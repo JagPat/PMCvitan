@@ -99,6 +99,7 @@ model Project {
   drawings      Drawing[]
   phases        Phase[]
   gateOverrides GateOverride[]
+  activityDependencies ActivityDependency[]
   // Tenant — NON-NULL since Phase 2 Task 4 (the event envelope's composite tenant key
   // (organizationId, projectId) references Project(orgId, id); a project cannot exist
   // without an org). Legacy null-org projects are backfilled by the migration's diagnostic,
@@ -868,6 +869,10 @@ model Membership {
   @@unique([projectId, id])
   @@index([userId])
   responsibleFor ActivityRequirement[]
+  // schedule dependency edges this member imposed / withdrew (schedule B1) — attribution is
+  // FK-backed and project-scoped, never a bare global user id
+  scheduleDependenciesCreated ActivityDependency[] @relation("ScheduleDependencyAuthor")
+  scheduleDependenciesRevoked ActivityDependency[] @relation("ScheduleDependencyRevoker")
 }
 
 // A browser Web Push subscription (Phase 8). Endpoint is unique per device;
@@ -2281,6 +2286,84 @@ model Activity {
   labourMismatches LabourMismatch[]
   workOutputs      ActivityWorkOutput[]
   measurements Measurement[]
+  // Schedule graph: the finish-to-start edges this activity sits on. `dependsOn` are the
+  // edges where THIS activity is the successor (its predecessors); `enables` are the edges
+  // where it is the predecessor (what it unblocks). An activity with no `dependsOn` edge is
+  // a ROOT and takes its start from an authorized anchor, not from another activity.
+  dependsOn      ActivityDependency[] @relation("DependencySuccessor")
+  enables        ActivityDependency[] @relation("DependencyPredecessor")
+}
+
+// One FINISH-TO-START dependency: `successor` may not commence until `predecessor` is
+// VERIFIED complete and any lag has elapsed. Multiple predecessors per successor are the
+// normal case — the successor waits for the latest of them.
+//
+// What the database guarantees about this graph, so no reader has to trust a caller:
+//   * both endpoints are activities of the SAME project (two composite FKs carrying the
+//     row's own `projectId`) — a cross-project edge is unrepresentable, not merely unwritten;
+//   * no self-dependency (CHECK);
+//   * one LIVE edge per ordered pair (the partial unique index described below);
+//   * non-negative lag (CHECK) — a negative lag would let a successor start before its
+//     predecessor finished, which is the whole thing this table exists to prevent;
+//   * NO CYCLES, even under concurrent writers (the insert trigger; see the migration).
+//
+// The ROW IS FROZEN once written, and the only permitted transition is live -> revoked, once.
+// Endpoint identity has to be frozen because the cycle check runs at INSERT: re-pointing an
+// edge is how a cycle sneaks past a check that only ran once. The LAG is frozen for a
+// different reason — it is part of the sequencing claim, not a display attribute, so editing
+// it in place would leave the frozen creation attribution saying that whoever imposed a
+// seven-day constraint imposed today's zero-day one. Changing a lag is revoking the edge and
+// imposing the one you mean.
+model ActivityDependency {
+  id            String   @id @default(cuid())
+  project       Project  @relation(fields: [projectId], references: [id])
+  projectId     String
+  predecessor   Activity @relation("DependencyPredecessor", fields: [projectId, predecessorId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  predecessorId String
+  successor     Activity @relation("DependencySuccessor", fields: [projectId, successorId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  successorId   String
+  /// Working days that must elapse AFTER the predecessor completes before the successor may
+  /// start — concrete curing, screed drying. Working days, so the project calendar applies.
+  lagWorkingDays Int     @default(0)
+  // Attribution is not decoration: only `schedule.manage` may shape a programme, and the
+  // record of who added an edge is what makes a disputed sequence answerable later.
+  createdAt     DateTime @default(now())
+  // The relation, not just the scalar. Prisma treats this datamodel as the DESIRED database shape,
+  // so a foreign key that exists only in SQL can be diffed as drift and DROPPED by a later
+  // generated migration — after which forged creator ids become insertable again and the freeze
+  // preserves them permanently.
+  //
+  // `Membership`, not `User`: a global user reference proves the id names somebody, not that the
+  // somebody had anything to do with THIS site, so an edge on one project could be attributed —
+  // permanently — to a member of another. Same identity every other project-scoped evidence
+  // column binds to (`ActivityRequirement.responsibleId`, `Inspection.assigneeId`, …).
+  createdBy     Membership @relation("ScheduleDependencyAuthor", fields: [projectId, createdById], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction, map: "ActivityDependency_createdBy_fkey")
+  createdById   String
+  createdByName String
+  // Edges are REVOKED, never deleted. See the migration: the creation provenance is frozen against
+  // UPDATE, but a hard DELETE followed by re-inserting the same pair under a different name laundered
+  // it completely — the freeze had nothing to hold on to. A revoked edge stays on the record with
+  // both attributions intact, and only live edges bind the graph. An edge is also BORN LIVE: these
+  // three columns cannot be set by the INSERT that creates the row, because a withdrawal of a
+  // constraint that never stood is not a withdrawal.
+  revokedAt     DateTime?
+  revokedById   String?
+  revokedByName String?
+  revokedBy     Membership? @relation("ScheduleDependencyRevoker", fields: [projectId, revokedById], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction, map: "ActivityDependency_revokedBy_fkey")
+
+  // One edge per ordered pair — and the target an edge-scoped dependency override references (a
+  // successor-wide override would clear the wrong predecessors, so the override must name the
+  // exact pair). Enforced by the PARTIAL unique index
+  // `ActivityDependency_projectId_successorId_predecessorId_key ... WHERE "revokedAt" IS NULL`,
+  // declared in raw SQL because Prisma cannot express a partial unique.
+  //
+  // Deliberately NOT `@@unique`: the pair is unique among LIVE edges only, and a revoked edge may
+  // legitimately share it with the replacement that succeeds it. Declaring it unconditionally
+  // would tell Prisma something false twice over — `findUnique` could match ambiguously once a
+  // pair has been re-imposed, and a later generated migration could install an unconditional
+  // constraint that rejects the supported history.
+  @@index([projectId, predecessorId])
+  @@index([projectId, successorId])
 }
 
 // A manual readiness exception (Phase 1 Task 6): the PMC overrides ONE gate's

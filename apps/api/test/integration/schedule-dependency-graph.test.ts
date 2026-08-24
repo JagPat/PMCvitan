@@ -1,0 +1,2223 @@
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { PrismaClient } from '@prisma/client';
+import { createTestApp, type TestApp } from './test-app';
+import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import {
+  extractCanonicalFunctionBodies,
+  extractSealInventorySql,
+  verifyB1Seals,
+} from '../../src/activities/b1/b1-seals';
+
+/**
+ * Schedule unit B1 — the ACYCLIC ACTIVITY DEPENDENCY GRAPH, proven against live PostgreSQL.
+ *
+ * No service writes these edges yet, so every probe is a HOSTILE-SQL probe: during this unit
+ * direct SQL is the only writer the table can have, and a guarantee that only holds when the
+ * application cooperates is not a guarantee.
+ *
+ * THE NUMBERING HAS GAPS, DELIBERATELY. A stable probe number keeps the earlier review records
+ * readable, and a gap says "deleted" where a shifted number would say nothing. Two are gone:
+ *
+ *   P17 - rows the guards would refuse are named before any object is installed.
+ *   P18 - a withdrawal the seals could not have judged is refused.
+ *
+ * Both only mean something when the migration ADOPTS a populated table, and it does not: nothing
+ * can write "ActivityDependency" between the CREATE TABLE that makes it and the seals a few
+ * statements later, so a table holding any row is not this file's partial apply and section 1c
+ * refuses it outright (P22). P15, P20 and P21 are back, and they now assert REFUSAL where they
+ * once asserted repair - the migration completes its OWN install and adopts nothing else.
+ *
+ * P23 is the retry-safety probe the whole shape exists for: a partial apply is left behind, the
+ * refusal this file used to carry is shown to dead-end on it, and the file as it stands completes
+ * the install. The install-and-repair half runs against real pre-baseline databases in
+ * `apps/api/scripts/schedule-b1-baseline-proof.sh`, which CI runs in the required `api` job.
+ *
+ * P24, P25, P26 and P27 are the three findings of #410's second round, each reproduced RED before
+ * its fix:
+ *
+ *   P24 - a COMPLETE install THAT HOLDS ROWS replays as a no-op. This is what P23 and P15 left
+ *         out: they replay over an EMPTY table, and the state a real re-deploy meets is a table
+ *         in service. One accepted edge used to make the file permanently non-rerunnable.
+ *   P25 - a same-named no-op in a schema ahead of `public` on the CALLER's path cannot capture a
+ *         seal. `SET LOCAL search_path` is only a warning outside a transaction block, so for the
+ *         autocommit caller an unqualified `EXECUTE FUNCTION` bound the decoy and exited 0.
+ *   P26 - an unfinished install is UNWRITABLE. A lock cannot span autocommit statements, so the
+ *         exclusion is an unsatisfiable CHECK installed atomically with the table and dropped
+ *         only once every seal is proven armed.
+ *   P27 - and that barrier is load-bearing rather than decorative: a seal that cannot be armed
+ *         leaves the table shut.
+ *
+ * The row rule therefore changed shape, and P22 carries the half that survived: rows plus an
+ * INCOMPLETE or foreign install is still refused, because arming a trigger validates nothing
+ * already in the table. Rows alone are not evidence of anything.
+ *
+ * P28, P29, P30, P31 and P32 are the rounds after that, and they are all ONE FINDING repeated:
+ * an object was accepted on fewer attributes than actually decide whether it enforces. P28 - a
+ * foreign key bound to a decoy schema and rendered identically. P29 - an UNLOGGED table, which
+ * PostgreSQL truncates after a crash. P30 - a STABLE clone of the acyclicity function, whose
+ * snapshot semantics break the advisory-lock protocol. P31 - a hollow `CHECK (true)` install
+ * barrier of the canonical NAME, which reads as "unwritable" while admitting every INSERT; and,
+ * as the other half of the same question, a barrier that is simply absent from an unfinished
+ * install, which is now RE-ARMED rather than refused. P32 - five foreign keys whose deparsed
+ * definitions and `convalidated` flags are byte-identical while their internal enforcement
+ * triggers are DISABLED, so nonexistent and cross-project endpoints are accepted.
+ *
+ * The migration's header now carries the CATALOG-ATTRIBUTE ENUMERATION derived from that
+ * repetition: for every kind of object the file installs, which `pg_catalog` state can differ
+ * while these checks still pass, with each column marked CHECKED, COVERED BY, or EXCLUDED with
+ * its reason. P31 and P32 are what a re-read of that enumeration against the file itself found.
+ */
+describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () => {
+  let t: TestApp;
+  let f: TwoProjectFixture;
+  let seq = 0;
+  const run = Math.floor(Math.random() * 1e6);
+
+  beforeAll(async () => {
+    t = await createTestApp();
+    f = await createTwoProjectFixture(t.prisma);
+  });
+
+  const wipe = async (): Promise<void> => {
+    // Edges are neither deletable (P12) nor truncatable (P16) — that is the point of the table. A
+    // test reset uses the same sanctioned destructive contract the seed does: disable the seal BY
+    // NAME for exactly this wipe, inside ONE transaction, so a wipe that throws rolls the DISABLE
+    // back with it and no failure path can leave the seal off for the suites that follow.
+    await t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_no_truncate"`),
+      t.prisma.$executeRawUnsafe(`TRUNCATE TABLE "ActivityDependency"`),
+      t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_no_truncate"`),
+    ]);
+    await t.prisma.activity.deleteMany({ where: { id: { startsWith: `act-b1-` } } });
+  };
+  afterEach(wipe);
+  afterAll(async () => {
+    await wipe();
+    await f?.cleanup();
+    await t?.close();
+  });
+
+  /** An activity, created directly. B1 takes no position on scheduling fields — only on edges. */
+  const activity = async (projectId: string = f.projectA.id): Promise<string> => {
+    const id = `act-b1-${run}-${seq += 1}`;
+    await t.prisma.activity.create({
+      data: { id, projectId, name: `Activity ${id}`, zone: 'Block A', plannedStart: 0, plannedEnd: 1 },
+    });
+    return id;
+  };
+
+  const edge = (
+    predecessorId: string,
+    successorId: string,
+    over: { projectId?: string; lagWorkingDays?: number } = {},
+  ): string => `INSERT INTO "ActivityDependency"
+      ("id","projectId","predecessorId","successorId","lagWorkingDays","createdById","createdByName")
+      VALUES ('dep-b1-${run}-${seq += 1}','${over.projectId ?? f.projectA.id}','${predecessorId}','${successorId}',${over.lagWorkingDays ?? 0},'${f.memberUser.id}','PMC')`;
+
+  const refusal = async (sql: string): Promise<string> => {
+    const err = await t.prisma.$executeRawUnsafe(sql).then(() => null, (e: unknown) => e);
+    expect(err, `expected PostgreSQL to refuse: ${sql.slice(0, 90)}`).not.toBeNull();
+    return String(err);
+  };
+
+  const edgeCount = async (): Promise<number> => {
+    const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT COUNT(*) AS n FROM "ActivityDependency" WHERE "id" LIKE 'dep-b1-%'`,
+    );
+    return Number(rows[0]?.n ?? 0);
+  };
+
+  const onlyId = async (): Promise<string> => (await t.prisma.$queryRawUnsafe<Array<{ id: string }>>(
+    `SELECT "id" FROM "ActivityDependency" WHERE "id" LIKE 'dep-b1-%' LIMIT 1`))[0]!.id;
+
+  const migrationPath = join(__dirname, '..', '..', 'prisma', 'migrations',
+                             '20270930000000_schedule_dependency_graph', 'migration.sql');
+
+  /**
+   * `DATABASE_URL` with its query string removed, because psql and Prisma do not accept the same
+   * URL. Prisma's carries `?schema=public`; psql rejects it outright — `invalid URI query
+   * parameter: "schema"` — and takes the whole invocation down with it. Worth a named helper
+   * because the failure is invisible in local development and unmissable in CI.
+   */
+  const psqlUrl = (): string => {
+    const url = new URL(process.env.DATABASE_URL!);
+    url.search = '';
+    return url.toString();
+  };
+
+  /**
+   * Apply the migration through psql, returning stderr on failure and null on success.
+   *
+   * `--single-transaction` is what the ORDINARY caller supplies. The file carries no
+   * `BEGIN;`/`COMMIT;` of its own — an explicit transaction inside it masks section 1's named
+   * diagnostics under `prisma migrate deploy`, which is why it was removed — so the CALLER
+   * supplies it. Prisma does automatically; psql does only when asked. It is passed here so the
+   * "changed nothing at all" assertions in P15 and P22 measure the refusal rather than luck.
+   *
+   * It is NOT what makes the file re-runnable. That comes from the object guards, and P23 proves
+   * it by leaving a partial apply behind and letting the file finish over it.
+   */
+  const applyMigration = (
+    opts: { autocommit?: boolean; searchPath?: string; file?: string } = {},
+  ): string | null => {
+    // AUTOCOMMIT is the caller the repository requires this file to tolerate, and the reason it is
+    // an option here rather than an aside: `psql` without `--single-transaction` commits every
+    // statement on its own, so a failure part-way leaves whatever ran behind. P23 uses it.
+    const tx = opts.autocommit ? [] : ['--single-transaction'];
+    // `searchPath` is the CALLER's path, set the way a real role's path is set — through the
+    // connection, not through anything this file can see. It is how P25 reproduces a same-named
+    // decoy sitting in front of `public`.
+    const env = opts.searchPath
+      ? { ...process.env, PGOPTIONS: `-c search_path=${opts.searchPath}` }
+      : process.env;
+    try {
+      execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', ...tx, '-q',
+                            '-d', psqlUrl(), '-f', opts.file ?? migrationPath],
+                   { encoding: 'utf8', stdio: 'pipe', env });
+      return null;
+    } catch (e: unknown) {
+      return String((e as { stderr?: string }).stderr ?? e);
+    }
+  };
+
+  /**
+   * Wait for a live database CONDITION, never for a duration.
+   *
+   * A sleep encodes an assumption about machine speed, and when that assumption is wrong the test
+   * does not merely flake — it can pass the wrong way round, reporting a serialization that never
+   * happened. Every barrier below waits on `pg_locks`, which is the mechanism itself.
+   */
+  const waitFor = async (what: string, sql: string): Promise<void> => {
+    for (let i = 0; i < 400; i += 1) {
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(sql);
+      if (Number(rows[0]?.n ?? 0) > 0) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error(`barrier never satisfied after 10s: ${what}`);
+  };
+
+  /** Every constraint / index OID on the table — identity, so a "no-op" can be proven to be one. */
+  const objectIdentity = async (): Promise<string> => {
+    const rows = await t.prisma.$queryRawUnsafe<Array<{ ids: string }>>(`
+      SELECT COALESCE((SELECT string_agg(oid::text, ',' ORDER BY conname) FROM pg_constraint
+                        WHERE conrelid = '"ActivityDependency"'::regclass), '')
+          || '|' || COALESCE((SELECT string_agg(ci.oid::text, ',' ORDER BY ci.relname)
+                                FROM pg_class ci JOIN pg_index ix ON ix.indexrelid = ci.oid
+                               WHERE ix.indrelid = '"ActivityDependency"'::regclass), '') AS ids`);
+    return rows[0]!.ids;
+  };
+
+  // ── P1 ─────────────────────────────────────────────────────────────────────────────────────
+  it('P1 containment: an edge cannot join activities of two different projects', async () => {
+    const here = await activity(f.projectA.id);
+    const there = await activity(f.projectB.id);
+    // Each endpoint key carries the edge's own projectId, so this is unrepresentable rather than
+    // merely unwritten — no service, import or hand-written UPDATE can produce it.
+    expect(await refusal(edge(there, here))).toMatch(/predecessorId_fkey/u);
+    expect(await refusal(edge(here, there))).toMatch(/successorId_fkey/u);
+    expect(await edgeCount()).toBe(0);
+  });
+
+  // ── P2 ─────────────────────────────────────────────────────────────────────────────────────
+  it('P2 shape: self-dependency, duplicate live edges and negative lag are all refused', async () => {
+    const [a, b] = [await activity(), await activity()];
+    expect(await refusal(edge(a, a))).toMatch(/cannot depend on itself|no_self_check/u);
+    expect(await refusal(edge(a, b, { lagWorkingDays: -1 }))).toMatch(/lag_nonneg_check/u);
+
+    await t.prisma.$executeRawUnsafe(edge(a, b, { lagWorkingDays: 7 }));
+    expect(await refusal(edge(a, b))).toMatch(/already exists|unique/u);
+    // …and zero lag is ordinary: the guard is about NEGATIVE lag, not about lag.
+    const c = await activity();
+    await t.prisma.$executeRawUnsafe(edge(a, c, { lagWorkingDays: 0 }));
+    expect(await edgeCount()).toBe(2);
+  });
+
+  // ── P3 ─────────────────────────────────────────────────────────────────────────────────────
+  it('P3 many predecessors are the normal case; a direct and a chained cycle are both refused', async () => {
+    const [a, b, c] = [await activity(), await activity(), await activity()];
+    await t.prisma.$executeRawUnsafe(edge(a, c));
+    await t.prisma.$executeRawUnsafe(edge(b, c));   // c waits for the LATEST of a and b
+
+    expect(await refusal(edge(c, a))).toMatch(/dependency cycle/u);
+    // and a longer one — the walk is reachability, not a neighbour check
+    const d = await activity();
+    await t.prisma.$executeRawUnsafe(edge(c, d));
+    const err = await refusal(edge(d, a));
+    expect(err).toMatch(/dependency cycle/u);
+    // the diagnostic names ONE concrete route, forwards, for the person who has to fix it
+    expect(err).toMatch(new RegExp(`${a} -> ${c} -> ${d}`, 'u'));
+    expect(await edgeCount()).toBe(3);
+  });
+
+  // ── P4 ─────────────────────────────────────────────────────────────────────────────────────
+  it('P4 the row is frozen: endpoints, lag and creation attribution are all unrewritable', async () => {
+    const [a, b] = [await activity(), await activity()];
+    await t.prisma.$executeRawUnsafe(edge(a, b, { lagWorkingDays: 7 }));
+    const id = await onlyId();
+
+    // Re-pointing is how a cycle evades a check that only ran at INSERT.
+    expect(await refusal(
+      `UPDATE "ActivityDependency" SET "predecessorId"='${b}', "successorId"='${a}' WHERE "id"='${id}'`,
+    )).toMatch(/is frozen/u);
+    // The lag is part of the sequencing claim: editing it in place would leave the frozen
+    // attribution saying that whoever imposed a seven-day cure imposed today's zero-day one.
+    expect(await refusal(
+      `UPDATE "ActivityDependency" SET "lagWorkingDays"=0 WHERE "id"='${id}'`)).toMatch(/is frozen/u);
+    expect(await refusal(
+      `UPDATE "ActivityDependency" SET "createdByName"='Someone Else' WHERE "id"='${id}'`,
+    )).toMatch(/is frozen/u);
+    expect(await refusal(
+      `UPDATE "ActivityDependency" SET "createdAt"=now() WHERE "id"='${id}'`)).toMatch(/is frozen/u);
+  });
+
+  // ── P5 ─────────────────────────────────────────────────────────────────────────────────────
+  it('P5 concurrency: two sessions each adding one legal edge cannot compose a cycle', async () => {
+    const [a, b] = [await activity(), await activity()];
+
+    // The hazard: two sessions each add an edge that is individually fine and jointly a loop.
+    //
+    //   T1: add a -> b   (asks: does b already reach a?  no)
+    //   T2: add b -> a   (asks: does a already reach b?  no)
+    //
+    // Neither is wrong on its own evidence. They touch different rows, conflict on nothing, and
+    // under READ COMMITTED neither can see the other's uncommitted row. Only the advisory lock —
+    // plus the fresh snapshot READ COMMITTED gives T2 after it waits — turns that into a refusal.
+    //
+    // FIRING BOTH INSERTS AS CONCURRENT PROMISES DOES NOT TEST THAT, and an earlier version of this
+    // probe did exactly that. The client pool is free to run one to completion before starting the
+    // other, and serial execution produces the same visible outcome — one edge accepted, one refused
+    // as an ordinary cycle — so the assertion passed without any interleaving at all, and would
+    // still pass with the serialization removed. A probe that cannot fail on the defect it names is
+    // not evidence.
+    //
+    // So the overlap is CONSTRUCTED: a second, independently-connected session holds its
+    // transaction open, and the first session's write is required to be genuinely BLOCKED on the
+    // project graph lock — asserted from `pg_locks`, not assumed after a sleep — before the holder
+    // is allowed to commit.
+    const holder = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let blocked: Promise<string> | null = null;
+
+    try {
+      const holderTx = holder.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(edge(a, b));   // takes the project graph lock, and keeps it
+        await held;                               // …until this test says otherwise
+      }, { timeout: 60_000, maxWait: 20_000 });
+
+      await waitFor('the holding session has taken the project graph lock',
+        `SELECT COUNT(*) AS n FROM pg_locks
+          WHERE locktype = 'advisory' AND granted
+            AND classid = hashtext('vitan:schedule-graph')
+            AND objid = hashtext('${f.projectA.id}')::bigint::int`);
+
+      // the opposing edge, from THIS session — it must not get past the lock
+      blocked = t.prisma.$executeRawUnsafe(edge(b, a))
+        .then(() => 'COMMITTED', (e: unknown) => String(e));
+
+      await waitFor('the opposing writer is WAITING on that same lock',
+        `SELECT COUNT(*) AS n FROM pg_locks
+          WHERE locktype = 'advisory' AND NOT granted
+            AND classid = hashtext('vitan:schedule-graph')
+            AND objid = hashtext('${f.projectA.id}')::bigint::int`);
+
+      // Only now — the two writes provably overlap, and the second is asleep on the lock the first
+      // holds. Letting the holder commit is what gives the second its fresh snapshot.
+      release();
+      await holderTx;
+
+      expect(await blocked, 'the second writer must be refused, not committed')
+        .toMatch(/dependency cycle/u);
+    } finally {
+      release();
+      await blocked?.catch(() => undefined);
+      await holder.$disconnect();
+    }
+
+    // the terminal invariant, which is the thing that actually matters
+    expect(await edgeCount()).toBe(1);
+  });
+
+  // ── P6 ─────────────────────────────────────────────────────────────────────────────────────
+  it('P6 attribution has to be answerable, and has to name a member of THIS project', async () => {
+    const [a, b] = [await activity(), await activity()];
+    // NOT NULL accepts all of these and P4 would then make them permanent — an edge that cannot
+    // say who imposed it, forever. The vertical tab in particular: the obvious hand-written trim
+    // set E' \t\n\r\v\f' does NOT strip it, because PostgreSQL reads \v there as the letter v.
+    // The characters are REAL here, never SQL escape sequences: `E'\\v'` is the letter v to
+    // PostgreSQL, so a probe written that way would test nothing and pass.
+    for (const [label, blank] of [['empty', ''], ['space', ' '], ['tab', '\t'],
+                                  ['newline', '\n'], ['vertical tab', '\v']] as const) {
+      const err = await refusal(
+        `INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName")
+         VALUES ('dep-b1-${run}-${seq += 1}','${f.projectA.id}','${a}','${b}','${f.memberUser.id}','${blank}')`);
+      expect(err, `${label} must not pass as attribution`).toMatch(/attribution_check/u);
+    }
+    // an id that names nobody at all
+    expect(await refusal(
+      `INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName")
+       VALUES ('dep-b1-${run}-${seq += 1}','${f.projectA.id}','${a}','${b}','forged-user','PMC')`,
+    )).toMatch(/createdBy_fkey/u);
+    // …and a REAL user is still not enough. `otherUser` is an active pmc — on the OTHER project.
+    expect(await refusal(
+      `INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName")
+       VALUES ('dep-b1-${run}-${seq += 1}','${f.projectA.id}','${a}','${b}','${f.otherUser.id}','Outsider')`,
+    )).toMatch(/createdBy_fkey/u);
+    // a real name is untouched, including one starting with the letter the bad trim set ate
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName")
+       VALUES ('dep-b1-${run}-${seq += 1}','${f.projectA.id}','${a}','${b}','${f.memberUser.id}','Vikram')`);
+    expect(await edgeCount()).toBe(1);
+  });
+
+  // ── P7 ─────────────────────────────────────────────────────────────────────────────────────
+  it('P7 a shadowing temporary table cannot blind the cycle check', async () => {
+    const [a, b] = [await activity(), await activity()];
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    // `pg_temp` precedes `public` by default, so a writer holding only the ordinary TEMP privilege
+    // can create a table of the same name. If the trigger resolved the relation through the
+    // CALLING session's path it would walk this empty copy and let the opposing edge commit.
+    await expect(t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        `CREATE TEMP TABLE "ActivityDependency" (LIKE public."ActivityDependency") ON COMMIT DROP`);
+      await tx.$executeRawUnsafe(
+        `INSERT INTO public."ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName")
+         VALUES ('dep-b1-${run}-${seq += 1}','${f.projectA.id}','${b}','${a}','${f.memberUser.id}','PMC')`);
+    })).rejects.toThrow(/dependency cycle/iu);
+    expect(await edgeCount()).toBe(1);
+  });
+
+  // ── P8 ─────────────────────────────────────────────────────────────────────────────────────
+  it('P8 one project per transaction, and the caller cannot switch that scope off', async () => {
+    const [a1, a2, a3] = [await activity(), await activity(), await activity()];
+    const [b1, b2] = [await activity(f.projectB.id), await activity(f.projectB.id)];
+
+    // Two projects in one transaction is what makes a deadlock possible: this is a ROW trigger, so
+    // the per-project locks are taken in whatever order the rows arrive, and a second transaction
+    // doing the same two projects the other way round leaves each holding what the other waits for.
+    await expect(t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(edge(a1, a2));
+      await tx.$executeRawUnsafe(edge(b1, b2, { projectId: f.projectB.id }));
+    })).rejects.toThrow(/one project per transaction/iu);
+    expect(await edgeCount()).toBe(0);
+
+    // The scope is derived from the transaction's own advisory locks rather than from session
+    // state, so clearing session state does not restore the deadlock shape.
+    await expect(t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(edge(a1, a2));
+      await tx.$executeRawUnsafe(`SELECT set_config('vitan.schedule_graph_project', '', true)`);
+      await tx.$executeRawUnsafe(`RESET ALL`);
+      await tx.$executeRawUnsafe(edge(b1, b2, { projectId: f.projectB.id }));
+    })).rejects.toThrow(/one project per transaction/iu);
+    expect(await edgeCount()).toBe(0);
+
+    // …and the lock genuinely cannot be handed back mid-transaction, which is what makes the
+    // derived state authoritative rather than merely inconvenient to forge.
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(edge(a1, a2));
+      const [{ released }] = await tx.$queryRawUnsafe<Array<{ released: boolean }>>(
+        `SELECT pg_advisory_unlock(hashtext('vitan:schedule-graph'), hashtext('${f.projectA.id}')) AS released`);
+      expect(released, 'a transaction-scoped advisory lock must not be releasable').toBe(false);
+    });
+    // many edges for ONE project in one transaction are untouched
+    await t.prisma.$transaction(async (tx) => { await tx.$executeRawUnsafe(edge(a2, a3)); });
+    expect(await edgeCount()).toBe(2);
+  });
+
+  // ── P9 ─────────────────────────────────────────────────────────────────────────────────────
+  it('P9 a fixed snapshot cannot be used to write edges at all', async () => {
+    const [a, b] = [await activity(), await activity()];
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    // The lock makes the second writer WAIT; what makes waiting useful is that the reachability
+    // query afterwards sees the first writer's edge. Under a fixed snapshot it does not, so the
+    // guard states its requirement rather than hoping SSI notices.
+    for (const level of ['REPEATABLE READ', 'SERIALIZABLE'] as const) {
+      await expect(t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SET TRANSACTION ISOLATION LEVEL ${level}`);
+        await tx.$executeRawUnsafe(edge(b, a));
+      })).rejects.toThrow(/READ COMMITTED/iu);
+    }
+    // and the ordinary isolation the application uses is untouched: the same write is refused, but
+    // as the CYCLE it is, which is the point of getting this far.
+    expect(await refusal(edge(b, a))).toMatch(/dependency cycle/iu);
+    expect(await edgeCount()).toBe(1);
+  });
+
+  // ── P10 ────────────────────────────────────────────────────────────────────────────────────
+  it('P10 a branching DAG is judged in linear time, not once per distinct route', async () => {
+    // The shape matters, and getting it wrong hides the bug. Layers of two with complete edges
+    // between them keep every route SHORT — 31 nodes, inside any plausible depth cap — while the
+    // number of distinct ROUTES doubles per layer: about 120 edges and over two billion routes.
+    // A path-carrying walk forces UNION ALL and enumerates routes; this one dedupes on node.
+    const head = await activity();
+    let prev = [head];
+    for (let layer = 0; layer < 30; layer += 1) {
+      const next = [await activity(), await activity()];
+      for (const p of prev) for (const n of next) await t.prisma.$executeRawUnsafe(edge(p, n));
+      prev = next;
+    }
+    // ACCEPTING has to be linear: an unrelated activity keeps the answer NO, so the walk has to
+    // exhaust reachability rather than stop at a lucky early hit.
+    const unrelated = await activity();
+    const acceptStarted = Date.now();
+    await t.prisma.$executeRawUnsafe(edge(unrelated, head));
+    expect(Date.now() - acceptStarted).toBeLessThan(5_000);
+    // …and so has REFUSING one, which is a SEPARATE walk and was a separate bug.
+    const rejectStarted = Date.now();
+    await expect(t.prisma.$executeRawUnsafe(edge(prev[0]!, head))).rejects.toThrow(/dependency cycle/iu);
+    expect(Date.now() - rejectStarted).toBeLessThan(5_000);
+  }, 180_000);
+
+  // ── P11 (F4) ───────────────────────────────────────────────────────────────────────────────
+  it('P11 (F4) refusing an edge costs about what accepting one costs, not many times more', async () => {
+    // The route explosion P10 covers is not the only way this walk can be too slow. The earlier
+    // version's ITERATION count was linear while its DATA STRUCTURES were not: `NOT (successorId =
+    // ANY(v_seen))` is a linear array scan for every candidate edge, so the membership test alone
+    // cost O(E*N) comparisons, and `v_seen := v_seen || v_node` rebuilt the whole array per node.
+    // That runs while holding the project graph lock, so every other schedule write for the
+    // project queues behind a diagnostic.
+    //
+    // The assertion is a RATIO, not a wall-clock bound, and that is deliberate. Accepting an edge
+    // runs the DETECTION walk alone; refusing one runs detection AND the diagnostic. Both scale
+    // with the same machine, so their ratio isolates the diagnostic and needs no assumption about
+    // how fast the runner is — a plain millisecond bound would encode one and fail for the wrong
+    // reason on a slow CI box. Measured on PostgreSQL 16 over this exact graph, in one warm
+    // session: accept 27ms either way; refuse 1,206ms with the two arrays against 104ms with the
+    // jsonb map, so the ratio is ~45x against ~4x. The bound sits well above the second and well
+    // below the first, because the point is to fail on the defect and not on a slow machine.
+    const W = 10;
+    const L = 300;
+    const node = (l: number, w: number): string => `act-b1-${run}-g-${l}-${w}`;
+    const head = `act-b1-${run}-g-head`;
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "Activity"("id","projectId","name","zone","plannedStart","plannedEnd")
+       VALUES ('${head}','${f.projectA.id}','head','Block A',0,1)`);
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "Activity"("id","projectId","name","zone","plannedStart","plannedEnd")
+       SELECT 'act-b1-${run}-g-' || l || '-' || w, '${f.projectA.id}', 'n', 'Block A', 0, 1
+         FROM generate_series(0, ${L - 1}) l, generate_series(0, ${W - 1}) w`);
+    // Layers of ${W}, fully connected between consecutive layers: ~${(L - 1) * W * W} edges over
+    // ${L * W + 1} activities. The guard is what this probe is timing, so the fixture is planted
+    // with it disabled — the graph is acyclic and would be accepted anyway, this only avoids tens
+    // of thousands of sequential guarded inserts.
+    await t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_acyclic"`),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName")
+         SELECT 'dep-b1-${run}-gh-' || w, '${f.projectA.id}', '${head}', 'act-b1-${run}-g-0-' || w,
+                '${f.memberUser.id}', 'PMC' FROM generate_series(0, ${W - 1}) w`),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName")
+         SELECT 'dep-b1-${run}-g-' || l || '-' || a || '-' || b, '${f.projectA.id}',
+                'act-b1-${run}-g-' || l || '-' || a, 'act-b1-${run}-g-' || (l + 1) || '-' || b,
+                '${f.memberUser.id}', 'PMC'
+           FROM generate_series(0, ${L - 2}) l, generate_series(0, ${W - 1}) a, generate_series(0, ${W - 1}) b`),
+      t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_acyclic"`),
+    ]);
+    // Autovacuum has not seen this table yet, and the ratio is only meaningful when both walks are
+    // planned against real statistics — which is what any live database has.
+    await t.prisma.$executeRawUnsafe(`ANALYZE "ActivityDependency"`);
+
+    // ACCEPTING: an unrelated activity keeps the answer NO, so detection must exhaust reachability
+    // rather than stop at a lucky early hit. This is the machine-speed calibration.
+    // Three of them, median taken: detection over this graph is tens of milliseconds, which is
+    // close enough to one client round trip that a single sample is mostly noise.
+    const accepts: number[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const unrelated = await activity();
+      const started = Date.now();
+      await t.prisma.$executeRawUnsafe(edge(unrelated, head));
+      accepts.push(Date.now() - started);
+    }
+    const accept = Math.max(accepts.sort((x, y) => x - y)[1]!, 5);
+
+    // REFUSING: the same detection walk, plus the diagnostic that names one route.
+    const rejectStarted = Date.now();
+    const err = await refusal(edge(node(L - 1, 0), head));
+    const reject = Date.now() - rejectStarted;
+    expect(err).toMatch(/dependency cycle/u);
+    expect(reject / accept, `refusing took ${reject}ms against ${accept}ms to accept`)
+      .toBeLessThan(15);
+
+    // The fixture is cleaned by the shared `afterEach`, which truncates the edges BEFORE deleting
+    // the activities — the endpoint keys are NO ACTION, so the other order is refused.
+  }, 300_000);
+
+  // ── P12 ────────────────────────────────────────────────────────────────────────────────────
+  it('P12 an edge is revoked, never deleted, and a revocation needs an answerable author', async () => {
+    const [a, b] = [await activity(), await activity()];
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    const id = await onlyId();
+
+    // The freeze holds the creation provenance against UPDATE. Against DELETE it held nothing:
+    // remove Alice's edge, re-insert the identical pair as Bob, and the original author is gone.
+    expect(await refusal(`DELETE FROM "ActivityDependency" WHERE "id"='${id}'`)).toMatch(/not deletable/u);
+    expect(await refusal(
+      `UPDATE "ActivityDependency" SET "revokedAt"=now() WHERE "id"='${id}'`)).toMatch(/revocation_check/u);
+    // …and a NAME, demanded EXPLICITLY. `NULL !~ '...'` is UNKNOWN and a CHECK PASSES on UNKNOWN,
+    // so a revoked arm testing only the regex accepts a stamp and an id with no recorded revoker.
+    expect(await refusal(
+      `UPDATE "ActivityDependency" SET "revokedAt"=now(), "revokedById"='${f.memberUser.id}', "revokedByName"=NULL WHERE "id"='${id}'`,
+    )).toMatch(/revocation_check/u);
+    expect(await refusal(
+      `UPDATE "ActivityDependency" SET "revokedAt"=now(), "revokedById"='${f.memberUser.id}', "revokedByName"='  ' WHERE "id"='${id}'`,
+    )).toMatch(/revocation_check/u);
+    // a fully attributed withdrawal LANDS — these seals refuse rewriting, not writing
+    await t.prisma.$executeRawUnsafe(
+      `UPDATE "ActivityDependency" SET "revokedAt"=now(), "revokedById"='${f.memberUser.id}', "revokedByName"='PMC' WHERE "id"='${id}'`);
+    const [row] = await t.prisma.$queryRawUnsafe<Array<{ both: string }>>(
+      `SELECT "createdByName" || '/' || "revokedByName" AS both FROM "ActivityDependency" WHERE "id"='${id}'`);
+    expect(row!.both).toBe('PMC/PMC');
+  });
+
+  // ── P13 (F2) ───────────────────────────────────────────────────────────────────────────────
+  it('P13 (F2) an edge cannot be BORN revoked, so a withdrawal always records one that stood', async () => {
+    const [a, b] = [await activity(), await activity()];
+    const bornRevoked = (id: string): string => `INSERT INTO "ActivityDependency"
+        ("id","projectId","predecessorId","successorId","createdById","createdByName","revokedAt","revokedById","revokedByName")
+        VALUES ('${id}','${f.projectA.id}','${a}','${b}','${f.memberUser.id}','PMC',now(),'${f.memberUser.id}','PMC')`;
+
+    // The revocation CHECK's revoked arm is satisfied by this row, because a CHECK sees one row and
+    // cannot tell an INSERT from an UPDATE. Every other guard then works in the fabrication's
+    // favour, which is why this needs a trigger of its own.
+    expect(await refusal(bornRevoked(`dep-b1-${run}-born`))).toMatch(/cannot be created already revoked/u);
+    expect(await edgeCount()).toBe(0);
+
+    // The three consequences, each stated as its own claim rather than left implied:
+    //
+    // (1) it would be permanent — the freeze refuses to touch an already-revoked row;
+    // (2) it would never be judged for cycles — the walk reads LIVE edges only;
+    // (3) the partial unique index covers live rows only, so an ordered pair could accumulate an
+    //     unlimited number of fabricated withdrawals.
+    // Proven by planting the row with ONLY this trigger disabled and watching the rest wave it
+    // through — which is exactly what happened before the trigger existed.
+    await t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_born_live"`),
+      t.prisma.$executeRawUnsafe(bornRevoked(`dep-b1-${run}-f1`)),
+      t.prisma.$executeRawUnsafe(bornRevoked(`dep-b1-${run}-f2`)),   // (3) a second, same pair
+      t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_born_live"`),
+    ]);
+    expect(await edgeCount(), 'two fabricated withdrawals for one pair were accepted').toBe(2);
+    expect(await refusal(                                            // (1)
+      `UPDATE "ActivityDependency" SET "revokedAt"=NULL, "revokedById"=NULL, "revokedByName"=NULL WHERE "id"='dep-b1-${run}-f1'`,
+    )).toMatch(/already revoked/u);
+    await t.prisma.$executeRawUnsafe(edge(b, a));                    // (2) the reverse edge stands
+    expect(await edgeCount()).toBe(3);
+  });
+
+  // ── P14 ────────────────────────────────────────────────────────────────────────────────────
+  it('P14 a revocation is evidence: it cannot be re-attributed or undone, and it frees the pair', async () => {
+    const [a, b] = [await activity(), await activity()];
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    const id = await onlyId();
+    await t.prisma.$executeRawUnsafe(
+      `UPDATE "ActivityDependency" SET "revokedAt"=now(), "revokedById"='${f.memberUser.id}', "revokedByName"='PMC' WHERE "id"='${id}'`);
+
+    expect(await refusal(
+      `UPDATE "ActivityDependency" SET "revokedByName"='Someone Else' WHERE "id"='${id}'`)).toMatch(/already revoked/u);
+    // un-revoking would also return a live edge to the graph without ever passing the acyclicity
+    // trigger, which fires on INSERT
+    expect(await refusal(
+      `UPDATE "ActivityDependency" SET "revokedAt"=NULL, "revokedById"=NULL, "revokedByName"=NULL WHERE "id"='${id}'`,
+    )).toMatch(/already revoked/u);
+
+    // A withdrawn edge binds nothing, so the REPLACEMENT in the other direction is an ordinary
+    // re-plan. A walk over history rather than over live edges would refuse it — through an edge
+    // withdrawn precisely to make room for it.
+    // (i) the same pair may be re-imposed, which is what the PARTIAL unique index is for
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    const again = (await t.prisma.$queryRawUnsafe<Array<{ id: string }>>(
+      `SELECT "id" FROM "ActivityDependency" WHERE "revokedAt" IS NULL LIMIT 1`))[0]!.id;
+    // (ii) and once THAT is withdrawn too, the replacement in the OTHER direction is accepted — a
+    //      walk over history rather than over live edges would refuse it as a cycle through an
+    //      edge withdrawn precisely to make room for it.
+    await t.prisma.$executeRawUnsafe(
+      `UPDATE "ActivityDependency" SET "revokedAt"=now(), "revokedById"='${f.memberUser.id}', "revokedByName"='PMC' WHERE "id"='${again}'`);
+    await t.prisma.$executeRawUnsafe(edge(b, a));
+    expect(await edgeCount()).toBe(3);
+  });
+
+  // ── P16 ────────────────────────────────────────────────────────────────────────────────────
+  it('P16 the sequencing record cannot be erased by TRUNCATE, and an empty one may be', async () => {
+    // A ROW trigger does not fire for TRUNCATE, so without a statement-level seal one statement
+    // erases every edge and every attribution the DELETE seal exists to protect.
+    const [a, b] = [await activity(), await activity()];
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    expect(await refusal(`TRUNCATE TABLE "ActivityDependency"`)).toMatch(/never truncated/u);
+    expect(await edgeCount()).toBe(1);
+
+    // …and a TRUNCATE that erases NOTHING is permitted, deliberately. What must not be destroyed
+    // is the record of who imposed each constraint and who withdrew it; with no edges there is no
+    // such record, and refusing anyway would refuse every fixture reset that CASCADEs through
+    // "Activity" on a database where no edge has ever been written — which is how a seal becomes a
+    // formality that every caller disables as a matter of routine.
+    await wipe();
+    await t.prisma.$executeRawUnsafe(`TRUNCATE TABLE "ActivityDependency"`);
+    expect(await edgeCount()).toBe(0);
+  });
+
+  // ── P19 ────────────────────────────────────────────────────────────────────────────────────
+  it('P19 a withdrawal attributed to a BLANK id is refused, exactly as a blank author is', async () => {
+    // The foreign key proves the revoker id names a membership. It does not prove the id is
+    // legible, and a writer able to create a whitespace-id user and membership can revoke through
+    // it — permanently, because section 7 freezes the withdrawal. The creation arm already refuses
+    // this on `createdById`; the revoked arm has to refuse it on `revokedById` for the same reason.
+    const blank = '   ';
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "User"("id","projectId","name","email","role") VALUES ('${blank}','${f.projectA.id}','Blank','blank-b1@example.com','pmc')`);
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "Membership"("id","projectId","userId","role","status") VALUES ('mem-b1-blank','${f.projectA.id}','${blank}','pmc','active')`);
+    try {
+      const [a, b] = [await activity(), await activity()];
+      await t.prisma.$executeRawUnsafe(edge(a, b));
+      const id = await onlyId();
+      // The membership really exists, so the FK is satisfied and only the CHECK can refuse this.
+      expect(await refusal(
+        `UPDATE "ActivityDependency" SET "revokedAt"=now(),"revokedById"='${blank}',"revokedByName"='PMC' WHERE "id"='${id}'`,
+      )).toMatch(/revocation_check/u);
+      // and the edge is still LIVE — a refused withdrawal withdraws nothing
+      const live = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+        `SELECT COUNT(*) AS n FROM "ActivityDependency" WHERE "id"='${id}' AND "revokedAt" IS NULL`);
+      expect(Number(live[0]!.n)).toBe(1);
+    } finally {
+      await t.prisma.$executeRawUnsafe(`DELETE FROM "Membership" WHERE "id"='mem-b1-blank'`);
+      await t.prisma.$executeRawUnsafe(`DELETE FROM "User" WHERE "id"='${blank}'`);
+    }
+  });
+
+  /** Every installed object, by KIND and COUNT — "the install is complete" as one readable string. */
+  const installed = async (): Promise<string> => (await t.prisma.$queryRawUnsafe<Array<{ s: string }>>(`
+    SELECT (SELECT COUNT(*) FROM pg_constraint
+             WHERE conrelid = '"ActivityDependency"'::regclass AND contype = 'c' AND convalidated)
+        || '/' || (SELECT COUNT(*) FROM pg_constraint
+                    WHERE conrelid = '"ActivityDependency"'::regclass AND contype = 'f')
+        || '/' || (SELECT COUNT(*) FROM pg_index WHERE indrelid = '"ActivityDependency"'::regclass)
+        || '/' || (SELECT COUNT(*) FROM pg_trigger
+                    WHERE tgrelid = '"ActivityDependency"'::regclass
+                      AND NOT tgisinternal AND tgenabled = 'O')
+        || '/' || (SELECT COUNT(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                    WHERE n.nspname = 'public' AND p.proname LIKE 'activity\\_dependency%') AS s`))[0]!.s;
+
+  /** checks/foreign keys/indexes/armed triggers/functions, when every object this file installs is present. */
+  const COMPLETE = '4/5/4/5/5';
+
+  // ── P15 ────────────────────────────────────────────────────────────────────────────────────
+  it('P15 a complete re-apply is a no-op, and a same-named WRONG definition is REFUSED, not adopted', async () => {
+    // Half of retry-safety is that a repeated apply over a finished install does nothing at all.
+    // "It did not error" is a much weaker claim than this: the object IDENTITIES are compared, so a
+    // drop-and-recreate would fail here even though the end state would look right.
+    expect(await installed(), 'the suite database carries the finished install').toBe(COMPLETE);
+    const before = await objectIdentity();
+    expect(applyMigration(), 'a re-apply over a complete install must succeed').toBeNull();
+    expect(await objectIdentity(), 'and must not recreate a single object').toBe(before);
+
+    // THIS ALSO PINS THE CANONICAL LIST AGAINST DRIFT, which is worth naming because it is the one
+    // hazard of writing a definition down twice. Section 1 compares the installed objects against
+    // canonical `pg_get_*def` texts spelled out in the file; if someone later edits a CHECK inline
+    // in section 2 and forgets its entry in section 1e, a FRESH install still succeeds — and this
+    // assertion is what fails, because the next apply over that install would then abort. The two
+    // copies cannot diverge without turning this red.
+
+    // The other half is that PRESENT is decided by DEFINITION, never by name. Each forgery below
+    // satisfies a name test — which is exactly why a name test is not enough — and each is REFUSED
+    // rather than repaired: this file completes its own install and adopts nothing else. The
+    // function case is the one that closed PR #409: `CREATE OR REPLACE FUNCTION` preserves the
+    // function's identity, so a hollowed body of the right name survives everything short of
+    // reading `prosrc`.
+    const forgeries: Array<{ what: string; forge: string[]; expect: RegExp; restore: string[] }> = [
+      { what: 'a hollow CHECK (TRUE) that judges nothing',
+        forge: [`ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_no_self_check"`,
+                `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_no_self_check" CHECK (TRUE)`],
+        expect: /constraint "ActivityDependency_no_self_check" DIFFERS — expected \[CHECK \(\("predecessorId" <> "successorId"\)\)[^\]]*\] but found \[CHECK \(true\)/u,
+        restore: [`ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_no_self_check"`,
+                  `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_no_self_check" CHECK ("predecessorId" <> "successorId")`] },
+      { what: 'a NOT VALID constraint, which judges nothing already in the table',
+        forge: [`ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_lag_nonneg_check"`,
+                `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_lag_nonneg_check" CHECK ("lagWorkingDays" >= 0) NOT VALID`],
+        expect: /constraint "ActivityDependency_lag_nonneg_check" DIFFERS — expected \[[^\]]*\| validated=true\] but found \[[^\]]*NOT VALID \| validated=false\]/u,
+        restore: [`ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_lag_nonneg_check"`,
+                  `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_lag_nonneg_check" CHECK ("lagWorkingDays" >= 0)`] },
+      { what: 'a foreign key to the global "User", losing the project half of the identity',
+        forge: [`ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_createdBy_fkey"`,
+                `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_createdBy_fkey" FOREIGN KEY ("createdById") REFERENCES "User"("id")`],
+        expect: /constraint "ActivityDependency_createdBy_fkey" DIFFERS — expected \[FOREIGN KEY \("projectId", "createdById"\) REFERENCES public\."Membership"[^\]]*\] but found \[FOREIGN KEY \("createdById"\) REFERENCES public\."User"/u,
+        restore: [`ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_createdBy_fkey"`,
+                  `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_createdBy_fkey" FOREIGN KEY ("projectId", "createdById") REFERENCES "Membership"("projectId", "userId")`] },
+      { what: 'a plain NON-UNIQUE index wearing the partial-unique name',
+        forge: [`DROP INDEX "ActivityDependency_projectId_successorId_predecessorId_key"`,
+                `CREATE INDEX "ActivityDependency_projectId_successorId_predecessorId_key" ON "ActivityDependency"("projectId","successorId","predecessorId")`],
+        expect: /index "ActivityDependency_projectId_successorId_predecessorId_key" DIFFERS — expected \[CREATE UNIQUE INDEX[^\]]*\] but found \[CREATE INDEX/su,
+        restore: [`DROP INDEX "ActivityDependency_projectId_successorId_predecessorId_key"`] },
+      { what: 'a same-named function whose body has been hollowed out',
+        forge: [`CREATE OR REPLACE FUNCTION activity_dependency_acyclic() RETURNS TRIGGER LANGUAGE plpgsql
+                 SET search_path = pg_catalog, public AS $hollow$ BEGIN RETURN NEW; END $hollow$`],
+        expect: /function public\.activity_dependency_acyclic\(\) already exists with a definition this migration did not install/u,
+        restore: [`DROP TRIGGER "ActivityDependency_acyclic" ON "ActivityDependency"`,
+                  `DROP FUNCTION activity_dependency_acyclic()`] },
+      { what: 'a seal that is present but DISABLED, so it reads as installed and fires for nobody',
+        forge: [`ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_frozen"`],
+        expect: /trigger "ActivityDependency_frozen" .*tgenabled=D/su,
+        restore: [`ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_frozen"`] },
+    ];
+
+    for (const g of forgeries) {
+      for (const s of g.forge) await t.prisma.$executeRawUnsafe(s);
+      try {
+        const err = applyMigration();
+        expect(err, `must refuse: ${g.what}`).not.toBeNull();
+        expect(err, `must name the object and both definitions: ${g.what}`).toMatch(g.expect);
+        expect(err, 'and must point at the operator procedure').toMatch(/docs\/RUNBOOK\.md section B1/u);
+      } finally {
+        for (const s of g.restore) await t.prisma.$executeRawUnsafe(s);
+      }
+      // Refusal is not the end of the road: with the forgery removed, the SAME file finishes the
+      // install. That is the difference between a guard and a dead end.
+      expect(applyMigration(), `and applies once removed: ${g.what}`).toBeNull();
+      expect(await installed(), `restoring the full install: ${g.what}`).toBe(COMPLETE);
+    }
+
+    // The restored rules really BIND, which the catalog alone does not prove.
+    const [a, b] = [await activity(), await activity()];
+    expect(await refusal(edge(a, a))).toMatch(/cannot depend on itself/u);
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    expect(await refusal(edge(b, a))).toMatch(/dependency cycle/u);
+    expect(await refusal(edge(a, b))).toMatch(/already exists|unique/u);
+  }, 120_000);
+
+  // ── P20 ────────────────────────────────────────────────────────────────────────────────────
+  it('P20 the table is judged on its COLUMN CONTRACT, not on its column names', async () => {
+    // Section 2's `CREATE TABLE IF NOT EXISTS` skips its definition when the table is already
+    // there, so on the resume path the shape is whatever produced it. A name test cannot tell a
+    // conforming column from a differently-shaped one, and a NULLABLE `predecessorId` is the case
+    // that matters: MATCH SIMPLE skips the composite FK entirely for a row with a NULL key column,
+    // the self-dependency CHECK evaluates to UNKNOWN and passes, and the walk matches no node.
+    await t.prisma.$executeRawUnsafe(
+      `ALTER TABLE "ActivityDependency" ALTER COLUMN "predecessorId" DROP NOT NULL`);
+    try {
+      const err = applyMigration();
+      expect(err, 'a nullable endpoint must abort the migration').not.toBeNull();
+      expect(err, "the differing COLUMN is named, with both contracts printed")
+        .toMatch(/column "predecessorId" DIFFERS — expected \[[^\]]*notnull=true[^\]]*\] but found \[[^\]]*notnull=false/u);
+      expect(err, 'and must name the column and both shapes').toMatch(/predecessorId/u);
+      expect(err, "expected contract first, then what was found").toMatch(/notnull=true.*notnull=false/su);
+    } finally {
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ALTER COLUMN "predecessorId" SET NOT NULL`);
+    }
+    expect(applyMigration(), 'and applies once the contract is restored').toBeNull();
+  }, 60_000);
+
+  // ── P21 ────────────────────────────────────────────────────────────────────────────────────
+  it('P21 an index name owned by ANOTHER table is refused, never reclaimed', async () => {
+    // An index name is unique per SCHEMA, not per table. Two silent failures follow from that: a
+    // table-scoped definition lookup reports "absent", and `CREATE INDEX IF NOT EXISTS` skips on
+    // the name — so the migration would report success over a table that never got the index.
+    const name = 'ActivityDependency_projectId_predecessorId_idx';
+    await t.prisma.$executeRawUnsafe(`DROP INDEX IF EXISTS public."${name}"`);
+    await t.prisma.$executeRawUnsafe(`CREATE TABLE "b1_decoy_owner"("k" TEXT)`);
+    await t.prisma.$executeRawUnsafe(`CREATE INDEX "${name}" ON "b1_decoy_owner"("k")`);
+    try {
+      const err = applyMigration();
+      expect(err, 'a name owned by another table must abort the migration').not.toBeNull();
+      expect(err, "the index reads as MISSING on THIS table, and the refusal says where the name lives")
+        .toMatch(/index "ActivityDependency_projectId_predecessorId_idx" is MISSING[\s\S]*an index of that name already exists in schema public on public\."[^"]+", which silences the guarded CREATE/u);
+      expect(err, 'and must name the table that really owns it').toMatch(/b1_decoy_owner/u);
+
+      // The whole point: the other table's index is STILL THERE. An unscoped drop would have taken
+      // it, and the migration would have reported success.
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+        `SELECT COUNT(*) AS n FROM pg_index ix JOIN pg_class ci ON ci.oid = ix.indexrelid
+          WHERE ci.relname = '${name}' AND ix.indrelid = '"b1_decoy_owner"'::regclass`);
+      expect(Number(rows[0]!.n), 'the decoy owner kept its index').toBe(1);
+    } finally {
+      await t.prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "b1_decoy_owner"`);
+    }
+    expect(applyMigration(), 'and applies once the name is free').toBeNull();
+    expect(await installed(), 'restoring the index it does own').toBe(COMPLETE);
+  }, 60_000);
+
+  // ── P22 ────────────────────────────────────────────────────────────────────────────────────
+  it('P22 the file supplies no transaction of its own, and refuses a table that holds rows', async () => {
+    const sql = readFileSync(migrationPath, 'utf8');
+
+    // THE TRANSACTION CONTRACT, pinned rather than described. The file must NOT open one of its
+    // own — measured: with `BEGIN;`/`COMMIT;` in the file, `migrate deploy` reports `current
+    // transaction is aborted, commands ignored…` and every named diagnostic in section 1 is
+    // discarded; without them it reports the message verbatim. That measurement is what makes the
+    // aborts in P15/P20/P21 readable at all, so the next person to reach for the obvious `BEGIN;`
+    // fails a test instead of costing an operator their diagnostic.
+    const statements = sql.split('\n').map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.startsWith('--'));
+    expect(statements, 'the file must not open its own transaction').not.toContain('BEGIN;');
+    expect(statements, 'nor close one').not.toContain('COMMIT;');
+    // THE SCHEMA PIN, and it is pinned as a WORKING one. `SET LOCAL search_path = public` stood
+    // here and was INERT: LOCAL is only a warning outside a transaction block, so for the
+    // autocommit caller this file must support it did nothing — which is how the five foreign-key
+    // targets came to resolve through the caller's path and bind to a decoy schema (P28). A plain
+    // `SET` works for both callers; the caller's own value is stashed first and restored by the
+    // last statement in the file, so nothing leaks into the connection the deploy reuses.
+    expect(statements[0], 'the caller path must be stashed before it is changed')
+      .toMatch(/^SELECT set_config\('vitan\.schedule_b1_caller_search_path',$/u);
+    expect(statements[2], 'and the pin must be a plain SET, not the inert SET LOCAL')
+      .toBe('SET search_path = pg_catalog;');
+    expect(statements, 'the inert form must not come back').not.toContain('SET LOCAL search_path = public;');
+    expect(statements[statements.length - 1], 'and the caller path must be handed back')
+      .toMatch(/^current_setting\('vitan\.schedule_b1_caller_search_path', true\), false\);$/u);
+
+    // Retry-safety is by OBJECT GUARDS, not by the caller's transaction: the table is created only
+    // if absent, and section 1 has already established that a table which IS present is this
+    // file's own unfinished install.
+    expect(sql, 'the table must be created conditionally')
+      .toMatch(/^CREATE TABLE IF NOT EXISTS public\."ActivityDependency" \($/mu);
+
+    // EVERY object is created SCHEMA-QUALIFIED. `SET LOCAL search_path` is only a WARNING outside
+    // a transaction block, so for the autocommit caller it does nothing at all — and an
+    // unqualified CREATE under a role whose path names `pg_temp` first would build the whole graph
+    // somewhere else and commit, while section 1's qualified lookups kept reporting a fresh
+    // install forever. Qualification is what makes the outcome independent of the caller's path.
+    for (const unqualified of sql.split('\n')
+           .filter((l) => /^\s*(CREATE (UNIQUE )?INDEX|CREATE TABLE|LOCK TABLE|\s*ON) /u.test(l))
+           .filter((l) => /"ActivityDependency"/u.test(l))
+           .filter((l) => !/public\."ActivityDependency"/u.test(l))) {
+      expect.unreachable(`every created object must be schema-qualified: ${unqualified.trim()}`);
+    }
+
+    // And no LOCK may be a top-level statement: a bare `LOCK TABLE` is an ERROR outside a
+    // transaction block, so it would dead-end the autocommit caller one statement past the CREATE.
+    // (matched at column 0: every top-level statement in this file is unindented, and the two
+    // locks that ARE legitimate live indented inside `DO` blocks.)
+    expect(sql, 'every lock must be inside a DO block').not.toMatch(/^LOCK TABLE/mu);
+
+    // ROWS PLUS AN UNFINISHED INSTALL is where the resume stops — and note which half does the
+    // work. Rows alone are the ordinary state of a deployed database and are replayed over freely
+    // (P24). What cannot be finished is a POPULATED table that is missing a seal or was built by
+    // something else: arming a trigger validates nothing already in the table, so completing it
+    // would certify those rows by silence.
+    const [a, b] = [await activity(), await activity()];
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    await t.prisma.$executeRawUnsafe(
+      `DROP TRIGGER "ActivityDependency_born_live" ON "ActivityDependency"`);
+    const before = await objectIdentity();
+
+    let err: string | null;
+    try {
+      err = applyMigration();
+      expect(err, 'a populated table with a missing seal must abort the migration').not.toBeNull();
+      expect(err, 'and must name what is missing')
+        .toMatch(/installation is INCOMPLETE: armed trigger "ActivityDependency_born_live"/u);
+      expect(err, 'and must say how many rows it found').toMatch(/already exists and holds 1 row\(s\)/u);
+      expect(err, 'and must point at the operator procedure').toMatch(/docs\/RUNBOOK\.md section B1/u);
+      // The abort is inside the caller's transaction, so it is not merely a refusal — it changes
+      // nothing at all.
+      expect(await objectIdentity(), 'the refused run must not touch a single object').toBe(before);
+      expect(await edgeCount(), 'nor a single row').toBe(1);
+    } finally {
+      await t.prisma.$executeRawUnsafe(
+        `CREATE TRIGGER "ActivityDependency_born_live" BEFORE INSERT ON public."ActivityDependency"
+           FOR EACH ROW EXECUTE FUNCTION public.activity_dependency_born_live()`);
+    }
+    expect(await refusal(edge(b, a))).toMatch(/dependency cycle/u);
+  }, 60_000);
+
+  // ── P23 ────────────────────────────────────────────────────────────────────────────────────
+  it('P23 the migration COMPLETES its own partial apply, where the old refusal dead-ended', async () => {
+    // THE FINDING, reproduced. A caller that wraps this file in no transaction — which `AGENTS.md`
+    // requires it to tolerate — and fails anywhere after `CREATE TABLE` leaves the table behind
+    // with some of its objects installed and some not. Simulated exactly: the table and the ten
+    // constraints `CREATE TABLE` installs atomically survive; the indexes, functions and triggers
+    // that come after it do not.
+    for (const s of [
+      `DROP INDEX "ActivityDependency_projectId_successorId_predecessorId_key"`,
+      `DROP INDEX "ActivityDependency_projectId_predecessorId_idx"`,
+      `DROP INDEX "ActivityDependency_projectId_successorId_idx"`,
+      `DROP TRIGGER "ActivityDependency_born_live" ON "ActivityDependency"`,
+      `DROP TRIGGER "ActivityDependency_no_delete" ON "ActivityDependency"`,
+      `DROP TRIGGER "ActivityDependency_no_truncate" ON "ActivityDependency"`,
+      `DROP TRIGGER "ActivityDependency_frozen" ON "ActivityDependency"`,
+      `DROP TRIGGER "ActivityDependency_acyclic" ON "ActivityDependency"`,
+      `DROP FUNCTION activity_dependency_born_live(), activity_dependency_no_delete(),
+                     activity_dependency_no_truncate(), activity_dependency_frozen(),
+                     activity_dependency_acyclic()`,
+    ]) await t.prisma.$executeRawUnsafe(s);
+    // 4 CHECKs and 5 keys survive with the table; every index but the primary key, every trigger
+    // and every function is gone.
+    expect(await installed(), 'the partial-apply state').toBe('4/5/1/0/0');
+
+    // RED: the shape this file used to carry — an unconditional refusal of any existing table —
+    // dead-ends here. It is asserted rather than described, because a retry that can never succeed
+    // is the whole defect: the only way forward was the destructive runbook DROP.
+    const oldRefusal = `DO $$ BEGIN
+      IF to_regclass('public."ActivityDependency"') IS NOT NULL THEN
+        RAISE EXCEPTION 'schedule B1: table "ActivityDependency" already exists. This migration CREATES that table and does not adopt one.';
+      END IF; END $$`;
+    expect(await refusal(oldRefusal), 'the unconditional refusal cannot complete a partial apply')
+      .toMatch(/already exists\. This migration CREATES that table and does not adopt one/u);
+
+    // GREEN: the file as it stands finishes the job, over the same database, in one run.
+    expect(applyMigration(), 'the migration must complete its own partial apply').toBeNull();
+    expect(await installed(), 'every object installed').toBe(COMPLETE);
+
+    // And a catalog full of objects is not a table full of rules. Each seal is exercised.
+    const [a, b] = [await activity(), await activity()];
+    expect(await refusal(edge(a, a))).toMatch(/cannot depend on itself/u);
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    expect(await refusal(edge(b, a))).toMatch(/dependency cycle/u);        // acyclic
+    expect(await refusal(edge(a, b))).toMatch(/already exists|unique/u);   // partial unique index
+    const id = await onlyId();
+    expect(await refusal(`DELETE FROM "ActivityDependency" WHERE "id"='${id}'`))
+      .toMatch(/not deletable/u);                                          // no_delete
+    expect(await refusal(`TRUNCATE TABLE "ActivityDependency"`)).toMatch(/never truncated/u);
+    expect(await refusal(`UPDATE "ActivityDependency" SET "lagWorkingDays"=9 WHERE "id"='${id}'`))
+      .toMatch(/is frozen/u);                                              // frozen
+    // A FRESH pair for the born-live probe: triggers fire in name order, so `..._acyclic` runs
+    // before `..._born_live` and a reversed pair would be refused as a cycle before born-live is
+    // ever consulted — which would leave that seal untested while the assertion still passed.
+    const [c, d] = [await activity(), await activity()];
+    expect(await refusal(
+      `INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName","revokedAt","revokedById","revokedByName")
+       VALUES ('dep-b1-born-${run}','${f.projectA.id}','${c}','${d}','${f.memberUser.id}','PMC',now(),'${f.memberUser.id}','PMC')`))
+      .toMatch(/cannot be created already revoked/u);                      // born_live
+
+    // AND THE SAME THING FOR THE CALLER THE FINDING IS ACTUALLY ABOUT: psql with no
+    // `--single-transaction`, which commits every statement on its own. That caller is the one
+    // that can leave a partial apply behind at all, and it also cannot execute a bare
+    // `LOCK TABLE` — `LOCK TABLE can only be used in transaction blocks` — so a top-level lock
+    // statement would dead-end this file one statement past `CREATE TABLE`, on every retry
+    // forever. Every lock this file takes is inside a `DO` block for that reason.
+    await wipe();
+    for (const s of [
+      `DROP TRIGGER "ActivityDependency_acyclic" ON "ActivityDependency"`,
+      `DROP FUNCTION activity_dependency_acyclic()`,
+      `DROP INDEX "ActivityDependency_projectId_successorId_idx"`,
+    ]) await t.prisma.$executeRawUnsafe(s);
+    expect(applyMigration({ autocommit: true }),
+           'an autocommit caller must be able to finish the install').toBeNull();
+    expect(await installed(), 'and must finish it completely').toBe(COMPLETE);
+    const [e, g] = [await activity(), await activity()];
+    await t.prisma.$executeRawUnsafe(edge(e, g));
+    expect(await refusal(edge(g, e)), 'with the seals really armed').toMatch(/dependency cycle/u);
+
+    // Finally: a SECOND complete run over the finished install is still a no-op, under either
+    // caller — so the resume path does not trade retry-safety for idempotence.
+    await wipe();
+    const objects = await objectIdentity();
+    expect(applyMigration(), 'and re-running once complete changes nothing').toBeNull();
+    expect(applyMigration({ autocommit: true }), 'under autocommit too').toBeNull();
+    expect(await objectIdentity()).toBe(objects);
+  }, 120_000);
+
+  // ── P24 ────────────────────────────────────────────────────────────────────────────────────
+  it('P24 a POPULATED complete install replays as a no-op — the state a real re-deploy meets', async () => {
+    // THE FINDING (review round 1 of #410, migration.sql:171), reproduced. P15 proved a complete
+    // install replays; it did so over an EMPTY table. The state a direct repair, a re-deploy, or
+    // `migrate resolve --rolled-back` followed by `migrate deploy` actually meets is a complete
+    // install THAT HAS BEEN IN SERVICE — and the earlier head's unconditional row check aborted on
+    // the first row it saw, before comparing a single object. One accepted edge made the migration
+    // permanently non-rerunnable, with the destructive runbook DROP as the only way forward.
+    //
+    // MEASURED against that head, on this container: replay over one legal edge exited 3 with
+    // `schedule B1: "ActivityDependency" already exists and holds 1 row(s)`.
+    const [a, b] = [await activity(), await activity()];
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    expect(await installed(), 'a complete install').toBe(COMPLETE);
+    expect(await edgeCount(), 'holding a real edge').toBe(1);
+    const before = await objectIdentity();
+
+    // The refusal the earlier head carried, executed against this exact state, so the defect is
+    // asserted rather than described.
+    expect(await refusal(`DO $$ BEGIN
+      IF (SELECT COUNT(*) FROM "ActivityDependency") > 0 THEN
+        RAISE EXCEPTION 'schedule B1: "ActivityDependency" already exists and holds % row(s).',
+          (SELECT COUNT(*) FROM "ActivityDependency");
+      END IF; END $$`), 'the unconditional row check cannot replay a populated install')
+      .toMatch(/already exists and holds 1 row\(s\)/u);
+
+    // GREEN, under BOTH callers: complete plus populated is a no-op. Not merely "it exited 0" —
+    // no object is recreated and no row is touched.
+    expect(applyMigration(), 'a replay over a populated COMPLETE install must succeed').toBeNull();
+    expect(applyMigration({ autocommit: true }), 'under autocommit too').toBeNull();
+    expect(await objectIdentity(), 'and must not recreate a single object').toBe(before);
+    expect(await edgeCount(), 'nor touch a single row').toBe(1);
+
+    // The install barrier is not reintroduced over a table already in service — a replay that left
+    // it behind would make a live table unwritable, which is the opposite of retry-safe.
+    const barrier = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT COUNT(*) AS n FROM pg_constraint
+        WHERE conname = 'ActivityDependency_install_incomplete_check'
+          AND conrelid = '"ActivityDependency"'::regclass`);
+    expect(Number(barrier[0]!.n), 'no install barrier survives a replay').toBe(0);
+
+    // And the table is still a working dependency graph afterwards.
+    expect(await refusal(edge(b, a))).toMatch(/dependency cycle/u);
+    const c = await activity();
+    await t.prisma.$executeRawUnsafe(edge(b, c));
+    expect(await edgeCount(), 'a legal edge still commits after the replay').toBe(2);
+  }, 120_000);
+
+  // ── P25 ────────────────────────────────────────────────────────────────────────────────────
+  it('P25 a same-named decoy on the CALLER path cannot capture a seal', async () => {
+    // THE FINDING (migration.sql:894), reproduced. `SET LOCAL search_path` at the top of the file
+    // is only a WARNING outside a transaction block, so for the autocommit caller the file
+    // explicitly supports it does nothing — and an unqualified `EXECUTE FUNCTION` in a
+    // `CREATE TRIGGER` resolves through the CALLER's path. A role whose path names another schema
+    // before `public`, holding a same-named no-op, gets the decoy: the file verifies and creates
+    // the canonical function in `public`, binds the trigger to something else, and exits 0 with
+    // the seal inert.
+    //
+    // MEASURED against the earlier head, on this container, with `search_path=b1decoy,public`:
+    // exit 0, and `ActivityDependency_born_live -> b1decoy.activity_dependency_born_live()`.
+    const bound = async (): Promise<string> => (await t.prisma.$queryRawUnsafe<Array<{ s: string }>>(`
+      SELECT string_agg(g.tgname || '=' || (
+               SELECT n.nspname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE p.oid = g.tgfoid), ',' ORDER BY g.tgname) AS s
+        FROM pg_trigger g
+       WHERE g.tgrelid = '"ActivityDependency"'::regclass AND NOT g.tgisinternal`))[0]!.s;
+
+    await t.prisma.$executeRawUnsafe(`CREATE SCHEMA IF NOT EXISTS "b1_decoy_schema"`);
+    try {
+      // The decoys: same names, same signature, and each one a no-op that enforces nothing.
+      for (const fn of ['born_live', 'no_delete', 'no_truncate', 'frozen', 'acyclic']) {
+        await t.prisma.$executeRawUnsafe(
+          `CREATE OR REPLACE FUNCTION "b1_decoy_schema".activity_dependency_${fn}()
+             RETURNS TRIGGER LANGUAGE plpgsql AS $decoy$ BEGIN RETURN NEW; END $decoy$`);
+      }
+      // Remove the armed seals so the file has to create them again, under the hostile path.
+      for (const tg of ['born_live', 'no_delete', 'no_truncate', 'frozen', 'acyclic']) {
+        await t.prisma.$executeRawUnsafe(
+          `DROP TRIGGER "ActivityDependency_${tg}" ON "ActivityDependency"`);
+      }
+
+      expect(applyMigration({ autocommit: true, searchPath: 'b1_decoy_schema,public' }),
+             'the file must apply under a hostile caller path').toBeNull();
+      expect(await bound(), 'every seal must be bound to the function in public').toBe(
+        ['ActivityDependency_acyclic=public', 'ActivityDependency_born_live=public',
+         'ActivityDependency_frozen=public', 'ActivityDependency_no_delete=public',
+         'ActivityDependency_no_truncate=public'].join(','));
+
+      // A catalog entry is not a rule. The seal the finding names is EXERCISED: under the decoy
+      // binding this insert commits, because the decoy returns NEW and judges nothing.
+      const [c, d] = [await activity(), await activity()];
+      expect(await refusal(
+        `INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName","revokedAt","revokedById","revokedByName")
+         VALUES ('dep-b1-decoy-${run}','${f.projectA.id}','${c}','${d}','${f.memberUser.id}','PMC',now(),'${f.memberUser.id}','PMC')`),
+        'the born-live seal must actually fire').toMatch(/cannot be created already revoked/u);
+    } finally {
+      await t.prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "b1_decoy_schema" CASCADE`);
+    }
+    expect(await installed(), 'and the install is complete').toBe(COMPLETE);
+  }, 120_000);
+
+  // ── P26 ────────────────────────────────────────────────────────────────────────────────────
+  it('P26 an unfinished install is UNWRITABLE, so no row can slip in before the seals', async () => {
+    // THE FINDING (migration.sql:428), reproduced as the exact interleaving it names:
+    //
+    //     T1  runs this file, gets past CREATE TABLE, commits (autocommit — no wrapping transaction)
+    //     T2  INSERTs an already-revoked edge while `ActivityDependency_born_live` does not exist
+    //     T1  creates the triggers and reports success
+    //
+    // Creating a trigger validates nothing already in the table, so the fabricated withdrawal —
+    // a record of a constraint that never stood — survives, and every other seal then protects it.
+    //
+    // MEASURED against the earlier head, on this container, driving exactly that sequence: T1
+    // exit 0, five seals armed, the fabricated row present, and `DELETE` refused by the no-delete
+    // seal — permanent, immutable, invented evidence.
+    //
+    // A LOCK CANNOT FIX THIS and no rewriting of the file can: a lock is released at COMMIT, and
+    // on the autocommit path COMMIT happens after every statement. The exclusion is therefore
+    // written into the TABLE — an unsatisfiable CHECK installed atomically with it and dropped
+    // only by section 9, after every seal is proven armed and bound to `public`.
+    const head = join(__dirname, '..', '..', '..', '..',
+                      'node_modules', '.cache', 'b1-head.sql');
+    const sql = readFileSync(migrationPath, 'utf8');
+    const cut = sql.indexOf('-- ── 4. An edge is BORN LIVE');
+    expect(cut, 'the file must still have a section 4 to cut at').toBeGreaterThan(0);
+    mkdirSync(dirname(head), { recursive: true });
+    writeFileSync(head, sql.slice(0, cut), 'utf8');
+
+    // Start over, so the table is created by THIS run and carries the barrier its creation
+    // installs. `DROP TABLE` fires no table trigger — that gap is documented in section 5.
+    await t.prisma.$executeRawUnsafe(`DROP TABLE "ActivityDependency"`);
+    try {
+      expect(applyMigration({ autocommit: true, file: head }),
+             'T1 must get through CREATE TABLE and the indexes').toBeNull();
+      const mid = await t.prisma.$queryRawUnsafe<Array<{ s: string }>>(`
+        SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgrelid = '"ActivityDependency"'::regclass
+                  AND NOT tgisinternal)
+            || '/' || (SELECT COUNT(*) FROM pg_constraint
+                        WHERE conrelid = '"ActivityDependency"'::regclass
+                          AND conname = 'ActivityDependency_install_incomplete_check') AS s`);
+      expect(mid[0]!.s, 'and stop with no seal armed and the barrier standing').toBe('0/1');
+
+      // T2, arriving in the window the finding names. Both writes are refused: the fabricated
+      // withdrawal AND an ordinary legal edge, because an unfinished install is not open for
+      // business at all — there is no rule yet that could judge either one.
+      const [a, b] = [await activity(), await activity()];
+      expect(await refusal(
+        `INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName","revokedAt","revokedById","revokedByName")
+         VALUES ('dep-b1-fab-${run}','${f.projectA.id}','${a}','${b}','${f.memberUser.id}','PMC',now(),'${f.memberUser.id}','PMC')`),
+        'the fabricated withdrawal must be refused while the seals are absent')
+        .toMatch(/ActivityDependency_install_incomplete_check/u);
+      expect(await refusal(edge(a, b)), 'and so must a legal edge')
+        .toMatch(/ActivityDependency_install_incomplete_check/u);
+      expect(await edgeCount(), 'nothing reached the half-built table').toBe(0);
+
+      // T1 resumes and finishes. The barrier is lifted only here, and only on proof.
+      expect(applyMigration({ autocommit: true }), 'T1 must be able to finish').toBeNull();
+      expect(await installed(), 'with every seal armed').toBe(COMPLETE);
+      const after = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+        `SELECT COUNT(*) AS n FROM pg_constraint
+          WHERE conname = 'ActivityDependency_install_incomplete_check'
+            AND conrelid = '"ActivityDependency"'::regclass`);
+      expect(Number(after[0]!.n), 'and the barrier lifted').toBe(0);
+      expect(await edgeCount(), 'and no fabricated evidence anywhere').toBe(0);
+
+      // Now the table works, and the seal that would have been bypassed really binds.
+      await t.prisma.$executeRawUnsafe(edge(a, b));
+      expect(await refusal(edge(b, a))).toMatch(/dependency cycle/u);
+      const [c, d] = [await activity(), await activity()];
+      expect(await refusal(
+        `INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName","revokedAt","revokedById","revokedByName")
+         VALUES ('dep-b1-fab2-${run}','${f.projectA.id}','${c}','${d}','${f.memberUser.id}','PMC',now(),'${f.memberUser.id}','PMC')`))
+        .toMatch(/cannot be created already revoked/u);
+    } finally {
+      rmSync(head, { force: true });
+    }
+  }, 120_000);
+
+  // ── P27 ────────────────────────────────────────────────────────────────────────────────────
+  it('P27 the barrier is not a formality: a missing seal keeps the table shut', async () => {
+    // Section 9 lifts the barrier only after proving all ten constraints, three indexes, five
+    // functions and five ARMED triggers — the last asked against `tgfoid`, so a trigger bound to
+    // a same-named decoy fails it however it renders. If anything is missing the barrier STAYS,
+    // and a half-sealed table is unwritable rather than quietly open.
+    const section9 = readFileSync(migrationPath, 'utf8');
+    expect(section9, 'section 9 must exist and be the last thing the file does')
+      .toMatch(/── 9\. Finish the install: prove every seal, then LIFT THE INSTALL BARRIER/u);
+    expect(section9, 'and must check the bound function itself, not a rendered name')
+      .toMatch(/JOIN pg_catalog\.pg_proc fp ON fp\.oid = tg\.tgfoid/u);
+    expect(section9, 'and must carry that OID-resolved identity into what is compared')
+      .toMatch(/\|\| ' \| fn=' \|\| fn\.nspname::TEXT \|\| '\.' \|\| fp\.proname::TEXT/u);
+
+    // Executed rather than read: strip one seal, put the barrier back by hand exactly as section 2
+    // installs it, and run the file. Section 8 refuses first (the seal is missing, so it is
+    // recreated) — so the case section 9 is for is the one where a seal cannot be created at all.
+    // That is simulated by holding the barrier while the file is asked to finish an install whose
+    // function has been renamed out from under it.
+    await t.prisma.$executeRawUnsafe(
+      `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_install_incomplete_check" CHECK ("id" !~ '^')`);
+    await t.prisma.$executeRawUnsafe(
+      `ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_acyclic"`);
+    try {
+      const err = applyMigration();
+      expect(err, 'a disabled seal must abort').not.toBeNull();
+      expect(err, 'naming the seal').toMatch(/ActivityDependency_acyclic/u);
+      // The barrier is still there, so the table is still shut. That is the whole point: a
+      // refusal that left it writable would leave a half-sealed graph open for business.
+      const [a, b] = [await activity(), await activity()];
+      expect(await refusal(edge(a, b)), 'and the table stays unwritable')
+        .toMatch(/ActivityDependency_install_incomplete_check/u);
+    } finally {
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_acyclic"`);
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DROP CONSTRAINT IF EXISTS "ActivityDependency_install_incomplete_check"`);
+    }
+    expect(applyMigration(), 'and the file applies once the seal is armed again').toBeNull();
+    expect(await installed()).toBe(COMPLETE);
+  }, 120_000);
+
+  // ── P28 ────────────────────────────────────────────────────────────────────────────────────
+  it('P28 the foreign keys bind to public, whatever schema the caller put in front of it', async () => {
+    // THE FINDING (migration.sql:496), reproduced. Every object this file CREATES was already
+    // `public.`-qualified; the five foreign-key TARGETS were not, and `SET LOCAL search_path` at
+    // the top of the file is only a WARNING outside a transaction block — so for the autocommit
+    // caller the file is required to support, the targets resolved through the CALLER's path.
+    //
+    // MEASURED against the earlier head, on this container, with `search_path=b1decoy,public` and
+    // same-named decoys in it: exit 0, and all five keys pointing into `b1decoy`. The table had no
+    // project containment, no endpoint containment and no membership containment at all — and the
+    // definition check in section 1e could not see it, because `pg_get_constraintdef` renders the
+    // target relative to that same caller path, so the decoy printed as `"Project"`.
+    const targets = async (): Promise<string> => (await t.prisma.$queryRawUnsafe<Array<{ s: string }>>(`
+      SELECT string_agg(k.conname || '=' || (
+               SELECT n.nspname || '."' || c.relname || '"'
+                 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.oid = k.confrelid), ',' ORDER BY k.conname) AS s
+        FROM pg_constraint k
+       WHERE k.conrelid = '"ActivityDependency"'::regclass AND k.contype = 'f'`))[0]!.s;
+    // Namespace read from `pg_namespace`, never from `confrelid::regclass::text` — a rendered
+    // regclass is relative to THIS session's search path and would print a decoy identically.
+    const CONTAINED = [
+      'ActivityDependency_createdBy_fkey=public."Membership"',
+      'ActivityDependency_projectId_fkey=public."Project"',
+      'ActivityDependency_projectId_predecessorId_fkey=public."Activity"',
+      'ActivityDependency_projectId_successorId_fkey=public."Activity"',
+      'ActivityDependency_revokedBy_fkey=public."Membership"',
+    ].join(',');
+
+    await t.prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "b1_decoy_targets" CASCADE`);
+    await t.prisma.$executeRawUnsafe(`CREATE SCHEMA "b1_decoy_targets"`);
+    try {
+      // Same names, same key shapes — everything a foreign key needs to bind successfully.
+      await t.prisma.$executeRawUnsafe(
+        `CREATE TABLE "b1_decoy_targets"."Project"("id" TEXT PRIMARY KEY)`);
+      await t.prisma.$executeRawUnsafe(
+        `CREATE TABLE "b1_decoy_targets"."Activity"("projectId" TEXT NOT NULL, "id" TEXT NOT NULL,
+           PRIMARY KEY ("projectId","id"))`);
+      await t.prisma.$executeRawUnsafe(
+        `CREATE TABLE "b1_decoy_targets"."Membership"("projectId" TEXT NOT NULL, "userId" TEXT NOT NULL,
+           PRIMARY KEY ("projectId","userId"))`);
+
+      // A FRESH install under the hostile path, in AUTOCOMMIT — the caller for which the old
+      // `SET LOCAL` did nothing whatsoever. This is the exact configuration that produced the
+      // decoy binding.
+      await t.prisma.$executeRawUnsafe(`DROP TABLE "ActivityDependency"`);
+      for (const fn of ['born_live', 'no_delete', 'no_truncate', 'frozen', 'acyclic']) {
+        await t.prisma.$executeRawUnsafe(`DROP FUNCTION public.activity_dependency_${fn}()`);
+      }
+      expect(applyMigration({ autocommit: true, searchPath: 'b1_decoy_targets,public' }),
+             'the file must apply under a hostile caller path').toBeNull();
+      expect(await targets(), 'every foreign key must reference the real table in public')
+        .toBe(CONTAINED);
+      expect(await installed(), 'and the install is complete').toBe(COMPLETE);
+
+      // A catalog entry is not containment. The keys are EXERCISED: an edge naming an activity of
+      // another project is refused, which is what "no containment" would have permitted.
+      const here = await activity(f.projectA.id);
+      const there = await activity(f.projectB.id);
+      expect(await refusal(edge(there, here)), 'containment must actually bind')
+        .toMatch(/predecessorId_fkey/u);
+
+      // AND THE RESUME PATH REFUSES a table that already carries a decoy-bound key, rather than
+      // reporting success over it. Asked by `confrelid` OID, not by a rendered name — under this
+      // caller's own path the two render identically.
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_projectId_fkey"`);
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_projectId_fkey"
+           FOREIGN KEY ("projectId") REFERENCES "b1_decoy_targets"."Project"("id")
+           ON DELETE RESTRICT ON UPDATE CASCADE`);
+      const err = applyMigration({ searchPath: 'b1_decoy_targets,public' });
+      expect(err, 'a decoy-bound foreign key must abort').not.toBeNull();
+      expect(err, 'naming the key').toMatch(/ActivityDependency_projectId_fkey/u);
+
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_projectId_fkey"`);
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_projectId_fkey"
+           FOREIGN KEY ("projectId") REFERENCES public."Project"("id")
+           ON DELETE RESTRICT ON UPDATE CASCADE`);
+      expect(applyMigration(), 'and applies once the key is contained again').toBeNull();
+      expect(await targets()).toBe(CONTAINED);
+    } finally {
+      await t.prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "b1_decoy_targets" CASCADE`);
+    }
+
+    // AND THE BARRIER IS THE BACKSTOP. Section 9 asks the same question by OID over the finished
+    // install and refuses to lift the write barrier while any key points elsewhere — so a caller
+    // who defeated every pin above would still get an UNWRITABLE table rather than an uncontained
+    // one. Executed rather than read: section 9 is extracted and run against a doctored state.
+    const nine = join(__dirname, '..', '..', '..', '..', 'node_modules', '.cache', 'b1-section9.sql');
+    const sql = readFileSync(migrationPath, 'utf8');
+    const from = sql.indexOf('-- ── 9. Finish the install');
+    expect(from, 'the file must still have a section 9').toBeGreaterThan(0);
+    mkdirSync(dirname(nine), { recursive: true });
+    writeFileSync(nine, sql.slice(from), 'utf8');
+    await t.prisma.$executeRawUnsafe(`CREATE SCHEMA IF NOT EXISTS "b1_decoy_targets"`);
+    try {
+      await t.prisma.$executeRawUnsafe(
+        `CREATE TABLE "b1_decoy_targets"."Project"("id" TEXT PRIMARY KEY)`);
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_projectId_fkey"`);
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_projectId_fkey"
+           FOREIGN KEY ("projectId") REFERENCES "b1_decoy_targets"."Project"("id")
+           ON DELETE RESTRICT ON UPDATE CASCADE`);
+      const err9 = applyMigration({ file: nine });
+      expect(err9, 'section 9 must refuse to finish over a decoy-bound key').not.toBeNull();
+      expect(err9, 'and must say the barrier stays')
+        .toMatch(/the install did not finish, so the write barrier stays/u);
+      expect(err9, 'naming the key and what it actually references')
+        .toMatch(/constraint "ActivityDependency_projectId_fkey" DIFFERS — expected \[FOREIGN KEY \("projectId"\) REFERENCES public\."Project"/u);
+    } finally {
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DROP CONSTRAINT IF EXISTS "ActivityDependency_projectId_fkey"`);
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_projectId_fkey"
+           FOREIGN KEY ("projectId") REFERENCES public."Project"("id")
+           ON DELETE RESTRICT ON UPDATE CASCADE`);
+      await t.prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "b1_decoy_targets" CASCADE`);
+      rmSync(nine, { force: true });
+    }
+    expect(applyMigration(), 'and the file applies over the repaired install').toBeNull();
+    expect(await installed()).toBe(COMPLETE);
+  }, 180_000);
+
+  // ── P29 ────────────────────────────────────────────────────────────────────────────────────
+  it('P29 the relation has to be an ordinary permanent table, not merely a relation of that name', async () => {
+    // THE FINDING (migration.sql:151), reproduced. The resume path compared columns, constraints,
+    // indexes, functions and triggers — and never asked what KIND of relation it was looking at,
+    // or whether it was the kind that keeps what it is given.
+    //
+    // MEASURED against the earlier head, on this container: `ALTER TABLE ... SET UNLOGGED`,
+    // re-run, exit 0, still UNLOGGED. PostgreSQL TRUNCATES unlogged tables after a crash or an
+    // unclean shutdown, so an append-only evidence register would silently empty while all five
+    // seals above it still read as armed.
+    //
+    // The fix is the class, not the attribute: section 1a' and section 9 both ask `relkind`,
+    // `relpersistence`, `relispartition`, `relhassubclass`, `relrowsecurity`,
+    // `relforcerowsecurity` and `pg_rewrite`, and the header enumerates every other `pg_class`
+    // column with the verdict on why it is or is not checked.
+    const persistence = async (): Promise<string> => (await t.prisma.$queryRawUnsafe<Array<{ s: string }>>(`
+      SELECT relkind::text || relpersistence::text AS s FROM pg_class
+       WHERE oid = '"ActivityDependency"'::regclass`))[0]!.s;
+
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "ActivityDependency" SET UNLOGGED`);
+    try {
+      expect(await persistence(), 'the table is now UNLOGGED').toBe('ru');
+      const err = applyMigration();
+      expect(err, 'an UNLOGGED evidence register must abort').not.toBeNull();
+      expect(err, 'naming the persistence and what it means')
+        .toMatch(/relpersistence is u \(UNLOGGED — PostgreSQL truncates it after a crash\)/u);
+      expect(await persistence(), 'and the refusal changes nothing').toBe('ru');
+    } finally {
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "ActivityDependency" SET LOGGED`);
+    }
+    expect(applyMigration(), 'and applies once the table is permanent again').toBeNull();
+
+    // The other members of the same class, each of which passes every other check in this file.
+    const cases: Array<{ what: string; arm: string; disarm: string; expect: RegExp }> = [
+      { what: 'row-level security, whose policy filters the seals\' own reads',
+        arm: `ALTER TABLE "ActivityDependency" ENABLE ROW LEVEL SECURITY`,
+        disarm: `ALTER TABLE "ActivityDependency" DISABLE ROW LEVEL SECURITY`,
+        expect: /ROW LEVEL SECURITY is enabled/u },
+      { what: 'a rewrite rule, which rewrites the statement before any trigger fires',
+        arm: `CREATE RULE "b1_decoy_rule" AS ON INSERT TO "ActivityDependency" DO INSTEAD NOTHING`,
+        disarm: `DROP RULE "b1_decoy_rule" ON "ActivityDependency"`,
+        expect: /relation "public\."ActivityDependency"" DIFFERS — expected \[[^\]]*rules=0\] but found \[[^\]]*rules=1\]/u },
+      { what: 'an inheritance child, whose rows this file reads and whose writes bypass its triggers',
+        arm: `CREATE TABLE "b1_decoy_child" () INHERITS ("ActivityDependency")`,
+        disarm: `DROP TABLE "b1_decoy_child"`,
+        expect: /has INHERITANCE CHILDREN/u },
+    ];
+    for (const c of cases) {
+      await t.prisma.$executeRawUnsafe(c.arm);
+      try {
+        const err = applyMigration();
+        expect(err, `must abort: ${c.what}`).not.toBeNull();
+        expect(err, `naming it: ${c.what}`).toMatch(c.expect);
+      } finally {
+        await t.prisma.$executeRawUnsafe(c.disarm);
+      }
+      expect(applyMigration(), `and applies once removed: ${c.what}`).toBeNull();
+    }
+    expect(await installed(), 'with nothing changed by any of it').toBe(COMPLETE);
+  }, 180_000);
+
+  // ── P30 ────────────────────────────────────────────────────────────────────────────────────
+  it('P30 the acyclicity function must be VOLATILE, and a STABLE clone really does admit a cycle', async () => {
+    // THE FINDING (migration.sql:961), reproduced — and then reproduced a second time as the
+    // CONSEQUENCE, because "the check omits an attribute" is a claim about the check and this is a
+    // claim about the graph.
+    //
+    // The identity comparison covered body, return type, language and the `search_path` pin, and
+    // omitted `provolatile`. A STABLE clone of the identical body was therefore accepted as
+    // canonical: MEASURED against the earlier head, on this container, exit 0, still STABLE.
+    //
+    // That is not a bookkeeping difference. A VOLATILE function takes a FRESH SNAPSHOT for each of
+    // its queries; a STABLE one reuses the CALLING STATEMENT's, taken before the statement began
+    // — which is before the advisory lock was ever requested. So the entire protocol in section 7
+    // stops working: T2 waits for T1's project lock, wakes after T1 commits, re-reads a snapshot
+    // that predates the wait, cannot see T1's edge, and commits the cycle.
+    const volatility = async (): Promise<string> => (await t.prisma.$queryRawUnsafe<Array<{ s: string }>>(`
+      SELECT p.provolatile::text AS s FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'public' AND p.proname = 'activity_dependency_acyclic'`))[0]!.s;
+
+    /** Re-declare the CANONICAL body under a different volatility. Nothing else changes. */
+    const redeclare = async (vol: string): Promise<void> => {
+      await t.prisma.$executeRawUnsafe(`
+        DO $redeclare$
+        DECLARE b TEXT;
+        BEGIN
+          SELECT p.prosrc INTO b FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+           WHERE n.nspname = 'public' AND p.proname = 'activity_dependency_acyclic';
+          EXECUTE format(
+            'CREATE OR REPLACE FUNCTION public.activity_dependency_acyclic() RETURNS TRIGGER'
+            || ' LANGUAGE plpgsql ${vol} SET search_path = pg_catalog, public AS %L', b);
+        END $redeclare$`);
+    };
+
+    for (const vol of ['STABLE', 'IMMUTABLE']) {
+      await redeclare(vol);
+      try {
+        expect(await volatility(), `the clone is ${vol}`).toBe(vol === 'STABLE' ? 's' : 'i');
+        const err = applyMigration();
+        expect(err, `a ${vol} clone of the identical body must abort`).not.toBeNull();
+        expect(err, 'naming the function').toMatch(/function public\.activity_dependency_acyclic\(\) already exists with a definition this migration did not install/u);
+        expect(err, 'and showing the volatility in both the expected and the found identity')
+          .toMatch(/plpgsql\/trigger\/volatile\/invoker/u);
+      } finally {
+        await redeclare('VOLATILE');
+      }
+    }
+    expect(await volatility(), 'restored').toBe('v');
+    expect(applyMigration(), 'and the file applies over the canonical function').toBeNull();
+
+    // ── THE CONSEQUENCE, DRIVEN ────────────────────────────────────────────────────────────
+    // P5's barrier, unchanged, over a STABLE clone. Under the canonical VOLATILE function the
+    // second writer is refused; under the STABLE one it commits, and the graph holds a -> b -> a.
+    const [a, b] = [await activity(), await activity()];
+    await redeclare('STABLE');
+    const holder = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let opposing: Promise<string> | null = null;
+    try {
+      const holderTx = holder.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(edge(a, b));
+        await held;
+      }, { timeout: 60_000, maxWait: 20_000 });
+
+      await waitFor('the holding session has taken the project graph lock',
+        `SELECT COUNT(*) AS n FROM pg_locks
+          WHERE locktype = 'advisory' AND granted
+            AND classid = hashtext('vitan:schedule-graph')
+            AND objid = hashtext('${f.projectA.id}')::bigint::int`);
+
+      opposing = t.prisma.$executeRawUnsafe(edge(b, a))
+        .then(() => 'COMMITTED', (e: unknown) => String(e));
+
+      await waitFor('the opposing writer is WAITING on that same lock',
+        `SELECT COUNT(*) AS n FROM pg_locks
+          WHERE locktype = 'advisory' AND NOT granted
+            AND classid = hashtext('vitan:schedule-graph')
+            AND objid = hashtext('${f.projectA.id}')::bigint::int`);
+
+      release();
+      await holderTx;
+
+      // THE DEFECT, OBSERVED: the lock served its purpose and the walk still missed the edge,
+      // because a STABLE function does not get a new snapshot for waiting.
+      expect(await opposing,
+             'a STABLE clone lets the second writer through — this is what provolatile buys')
+        .toBe('COMMITTED');
+      expect(await edgeCount(), 'and the graph now holds a cycle').toBe(2);
+    } finally {
+      release();
+      await opposing?.catch(() => undefined);
+      await holder.$disconnect();
+      await redeclare('VOLATILE');
+    }
+    expect(await volatility(), 'the canonical function is back').toBe('v');
+    expect(applyMigration(), 'and the file applies over it').toBeNull();
+    expect(await installed()).toBe(COMPLETE);
+  }, 180_000);
+  // ── P31 ────────────────────────────────────────────────────────────────────────────────────
+  it('P31 the install barrier is judged by its DEFINITION, and an absent one is re-armed', async () => {
+    // THE FINDING (migration.sql:748), reproduced as the exact interleaving it names.
+    //
+    // Section 1g looked the install barrier up BY NAME and read its presence as "this table is
+    // unwritable". Every other constraint in this file is compared by `pg_get_constraintdef` —
+    // that is the lesson section 1e is built around — and the barrier escaped it for one reason:
+    // it was not in section 1e's list. A rule applied to a LIST rather than to a KIND of object
+    // has a hole the exact size of what the list omits.
+    //
+    // MEASURED against the earlier head, on this container, driving the sequence below:
+    //
+    //     step 1  an EMPTY incomplete install whose barrier is a hollow `CHECK (true)`
+    //     step 2  T1 runs section 1, reads "barrier present", resumes — exit 0, and on the
+    //             autocommit path that DO block COMMITS, releasing the lock it held since 1b
+    //     step 3  T2 INSERTs an already-revoked edge; the hollow barrier admits it and
+    //             `ActivityDependency_born_live` does not exist yet
+    //     step 4  T1 installs the remaining seals — exit 0, 5 seals armed, barrier lifted
+    //     step 5  `DELETE` is refused by the no-delete seal
+    //
+    // A fabricated withdrawal — a record of a sequencing constraint that never stood — made
+    // permanent and immutable by the very seals the run had just reported installing.
+    const head = join(__dirname, '..', '..', '..', '..',
+                      'node_modules', '.cache', 'b1-head-p31.sql');
+    const sql = readFileSync(migrationPath, 'utf8');
+    const cut = sql.indexOf('-- ── 4. An edge is BORN LIVE');
+    expect(cut, 'the file must still have a section 4 to cut at').toBeGreaterThan(0);
+    mkdirSync(dirname(head), { recursive: true });
+    writeFileSync(head, sql.slice(0, cut), 'utf8');
+
+    const barrier = async (): Promise<string | null> => {
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ d: string }>>(`
+        SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint
+         WHERE conname = 'ActivityDependency_install_incomplete_check'
+           AND conrelid = '"ActivityDependency"'::regclass`);
+      return rows[0]?.d ?? null;
+    };
+    const bornRevoked = (id: string, a: string, b: string): string =>
+      `INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName","revokedAt","revokedById","revokedByName")
+       VALUES ('${id}','${f.projectA.id}','${a}','${b}','${f.memberUser.id}','PMC',now(),'${f.memberUser.id}','PMC')`;
+
+    await t.prisma.$executeRawUnsafe(`DROP TABLE "ActivityDependency"`);
+    try {
+      expect(applyMigration({ autocommit: true, file: head }),
+             'an incomplete install, created by this file and carrying its own barrier').toBeNull();
+      expect(await barrier(), 'the canonical barrier').toBe(`CHECK ((id !~ '^'::text))`);
+
+      // ── THE PREMISE, OBSERVED ────────────────────────────────────────────────────────────
+      // Substitute a hollow barrier of the same name. Nothing a name test can see has changed.
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_install_incomplete_check"`);
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_install_incomplete_check" CHECK (TRUE)`);
+      expect(await barrier(), 'the hollow barrier is present under the canonical name')
+        .toBe('CHECK (true)');
+
+      const [a, b] = [await activity(), await activity()];
+      // The window is genuinely open: this is T2's write, and it lands. No seal exists to judge
+      // it, and the constraint that is supposed to make that impossible admits it.
+      await t.prisma.$executeRawUnsafe(bornRevoked(`dep-b1-p31-fab-${run}`, a, b));
+      expect(await edgeCount(), 'the "unwritable" table took a fabricated withdrawal').toBe(1);
+      await t.prisma.$executeRawUnsafe(
+        `DELETE FROM "ActivityDependency" WHERE "id" = 'dep-b1-p31-fab-${run}'`);
+
+      // ── THE FIX ──────────────────────────────────────────────────────────────────────────
+      // Compared by definition and by `convalidated`, exactly as every other constraint here is.
+      // WRONG, not missing: an abort whether or not the table holds rows, because what a
+      // noncanonical barrier proves about writability is false in either case.
+      const err = applyMigration({ autocommit: true });
+      expect(err, 'a hollow barrier of the right name must abort').not.toBeNull();
+      expect(err, 'naming what is there').toMatch(/install barrier "ActivityDependency_install_incomplete_check" is present as CHECK \(true\)[\s\S]*is not the write exclusion this install is held behind/u);
+      expect(err, 'and what was expected').toMatch(/Expected: CHECK \(\(id !~ '\^'::text\)\)/u);
+
+      // Restored, the same write is refused — which is what "present" was being read to mean.
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_install_incomplete_check"`);
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_install_incomplete_check" CHECK ("id" !~ '^')`);
+      // The same write is refused again — and note WHICH seal refuses it, because the set-equality
+      // restructure moved this refusal. The hollow barrier is now caught by section 9 rather than
+      // section 1, and on the AUTOCOMMIT path (the one this probe drives) the guarded creates in
+      // sections 4 to 8 have already committed by the time section 9 aborts. So
+      // `ActivityDependency_born_live` now exists and, being a BEFORE INSERT ROW trigger, fires
+      // ahead of the barrier's CHECK. Either seal refusing is the property under test — the
+      // fabricated withdrawal does not land — so this asserts the REFUSAL and the empty table
+      // rather than which of the two guards got there first.
+      expect(await refusal(bornRevoked(`dep-b1-p31-fab2-${run}`, a, b)),
+             'the restored install refuses the same fabricated withdrawal')
+        .toMatch(/ActivityDependency_install_incomplete_check|cannot be created already revoked/u);
+      expect(await edgeCount(), 'and nothing landed').toBe(0);
+
+      // ── AND THE OTHER HALF OF THE SAME QUESTION: A BARRIER THAT IS SIMPLY GONE ───────────
+      // Section 1i. An unfinished install with no barrier is the same open window with nothing
+      // in it at all, so refusing would leave the table unguarded — the opposite of the point.
+      // It is re-armed from this file's own text, under the lock section 1b already holds.
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_install_incomplete_check"`);
+      expect(await barrier(), 'no barrier at all, over an install that never finished').toBeNull();
+      expect(applyMigration({ autocommit: true, file: head }),
+             'the file resumes rather than refusing').toBeNull();
+      expect(await barrier(), 'and the canonical barrier is back')
+        .toBe(`CHECK ((id !~ '^'::text))`);
+      expect(await refusal(edge(a, b)), 'so the table is shut again')
+        .toMatch(/ActivityDependency_install_incomplete_check/u);
+
+      // And the install still finishes normally from there.
+      expect(applyMigration({ autocommit: true }), 'T1 finishes').toBeNull();
+      expect(await installed(), 'with every seal armed').toBe(COMPLETE);
+      expect(await barrier(), 'and the barrier lifted, on proof').toBeNull();
+      expect(await edgeCount(), 'and no fabricated evidence anywhere').toBe(0);
+    } finally {
+      rmSync(head, { force: true });
+    }
+  }, 180_000);
+
+  // ── P32 ────────────────────────────────────────────────────────────────────────────────────
+  it('P32 a foreign key that reads as valid but does not ENFORCE is refused', async () => {
+    // THE FINDING (migration.sql:607), reproduced. Section 1e compared each foreign key's
+    // DEFINITION, 1e' compared its TARGET by OID, and section 9 asked both again plus
+    // `convalidated`. Three attributes, all of them the right ones for "is this the key I meant",
+    // and none of them the one that decides whether the key does anything.
+    //
+    // A foreign key is not self-executing: PostgreSQL implements it as internal
+    // `RI_ConstraintTrigger` rows. MEASURED on this container, PostgreSQL 16: four per key, two on
+    // "ActivityDependency" and two on the referenced table. `ALTER TABLE ... DISABLE TRIGGER ALL`
+    // — which a failed restore and several ordinary superuser recovery procedures run — sets the
+    // ones on this table to 'D'. Also MEASURED: after it, every `pg_get_constraintdef` is
+    // BYTE-IDENTICAL and every `convalidated` is still true, and the earlier head applied over
+    // that database with EXIT 0 while an INSERT naming a nonexistent project, a nonexistent
+    // activity and a nonexistent membership was accepted.
+    //
+    // `ENABLE TRIGGER USER` afterwards is what isolates the finding rather than widening it: it
+    // puts the five SEALS back to 'O', so the armed-trigger checks that already existed pass, and
+    // leaves exactly the residue every other check in this file accepted.
+    const fkIdentity = async (): Promise<string> => (await t.prisma.$queryRawUnsafe<Array<{ s: string }>>(`
+      SELECT string_agg(pg_get_constraintdef(oid) || '/' || convalidated::text, '|' ORDER BY conname) AS s
+        FROM pg_constraint
+       WHERE conrelid = '"ActivityDependency"'::regclass AND contype = 'f'`))[0]!.s;
+    const enforcement = async (): Promise<string> => (await t.prisma.$queryRawUnsafe<Array<{ s: string }>>(`
+      SELECT string_agg(DISTINCT g.tgenabled::text, ',') AS s
+        FROM pg_constraint c JOIN pg_trigger g ON g.tgconstraint = c.oid
+       WHERE c.conrelid = '"ActivityDependency"'::regclass AND c.contype = 'f'`))[0]!.s;
+
+    expect(await installed(), 'starting from the finished install').toBe(COMPLETE);
+    const identityBefore = await fkIdentity();
+    expect(await enforcement(), 'every enforcement trigger is on').toBe('O');
+
+    // A cross-project edge, which containment exists to make unrepresentable.
+    const here = await activity(f.projectA.id);
+    const there = await activity(f.projectB.id);
+    const crossProject = `INSERT INTO "ActivityDependency"
+       ("id","projectId","predecessorId","successorId","lagWorkingDays","createdById","createdByName")
+       VALUES ('dep-b1-p32-${run}','${f.projectA.id}','${there}','${here}',0,'${f.memberUser.id}','PMC')`;
+    expect(await refusal(crossProject), 'refused while the key enforces')
+      .toMatch(/predecessorId_fkey/u);
+
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "ActivityDependency" DISABLE TRIGGER ALL`);
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "ActivityDependency" ENABLE TRIGGER USER`);
+    try {
+      // THE PREMISE: identity unchanged, enforcement off. This is the whole finding in two lines.
+      expect(await fkIdentity(), 'the definitions and validated flags are byte-identical')
+        .toBe(identityBefore);
+      expect(await enforcement(), 'while half the enforcement triggers are DISABLED')
+        .toMatch(/D/u);
+
+      // THE CONSEQUENCE: the cross-project edge the definition forbids now lands.
+      await t.prisma.$executeRawUnsafe(crossProject);
+      expect(await edgeCount(), 'an uncontained edge is in the evidence register').toBe(1);
+
+      // THE FIX: each of the four internal triggers per key is named and asked for on its own, in
+      // section 1e'' and again in section 9. Both sides are covered, because the ON DELETE /
+      // ON UPDATE half of each key lives on "Project", "Activity" or "Membership". P33 is the
+      // other half of the same finding: a trigger that is MISSING rather than disabled, with its
+      // sibling on the same side intact — which the per-SIDE question this head replaced accepted.
+      const err = applyMigration();
+      expect(err, 'an unenforced foreign key must abort').not.toBeNull();
+      expect(err, 'naming the exact internal trigger and its state')
+        .toMatch(/fk-enforcement "ActivityDependency_\w+ -> RI_FKey_\w+ type=\d+ on public\.\w+" (DIFFERS|is MISSING)/u);
+      expect(err, 'and each key, each trigger, and where')
+        .toMatch(/fk-enforcement "ActivityDependency_projectId_predecessorId_fkey -> RI_FKey_check_ins type=5 on public\.ActivityDependency" DIFFERS — expected \[enabled=O\] but found \[enabled=D\]/u);
+      expect(err, 'and the repair').toMatch(/ENABLE TRIGGER ALL/u);
+      expect(await enforcement(), 'and the refusal changes nothing').toMatch(/D/u);
+    } finally {
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "ActivityDependency" ENABLE TRIGGER ALL`);
+      // The uncontained row is not deletable — the no-delete seal was armed the whole time, which
+      // is precisely why the abort tells the operator to confirm what was written. The suite's own
+      // sanctioned reset is the only way out, and it is the same one `wipe()` uses.
+      await t.prisma.$transaction([
+        t.prisma.$executeRawUnsafe(
+          `ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_no_truncate"`),
+        t.prisma.$executeRawUnsafe(`TRUNCATE TABLE "ActivityDependency"`),
+        t.prisma.$executeRawUnsafe(
+          `ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_no_truncate"`),
+      ]);
+    }
+
+    expect(await enforcement(), 'enforcement is back on').toBe('O');
+    expect(applyMigration(), 'and the file applies over an enforcing table').toBeNull();
+    expect(await installed()).toBe(COMPLETE);
+    expect(await refusal(crossProject), 'and containment acts again')
+      .toMatch(/predecessorId_fkey/u);
+  }, 180_000);
+  // ── P33 ────────────────────────────────────────────────────────────────────────────────────
+  it('P33 a foreign key that has LOST one internal trigger, with its sibling intact, is refused', async () => {
+    // THE FINDING (migration.sql:790), reproduced. P32 closed "the enforcement triggers are
+    // switched off" by asking, per SIDE, whether a trigger was there and enabled. That is one
+    // attribute more than before and still fewer than decide whether the key enforces: a SIDE is
+    // not a unit of enforcement. The referencing side of every key carries TWO triggers doing two
+    // different jobs — `RI_FKey_check_ins` for INSERT, `RI_FKey_check_upd` for UPDATE — and losing
+    // one leaves the other to answer the side-level question.
+    //
+    // Losing one is not hypothetical: a `pg_trigger` row can be removed under
+    // `allow_system_table_mods`, which is what a catalog repair or a partially-restored dump
+    // leaves behind, and it is the one shape `DISABLE TRIGGER ALL` does NOT produce.
+    const fkIdentity = async (): Promise<string> => (await t.prisma.$queryRawUnsafe<Array<{ s: string }>>(`
+      SELECT pg_get_constraintdef(oid) || '/' || convalidated::text AS s
+        FROM pg_constraint
+       WHERE conrelid = '"ActivityDependency"'::regclass
+         AND conname = 'ActivityDependency_revokedBy_fkey'`))[0]!.s;
+    /** What the SIDE-LEVEL question asked: is there ANY internal trigger on the referencing side. */
+    const sideLevelAnswer = async (): Promise<number> => Number((await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(`
+      SELECT COUNT(*) AS n FROM pg_constraint c JOIN pg_trigger g ON g.tgconstraint = c.oid
+       WHERE c.conname = 'ActivityDependency_revokedBy_fkey'
+         AND c.conrelid = '"ActivityDependency"'::regclass AND g.tgrelid = c.conrelid`))[0]!.n);
+
+    expect(await installed(), 'starting from the finished install').toBe(COMPLETE);
+    const identityBefore = await fkIdentity();
+    expect(await sideLevelAnswer(), 'two triggers on the referencing side to begin with').toBe(2);
+
+    const a = await activity();
+    const b = await activity();
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    const id = await onlyId();
+    const forge = `UPDATE "ActivityDependency"
+                      SET "revokedAt" = now(), "revokedById" = 'ghost-b1-p33-${run}', "revokedByName" = 'Ghost'
+                    WHERE "id" = '${id}'`;
+    expect(await refusal(forge), 'refused while the UPDATE check is in place')
+      .toMatch(/revokedBy_fkey/u);
+
+    // Lose EXACTLY ONE row: the UPDATE-side check, and its dependency bookkeeping with it, which
+    // is what a partially-restored catalog actually leaves — a dangling `pg_depend` entry would be
+    // a different, self-announcing kind of damage.
+    await t.prisma.$executeRawUnsafe(`SET allow_system_table_mods = on`);
+    await t.prisma.$executeRawUnsafe(`
+      DELETE FROM pg_depend d
+       USING pg_trigger g, pg_constraint c
+       WHERE d.classid = 'pg_trigger'::regclass AND d.objid = g.oid
+         AND g.tgconstraint = c.oid
+         AND c.conname = 'ActivityDependency_revokedBy_fkey'
+         AND c.conrelid = '"ActivityDependency"'::regclass
+         AND g.tgfoid = 'pg_catalog."RI_FKey_check_upd"'::regproc`);
+    await t.prisma.$executeRawUnsafe(`
+      DELETE FROM pg_trigger g USING pg_constraint c
+       WHERE g.tgconstraint = c.oid
+         AND c.conname = 'ActivityDependency_revokedBy_fkey'
+         AND c.conrelid = '"ActivityDependency"'::regclass
+         AND g.tgfoid = 'pg_catalog."RI_FKey_check_upd"'::regproc`);
+    try {
+      // THE PREMISE, in three lines: the definition and the validated flag are byte-identical, and
+      // the side-level question — the check this head replaces — still answers "yes, there is one".
+      expect(await fkIdentity(), 'the definition and validated flag are byte-identical')
+        .toBe(identityBefore);
+      expect(await sideLevelAnswer(), 'and the surviving sibling still answers the per-SIDE question')
+        .toBe(1);
+
+      // THE CONSEQUENCE: a revoker identity that names no membership is now accepted, and section
+      // 6 freezes the row, so the fabricated attribution is permanent.
+      //
+      // On a SEPARATE CONNECTION, deliberately. Deleting a `pg_trigger` row by hand is catalog DML
+      // and sends no relcache invalidation, so the backend that did it keeps its cached trigger
+      // descriptors and would still refuse — a fresh backend is both what makes the probe measure
+      // the catalog rather than a stale cache, and what the real sequence looks like: a restore,
+      // then an application connecting to what it left.
+      const fresh = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } });
+      try {
+        await fresh.$executeRawUnsafe(forge);
+        const ghost = await fresh.$queryRawUnsafe<Array<{ who: string | null; member: boolean }>>(`
+          SELECT d."revokedById" AS who,
+                 EXISTS (SELECT 1 FROM "Membership" m
+                          WHERE m."projectId" = d."projectId" AND m."userId" = d."revokedById") AS member
+            FROM "ActivityDependency" d WHERE d."id" = '${id}'`);
+        expect(ghost[0]!.who, 'the forged revoker is stored').toBe(`ghost-b1-p33-${run}`);
+        expect(ghost[0]!.member, 'and it names no membership at all').toBe(false);
+      } finally {
+        await fresh.$disconnect();
+      }
+
+      // THE FIX: all twenty internal triggers are enumerated by name, so the absent one is named.
+      const err = applyMigration();
+      expect(err, 'a key missing one of its four triggers must abort').not.toBeNull();
+      expect(err, 'naming the exact internal trigger and its state')
+        .toMatch(/fk-enforcement "ActivityDependency_\w+ -> RI_FKey_\w+ type=\d+ on public\.\w+" (DIFFERS|is MISSING)/u);
+      expect(err, 'and the exact trigger, and where it should be')
+        .toMatch(/fk-enforcement "ActivityDependency_revokedBy_fkey -> RI_FKey_check_upd type=17 on public\.ActivityDependency" is MISSING/u);
+      // And the repair the refusal names is the one that works: re-enabling changes nothing here,
+      // because there is nothing to re-enable — the key has to be dropped and re-added.
+      expect(err, 'so the message says so').toMatch(/a MISSING trigger row needs the key dropped and re-added/u);
+    } finally {
+      // ORDER MATTERS, and the reason is the finding itself. The forged row is frozen and not
+      // deletable — which is exactly why the abort tells the operator to confirm what was written
+      // — so the suite's sanctioned reset comes FIRST. Re-adding the key over a table that still
+      // holds a revoker naming no membership would fail validation, which is the correct behaviour
+      // of a real repair and would leave this database with four foreign keys for every suite that
+      // follows.
+      await t.prisma.$transaction([
+        t.prisma.$executeRawUnsafe(
+          `ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_no_truncate"`),
+        t.prisma.$executeRawUnsafe(`TRUNCATE TABLE "ActivityDependency"`),
+        t.prisma.$executeRawUnsafe(
+          `ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_no_truncate"`),
+      ]);
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DROP CONSTRAINT IF EXISTS "ActivityDependency_revokedBy_fkey"`);
+      await t.prisma.$executeRawUnsafe(`
+        ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_revokedBy_fkey"
+          FOREIGN KEY ("projectId", "revokedById") REFERENCES public."Membership"("projectId", "userId")
+          ON DELETE NO ACTION ON UPDATE NO ACTION`);
+    }
+
+    expect(await sideLevelAnswer(), 'the key is whole again').toBe(2);
+    expect(applyMigration(), 'and the file applies over an enforcing table').toBeNull();
+    expect(await installed()).toBe(COMPLETE);
+    const c = await activity();
+    const d = await activity();
+    await t.prisma.$executeRawUnsafe(edge(c, d));
+    expect(await refusal(`UPDATE "ActivityDependency"
+                             SET "revokedAt" = now(), "revokedById" = 'ghost-b1-p33b-${run}', "revokedByName" = 'Ghost'
+                           WHERE "id" = '${await onlyId()}'`), 'and attribution is enforced again')
+      .toMatch(/revokedBy_fkey/u);
+  }, 180_000);
+
+  // ── P34 ────────────────────────────────────────────────────────────────────────────────────
+  it('P34 the seals are re-verified on EVERY deploy, from the migration\'s own inventory', async () => {
+    // THE FINDING (migration.sql:1903), reproduced. Everything above verifies the install AT
+    // INSTALL TIME. Once `20270930000000` is recorded in `_prisma_migrations`, `prisma migrate
+    // deploy` has nothing pending and never re-reads the file — so on every database that already
+    // ran it, the whole apparatus above is a fact about the past. MEASURED at the previous head:
+    // with `ActivityDependency_frozen` and `ActivityDependency_no_delete` DISABLED,
+    // `scripts/migrate.sh` exited 0, and an UPDATE and then a DELETE against the immutable
+    // evidence row both committed.
+    //
+    // The fix is the compiled verifier `scripts/migrate.sh` now runs on both success paths. It
+    // keeps NO second inventory: it extracts section 9's and re-executes it, which is the property
+    // asserted first here, because a verifier whose list has drifted is worse than none.
+    const sql = readFileSync(migrationPath, 'utf8');
+    const inventory = extractSealInventorySql(sql);
+
+    // The extract differs from the file by exactly one thing — the plpgsql assignment that turns
+    // the statement into a query. Put it back and the string is byte-for-byte the file's own text,
+    // which is the whole claim: there is no second copy of this list anywhere.
+    expect(sql.includes(inventory), 'the extract is not present verbatim — the assignment is gone')
+      .toBe(false);
+    expect(sql.includes(inventory.replace(
+      "SELECT string_agg(d.what, ', ' ORDER BY d.what) FROM (",
+      "SELECT string_agg(d.what, ', ' ORDER BY d.what) INTO v_missing FROM (")),
+           'and putting that one assignment back reproduces the migration exactly')
+      .toBe(true);
+
+    const bodies = extractCanonicalFunctionBodies(sql);
+    expect([...bodies.keys()].sort(), 'and all five seal bodies come from the same file').toEqual([
+      'activity_dependency_acyclic', 'activity_dependency_born_live', 'activity_dependency_frozen',
+      'activity_dependency_no_delete', 'activity_dependency_no_truncate',
+    ]);
+
+    // A verifier that quietly asks nothing reports every database as sealed, so extraction fails
+    // closed on a file it does not recognise rather than returning an empty question.
+    expect(() => extractSealInventorySql(sql.replace(/B1-SEAL-INVENTORY BEGIN/u, 'X')))
+      .toThrow(/carries no B1-SEAL-INVENTORY BEGIN/u);
+    expect(() => extractSealInventorySql(sql.replace(
+      /B1-SEAL-INVENTORY END/u, 'B1-SEAL-INVENTORY END\n  -- B1-SEAL-INVENTORY END')))
+      .toThrow(/more than one/u);
+    expect(() => extractSealInventorySql(sql.replace(' INTO v_missing', '')))
+      .toThrow(/contains the plpgsql assignment 0 time\(s\)/u);
+
+    expect(await installed(), 'starting from the finished install').toBe(COMPLETE);
+    expect((await verifyB1Seals(t.prisma, sql)).sealed, 'an intact database is sealed').toBe(true);
+
+    // (a) A SEAL DISABLED — the shape a failed restore leaves, and the finding's own example.
+    await t.prisma.$executeRawUnsafe(
+      `ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_frozen"`);
+    try {
+      const off = await verifyB1Seals(t.prisma, sql);
+      expect(off.sealed, 'a disabled seal is not sealed').toBe(false);
+      expect(off.inventory, 'and the migration\'s own inventory names it')
+        .toMatch(/trigger "ActivityDependency_frozen" DIFFERS — expected \[[^\]]*enabled=O[^\]]*\] but found \[[^\]]*enabled=D/u);
+    } finally {
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_frozen"`);
+    }
+
+    // (b) A SEAL HOLLOWED. `CREATE OR REPLACE FUNCTION` keeps the OID, the name, the volatility,
+    // the security context and the search_path pin — every property section 9 re-asks — and
+    // replaces what the function DOES. Section 9 cannot catch this because sections 4 to 7
+    // compared the body minutes earlier; the deploy-time verifier compares it again, against the
+    // same `$body$` literal the file installs from.
+    const canonicalFrozen = bodies.get('activity_dependency_frozen')!;
+    await t.prisma.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION public.activity_dependency_frozen() RETURNS TRIGGER LANGUAGE plpgsql
+        VOLATILE SET search_path = pg_catalog, public AS $hollow$
+BEGIN
+  RETURN NEW;
+END $hollow$`);
+    try {
+      const hollow = await verifyB1Seals(t.prisma, sql);
+      expect(hollow.sealed, 'a hollowed seal is not sealed').toBe(false);
+      expect(hollow.inventory, 'and section 9\'s inventory alone would have passed it').toBeNull();
+      expect(hollow.extra.join(' | '), 'so the body is what names it')
+        .toMatch(/function public\.activity_dependency_frozen\(\) does not have the body this migration installed/u);
+    } finally {
+      await t.prisma.$executeRawUnsafe(
+        `CREATE OR REPLACE FUNCTION public.activity_dependency_frozen() RETURNS TRIGGER LANGUAGE plpgsql
+           VOLATILE SET search_path = pg_catalog, public AS $restore$${canonicalFrozen}$restore$`);
+    }
+    expect((await verifyB1Seals(t.prisma, sql)).sealed, 'restoring the canonical body re-seals it')
+      .toBe(true);
+
+    // (c) THE INSTALL BARRIER BACK IN PLACE. Section 9 drops it as the last act of a proven
+    // install, so at the moment its inventory runs the barrier is still there and cannot be part
+    // of it. Afterwards, its presence means the install that this database recorded as applied
+    // never finished — and the table is unwritable while nothing re-reads the file.
+    await t.prisma.$executeRawUnsafe(`
+      ALTER TABLE "ActivityDependency"
+        ADD CONSTRAINT "ActivityDependency_install_incomplete_check" CHECK ("id" !~ '^')`);
+    try {
+      const barred = await verifyB1Seals(t.prisma, sql);
+      expect(barred.sealed, 'an unlifted barrier is not a finished install').toBe(false);
+      expect(barred.extra.join(' | '), 'and the verifier says which state that is')
+        .toMatch(/install barrier "ActivityDependency_install_incomplete_check" is still in place/u);
+    } finally {
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_install_incomplete_check"`);
+    }
+
+    expect((await verifyB1Seals(t.prisma, sql)).sealed, 'and the database is sealed again').toBe(true);
+  }, 120_000);
+
+  // ── P35 — schema.prisma and the migration agree on every constraint name ────────────────────
+  //
+  // The finding: the two attribution foreign keys were named `ActivityDependency_createdBy_fkey`
+  // and `ActivityDependency_revokedBy_fkey`, while the Prisma relations carried no `map:` and so
+  // expected `ActivityDependency_projectId_createdById_fkey` / `..._revokedById_fkey`. Prisma
+  // treats its datamodel as the DESIRED shape, so the next generated migration would RENAME the
+  // reviewed constraints — after which the migration's own inventory rejects a database that
+  // migrated successfully, and `migrate.sh` refuses startup.
+  //
+  // MEASURED before the fix: `prisma migrate diff` emitted exactly those two RENAME statements,
+  // and applying them made `b1:seals` exit 3 on a correctly migrated database.
+  //
+  // This asserts the agreement DIRECTLY rather than trusting either side: every foreign-key name
+  // the migration's expected inventory pins must be a name `schema.prisma` also pins, via an
+  // explicit `map:` on the relation. A relation without `map:` is a name Prisma owns and can
+  // change, so it is a failure here even if today's default happens to match.
+  it('P35 - schema.prisma pins every foreign-key name the migration inventory hard-codes', () => {
+    const migrationSql = readFileSync(migrationPath, 'utf8');
+    const schema = readFileSync(join(__dirname, '..', '..', 'prisma', 'schema.prisma'), 'utf8');
+
+    const inventory = extractSealInventorySql(migrationSql);
+    const pinned = [...inventory.matchAll(/\('constraint', '(ActivityDependency_\w*fkey)'/gu)]
+      .map((m) => m[1]).sort();
+    expect(pinned.length, 'the inventory pins the five foreign keys').toBe(5);
+
+    const model = /model ActivityDependency \{[\s\S]*?\n\}/u.exec(schema)?.[0];
+    expect(model, 'the model is in schema.prisma').toBeTruthy();
+
+    // Every relation field that backs one of these keys must carry an explicit map:.
+    const mapped = [...(model as string).matchAll(/map:\s*"(ActivityDependency_\w*fkey)"/gu)]
+      .map((m) => m[1]);
+    // The three keys Prisma names by its own default convention are allowed to rely on it, because
+    // the default IS the migration's name; the two that deviate must be mapped.
+    const deviating = pinned.filter((name) =>
+      name === 'ActivityDependency_createdBy_fkey' || name === 'ActivityDependency_revokedBy_fkey');
+    for (const name of deviating) {
+      expect(mapped, `${name} deviates from Prisma's default name, so schema.prisma must map: it`)
+        .toContain(name);
+    }
+
+    // And nothing in schema.prisma may map: a name the migration does not install.
+    for (const name of mapped) {
+      expect(pinned, `schema.prisma maps ${name}, which the migration does not install`)
+        .toContain(name);
+    }
+  });
+
+  // ── P36 — THE DATABASE IS THE ARBITER: the expected inventory IS what was installed ─────────
+  //
+  // The structural finding this unit was replaced for: section 9 and the deploy-time verifier were
+  // two hand-written comparisons, and the round that added the verifier reintroduced, inside it,
+  // the by-name CHECK test the migration had been fixed to avoid two rounds earlier. There is now
+  // ONE expression and both callers run it — but "one expression" is a claim about the file, and a
+  // claim about the file is exactly what kept being wrong.
+  //
+  // So this asserts it against the DATABASE instead. The migration has been applied to this
+  // database by the ordinary deploy path. The inventory's expected set is compared with what
+  // actually exists, in BOTH directions:
+  //
+  //   an object the migration CREATES that the inventory does not know about  -> UNEXPECTED, fails
+  //   an object the inventory expects that the migration does not create      -> MISSING, fails
+  //
+  // A future edit that adds an index, a CHECK, a trigger or a foreign key to the migration without
+  // adding it to the inventory fails here, because the database will hold it and the expected set
+  // will not. That is the property the two-copy design could not have.
+  it('P36 - the seal inventory and the installed database agree exactly, in both directions', async () => {
+    // Deliberately NOT run against the suite database. By the time this probe executes, earlier
+    // probes have added and removed objects, and `afterEach` only truncates ROWS — it does not
+    // undo schema changes. Asserting "no difference" against a database other tests have been
+    // editing would make this probe a statement about test ordering rather than about the file.
+    //
+    // So it builds its OWN database, migrates it by the ORDINARY deploy path, and asks there.
+    const base = new URL(process.env.DATABASE_URL!);
+    const scratch = `${base.pathname.replace(/^\//u, '')}_p36`;
+    const admin = new URL(base.toString()); admin.pathname = '/postgres'; admin.search = '';
+    const scratchUrl = new URL(base.toString()); scratchUrl.pathname = `/${scratch}`; scratchUrl.search = '';
+    const psqlAdmin = (sqlText: string): void => {
+      execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', '-q', '-d', admin.toString(), '-c', sqlText],
+                   { encoding: 'utf8', stdio: 'pipe' });
+    };
+
+    psqlAdmin(`DROP DATABASE IF EXISTS "${scratch}"`);
+    psqlAdmin(`CREATE DATABASE "${scratch}"`);
+    const fresh = new PrismaClient({ datasources: { db: { url: scratchUrl.toString() } } });
+    try {
+      execFileSync('pnpm', ['-s', 'prisma', 'migrate', 'deploy'], {
+        cwd: join(__dirname, '..', '..'),
+        encoding: 'utf8',
+        stdio: 'pipe',
+        env: { ...process.env, DATABASE_URL: scratchUrl.toString() },
+      });
+
+      const report = await verifyB1Seals(fresh as never, readFileSync(migrationPath, 'utf8'));
+      expect(report.applicable, 'the table exists on the freshly migrated database').toBe(true);
+      // BOTH DIRECTIONS. An object the migration creates that the inventory does not know about
+      // reads as UNEXPECTED here; an object the inventory expects that the migration does not
+      // create reads as MISSING. So a future edit that adds an index, a CHECK, a trigger or a
+      // foreign key to the file without adding it to the inventory fails this probe — which is
+      // the property the previous two-hand-written-copies design could not have.
+      expect(
+        [report.inventory, ...report.extra].filter(Boolean),
+        'a freshly migrated database differs from the inventory in NO direction',
+      ).toEqual([]);
+      expect(report.sealed).toBe(true);
+    } finally {
+      await fresh.$disconnect();
+      psqlAdmin(`DROP DATABASE IF EXISTS "${scratch}"`);
+    }
+  }, 300_000);
+
+  // ── P37 — the TRUNCATE fast path is refused under fixed-snapshot isolation ──────────────────
+  //
+  // RED, measured on PostgreSQL 16.13 before the guard existed, driven by a pg_locks barrier and
+  // never by a sleep: T1 opened REPEATABLE READ and fixed its snapshot while the table was empty;
+  // T2 inserted an edge; T1's TRUNCATE QUEUED on T2's lock (observed as a not-granted
+  // AccessExclusiveLock in pg_locks); T2 committed; T1 took the lock, the seal's emptiness test
+  // read T1's STALE snapshot, saw nothing, and the physical truncate erased T2's COMMITTED
+  // sequencing evidence. Surviving rows: 0.
+  //
+  // The seal's ACCESS EXCLUSIVE lock serialises PHYSICAL access but does not move a snapshot, so
+  // the emptiness test is only race-free under READ COMMITTED, where the statement's snapshot is
+  // taken AFTER the lock is held. The guard refuses the isolation rather than refusing TRUNCATE
+  // outright, because the fast path is load-bearing: `event-catalog.test.ts` resets with
+  // `TRUNCATE "Decision","Activity",... CASCADE` and this table foreign-keys into "Activity", so
+  // the CASCADE reaches this seal WITHOUT disabling it. P37b holds that path open.
+  //
+  // The interleaving is driven by the lock queue itself, so there is no timing assumption to be
+  // flaky about: the barrier is "someone is actually blocked on this relation", read from pg_locks.
+  it('P37 - a REPEATABLE READ truncate cannot erase an edge committed after its snapshot', async () => {
+    const url = process.env.DATABASE_URL as string;
+    const c1 = new PrismaClient({ datasources: { db: { url } } });
+    const c2 = new PrismaClient({ datasources: { db: { url } } });
+    const a = await activity();
+    const b = await activity();
+    try {
+      const untilBlocked = async (): Promise<void> => {
+        for (let i = 0; i < 400; i += 1) {
+          const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+            `SELECT COUNT(*) AS n FROM pg_locks
+              WHERE relation = 'public."ActivityDependency"'::regclass AND NOT granted`);
+          if (Number(rows[0]?.n ?? 0) > 0) return;
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        throw new Error('pg_locks barrier: T1 never queued on "ActivityDependency"');
+      };
+
+      let snapshotTaken!: () => void;
+      const snapshotDone = new Promise<void>((res) => { snapshotTaken = res; });
+      let inserted!: () => void;
+      const insertDone = new Promise<void>((res) => { inserted = res; });
+      let allowCommit!: () => void;
+      const mayCommit = new Promise<void>((res) => { allowCommit = res; });
+
+      // T1: fix a snapshot on the EMPTY table, then TRUNCATE — which queues on T2's lock.
+      const t1 = c1.$transaction(async (tx) => {
+        const rows = await tx.$queryRawUnsafe<Array<{ n: bigint }>>(
+          `SELECT COUNT(*) AS n FROM "ActivityDependency"`);
+        expect(Number(rows[0].n), 'T1 fixes its snapshot while the table is empty').toBe(0);
+        snapshotTaken();
+        await insertDone;
+        await tx.$executeRawUnsafe(`TRUNCATE TABLE "ActivityDependency"`);
+        return 'THE TRUNCATE SUCCEEDED';
+      }, { isolationLevel: 'RepeatableRead', timeout: 60_000 })
+        .then((v) => v, (e: unknown) => String((e as Error).message));
+
+      // T2: insert an edge and hold it uncommitted until T1 is provably blocked.
+      const t2 = c2.$transaction(async (tx) => {
+        await snapshotDone;
+        await tx.$executeRawUnsafe(edge(a, b));
+        inserted();
+        await mayCommit;
+      }, { timeout: 60_000 });
+
+      await insertDone;
+      await untilBlocked();          // ← the barrier: T1 is genuinely queued on the lock
+      allowCommit();                 // ← T2's edge becomes COMMITTED evidence
+      await t2;
+      const outcome = await t1;
+
+      expect(String(outcome), 'the seal refuses the fixed-snapshot truncate by name')
+        .toMatch(/cannot be TRUNCATEd from a repeatable read transaction/u);
+      expect(await edgeCount(), "T2's committed sequencing evidence survives (it was 0 before the fix)")
+        .toBe(1);
+    } finally {
+      await c1.$disconnect();
+      await c2.$disconnect();
+    }
+  }, 120_000);
+
+  // ── P37b — and the CASCADE reset path the fast path exists for still works ──────────────────
+  //
+  // The regression this fix could have caused. An unconditional TRUNCATE refusal was NOT available:
+  // `apps/api/test/integration/event-catalog.test.ts` resets with
+  // `TRUNCATE "Decision","Activity",… CASCADE`, and because "ActivityDependency" foreign-keys into
+  // "Activity" the CASCADE reaches it and fires this statement-level seal WITHOUT disabling it by
+  // name. MEASURED: a cascaded BEFORE TRUNCATE trigger does fire. So the empty-table fast path is
+  // load-bearing, and it must remain open under READ COMMITTED.
+  it('P37b - an empty-table CASCADE truncate under READ COMMITTED is still permitted', async () => {
+    expect(await edgeCount(), 'this probe starts from an empty edge table').toBe(0);
+    // The seal is NOT disabled here — that is the whole point.
+    await t.prisma.$executeRawUnsafe(`TRUNCATE TABLE "ActivityDependency"`);
+    // and a NON-empty table is still refused on the same path
+    const a = await activity();
+    const b = await activity();
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    expect(await refusal(`TRUNCATE TABLE "ActivityDependency"`), 'a populated table is still sealed')
+      .toMatch(/never truncated/u);
+  }, 120_000);
+
+  // ── P38 — the inventory refuses by DEFINITION, and in BOTH directions ───────────────────────
+  //
+  // RED, measured: a restore or catalog repair replaced `ActivityDependency_attribution_check`
+  // with a VALIDATED `CHECK (TRUE)` under the same name. The old inventory tested only `conname`
+  // and `convalidated`, so `b1:seals` exited 0 reporting sealed, `migrate.sh` exited 0, and an
+  // INSERT with a whitespace-only `createdByName` then COMMITTED — after which the freeze and
+  // no-delete seals made that invalid attribution permanent.
+  it('P38 - a hollow CHECK, an extra object and a disabled key are all refused', async () => {
+    const sql = readFileSync(migrationPath, 'utf8');
+
+    // (a) SAME NAME, VALIDATED, HOLLOW BODY.
+    await t.prisma.$executeRawUnsafe(
+      `ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_attribution_check"`);
+    await t.prisma.$executeRawUnsafe(
+      `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_attribution_check" CHECK (TRUE)`);
+    try {
+      const hollow = await verifyB1Seals(t.prisma, sql);
+      expect(hollow.sealed, 'a hollow CHECK is not a seal').toBe(false);
+      expect([hollow.inventory, ...hollow.extra].join(' | '), 'and the DEFINITION is what names it')
+        .toMatch(/constraint "ActivityDependency_attribution_check" DIFFERS/u);
+    } finally {
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_attribution_check"`);
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_attribution_check"
+           CHECK (("createdById" !~ '^[[:space:]]*$') AND ("createdByName" !~ '^[[:space:]]*$'))`);
+    }
+    expect((await verifyB1Seals(t.prisma, sql)).sealed, 'restoring the real CHECK re-seals it').toBe(true);
+
+    // (b) AN OBJECT THIS FILE DOES NOT INSTALL. No list-based check could see this at all.
+    await t.prisma.$executeRawUnsafe(
+      `CREATE INDEX "ActivityDependency_p31_rogue_idx" ON "ActivityDependency" ("createdById")`);
+    try {
+      const extra = await verifyB1Seals(t.prisma, sql);
+      expect(extra.sealed, 'an unexpected object attached to this table is refused').toBe(false);
+      expect([extra.inventory, ...extra.extra].join(' | '))
+        .toMatch(/index "ActivityDependency_p31_rogue_idx" is UNEXPECTED/u);
+    } finally {
+      await t.prisma.$executeRawUnsafe(`DROP INDEX "ActivityDependency_p31_rogue_idx"`);
+    }
+
+    // (c) A FOREIGN KEY THAT STILL READS AS VALID BUT NO LONGER ACTS.
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "ActivityDependency" DISABLE TRIGGER ALL`);
+    try {
+      const off = await verifyB1Seals(t.prisma, sql);
+      expect(off.sealed, 'a key whose internal triggers are off is not enforcing').toBe(false);
+      expect([off.inventory, ...off.extra].join(' | '))
+        .toMatch(/fk-enforcement "ActivityDependency_\w+ -> RI_FKey_\w+ type=\d+ on public\.\w+" DIFFERS/u);
+    } finally {
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "ActivityDependency" ENABLE TRIGGER ALL`);
+    }
+
+    expect((await verifyB1Seals(t.prisma, sql)).sealed, 'and the database is sealed again').toBe(true);
+  }, 120_000);
+});
