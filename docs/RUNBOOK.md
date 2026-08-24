@@ -1082,3 +1082,129 @@ cutover step 1 above). Keep it that way for the 4a rollout specifically: do NOT 
 post-4a application processes side by side. If a multi-instance rolling strategy is ever
 introduced, the exposure is bounded to pushes leased by old senders during the one rollout that
 ships 4a — after that, every sender carries the pre-send re-check.
+
+## §B1. Schedule B1 — `prisma migrate deploy` aborts on `ActivityDependency`
+
+`20270930000000_schedule_dependency_graph` COMPLETES ITS OWN INSTALL of `ActivityDependency` and
+adopts nothing else. Applied twice, or applied after a run that died part-way, it finishes the job
+and exits 0 — **the first thing to try is simply re-running the deploy**, and on a partial apply
+that is the whole procedure. It aborts only when it meets an object it did not install, and the
+abort NAMES that object and both definitions.
+
+### First: re-run the deploy
+
+```
+sh apps/api/scripts/migrate.sh
+```
+
+A partial apply — the table created, some or all of the indexes, functions and triggers missing —
+is completed by this and needs nothing else. **So is a COMPLETE install that is already in service
+and holding rows**: replaying over it is a no-op, which is what a direct repair, a re-deploy, or
+`migrate resolve --rolled-back` followed by `migrate deploy` all do. If it exits 0, verify the
+guards are in force (step 4 below) and stop here.
+
+**A half-installed table cannot be written while you work.** `CREATE TABLE` installs an
+unsatisfiable CHECK, `ActivityDependency_install_incomplete_check`, atomically with the table, and
+the migration drops it only after proving that all ten constraints, three indexes, five functions
+and five ARMED triggers are present and that each trigger is bound to the function in `public`.
+Until then every INSERT is refused — by any role, including a superuser, because a CHECK is not a
+trigger. If you see that constraint named by a rejected write, the install did not finish: re-run
+the deploy. Do not drop the barrier by hand; it is the only thing standing between a half-sealed
+graph and a row no guard ever judged.
+
+### If it aborts, read what it names
+
+The message is one of five, and each says which object disagrees:
+
+| Abort names | What it means |
+| --- | --- |
+| `holds rows and its installation is INCOMPLETE: <what is missing>` (with `already exists and holds N row(s)`) | The table is populated AND something this migration installs is absent. Arming a trigger validates nothing already in the table, so finishing this install would certify those rows by silence. Rows on a COMPLETE install are not an error and do not reach this message. |
+| `does not match the column contract` | The columns are not the ones this migration reasons about — a nullable endpoint, a wrong type, a missing default. It names the column and both shapes. |
+| `its constraint "<name>" is ABSENT` / `is present as <definition>` | A CHECK or key this migration declares INLINE with the table. `CREATE TABLE` installs all ten atomically, so this migration's own partial apply always carries them; one missing or altered means another tool built this table. |
+| `index "<name>" exists … with a definition this migration did not install` or `already exists in schema public on table "<other>"` | A same-named index that is not the one printed in the message — or one owned by an entirely different relation. Index names are schema-scoped in PostgreSQL, so a collision elsewhere in `public` also lands here. |
+| `function public.<name>() already exists with a definition this migration did not install` / `trigger "<name>" already exists …` | A seal of the right name and the wrong body, or one left `DISABLED`. Compared by body and by `tgenabled`, because `CREATE OR REPLACE FUNCTION` preserves identity and a hollowed body reads as present. |
+
+**None of these is repaired automatically, deliberately.** Installing a rule over a table this
+migration did not build would mean certifying a shape and a history it never observed.
+
+**The realistic cause is a schema reconciled from `schema.prisma` without the migration ledger** —
+the P3005 baseline path, where `scripts/migrate.sh` deliberately leaves this migration PENDING so
+its raw guards really execute. `schema.prisma` can express neither a CHECK nor a trigger, so
+`prisma db push` produces the columns, the primary key, the modelled foreign keys and the two
+modelled indexes, and none of the four CHECKs, the two `Membership` keys, the partial unique index
+or the five seals — which is why the abort you see is usually a missing CHECK.
+
+### Last resort: drop the table and let the migration build it
+
+This is the last resort, not the routine answer. It is cheap *here* specifically because the table
+is new: `ActivityDependency` exists in no released schema, no service writes it, and it holds
+**zero rows on every deployed database**. It is unlike §T45, §P4T2C, §P4LC2 and §P4T3C3, which
+abort over real operational data and need a judgement.
+
+1. **Confirm the table is empty and is the schedule graph.** Anything other than `0` here stops the
+   procedure — see "If step 1 finds rows" below.
+
+   ```sql
+   SELECT COUNT(*) FROM "ActivityDependency";
+   \d+ "ActivityDependency"
+   ```
+
+2. **Confirm the migration is not recorded as applied.** The abort happens inside the migration's
+   transaction, so Prisma records it as failed, not applied.
+
+   ```sql
+   SELECT migration_name, started_at, finished_at, rolled_back_at
+     FROM _prisma_migrations
+    WHERE migration_name = '20270930000000_schedule_dependency_graph';
+   ```
+
+   A row with `finished_at IS NULL` is a failed attempt; resolve it as rolled back before
+   redeploying:
+
+   ```
+   npx prisma migrate resolve --rolled-back 20270930000000_schedule_dependency_graph
+   ```
+
+   No row at all (the P3005 baseline path aborting before the ledger records anything) needs
+   nothing here.
+
+3. **Drop the table.** If the abort named an index owned by ANOTHER relation, drop or rename that
+   index instead — this migration will not reclaim a name it does not own, and neither should you
+   without knowing what the other index is for.
+
+   ```sql
+   DROP TABLE "ActivityDependency";
+   ```
+
+4. **Re-run the deploy** — `sh apps/api/scripts/migrate.sh` — and verify the guards are in force,
+   not merely recorded. Expect `4|1|5|0`: four validated CHECKs, the partial unique index, five
+   armed triggers, and NO install barrier (a barrier still present means the install did not
+   finish and the table is still unwritable).
+
+   ```sql
+   SELECT (SELECT COUNT(*) FROM pg_constraint
+            WHERE conrelid = '"ActivityDependency"'::regclass AND contype = 'c' AND convalidated)
+       || '|' || (SELECT COUNT(*) FROM pg_index ix JOIN pg_class ci ON ci.oid = ix.indexrelid
+                   WHERE ci.relname = 'ActivityDependency_projectId_successorId_predecessorId_key'
+                     AND ix.indisunique AND ix.indisvalid AND ix.indpred IS NOT NULL)
+       || '|' || (SELECT COUNT(*) FROM pg_trigger
+                   WHERE tgrelid = '"ActivityDependency"'::regclass
+                     AND NOT tgisinternal AND tgenabled = 'O')
+       || '|' || (SELECT COUNT(*) FROM pg_constraint
+                   WHERE conname = 'ActivityDependency_install_incomplete_check'
+                     AND conrelid = '"ActivityDependency"'::regclass);
+   ```
+
+**If step 1 finds rows**, do not continue — and note that you only reach this procedure at all
+when the install is INCOMPLETE, because a complete populated install replays without aborting.
+Real dependency edges predating this migration would be edges no guard ever judged — they may contain cycles, self-dependencies or unattributable
+authorship. Preserve them (`CREATE TABLE "ActivityDependency_preexisting" AS SELECT * FROM
+"ActivityDependency"`), raise it, and expect a dedicated reconciliation unit: deciding what may
+honestly be said about such rows is a design question, not a runbook step.
+
+**Proof.** `apps/api/scripts/schedule-b1-baseline-proof.sh` runs the real `scripts/migrate.sh`
+through all five states of this — the install on a pre-baseline database WITHOUT the table, the
+abort-then-repair cycle on one carrying a table this migration did not build, the COMPLETION of a
+genuine partial apply (with the install barrier shown to refuse a write while the seals are
+absent), the REFUSAL over a populated INCOMPLETE table with the row left alone, and a no-op REPLAY
+over a populated COMPLETE one — and CI runs that script in the required `api` job.

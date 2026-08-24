@@ -3696,6 +3696,179 @@ assert "4b round 1 F2: the replay/redeploy cycle invented no legacy stamp" \
   "SELECT COUNT(*)::text FROM \"DecisionLegacyApproval\" WHERE \"decisionId\" IN ('UP4B-OLD','UP4B-ATTR','UP4B-UNPUB-ATTR','UP4B-UNPUB-OLD');" \
   "0"
 
+# ---- Schedule B1 — the acyclic activity dependency graph -------------------------------------
+echo ""
+echo "=== schedule B1: the activity dependency graph over a legacy database ==="
+
+# A legacy database has no dependency edges, and the guards did not exist when its rows were
+# written — so the table must arrive EMPTY. Rows here would be edges nothing ever judged.
+assert "B1: a legacy database upgrades ROW-FREE — no edge predates the guards that judge them" \
+  "SELECT COUNT(*)::text FROM \"ActivityDependency\";" \
+  "0"
+assert "B1: the containment FKs, the project-scoped attribution FKs, the CHECKs, the ordered-pair key and all five seals are installed" \
+  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conrelid='\"ActivityDependency\"'::regclass AND convalidated AND conname IN ('ActivityDependency_projectId_fkey','ActivityDependency_projectId_predecessorId_fkey','ActivityDependency_projectId_successorId_fkey','ActivityDependency_createdBy_fkey','ActivityDependency_revokedBy_fkey','ActivityDependency_no_self_check','ActivityDependency_lag_nonneg_check','ActivityDependency_revocation_check','ActivityDependency_attribution_check'))::text || '|' || (SELECT COUNT(*) FROM pg_index ix JOIN pg_class ci ON ci.oid=ix.indexrelid WHERE ci.relname='ActivityDependency_projectId_successorId_predecessorId_key' AND ix.indisunique AND ix.indisvalid AND ix.indpred IS NOT NULL)::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled='O' AND tgrelid='\"ActivityDependency\"'::regclass AND tgname IN ('ActivityDependency_acyclic','ActivityDependency_born_live','ActivityDependency_frozen','ActivityDependency_no_delete','ActivityDependency_no_truncate'))::text;" \
+  "9|1|5"
+# the guard is only correct because it serializes, and only reads the table it writes — both are
+# invisible in the behaviour of a single writer, so both are asserted from the catalog
+# The INSTALL BARRIER is the write exclusion that spans the caller's statement boundaries: an
+# unsatisfiable CHECK installed atomically with the table, so a half-built install cannot be
+# written at all, and dropped only once every seal is proven armed. Its ABSENCE here is the proof
+# that this deploy FINISHED — a barrier still standing would mean a legacy database upgraded into
+# a table nothing can write.
+assert "B1: the install barrier is LIFTED, so the completed install is open for business" \
+  "SELECT COUNT(*)::text FROM pg_constraint WHERE conname='ActivityDependency_install_incomplete_check' AND conrelid='\"ActivityDependency\"'::regclass;" \
+  "0"
+# Bound to the functions in `public`, asked against `tgfoid` rather than against any rendered name.
+# `CREATE TRIGGER` resolves an unqualified function through the CALLER's search path, so a
+# same-named no-op in a schema ahead of `public` would produce five triggers that read as installed
+# and enforce nothing.
+assert "B1: every seal is bound to the function in public, not to a same-named decoy" \
+  "SELECT COUNT(*)::text FROM pg_trigger g WHERE g.tgrelid='\"ActivityDependency\"'::regclass AND NOT g.tgisinternal AND g.tgfoid = to_regprocedure('public.' || replace(g.tgname, 'ActivityDependency_', 'activity_dependency_') || '()');" \
+  "5"
+assert "B1: the cycle guard serializes on the project schedule-graph advisory lock (its own key namespace)" \
+  "SELECT (prosrc LIKE '%pg_advisory_xact_lock%' AND prosrc LIKE '%vitan:schedule-graph%')::text FROM pg_proc WHERE proname='activity_dependency_acyclic';" \
+  "true"
+assert "B1: the cycle check resolves its table through a pinned search path" \
+  "SELECT COALESCE(array_to_string(proconfig, ','), '<none>') FROM pg_proc WHERE proname='activity_dependency_acyclic';" \
+  "search_path=pg_catalog, public"
+
+# Two extra fixture activities and a real member of the OTHER project — the identity a cross-tenant
+# attribution would use. Both probes below need pairs legal in every OTHER respect, so that the
+# refusal they assert is the only thing standing in the way.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  B1: could not add the extra fixture rows"; FAIL=1; }
+INSERT INTO "Activity"("id","projectId","name","zone","plannedStart","plannedEnd","status")
+VALUES('ACT-P1C','p1','Third project-1 activity','Hall',0,5,'done'),
+      ('ACT-P3B','p3','Second pre-T4 activity','Hall',0,5,'done');
+INSERT INTO "User"("id","projectId","role","name","email","passwordHash")
+VALUES('UPB1-U3','p3','pmc','Other-tenant PMC','upb1-u3@vitan.in','h') ON CONFLICT DO NOTHING;
+INSERT INTO "Membership"("id","projectId","userId","role","status")
+VALUES('UPB1-M3','p3','UPB1-U3','pmc','active') ON CONFLICT DO NOTHING;
+SQL
+
+# PRECISION FIRST — a legal edge between two activities of ONE legacy project commits. Without this
+# the rejections below would pass on a table that simply refuses everything.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  B1 precision: a legal same-project edge was refused"; FAIL=1; }
+INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","lagWorkingDays","createdById","createdByName")
+VALUES ('UPB1-E1','p1','ACT-1','ACT-2',7,'USER-1','Legacy PMC');
+SQL
+assert "B1 precision: a same-project finish-to-start edge with a 7-working-day lag is accepted" \
+  "SELECT \"predecessorId\" || '->' || \"successorId\" || '+' || \"lagWorkingDays\"::text FROM \"ActivityDependency\" WHERE \"id\"='UPB1-E1';" \
+  "ACT-1->ACT-2+7"
+
+assert_rejects "B1: a CROSS-PROJECT edge (p1 successor, p3 predecessor) is unrepresentable, not merely unwritten" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-X','p1','ACT-P3','ACT-2','USER-1','Legacy PMC')" \
+  "foreign key"
+assert_rejects "B1: a SELF-dependency — an activity waiting for itself can never start" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-S','p1','ACT-1','ACT-1','USER-1','Legacy PMC')" \
+  "cannot depend on itself|no_self_check"
+assert_rejects "B1: a DUPLICATE live edge for the same ordered pair" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-D','p1','ACT-1','ACT-2','USER-1','Legacy PMC')" \
+  "already exists"
+assert_rejects "B1: a NEGATIVE lag, which would let a successor begin before its predecessor finished" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"lagWorkingDays\",\"createdById\",\"createdByName\") VALUES ('UPB1-N','p1','ACT-P5T3','ACT-2',-1,'USER-1','Legacy PMC')" \
+  "lag_nonneg_check"
+assert_rejects "B1: a CYCLE — ACT-1 -> ACT-2 already stands, so ACT-2 -> ACT-1 closes the loop" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-C','p1','ACT-2','ACT-1','USER-1','Legacy PMC')" \
+  "dependency cycle"
+# An edge that arrives ALREADY REVOKED records a withdrawal that never happened — permanent (the
+# freeze will not touch it), never cycle-checked (the walk reads live edges only), and unlimited
+# per pair (the unique index covers live rows only). A CHECK cannot tell an INSERT from an UPDATE,
+# so this one needs its own BEFORE INSERT trigger.
+assert_rejects "B1: an edge BORN REVOKED, a withdrawal of a constraint that never stood" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\",\"revokedAt\",\"revokedById\",\"revokedByName\") VALUES ('UPB1-BR','p1','ACT-1','ACT-P1C','USER-1','Legacy PMC',now(),'USER-1','Legacy PMC')" \
+  "cannot be created already revoked"
+assert_rejects "B1: RE-POINTING an accepted edge, the route by which a cycle would evade an insert-time check" \
+  "UPDATE \"ActivityDependency\" SET \"predecessorId\"='ACT-2', \"successorId\"='ACT-1' WHERE \"id\"='UPB1-E1'" \
+  "is frozen"
+assert_rejects "B1: EDITING THE LAG in place, which would leave the frozen attribution describing a constraint nobody imposed" \
+  "UPDATE \"ActivityDependency\" SET \"lagWorkingDays\"=0 WHERE \"id\"='UPB1-E1'" \
+  "is frozen"
+assert_rejects "B1: attribution to a person who is a member of ANOTHER project — a real user, the wrong site" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-XT','p1','ACT-1','ACT-P1C','UPB1-U3','Other-tenant PMC')" \
+  "createdBy_fkey"
+assert_rejects "B1: attribution to a user id that names nobody at all" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-XF','p1','ACT-1','ACT-P1C','forged-user','Legacy PMC')" \
+  "createdBy_fkey"
+assert_rejects "B1: attribution that is present but not answerable — a name of pure whitespace" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-W','p1','ACT-1','ACT-P1C','USER-1',E'\\t ')" \
+  "attribution_check"
+# The guard needs a snapshot taken AFTER its lock, and only READ COMMITTED provides one. Under a
+# fixed snapshot two writers can each add an edge the other cannot see, so the level is refused
+# rather than silently unguarded. Asserted through a real REPEATABLE READ transaction.
+assert_rejects "B1: an edge written under a FIXED SNAPSHOT, where waiting on the lock proves nothing" \
+  "BEGIN ISOLATION LEVEL REPEATABLE READ;
+   INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-RR','p1','ACT-1','ACT-P1C','USER-1','Legacy PMC');
+   COMMIT" \
+  "READ COMMITTED"
+# One project per transaction: the per-project lock is taken by a ROW trigger, so a transaction
+# spanning two projects takes two locks in row order and can deadlock against one going the other
+# way. Both statements below run in a single transaction (psql -c), which is exactly that shape —
+# and the scope is derived from pg_locks, so clearing session state does not restore it.
+assert_rejects "B1: two projects' edges in ONE transaction, with the caller CLEARING session state in between" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-R1','p1','ACT-1','ACT-P1C','USER-1','Legacy PMC');
+   SELECT set_config('vitan.schedule_graph_project', '', true);
+   RESET ALL;
+   INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-R2','p3','ACT-P3','ACT-P3B','USER-1','Legacy PMC')" \
+  "one project per transaction"
+# Removal is a revocation. The creation freeze holds against UPDATE; against DELETE it held nothing,
+# so an edge could be removed and the same pair re-added under a different name.
+assert_rejects "B1: DELETING an edge, which would launder who imposed the constraint" \
+  "DELETE FROM \"ActivityDependency\" WHERE \"id\"='UPB1-E1'" \
+  "not deletable"
+assert_rejects "B1: a revocation with no one attached to it" \
+  "UPDATE \"ActivityDependency\" SET \"revokedAt\"=now() WHERE \"id\"='UPB1-E1'" \
+  "revocation_check"
+# `NULL !~ '...'` is UNKNOWN and a CHECK PASSES on UNKNOWN, so a revoked arm that tests only the
+# regex accepts a withdrawal with no recorded revoker — the same erasure the DELETE seal refuses.
+assert_rejects "B1: a revocation carrying a stamp and an id but NO NAME, which three-valued logic would wave through" \
+  "UPDATE \"ActivityDependency\" SET \"revokedAt\"=now(), \"revokedById\"='USER-1', \"revokedByName\"=NULL WHERE \"id\"='UPB1-E1'" \
+  "revocation_check"
+# The foreign key proves the revoker id names a membership; it does not prove the id is LEGIBLE.
+# A writer able to create a whitespace-id user and membership could revoke through it, and section 7
+# would freeze that unanswerable attribution permanently — the asymmetry the creation arm already
+# refuses on `createdById`.
+assert_rejects "B1: a revocation attributed to a BLANK id, through a membership that really exists" \
+  "INSERT INTO \"User\"(\"id\",\"projectId\",\"name\",\"email\",\"role\") VALUES ('   ','p1','Blank','blank-upb1@example.com','pmc');
+   INSERT INTO \"Membership\"(\"id\",\"projectId\",\"userId\",\"role\",\"status\") VALUES ('UPB1-MEMBLANK','p1','   ','pmc','active');
+   UPDATE \"ActivityDependency\" SET \"revokedAt\"=now(), \"revokedById\"='   ', \"revokedByName\"='Legacy PMC' WHERE \"id\"='UPB1-E1'" \
+  "revocation_check"
+assert_rejects "B1: TRUNCATE, which no row-level seal sees — one statement would erase every edge and both attributions" \
+  "TRUNCATE TABLE \"ActivityDependency\"" \
+  "never truncated"
+assert "B1: after every rejection the graph still holds exactly the one legal edge" \
+  "SELECT COUNT(*)::text FROM \"ActivityDependency\";" \
+  "1"
+
+# PRECISION for the whole revocation lifecycle: the seals must refuse REWRITING history, not refuse
+# the one legitimate transition. A withdrawal lands, keeps both attributions, and frees the ordered
+# pair — including in the reverse direction, which is the re-plan the partial unique index exists
+# for and which a cycle walk over history rather than over LIVE edges would refuse.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  B1 precision: a fully attributed revocation was refused"; FAIL=1; }
+UPDATE "ActivityDependency"
+   SET "revokedAt"=now(), "revokedById"='USER-1', "revokedByName"='Legacy PMC'
+ WHERE "id"='UPB1-E1';
+SQL
+assert "B1 precision: a fully attributed revocation lands, and BOTH attributions survive on the row" \
+  "SELECT \"createdByName\" || '/' || \"revokedByName\" FROM \"ActivityDependency\" WHERE \"id\"='UPB1-E1';" \
+  "Legacy PMC/Legacy PMC"
+assert_rejects "B1: RE-ATTRIBUTING a withdrawal — who withdrew a constraint is as much the record as who imposed it" \
+  "UPDATE \"ActivityDependency\" SET \"revokedByName\"='Someone Else' WHERE \"id\"='UPB1-E1'" \
+  "already revoked"
+assert_rejects "B1: UN-REVOKING an edge, which would also return it to the graph without ever passing the cycle check" \
+  "UPDATE \"ActivityDependency\" SET \"revokedAt\"=NULL, \"revokedById\"=NULL, \"revokedByName\"=NULL WHERE \"id\"='UPB1-E1'" \
+  "already revoked"
+# ACT-1 -> ACT-2 was refused as a cycle while it stood. Withdrawn, it binds nothing.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  B1 precision: the reverse edge was refused after the original was revoked"; FAIL=1; }
+INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName")
+VALUES ('UPB1-E2','p1','ACT-2','ACT-1','USER-1','Legacy PMC');
+SQL
+assert "B1 precision: with the original withdrawn, the reverse edge is an ordinary re-plan and is accepted" \
+  "SELECT COUNT(*)::text FROM \"ActivityDependency\" WHERE \"revokedAt\" IS NULL;" \
+  "1"
+assert "B1: the withdrawn edge is still on the record beside its replacement" \
+  "SELECT COUNT(*)::text FROM \"ActivityDependency\";" \
+  "2"
+
 # ---- Issue generalization A1-i — the option kind vocabulary ----------------------------------
 echo ""
 echo "=== A1-i: option kinds over a legacy database ==="

@@ -15,12 +15,15 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 0658e88
-open_pr: 407
+reviewed_merge: 54ae560
+open_pr: 411
 next_task: none
 blocking_directive: none
-updated: 2026-08-21
+updated: 2026-08-24
 ```
+
+**SIXTEEN obligations are pending: the fifteen listed below plus #410**, which
+closed at the two-finding-head limit and is claimed by the open PR.
 
 **#382 MERGED at `main` `1449c82`**, putting
 `docs/reviews/replacement-lineage-repair.md` on `main` and discharging #381. #383,
@@ -241,9 +244,10 @@ re-classified. Legacy settlement therefore behaves exactly as `main` behaves tod
 neither created, widened, nor endorsed by this repair. It is §2, live, recorded in
 the record's defect list, and closing it needs the authority named there.
 
-**Fifteen obligations are pending, and they discharge one per merge.** #377, #378,
-#379, #383, #384, #385, #386, #387, #388, #389, #390, #391, #392, #393
-and #396. (#381 carries the label but is settled by merged #382, #394 by merged #395,
+**Sixteen obligations are pending, and they discharge one per merge.** #377, #378,
+#379, #383, #384, #385, #386, #387, #388, #389, #390, #391, #392, #393, #396
+and #410 — the last added when #410 closed at the two-finding-head limit, and
+claimed by the open PR, which carries `Replaces: #410`. (#381 carries the label but is settled by merged #382, #394 by merged #395,
 #401 by merged #402, #400 by merged #403, #399 by merged #404, #398 by merged #405,
 and #397 by merged #406 —
 discharge is computed, not un-marked.) #391, #392, #393 and #394 each joined the queue by
@@ -260,6 +264,137 @@ is refused because obligations are outstanding — the gate names #377, the lowe
 of them, but ALL currently-labelled units must be discharged before any
 `Replaces: none` unit is admitted. It is NOT to be edited to claim an obligation
 it does not carry; it resumes when the queue is empty.
+
+**THE SCHEDULE B1 UNIT IS NOW SPLIT, and the split is the finding rather than a
+tactic.** That unit burned SEVEN heads — #354 → #360 → #361 → #363 → #408 → #409
+→ the open PR — and every finding across the last three landed in ONE place: the
+ADOPTION path, the branch that runs when `ActivityDependency` already exists.
+#408 R1 validated pre-existing rows without locking them; #408 R2 accepted a
+pre-existing REVOKED row because its tuple was complete; #409 R1 found the
+adopted table's physical column contract unchecked, an unscoped `DROP INDEX` able
+to delete another table's index, and whitespace accepted in `revokedById`; #409
+R2 found the "seals armed" exemption trusting trigger and FUNCTION NAMES rather
+than function BODIES, so a hollow same-named function let an unproven withdrawal
+through and the migration then froze it. Each round's fix produced the next
+round's finding in the same place. **The FRESH-INSTALL path drew no finding at
+all, in any round.**
+
+So **PR #410 is unit A only: the fresh install.** The entire adoption
+apparatus was DELETED — the state-invariant verification over pre-existing rows,
+the forbidden-transition refusal and its seals-armed exemption, the
+definition-comparison and drop/recreate repair for constraints and indexes, and
+the physical-column-contract preflight.
+
+**#410 REACHED THE TWO-FINDING-HEAD LIMIT AND IS CLOSED; the open PR is its
+MECHANICAL replacement, carrying `Replaces: #410`.** #410's design is carried
+forward unchanged — it has been re-shaped twice already and both re-shapes were
+refuted, so this unit fixes the three findings and re-shapes nothing. What is
+kept verbatim: the definition-aware completion rule, `born_live`, whitespace
+rejection on BOTH attribution columns, the jsonb linear cycle diagnostic, the P5
+`pg_locks` barrier, and the baseline proof wired into the required `api` job with
+`ci-baseline-proof-wiring.test.mjs` pinning the wiring.
+
+**#410's FIRST HEAD replaced all of it with ONE rule — if `ActivityDependency`
+already exists, ABORT — and Codex REFUTED that rule (one P1 on `f00460b`).** The
+reasoning behind the split was wrong on one point: `AGENTS.md` requires a new
+migration to tolerate PARTIAL APPLICATION and be safe to re-run, and satisfying
+that REQUIRES handling a table that already exists. A caller that wraps the file
+in no transaction and fails anywhere after `CREATE TABLE` leaves the table
+behind; every retry then stopped at the refusal, and a complete, correct re-run
+stopped there too, with the destructive runbook `DROP TABLE` as the only way
+forward. The finding is correct and the unconditional abort is gone.
+
+**The correction round replaces it with ONE RULE STATED AS A RULE, not as a
+list** — because the four preceding rounds each patched one instance of a class.
+For EVERY object this file installs (the table, each column, each CHECK, the
+primary key, each composite FK, each index, each function, each trigger):
+**absent → create it; present AND definition-identical → skip it, this is the
+resumed apply; present AND different → ABORT, naming the object and both
+definitions.** For ROWS: a partially-applied fresh install cannot hold any —
+nothing can write the table between its creation and its seals — so any row
+means this is not our partial install and the file refuses. Comparison is by
+DEFINITION and never by name: constraints through `pg_get_constraintdef` +
+`convalidated`, indexes through `pg_get_indexdef` + `indisunique`/`indisvalid`,
+triggers through `pg_get_triggerdef` + `tgenabled`, and FUNCTIONS through their
+BODY (`prosrc`) — the last because `CREATE OR REPLACE FUNCTION` preserves
+identity, so a hollowed same-named body reads as present, which is the exact
+defect that closed #409. Every check and every repair is scoped to THIS table:
+index names are schema-scoped in PostgreSQL, so a same-named index owned by
+another relation ABORTS and is never dropped or reclaimed.
+
+**#410's SECOND HEAD (`c105400`) drew THREE findings, and two of them share ONE
+root: the file deliberately opens no transaction, so nothing it sets or takes
+survives its own statement.** `SET LOCAL search_path` is a WARNING outside a
+transaction block, and `LOCK TABLE` cannot be held across autocommit statements
+at all. All three are fixed here, each reproduced RED first.
+
+**F1 — the seals were bound through the CALLER's search path.** An unqualified
+`EXECUTE FUNCTION` in `CREATE TRIGGER` resolves at creation time through whatever
+path the caller has. MEASURED against `c105400` with `search_path=b1decoy,public`
+and a same-named no-op planted there: exit 0, and
+`ActivityDependency_born_live -> b1decoy.activity_dependency_born_live()` — the
+canonical function created in `public`, the trigger bound to the decoy, the seal
+inert and the deploy green. All five `EXECUTE FUNCTION` targets are now
+`public.`-qualified; the definition comparison pins `search_path` to `pg_catalog`
+for the block so the rendering is deterministic; a trigger this file has just
+CREATED is re-read and compared rather than assumed; and section 9 asks the same
+question once more against `tgfoid` itself, which no rendering can disguise.
+
+**F2 — a populated COMPLETE install could not be replayed.** The row check was
+unconditional and ran before a single object was compared, so one accepted edge
+made the migration permanently non-rerunnable over the ONLY populated state a
+real re-deploy ever meets. MEASURED: replay over a complete install holding one
+legal edge exited 3. The count is now taken early and the VERDICT is deferred:
+sections 1d–1g record what is WRONG (present with a definition this file did not
+install — an abort either way) and what is MISSING (absent — an abort only when
+the table holds rows), and one decision reads both. Complete plus populated is a
+no-op; INCOMPLETE or foreign plus populated is still refused, because arming a
+trigger validates nothing already in the table, so those rows would be certified
+by silence.
+
+**F3 — the install lock did not survive to the seals, AND IT CANNOT.** Codex's
+interleaving, driven exactly as stated against `c105400`: T1 runs the file
+through `CREATE TABLE` and the indexes under an autocommit caller; T2 inserts an
+ALREADY-REVOKED edge while `ActivityDependency_born_live` does not yet exist; T1
+arms all five seals and exits 0. Trigger creation validates nothing already in
+the table, so the fabricated withdrawal survives — and `DELETE` is then refused
+by the no-delete seal, making the invented evidence permanent.
+
+**The measured answer is NOT to reintroduce a transaction.** A lock is released
+at COMMIT and on the autocommit path COMMIT happens after every statement, so no
+rewriting of this file can hold one across the gap; and the earlier measurement
+that removed `BEGIN;`/`COMMIT;` still stands — with them `prisma migrate deploy`
+reported `current transaction is aborted, commands ignored until end of
+transaction block` and DISCARDED the named diagnostic on exactly the path it
+exists for. So the exclusion is written into the TABLE instead. `CREATE TABLE`
+installs an unsatisfiable CHECK — `ActivityDependency_install_incomplete_check`,
+`CHECK ("id" !~ '^')` — ATOMICALLY with the table, and a new section 9 drops it
+only after proving all ten constraints, three indexes, five functions and five
+ARMED triggers are present and each trigger is bound to the function in `public`.
+While it stands the table refuses every INSERT from every role including a
+superuser, because a CHECK is not a trigger and `session_replication_role =
+replica` does not switch it off. It is STRICTLY STRONGER than the transaction it
+replaces: a lock dies with the session, so a run killed mid-install would leave
+the unguarded table behind anyway — this barrier survives the crash, and an
+unfinished install stays unwritable until a later run finishes it. **P22 still
+pins the absence of an explicit transaction, and that decision is NOT reversed.**
+
+**Both halves of the transaction question hold at once, measured rather than
+assumed.** Idempotence comes from the object guards (which is what the round-1
+finding asked for); atomicity comes from the CALLER; and the write exclusion the
+seals need comes from the barrier, which depends on neither.
+
+**The destructive `DROP TABLE` is no longer the routine answer.** `RUNBOOK.md`
+§B1 now leads with re-running the deploy — which completes a partial apply and
+needs nothing else — and reaches for the drop only when the migration NAMES a
+disagreement it cannot honestly resolve, over a table it did not install.
+
+**Real adoption of a `db push`-shaped table — reconciling a differing column
+contract, installing constraints it never had, and deciding what may honestly be
+said about rows written before any guard existed — remains DEFERRED to a separate
+future unit, to be built if and when a database that needs it exists.** None does
+today. That deferral is what the refusal arms above protect: refusing is honest,
+adopting would be certifying a shape and a history this file never observed.
 
 **Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
 (`main` `7a688e3`) with a fresh exact-head Codex +1 after ONE correction round
@@ -324,13 +459,16 @@ rounds established so it is not rediscovered. The rename waits on the owner's
 go, behind this task — the gated table above is the machine record.
 
 **`work_item: none` alongside an `open_pr` is deliberate, and the resolution is
-`pr:406`.** `autonomous-status-state.test.mjs` pins two rules against this file:
+`pr:411`.** `autonomous-status-state.test.mjs` pins two rules against this file:
 `work_item` is consulted ONLY from `task_state: merged`, and a `merged` block
 must CLEAR it — so naming a `work_item` from any other state is inert, and from
 `in_progress` it silently resolves to the bare parent task and discards the named
-unit. `open_pr` outranks the task branch outright: with `open_pr: 407` the
-resolver returns `pr:406` — "an open PR is the current work item until it merges
-or closes" — not `task:4`. Executed against `assessRunnerState`, not inferred.
+unit. `open_pr` outranks the task branch outright: with `open_pr: 411`
+`assessRunnerState` returns `pr:411` — "an open PR is the current work item until
+it merges or closes" — not `task:4`. Executed against `parseStatusNow` +
+`assessRunnerState` on this file, not inferred. (A predecessor of this paragraph
+said `open_pr: 407` resolved to `pr:406`; that was a transcription slip — the
+resolver returns the open PR's own number, and it is corrected forward here.)
 The open unit is named in the prose above rather than in `work_item`, because
 that field would not be read here.
 
