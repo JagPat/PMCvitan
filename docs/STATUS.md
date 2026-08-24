@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: 54ae560
-open_pr: 412
+open_pr: 413
 next_task: none
 blocking_directive: none
 updated: 2026-08-24
@@ -546,12 +546,12 @@ rounds established so it is not rediscovered. The rename waits on the owner's
 go, behind this task — the gated table above is the machine record.
 
 **`work_item: none` alongside an `open_pr` is deliberate, and the resolution is
-`pr:412`.** `autonomous-status-state.test.mjs` pins two rules against this file:
+`pr:413`.** `autonomous-status-state.test.mjs` pins two rules against this file:
 `work_item` is consulted ONLY from `task_state: merged`, and a `merged` block
 must CLEAR it — so naming a `work_item` from any other state is inert, and from
 `in_progress` it silently resolves to the bare parent task and discards the named
-unit. `open_pr` outranks the task branch outright: with `open_pr: 412`
-`assessRunnerState` returns `pr:412` — "an open PR is the current work item until
+unit. `open_pr` outranks the task branch outright: with `open_pr: 413`
+`assessRunnerState` returns `pr:413` — "an open PR is the current work item until
 it merges or closes" — not `task:4`. Executed against `parseStatusNow` +
 `assessRunnerState` on this file, not inferred. (A predecessor of this paragraph
 said `open_pr: 407` resolved to `pr:406`; that was a transcription slip — the
