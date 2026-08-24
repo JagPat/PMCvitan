@@ -341,6 +341,22 @@
 --                                 this line — "none of this file's business" — got exactly
 --                                 backwards. This file installs those keys; whether they act is
 --                                 its business.
+--   THE SET of NON-      CHECKED  and this one is not an attribute of a trigger at all — it is the
+--   INTERNAL triggers              question the entries above cannot ask. They judge FIVE NAMED
+--   on this table                  TRIGGERS; what decides what a write STORES is the whole SET of
+--                                  triggers on the table, and a sixth is a bypass of all five
+--                                  rather than a weaker one, because BEFORE ROW triggers fire in
+--                                  NAME ORDER and one sorting last rewrites NEW after every seal
+--                                  has judged it. MEASURED: an accepted a2→a3 edge stored as a2→a1,
+--                                  a permanent cycle, attribution relaid past every foreign key,
+--                                  and both this file and `b1 seals` reported success over it.
+--                                  Section 9's inventory now refuses ANY non-internal trigger this
+--                                  file did not install, quoting its deparsed definition — so the
+--                                  deploy-time verifier refuses it too, from the same one copy.
+--                                  Probe P38. INTERNAL rows are deliberately NOT refused: they
+--                                  belong to constraints, section 1e'' compares the five keys'
+--                                  machinery as an exact set, and a future key pointing AT this
+--                                  table must not be refused forever in advance.
 --   tgparentid           EXCLUDED Only set for a trigger cloned from a partitioned parent, and
 --                                 `relispartition` is pinned false above.
 --
@@ -2306,6 +2322,53 @@ BEGIN
                           AND g.tgname = t.name AND NOT g.tgisinternal AND g.tgenabled = 'O'
                           AND g.tgtype = t.tgtype
                           AND g.tgfoid = to_regprocedure('public.' || t.fn || '()'))
+    -- ┌── B1-TRIGGER-SET BEGIN ───────────────────────────────────────────────────────────────────
+    -- One whole UNION ALL branch, bracketed so that `P38` can excise it and rebuild the head this
+    -- check was added to — a reproduction that cannot be built is not a reproduction.
+    UNION ALL
+    -- THE TRIGGER SET, ASKED WHOLE — and this is the one thing above that is not about an object
+    -- this file installs. Every entry before it asks whether the FIVE seals are present, armed, of
+    -- the right `tgtype` and bound by `tgfoid`. Five right answers, about five triggers. The object
+    -- those answers claim to describe is not "these five triggers": it is THE SET OF TRIGGERS THAT
+    -- RUN WHEN THIS TABLE IS WRITTEN, and nothing asked whether that set had a sixth member.
+    --
+    -- A sixth is not a weaker seal. It is a bypass of all five, because BEFORE ROW triggers fire in
+    -- NAME ORDER: one sorting after `ActivityDependency_no_truncate` runs LAST — after the
+    -- acyclicity walk and the born-live check have judged NEW — and whatever it then assigns to NEW
+    -- is what gets stored. MEASURED on PostgreSQL 16.13 against a complete install of this file: a
+    -- `BEFORE INSERT ... FOR EACH ROW` trigger that rewrote NEW."predecessorId" and
+    -- NEW."successorId" turned an accepted a2→a3 edge into a2→a1, so a1→a2 and a2→a1 were both
+    -- LIVE — a cycle, in the table whose entire purpose is that it cannot hold one — while it
+    -- relaid the attribution onto a different real membership, so no foreign key noticed. This file
+    -- then replayed over that database and exited 0, and `b1 seals` answered `sealed: true`. A
+    -- BEFORE ROW trigger returning NULL is the same hole in the other direction: the write is
+    -- dropped, silently, from an append-only register.
+    --
+    -- REFUSED rather than dropped, like everything else here: this file does not remove an object it
+    -- did not install. A later unit that legitimately needs a sixth trigger on this table adds its
+    -- name to this list, which is the point — the addition becomes a reviewed change instead of an
+    -- invisible one.
+    --
+    -- INTERNAL triggers are deliberately NOT refused, and this is a judgement rather than an
+    -- oversight. `tgisinternal` rows on this table belong to CONSTRAINTS: the five foreign keys'
+    -- referencing-side machinery, which section 1e'' compares as an exact set, and the
+    -- referenced-side machinery of any FUTURE key pointing AT this table, which no unit has yet and
+    -- which this file must not refuse forever in advance. An internal trigger also cannot run
+    -- arbitrary code — its function is one of PostgreSQL's own RI routines.
+    SELECT 'a trigger "' || g.tgname || '" this migration did not install is attached: '
+           || pg_catalog.pg_get_triggerdef(g.oid)
+           || '. BEFORE ROW triggers fire in NAME ORDER, so one added here runs after the seals have '
+           || 'judged NEW and decides what is actually stored — it can rewrite the endpoints past an '
+           || 'acyclicity check that already passed them, relay the attribution onto another '
+           || 'identity, or return NULL and drop the write from an append-only register entirely. '
+           || 'Drop it deliberately, or add it to this migration if it belongs' AS what
+      FROM pg_trigger g
+     WHERE g.tgrelid = to_regclass('public."ActivityDependency"')
+       AND NOT g.tgisinternal
+       AND g.tgname NOT IN ('ActivityDependency_born_live', 'ActivityDependency_no_delete',
+                            'ActivityDependency_no_truncate', 'ActivityDependency_frozen',
+                            'ActivityDependency_acyclic')
+    -- └── B1-TRIGGER-SET END ─────────────────────────────────────────────────────────────────────
   ) x;
   -- └── B1-SEAL-INVENTORY END ───────────────────────────────────────────────────────────────────
 

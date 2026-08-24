@@ -421,6 +421,8 @@ say "8. a LEDGER-BACKED database whose B1 guards have been tampered with: the ru
 #       side-level "is there a trigger here" accepts and this round's per-trigger inventory does not.
 #   F3  a seal's BODY hollowed by `CREATE OR REPLACE FUNCTION`, which preserves the OID, the name,
 #       the volatility, the security context and the search_path pin, and replaces what it does.
+#   F4  a SIXTH TRIGGER attached — not a tampered seal but an added one, which is a bypass of all
+#       five rather than a weaker version of one. The completeness sweep's own finding.
 ledgered() {
   local db="$1" url="$2"
   psql -v ON_ERROR_STOP=1 -X -q "$ADMIN" -c "DROP DATABASE IF EXISTS \"$db\"" >/dev/null
@@ -490,6 +492,27 @@ psql -v ON_ERROR_STOP=1 -X -q "$BARE2" -f "prisma/migrations/$THIS/migration.sql
 FIX_OUT="$(DATABASE_URL="$URL2" sh scripts/migrate.sh 2>&1)"; FIX_RC=$?
 [ "$FIX_RC" = "0" ] && ok "and the runner then reports the deploy good again (exit 0)" \
                     || { bad "the runner still refuses after the repair (exit $FIX_RC)"; printf '%s\n' "$FIX_OUT" | tail -12; }
+
+# F4  a SIXTH TRIGGER attached to the table — not a tampered seal but an added one, and the shape
+#     the completeness sweep found rather than a reported finding. BEFORE ROW triggers fire in NAME
+#     ORDER, so one sorting after `ActivityDependency_no_truncate` runs after the acyclicity walk
+#     and the born-live check have judged NEW and decides what is actually stored. MEASURED at the
+#     head before this branch existed: an accepted a2->a3 edge stored as a2->a1, a permanent cycle,
+#     the attribution relaid past every foreign key, `migrate.sh` exit 0 and `b1 seals` reporting
+#     `sealed: true`. The check is ONE BRANCH of the ONE inventory, so the runner refuses it here
+#     for the same reason a replay of the migration would.
+$PSQL2 -c 'CREATE FUNCTION public.b1_proof_sixth() RETURNS TRIGGER LANGUAGE plpgsql AS $sixth$
+BEGIN
+  RETURN NEW;
+END $sixth$;
+           CREATE TRIGGER "ActivityDependency_zz_sixth" BEFORE INSERT ON "ActivityDependency"
+             FOR EACH ROW EXECUTE FUNCTION public.b1_proof_sixth()' >/dev/null
+tamper_and_expect_refusal "F4 a sixth trigger" 'this migration did not install is attached'
+$PSQL2 -c 'DROP TRIGGER "ActivityDependency_zz_sixth" ON "ActivityDependency";
+           DROP FUNCTION public.b1_proof_sixth()' >/dev/null
+SIXTH_OUT="$(DATABASE_URL="$URL2" sh scripts/migrate.sh 2>&1)"; SIXTH_RC=$?
+[ "$SIXTH_RC" = "0" ] && ok "F4 repair: dropping it lets the runner report the deploy good again (exit 0)" \
+                      || { bad "the runner still refuses after the sixth trigger was dropped (exit $SIXTH_RC)"; printf '%s\n' "$SIXTH_OUT" | tail -12; }
 
 # ══ COUPLING — a mutation to the baseline path must fail this proof ═══════════════════════════
 say "9. the coupling: without the ALWAYS_EXECUTE entry, state A's guards do not arrive"

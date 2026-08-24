@@ -2136,4 +2136,91 @@ END $hollow$`);
       expect(migration, `and the migration inventory must expect ${name}`).toContain(`'${name}'`);
     }
   }, 120_000);
+
+  // ── P38 ────────────────────────────────────────────────────────────────────────────────────
+  it('P38 a SIXTH trigger on this table is a bypass of all five, and is refused', async () => {
+    // NOT a reported finding. This is what the COMPLETENESS sweep turned up when the question the
+    // foreign keys failed — "is the check over the WHOLE object, or over a representative part of
+    // it?" — was asked of every other object this file judges.
+    //
+    // Section 9's inventory asks whether the five seals are present, armed, of the right `tgtype`
+    // and bound by `tgfoid`. Five right answers, about five triggers. The object those answers
+    // claim to describe is THE SET OF TRIGGERS THAT RUN WHEN THIS TABLE IS WRITTEN, and nothing
+    // asked whether that set had a sixth member.
+    //
+    // A sixth is not a weaker seal, it is a bypass of all five: BEFORE ROW triggers fire in NAME
+    // ORDER, so one sorting after `ActivityDependency_no_truncate` runs LAST — after the acyclicity
+    // walk and the born-live check have judged NEW — and what it assigns to NEW is what lands.
+    const head = join(__dirname, '..', '..', '..', '..',
+                      'node_modules', '.cache', 'b1-head-p38.sql');
+    const sql = readFileSync(migrationPath, 'utf8');
+    // The head this check was added to, rebuilt by excising the bracketed branch. Rebuilt rather
+    // than fetched: CI checks out shallow, so `git show <old sha>` is not available to a test.
+    const from = sql.indexOf('    -- \u250c\u2500\u2500 B1-TRIGGER-SET BEGIN');
+    const to = sql.indexOf('    -- \u2514\u2500\u2500 B1-TRIGGER-SET END');
+    expect(from, 'the bracketed branch must be present to excise').toBeGreaterThan(0);
+    expect(to, 'and must be terminated').toBeGreaterThan(from);
+    const prior = sql.slice(0, from) + sql.slice(sql.indexOf('\n', to) + 1);
+    expect(prior.includes('this migration did not install is attached'),
+           'the rebuilt head must not still carry the refusal').toBe(false);
+    mkdirSync(dirname(head), { recursive: true });
+    writeFileSync(head, prior, 'utf8');
+
+    const a = await activity();
+    const b = await activity();
+    const c = await activity();
+    /** Every LIVE edge, as endpoints and the attribution that was recorded for it. */
+    const live = async (): Promise<string> => (await t.prisma.$queryRawUnsafe<Array<{ s: string }>>(`
+      SELECT COALESCE(string_agg("predecessorId" || '->' || "successorId" || '@' || "createdByName",
+                                 ',' ORDER BY "id"), 'none') AS s
+        FROM "ActivityDependency" WHERE "revokedAt" IS NULL`))[0]!.s;
+
+    try {
+      expect(await installed(), 'starting from the finished install').toBe(COMPLETE);
+      await t.prisma.$executeRawUnsafe(edge(a, b));
+
+      // Named to sort AFTER all five, which is the whole mechanism rather than a detail.
+      await t.prisma.$executeRawUnsafe(`
+        CREATE FUNCTION public.b1_p38_rewrite() RETURNS TRIGGER LANGUAGE plpgsql AS $p38$
+        BEGIN
+          NEW."predecessorId" := '${b}';
+          NEW."successorId"   := '${a}';
+          NEW."createdByName" := 'Not the author';
+          RETURN NEW;
+        END $p38$`);
+      await t.prisma.$executeRawUnsafe(`
+        CREATE TRIGGER "ActivityDependency_zz_p38" BEFORE INSERT ON "ActivityDependency"
+          FOR EACH ROW EXECUTE FUNCTION public.b1_p38_rewrite()`);
+
+      // ── RED, at the head this check was added to ──────────────────────────────────────────
+      expect(applyMigration({ file: head }),
+             'the earlier head accepts a table with a sixth trigger on it').toBeNull();
+      // b→c is acyclic and the walk passes it. What is STORED is b→a.
+      await t.prisma.$executeRawUnsafe(edge(b, c));
+      expect(await live(), 'a cycle is LIVE in the acyclic graph, and the attribution is laundered')
+        .toBe(`${a}->${b}@PMC,${b}->${a}@Not the author`);
+      // And it is permanent: section 6 freezes the row, section 5 refuses the delete.
+      expect(await refusal(`DELETE FROM "ActivityDependency" WHERE "createdByName" = 'Not the author'`),
+             'the fabricated edge cannot even be removed').toMatch(/never deleted|append|revoke/u);
+
+      // ── GREEN, at this head. One copy, so BOTH readers refuse: the migration below, and
+      //    `b1 seals` on every deploy, which re-executes this same inventory. ────────────────
+      const err = applyMigration();
+      expect(err, 'a trigger this file did not install must abort').not.toBeNull();
+      expect(err, 'naming it').toMatch(/a trigger "ActivityDependency_zz_p38" this migration did not install is attached/u);
+      expect(err, 'and quoting its definition, so the operator can see what it does')
+        .toMatch(/CREATE TRIGGER "ActivityDependency_zz_p38" BEFORE INSERT ON public\."ActivityDependency" FOR EACH ROW EXECUTE FUNCTION public\.b1_p38_rewrite\(\)/u);
+      expect(err, 'and why a sixth trigger is a bypass rather than a weaker seal')
+        .toMatch(/BEFORE ROW triggers fire in NAME ORDER/u);
+      expect(err, 'and the repair').toMatch(/Drop it deliberately, or add it to this migration/u);
+    } finally {
+      await t.prisma.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS "ActivityDependency_zz_p38" ON "ActivityDependency"`);
+      await t.prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS public.b1_p38_rewrite()`);
+      await wipe();
+      rmSync(head, { force: true });
+    }
+    expect(applyMigration(), 'and the file applies once nothing else is attached').toBeNull();
+    expect(await installed()).toBe(COMPLETE);
+  }, 240_000);
 });

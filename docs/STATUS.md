@@ -577,6 +577,42 @@ REAL `scripts/migrate.sh` over a LEDGER-COMPLETE database in all three tampered
 shapes, requiring a refusal that names the object and a clean exit 0 after repair;
 `ci-baseline-proof-wiring.test.mjs` pins the sixth state name alongside the five.
 
+**AND THE COMPLETENESS SWEEP FOUND ONE MORE, WHICH IS WHY IT WAS RUN.** Neither
+reported finding names it, and fixing only the two named holes is what has produced
+the next round five times. Asking "is the check over the WHOLE object, or over a
+representative part of it?" of every object this file judges turned up the TRIGGER
+SET: section 9's inventory asks whether the FIVE seals are present, armed, of the
+right `tgtype` and bound by `tgfoid` — five right answers, about five triggers —
+while the object those answers claim to describe is the SET of triggers that run
+when the table is written, and nothing asked whether that set had a sixth member. A
+sixth is a bypass of all five, not a weaker one: BEFORE ROW triggers fire in NAME
+ORDER, so one sorting after `ActivityDependency_no_truncate` runs after the
+acyclicity walk and the born-live check have judged NEW and decides what is stored.
+MEASURED on PostgreSQL 16.13 against a complete install of this head: a
+`BEFORE INSERT … FOR EACH ROW` trigger rewrote an accepted a2→a3 edge into a2→a1, so
+a1→a2 and a2→a1 were both LIVE — a permanent cycle in the table whose entire purpose
+is that it cannot hold one — with the attribution relaid onto another real
+membership so no foreign key noticed; the migration then replayed over that database
+with EXIT 0 and `b1 seals` answered `sealed: true`. FIXED as ONE BRANCH of the ONE
+inventory, so the migration and the deploy-time verifier refuse it identically and
+neither can drift from the other; it names the trigger and quotes its deparsed
+definition, and refuses rather than dropping, because a later unit that legitimately
+needs a sixth trigger adds its name to the list and that addition is then a reviewed
+change instead of an invisible one. INTERNAL rows are deliberately not refused — they
+belong to constraints, section 1e'' compares the five keys' machinery as an exact
+set, and a future key pointing AT this table must not be refused in advance. Probe
+**P38** drives it RED (the head this check was added to, rebuilt by excising the
+bracketed branch, accepts the table; the cycle lands and cannot be deleted) then
+GREEN.
+
+**The LIFETIME sweep found nothing further, and that is worth stating rather than
+leaving blank.** The one candidate — a ledger recording `20270930000000` as applied
+while `ActivityDependency` does not exist, which leaves nothing pending for any later
+deploy to notice — is ALREADY closed by this head's own design: `b1 seals` answers
+exit 4 when the table is absent, and `scripts/migrate.sh` treats any non-zero as a
+failure on both success paths, so that state refuses the deploy rather than passing
+it.
+
 F1 (`migration.sql:748`): the INSTALL BARRIER was looked up BY NAME, and its
 presence read as "this table is unwritable". Reproduced RED against `a222e91` on a
 live database, driving the exact interleaving — an empty incomplete install whose
