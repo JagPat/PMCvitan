@@ -137,8 +137,29 @@ if echo "$out" | grep -q "P3005"; then
   # The T3C entries above decide this from a live probe, because those migrations may or may not
   # have run. These are decided statically, because they cannot have: a pre-baseline database
   # predates them. Leaving them pending costs nothing when they have somehow already been applied —
-  # each is written idempotently and re-applies as a no-op.
-  ALWAYS_EXECUTE="20270920000000_decision_option_kinds"
+  # `20270920000000_decision_option_kinds` is written idempotently and re-applies as a no-op.
+  #
+  # `20270930000000_schedule_dependency_graph` is written to be re-run, and it is stated here
+  # rather than discovered in production. That file COMPLETES ITS OWN INSTALL of
+  # "ActivityDependency": every object is created only if absent, and an object that is present is
+  # compared by DEFINITION first — so a run that died part-way is finished by the next one, which
+  # is what re-running this script does. It ABORTS only over an object it did not install (a column
+  # contract that differs, a missing or altered CHECK, a same-named index or seal with another
+  # definition, or an INCOMPLETE install whose table already holds rows), and the abort NAMES that
+  # object and points at docs/RUNBOOK.md section B1. ROWS ALONE ARE NOT A REFUSAL: a COMPLETE
+  # install that has been in service replays as a no-op, which is the only populated state a real
+  # re-deploy meets. The last-resort repair is cheap because the table is NEW: it exists in no
+  # released schema, no service writes it, and it holds ZERO ROWS everywhere.
+  # `scripts/schedule-b1-baseline-proof.sh` runs THIS runner through all five states (install where
+  # the table is absent; abort-then-repair over a table this migration did not build; COMPLETION of
+  # a genuine partial apply; refusal over a populated INCOMPLETE table; and a no-op replay over a
+  # populated COMPLETE one), and CI runs that proof in the required `api` job.
+  #
+  # The entry is still right. `schema.prisma` can describe neither a CHECK nor a trigger, so
+  # baselining that migration WITHOUT running it would record guards that never existed —
+  # indistinguishable from success. Left pending so the deploy really executes it.
+  ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
+20270920000000_decision_option_kinds"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
