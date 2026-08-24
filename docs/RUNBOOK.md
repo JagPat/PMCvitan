@@ -1114,15 +1114,17 @@ graph and a row no guard ever judged.
 
 ### If it aborts, read what it names
 
-The message is one of five, and each says which object disagrees:
+The message is one of six, and each says which object disagrees:
 
 | Abort names | What it means |
 | --- | --- |
 | `holds rows and its installation is INCOMPLETE: <what is missing>` (with `already exists and holds N row(s)`) | The table is populated AND something this migration installs is absent. Arming a trigger validates nothing already in the table, so finishing this install would certify those rows by silence. Rows on a COMPLETE install are not an error and do not reach this message. |
+| `is not an ordinary permanent table (pg_class relkind/relpersistence = …, expected r/p)` | The relation of that name is UNLOGGED, or is a view/foreign/partitioned relation. PostgreSQL truncates an unlogged relation after a crash or unclean shutdown, so these seals would be armed over a record that erases itself. If it really is the dependency graph, `ALTER TABLE "ActivityDependency" SET LOGGED` and re-run; otherwise rename or drop it. |
 | `does not match the column contract` | The columns are not the ones this migration reasons about — a nullable endpoint, a wrong type, a missing default. It names the column and both shapes. |
 | `its constraint "<name>" is ABSENT` / `is present as <definition>` | A CHECK or key this migration declares INLINE with the table. `CREATE TABLE` installs all ten atomically, so this migration's own partial apply always carries them; one missing or altered means another tool built this table. |
 | `index "<name>" exists … with a definition this migration did not install` or `already exists in schema public on table "<other>"` | A same-named index that is not the one printed in the message — or one owned by an entirely different relation. Index names are schema-scoped in PostgreSQL, so a collision elsewhere in `public` also lands here. |
-| `function public.<name>() already exists with a definition this migration did not install` / `trigger "<name>" already exists …` | A seal of the right name and the wrong body, or one left `DISABLED`. Compared by body and by `tgenabled`, because `CREATE OR REPLACE FUNCTION` preserves identity and a hollowed body reads as present. |
+| `function public.<name>() already exists with a definition this migration did not install` / `trigger "<name>" already exists …` | A seal of the right name and the wrong body, the wrong VOLATILITY, or one left `DISABLED`. Compared by body, by `provolatile` and by `tgenabled`, because `CREATE OR REPLACE FUNCTION` preserves identity, a hollowed body reads as present, and `ALTER FUNCTION … STABLE` changes the snapshot the acyclicity walk reads while changing nothing in the source. `ALTER FUNCTION <name>() VOLATILE` is the repair for the last case. |
+| `constraint "<name>" is present as FOREIGN KEY … REFERENCES <otherschema>."Project"` | A containment key bound to a same-named relation in another schema — which happens when the deploy role's search path names that schema before `public`. Containment then proves nothing. Fix the role's `search_path`, drop the mis-bound key, and re-run. |
 
 **None of these is repaired automatically, deliberately.** Installing a rule over a table this
 migration did not build would mean certifying a shape and a history it never observed.
@@ -1177,9 +1179,10 @@ abort over real operational data and need a judgement.
    ```
 
 4. **Re-run the deploy** — `sh apps/api/scripts/migrate.sh` — and verify the guards are in force,
-   not merely recorded. Expect `4|1|5|0`: four validated CHECKs, the partial unique index, five
-   armed triggers, and NO install barrier (a barrier still present means the install did not
-   finish and the table is still unwritable).
+   not merely recorded. Expect `4|1|5|0|5|5|r/p`: four validated CHECKs, the partial unique index,
+   five armed triggers, NO install barrier (a barrier still present means the install did not
+   finish and the table is still unwritable), five containment keys pointing at relations in
+   `public`, five VOLATILE seal functions, and an ordinary permanent table.
 
    ```sql
    SELECT (SELECT COUNT(*) FROM pg_constraint
@@ -1192,7 +1195,17 @@ abort over real operational data and need a judgement.
                      AND NOT tgisinternal AND tgenabled = 'O')
        || '|' || (SELECT COUNT(*) FROM pg_constraint
                    WHERE conname = 'ActivityDependency_install_incomplete_check'
-                     AND conrelid = '"ActivityDependency"'::regclass);
+                     AND conrelid = '"ActivityDependency"'::regclass)
+       || '|' || (SELECT COUNT(*) FROM pg_constraint k
+                    JOIN pg_class c ON c.oid = k.confrelid
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                   WHERE k.conrelid = '"ActivityDependency"'::regclass AND k.contype = 'f'
+                     AND n.nspname = 'public')
+       || '|' || (SELECT COUNT(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                   WHERE n.nspname = 'public' AND p.proname LIKE 'activity\_dependency%'
+                     AND p.provolatile = 'v')
+       || '|' || (SELECT relkind::text || '/' || relpersistence::text
+                    FROM pg_class WHERE oid = '"ActivityDependency"'::regclass);
    ```
 
 **If step 1 finds rows**, do not continue — and note that you only reach this procedure at all

@@ -384,6 +384,48 @@ assumed.** Idempotence comes from the object guards (which is what the round-1
 finding asked for); atomicity comes from the CALLER; and the write exclusion the
 seals need comes from the barrier, which depends on neither.
 
+**#411's FIRST REVIEWED HEAD (`f87e5a7`) DREW THREE MORE P1s, and two of them are
+the SAME ROOT one door further along.** #410's F1 fix qualified the objects this
+file CREATES and the functions its triggers call. It did not qualify what those
+objects POINT AT, and it did not make the comparison itself path-independent.
+Corrected in ONE head, each reproduced RED first:
+
+**G1 — a decoy TABLE on the caller path captured containment.** A foreign key
+resolves its target through the CALLER's search path at CREATE time. MEASURED at
+`f87e5a7` with `search_path=b1decoy,public` and decoy `Project`/`Activity`/
+`Membership` planted there: exit 0, and ALL FIVE containment keys bound to
+`b1decoy.*`. Containment then proves nothing — an edge may name any project, any
+activity, any user. Worse, a REPLAY accepted it, because `pg_get_constraintdef`
+renders a target relative to the READER's path too, so the decoy printed exactly
+like the canonical text. Fixed on both sides: every `REFERENCES` is now
+`public.`-qualified, section 1 pins its OWN path to `pg_catalog` so every
+comparison is rendered fully qualified (the five FK canonical strings updated to
+match), and section 9 asks `confrelid` directly — the binding itself, which no
+rendering can disguise.
+
+**G2 — VOLATILITY was not part of a seal function's identity.** PostgreSQL gives
+a STABLE or IMMUTABLE function the CALLING STATEMENT's snapshot, so a same-bodied
+`activity_dependency_acyclic` declared STABLE reads the graph as it stood BEFORE
+it began waiting on the project advisory lock: T2 starts the opposite edge, blocks
+on T1's lock, then walks a snapshot that cannot see the edge T1 just committed —
+and the cycle commits. `ALTER FUNCTION ... STABLE` changes nothing else, so
+`prosrc` is byte-identical. MEASURED at `f87e5a7`: ALTER then replay exited 0 and
+left it STABLE. `provolatile` now travels with the body in all five identity
+checks, the CREATE says `VOLATILE` explicitly, and section 9 re-asks.
+
+**G3 — an UNLOGGED table was adopted as a complete install.** The resume path
+never asked `relpersistence` or even `relkind`, and an unlogged table carries the
+same columns, constraints, indexes and triggers as a permanent one, so every shape
+comparison passes. What differs is the only property this table exists for:
+PostgreSQL TRUNCATES an unlogged relation after a crash or unclean shutdown, so
+the append-only record of who imposed and who withdrew each constraint would
+silently empty itself while every seal reported success — the exact erasure the
+DELETE and TRUNCATE seals exist to forbid. MEASURED at `f87e5a7`: the file's own
+CREATE TABLE applied as UNLOGGED, then the migration — exit 0, five seals armed,
+`relpersistence` still `u`. Section 1 now refuses anything but `r`/`p`, naming
+both what it found and why it matters, and `ALTER TABLE ... SET LOGGED` (named in
+the abort) lets the same file deploy.
+
 **The destructive `DROP TABLE` is no longer the routine answer.** `RUNBOOK.md`
 §B1 now leads with re-running the deploy — which completes a partial apply and
 needs nothing else — and reaches for the drop only when the migration NAMES a

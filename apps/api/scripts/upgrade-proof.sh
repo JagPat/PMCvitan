@@ -3722,6 +3722,25 @@ assert "B1: the install barrier is LIFTED, so the completed install is open for 
 # `CREATE TRIGGER` resolves an unqualified function through the CALLER's search path, so a
 # same-named no-op in a schema ahead of `public` would produce five triggers that read as installed
 # and enforce nothing.
+# CONTAINMENT is only containment if the keys point at the REAL relations. A foreign key resolves
+# its target through the CALLER's search path at CREATE time, so a decoy schema ahead of `public`
+# would bind all five to same-named tables holding nothing — every key satisfied, nothing contained.
+# Asked through `confrelid`, which is the binding itself rather than any rendered name.
+assert "B1: all five containment keys reference the relations in public, not a same-named decoy" \
+  "SELECT COUNT(*)::text FROM pg_constraint k JOIN pg_class c ON c.oid=k.confrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE k.conrelid='\"ActivityDependency\"'::regclass AND k.contype='f' AND n.nspname='public' AND c.relname IN ('Project','Activity','Membership');" \
+  "5"
+# An UNLOGGED relation is TRUNCATED by PostgreSQL after a crash or unclean shutdown. This table is
+# an append-only record of who imposed and who withdrew each sequencing constraint, so a register
+# that empties itself is the one failure the DELETE and TRUNCATE seals exist to make impossible.
+assert "B1: the dependency graph is an ordinary PERMANENT table, so a crash cannot empty the record" \
+  "SELECT relkind::text || '/' || relpersistence::text FROM pg_class WHERE oid='\"ActivityDependency\"'::regclass;" \
+  "r/p"
+# VOLATILE, not merely present: PostgreSQL gives a STABLE or IMMUTABLE function the CALLING
+# STATEMENT's snapshot, so a same-bodied acyclic check declared STABLE would read the graph as it
+# stood before it began waiting on the project lock — and miss the edge that made the cycle.
+assert "B1: all five seal functions are VOLATILE, so each reads a fresh snapshot after the lock" \
+  "SELECT COUNT(*)::text FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname LIKE 'activity\\_dependency%' AND p.provolatile='v';" \
+  "5"
 assert "B1: every seal is bound to the function in public, not to a same-named decoy" \
   "SELECT COUNT(*)::text FROM pg_trigger g WHERE g.tgrelid='\"ActivityDependency\"'::regclass AND NOT g.tgisinternal AND g.tgfoid = to_regprocedure('public.' || replace(g.tgname, 'ActivityDependency_', 'activity_dependency_') || '()');" \
   "5"

@@ -119,7 +119,20 @@ DECLARE
   v_missing  TEXT;                 -- what is simply ABSENT: an abort only when the table holds rows
   v_note     TEXT := '';           -- appended to whatever abort fires, so a refusal names the rows
   v_barrier  TEXT;
+  v_rel      TEXT;
+  v_path     TEXT;
 BEGIN
+  -- EVERY COMPARISON BELOW IS RENDERED BY POSTGRESQL RELATIVE TO THE READER'S SEARCH PATH, so
+  -- without this pin the canonical texts printed in this file would only match under some callers.
+  -- The case that matters is not cosmetic: `pg_get_constraintdef` prints a foreign-key target
+  -- UNQUALIFIED whenever the target's schema is on the path, so a key bound to `b1decoy."Project"`
+  -- reads as `REFERENCES "Project"(id)` to a caller whose path is `b1decoy, public` — identical to
+  -- the canonical text, and accepted. Pinned to `pg_catalog` alone, nothing but `pg_catalog` is
+  -- visible, every relation renders schema-qualified, and a decoy is textually distinguishable
+  -- from the real target. Restored at the end of the block; LOCAL, so it cannot leak into the
+  -- connection the deploy goes on to use.
+  v_path := current_setting('search_path');
+  PERFORM set_config('search_path', 'pg_catalog', true);
   -- ── 1a. Index NAMES, asked BEFORE anything else and asked whether or not the table exists ───
   -- An index name is unique per SCHEMA, not per table. Two consequences, and both are silent:
   -- section 3's `CREATE INDEX IF NOT EXISTS` skips on a name owned by ANOTHER relation, leaving
@@ -147,7 +160,31 @@ BEGIN
   END LOOP;
 
   IF to_regclass('public."ActivityDependency"') IS NULL THEN
+    PERFORM set_config('search_path', v_path, true);
     RETURN;                        -- nothing installed yet; sections 2..8 install all of it
+  END IF;
+
+  -- ── 1a-bis. IS IT AN ORDINARY, PERMANENT TABLE? ─────────────────────────────────────────────
+  -- Asked before anything else about the relation, and asked because the answer is invisible in
+  -- every other check: an UNLOGGED table carries the same columns, the same constraints, the same
+  -- indexes and the same triggers as a permanent one, so a shape comparison cannot tell them
+  -- apart. What differs is the only property this table exists for. PostgreSQL TRUNCATES an
+  -- unlogged relation after a crash or unclean shutdown — so an append-only register of who
+  -- imposed and who withdrew each sequencing constraint would be silently emptied, by design,
+  -- with every seal still armed and reporting success. That is the one failure this file must
+  -- never certify: the DELETE and TRUNCATE seals exist precisely to make that erasure impossible.
+  --
+  -- `relkind` is asked too, and for the same reason: a VIEW, a foreign table or a partitioned
+  -- parent of the right name would satisfy `to_regclass` and then take a completely different set
+  -- of rules — and `LOCK TABLE` below is not even legal on some of them. Section 2 creates an
+  -- ordinary permanent table (`CREATE TABLE` with no qualifier), so on this file's own partial
+  -- apply the answer is always `r`/`p`; anything else was built by something else.
+  SELECT c.relkind::TEXT || '/' || c.relpersistence::TEXT INTO v_rel
+    FROM pg_class c WHERE c.oid = to_regclass('public."ActivityDependency"');
+  IF v_rel IS DISTINCT FROM 'r/p' THEN
+    PERFORM set_config('search_path', v_path, true);
+    RAISE EXCEPTION 'schedule B1: public."ActivityDependency" exists but is not an ordinary permanent table (pg_class relkind/relpersistence = %, expected r/p). This migration creates a PERMANENT table because the rows are an append-only record of who imposed and who withdrew each sequencing constraint: PostgreSQL truncates an UNLOGGED relation after a crash or unclean shutdown, so installing these seals over one would certify a register that erases itself while every guard still reports success. A view, foreign table or partitioned relation of this name takes different rules again. Rename or drop it, or convert it with ALTER TABLE ... SET LOGGED, then re-run. Procedure: docs/RUNBOOK.md section B1.',
+      v_rel;
   END IF;
 
   -- ── 1b. LOCK BEFORE LOOKING, and hold it to COMMIT ──────────────────────────────────────────
@@ -263,15 +300,15 @@ BEGIN
       ('ActivityDependency_lag_nonneg_check',
        'CHECK (("lagWorkingDays" >= 0))'),
       ('ActivityDependency_projectId_fkey',
-       'FOREIGN KEY ("projectId") REFERENCES "Project"(id) ON UPDATE CASCADE ON DELETE RESTRICT'),
+       'FOREIGN KEY ("projectId") REFERENCES public."Project"(id) ON UPDATE CASCADE ON DELETE RESTRICT'),
       ('ActivityDependency_projectId_predecessorId_fkey',
-       'FOREIGN KEY ("projectId", "predecessorId") REFERENCES "Activity"("projectId", id)'),
+       'FOREIGN KEY ("projectId", "predecessorId") REFERENCES public."Activity"("projectId", id)'),
       ('ActivityDependency_projectId_successorId_fkey',
-       'FOREIGN KEY ("projectId", "successorId") REFERENCES "Activity"("projectId", id)'),
+       'FOREIGN KEY ("projectId", "successorId") REFERENCES public."Activity"("projectId", id)'),
       ('ActivityDependency_createdBy_fkey',
-       'FOREIGN KEY ("projectId", "createdById") REFERENCES "Membership"("projectId", "userId")'),
+       'FOREIGN KEY ("projectId", "createdById") REFERENCES public."Membership"("projectId", "userId")'),
       ('ActivityDependency_revokedBy_fkey',
-       'FOREIGN KEY ("projectId", "revokedById") REFERENCES "Membership"("projectId", "userId")')
+       'FOREIGN KEY ("projectId", "revokedById") REFERENCES public."Membership"("projectId", "userId")')
     ) AS c(name, canonical)
   LOOP
     SELECT regexp_replace(pg_get_constraintdef(k.oid), '[[:space:]]+', ' ', 'g')
@@ -390,6 +427,7 @@ BEGIN
   IF v_wrong IS NULL AND v_missing IS NOT NULL AND v_rows > 0 THEN
     v_wrong := format('"ActivityDependency" holds rows and its installation is INCOMPLETE: %s. A COMPLETE install may be replayed as often as you like — that is the ordinary state of a deployed database and this file is a no-op over it. An INCOMPLETE or foreign populated table is refused rather than finished, because arming a seal validates nothing already in the table, so those rows would be certified by silence.', v_missing);
   END IF;
+  PERFORM set_config('search_path', v_path, true);
   IF v_wrong IS NOT NULL THEN
     RAISE EXCEPTION 'schedule B1: % Procedure: docs/RUNBOOK.md section B1.', v_wrong || v_note;
   END IF;
@@ -492,13 +530,23 @@ CREATE TABLE IF NOT EXISTS public."ActivityDependency" (
   -- Containment: each endpoint key carries the edge's OWN `projectId`, so an edge between two
   -- projects is not a representable row. That is the difference between an invariant and a
   -- convention — no service, import, script or hand-written UPDATE can produce one.
+  --
+  -- THE TARGETS ARE `public.`-QUALIFIED, and that is load-bearing rather than tidy. A foreign key
+  -- resolves its target through the CALLER's search path at CREATE time, and `SET LOCAL
+  -- search_path` at the top of this file is only a WARNING outside a transaction block — so under
+  -- the autocommit caller this file must support, a role whose path names another schema first
+  -- would bind all five keys to same-named DECOY tables there. Containment would then be a key
+  -- that proves nothing: an edge could name any project, any activity, any user, and PostgreSQL
+  -- would accept it. Worse, the check in section 1e could not see it, because
+  -- `pg_get_constraintdef` renders the target relative to the READER's path too — which is why
+  -- section 1 pins its own path to `pg_catalog` and compares fully-qualified text.
   CONSTRAINT "ActivityDependency_projectId_fkey"
-    FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+    FOREIGN KEY ("projectId") REFERENCES public."Project"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
   CONSTRAINT "ActivityDependency_projectId_predecessorId_fkey"
-    FOREIGN KEY ("projectId", "predecessorId") REFERENCES "Activity"("projectId", "id")
+    FOREIGN KEY ("projectId", "predecessorId") REFERENCES public."Activity"("projectId", "id")
     ON DELETE NO ACTION ON UPDATE NO ACTION,
   CONSTRAINT "ActivityDependency_projectId_successorId_fkey"
-    FOREIGN KEY ("projectId", "successorId") REFERENCES "Activity"("projectId", "id")
+    FOREIGN KEY ("projectId", "successorId") REFERENCES public."Activity"("projectId", "id")
     ON DELETE NO ACTION ON UPDATE NO ACTION,
 
   -- Attribution is bound to a MEMBER OF THIS PROJECT. A global `User` reference proves the id
@@ -513,10 +561,10 @@ CREATE TABLE IF NOT EXISTS public."ActivityDependency" (
   -- — switches the reference off rather than failing it. The revocation CHECK decides whether
   -- those columns may be null at all; this key decides who the revoker may be.
   CONSTRAINT "ActivityDependency_createdBy_fkey"
-    FOREIGN KEY ("projectId", "createdById") REFERENCES "Membership"("projectId", "userId")
+    FOREIGN KEY ("projectId", "createdById") REFERENCES public."Membership"("projectId", "userId")
     ON DELETE NO ACTION ON UPDATE NO ACTION,
   CONSTRAINT "ActivityDependency_revokedBy_fkey"
-    FOREIGN KEY ("projectId", "revokedById") REFERENCES "Membership"("projectId", "userId")
+    FOREIGN KEY ("projectId", "revokedById") REFERENCES public."Membership"("projectId", "userId")
     ON DELETE NO ACTION ON UPDATE NO ACTION
 );
 
@@ -582,8 +630,14 @@ CREATE INDEX IF NOT EXISTS "ActivityDependency_projectId_successorId_idx"
 -- The body is held in a variable and the function is created FROM that variable, so the text this
 -- file installs and the text it compares against are the SAME string — there is no second copy to
 -- drift. `prosrc` stores exactly what the `AS` literal contained, so the comparison is exact.
--- Signature, language and `search_path` travel with it, because a body of the right shape attached
--- to the wrong return type or with the search-path pin removed is a different function.
+-- Signature, language, VOLATILITY and `search_path` travel with it, because a body of the right
+-- shape attached to the wrong return type, with the search-path pin removed, or re-declared
+-- STABLE, is a different function. Volatility is the one that is invisible in the source text and
+-- decisive at runtime: PostgreSQL gives a STABLE or IMMUTABLE function the CALLING STATEMENT's
+-- snapshot, so a same-bodied `..._acyclic` declared STABLE would read the graph as it stood before
+-- it began waiting on the project lock — miss the edge the session it was waiting for had just
+-- committed, and let the cycle in. `ALTER FUNCTION ... STABLE` changes nothing else, which is why
+-- `provolatile` has to be part of the identity rather than assumed from the CREATE below.
 DO $install$
 DECLARE
   v_body TEXT := $body$
@@ -598,8 +652,9 @@ END $body$;
   v_want TEXT;
   v_found TEXT;
 BEGIN
-  v_want := 'plpgsql/trigger/{"search_path=pg_catalog, public"}' || v_body;
+  v_want := 'plpgsql/trigger/v/{"search_path=pg_catalog, public"}' || v_body;
   SELECT l.lanname || '/' || pg_catalog.format_type(p.prorettype, NULL) || '/'
+         || p.provolatile::TEXT || '/'
          || COALESCE(p.proconfig::TEXT, '{}') || p.prosrc
     INTO v_found
     FROM pg_proc p
@@ -611,7 +666,7 @@ BEGIN
       v_want, v_found;
   END IF;
   IF v_found IS NULL THEN
-    EXECUTE format('CREATE FUNCTION public.%I() RETURNS TRIGGER LANGUAGE plpgsql SET search_path = pg_catalog, public AS %L',
+    EXECUTE format('CREATE FUNCTION public.%I() RETURNS TRIGGER LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, public AS %L',
                    'activity_dependency_born_live', v_body);
   END IF;
 END $install$;
@@ -627,8 +682,14 @@ END $install$;
 -- The body is held in a variable and the function is created FROM that variable, so the text this
 -- file installs and the text it compares against are the SAME string — there is no second copy to
 -- drift. `prosrc` stores exactly what the `AS` literal contained, so the comparison is exact.
--- Signature, language and `search_path` travel with it, because a body of the right shape attached
--- to the wrong return type or with the search-path pin removed is a different function.
+-- Signature, language, VOLATILITY and `search_path` travel with it, because a body of the right
+-- shape attached to the wrong return type, with the search-path pin removed, or re-declared
+-- STABLE, is a different function. Volatility is the one that is invisible in the source text and
+-- decisive at runtime: PostgreSQL gives a STABLE or IMMUTABLE function the CALLING STATEMENT's
+-- snapshot, so a same-bodied `..._acyclic` declared STABLE would read the graph as it stood before
+-- it began waiting on the project lock — miss the edge the session it was waiting for had just
+-- committed, and let the cycle in. `ALTER FUNCTION ... STABLE` changes nothing else, which is why
+-- `provolatile` has to be part of the identity rather than assumed from the CREATE below.
 DO $install$
 DECLARE
   v_body TEXT := $body$
@@ -638,8 +699,9 @@ END $body$;
   v_want TEXT;
   v_found TEXT;
 BEGIN
-  v_want := 'plpgsql/trigger/{"search_path=pg_catalog, public"}' || v_body;
+  v_want := 'plpgsql/trigger/v/{"search_path=pg_catalog, public"}' || v_body;
   SELECT l.lanname || '/' || pg_catalog.format_type(p.prorettype, NULL) || '/'
+         || p.provolatile::TEXT || '/'
          || COALESCE(p.proconfig::TEXT, '{}') || p.prosrc
     INTO v_found
     FROM pg_proc p
@@ -651,7 +713,7 @@ BEGIN
       v_want, v_found;
   END IF;
   IF v_found IS NULL THEN
-    EXECUTE format('CREATE FUNCTION public.%I() RETURNS TRIGGER LANGUAGE plpgsql SET search_path = pg_catalog, public AS %L',
+    EXECUTE format('CREATE FUNCTION public.%I() RETURNS TRIGGER LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, public AS %L',
                    'activity_dependency_no_delete', v_body);
   END IF;
 END $install$;
@@ -673,8 +735,14 @@ END $install$;
 -- The body is held in a variable and the function is created FROM that variable, so the text this
 -- file installs and the text it compares against are the SAME string — there is no second copy to
 -- drift. `prosrc` stores exactly what the `AS` literal contained, so the comparison is exact.
--- Signature, language and `search_path` travel with it, because a body of the right shape attached
--- to the wrong return type or with the search-path pin removed is a different function.
+-- Signature, language, VOLATILITY and `search_path` travel with it, because a body of the right
+-- shape attached to the wrong return type, with the search-path pin removed, or re-declared
+-- STABLE, is a different function. Volatility is the one that is invisible in the source text and
+-- decisive at runtime: PostgreSQL gives a STABLE or IMMUTABLE function the CALLING STATEMENT's
+-- snapshot, so a same-bodied `..._acyclic` declared STABLE would read the graph as it stood before
+-- it began waiting on the project lock — miss the edge the session it was waiting for had just
+-- committed, and let the cycle in. `ALTER FUNCTION ... STABLE` changes nothing else, which is why
+-- `provolatile` has to be part of the identity rather than assumed from the CREATE below.
 DO $install$
 DECLARE
   v_body TEXT := $body$
@@ -698,8 +766,9 @@ END $body$;
   v_want TEXT;
   v_found TEXT;
 BEGIN
-  v_want := 'plpgsql/trigger/{"search_path=pg_catalog, public"}' || v_body;
+  v_want := 'plpgsql/trigger/v/{"search_path=pg_catalog, public"}' || v_body;
   SELECT l.lanname || '/' || pg_catalog.format_type(p.prorettype, NULL) || '/'
+         || p.provolatile::TEXT || '/'
          || COALESCE(p.proconfig::TEXT, '{}') || p.prosrc
     INTO v_found
     FROM pg_proc p
@@ -711,7 +780,7 @@ BEGIN
       v_want, v_found;
   END IF;
   IF v_found IS NULL THEN
-    EXECUTE format('CREATE FUNCTION public.%I() RETURNS TRIGGER LANGUAGE plpgsql SET search_path = pg_catalog, public AS %L',
+    EXECUTE format('CREATE FUNCTION public.%I() RETURNS TRIGGER LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, public AS %L',
                    'activity_dependency_no_truncate', v_body);
   END IF;
 END $install$;
@@ -739,8 +808,14 @@ END $install$;
 -- The body is held in a variable and the function is created FROM that variable, so the text this
 -- file installs and the text it compares against are the SAME string — there is no second copy to
 -- drift. `prosrc` stores exactly what the `AS` literal contained, so the comparison is exact.
--- Signature, language and `search_path` travel with it, because a body of the right shape attached
--- to the wrong return type or with the search-path pin removed is a different function.
+-- Signature, language, VOLATILITY and `search_path` travel with it, because a body of the right
+-- shape attached to the wrong return type, with the search-path pin removed, or re-declared
+-- STABLE, is a different function. Volatility is the one that is invisible in the source text and
+-- decisive at runtime: PostgreSQL gives a STABLE or IMMUTABLE function the CALLING STATEMENT's
+-- snapshot, so a same-bodied `..._acyclic` declared STABLE would read the graph as it stood before
+-- it began waiting on the project lock — miss the edge the session it was waiting for had just
+-- committed, and let the cycle in. `ALTER FUNCTION ... STABLE` changes nothing else, which is why
+-- `provolatile` has to be part of the identity rather than assumed from the CREATE below.
 DO $install$
 DECLARE
   v_body TEXT := $body$
@@ -761,8 +836,9 @@ END $body$;
   v_want TEXT;
   v_found TEXT;
 BEGIN
-  v_want := 'plpgsql/trigger/{"search_path=pg_catalog, public"}' || v_body;
+  v_want := 'plpgsql/trigger/v/{"search_path=pg_catalog, public"}' || v_body;
   SELECT l.lanname || '/' || pg_catalog.format_type(p.prorettype, NULL) || '/'
+         || p.provolatile::TEXT || '/'
          || COALESCE(p.proconfig::TEXT, '{}') || p.prosrc
     INTO v_found
     FROM pg_proc p
@@ -774,7 +850,7 @@ BEGIN
       v_want, v_found;
   END IF;
   IF v_found IS NULL THEN
-    EXECUTE format('CREATE FUNCTION public.%I() RETURNS TRIGGER LANGUAGE plpgsql SET search_path = pg_catalog, public AS %L',
+    EXECUTE format('CREATE FUNCTION public.%I() RETURNS TRIGGER LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, public AS %L',
                    'activity_dependency_frozen', v_body);
   END IF;
 END $install$;
@@ -812,8 +888,14 @@ END $install$;
 -- The body is held in a variable and the function is created FROM that variable, so the text this
 -- file installs and the text it compares against are the SAME string — there is no second copy to
 -- drift. `prosrc` stores exactly what the `AS` literal contained, so the comparison is exact.
--- Signature, language and `search_path` travel with it, because a body of the right shape attached
--- to the wrong return type or with the search-path pin removed is a different function.
+-- Signature, language, VOLATILITY and `search_path` travel with it, because a body of the right
+-- shape attached to the wrong return type, with the search-path pin removed, or re-declared
+-- STABLE, is a different function. Volatility is the one that is invisible in the source text and
+-- decisive at runtime: PostgreSQL gives a STABLE or IMMUTABLE function the CALLING STATEMENT's
+-- snapshot, so a same-bodied `..._acyclic` declared STABLE would read the graph as it stood before
+-- it began waiting on the project lock — miss the edge the session it was waiting for had just
+-- committed, and let the cycle in. `ALTER FUNCTION ... STABLE` changes nothing else, which is why
+-- `provolatile` has to be part of the identity rather than assumed from the CREATE below.
 DO $install$
 DECLARE
   v_body TEXT := $body$
@@ -956,8 +1038,9 @@ END $body$;
   v_want TEXT;
   v_found TEXT;
 BEGIN
-  v_want := 'plpgsql/trigger/{"search_path=pg_catalog, public"}' || v_body;
+  v_want := 'plpgsql/trigger/v/{"search_path=pg_catalog, public"}' || v_body;
   SELECT l.lanname || '/' || pg_catalog.format_type(p.prorettype, NULL) || '/'
+         || p.provolatile::TEXT || '/'
          || COALESCE(p.proconfig::TEXT, '{}') || p.prosrc
     INTO v_found
     FROM pg_proc p
@@ -969,7 +1052,7 @@ BEGIN
       v_want, v_found;
   END IF;
   IF v_found IS NULL THEN
-    EXECUTE format('CREATE FUNCTION public.%I() RETURNS TRIGGER LANGUAGE plpgsql SET search_path = pg_catalog, public AS %L',
+    EXECUTE format('CREATE FUNCTION public.%I() RETURNS TRIGGER LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, public AS %L',
                    'activity_dependency_acyclic', v_body);
   END IF;
 END $install$;
@@ -1092,9 +1175,13 @@ END $install$;
 -- it, and each may CREATE the object it was judging. This section runs after all of them and asks
 -- the whole question once, over the objects that now exist:
 --
---   * the ten constraints `CREATE TABLE` declares inline, each VALIDATED;
+--   * the ten constraints `CREATE TABLE` declares inline, each VALIDATED — and the five
+--     containment keys asked, through `confrelid`, WHICH relation they actually reference;
 --   * the three indexes, each `indisvalid`;
---   * the five functions in `public`;
+--   * the five functions in `public`, each VOLATILE — a STABLE one would read the graph from the
+--     calling statement's snapshot and could miss an edge committed while it waited on the lock;
+--   * the relation still an ordinary PERMANENT table, since an UNLOGGED one is truncated by
+--     PostgreSQL after an unclean shutdown and this register may not erase itself;
 --   * the five triggers, ENABLED, and — asked against `tgfoid` rather than against any rendered
 --     text — bound to the function in `public` and to no other. A trigger created under a caller
 --     path naming a same-named decoy first would satisfy every name test and fail this one.
@@ -1118,13 +1205,26 @@ BEGIN
       FROM (VALUES
         ('ActivityDependency_pkey'), ('ActivityDependency_attribution_check'),
         ('ActivityDependency_revocation_check'), ('ActivityDependency_no_self_check'),
-        ('ActivityDependency_lag_nonneg_check'), ('ActivityDependency_projectId_fkey'),
-        ('ActivityDependency_projectId_predecessorId_fkey'),
-        ('ActivityDependency_projectId_successorId_fkey'),
-        ('ActivityDependency_createdBy_fkey'), ('ActivityDependency_revokedBy_fkey')) AS c(name)
+        ('ActivityDependency_lag_nonneg_check')) AS c(name)
      WHERE NOT EXISTS (SELECT 1 FROM pg_constraint k
                         WHERE k.conname = c.name AND k.convalidated
                           AND k.conrelid = 'public."ActivityDependency"'::regclass)
+    UNION ALL
+    -- The five containment keys are asked a second question: WHICH RELATION do they point at?
+    -- `confrelid` is the binding itself, so unlike any rendered text it cannot read one way to one
+    -- caller and another way to the next. A key bound to a same-named decoy in another schema
+    -- satisfies every name test and fails here.
+    SELECT 'constraint "' || f.name || '" referencing public."' || f.target || '"'
+      FROM (VALUES
+        ('ActivityDependency_projectId_fkey',                'Project'),
+        ('ActivityDependency_projectId_predecessorId_fkey',  'Activity'),
+        ('ActivityDependency_projectId_successorId_fkey',    'Activity'),
+        ('ActivityDependency_createdBy_fkey',                'Membership'),
+        ('ActivityDependency_revokedBy_fkey',                'Membership')) AS f(name, target)
+     WHERE NOT EXISTS (SELECT 1 FROM pg_constraint k
+                        WHERE k.conname = f.name AND k.convalidated
+                          AND k.conrelid = 'public."ActivityDependency"'::regclass
+                          AND k.confrelid = to_regclass('public."' || f.target || '"'))
     UNION ALL
     SELECT 'index "' || i.name || '"'
       FROM (VALUES
@@ -1143,7 +1243,14 @@ BEGIN
         ('activity_dependency_no_truncate'), ('activity_dependency_frozen'),
         ('activity_dependency_acyclic')) AS f(name)
      WHERE NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-                        WHERE n.nspname = 'public' AND p.proname = f.name AND p.pronargs = 0)
+                        WHERE n.nspname = 'public' AND p.proname = f.name AND p.pronargs = 0
+                          AND p.provolatile = 'v')
+    UNION ALL
+    SELECT 'an ordinary permanent table (found relkind/relpersistence '
+             || c.relkind::TEXT || '/' || c.relpersistence::TEXT || ')'
+      FROM pg_class c
+     WHERE c.oid = to_regclass('public."ActivityDependency"')
+       AND (c.relkind <> 'r' OR c.relpersistence <> 'p')
     UNION ALL
     SELECT 'armed trigger "' || t.name || '" bound to public.' || t.fn || '()'
       FROM (VALUES

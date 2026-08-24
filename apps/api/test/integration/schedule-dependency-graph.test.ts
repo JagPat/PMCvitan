@@ -728,7 +728,7 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
       { what: 'a foreign key to the global "User", losing the project half of the identity',
         forge: [`ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_createdBy_fkey"`,
                 `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_createdBy_fkey" FOREIGN KEY ("createdById") REFERENCES "User"("id")`],
-        expect: /"ActivityDependency_createdBy_fkey" is present as FOREIGN KEY \("createdById"\) REFERENCES "User"/u,
+        expect: /"ActivityDependency_createdBy_fkey" is present as FOREIGN KEY \("createdById"\) REFERENCES public\."User"/u,
         restore: [`ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_createdBy_fkey"`,
                   `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_createdBy_fkey" FOREIGN KEY ("projectId", "createdById") REFERENCES "Membership"("projectId", "userId")`] },
       { what: 'a plain NON-UNIQUE index wearing the partial-unique name',
@@ -855,6 +855,17 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
            .filter((l) => /"ActivityDependency"/u.test(l))
            .filter((l) => !/public\."ActivityDependency"/u.test(l))) {
       expect.unreachable(`every created object must be schema-qualified: ${unqualified.trim()}`);
+    }
+
+    // AND SO IS EVERY FOREIGN-KEY TARGET, which is the same hazard pointing the other way. A key
+    // resolves its target through the CALLER's path at CREATE time, so an unqualified
+    // `REFERENCES "Project"` under a path naming another schema first binds containment to a decoy
+    // — and containment bound to a decoy proves nothing at all.
+    for (const unqualified of sql.split('\n')
+           .filter((l) => !/^\s*--/u.test(l))            // the prose ABOUT the hazard is not the hazard
+           .filter((l) => /REFERENCES /u.test(l))
+           .filter((l) => !/REFERENCES public\./u.test(l))) {
+      expect.unreachable(`every foreign-key target must be schema-qualified: ${unqualified.trim()}`);
     }
 
     // And no LOCK may be a top-level statement: a bare `LOCK TABLE` is an ERROR outside a
@@ -1197,5 +1208,161 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
     }
     expect(applyMigration(), 'and the file applies once the seal is armed again').toBeNull();
     expect(await installed()).toBe(COMPLETE);
+  }, 120_000);
+
+  /** Every foreign key, as `name->target relation`, read from `confrelid` rather than from text. */
+  const bindings = async (): Promise<string> => (await t.prisma.$queryRawUnsafe<Array<{ s: string }>>(`
+    SELECT string_agg(k.conname || '->' || n.nspname || '."' || c.relname || '"', ',' ORDER BY k.conname) AS s
+      FROM pg_constraint k
+      JOIN pg_class c ON c.oid = k.confrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE k.conrelid = 'public."ActivityDependency"'::regclass AND k.contype = 'f'`))[0]!.s;
+
+  // ── P28 ────────────────────────────────────────────────────────────────────────────────────
+  it('P28 a same-named decoy TABLE on the caller path cannot capture containment', async () => {
+    // THE FINDING (round 1 of #411, migration.sql:496). The seals were qualified; the FOREIGN-KEY
+    // TARGETS were not. A key resolves its target through the CALLER's path at CREATE time, and
+    // `SET LOCAL search_path` is only a warning outside a transaction block — so under the
+    // autocommit caller a role whose path names another schema first binds all five containment
+    // keys to same-named decoys there. Containment then proves NOTHING: an edge may name any
+    // project, any activity, any user, and PostgreSQL accepts it.
+    //
+    // MEASURED against `f87e5a7`, on this container, with `search_path=b1decoy,public`: exit 0 and
+    // all five keys bound to `b1decoy."Project"` / `"Activity"` / `"Membership"` — and a REPLAY
+    // accepted them, because `pg_get_constraintdef` renders the target relative to the reader's
+    // path too, so the decoy printed exactly like the canonical text.
+    await t.prisma.$executeRawUnsafe(`CREATE SCHEMA IF NOT EXISTS "b1_decoy_schema"`);
+    try {
+      for (const ddl of [
+        `CREATE TABLE "b1_decoy_schema"."Project"("id" TEXT PRIMARY KEY)`,
+        `CREATE TABLE "b1_decoy_schema"."Activity"("projectId" TEXT, "id" TEXT, PRIMARY KEY ("projectId","id"))`,
+        `CREATE TABLE "b1_decoy_schema"."Membership"("projectId" TEXT, "userId" TEXT, PRIMARY KEY ("projectId","userId"))`,
+      ]) await t.prisma.$executeRawUnsafe(ddl);
+
+      // Start over so the keys are created by THIS run, under the hostile path.
+      await t.prisma.$executeRawUnsafe(`DROP TABLE "ActivityDependency"`);
+      expect(applyMigration({ autocommit: true, searchPath: 'b1_decoy_schema,public' }),
+             'the file must apply under a hostile caller path').toBeNull();
+      expect(await bindings(), 'every containment key must bind to the relation in public').toBe(
+        ['ActivityDependency_createdBy_fkey->public."Membership"',
+         'ActivityDependency_projectId_fkey->public."Project"',
+         'ActivityDependency_projectId_predecessorId_fkey->public."Activity"',
+         'ActivityDependency_projectId_successorId_fkey->public."Activity"',
+         'ActivityDependency_revokedBy_fkey->public."Membership"'].join(','));
+
+      // And the comparison is no longer rendered through the caller's path either: a key REALLY
+      // bound to the decoy is refused, and the abort NAMES the schema it disagrees about.
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_projectId_fkey"`);
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_projectId_fkey"
+           FOREIGN KEY ("projectId") REFERENCES "b1_decoy_schema"."Project"("id")
+           ON DELETE RESTRICT ON UPDATE CASCADE`);
+      const err = applyMigration({ autocommit: true, searchPath: 'b1_decoy_schema,public' });
+      expect(err, 'a key bound to a decoy must abort the migration').not.toBeNull();
+      expect(err, 'and must name the decoy schema it found')
+        .toMatch(/ActivityDependency_projectId_fkey" is present as FOREIGN KEY .*b1_decoy_schema/su);
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_projectId_fkey"`);
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_projectId_fkey"
+           FOREIGN KEY ("projectId") REFERENCES public."Project"("id")
+           ON DELETE RESTRICT ON UPDATE CASCADE`);
+    } finally {
+      await t.prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "b1_decoy_schema" CASCADE`);
+    }
+    expect(applyMigration(), 'and applies once the real target is restored').toBeNull();
+    expect(await installed()).toBe(COMPLETE);
+
+    // Containment really binds again, which the catalog alone does not prove.
+    const a = await activity();
+    const foreign = await activity(f.projectB.id);
+    expect(await refusal(edge(a, foreign))).toMatch(/violates foreign key|foreign key constraint/u);
+  }, 120_000);
+
+  // ── P29 ────────────────────────────────────────────────────────────────────────────────────
+  it('P29 VOLATILITY is part of a seal function\'s identity, not an assumption about it', async () => {
+    // THE FINDING (migration.sql:961). The identity check compared body, language, return type and
+    // `search_path` — not `provolatile`. PostgreSQL hands a STABLE or IMMUTABLE function the
+    // CALLING STATEMENT's snapshot, so a same-bodied `..._acyclic` declared STABLE reads the graph
+    // as it stood BEFORE it began waiting on the project advisory lock: T2 starts the opposite
+    // edge, blocks on T1's lock, and when it finally runs the recursive walk it cannot see the
+    // edge T1 just committed. The cycle commits. `ALTER FUNCTION ... STABLE` changes nothing else,
+    // so the forgery is byte-identical in `prosrc`.
+    //
+    // MEASURED against `f87e5a7`: `ALTER FUNCTION ... STABLE` then replay — exit 0, and the
+    // function was still STABLE afterwards. The migration had certified it.
+    const volatility = async (): Promise<string> => (await t.prisma.$queryRawUnsafe<Array<{ s: string }>>(`
+      SELECT string_agg(p.proname || '=' || p.provolatile::text, ',' ORDER BY p.proname) AS s
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'public' AND p.proname LIKE 'activity\\_dependency%'`))[0]!.s;
+
+    expect(await volatility(), 'the installed seals are VOLATILE').toBe(
+      ['activity_dependency_acyclic=v', 'activity_dependency_born_live=v',
+       'activity_dependency_frozen=v', 'activity_dependency_no_delete=v',
+       'activity_dependency_no_truncate=v'].join(','));
+
+    for (const fn of ['acyclic', 'born_live']) {
+      await t.prisma.$executeRawUnsafe(`ALTER FUNCTION activity_dependency_${fn}() STABLE`);
+      try {
+        const err = applyMigration();
+        expect(err, `a STABLE ${fn} must abort the migration`).not.toBeNull();
+        expect(err, 'naming the function').toMatch(
+          new RegExp(`function public\\.activity_dependency_${fn}\\(\\) already exists with a definition this migration did not install`, 'u'));
+        expect(err, 'and must point at the operator procedure').toMatch(/docs\/RUNBOOK\.md section B1/u);
+      } finally {
+        await t.prisma.$executeRawUnsafe(`ALTER FUNCTION activity_dependency_${fn}() VOLATILE`);
+      }
+      expect(applyMigration(), `and applies once ${fn} is VOLATILE again`).toBeNull();
+    }
+    expect(await installed()).toBe(COMPLETE);
+  }, 120_000);
+
+  // ── P30 ────────────────────────────────────────────────────────────────────────────────────
+  it('P30 an UNLOGGED table is refused, however canonical its shape', async () => {
+    // THE FINDING (migration.sql:151). The resume path never asked `relpersistence`, and an
+    // UNLOGGED table carries the same columns, constraints, indexes, functions and triggers as a
+    // permanent one — so every shape comparison passes. What differs is the only property this
+    // table exists for: PostgreSQL TRUNCATES an unlogged relation after a crash or unclean
+    // shutdown. The migration would arm five seals over an append-only record of who imposed and
+    // who withdrew each constraint, and that record would silently empty itself.
+    //
+    // MEASURED against `f87e5a7`: the file's own CREATE TABLE, applied as UNLOGGED, then the
+    // migration — exit 0, five seals armed, `relpersistence` still `u`.
+    const sql = readFileSync(migrationPath, 'utf8');
+    const start = sql.indexOf('CREATE TABLE IF NOT EXISTS public."ActivityDependency" (');
+    const end = sql.indexOf('\n);', start);
+    expect(start, 'the CREATE TABLE block must still be findable').toBeGreaterThan(0);
+    const unlogged = sql.slice(start, end + 3)
+      .replace('CREATE TABLE IF NOT EXISTS', 'CREATE UNLOGGED TABLE');
+
+    await t.prisma.$executeRawUnsafe(`DROP TABLE "ActivityDependency"`);
+    await t.prisma.$executeRawUnsafe(unlogged);
+    const persistence = async (): Promise<string> => (await t.prisma.$queryRawUnsafe<Array<{ s: string }>>(
+      `SELECT relkind::text || '/' || relpersistence::text AS s
+         FROM pg_class WHERE oid = '"ActivityDependency"'::regclass`))[0]!.s;
+    expect(await persistence(), 'the fixture is an unlogged ordinary table').toBe('r/u');
+
+    const err = applyMigration();
+    expect(err, 'an unlogged register must abort the migration').not.toBeNull();
+    expect(err, 'naming what it found and what it required')
+      .toMatch(/is not an ordinary permanent table \(pg_class relkind\/relpersistence = r\/u, expected r\/p\)/u);
+    expect(err, 'and saying why it matters').toMatch(/truncates an UNLOGGED relation/u);
+    expect(err, 'and must point at the operator procedure').toMatch(/docs\/RUNBOOK\.md section B1/u);
+
+    // NOTHING was installed over it — the refusal is not merely a message.
+    const armed = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT COUNT(*) AS n FROM pg_trigger
+        WHERE tgrelid = '"ActivityDependency"'::regclass AND NOT tgisinternal`);
+    expect(Number(armed[0]!.n), 'no seal may be armed over an unlogged register').toBe(0);
+
+    // And the repair the abort names lets the SAME file deploy — a guard, not a dead end.
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "ActivityDependency" SET LOGGED`);
+    expect(await persistence(), 'converted to permanent').toBe('r/p');
+    expect(applyMigration(), 'and the same file then completes the install').toBeNull();
+    expect(await installed()).toBe(COMPLETE);
+    const [a, b] = [await activity(), await activity()];
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    expect(await refusal(edge(b, a)), 'with the seals really armed').toMatch(/dependency cycle/u);
   }, 120_000);
 });
