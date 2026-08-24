@@ -2,7 +2,7 @@ import { useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, type IssueDecisionPayload } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
-import { Eyebrow, DecisionChip, Button, Modal } from '@/components';
+import { Eyebrow, DecisionChip, Button, Modal, LocationContext, EditState } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { Lock, Plus, X, ChevronRight, Pencil, Trash2, BookmarkPlus } from '@/lib/icons';
 import { signed, swatch as swatchGradient, decisionRail, can, SW, type Decision, type SwatchKey } from '@vitan/shared';
@@ -222,7 +222,12 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
                 <span style={{ fontWeight: 600, fontSize: 16 }}>{d.title}</span>
                 {locked && <Lock size={13} data-testid={`lock-${d.id}`} />}
               </div>
-              <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 3 }}>{subLabel || d.room}</div>
+              {/* WHERE this decision belongs — tappable back to the Site Map at that place.
+                  `subLabel` (the finer location under the group header) stays the fallback for a
+                  legacy free-text decision that never got a node. */}
+              <div style={{ marginTop: 3 }}>
+                <LocationContext nodeId={d.nodeId} fallback={subLabel || d.room} compact testId={`decision-place-${d.id}`} />
+              </div>
             </div>
             <DecisionChip status={d.status} />
           </div>
@@ -249,16 +254,6 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
             </div>
             <div style={{ textAlign: 'right' }}>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 600, color: (d.cost ?? 0) > 0 ? 'var(--ink)' : 'var(--muted)' }}>{costStr}</div>
-              {locked && (
-                <Button variant="outline" onClick={onChange} style={{ marginTop: 7, padding: '6px 12px', fontSize: 11.5, fontWeight: 500 }}>
-                  Request Change
-                </Button>
-              )}
-              {d.status === 'change' && onWithdraw && (
-                <Button variant="outline" onClick={onWithdraw} data-testid={`withdraw-${d.id}`} style={{ marginTop: 7, padding: '6px 12px', fontSize: 11.5, fontWeight: 500 }}>
-                  Withdraw request
-                </Button>
-              )}
               {onWithdrawDecision && (
                 <Button variant="outline" onClick={onWithdrawDecision} data-testid={`withdraw-decision-${d.id}`} style={{ marginTop: 7, padding: '6px 12px', fontSize: 11.5, fontWeight: 500 }}>
                   Withdraw decision
@@ -266,6 +261,28 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
               )}
             </div>
           </div>
+          {/* Can I edit this? If not, why — and what may I do instead? The verdict is the domain's
+              (approved ⇒ locked; a change request is with the client), never a bare disabled control. */}
+          {locked && (
+            <div style={{ marginTop: 10 }}>
+              <EditState
+                state="locked"
+                reason="Locked after approval — the approved choice is the record."
+                action={{ label: 'Request change', onClick: onChange, testId: `request-change-${d.id}` }}
+                testId={`edit-state-${d.id}`}
+              />
+            </div>
+          )}
+          {d.status === 'change' && (
+            <div style={{ marginTop: 10 }}>
+              <EditState
+                state="workflow"
+                reason="A change request is with the client — the decision reopens when they answer."
+                action={onWithdraw ? { label: 'Withdraw request', onClick: onWithdraw, testId: `withdraw-${d.id}` } : undefined}
+                testId={`edit-state-${d.id}`}
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>

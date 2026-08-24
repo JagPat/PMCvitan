@@ -275,6 +275,8 @@ export interface AppState {
   labourOnboardPending: Record<string, string>;
   labourBindPending: Record<string, string>;
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
+  /** the Site Map's pending focus when it is entered from a location breadcrumb (project-owned) */
+  placeFocus: string | null;
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
   // Unsubmitted per-field checklist edits (gate round 6). The engineer's marks
   // live only in this client until they submit; any snapshot refresh — this
@@ -362,6 +364,10 @@ export interface AppActions {
   setRole: (role: Role) => void;
   signOut: () => void;
   setScreen: (k: ScreenKey) => void;
+  /** open the Site Map focused on one location — the breadcrumbs' navigation door */
+  openPlace: (nodeId: string | null) => void;
+  /** the Site Map has adopted `placeFocus` and will not re-adopt it */
+  clearPlaceFocus: () => void;
   setLang: (l: Lang) => void;
   toggleNotif: () => void;
   flash: (msg: string) => void;
@@ -857,6 +863,7 @@ export function getInitialState(): AppState {
     labourOnboardPending: {},
     labourBindPending: {},
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
+    placeFocus: null,
     checklist: structuredClone(SEED_CHECKLIST),
     checklistMarks: { inspectionId: null, generation: 0, rev: 0, byItem: {} },
     submission: { inspectionId: null, generation: 0, status: 'idle', attempt: 0 },
@@ -1843,6 +1850,16 @@ export const useStore = create<Store>()(
       set((s) => {
         s.screen = k;
         s.notifOpen = false;
+      }),
+    openPlace: (nodeId) =>
+      set((s) => {
+        s.placeFocus = nodeId;
+        s.screen = 'places';
+        s.notifOpen = false;
+      }),
+    clearPlaceFocus: () =>
+      set((s) => {
+        s.placeFocus = null;
       }),
     setLang: (l) => set((s) => { s.lang = l; }),
     toggleNotif: () => set((s) => { s.notifOpen = !s.notifOpen; }),

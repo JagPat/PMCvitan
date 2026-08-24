@@ -20,6 +20,10 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  /* the project name owns the free space and truncates inside it; the bell/persona
+     controls on the right are never pushed off a 390px screen by a long name */
+  flex: 1;
+  min-width: 0;
 }
 .logoTile {
   width: 30px;
@@ -36,10 +40,37 @@
   height: 26px;
   object-fit: contain;
 }
-.brand {
+.project {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  /* a real one-handed target, not a text link */
+  min-height: 44px;
+  padding: 0 8px 0 0;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-text);
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.project:disabled {
+  cursor: default;
+}
+.projectName {
   font-weight: 700;
-  letter-spacing: 0.14em;
-  font-size: 14px;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.projectChevron {
+  flex: none;
+  opacity: 0.65;
 }
 .right {
   display: flex;
