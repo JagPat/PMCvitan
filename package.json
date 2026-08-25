@@ -2,7 +2,7 @@
   "name": "vitan-pmc",
   "private": true,
   "type": "module",
-  "description": "Vitan PMC \u2014 project-management console for an architect-led PMC. Monorepo root.",
+  "description": "Vitan PMC — project-management console for an architect-led PMC. Monorepo root.",
   "scripts": {
     "dev": "pnpm --filter web dev",
     "build": "pnpm --filter web build",
@@ -40,5 +40,8 @@
       "esbuild@<0.28.1": ">=0.28.1",
       "multer@<2.2.0": ">=2.2.0"
     }
+  },
+  "devDependencies": {
+    "pg-query-emscripten": "^5.1.0"
   }
 }
