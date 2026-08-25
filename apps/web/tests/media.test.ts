@@ -31,8 +31,15 @@ describe('addProgressPhoto — API mode', () => {
     const gw = { uploadMedia: vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' }) };
     s()._setGateway(gw as unknown as ApiGateway);
 
-    s().addProgressPhoto(PNG);
-    expect(gw.uploadMedia).toHaveBeenCalledWith({ kind: 'progress', mime: 'image/png', data: 'iVBORw0KGgo=' });
+    await s().addProgressPhoto(PNG);
+    // the upload now carries the capture stamp the daily log has always promised; with no
+    // granted geolocation permission that is the time alone
+    expect(gw.uploadMedia).toHaveBeenCalledWith({
+      kind: 'progress',
+      mime: 'image/png',
+      data: 'iVBORw0KGgo=',
+      takenAt: expect.any(String),
+    });
 
     await flush();
     expect(s().dailyLog!.photos[0]).toEqual({ id: 'm1', url: '/media/m1' });
@@ -43,7 +50,7 @@ describe('addProgressPhoto — API mode', () => {
     const gw = { uploadMedia: vi.fn().mockRejectedValue(new Error('media 500')) };
     s()._setGateway(gw as unknown as ApiGateway);
 
-    s().addProgressPhoto(PNG);
+    await s().addProgressPhoto(PNG);
     await flush();
     expect(s().dailyLog!.photos).toHaveLength(0);
     expect(s().toast).toMatch(/could not upload/i);

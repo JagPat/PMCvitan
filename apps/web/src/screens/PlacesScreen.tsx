@@ -3,9 +3,14 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectVisibleDecisions } from '@/store/selectors';
 import { resolveDrawingUrl } from '@/data/apiGateway';
-import { Eyebrow, DecisionChip, ActivityChip, Swatch, PhotoViewer } from '@/components';
+import { Eyebrow, DecisionChip, ActivityChip, Swatch, PhotoViewer, Button, CreateMenu } from '@/components';
+import { createOptionsFor, type CreateKind } from '@/lib/createOptions';
+import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
+import { AddMaterialModal } from '@/screens/modals/AddMaterialModal';
+import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
+import { captureAtPlace } from '@/lib/captureContext';
 import { DrawingViewer } from '@/screens/DrawingsScreen';
-import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck } from '@/lib/icons';
+import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus } from '@/lib/icons';
 import { childrenOf, subtreeIds, trailOf, placeContents, type DrawingRelation, type PlacedDrawing } from '@/lib/locationTree';
 import { type Drawing, type Photo, type PlacedInspection, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
@@ -58,6 +63,16 @@ export function PlacesScreen() {
   }, [placeFocus, clearPlaceFocus]);
   const [zoom, setZoom] = useState<string | null>(null);
   const [openDrawing, setOpenDrawing] = useState<Drawing | null>(null);
+  // Creating FROM a place: the Site Map was read-only, so the one screen that knows exactly
+  // where a record belongs was also the one screen that could not create one. `creating` is
+  // the menu; `creatingKind` is the form it chose. Both carry the place with them.
+  const [creating, setCreating] = useState(false);
+  const [creatingKind, setCreatingKind] = useState<CreateKind | null>(null);
+  const role = useStore((s) => s.role);
+  const activeProjectId = useStore((s) => s.activeProjectId);
+  // a role with nothing it may author is never offered the button, rather than being
+  // offered one and refused
+  const canCreateHere = createOptionsFor(role).length > 0;
 
   // if the selected node was deleted out from under us, fall back to the whole project
   const selValid = sel === null || nodes.some((n) => n.id === sel);
@@ -122,6 +137,18 @@ export function PlacesScreen() {
               );
             })}
           </div>
+
+          {/* Create AT this place. The record inherits the coordinate the user is already
+              standing on, so the form never re-asks where — the point of the Site Map is
+              that this screen already knows. Same button, same options and same forms on a
+              phone and a desktop; only the entry point's placement differs. */}
+          {canCreateHere && (
+            <div style={{ marginBottom: 18 }}>
+              <Button variant="ink" onClick={() => setCreating(true)} data-testid="place-add" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 14px', fontSize: 13 }}>
+                <Plus size={15} /> Add here
+              </Button>
+            </div>
+          )}
 
           {/* drill-down: child zones/rooms/objects with per-place counts */}
           {children.length > 0 && (
@@ -302,6 +329,25 @@ export function PlacesScreen() {
 
       {zoom && <PhotoViewer url={zoom} onClose={() => setZoom(null)} />}
       {openDrawing && <DrawingViewer drawing={openDrawing} onClose={() => setOpenDrawing(null)} />}
+      {creating && (
+        <CreateMenu
+          title="Add here"
+          subtitle={trail[trail.length - 1]?.name}
+          onPick={(kind) => { setCreating(false); setCreatingKind(kind); }}
+          onClose={() => setCreating(false)}
+        />
+      )}
+      {/* `active`, not `sel`: a place deleted out from under the user falls back to the whole
+          project, and the form must inherit what the screen is actually showing. */}
+      {creatingKind === 'inspection' && (
+        <IssueChecklistModal context={captureAtPlace(activeProjectId, active)} onClose={() => setCreatingKind(null)} />
+      )}
+      {creatingKind === 'material' && (
+        <AddMaterialModal context={captureAtPlace(activeProjectId, active)} onClose={() => setCreatingKind(null)} />
+      )}
+      {creatingKind === 'decision' && (
+        <IssueDecisionModal context={captureAtPlace(activeProjectId, active)} onClose={() => setCreatingKind(null)} />
+      )}
     </div>
   );
 }
