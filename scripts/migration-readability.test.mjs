@@ -12,7 +12,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadParser, parseMigration, relationsIn } from './pg-parse.mjs';
 import { readCorpus, migrationNames, MIGRATIONS_DIR } from './migration-readability.mjs';
@@ -89,6 +90,74 @@ test('an unclassified PL/pgSQL statement kind stops the run rather than passing'
     () => parseMigration('DO $$ BEGIN FOR i IN 1..3 LOOP PERFORM 1; END LOOP; END $$;'),
     /unclassified PL\/pgSQL statement/,
   );
+});
+
+// ── Each of these was a Codex finding on head 01a89d5, reproduced before it was fixed ────────
+
+test('a DO block honours its DECLARED language instead of assuming PL/pgSQL', () => {
+  // PostgreSQL accepts `DO LANGUAGE <any installed language>`. Assuming plpgsql handed the body to
+  // raw_parse_plpgsql, which ABORTS — turning a construct that should be a reportable fragment
+  // into a hard failure no explicit pin could ever clear.
+  const sql = 'DO LANGUAGE plpython3u $$\nplpy.execute("SELECT 1")\n$$;';
+  const parsed = parseMigration(sql);
+  assert.equal(parsed.sites.length, 0);
+  assert.deepEqual(parsed.unreadable.map((u) => u.kind), ['language-unsupported']);
+  assert.equal(parsed.unreadable[0].detail, 'plpython3u', 'and it names the language it could not read');
+});
+
+test('a DO block with no LANGUAGE clause is still PL/pgSQL', () => {
+  // The default must survive the fix: `plpgsql` is what PostgreSQL means by an absent clause.
+  const parsed = parseMigration('DO $$ BEGIN PERFORM 1; END $$;');
+  assert.deepEqual(parsed.unreadable, []);
+  assert.equal(parsed.routines[0].language, 'plpgsql');
+});
+
+test('a multi-command dynamic EXECUTE becomes one site PER COMMAND', () => {
+  // RED against recording the whole tree as one site: a rule judging that single site would draw
+  // evidence from one command and excuse a defect in its neighbour — the cross-neighbour false
+  // pass this adapter exists to make impossible.
+  const sql = 'DO $$ BEGIN\n'
+    + "  EXECUTE 'SELECT 1 FROM pg_constraint; SELECT 1 FROM pg_trigger';\nEND $$;";
+  const parsed = parseMigration(sql);
+  assert.deepEqual(parsed.unreadable, []);
+  const executed = parsed.sites.filter((site) => site.dynamic);
+  assert.equal(executed.length, 2, 'two commands are two sites');
+  assert.deepEqual(executed.map((site) => relationsIn(site.tree)), [['pg_constraint'], ['pg_trigger']],
+    'and each site sees only its OWN command');
+});
+
+test('a routine body is located inside its own statement, not wherever the text first appears', () => {
+  // A comment quoting a short body is an earlier occurrence of the same bytes. A repository-wide
+  // search takes it, and the routine plus every site inside it is then reported at unrelated text —
+  // worse than not reporting, because an exact pin would point somewhere meaningless.
+  // The decoy is in a BLOCK comment, which also puts a dollar tag inside a comment — one of the
+  // two constructs that desynced PR #423's hand-written lexer. PostgreSQL's own grammar handles it.
+  const body = '\n  SELECT 1 FROM pg_constraint\n';
+  const sql = `/* a comment quoting the body: $$${body}$$ */\n`
+    + `CREATE FUNCTION public.helper() RETURNS INT AS $$${body}$$ LANGUAGE sql;`;
+  const parsed = parseMigration(sql);
+  assert.deepEqual(parsed.unreadable, []);
+  assert.equal(parsed.routines.length, 1);
+  // The decoy body opens on line 1; the REAL one opens on line 4.
+  assert.equal(parsed.routines[0].startLine, 4, 'the body inside the CREATE FUNCTION, not the quote');
+  assert.equal(parsed.sites.filter((site) => site.routine === parsed.routines[0])[0].line, 5,
+    'and the site inside it is reported at its own line, not at the comment');
+});
+
+test('a migration that cannot be read names the FILE, not just the construct', () => {
+  // parseMigration is handed TEXT, so none of its four refusals can name a file. Over 91
+  // migrations an uncaught throw leaves the one file that matters unidentifiable.
+  const dir = mkdtempSync(join(tmpdir(), 'migration-readability-'));
+  const name = '20990101000000_unreadable';
+  mkdirSync(join(dir, name));
+  writeFileSync(join(dir, name, 'migration.sql'),
+    'DO $$ BEGIN FOR i IN 1..3 LOOP PERFORM 1; END LOOP; END $$;');
+  assert.throws(() => readCorpus({ dir }), (err) => {
+    assert.match(err.message, /20990101000000_unreadable\/migration\.sql/, 'the file is named');
+    assert.match(err.message, /unclassified PL\/pgSQL statement/, 'and so is the construct');
+    assert.equal(err.migration, name);
+    return true;
+  });
 });
 
 // ── The corpus, accounted for ────────────────────────────────────────────────────────────────

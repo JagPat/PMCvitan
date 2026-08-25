@@ -37,8 +37,14 @@ export function migrationNames(dir = MIGRATIONS_DIR) {
 /**
  * Read the whole corpus and account for every part of it.
  *
- * A file the grammar refuses at all THROWS, naming the file — this adapter never degrades to
- * "found nothing". Everything it can open is returned as counted sites and named fragments.
+ * A file the grammar refuses at all THROWS, NAMING THE FILE — and the naming is done here, because
+ * this is the only layer that knows the name. `parseMigration` is handed SQL text, not a path, so
+ * its four refusals (a top-level parse error, a PL/pgSQL compilation error, a body it cannot locate
+ * inside its own statement, an unclassified statement kind) all describe the CONSTRUCT and none can
+ * describe the FILE. Uncaught, `pnpm lint:migrations` over 91 migrations would stop on a parser
+ * message and a stack frame in this function, leaving the one file that matters unidentifiable —
+ * a check whose failure output does not say what failed. The contract above says the file is named,
+ * so the file is named.
  */
 export function readCorpus({ dir = MIGRATIONS_DIR } = {}) {
   const migrations = migrationNames(dir);
@@ -46,7 +52,15 @@ export function readCorpus({ dir = MIGRATIONS_DIR } = {}) {
   let routines = 0;
   const unreadable = [];
   for (const name of migrations) {
-    const parsed = parseMigration(readFileSync(join(dir, name, 'migration.sql'), 'utf8'));
+    let parsed;
+    try {
+      parsed = parseMigration(readFileSync(join(dir, name, 'migration.sql'), 'utf8'));
+    } catch (err) {
+      const failure = new Error(`${name}/migration.sql: ${err.message}`);
+      failure.cause = err;
+      failure.migration = name;
+      throw failure;
+    }
     sites += parsed.sites.length;
     routines += parsed.routines.length;
     for (const u of parsed.unreadable) unreadable.push({ migration: name, ...u });

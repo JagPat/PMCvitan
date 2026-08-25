@@ -265,18 +265,21 @@ const ROUTINE_STATEMENTS = new Set(['DoStmt', 'CreateFunctionStmt']);
 //   plpgsql  compiled by the PL/pgSQL parser, as before
 //   sql      parsed by the SQL grammar — its statements become ordinary sites
 //   anything else, or a body the grammar refuses, is an UNREADABLE FRAGMENT, named and counted.
+const defElem = (list, name) => (list ?? [])
+  .find((o) => o.DefElem?.defname === name)?.DefElem?.arg;
+
 const bodyOf = (node, type) => {
-  if (type === 'DoStmt') {
-    for (const arg of node.args ?? []) {
-      if (arg.DefElem?.defname === 'as') return { language: 'plpgsql', body: arg.DefElem.arg?.String?.sval ?? null };
-    }
-    return { language: 'plpgsql', body: null };
-  }
-  const options = node.options ?? [];
-  const language = String(
-    options.find((o) => o.DefElem?.defname === 'language')?.DefElem?.arg?.String?.sval ?? '',
-  ).toLowerCase();
-  let arg = options.find((o) => o.DefElem?.defname === 'as')?.DefElem?.arg;
+  // `DO` CARRIES A LANGUAGE TOO, and assuming `plpgsql` here is not a harmless default: PostgreSQL
+  // accepts `DO LANGUAGE plpython3u $$ … $$` for any installed procedural language, and a body
+  // assumed to be PL/pgSQL is handed to `raw_parse_plpgsql`, which ABORTS on it. That turns a
+  // construct this adapter merely cannot read — which it is supposed to report as a fragment and
+  // let an explicit pin cover — into a hard failure no pin can clear. The grammar records the
+  // language, so it is read, and `plpgsql` is the default ONLY when the clause is absent, which is
+  // what the default means in PostgreSQL.
+  const list = type === 'DoStmt' ? node.args : node.options;
+  const declared = defElem(list, 'language')?.String?.sval;
+  const language = String(declared ?? (type === 'DoStmt' ? 'plpgsql' : '')).toLowerCase();
+  let arg = defElem(list, 'as');
   if (arg?.List) arg = arg.List.items;
   return { language, body: (Array.isArray(arg) ? arg : [arg])[0]?.String?.sval ?? null };
 };
@@ -285,7 +288,6 @@ const bodyOf = (node, type) => {
 // found by locating that exact string. No dollar-tag matching of our own, at any point.
 function routineBodies(tree, buffer) {
   const out = [];
-  let searchFrom = 0;
   for (const { type, node, statement } of topLevelRoutineStatements(tree)) {
     const { language, body } = bodyOf(node, type);
     const from = statement.stmt_location ?? 0;
@@ -296,13 +298,32 @@ function routineBodies(tree, buffer) {
       out.push({ kind: type, language, body: null, startLine: declaredAt, statementSql: null });
       continue;
     }
+    // THE BODY IS FOUND INSIDE ITS OWN STATEMENT, and from the END of it.
+    //
+    // A forward search takes the FIRST occurrence of the body text — and a comment quoting a short
+    // body, or a second routine with an identical one-line body, is such an occurrence. The routine
+    // and every site inside it are then reported at unrelated text, which is worse than not
+    // reporting them: an exact fragment pin would point somewhere meaningless.
+    //
+    // Bounding the search to the statement's own byte range is NOT sufficient, and the reason is
+    // measured rather than assumed: libpg_query omits `stmt_location` entirely for a first
+    // statement, so its span begins at byte 0 and includes every comment before it. What is
+    // reliable is the other end — a routine's body is the LAST thing in its own declaration before
+    // the language clause, so the span is searched BACKWARDS and the first hit from that end is
+    // the real body. (Measured on the probe in `migration-readability.test.mjs`: the decoy sits at
+    // byte 33 and the body at 119, inside a span of 0..165.)
+    const to = Math.min(
+      typeof statement.stmt_len === 'number' ? from + statement.stmt_len : buffer.length,
+      buffer.length,
+    );
     const bodyBytes = Buffer.from(body, 'utf8');
-    const at = buffer.indexOf(bodyBytes, searchFrom);
-    if (at === -1) throw new Error('pg-parse: a routine body the parser returned is not findable in the source');
-    searchFrom = at + bodyBytes.length;
+    const at = buffer.lastIndexOf(bodyBytes, to - bodyBytes.length);
+    if (at === -1 || at < from) {
+      throw new Error('pg-parse: a routine body the parser returned is not findable inside its own '
+        + `statement (bytes ${from}..${to})`);
+    }
     // `lineno` 1 in the PL/pgSQL tree is the line the body STARTS on — the line carrying the
     // opening dollar tag — so the two line spaces differ by exactly this offset.
-    const to = typeof statement.stmt_len === 'number' ? from + statement.stmt_len : buffer.length;
     out.push({
       kind: type,
       language,
@@ -320,6 +341,36 @@ function* topLevelRoutineStatements(tree) {
     for (const { type, node } of walk(statement.stmt)) {
       if (ROUTINE_STATEMENTS.has(type)) yield { type, node, statement };
     }
+  }
+}
+
+/**
+ * One site per STATEMENT of a parsed SQL text — the only way either caller turns text into sites.
+ *
+ * It is shared rather than written twice because the two callers already drifted apart once: the
+ * SQL-body path split its statements while the dynamic-`EXECUTE` path recorded the whole tree as a
+ * single site, so `EXECUTE 'SELECT …; SELECT …'` produced ONE site spanning two commands. A rule
+ * judging that site would gather evidence from one command and excuse a defect in its neighbour —
+ * the cross-neighbour false pass this adapter exists to make impossible. Two call sites that must
+ * agree are one function.
+ *
+ * `lineFor` maps a byte offset inside `text` to a line in the FILE. The two callers know different
+ * things and say so: a routine body has a real span in the file, so its offsets resolve to real
+ * lines; a dynamic string was folded from constants and has no single span, so every statement in
+ * it is reported at the `EXECUTE` that runs it.
+ */
+function* sqlTextSites(text, lineFor) {
+  const buffer = Buffer.from(text, 'utf8');
+  for (const inner of parseSql(text).stmts ?? []) {
+    const from = inner.stmt_location ?? 0;
+    const to = typeof inner.stmt_len === 'number' ? from + inner.stmt_len : buffer.length;
+    yield {
+      // libpg_query reports `stmt_location` 0 for a first statement, which includes any leading
+      // newline, so the offset is advanced to real text before it is turned into a line.
+      line: lineFor(firstNonSpace(buffer, from, to)),
+      sql: buffer.subarray(from, to).toString('utf8').trim(),
+      tree: inner.stmt,
+    };
   }
 }
 
@@ -370,33 +421,24 @@ export function parseMigration(sql) {
     if (body.language === 'sql') {
       // A SQL-language body IS SQL. It is parsed by the SQL grammar and its statements become
       // ordinary sites, so a catalog query written in a SQL helper is read like any other.
+      let bodySites = null;
       let bodyTree = null;
       try {
         bodyTree = parseSql(body.body);
+        // `startLine` is the line the body OPENS on and offsets inside it are relative to that,
+        // so the two line spaces compose by addition.
+        const bodyBuffer = Buffer.from(body.body, 'utf8');
+        bodySites = [...sqlTextSites(body.body,
+          (at) => body.startLine + lineOfByteOffset(bodyBuffer, at) - 1)];
       } catch {
-        bodyTree = null;
+        bodySites = null;
       }
-      if (bodyTree === null) {
+      if (bodySites === null) {
         unreadable.push({ line: body.startLine, kind: 'sql-body-unparsed', detail: body.language });
         continue;
       }
       const routine = { ...body, tree: bodyTree };
-      const bodyBuffer = Buffer.from(body.body, 'utf8');
-      for (const inner of bodyTree.stmts ?? []) {
-        const from = inner.stmt_location ?? 0;
-        const to = typeof inner.stmt_len === 'number' ? from + inner.stmt_len : bodyBuffer.length;
-        sites.push({
-          // `startLine` is the line the body OPENS on and offsets inside the body are relative to
-          // it, so the two line spaces compose by addition. The offset is advanced past leading
-          // whitespace first: libpg_query reports `stmt_location` 0 for a first statement, which
-          // includes the newline after the opening dollar tag, and reporting a site at the
-          // `CREATE FUNCTION` line instead of at its own query makes the line unopenable.
-          line: body.startLine + lineOfByteOffset(bodyBuffer, firstNonSpace(bodyBuffer, from, to)) - 1,
-          sql: bodyBuffer.subarray(from, to).toString('utf8').trim(),
-          tree: inner.stmt,
-          routine,
-        });
-      }
+      for (const site of bodySites) sites.push({ ...site, routine });
       routines.push(routine);
       continue;
     }
@@ -421,19 +463,21 @@ export function parseMigration(sql) {
         const valueTree = parseFragment({ ...expr, dynamic: false });
         const value = valueTree === null ? null : nodesOfType(valueTree, 'ResTarget')[0]?.val;
         const text = value ? foldConstantSql(value) : null;
-        let dynamicTree = null;
+        let executed = null;
         if (text !== null) {
           try {
-            dynamicTree = parseSql(text);
+            // A folded constant has no single span in the file, so every statement it holds is
+            // reported at the `EXECUTE` that runs it — the line a reader would actually open.
+            executed = [...sqlTextSites(text, () => line)];
           } catch {
-            dynamicTree = null;
+            executed = null;
           }
         }
-        if (dynamicTree === null) {
+        if (executed === null) {
           unreadable.push({ line, kind: 'dynamic-unresolved', detail: expr.query });
           continue;
         }
-        sites.push({ line, sql: text, tree: dynamicTree, routine, dynamic: true });
+        for (const site of executed) sites.push({ ...site, routine, dynamic: true });
         continue;
       }
 
