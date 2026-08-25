@@ -135,6 +135,55 @@ export const stringConstsIn = (tree) => nodesOfType(tree, 'A_Const')
   .filter((c) => typeof c.sval?.sval === 'string')
   .map((c) => c.sval.sval);
 
+/**
+ * Alias (or bare relation name) → relation name, for every range this query names.
+ *
+ * One map for the whole query, sub-selects included, DELIBERATELY. A correlated sub-select
+ * legitimately references an outer range — the merged head of PR #412 reads `c.oid` inside a
+ * scalar sub-select where `pg_constraint c` is joined in the enclosing query — so per-scope
+ * resolution would fail to resolve exactly the shape this repository writes. The cost is that an
+ * inner range shadowing an outer alias resolves to whichever the parser listed last; that makes an
+ * ENFORCEMENT read easier to credit, never a finding easier to hide, so it errs safe.
+ */
+export function relationAliases(tree) {
+  const map = new Map();
+  for (const range of nodesOfType(tree, 'RangeVar')) {
+    const relation = String(range.relname ?? '').toLowerCase();
+    const alias = range.alias?.aliasname ? String(range.alias.aliasname).toLowerCase() : relation;
+    map.set(alias, relation);
+  }
+  return map;
+}
+
+/**
+ * Does `subtree` reference `column` on a range that resolves to `relation`?
+ *
+ * A column NAME is not a column: `tgenabled` selected from a derived table of someone's own making
+ * says nothing about any trigger. A qualified reference is resolved through `aliases`; an
+ * unqualified one is credited only when the query names exactly one relation and it is this one.
+ * Anything else is unresolved, and unresolved means NO — a rule asking this question is asking for
+ * evidence, and evidence that cannot be tied to the catalog it claims to come from is not evidence.
+ */
+export function referencesColumnOf(subtree, relation, column, aliases) {
+  for (const ref of nodesOfType(subtree, 'ColumnRef')) {
+    const fields = (ref.fields ?? [])
+      .map((f) => (typeof f.String?.sval === 'string' ? f.String.sval.toLowerCase() : null));
+    if (fields.length === 0 || fields[fields.length - 1] !== column) continue;
+    if (fields.length >= 2) {
+      if (aliases.get(fields[fields.length - 2]) === relation) return true;
+      continue;
+    }
+    if (aliases.size === 1 && [...aliases.values()][0] === relation) return true;
+  }
+  return false;
+}
+
+/** The two operand subtrees of a comparison, in both orders, or nothing when it has only one. */
+export function comparisonOperands(expr) {
+  const sides = [expr.lexpr, expr.rexpr].filter((side) => side !== undefined && side !== null);
+  return sides.length < 2 ? [] : [[sides[0], sides[1]], [sides[1], sides[0]]];
+}
+
 // Every offset libpg_query reports is a BYTE offset, and these migrations contain `§`, `─` and
 // other multi-byte characters, so all position arithmetic happens in a Buffer. Doing it in JS
 // string indices slices a statement mid-character: measured, that mis-sliced 48 of the 91
@@ -146,22 +195,83 @@ const lineOfByteOffset = (buffer, offset) => {
   return line;
 };
 
+// EVERY PL/pgSQL STATEMENT KIND, CLASSIFIED — and an unknown one THROWS.
+//
+// The eleven below are the kinds the 91 migrations actually contain, enumerated rather than
+// imagined. What matters is not the list but the `default:` case it does not have: a kind absent
+// from this table stops the run and names itself, instead of having its SQL walked as if the
+// walker understood the position it sat in. PL/pgSQL has dynamic-SQL statements this repository has
+// never used — `dynfors`, `open … FOR EXECUTE`, `return_query EXECUTE` — and each would otherwise
+// arrive looking exactly like an ordinary expression.
+//
+// `dynamicSqlField` names the field whose expression EVALUATES TO SQL TEXT rather than being SQL.
+// Reading `EXECUTE 'SELECT … FROM pg_constraint WHERE contype = ''f'''` as an ordinary expression
+// parses the string LITERAL and never the statement PostgreSQL will run, so the guard inside it
+// becomes invisible to every rule — a linter reporting clean about SQL it never read.
+const PLPGSQL_STATEMENT_KINDS = new Map([
+  ['PLpgSQL_stmt_assign', {}],
+  ['PLpgSQL_stmt_block', {}],
+  ['PLpgSQL_stmt_dynexecute', { dynamicSqlField: 'query' }],
+  ['PLpgSQL_stmt_execsql', {}],
+  ['PLpgSQL_stmt_exit', {}],
+  ['PLpgSQL_stmt_foreach_a', {}],
+  ['PLpgSQL_stmt_fors', {}],
+  ['PLpgSQL_stmt_if', {}],
+  ['PLpgSQL_stmt_perform', {}],
+  ['PLpgSQL_stmt_raise', {}],
+  ['PLpgSQL_stmt_return', {}],
+]);
+
 // Every SQL text inside a routine lives in a `PLpgSQL_expr.query`, so the walk collects EVERY one
-// and attributes it to the nearest enclosing `lineno`. That is total over whatever statement kinds
-// a routine contains, rather than over a list of the kinds this repository has used so far.
-function* plpgsqlExpressions(value, lineno) {
+// and attributes it to the nearest enclosing `lineno`, carrying whether it sits in a dynamic-SQL
+// position. That is total over whatever expressions a routine contains, while the statement table
+// above keeps it total over the statement kinds those expressions sit in.
+function* plpgsqlExpressions(value, lineno, dynamic = false) {
   if (Array.isArray(value)) {
-    for (const item of value) yield* plpgsqlExpressions(item, lineno);
+    for (const item of value) yield* plpgsqlExpressions(item, lineno, dynamic);
     return;
   }
   if (value === null || typeof value !== 'object') return;
   const here = typeof value.lineno === 'number' ? value.lineno : lineno;
   for (const [key, child] of Object.entries(value)) {
-    if (key === 'PLpgSQL_expr' && typeof child?.query === 'string') {
-      yield { query: child.query, parseMode: child.parseMode ?? 0, lineno: here };
+    if (key.startsWith('PLpgSQL_stmt_')) {
+      const kind = PLPGSQL_STATEMENT_KINDS.get(key);
+      if (kind === undefined) {
+        throw new Error(`pg-parse: unclassified PL/pgSQL statement ${key} — add it to `
+          + 'PLPGSQL_STATEMENT_KINDS, saying whether any of its fields evaluates to SQL text, '
+          + 'rather than letting the SQL inside it pass unread');
+      }
+      const statementLine = typeof child?.lineno === 'number' ? child.lineno : here;
+      for (const [field, sub] of Object.entries(child ?? {})) {
+        yield* plpgsqlExpressions(sub, statementLine, field === kind.dynamicSqlField);
+      }
+      continue;
     }
-    yield* plpgsqlExpressions(child, here);
+    if (key === 'PLpgSQL_expr' && typeof child?.query === 'string') {
+      yield { query: child.query, parseMode: child.parseMode ?? 0, lineno: here, dynamic };
+      continue;
+    }
+    yield* plpgsqlExpressions(child, here, dynamic);
   }
+}
+
+/**
+ * Fold a dynamic-SQL expression to the constant text it always produces, or null.
+ *
+ * `EXECUTE 'SELECT …'` and `EXECUTE 'CREATE ' || 'TABLE …'` are decidable: the statement is written
+ * in the file and is parsed for real. `EXECUTE format('DROP TRIGGER %I ON %I', …)` is not — its
+ * text does not exist until the migration runs. The two are told apart by the parse tree, not by
+ * pattern: a string constant, or a `||` of string constants, folds; anything else does not.
+ */
+function foldConstantSql(node) {
+  if (typeof node?.A_Const?.sval?.sval === 'string') return node.A_Const.sval.sval;
+  const expr = node?.A_Expr;
+  if (expr && (expr.name ?? []).some((n) => n.String?.sval === '||')) {
+    const left = foldConstantSql(expr.lexpr);
+    const right = foldConstantSql(expr.rexpr);
+    return left === null || right === null ? null : left + right;
+  }
+  return null;
 }
 
 /**
@@ -265,10 +375,38 @@ export function parseMigration(sql) {
     sites.push({ line: s.line, sql: null, tree: s.node, routine: null });
   }
 
+  const unresolvedDynamicSql = [];
   const routines = routineBodies(tree, buffer).map((body) => {
     const compiled = parsePlpgsqlStatement(body.statementSql);
     const routine = { ...body, tree: compiled };
     for (const expr of plpgsqlExpressions(compiled, 1)) {
+      const line = body.startLine + Math.max(0, expr.lineno - 1);
+
+      // A dynamic-SQL position is read as the STATEMENT it produces, never as the string that
+      // produces it. When the text is decidable from the file it is parsed for real and becomes an
+      // ordinary site. When it is not, it is REPORTED — `migration-lint.test.mjs` pins the exact
+      // set, so a new one cannot appear without a visible diff — rather than being handed to the
+      // rules as a harmless string expression they will find nothing in.
+      if (expr.dynamic) {
+        const valueTree = parseFragment({ ...expr, dynamic: false });
+        const value = valueTree === null ? null : nodesOfType(valueTree, 'ResTarget')[0]?.val;
+        const text = value ? foldConstantSql(value) : null;
+        let dynamicTree = null;
+        if (text !== null) {
+          try {
+            dynamicTree = parseSql(text);
+          } catch {
+            dynamicTree = null;
+          }
+        }
+        if (dynamicTree === null) {
+          unresolvedDynamicSql.push({ line, sql: expr.query });
+          continue;
+        }
+        sites.push({ line, sql: text, tree: dynamicTree, routine, dynamic: true });
+        continue;
+      }
+
       const exprTree = parseFragment(expr);
       if (exprTree === null) {
         // Refused in every reading the grammar offers. Counted rather than shrugged off:
@@ -277,16 +415,12 @@ export function parseMigration(sql) {
         routine.unparsed = (routine.unparsed ?? 0) + 1;
         continue;
       }
-      sites.push({
-        line: body.startLine + Math.max(0, expr.lineno - 1),
-        sql: expr.query,
-        tree: exprTree,
-        routine,
-      });
+      sites.push({ line, sql: expr.query, tree: exprTree, routine });
     }
     return routine;
   });
 
   sites.sort((a, b) => a.line - b.line);
-  return { statements, sites, routines };
+  unresolvedDynamicSql.sort((a, b) => a.line - b.line);
+  return { statements, sites, routines, unresolvedDynamicSql };
 }

@@ -16,9 +16,18 @@
 --   RESOLUTION B  reads `convalidated` and the `confrelid` OID and stops there. Every column it
 --                 reads survives `ALTER TABLE ... DISABLE TRIGGER ALL` byte for byte.
 --                 MI-001 MUST fire, on this query, with A standing right beside it.
+--   RESOLUTION C  joins the key's own internal triggers correctly and then merely SELECTS
+--                 `tgenabled` without rejecting anything. The column is read; nothing turns on it.
+--                 MI-001 MUST fire.
+--   RESOLUTION D  names `pg_trigger`, links it correctly, and then takes `tgenabled` from a derived
+--                 table of its own making. The column NAME is present and says nothing about any
+--                 trigger. MI-001 MUST fire.
+--
+-- C and D are the two frauds the first draft of this rule admitted, because it asked only whether
+-- the column names `tgenabled` and `tgconstraint` appeared somewhere in the query.
 
 DO $$
-DECLARE v_bad TEXT; v_ok BOOLEAN;
+DECLARE v_bad TEXT; v_ok BOOLEAN; v_state "char";
 BEGIN
   -- RESOLUTION A — enforcement asked and answered in the query that draws the conclusion.
   SELECT k.conname INTO v_bad
@@ -39,5 +48,27 @@ BEGIN
      AND k.conrelid = 'public."Decoy"'::regclass;
   IF v_ok IS NOT TRUE THEN
     RAISE EXCEPTION 'decoy: foreign key "Decoy_unguarded_fkey" is missing or points elsewhere';
+  END IF;
+
+  -- RESOLUTION C — the right triggers, read and not judged.
+  SELECT g.tgenabled INTO v_state
+    FROM pg_constraint k
+    JOIN pg_trigger g ON g.tgconstraint = k.oid AND g.tgisinternal
+   WHERE k.conname = 'Decoy_projected_fkey' AND k.contype = 'f'
+     AND k.conrelid = 'public."Decoy"'::regclass;
+  IF v_state IS NULL THEN
+    RAISE EXCEPTION 'decoy: foreign key "Decoy_projected_fkey" has no internal triggers at all';
+  END IF;
+
+  -- RESOLUTION D — the right names, from the wrong place.
+  SELECT k.conname INTO v_bad
+    FROM pg_constraint k
+    JOIN pg_trigger g ON g.tgconstraint = k.oid AND g.tgisinternal
+    CROSS JOIN (SELECT 'O'::TEXT AS tgenabled) AS fake
+   WHERE k.conname = 'Decoy_pretend_fkey' AND k.contype = 'f'
+     AND k.conrelid = 'public."Decoy"'::regclass
+     AND fake.tgenabled NOT IN ('D', 'R');
+  IF v_bad IS NOT NULL THEN
+    RAISE EXCEPTION 'decoy: foreign key % is present but is not enforcing', v_bad;
   END IF;
 END $$;

@@ -47,7 +47,8 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  loadParser, parseMigration, walk, nodesOfType, relationsIn, columnsIn, stringConstsIn,
+  loadParser, parseMigration, nodesOfType, relationsIn, columnsIn, stringConstsIn,
+  relationAliases, referencesColumnOf, comparisonOperands,
 } from './pg-parse.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -69,13 +70,47 @@ const FK_VALUE = 'f';
 
 /** True when this comparison puts a `contype` column and the constant `'f'` on opposite sides. */
 function comparesFkDiscriminator(expr) {
-  const sides = [expr.lexpr, expr.rexpr].filter((s) => s != null);
-  if (sides.length < 2) return false;
-  const [a, b] = sides;
-  const names = (side) => columnsIn(side);
-  const consts = (side) => stringConstsIn(side);
-  return (names(a).includes(FK_DISCRIMINATOR) && consts(b).includes(FK_VALUE))
-    || (names(b).includes(FK_DISCRIMINATOR) && consts(a).includes(FK_VALUE));
+  // DELIBERATELY unresolved, unlike the enforcement read below. Detection and evidence pull in
+  // opposite directions: a permissive detector asks the question of more sites than strictly own
+  // it, and a strict evidence test credits fewer answers. Both err toward a FINDING, which is the
+  // only direction a linter may err in — the failure this whole unit exists to refuse is a silent
+  // clean report, never a site reported that a human then reads and accepts in the ledger.
+  return comparisonOperands(expr).some(([a, b]) => columnsIn(a).includes(FK_DISCRIMINATOR)
+    && stringConstsIn(b).includes(FK_VALUE));
+}
+
+// The states `pg_trigger.tgenabled` can hold: 'O' origin, 'A' always, 'D' disabled, 'R' replica.
+// A query that compares the column against something outside this alphabet is not deciding
+// enforcement, whatever it is doing.
+const ENABLEMENT_STATES = new Set(['D', 'R', 'O', 'A']);
+
+/**
+ * Does THIS query establish that the foreign key it is judging actually enforces?
+ *
+ * Two facts, both required, both resolved rather than name-matched. The first draft of this rule
+ * asked only whether the column NAMES `tgenabled` and `tgconstraint` appeared in the query, and
+ * Codex was right that this admits two different frauds: a guard that JOINS the right triggers and
+ * then merely SELECTS `tgenabled` without rejecting anything, and a query whose `tgenabled` comes
+ * from a derived table of its author's own making. Both are the linter's own defect class again —
+ * evidence that resembles the claim instead of establishing it.
+ */
+function readsEnforcementState(tree) {
+  const aliases = relationAliases(tree);
+  if (![...aliases.values()].includes('pg_trigger')) return false;
+  const comparisons = nodesOfType(tree, 'A_Expr');
+
+  // (1) LINKED — these triggers are the inspected constraint's own: `tgconstraint = <constraint>.oid`.
+  //     Without it the query is reading the enablement of some trigger, not of this key.
+  const linked = comparisons.some((expr) => comparisonOperands(expr).some(([a, b]) =>
+    referencesColumnOf(a, 'pg_trigger', 'tgconstraint', aliases)
+    && referencesColumnOf(b, 'pg_constraint', 'oid', aliases)));
+  if (!linked) return false;
+
+  // (2) TESTED — the enablement value is compared against a state it can hold, so the query's
+  //     result actually turns on it. `SELECT g.tgenabled` alone decides nothing and is refused.
+  return comparisons.some((expr) => comparisonOperands(expr).some(([a, b]) =>
+    referencesColumnOf(a, 'pg_trigger', 'tgenabled', aliases)
+    && stringConstsIn(b).some((value) => ENABLEMENT_STATES.has(value))));
 }
 
 /**
@@ -103,12 +138,7 @@ function ruleEnforcementNotExistence(site) {
   const comparisons = nodesOfType(site.tree, 'A_Expr');
   if (!comparisons.some(comparesFkDiscriminator)) return [];
 
-  // The enforcement read, in THIS query: `pg_trigger.tgenabled`, reached through `tgconstraint`.
-  // Both halves are required and neither is decoration. `tgenabled` alone would accept the
-  // enablement of some unrelated trigger that happens to be read nearby; `tgconstraint` alone
-  // reaches the key's own triggers and then never asks whether they are switched on.
-  const columns = columnsIn(site.tree);
-  if (columns.includes('tgenabled') && columns.includes('tgconstraint')) return [];
+  if (readsEnforcementState(site.tree)) return [];
 
   return [finding('MI-001', site.line,
     'this query decides something about a foreign key (it reads pg_constraint and tests '
@@ -117,8 +147,10 @@ function ruleEnforcementNotExistence(site) {
     + 'DISABLE TRIGGER ALL switches them off while leaving conname, conrelid, confrelid, contype, '
     + 'convalidated and pg_get_constraintdef byte-for-byte unchanged. A key that enforces nothing '
     + 'therefore satisfies every column read here, which is how PR #411 head a222e91 certified a '
-    + 'database with no containment. Join pg_trigger on tgconstraint and refuse tgenabled in '
-    + "('D','R') IN THIS QUERY. The same read in a neighbouring query does not answer for this one.")];
+    + "database with no containment. IN THIS QUERY, join pg_trigger on tgconstraint = the "
+    + "constraint's oid and compare tgenabled against the states it can hold — reading the column "
+    + 'without testing it decides nothing, and the same read in a neighbouring query does not '
+    + 'answer for this one.')];
 }
 
 const RULES = [
@@ -139,12 +171,41 @@ export function lintMigration({ name, sql }) {
     .sort((a, b) => a.line - b.line || a.rule.localeCompare(b.rule));
 }
 
-/** Migrations merged before this linter existed, each with a written reason. Recorded, not
- *  suppressed: adding one costs a visible edit that a reviewer reads. See the JSON's __README__. */
+/**
+ * The SQL this linter could not read, because it does not exist until the migration runs.
+ *
+ * `EXECUTE format('CREATE TRIGGER %I ON %I', …)` has no text a parser can be given. The adapter
+ * refuses to hand such a fragment to the rules as though it were an ordinary query — that would be
+ * a clean report about SQL nobody read — so each one is reported here instead. This is NOT an
+ * exemption: `migration-lint.test.mjs` pins the exact set, so a new one fails the required
+ * `automation` job and has to be looked at, and `docs/MIGRATION_INVARIANTS.md` states the limit.
+ */
+export function unresolvedDynamicSql({ dir = MIGRATIONS_DIR } = {}) {
+  const out = [];
+  for (const name of migrationNames(dir)) {
+    const sql = readFileSync(join(dir, name, 'migration.sql'), 'utf8');
+    for (const site of parseMigration(sql).unresolvedDynamicSql) out.push({ migration: name, ...site });
+  }
+  return out;
+}
+
+/**
+ * Migrations merged before this linter existed, each with a written reason. Recorded, not
+ * suppressed: adding one costs a visible edit that a reviewer reads. See the JSON's __README__.
+ *
+ * KEYED PER SITE — `"MI-001:167"`, rule and line — not per rule. Keying it by rule alone let one
+ * accepted site discharge every other finding of that rule in the same file, which is the ledger
+ * committing the exact defect the rule detects and the ledger's own README disclaims. Migrations
+ * are immutable once merged, so the line is stable; if one ever moves, the stale entry goes dead
+ * (a test fails) AND the moved site is unexempted (the lint fails), so it cannot drift quietly.
+ */
 const EXEMPTIONS_FILE = join(REPO_ROOT, 'scripts', 'migration-lint-exemptions.json');
 export const EXEMPTIONS = new Map(Object.entries(JSON.parse(
   existsSync(EXEMPTIONS_FILE) ? readFileSync(EXEMPTIONS_FILE, 'utf8') : '{}',
 )));
+
+/** The key one exemption entry must carry to suppress one finding: the rule and the site's line. */
+export const exemptionKey = (finding) => `${finding.rule}:${finding.line}`;
 
 export function migrationNames(dir = MIGRATIONS_DIR) {
   return readdirSync(dir).sort().filter((n) => existsSync(join(dir, n, 'migration.sql')));
@@ -158,12 +219,12 @@ export function migrationNames(dir = MIGRATIONS_DIR) {
  * defect this unit is not allowed to repair stays visible in the same output as a failing one
  * rather than disappearing into a JSON file nobody opens.
  */
-export function lintAll({ dir = MIGRATIONS_DIR, applyExemptions = true } = {}) {
+export function lintAll({ dir = MIGRATIONS_DIR, applyExemptions = true, exemptions = EXEMPTIONS } = {}) {
   const findings = [];
   const exempted = [];
   for (const name of migrationNames(dir)) {
     for (const f of lintMigration({ name, sql: readFileSync(join(dir, name, 'migration.sql'), 'utf8') })) {
-      const reason = applyExemptions ? (EXEMPTIONS.get(name) ?? {})[f.rule] : undefined;
+      const reason = applyExemptions ? (exemptions.get(name) ?? {})[exemptionKey(f)] : undefined;
       if (reason) exempted.push({ ...f, reason });
       else findings.push(f);
     }
@@ -178,6 +239,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     const live = f.reason.startsWith('LIVE DEFECT');
     console.error(`${f.migration}/migration.sql:${f.line}  ${f.rule}  ${live ? 'LIVE DEFECT (recorded, not repaired here)' : 'RECORDED EXEMPTION'}: ${f.reason}`);
   }
+  for (const d of unresolvedDynamicSql()) {
+    console.error(`${d.migration}/migration.sql:${d.line}  NOT READ  this statement is built at run time, so no rule could be applied to it. `
+      + 'Pinned by migration-lint.test.mjs; see docs/MIGRATION_INVARIANTS.md.');
+  }
   if (findings.exempted.length > 0) console.error('');
   for (const f of findings) {
     console.error(`${f.migration}/migration.sql:${f.line}  ${f.rule}  ${f.message}`);
@@ -191,6 +256,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   }
   const n = migrationNames().length;
   const recorded = findings.exempted.length;
+  const notRead = unresolvedDynamicSql().length;
   console.log(`migration-lint: clean (${n} migrations, ${RULE_IDS.length} rule${RULE_IDS.length === 1 ? '' : 's'}`
-    + `${recorded > 0 ? `, ${recorded} recorded exemption${recorded === 1 ? '' : 's'} printed above` : ''}).`);
+    + `${recorded > 0 ? `, ${recorded} recorded exemption${recorded === 1 ? '' : 's'}` : ''}`
+    + `${notRead > 0 ? `, ${notRead} run-time-built statement${notRead === 1 ? '' : 's'} not read` : ''}`
+    + `${recorded > 0 || notRead > 0 ? ' — printed above' : ''}).`);
 }

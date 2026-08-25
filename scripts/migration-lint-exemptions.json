@@ -9,7 +9,10 @@
     "diff, not silence. Two tests keep it honest — every entry must name a real migration and rule",
     "with a checkable reason, and none may be DEAD.",
     "",
-    "EVERY COUNT HERE IS PER SITE, where a site is ONE SQL query as PostgreSQL's grammar sees it.",
+    "EVERY ENTRY IS KEYED PER SITE — \"<RULE>:<line>\", where a site is ONE SQL query as PostgreSQL's",
+    "grammar sees it. Keying by rule alone would let one accepted site discharge every other",
+    "finding of that rule in the same file — the ledger committing the very defect the rule",
+    "detects. An entry must match the finding's rule AND its line exactly.",
     "That granularity is the correction PR #423 was closed for failing to make twice: its evidence",
     "was gathered per FILE and then per BLOCK, so one correct guard discharged the requirement for",
     "every defective neighbour beside it.",
@@ -24,9 +27,9 @@
     "not unfind the defect; it removed the alarm. See docs/MIGRATION_INVARIANTS.md."
   ],
   "20270225000000_phase4_t3_correction3": {
-    "MI-001": "LIVE DEFECT — REPORTED, NOT FIXED. Line 167 verifies the prerequisite composite foreign keys by conname + conrelid + contype='f' + convalidated, and never reads pg_trigger.tgenabled on tgconstraint. This is exactly the a222e91 (PR #411) class: `ALTER TABLE ... DISABLE TRIGGER ALL` leaves every column that guard reads unchanged while the keys stop enforcing, so a restored database with NO containment satisfies the prerequisite and is baselined as correct. apps/api/prisma/** is read-only to this unit, so this is recorded and reported rather than repaired here."
+    "MI-001:167": "LIVE DEFECT — REPORTED, NOT FIXED. Line 167 verifies the prerequisite composite foreign keys by conname + conrelid + contype='f' + convalidated, and never reads pg_trigger.tgenabled on tgconstraint. This is exactly the a222e91 (PR #411) class: `ALTER TABLE ... DISABLE TRIGGER ALL` leaves every column that guard reads unchanged while the keys stop enforcing, so a restored database with NO containment satisfies the prerequisite and is baselined as correct. apps/api/prisma/** is read-only to this unit, so this is recorded and reported rather than repaired here."
   },
   "20270930000000_schedule_dependency_graph": {
-    "MI-001": "ACCEPTED — 1 site. Section 1e' (line 797) compares each foreign key's TARGET by confrelid OID and asks nothing about enforcement, which is what MI-001 reports. It is accepted on the merged evidence that section 1e'' — the next statement inside the SAME DO block, over the SAME five keys — asks the enforcement question per internal trigger and refuses tgenabled outside ('O','A'). The rule does not read that neighbour on 1e''s behalf, and it must not: that is precisely the coarser-than-the-site evidence PR #423 was closed for. The judgement that the neighbour covers this site is a human one, so it is written down here where a reviewer sees it."
+    "MI-001:797": "ACCEPTED — 1 site. Section 1e' (line 797) compares each foreign key's TARGET by confrelid OID and asks nothing about enforcement, which is what MI-001 reports. It is accepted on the merged evidence that section 1e'' — the next statement inside the SAME DO block, over the SAME five keys — asks the enforcement question per internal trigger and refuses tgenabled outside ('O','A'). The rule does not read that neighbour on 1e''s behalf, and it must not: that is precisely the coarser-than-the-site evidence PR #423 was closed for. The judgement that the neighbour covers this site is a human one, so it is written down here where a reviewer sees it."
   }
 }
