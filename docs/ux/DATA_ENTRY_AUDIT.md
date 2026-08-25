@@ -19,9 +19,9 @@ field entries plus confirmations, from wherever the user happens to be standing.
 | Activity (pmc) | 4 taps past **9 flat controls** | name, `plannedStart`/`End` **as day-offset integers** | project, author | free-text `zone` duplicates the LocationPicker; day-numbers leak the timeline model |
 | Inspection (pmc) | ~9 | title, **`zone` string (required)**, ≥1 item | project, author, date | location typed *then* optionally picked, with the canonical field as the optional one |
 | Photo (eng) | 6–10 | the file | project, user, time, place | gated behind starting a daily log; **no caption field exists** |
-| Daily update (eng) | 2 | — | project, user, date | fine as a container, wrong as a gate on photos |
+| Daily update (eng) | 2 | — | project, user, date | wrong as a gate on photos — and **not currently a container either**, see §9 |
 | Material delivery (eng) | 5–6 | name, qty | project, user, date | location never inherited (its `zone` text is storage detail, **not** a duplicate — see §4) |
-| Drawing (pmc) | ~8 | number, title, discipline, rev, file | project, author, date, **issuer's own discipline** | discipline is inferable from membership |
+| Drawing (pmc) | ~8 | number, title, discipline, rev, file | project, author, date | discipline is **not** inferable — see §4 |
 | Places creation | — | name, kind | parent from selection | lives under the Decision Log, not under Places |
 | Assignment | — | — | — | **no assignment field on any create form** |
 | Note / observation | — | — | — | **does not exist** |
@@ -81,7 +81,7 @@ expensive even when it costs one tap.
 | author, date, time | all | already server-derived |
 | `takenAt`, geo | photo | sent rather than claimed — its own unit |
 | `phaseId` | activity | defaultable from place or last use |
-| `discipline` | drawing | defaultable from the issuer's membership |
+| `discipline` | drawing | **NOT derivable.** `MembersService.disciplineFor` stores a discipline only for `consultant` and clears it for every other role, while `drawing.issue` is `['pmc']` — so the only role that may issue never has one. An earlier draft of this audit claimed otherwise, reading the consultant's *read*-scoping in `DrawingsScreen` as if it were the issuer's. Simplifying this field needs a different source of truth, not a default |
 | `plannedStart`/`End` | activity | civil dates with defaults, not offsets |
 | swatch, price delta, decision link | decision, material | secondary — under More details |
 
@@ -138,13 +138,24 @@ can author something.
 
 ## 8 · Effort, before and after
 
+Counted the same way on both sides, per the definition at the top: navigation taps **plus**
+field entries **plus** the confirmation. Creating from a place costs TWO entry taps — `Add
+here`, then choosing the record type — and an earlier version of this table omitted them
+from the "after" column while counting the equivalent taps in "before". The comparison was
+therefore flattering itself by one step in every row.
+
 | Workflow | Before | After Unit A | Target |
 |---|---|---|---|
-| Decision from a place | ~10 steps, location re-picked | **5**, location inherited | 4 |
-| Inspection from a place | ~9, location entered **twice** | **4**, asked once | 3 |
-| Material from a place | 5–6 | **4** | 3 |
+| Decision from a place | ~10 steps, location re-picked | **6**, location inherited | 4 |
+| Inspection from a place | ~9, location entered **twice** | **5**, asked once | 3 |
+| Material from a place | 5–6 | **5** — see below | 3 |
 | Site observation | **impossible** | still impossible | 3 |
 | Desktop photo | file dialog only | unchanged | 2 (drag/paste) |
+
+**A delivery's tap count did not improve, and the row should not pretend otherwise.** Five
+before, five after. What changed is what the record carries: the location now arrives with
+it, where before it was either absent or cost extra taps to pick. The remaining wins in
+this row are the ones §9 still lists as unshipped.
 
 ## 9 · What Unit A does not fix
 
@@ -154,6 +165,15 @@ can author something.
   material-bound, and a checklist note needs a PMC-issued checklist first. The agreed
   direction is one caption column on media plus a `note` kind — the smallest change that
   makes an observation authorable by everyone who can already upload a photo.
+- **A progress photo is not bound to its daily log.** `media` accepts a `dailyLogId`
+  (`media.service.ts` resolves and project-checks it), but the web's `UploadMediaInput` has
+  no such field, so `addProgressPhoto` never sends one — and `SnapshotService` folds
+  **project-wide** `kind: 'progress'` media, attaching the newest 12 to whichever log is
+  current. A day-two log therefore shows day-one photos and counts them as today's progress.
+  This is a real defect, not a wording problem, and it is NOT fixed by the capture-stamp
+  unit below: adding `takenAt` makes the mis-binding *visible* without correcting it. Either
+  the upload carries its log, or progress photos are defined as project-wide and the daily
+  log stops counting them as its own.
 - **The photo capture stamp.** Its own review unit: making the daily log's "geo + time
   stamped" claim true is about what a photo *carries*, not about where a form inherits its
   place from.
