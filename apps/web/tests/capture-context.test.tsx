@@ -169,30 +169,6 @@ describe('the checklist form asks for the location once and derives the rest', (
   });
 });
 
-describe('secondary fields fold away, mandatory ones never do', () => {
-  it('a delivery opens as what arrived and how much; the decision link is under More details', async () => {
-    await load();
-    const { AddMaterialModal } = await import('@/screens/modals/AddMaterialModal');
-    const r = render(<AddMaterialModal context={captureAtPlace('villa-b', 'bath')} onClose={() => {}} />);
-    expect(r.queryByTestId('mat-decision')).not.toBeInTheDocument();
-    expect(r.queryByTestId('mat-zone')).not.toBeInTheDocument();
-
-    fireEvent.click(r.getByTestId('mat-more-toggle'));
-    expect(r.getByTestId('mat-decision')).toBeInTheDocument();
-  });
-
-  it("a decision's two options stay visible — the server contract requires them", async () => {
-    await load();
-    const { IssueDecisionModal } = await import('@/screens/modals/IssueDecisionModal');
-    const r = render(<IssueDecisionModal context={captureAtPlace('villa-b', 'bath')} onClose={() => {}} />);
-    // options.min(2) is a DOMAIN rule, so hiding the second would offer a save the API refuses
-    expect(r.getByTestId('dec-opt-0')).toBeInTheDocument();
-    expect(r.getByTestId('dec-opt-1')).toBeInTheDocument();
-    // what an option optionally carries does fold away
-    expect(r.queryByPlaceholderText('₹ delta (0 = base)')).not.toBeInTheDocument();
-  });
-});
-
 describe('the Site Map can create at the place it is showing', () => {
   it('a pmc gets Add here, and the menu offers the three they may author', async () => {
     await load();

@@ -1,6 +1,6 @@
 import { useState, type CSSProperties } from 'react';
 import { useStore, type IssueDecisionPayload } from '@/store/store';
-import { Button, Modal, InheritedContext, MoreDetails } from '@/components';
+import { Button, Modal, InheritedContext } from '@/components';
 import { X } from '@/lib/icons';
 import { swatch as swatchGradient, SW, type SwatchKey } from '@vitan/shared';
 import { inheritsLocation, type CaptureContext } from '@/lib/captureContext';
@@ -13,9 +13,9 @@ import { inheritsLocation, type CaptureContext } from '@/lib/captureContext';
  * mandatory domain rule may block a save, and this is one — hiding it would offer a
  * Publish button the API would refuse.
  *
- * What DOES fold away is everything an option can optionally carry — the price delta, the
- * swatch, the sample photo, the recommendation. The form opens as "what is being decided,
- * where, and between which two things", which is the whole question on a phone.
+ * Everything else an option carries — the price delta, the swatch, the sample photo, the
+ * recommendation — is optional and blocks nothing. Folding it under a More-details
+ * disclosure is progressive disclosure: its own principle, and its own review unit.
  */
 export function IssueDecisionModal({ context, onClose }: { context?: CaptureContext; onClose: () => void }) {
   const issueDecision = useStore((s) => s.issueDecision);
@@ -84,8 +84,7 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
             </div>
             <input value={o.material} onChange={(e) => setOpt(i, { material: e.target.value })} placeholder="Material (e.g. Italian Marble)" style={{ ...fldD, width: '100%' }} data-testid={`dec-opt-${i}`} />
 
-            <MoreDetails label="Price, swatch, photo" testId={`dec-opt-more-${i}`}>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 <input value={o.delta} onChange={(e) => setOpt(i, { delta: e.target.value })} placeholder="₹ delta (0 = base)" style={{ ...fldD, flex: '0 0 130px' }} />
                 <select value={o.swatch} onChange={(e) => setOpt(i, { swatch: e.target.value as SwatchKey })} style={{ ...fldD, flex: '0 0 120px' }} aria-label="Swatch">
                   {SWATCH_KEYS.map((k) => <option key={k} value={k}>{k}</option>)}
@@ -98,8 +97,7 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
                 <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
                   <input type="radio" name="recommended" checked={o.recommended} onChange={() => setOpt(i, { recommended: true })} /> Recommended
                 </label>
-              </div>
-            </MoreDetails>
+            </div>
           </div>
         ))}
 

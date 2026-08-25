@@ -14,5 +14,4 @@ export { EmptyState } from './EmptyState';
 export { LocationContext } from './LocationContext';
 export { EditState, type EditAvailability } from './EditState';
 export { InheritedContext } from './InheritedContext';
-export { MoreDetails } from './MoreDetails';
 export { CreateMenu } from './CreateMenu';

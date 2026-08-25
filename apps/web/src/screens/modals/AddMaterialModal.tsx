@@ -2,7 +2,7 @@ import { useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectVisibleDecisions } from '@/store/selectors';
-import { Button, Modal, Swatch, InheritedContext, MoreDetails } from '@/components';
+import { Button, Modal, Swatch, InheritedContext } from '@/components';
 import { SW, type SwatchKey } from '@vitan/shared';
 import { inheritsLocation, type CaptureContext } from '@/lib/captureContext';
 
@@ -17,8 +17,9 @@ import { inheritsLocation, type CaptureContext } from '@/lib/captureContext';
  * the one the storekeeper actually recorded, so it stays a field — relabelled to say what
  * it is, and optional, because it always was.
  *
- * The decision link and the swatch move under More details. Neither blocks the save — the
- * domain requires only a name and a quantity.
+ * Only a name and a quantity block the save, as the domain requires; the decision link and
+ * the swatch stay optional. Folding those under a More-details disclosure is progressive
+ * disclosure — its own principle and its own review unit.
  */
 export function AddMaterialModal({ context, onClose }: { context?: CaptureContext; onClose: () => void }) {
   const addSiteMaterial = useStore((s) => s.addSiteMaterial);
@@ -66,8 +67,7 @@ export function AddMaterialModal({ context, onClose }: { context?: CaptureContex
           <InheritedContext value={nodeId} onChange={setNodeId} inherited={inherited} idPrefix="mat-loc" testId="mat-place" />
         </div>
 
-        <MoreDetails testId="mat-more">
-          <div style={sectionLabel}>LINK TO DECISION</div>
+        <div style={{ ...sectionLabel, marginTop: 16 }}>LINK TO DECISION (optional)</div>
           <select value={decisionId} onChange={(e) => setDecisionId(e.target.value)} style={{ ...fldM, width: '100%' }} data-testid="mat-decision" aria-label="Link to decision">
             <option value="">— No linked decision —</option>
             {decisions.map((d) => (
@@ -82,8 +82,7 @@ export function AddMaterialModal({ context, onClose }: { context?: CaptureContex
                 <option key={k} value={k}>{k}</option>
               ))}
             </select>
-          </div>
-        </MoreDetails>
+        </div>
 
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
