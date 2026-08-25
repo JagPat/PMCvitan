@@ -31,15 +31,18 @@ migration, no API change. It does NOT advance phase 6 task 4, which still has no
 of its own. Read `task: 4` as where the PHASE stands, and `open_pr` as what is actually
 in review right now.
 
-**TWO AUTONOMOUS PRs ARE LIVE, AND `open_pr` HOLDS ONE SLOT.** #419
-(`claude/lineage-base-acceptance`) is open alongside this unit — a `scripts/`-only
-governance fix defining "still the unit under review" once, so a retargeted pull request
-can no longer mint a repository-wide obligation. That is the ROOT CAUSE of the stale
-obligation chain this file records below; it is not this unit's work and is not
-duplicated here. #419 deliberately does not touch STATUS (its body says so), so this unit
-carries the `open_pr` correction the hourly watchdog asked for. A later reader should
-expect `open_pr` to name whichever draft the watchdog last shepherded, not the only PR
-in flight.
+**THE ROOT CAUSE OF THE STALE OBLIGATION CHAIN IS FIXED — #419 MERGED at `main`
+`2b5d12f`.** `claude/lineage-base-acceptance` defines "still the unit under review" once
+and accepts a live pull request only through it, so a retargeted pull request can no
+longer mint a repository-wide obligation for work that could never land on `main`. That
+is the defect behind the four-link residue this file records below, and it is not this
+unit's work: #419 is `scripts/`-only and was merged into this branch rather than
+duplicated. #419 deliberately did not touch STATUS (its body says so), which is why this
+unit carries the `open_pr` correction the hourly watchdog asked for.
+
+**`open_pr` HOLDS ONE SLOT, AND MORE THAN ONE AUTONOMOUS DRAFT CAN BE LIVE.** While this
+unit was open, #419 was open beside it. Read `open_pr` as whichever draft the watchdog
+last shepherded, not as the only PR in flight.
 
 `task_state` stays `in_progress` rather than `in_review` deliberately: the live-file pin
 in `autonomous-status-state.test.mjs` requires STATUS to still resolve a next step AFTER
