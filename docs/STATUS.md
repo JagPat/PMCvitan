@@ -16,11 +16,31 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: e5d3c4fd
-open_pr: 428
+open_pr: 433
 next_task: none
 blocking_directive: none
 updated: 2026-08-25
 ```
+
+**THE OPEN PR IS A TOOLING UNIT, NOT PHASE 6 TASK 4.** #433 settles the parser binding this
+repository reads its own migrations with — `pg-query-emscripten` (libpg_query 16) through its raw
+entry points — plus the claim that all 91 migrations parse through it and that it neither leaks nor
+truncates. It ships **no rule, no sites, no coverage accounting and no rule-support helpers**, so it
+detects no defect; `docs/MIGRATION_INVARIANTS.md` names the three live defects that have no alarm at
+all. No `apps/**` file, no schema, no migration, no CI workflow change. Does not advance task 4.
+
+It **replaces #432** — the FOURTH unit in this lineage to reach the two-finding-head limit, after
+#423 (a hand-written SQL lexer), #430 (binding + enforcement rule) and #431 (binding + site
+attribution + a coverage claim). Sixteen findings across the four, every one reducing to *a check
+narrower than the object it judges* — the defect the eventual rules exist to detect, restated as
+their implementation. The last two rounds found it in the TESTS rather than the code: a probe that
+searched the source for a guard's message, and a leak probe that passed with the fix deleted. Each
+replacement removed the surface that had just drawn findings; this one removes `relationsIn` (rule
+support) and replaces the leak probe with one that observes the allocator. **This lineage has cost
+four PRs and merged nothing; whether to continue it is a judgement for JagPat, recorded here so the
+cost is visible rather than buried in loop history.** None of `claude/migration-invariant-linter`,
+`claude/migration-invariant-linter-v2`, `claude/migration-parser-adapter` or
+`claude/migration-parser-binding` may be rebased or force-pushed; all four are the handover record.
 
 **UNIT A MERGED AS #424 at `main` `8a4b0db8`** — the capture-context spine, the Site Map's
 `Add here`, and every finding from #422's two review rounds. The open PR is the first of
