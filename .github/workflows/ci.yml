@@ -311,6 +311,19 @@ jobs:
         timeout-minutes: 25
         run: bash apps/api/scripts/schedule-b1-baseline-proof.sh
 
+      # The schema-enforcement check asks two closed properties of the whole application schema —
+      # no trigger is disabled, no foreign key is unvalidated — before Prisma and again after a
+      # successful deploy. Here for the same reasons as the step above: this job already has the
+      # toolchain and the PostgreSQL service, and the proof builds its own scratch database and
+      # never touches `pmcvitan_test`.
+      #
+      # It proves its own coupling (step H unwires the preflight from a copy of migrate.sh and
+      # requires the dirty database to be accepted again), so deleting the wiring cannot pass
+      # silently here either.
+      - name: Schema enforcement production-runner proof (the real migrate.sh over dirty databases)
+        timeout-minutes: 25
+        run: bash apps/api/scripts/schema-enforcement-production-runner-proof.sh
+
   # The ONE required status.
   #
   # `always()` is load-bearing: without it a failing job would SKIP this gate,
