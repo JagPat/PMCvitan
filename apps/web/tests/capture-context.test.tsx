@@ -3,7 +3,6 @@ import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { ProjectNode } from '@vitan/shared';
 import { zoneLabelFor, captureAtPlace, captureGlobal, inheritsLocation } from '@/lib/captureContext';
 import { createOptionsFor } from '@/lib/createOptions';
-import { captureStamp } from '@/lib/captureStamp';
 
 /**
  * Unit A — capture context and context-inherited creation.
@@ -92,54 +91,6 @@ describe('the Add menu offers only what the role may actually author', () => {
     for (const option of createOptionsFor('pmc')) {
       expect(typeof option.action).toBe('string');
     }
-  });
-});
-
-describe('a photo carries the stamp the daily log promises', () => {
-  it('always carries its capture time', async () => {
-    vi.stubGlobal('navigator', {});
-    const stamp = await captureStamp(() => new Date('2026-08-25T06:30:00.000Z'));
-    expect(stamp).toEqual({ takenAt: '2026-08-25T06:30:00.000Z' });
-  });
-
-  it('adds coordinates when location is ALREADY granted', async () => {
-    vi.stubGlobal('navigator', {
-      permissions: { query: async () => ({ state: 'granted' }) },
-      geolocation: {
-        getCurrentPosition: (ok: (p: unknown) => void) => ok({ coords: { latitude: 23.03, longitude: 72.51 } }),
-      },
-    });
-    const stamp = await captureStamp(() => new Date('2026-08-25T06:30:00.000Z'));
-    expect(stamp).toEqual({ takenAt: '2026-08-25T06:30:00.000Z', geoLat: 23.03, geoLng: 72.51 });
-  });
-
-  it('NEVER prompts: a permission still at "prompt" is treated as a no', async () => {
-    const getCurrentPosition = vi.fn();
-    vi.stubGlobal('navigator', {
-      permissions: { query: async () => ({ state: 'prompt' }) },
-      geolocation: { getCurrentPosition },
-    });
-    const stamp = await captureStamp(() => new Date('2026-08-25T06:30:00.000Z'));
-    expect(stamp.geoLat).toBeUndefined();
-    // the point of the rule: the capture never raises a permission dialog
-    expect(getCurrentPosition).not.toHaveBeenCalled();
-  });
-
-  it('degrades to the time alone when the position read fails', async () => {
-    vi.stubGlobal('navigator', {
-      permissions: { query: async () => ({ state: 'granted' }) },
-      geolocation: {
-        getCurrentPosition: (_ok: unknown, fail: () => void) => fail(),
-      },
-    });
-    const stamp = await captureStamp(() => new Date('2026-08-25T06:30:00.000Z'));
-    expect(stamp).toEqual({ takenAt: '2026-08-25T06:30:00.000Z' });
-  });
-
-  it('survives a browser with no Permissions API', async () => {
-    vi.stubGlobal('navigator', { geolocation: { getCurrentPosition: vi.fn() } });
-    const stamp = await captureStamp(() => new Date('2026-08-25T06:30:00.000Z'));
-    expect(stamp.geoLat).toBeUndefined();
   });
 });
 

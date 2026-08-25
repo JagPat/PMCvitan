@@ -58,10 +58,10 @@ expensive even when it costs one tap.
    required one while canonical `nodeId` is optional.
 3. **Activity creation.** Nine flat controls, no disclosure, and planned dates entered as
    day-offset integers — the user must understand the schedule anchor to enter a date.
-4. **Photo capture.** Gated behind a daily log; no description field; and the UI claimed
-   *"Geo + time stamped, tied to activity"* while `addProgressPhoto` sent none of
+4. **Photo capture.** Gated behind a daily log; no description field; and the UI claims
+   *"Geo + time stamped, tied to activity"* while `addProgressPhoto` sends none of
    `takenAt`/`geoLat`/`geoLng` (all three accepted by `UploadMediaInput`) and media carries
-   no activity link at all.
+   no activity link at all. Corrected in its own review unit — see §9.
 5. **Decision creation.** Location never inherited, and no way to raise a decision from the
    place it concerns.
 
@@ -73,7 +73,7 @@ expensive even when it costs one tap.
 | `nodeId` | decision, activity, inspection, material, photo | inherited from the surface; shown as `Master Bathroom · Change` |
 | `zone` (free text) | activity, inspection, material | **derived** from `nodeId` by `zoneLabelFor` |
 | author, date, time | all | already server-derived |
-| `takenAt`, geo | photo | sent, rather than claimed |
+| `takenAt`, geo | photo | sent rather than claimed — its own unit |
 | `phaseId` | activity | defaultable from place or last use |
 | `discipline` | drawing | defaultable from the issuer's membership |
 | `plannedStart`/`End` | activity | civil dates with defaults, not offsets |
@@ -145,6 +145,9 @@ can author something.
   material-bound, and a checklist note needs a PMC-issued checklist first. The agreed
   direction is one caption column on media plus a `note` kind — the smallest change that
   makes an observation authorable by everyone who can already upload a photo.
+- **The photo capture stamp.** Split into its own review unit: the honesty fix is a
+  separate concern from context inheritance, and bundling them pushed this unit past the
+  20-file review budget.
 - **The Activity form** keeps its nine flat controls and its day-offset dates.
 - **Desktop density**: no command entry, no drag/drop, no paste, no split views.
 - **The universal `+`** and its device-specific shells.

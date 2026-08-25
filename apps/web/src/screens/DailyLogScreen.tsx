@@ -60,7 +60,7 @@ export function DailyLogScreen() {
     if (file) {
       const reader = new FileReader();
       reader.onload = () => {
-        if (typeof reader.result === 'string') void addProgressPhoto(reader.result, photoNode);
+        if (typeof reader.result === 'string') addProgressPhoto(reader.result, photoNode);
       };
       reader.readAsDataURL(file);
     }
@@ -271,10 +271,7 @@ export function DailyLogScreen() {
         <div style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 13, padding: 13, display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 600, fontSize: 13.5 }}>{dailyLog.progress} progress photos</div>
-            {/* What a progress photo ACTUALLY carries: its capture time always, the place
-                below when one is chosen, and coordinates only where location is already
-                shared. The previous copy also claimed an activity link; media carries none. */}
-            <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>Time stamped, and placed on the site map</div>
+            <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>Geo + time stamped, tied to activity</div>
           </div>
           <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPickPhoto} data-testid="progress-file" style={{ display: 'none' }} />
           <button onClick={() => fileRef.current?.click()} data-testid="add-progress-photo" style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>

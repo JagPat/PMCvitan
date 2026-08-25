@@ -13,7 +13,6 @@
  */
 
 import { create } from 'zustand';
-import { captureStamp } from '@/lib/captureStamp';
 import { immer } from 'zustand/middleware/immer';
 import { castDraft } from 'immer';
 import {
@@ -588,7 +587,7 @@ export interface AppActions {
   scanWorker: () => void;
   crewStep: (idx: number, delta: number) => void;
   addProgress: () => void;
-  addProgressPhoto: (dataUrl: string, nodeId?: string | null) => Promise<void>;
+  addProgressPhoto: (dataUrl: string, nodeId?: string | null) => void;
   submitDailyLog: () => void;
   flagMismatch: (idx: number) => void;
   record: (label: string) => void;
@@ -3922,69 +3921,60 @@ export const useStore = create<Store>()(
       set((s) => { if (s.dailyLog) s.dailyLog.progress += 1; });
       get().record('Progress photo');
     },
-    addProgressPhoto: async (dataUrl, nodeId) => {
+    addProgressPhoto: (dataUrl, nodeId) => {
       const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
       if (!m) {
         get().flash('Could not read that photo — please try again.');
         return;
       }
       const [, mime, base64] = m;
-      if (!gateway) {
-        // local demo: keep the data URL as the image source; also place it on the tree
-        // (with the chosen node) so the Place view reflects it without a server. Nothing is
-        // uploaded here, so there is no stamp to attach — and running before the first
-        // `await` keeps this path synchronous for its callers.
-        set((s) => {
-          if (s.dailyLog) {
-            s.dailyLog.photos.unshift({ url: dataUrl });
-            s.dailyLog.progress += 1;
-          }
-          s.photos.unshift({ id: `demo-photo-${s.photos.length + 1}`, url: dataUrl, nodeId: nodeId ?? undefined, kind: 'progress' });
-        });
-        get().record('Progress photo');
-        get().flash(get().online ? 'Progress photo added.' : 'Photo saved offline — will upload when signal returns.');
-        return;
-      }
-      // The daily log promises these photos are time-stamped, so send what the media
-      // contract has always accepted. `captureStamp` never prompts for location and never
-      // blocks the save: with no granted permission the photo carries its time alone.
-      //
-      // It is awaited BEFORE the offline branch on purpose — a queued photo must carry the
-      // moment it was TAKEN, not the moment the queue happened to drain days later.
-      const stamp = await captureStamp();
-      // Location spine: tag the photo with the place it shows, if one was chosen.
-      const input = { kind: 'progress' as const, mime, data: base64, ...stamp, ...(nodeId ? { nodeId } : {}) };
-      // Phase 8 media offline queue: when offline, show the photo optimistically
-      // (local data URL) and queue the upload for replay on reconnect — instead
-      // of losing it. Mirrors runRemoteOrQueue for the JSON mutations.
-      if (!get().online) {
-        set((s) => {
-          s.outbox.push({ t: 'uploadMedia', input });
-          s.syncQueue.push('Progress photo');
-          if (s.dailyLog) {
-            s.dailyLog.photos.unshift({ url: dataUrl });
-            s.dailyLog.progress += 1;
-          }
-        });
-        persistOutbox();
-        get().flash('Photo saved offline — will upload when signal returns.');
-        return;
-      }
-      // raw-DTO reconcile: pin the reply to the scope that uploaded it — a late
-      // reply must never land on ANOTHER project's daily log (finding 3)
-      const scope = currentScope();
-      gateway
-        .uploadMedia(input)
-        .then((res) => {
-          if (!scopeStillCurrent(scope)) return;
+      if (gateway) {
+        // Location spine: tag the photo with the place it shows, if one was chosen.
+        const input = { kind: 'progress' as const, mime, data: base64, ...(nodeId ? { nodeId } : {}) };
+        // Phase 8 media offline queue: when offline, show the photo optimistically
+        // (local data URL) and queue the upload for replay on reconnect — instead
+        // of losing it. Mirrors runRemoteOrQueue for the JSON mutations.
+        if (!get().online) {
           set((s) => {
-            if (!s.dailyLog) return;
-            s.dailyLog.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
-            s.dailyLog.progress += 1;
+            s.outbox.push({ t: 'uploadMedia', input });
+            s.syncQueue.push('Progress photo');
+            if (s.dailyLog) {
+              s.dailyLog.photos.unshift({ url: dataUrl });
+              s.dailyLog.progress += 1;
+            }
           });
-          get().flash('Progress photo uploaded — visible to PMC.');
-        })
-        .catch(() => get().flash('Could not upload the photo — please try again.'));
+          persistOutbox();
+          get().flash('Photo saved offline — will upload when signal returns.');
+          return;
+        }
+        // raw-DTO reconcile: pin the reply to the scope that uploaded it — a late
+        // reply must never land on ANOTHER project's daily log (finding 3)
+        const scope = currentScope();
+        gateway
+          .uploadMedia(input)
+          .then((res) => {
+            if (!scopeStillCurrent(scope)) return;
+            set((s) => {
+              if (!s.dailyLog) return;
+              s.dailyLog.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
+              s.dailyLog.progress += 1;
+            });
+            get().flash('Progress photo uploaded — geo + time stamped, visible to PMC.');
+          })
+          .catch(() => get().flash('Could not upload the photo — please try again.'));
+        return;
+      }
+      // local demo: keep the data URL as the image source; also place it on the tree
+      // (with the chosen node) so the Place view reflects it without a server.
+      set((s) => {
+        if (s.dailyLog) {
+          s.dailyLog.photos.unshift({ url: dataUrl });
+          s.dailyLog.progress += 1;
+        }
+        s.photos.unshift({ id: `demo-photo-${s.photos.length + 1}`, url: dataUrl, nodeId: nodeId ?? undefined, kind: 'progress' });
+      });
+      get().record('Progress photo');
+      get().flash(get().online ? 'Progress photo added — geo + time stamped.' : 'Photo saved offline — will upload when signal returns.');
     },
     submitDailyLog: () => {
       const dl = get().dailyLog;

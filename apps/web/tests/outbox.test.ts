@@ -159,20 +159,16 @@ describe('Phase 8 offline outbox', () => {
     expect(globalThis.localStorage?.getItem('vitan.outbox')).toBeNull(); // legacy key consumed
   });
 
-  it('queues a progress photo while offline and shows it optimistically', async () => {
+  it('queues a progress photo while offline and shows it optimistically', () => {
     const gw = { uploadMedia: vi.fn(), snapshot: vi.fn() };
     s()._setGateway(gw as unknown as ApiGateway);
     useStore.setState((st) => { st.online = false; });
 
     const before = s().dailyLog!.photos.length;
-    await s().addProgressPhoto('data:image/jpeg;base64,AAAA');
+    s().addProgressPhoto('data:image/jpeg;base64,AAAA');
 
     expect(gw.uploadMedia).not.toHaveBeenCalled(); // not uploaded while offline
-    // the QUEUED payload carries the moment the photo was taken, not the moment the queue
-    // later drains — a stamp resolved at flush time would be a different day on site
-    expect(s().outbox).toEqual([
-      { t: 'uploadMedia', input: { kind: 'progress', mime: 'image/jpeg', data: 'AAAA', takenAt: expect.any(String) } },
-    ]);
+    expect(s().outbox).toEqual([{ t: 'uploadMedia', input: { kind: 'progress', mime: 'image/jpeg', data: 'AAAA' } }]);
     expect(s().dailyLog!.photos.length).toBe(before + 1); // shown right away
     expect(s().dailyLog!.photos[0].url).toBe('data:image/jpeg;base64,AAAA');
     expect(s().dailyLog!.photos[0].id).toBeUndefined(); // no server id yet
@@ -187,14 +183,13 @@ describe('Phase 8 offline outbox', () => {
     s()._setGateway(gw as unknown as ApiGateway);
     useStore.setState((st) => { st.online = false; });
 
-    await s().addProgressPhoto('data:image/png;base64,BBBB');
+    s().addProgressPhoto('data:image/png;base64,BBBB');
     expect(s().outbox).toHaveLength(1);
 
     s().toggleOnline(); // back online → flush
     await flush();
 
-    // replayed VERBATIM, capture stamp included — the queued payload is the record
-    expect(gw.uploadMedia).toHaveBeenCalledWith({ kind: 'progress', mime: 'image/png', data: 'BBBB', takenAt: expect.any(String) });
+    expect(gw.uploadMedia).toHaveBeenCalledWith({ kind: 'progress', mime: 'image/png', data: 'BBBB' });
     expect(gw.snapshot).toHaveBeenCalled(); // refetched to reconcile photos
     expect(s().outbox).toHaveLength(0);
     expect(s().syncQueue).toHaveLength(0);
