@@ -314,5 +314,5 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     console.error('and head whose finding produced it. See docs/MIGRATION_INVARIANTS.md.');
     process.exit(1);
   }
-  console.log(`migration-lint: clean (${readdirSync(MIGRATIONS_DIR).filter((n) => existsSync(join(MIGRATIONS_DIR, n, 'migration.sql'))).length} migrations, ${RULE_IDS.length} rules).`);
+  console.log(`migration-lint: clean (${readdirSync(MIGRATIONS_DIR).filter((n) => existsSync(join(MIGRATIONS_DIR, n, 'migration.sql'))).length} migrations, ${RULE_IDS.length} rule${RULE_IDS.length === 1 ? '' : 's'}).`);
 }
