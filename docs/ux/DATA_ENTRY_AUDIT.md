@@ -18,7 +18,7 @@ field entries plus confirmations, from wherever the user happens to be standing.
 | Decision (pmc) | ~10 | title, `nodeId`, 2 options × material | project, author, date | location never inherited |
 | Activity (pmc) | 4 taps past **9 flat controls** | name, `plannedStart`/`End` **as day-offset integers** | project, author | free-text `zone` duplicates the LocationPicker; day-numbers leak the timeline model |
 | Inspection (pmc) | ~9 | title, **`zone` string (required)**, ≥1 item | project, author, date | location typed *then* optionally picked, with the canonical field as the optional one |
-| Photo (eng) | 6–10 | the file | project, user | gated behind starting a daily log; **no caption field exists**; the place is an optional hand-pick and the capture time is never sent — see §4 |
+| Photo (eng) | 6–10 | the file | project, user, capture time | gated behind starting a daily log; **no caption field exists**; the place is still an optional hand-pick — see §4 |
 | Daily update (eng) | 2 | — | project, user, date | wrong as a gate on photos — and **not currently a container either**, see §9 |
 | Material delivery (eng) | 5–6 | name, qty | project, user, date | location never inherited (its `zone` text is storage detail, **not** a duplicate — see §4) |
 | Drawing (pmc) | ~8 | number, title, discipline, rev, file | project, author, date | discipline is **not** inferable — see §4 |
@@ -63,12 +63,11 @@ expensive even when it costs one tap.
    required one while canonical `nodeId` is optional.
 3. **Activity creation.** Nine flat controls, no disclosure, and planned dates entered as
    day-offset integers — the user must understand the schedule anchor to enter a date.
-4. **Photo capture.** Gated behind a daily log; no description field; and the UI claims
-   *"Geo + time stamped, tied to activity"* while `addProgressPhoto` sends none of
-   `takenAt`/`geoLat`/`geoLng` (all three accepted by `UploadMediaInput`) and media carries
-   no activity link at all — and the place is hand-picked too. Of the four facts a photo
-   could arrive with, it arrives with two: the project and the user. Its correction is a
-   separate unshipped unit; see §9.
+4. **Photo capture.** Gated behind a daily log; no description field; and the place is
+   still hand-picked. The stamp half is fixed — `takenAt` is always sent now, geo when
+   location is already granted, and the label no longer claims an activity link that media
+   does not have. Of the four facts a photo could arrive with it now arrives with three;
+   only the place is still asked. See §9.
 5. **Decision creation.** Location never inherited, and no way to raise a decision from the
    place it concerns.
 
@@ -90,7 +89,8 @@ live in §9 as open questions; this table only reports.
 | `zone` | inspection | **derived** from `nodeId` by `locationLabelFor` — the full path, as the existing data writes it (Unit A) |
 | `zone` | activity | **still asked twice.** `PlanActivityModal` keeps `zone` and `nodeId` independent and submits `zone.trim()`, so a picked node can sit beside empty or contradicting text |
 | `zone` | material | **not derivable** — it holds storage detail ("covered, on pallets"), which is a different fact from the location |
-| `takenAt`, geo | photo | **not sent.** The upload is `{ kind, mime, data, nodeId? }`, so for a photo queued offline the upload time stands in for the capture time |
+| `takenAt` | photo | **sent.** Resolved at capture, so a photo queued offline carries the moment it was taken rather than the moment the queue drained |
+| geo | photo | **sent only when location is already granted.** `captureStamp` never raises a permission dialog and never delays a save; without a grant the photo carries its time alone |
 | `phaseId` | activity | **asked, and nothing can currently answer it.** `ProjectNode` carries no phase relation, and `Activity` references a phase and a place independently — so there is no place-to-phase mapping to default from. A room can host Services work and then Finishing work |
 | `discipline` | drawing | **not derivable.** `MembersService.disciplineFor` stores a discipline only for `consultant`, while `drawing.issue` is `['pmc']` — the only role that may issue never has one |
 
@@ -226,15 +226,19 @@ this row are the ones §9 still lists as unshipped.
   it look like a photo count. So a day-two log shows day-one photos beside a count of zero,
   and a fix that adjusted the count would be repairing the wrong thing.
 
-  It is NOT fixed by the capture-stamp unit below either: adding `takenAt` makes the
-  mis-binding *visible* — yesterday's date in today's gallery — without correcting it. Either
-  the upload carries its log and the gallery is scoped to it, or progress photos are defined
-  as project-wide and the daily log stops presenting them as its own.
-- **The photo capture stamp — and the photo's place.** The stamp is its own review unit:
-  making the daily log's "geo + time stamped" claim true is about what a photo *carries*.
-  The place is a second gap in the same flow, and a gap this audit originally hid by listing
-  both as context a photo already has. Neither is: `photoNode` starts null behind an optional
-  picker, and the upload sends no `takenAt`.
+  The capture-stamp unit did not fix it, and was never going to: now that `takenAt` is
+  sent, the mis-binding is *visible* — yesterday's date in today's gallery — rather than
+  corrected. Visible is better than silent, but it is not a fix. Either the upload carries
+  its log and the gallery is scoped to it, or progress photos are defined as project-wide
+  and the daily log stops presenting them as its own. That choice is open.
+- **The photo's place.** The *stamp* half is now shipped: the upload carries `takenAt`
+  always and coordinates when the browser already holds a geolocation grant, and the daily
+  log's label says that rather than the "geo + time stamped, tied to activity" it used to
+  claim — media has no activity link, so that clause is gone rather than reworded. The
+  **place** is untouched: `photoNode` still starts null behind an optional `LocationPicker`
+  and the capture flow still takes no `CaptureContext`, so a photo remains the one record
+  type asked for its location by hand. Both were hidden by this audit's original §1 row,
+  which listed them as context a photo already had.
 - **Two open questions were removed from §4 rather than answered there**, because a table
   that reports measurements should not also carry proposals — each proposal it held was
   wrong. They stay open here. *Can `phaseId` be defaulted?* Not today: no place-to-phase

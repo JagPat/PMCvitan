@@ -71,7 +71,7 @@ describe('stale raw-DTO replies are scope-guarded (finding 3)', () => {
     useStore.setState((st) => { st.online = true; });
     const beforeCount = s().dailyLog?.progress ?? 0;
 
-    s().addProgressPhoto('data:image/png;base64,aGk=', null);
+    await s().addProgressPhoto('data:image/png;base64,aGk=', null);
     bumpScope();
     // B has its own daily log by the time A's upload reply lands
     useStore.setState((st) => {

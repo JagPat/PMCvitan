@@ -60,7 +60,9 @@ export function DailyLogScreen() {
     if (file) {
       const reader = new FileReader();
       reader.onload = () => {
-        if (typeof reader.result === 'string') addProgressPhoto(reader.result, photoNode);
+        // `void`: the action is async now (it awaits the capture stamp) and reports its own
+        // outcome through a flash, so there is nothing here to await or to catch.
+        if (typeof reader.result === 'string') void addProgressPhoto(reader.result, photoNode);
       };
       reader.readAsDataURL(file);
     }
@@ -271,7 +273,11 @@ export function DailyLogScreen() {
         <div style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 13, padding: 13, display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 600, fontSize: 13.5 }}>{dailyLog.progress} progress photos</div>
-            <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>Geo + time stamped, tied to activity</div>
+            {/* Says only what the record carries. The time is always sent; the location is
+                sent when the browser already holds a geolocation grant, and `captureStamp`
+                never prompts for one. "Tied to activity" was never true at all — media has
+                no activity link — so it is gone rather than reworded. */}
+            <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>Time stamped, and located when location is on</div>
           </div>
           <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPickPhoto} data-testid="progress-file" style={{ display: 'none' }} />
           <button onClick={() => fileRef.current?.click()} data-testid="add-progress-photo" style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
