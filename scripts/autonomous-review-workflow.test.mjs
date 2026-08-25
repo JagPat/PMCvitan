@@ -607,8 +607,8 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     // Ownership is a precondition of every scope assessment, so this fixture
     // declares one; the test is about a buried clean verdict, not ownership.
     body: '<!-- correction-owner: claude -->',
-    head: { sha: expectedHead },
-    base: { ref: 'main' },
+    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
   };
   const draftTransitions = [];
@@ -968,7 +968,8 @@ test('a buried current-head finding vetoes recovered clean state', async () => {
     number: 230,
     state: 'open',
     draft: false,
-    head: { sha: expectedHead },
+    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
   };
   const draftTransitions = [];
@@ -1012,7 +1013,8 @@ test('live current-head findings stop recovery before another ready transition',
     number: 230,
     state: 'open',
     draft: true,
-    head: { sha: expectedHead },
+    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
   };
   const draftTransitions = [];
@@ -1060,7 +1062,8 @@ test('a finding on the second distinct head publishes replacement_required immed
     number: 346,
     state: 'open',
     draft: false,
-    head: { sha: expectedHead },
+    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/346',
   };
   const sticky = [];
@@ -1415,7 +1418,8 @@ test('trusted scope enforcement rejects a spoofed green preflight', async () => 
     state: 'open',
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
-    head: { sha: head },
+    head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
   };
   const statuses = [];
   const sticky = [];
@@ -1459,7 +1463,8 @@ test('trusted scope enforcement reads the cumulative file list and rejects a mig
     state: 'open',
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/346',
-    head: { sha: head },
+    head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
   };
   const statuses = [];
   const client = {
@@ -1495,7 +1500,8 @@ test('final admission revalidates live scope and the late review-round reset', a
     state: 'open',
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
-    head: { sha: head },
+    head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
   };
   const statuses = [];
   const sticky = [];
@@ -1630,7 +1636,8 @@ test('the second finding-bearing head requires replacement even when convergence
     state: 'open',
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
-    head: { sha: head },
+    head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
   };
   const comments = [
     { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'a'.repeat(40) },
@@ -1729,8 +1736,8 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
     number: 230,
     state: 'open',
     draft: false,
-    head: { sha: expectedHead },
-    base: { ref: 'main' },
+    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
   };
   const calls = [];
   const client = {
@@ -1767,8 +1774,8 @@ test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
     number: 230,
     state: 'open',
     draft: false,
-    head: { sha: expectedHead },
-    base: { ref: 'main' },
+    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
   };
   const calls = [];
   const client = {
@@ -1806,8 +1813,8 @@ test('a clean-state auto-merge race retries the exact-SHA merge once', async () 
     number: 230,
     state: 'open',
     draft: false,
-    head: { sha: expectedHead },
-    base: { ref: 'main' },
+    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
   };
   let mergeAttempts = 0;
   const client = {
@@ -2070,4 +2077,196 @@ test('CI runs once per pull-request head', async () => {
 
   assert.match(ci, /pull_request:/);
   assert.doesNotMatch(ci, /push:/);
+});
+
+test('a base retargeted MID-POLL cannot mint an obligation, publish a finding, or promote', async () => {
+  // THE FINDING on this unit's first head, reproduced. Checking the base once in `run()`
+  // answers a question about the moment the workflow STARTED. A retarget changes neither the
+  // head SHA nor the state, so both of `refreshCurrentHead`'s original guards pass — and the
+  // controller carries on mutating a unit that can no longer land on `main`.
+  //
+  // The damaging mutation is EXHAUSTION: two finding-bearing heads take
+  // `enforceReviewConvergence` to `markReplacementRequired`, and that label is a
+  // REPOSITORY-WIDE obligation which then refuses every fresh `main` unit — exactly the
+  // outcome the eligibility rule exists to prevent, arrived at from the other side.
+  const expectedHead = 'd'.repeat(40);
+  const onMain = {
+    number: 601,
+    state: 'open',
+    draft: false,
+    body: '<!-- correction-owner: claude -->',
+    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/601',
+  };
+  // What the controller re-reads AFTER the poll: same head, same state, new base.
+  const retargeted = { ...onMain, base: { ref: 'release', repo: { full_name: 'JagPat/PMCvitan' } } };
+
+  const marked = [];
+  const draftTransitions = [];
+  const client = {
+    async pullRequest() { return retargeted; },
+    async setDraft(current, draft) { draftTransitions.push(draft); return { ...current, draft }; },
+    async setStatus() {},
+    async markReplacementRequired(number) { marked.push(number); },
+    async updateStickyComment() {},
+    async reviews() { return []; },
+    async reviewComments() {
+      return [
+        { user: { login: 'chatgpt-codex-connector[bot]' },
+          original_commit_id: 'c'.repeat(40), body: '**P1** first-head finding' },
+        { user: { login: 'chatgpt-codex-connector[bot]' },
+          original_commit_id: expectedHead, body: '**P1** second-head finding' },
+      ];
+    },
+  };
+
+  // Two finding-bearing heads: without the re-check this reaches markReplacementRequired.
+  const result = await reviewGate.enforceReviewConvergence(client, onMain, expectedHead);
+
+  assert.equal(marked.length, 0,
+    'a retargeted unit must not be labelled — that label is a repository-wide obligation');
+  assert.equal(result.superseded, true,
+    'the convergence must report itself superseded rather than completing');
+  assert.deepEqual(draftTransitions, [],
+    'and no lifecycle transition may be written against a unit that cannot land on main');
+});
+
+test('the same re-check does not disturb a unit that is still on main', async () => {
+  // Precision, not strictness: the guard must refuse ONLY the retarget. An identical
+  // interleaving whose base is unchanged still records exhaustion exactly as before.
+  const expectedHead = 'e'.repeat(40);
+  const pullRequest = {
+    number: 602,
+    state: 'open',
+    draft: false,
+    body: '<!-- correction-owner: claude -->',
+    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/602',
+  };
+  const marked = [];
+  const client = {
+    async pullRequest() { return pullRequest; },
+    async setDraft(current, draft) { return { ...current, draft }; },
+    async setStatus() {},
+    async markReplacementRequired(number) { marked.push(number); },
+    async updateStickyComment() {},
+    async reviews() { return []; },
+    async reviewComments() {
+      return [
+        { user: { login: 'chatgpt-codex-connector[bot]' },
+          original_commit_id: 'c'.repeat(40), body: '**P1** first-head finding' },
+        { user: { login: 'chatgpt-codex-connector[bot]' },
+          original_commit_id: expectedHead, body: '**P1** second-head finding' },
+      ];
+    },
+  };
+
+  const result = await reviewGate.enforceReviewConvergence(client, pullRequest, expectedHead);
+  assert.deepEqual(marked, [602], 'a genuine on-main exhaustion is still recorded');
+  assert.equal(result.required, true);
+  assert.notEqual(result.superseded, true);
+});
+
+test('a base retargeted INSIDE the setDraft window is refused on the post-mutation object', async () => {
+  // ROUND 3's finding, reproduced. `refreshCurrentHead` base-checks the pull request, then
+  // `client.setDraft()` REFETCHES and returns the post-mutation object — authoritative
+  // evidence about a moment AFTER that guard ran. Accepting it on `state` and `head.sha`
+  // alone let a retarget inside the mutation window through, and `reviewAttempt()` then
+  // proceeded with an off-`main` object, so the ready transition could still trigger Codex
+  // on a unit that can never land on `main`.
+  const expectedHead = 'f'.repeat(40);
+  const onMain = {
+    number: 700,
+    state: 'open',
+    draft: true,
+    node_id: 'PR_700',
+    body: '<!-- correction-owner: claude -->',
+    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/700',
+  };
+
+  let setDraftCalls = 0;
+  const client = {
+    // The pre-mutation refresh sees `main`; the post-mutation refetch sees `release`.
+    async pullRequest() { return onMain; },
+    async setDraft(current, draft) {
+      setDraftCalls += 1;
+      return {
+        ...current,
+        draft,
+        base: { ref: 'release', repo: { full_name: 'JagPat/PMCvitan' } },
+      };
+    },
+  };
+
+  const result = await reviewGate.setDraftForCurrentHead(client, 700, expectedHead, false);
+
+  assert.equal(setDraftCalls, 1, 'the mutation really was attempted — this is not a no-op');
+  assert.equal(result, null,
+    'the post-mutation object must be refused, so no caller proceeds with an off-main unit');
+});
+
+test('the post-mutation check does not disturb a unit that stayed on main', async () => {
+  // Precision: the same path, retarget-free, still returns the promoted pull request.
+  const expectedHead = 'a'.repeat(40);
+  const onMain = {
+    number: 701,
+    state: 'open',
+    draft: true,
+    node_id: 'PR_701',
+    body: '<!-- correction-owner: claude -->',
+    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/701',
+  };
+  const client = {
+    async pullRequest() { return onMain; },
+    async setDraft(current, draft) { return { ...current, draft }; },
+  };
+
+  const result = await reviewGate.setDraftForCurrentHead(client, 701, expectedHead, false);
+  assert.ok(result, 'an unchanged unit is still promoted');
+  assert.equal(result.draft, false);
+  assert.equal(result.base.ref, 'main');
+});
+
+test('a NO-OP draft transition still returns freshly fetched evidence', async () => {
+  // ROUND 4's finding, reproduced. An exhaustion check begins with the pull request ALREADY in
+  // draft, so `setDraft(..., true)` has nothing to mutate. Its no-op branch used to return the
+  // caller's object — the one `refreshCurrentHead` read moments earlier — so a retarget in that
+  // window was re-validated against a stale base, accepted, and `enforceReviewConvergence` then
+  // applied the repository-wide replacement label to a pull request that had left `main`.
+  //
+  // The predicate was never the defect; its input was. This asserts the CLIENT's contract: the
+  // returned object is always a fresh read, so no caller can be handed staleness to validate.
+  const expectedHead = 'b'.repeat(40);
+  const alreadyDraft = {
+    number: 800,
+    state: 'open',
+    draft: true,
+    node_id: 'PR_800',
+    body: '<!-- correction-owner: claude -->',
+    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/800',
+  };
+
+  let fetches = 0;
+  const client = new reviewGate.GitHubClient({ repository: 'JagPat/PMCvitan', token: 't' });
+  // The live read reflects the retarget that happened after the caller's earlier refresh.
+  client.pullRequest = async () => {
+    fetches += 1;
+    return { ...alreadyDraft, base: { ref: 'release', repo: { full_name: 'JagPat/PMCvitan' } } };
+  };
+  client.graphql = async () => { throw new Error('a no-op transition must not mutate'); };
+
+  const updated = await client.setDraft(alreadyDraft, true);
+
+  assert.equal(fetches, 1, 'the no-op branch must refetch rather than echo its argument');
+  assert.equal(updated.base.ref, 'release',
+    'and the caller must receive the LIVE base, not the one it passed in');
+  assert.notEqual(updated, alreadyDraft, 'the returned object is not the input object');
 });
