@@ -1,8 +1,8 @@
 import { useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { Button } from '@/components';
-import { childrenOf } from '@/lib/locationTree';
+import { Button } from './Button';
+import { childrenOf, trailOf } from '@/lib/locationTree';
 import type { NodeKind } from '@vitan/shared';
 
 const KIND_LABEL: Record<NodeKind, string> = { zone: 'Zone', room: 'Room', element: 'Object' };
@@ -47,8 +47,15 @@ export function LocationPicker({
   const addLocationNode = useStore((s) => s.addLocationNode);
   // The selection PATH from the top level down: path[0] is a zone, each further entry a
   // child of the one before it. The filed target is the deepest selection.
-  const [path, setPath] = useState<string[]>([]);
-  void value;
+  //
+  // Seeded from `value` so the picker OPENS on the place the caller already holds. It used
+  // to discard the prop and start empty, which let the selects read blank while the caller's
+  // `nodeId` was still set — a form could then be saved to a location the UI showed as
+  // unchosen. An unknown or draft node seeds nothing, because `nodes` is the published set.
+  //
+  // Seeding is initial-only, which matches how every caller uses it: the picker is mounted
+  // for one editing session and reports outwards through `onChange`.
+  const [path, setPath] = useState<string[]>(() => trailOf(nodes, value).map((t) => t.id));
 
   const selectAt = (level: number, id: string | null) => {
     const next = id ? [...path.slice(0, level), id] : path.slice(0, level);

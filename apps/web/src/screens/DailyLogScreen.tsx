@@ -1,13 +1,14 @@
-import { useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
+import { useRef, useState, type ChangeEvent } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { dailyLogReadMode } from '@/data/apiGateway';
-import { selectTotalWorkers, selectVisibleDecisions } from '@/store/selectors';
-import { EmptyState, Eyebrow, Swatch, PhotoViewer, Modal, Button } from '@/components';
+import { selectTotalWorkers } from '@/store/selectors';
+import { EmptyState, Eyebrow, Swatch, PhotoViewer, Button } from '@/components';
+import { AddMaterialModal } from '@/screens/modals/AddMaterialModal';
 import { LocationPicker } from '@/components/LocationPicker';
 import { pathOf } from '@/lib/locationTree';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
-import { can, SW, labourLabels, type SwatchKey } from '@vitan/shared';
+import { can, labourLabels } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 export function DailyLogScreen() {
@@ -335,69 +336,3 @@ const stepBtn: React.CSSProperties = {
   justifyContent: 'center',
 };
 
-/** Engineer/PMC affordance: record a material delivery on the open daily log,
- *  optionally linked to a locked decision so the PMC can confirm the match. */
-function AddMaterialModal({ onClose }: { onClose: () => void }) {
-  const addSiteMaterial = useStore((s) => s.addSiteMaterial);
-  // a delivery matches a published decision — drafts aren't linkable
-  // …and a WITHDRAWN decision is terminal: a delivery can no longer match it, so the picker
-  // excludes it for EVERY role on top of the shared audience rule (4a round 6, Codex)
-  const decisions = useStore(useShallow((s) => selectVisibleDecisions(s).filter((d) => d.status !== 'withdrawn')));
-  const [name, setName] = useState('');
-  const [qty, setQty] = useState('');
-  const [zone, setZone] = useState('');
-  const [decisionId, setDecisionId] = useState('');
-  const [nodeId, setNodeId] = useState<string | null>(null);
-  const [swatch, setSwatch] = useState<SwatchKey>('tile');
-
-  const ready = Boolean(name.trim() && qty.trim());
-  const save = () => {
-    if (!ready) return;
-    addSiteMaterial({ name: name.trim(), qty: qty.trim(), zone: zone.trim(), decisionId: decisionId || undefined, swatch, ...(nodeId ? { nodeId } : {}) });
-    onClose();
-  };
-  const swatchKeys = Object.keys(SW) as SwatchKey[];
-
-  return (
-    <Modal onClose={onClose} maxWidth={440} labelledBy="add-mat-title">
-      <div style={{ padding: '18px 20px', maxHeight: '80vh', overflowY: 'auto' }}>
-        <div id="add-mat-title" style={{ fontWeight: 700, fontSize: 17 }}>Record material delivery</div>
-        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
-          Link it to a locked decision so the PMC can confirm the delivery matches what the client approved.
-        </div>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Material (e.g. Italian Marble slabs)" style={{ ...fldM, marginTop: 14, width: '100%' }} data-testid="mat-name" />
-        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-          <input value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Qty (e.g. 40 sqm)" style={{ ...fldM, flex: 1, minWidth: 0 }} data-testid="mat-qty" />
-          <input value={zone} onChange={(e) => setZone(e.target.value)} placeholder="Zone" style={{ ...fldM, flex: 1, minWidth: 0 }} data-testid="mat-zone" />
-        </div>
-
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)', margin: '16px 0 6px' }}>LINK TO DECISION (optional)</div>
-        <select value={decisionId} onChange={(e) => setDecisionId(e.target.value)} style={{ ...fldM, width: '100%' }} data-testid="mat-decision" aria-label="Link to decision">
-          <option value="">— No linked decision —</option>
-          {decisions.map((d) => (
-            <option key={d.id} value={d.id}>{d.id} · {d.title}</option>
-          ))}
-        </select>
-
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)', margin: '16px 0 6px' }}>LOCATION (optional)</div>
-        <LocationPicker value={nodeId} onChange={setNodeId} idPrefix="mat-loc" />
-
-        <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
-          <Swatch swatch={swatch} size={40} radius={9} />
-          <select value={swatch} onChange={(e) => setSwatch(e.target.value as SwatchKey)} style={{ ...fldM, flex: 1, minWidth: 0 }} aria-label="Material swatch">
-            {swatchKeys.map((k) => (
-              <option key={k} value={k}>{k}</option>
-            ))}
-          </select>
-        </div>
-
-        <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
-          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
-          <Button variant="ink" onClick={save} disabled={!ready} data-testid="save-material" style={{ flex: 1, padding: 12 }}>Record delivery</Button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-const fldM: CSSProperties = { height: 42, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none' };
