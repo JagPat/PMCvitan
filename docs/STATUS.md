@@ -16,11 +16,19 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: 2b5d12f
-open_pr: 421
+open_pr: 423
 next_task: none
 blocking_directive: none
 updated: 2026-08-25
 ```
+
+**`open_pr: 423` IS A TOOLING UNIT, NOT PHASE 6 TASK 4.** #423
+(`claude/migration-invariant-linter`) adds `pnpm lint:migrations` — five executable migration
+invariants (MI-000..MI-004) drawn from the schedule-B1 lineage (#354→#415), which spent sixteen
+heads rediscovering one shape — and wires it into the required `automation` job. It is `scripts/`, `.github/workflows/ci.yml`, `package.json` and
+one new doc: no `apps/web` file, no schema, no migration, no API change, and `apps/api/prisma/**` is
+read-only to it. It does NOT advance phase 6 task 4. #422 (`claude/capture-context-unit-a`) is live
+beside it and this file is their only shared edit.
 
 **`open_pr: 421` IS A USER-DIRECTED UX UNIT, NOT PHASE 6 TASK 4.** #421
 (`claude/pmcvitan-ux-audit-replacement`) is the UX completion audit that follows merged

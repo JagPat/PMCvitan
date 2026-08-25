@@ -25,11 +25,12 @@
     "test:e2e:api:allmodules": "E2E_SENDER_MODE=legacy E2E_DECISIONS_READ=moduleQuery E2E_DAILYLOG_READ=moduleQuery E2E_DRAWINGS_READ=moduleQuery E2E_INSPECTIONS_READ=moduleQuery E2E_ACTIVITIES_READ=moduleQuery bash scripts/test-api-e2e.sh",
     "test:e2e:api:allmodules:outbox": "E2E_SENDER_MODE=outbox E2E_DECISIONS_READ=moduleQuery E2E_DAILYLOG_READ=moduleQuery E2E_DRAWINGS_READ=moduleQuery E2E_INSPECTIONS_READ=moduleQuery E2E_ACTIVITIES_READ=moduleQuery bash scripts/test-api-e2e.sh",
     "build:shared": "pnpm --filter @vitan/shared build",
-    "test:automation": "node --test scripts/autonomous-*.test.mjs scripts/ci-*.test.mjs scripts/runner-continuation*.test.mjs scripts/review-efficiency.test.mjs scripts/review-lifecycle*.test.mjs",
-    "check:automation": "pnpm test:automation",
+    "test:automation": "node --test scripts/autonomous-*.test.mjs scripts/ci-*.test.mjs scripts/migration-lint.test.mjs scripts/runner-continuation*.test.mjs scripts/review-efficiency.test.mjs scripts/review-lifecycle*.test.mjs",
+    "check:automation": "pnpm lint:migrations && pnpm test:automation",
     "check:web": "pnpm --filter web lint && pnpm --filter web typecheck && pnpm --filter web test && pnpm --filter web build",
     "check:api": "pnpm build:shared && pnpm --filter api prisma:generate && pnpm --filter api typecheck && pnpm --filter api test && pnpm --filter api build",
-    "check": "pnpm check:automation && pnpm check:web && pnpm check:api"
+    "check": "pnpm check:automation && pnpm check:web && pnpm check:api",
+    "lint:migrations": "node scripts/migration-lint.mjs"
   },
   "engines": {
     "node": ">=20"

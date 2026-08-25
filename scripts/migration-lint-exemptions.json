@@ -1,0 +1,27 @@
+{
+  "__README__": [
+    "Migrations merged BEFORE scripts/migration-lint.mjs existed, with a written reason each.",
+    "",
+    "RECORDED, not suppressed. The measured verdict of MI-000..MI-004 over the 91 migrations on main",
+    "at 756563c8 was 7 findings across 3 files; every one is listed here with what it is. TWO are",
+    "LIVE DEFECTS of the same class the schedule-B1 lineage spent sixteen heads on, and they are",
+    "reported to the owner as candidates for their own units rather than fixed here — this unit's",
+    "file surface is scripts/, CI and docs, and apps/api/prisma/** is read-only to it.",
+    "",
+    "A NEW migration cannot join this list without an owner editing this file, which is the point:",
+    "the cost of an exception is a visible diff, not silence. Two tests keep it honest — every entry",
+    "must name a real migration and rule with a checkable reason, and none may be DEAD."
+  ],
+
+  "20270225000000_phase4_t3_correction3": {
+    "MI-001": "ACCEPTED, 3 sites. The prerequisite blocks resolve CHECK constraints and functions by name inside a guard that refuses, without comparing a definition IN THIS FILE. The comparison exists but lives in the compiled verifier: `t3c seals` compares canonical function BODIES and gates every migrate.sh path including the post-deploy success path. The in-file block is documented at line 63 as 'the in-file restatement for a direct prisma migrate deploy, kept auditable on sight'. A narrow check backed by a wider one that runs on every deploy is the opposite of the a222e91 shape.",
+    "MI-002": "LIVE DEFECT — reported, not fixed here. Line 169 verifies the prerequisite composite foreign keys by conname + conrelid + contype='f' + convalidated and never reads pg_trigger.tgenabled on tgconstraint. That is the a222e91 shape exactly: ALTER TABLE ... DISABLE TRIGGER ALL leaves every column this block reads unchanged while the keys stop enforcing, so a restored database missing its containment passes this prerequisite and is baselined. Fixing it means editing apps/api/prisma/**, which is read-only to this unit. Candidate for its own unit."
+  },
+  "20270826000000_phase6_t4b_approval_attribution": {
+    "MI-004": "ACCEPTED WITH A RECORDED DIVERGENCE. Line 11 is a bare top-level `LOCK TABLE \"Decision\", \"Membership\"`. Under `prisma migrate deploy` this is correct and the file says so: the schema engine sends the script to a connection already in a transaction, MEASURED at 20270930000000_schedule_dependency_graph/migration.sql:75-79. It is NOT tolerant of the no-transaction caller AGENTS.md contemplates, where LOCK TABLE is a hard error — the B1 migration wraps its own lock as `DO $$ BEGIN LOCK TABLE ...; END $$;` (line 1245) for exactly that reason. It fails LOUDLY rather than silently, which is why this is a divergence from precedent rather than a live production defect."
+  },
+  "20270920000000_decision_option_kinds": {
+    "MI-001": "ACCEPTED. Resolves a function by proname inside a refusing guard without comparing prosrc. Same class as the B1 function-BODY finding, but this migration installs no deploy-time verifier that would freeze a wrong body in place, so the exposure is a failed apply rather than a false clearance.",
+    "MI-003": "LIVE DEFECT — reported, not fixed here. This migration installs CONSTRAINT TRIGGERs (DecisionOption_kind_selectable_ins/_upd) and verifies them against the catalog, but names no RUNBOOK procedure and has no counterpart in migrate.sh. Once its row is in _prisma_migrations the seals are never checked again, so a restore that drops or disables them yields a green deploy — the #411 head a222e91 defect, on a merged migration. Candidate for its own unit."
+  }
+}

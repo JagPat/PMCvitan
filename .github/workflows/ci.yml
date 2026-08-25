@@ -56,6 +56,18 @@ jobs:
   # The loop's own machinery. NOT gated on the classification: `docs/STATUS.md`
   # is parsed by the runner state machine, so even a Markdown-only change can
   # break these. They are seconds, not minutes.
+  #
+  # `lint:migrations` lives here rather than in `api`, and the reason is measured
+  # rather than aesthetic. Three facts decided it. (1) This is the only REQUIRED
+  # job that is not gated on `battery-plan.outputs.run_products`, so it runs on
+  # every SHA — including the PR-body edits where the product jobs are skipped by
+  # design. A migration invariant that can be skipped is not an invariant.
+  # (2) The linter is STATIC: no database, no build, no Prisma client. `api`
+  # carries `timeout-minutes: 60` and a Postgres service it would not use, and
+  # putting a pre-review check behind an hour-budgeted job delays exactly the
+  # feedback it exists to give. (3) It is cheap: measured locally, the linter
+  # runs in 0.48s over the 91 migrations and its test file adds 1.9s to a suite
+  # that took 1.6s — seconds, in a job budgeted at fifteen minutes.
   automation:
     needs: [review-scope]
     runs-on: ubuntu-latest
@@ -70,6 +82,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Migration invariants
+        run: pnpm lint:migrations
       - name: Autonomous review state tests
         run: pnpm test:automation
 
