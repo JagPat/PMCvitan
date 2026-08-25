@@ -44,6 +44,7 @@
 // `migration-lint.test.mjs` asserts that in both directions. Full prose: docs/MIGRATION_INVARIANTS.md.
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -55,7 +56,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = join(HERE, '..');
 export const MIGRATIONS_DIR = join(REPO_ROOT, 'apps', 'api', 'prisma', 'migrations');
 
-const finding = (rule, line, message) => ({ rule, line, message });
+const finding = (rule, site, message) => ({
+  rule, line: site.line, fingerprint: fingerprintOf(site.sql), message,
+});
+
+/** A site's identity independent of where it sits: its own SQL, whitespace runs collapsed. */
+export const fingerprintOf = (sql) => createHash('sha256')
+  .update(String(sql ?? '').replace(/\s+/gu, ' ').trim(), 'utf8').digest('hex').slice(0, 16);
 
 // ── What "this query is about a foreign key" means, structurally ─────────────────────────────
 //
@@ -140,7 +147,7 @@ function ruleEnforcementNotExistence(site) {
 
   if (readsEnforcementState(site.tree)) return [];
 
-  return [finding('MI-001', site.line,
+  return [finding('MI-001', site,
     'this query decides something about a foreign key (it reads pg_constraint and tests '
     + "contype = 'f') without asking whether that key ENFORCES. A foreign key is implemented as "
     + 'internal RI_ConstraintTrigger rows — four per key on PostgreSQL 16 — and ALTER TABLE … '
@@ -193,19 +200,20 @@ export function unresolvedDynamicSql({ dir = MIGRATIONS_DIR } = {}) {
  * Migrations merged before this linter existed, each with a written reason. Recorded, not
  * suppressed: adding one costs a visible edit that a reviewer reads. See the JSON's __README__.
  *
- * KEYED PER SITE — `"MI-001:167"`, rule and line — not per rule. Keying it by rule alone let one
- * accepted site discharge every other finding of that rule in the same file, which is the ledger
- * committing the exact defect the rule detects and the ledger's own README disclaims. Migrations
- * are immutable once merged, so the line is stable; if one ever moves, the stale entry goes dead
- * (a test fails) AND the moved site is unexempted (the lint fails), so it cannot drift quietly.
+ * KEYED PER SITE — `"MI-001:167:5d27fbda47ce05f6"`: rule, line AND the site's fingerprint, all
+ * three matching. Keying it by rule alone let one accepted site discharge every other finding of
+ * that rule in the file — the ledger committing the defect the rule detects, and the THIRD
+ * occurrence of that granularity defect in this unit's lineage (file-global, block-global, this).
+ * The JSON's __SCHEMA__ states why BOTH halves are carried, and records the audit of every other
+ * suppression path.
  */
 const EXEMPTIONS_FILE = join(REPO_ROOT, 'scripts', 'migration-lint-exemptions.json');
 export const EXEMPTIONS = new Map(Object.entries(JSON.parse(
   existsSync(EXEMPTIONS_FILE) ? readFileSync(EXEMPTIONS_FILE, 'utf8') : '{}',
 )));
 
-/** The key one exemption entry must carry to suppress one finding: the rule and the site's line. */
-export const exemptionKey = (finding) => `${finding.rule}:${finding.line}`;
+/** The key one entry must carry to suppress one finding: rule, line, and the query's fingerprint. */
+export const exemptionKey = (f) => `${f.rule}:${f.line}:${f.fingerprint}`;
 
 export function migrationNames(dir = MIGRATIONS_DIR) {
   return readdirSync(dir).sort().filter((n) => existsSync(join(dir, n, 'migration.sql')));

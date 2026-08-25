@@ -363,16 +363,24 @@ export function parseMigration(sql) {
   const tree = parseSql(sql);
   const sites = [];
 
-  const statements = (tree.stmts ?? []).map((s, index) => ({
-    index,
-    line: lineOfByteOffset(buffer, s.stmt_location ?? 0),
-    node: s.stmt,
-    type: Object.keys(s.stmt ?? {})[0] ?? null,
-  }));
+  // EVERY site carries its own text, top-level statements included — not cosmetic: the exemption
+  // ledger identifies a site BY ITS QUERY, and a site with no text has nothing to be identified
+  // by, so every such site would hash alike. That is the coarse key again in a different costume.
+  const statements = (tree.stmts ?? []).map((s, index) => {
+    const from = s.stmt_location ?? 0;
+    return {
+      index,
+      line: lineOfByteOffset(buffer, from),
+      node: s.stmt,
+      sql: buffer.subarray(from, typeof s.stmt_len === 'number' ? from + s.stmt_len : buffer.length)
+        .toString('utf8'),
+      type: Object.keys(s.stmt ?? {})[0] ?? null,
+    };
+  });
 
   for (const s of statements) {
     if (ROUTINE_STATEMENTS.has(s.type)) continue;
-    sites.push({ line: s.line, sql: null, tree: s.node, routine: null });
+    sites.push({ line: s.line, sql: s.sql, tree: s.node, routine: null });
   }
 
   const unresolvedDynamicSql = [];

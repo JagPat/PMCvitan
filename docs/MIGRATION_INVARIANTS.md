@@ -106,8 +106,7 @@ produces:
 The statement kinds a routine may contain are classified in `PLPGSQL_STATEMENT_KINDS`, recording the
 eleven this corpus contains. Any other kind — including PL/pgSQL's other dynamic-SQL statements,
 `FOR … IN EXECUTE`, `OPEN … FOR EXECUTE` and `RETURN QUERY EXECUTE`, none of which appear here —
-**stops the run and names itself**, at the cost of one classified line. The table is not the point;
-the absent `default:` case is.
+**stops the run and names itself**. The table is not the point; the absent `default:` case is.
 
 ### What this unit does NOT cover
 
@@ -128,20 +127,18 @@ SHAs stay readable against it. In that numbering the enforcement rule was `MI-00
 the name-over-definition rule; this unit ships the enforcement rule as **MI-001**, per the owner's
 re-cut. Nothing on that branch shipped; everything in the table above is deferred.
 
-**What MI-000's absence still costs, precisely.** Totality holds at two levels here and MI-000 is
-about the one that is still open:
-
-* **PL/pgSQL statement kinds — CLOSED, in the adapter.** An unclassified kind throws and names
-  itself. This is not MI-000 arriving early; it is the adapter refusing to walk a position it has
-  not been told how to read, which is what let PR #423's lexer desync silently.
-* **Top-level SQL statement kinds — OPEN.** No rule asks anything of a `CREATE VIEW` or a `GRANT`,
-  because MI-001 is about foreign keys and nothing else looks at them. A construct nobody has
-  reasoned about therefore passes `pnpm lint:migrations` rather than failing it. That is MI-000's
-  job and MI-000 is deferred.
+**What MI-000's absence still costs, precisely.** Totality holds at two levels and MI-000 is about
+the open one. **PL/pgSQL statement kinds are CLOSED, in the adapter**: an unclassified kind throws
+and names itself — not MI-000 arriving early, but the adapter refusing to walk a position it has not
+been told how to read, which is what let #423's lexer desync silently. **Top-level SQL statement
+kinds are OPEN**: no rule asks anything of a `CREATE VIEW` or a `GRANT`, because MI-001 is about
+foreign keys, so a construct nobody has reasoned about passes `pnpm lint:migrations` rather than
+failing it. That is MI-000's job and MI-000 is deferred.
 
 Separately, `scripts/migration-lint.test.mjs` asserts that every migration parses and that **zero**
-fragments are unreadable, so a fragment this adapter cannot read fails `pnpm test:automation` even
-though it does not fail `pnpm lint:migrations`.
+fragments are unreadable *by the grammar*, so one this adapter cannot read fails
+`pnpm test:automation` even though it does not fail `pnpm lint:migrations`. Run-time-built SQL is a
+different limit, counted separately — see *Corpus*.
 
 ## The live defects — one with a backstop here, one without
 
@@ -167,9 +164,8 @@ symmetrical, and a reader must not assume coverage this unit does not have.**
 ## The measured corpus verdict
 
 Over the 91 migrations on `main` at `959393d9`, MI-001 raises **two findings**, both recorded in
-`scripts/migration-lint-exemptions.json` with a written reason, keyed **per site** (`"MI-001:167"` —
-rule and line). Keying by rule alone would let one accepted site discharge every other finding of
-that rule in the same file: the ledger committing the exact defect the rule detects.
+`scripts/migration-lint-exemptions.json` with a written reason, keyed **per site**
+(`"MI-001:167:5d27fbda47ce05f6"` — rule, line and the query's fingerprint).
 
 | Site | Verdict |
 | --- | --- |
@@ -178,11 +174,34 @@ that rule in the same file: the ledger committing the exact defect the rule dete
 
 The rule does not read that neighbour on 1e''s behalf, and it must not — that is precisely the
 coarser-than-the-site evidence #423 was closed for. The judgement that the neighbour covers the site
-is a human one, so it is written down where a reviewer sees it.
+is a human one, so it is written down where a reviewer sees it — and the written reason now states
+the condition that makes it sound: that migration is **applied and checksum-frozen**, so the
+statement the acceptance leans on cannot be removed, reordered or weakened without a new migration
+MI-001 would judge on its own terms. On an unapplied file the argument would be worthless. The rule
+is not weakened to accommodate it.
+
+### The exemption ledger
 
 An exemption suppresses the **build failure** and nothing else. Every entry is printed on every run,
-in the same output as a failing finding. Two tests keep the ledger honest: each entry must name a
-real migration and a real rule with a checkable reason, and none may be dead.
+in the same output as a failing finding.
+
+**The key was `<migration>` + `<rule>` until PR #430**, making this the *third* occurrence of one
+defect in this unit's lineage — file-global evidence (#423 round 1), block-global evidence (#423
+round 2), then a ledger keyed more coarsely than the rule it overrides, so one accepted site
+discharged every other MI-001 site in the file, a genuinely defective one included. A ledger coarser
+than the rule it overrides **is** the rule at the coarser granularity. The fix was not applied only
+where the finding pointed: every suppression path was audited, and the audit and the full reasoning
+for the key live in the ledger's own `__SCHEMA__`.
+
+The key now carries **both halves of a site's identity** and both must match — `line` (where: an
+applied migration is checksum-frozen, so the line does not drift, and it is the half a reviewer
+navigates to) and `fingerprint` (what: sha-256 of the query's normalised text, so a **changed query
+must re-earn its exemption**). Neither alone: line alone lets an edited query inherit its
+predecessor's acceptance; fingerprint alone exempts every identical query in the file — the
+migration-global defect again, wearing a hash. Three tests keep it honest: each entry must name a
+real migration, rule and site — line **and** well-formed fingerprint — with a checkable reason; none
+may be dead; and a fixture migration carrying three findings asserts that exempting one leaves the
+other two failing the run, and that breaking *either* half of the key stops it applying.
 
 ## The parser
 

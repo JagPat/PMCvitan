@@ -15,13 +15,15 @@ import { fileURLToPath } from 'node:url';
 import { loadParser, parseMigration } from './pg-parse.mjs';
 import {
   lintMigration, lintAll, unresolvedDynamicSql, EXEMPTIONS, RULE_IDS,
-  MIGRATIONS_DIR, migrationNames,
+  MIGRATIONS_DIR, migrationNames, exemptionKey,
 } from './migration-lint.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, 'fixtures', 'migration-lint');
 const fixture = (name) => readFileSync(join(FIXTURES, `${name}.sql`), 'utf8');
 const linesOf = (sql) => sql.split(String.fromCharCode(10));
+/** The ledger's real entries. `__README__`/`__SCHEMA__` are prose for the reader, not exemptions. */
+const ledgerEntries = () => [...EXEMPTIONS].filter(([name]) => !name.startsWith('__'));
 const lintFixture = (name) => lintMigration({ name, sql: fixture(name) });
 const linesAt = (sql, needle) => linesOf(sql)
   .map((line, i) => (line.includes(needle) ? i + 1 : 0))
@@ -193,25 +195,38 @@ test('an exemption suppresses ONE site, not every site of that rule in the file'
   const all = lintAll({ dir, applyExemptions: false });
   assert.equal(all.length, 3, 'the fixture carries three defective sites');
 
-  const exemptions = new Map([[name, {
-    [`MI-001:${all[0].line}`]: 'ACCEPTED — a probe entry, long enough to be a reason a reviewer could check rather than a bare label.',
-  }]]);
-  const partial = lintAll({ dir, exemptions });
+  const reason = 'ACCEPTED — a probe entry, long enough to be a reason a reviewer could check rather than a bare label.';
+  const ledger = (key) => new Map([[name, { [key]: reason }]]);
+  const partial = lintAll({ dir, exemptions: ledger(exemptionKey(all[0])) });
   assert.deepEqual(partial.map((f) => f.line), all.slice(1).map((f) => f.line),
     'the two unexempted sites must still fail');
   assert.deepEqual(partial.exempted.map((f) => f.line), [all[0].line]);
+
+  // BOTH halves of the site's identity are load-bearing, so each is tested by breaking only it. A
+  // line-only key lets an edited query inherit its predecessor's acceptance; a fingerprint-only key
+  // exempts every identical query in the file — migration-global again.
+  const moved = `${all[0].rule}:${all[0].line + 1}:${all[0].fingerprint}`;
+  assert.equal(lintAll({ dir, exemptions: ledger(moved) }).exempted.length, 0,
+    'a MOVED query must re-earn its exemption');
+  const changed = `${all[0].rule}:${all[0].line}:deadbeefdeadbeef`;
+  assert.equal(lintAll({ dir, exemptions: ledger(changed) }).exempted.length, 0,
+    'a CHANGED query must re-earn its exemption');
 });
 
-test('every exemption names a real migration, a real rule and line, and a checkable reason', () => {
+test('every exemption names a real migration, a real rule, a real site, and a checkable reason', () => {
   const onDisk = new Set(readdirSync(MIGRATIONS_DIR));
-  for (const [migration, entries] of EXEMPTIONS) {
-    if (migration === '__README__') continue;
+  for (const [migration, entries] of ledgerEntries()) {
     assert.ok(onDisk.has(migration), `exemption names a migration that is not on disk: ${migration}`);
-    assert.ok(existsSync(join(MIGRATIONS_DIR, migration, 'migration.sql')));
+    const lines = linesOf(readFileSync(join(MIGRATIONS_DIR, migration, 'migration.sql'), 'utf8'));
     for (const [key, reason] of Object.entries(entries)) {
-      const [rule, line] = key.split(':');
+      const [rule, line, fingerprint] = key.split(':');
       assert.ok(RULE_IDS.includes(rule), `exemption names a rule that does not exist: ${rule}`);
       assert.match(line ?? '', /^\d+$/u, `exemption ${migration}/${key} must name the site's line`);
+      assert.ok(Number(line) >= 1 && Number(line) <= lines.length,
+        `${migration}/${key} names a line that file does not have`);
+      // Both halves of the site's identity, so a CHANGED query at the same address re-earns it.
+      assert.match(fingerprint ?? '', /^[0-9a-f]{16}$/u,
+        `${migration}/${key} must carry the site's fingerprint as well as its line`);
       assert.ok(typeof reason === 'string' && reason.length > 120,
         `${migration}/${key} needs a reason a reviewer can check, not a label`);
     }
@@ -220,9 +235,8 @@ test('every exemption names a real migration, a real rule and line, and a checka
 
 test('no exemption is dead', () => {
   const raised = new Set(lintAll({ applyExemptions: false })
-    .map((f) => `${f.migration} MI-001:${f.line}`.replace('MI-001', f.rule)));
-  for (const [migration, entries] of EXEMPTIONS) {
-    if (migration === '__README__') continue;
+    .map((f) => `${f.migration} ${exemptionKey(f)}`));
+  for (const [migration, entries] of ledgerEntries()) {
     for (const key of Object.keys(entries)) {
       assert.ok(raised.has(`${migration} ${key}`),
         `${migration}/${key} suppresses nothing — delete it rather than leave it standing`);
