@@ -66,13 +66,48 @@ baselined as correct.
 GREEN at `96c9cc4` (PR #412), which joins `pg_trigger` on `tgconstraint` and refuses a key whose
 `tgenabled` says it does not act.
 
-The rule fires on a query that reads `pg_constraint` and compares `contype` against `'f'` without
-reading `pg_trigger.tgenabled` through `tgconstraint` **in that same query**. Both halves of the
-evidence are required and neither is decoration: `tgenabled` alone would accept the enablement of
-some unrelated trigger read nearby, and `tgconstraint` alone reaches the key's own triggers and then
-never asks whether they are switched on.
+The rule fires on a query that reads `pg_constraint` and compares `contype` against `'f'` unless,
+**in that same query**, two things hold:
 
-Fixtures: `mi001-red-a222e91.sql`, `mi001-green-96c9cc4.sql`, `mi001-decoy-adjacent-guard.sql`.
+* **LINKED** — a comparison equates `pg_trigger.tgconstraint` with the inspected constraint's `oid`,
+  so the triggers being read are this key's own and not some other object's.
+* **TESTED** — `pg_trigger.tgenabled` is compared against a state it can hold (`O`, `A`, `D`, `R`),
+  so the query's result actually turns on it. Selecting the column decides nothing.
+
+Both are resolved through the query's own range table, not matched by name. `tgenabled` taken from
+a derived table of the author's own making is a column name, not a fact about any trigger; an
+unqualified reference is credited only when the query names exactly one relation. Anything the
+analyzer cannot tie to the catalog it claims to come from is not evidence, and the rule fires.
+
+Detection and evidence deliberately pull in opposite directions: the `contype = 'f'` test that makes
+a query a SITE is permissive, and the enforcement test that clears it is strict. Both err toward a
+finding — the only direction a linter may err in, because a reported site is read by a human and
+either fixed or accepted in the ledger, while a silent clean report is read by nobody.
+
+Fixtures: `mi001-red-a222e91.sql`, `mi001-green-96c9cc4.sql`, `mi001-decoy-adjacent-guard.sql`
+(four resolutions in one block — enforcing, presence-only, read-but-not-judged, and right-name
+wrong-source), `mi001-dynamic-sql.sql`.
+
+### SQL that does not exist until the migration runs
+
+`EXECUTE` takes a string. Reading that string as an ordinary expression parses the LITERAL and never
+the statement PostgreSQL will run, so a guard written as
+`EXECUTE 'SELECT … FROM pg_constraint WHERE contype = ''f'''` would be invisible to every rule while
+the linter reported clean. The adapter therefore treats a dynamic-SQL position as the statement it
+produces:
+
+* **Decidable text is parsed for real.** A string constant, or a `||` chain of them, folds to the
+  statement it always is and becomes an ordinary site the rules judge. One migration here does this.
+* **Undecidable text is reported as unread.** `EXECUTE format('DROP TRIGGER %I ON %I', …)` has no
+  text before the migration runs. Eleven such statements exist in this corpus. They are **pinned**
+  in `scripts/migration-lint.test.mjs`, not exempted — there is no reason to author, and a NEW one
+  fails the required `automation` job and has to be looked at.
+
+The statement kinds a routine may contain are classified in `PLPGSQL_STATEMENT_KINDS`, recording the
+eleven this corpus contains. Any other kind — including PL/pgSQL's other dynamic-SQL statements,
+`FOR … IN EXECUTE`, `OPEN … FOR EXECUTE` and `RETURN QUERY EXECUTE`, none of which appear here —
+**stops the run and names itself**, at the cost of one classified line. The table is not the point;
+the absent `default:` case is.
 
 ### What this unit does NOT cover
 
@@ -93,10 +128,20 @@ SHAs stay readable against it. In that numbering the enforcement rule was `MI-00
 the name-over-definition rule; this unit ships the enforcement rule as **MI-001**, per the owner's
 re-cut. Nothing on that branch shipped; everything in the table above is deferred.
 
-Because MI-000 is deferred, an unrecognised construct is not *failed* — but it is not skipped
-either: `scripts/migration-lint.test.mjs` asserts that every migration parses and that **zero**
-fragments are unreadable, so a construct this adapter cannot read fails `pnpm test:automation`. It
-does not fail `pnpm lint:migrations`.
+**What MI-000's absence still costs, precisely.** Totality holds at two levels here and MI-000 is
+about the one that is still open:
+
+* **PL/pgSQL statement kinds — CLOSED, in the adapter.** An unclassified kind throws and names
+  itself. This is not MI-000 arriving early; it is the adapter refusing to walk a position it has
+  not been told how to read, which is what let PR #423's lexer desync silently.
+* **Top-level SQL statement kinds — OPEN.** No rule asks anything of a `CREATE VIEW` or a `GRANT`,
+  because MI-001 is about foreign keys and nothing else looks at them. A construct nobody has
+  reasoned about therefore passes `pnpm lint:migrations` rather than failing it. That is MI-000's
+  job and MI-000 is deferred.
+
+Separately, `scripts/migration-lint.test.mjs` asserts that every migration parses and that **zero**
+fragments are unreadable, so a fragment this adapter cannot read fails `pnpm test:automation` even
+though it does not fail `pnpm lint:migrations`.
 
 ## The live defects — one with a backstop here, one without
 
@@ -122,7 +167,9 @@ symmetrical, and a reader must not assume coverage this unit does not have.**
 ## The measured corpus verdict
 
 Over the 91 migrations on `main` at `959393d9`, MI-001 raises **two findings**, both recorded in
-`scripts/migration-lint-exemptions.json` with a written reason:
+`scripts/migration-lint-exemptions.json` with a written reason, keyed **per site** (`"MI-001:167"` —
+rule and line). Keying by rule alone would let one accepted site discharge every other finding of
+that rule in the same file: the ledger committing the exact defect the rule detects.
 
 | Site | Verdict |
 | --- | --- |
@@ -167,8 +214,8 @@ than absorbed:
   so. The adapter compiles **one routine at a time**, from that routine's own statement text sliced
   by the byte offsets the raw parser reported.
 
-Measured over the corpus: 91 migrations, 333 PL/pgSQL routines, 4,107 sites, **0 unreadable
-fragments**, 1.4 s.
+Measured over the corpus: 91 migrations, 333 PL/pgSQL routines, 4,096 sites (one of them a folded
+dynamic statement), **0 unreadable fragments**, 11 run-time-built statements reported unread, 1.4 s.
 
 ## Adding a rule
 
