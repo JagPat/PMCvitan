@@ -43,6 +43,10 @@ export interface ProjectScope {
 export interface ProjectDataState {
   decisions: Decision[];
   nodes: ProjectNode[];
+  /** Mobile IA — the location the Site Map should open at when it is entered from an entity's
+   *  location breadcrumb. A node id is PROJECT-CONTAINED, so it is project-owned and tears down
+   *  on every scope change: another project's Site Map can never open at this project's node. */
+  placeFocus: string | null;
   checklist: Checklist | null;
   reviews: Review[];
   activeReviewId: string | null;
@@ -126,6 +130,7 @@ export function emptyProjectData(): ProjectDataState {
   return {
     decisions: [],
     nodes: [],
+    placeFocus: null,
     checklist: null,
     reviews: [],
     activeReviewId: null,

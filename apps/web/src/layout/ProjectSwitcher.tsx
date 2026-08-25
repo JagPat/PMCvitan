@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
+import { useProjectSwitch } from './useProjectSwitch';
 import { Modal } from '@/components';
 import { ChevronRight, Plus, Check } from '@/lib/icons';
 import type { ModuleSelection, NewProjectInput } from '@/data/apiGateway';
@@ -8,10 +9,9 @@ import type { ModuleSelection, NewProjectInput } from '@/data/apiGateway';
 /** Active-project display + switcher for the left rail. Real data arrives from
  *  the API (`/me/memberships`); with no API it's just the seeded project name. */
 export function ProjectSwitcher() {
-  const memberships = useStore(useShallow((s) => s.memberships));
-  const myOrgs = useStore(useShallow((s) => s.myOrgs));
-  const activeProjectId = useStore((s) => s.activeProjectId);
-  const switchProject = useStore((s) => s.switchProject);
+  // the SHARED switch data — the same hook the mobile top bar reads, so neither surface
+  // owns project state and a switch from either takes the identical store path
+  const { memberships, activeProjectId, label, adminOrg, canSwitch, switchProject } = useProjectSwitch();
   const setScreen = useStore((s) => s.setScreen);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -40,15 +40,6 @@ export function ProjectSwitcher() {
     document.addEventListener('mousedown', onOutside);
     return () => document.removeEventListener('mousedown', onOutside);
   }, [open]);
-
-  const liveShort = useStore((s) => s.short);
-  const active = memberships.find((m) => m.projectId === activeProjectId);
-  const label = active?.short ?? liveShort;
-  // Prefer the ACTIVE project's org so "save as template → pick it at New project" holds
-  // for multi-org admins; fall back to the first org they administer (review F5).
-  const adminOrgs = myOrgs.filter((o) => o.role === 'owner' || o.role === 'admin');
-  const adminOrg = adminOrgs.find((o) => o.id === active?.orgId) ?? adminOrgs[0];
-  const canSwitch = memberships.length > 1 || Boolean(adminOrg);
 
   return (
     <div

@@ -2,7 +2,7 @@ import { useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, drawingMutationsBlocked } from '@/store/store';
 import { resolveDrawingUrl, drawingsReadMode, type IssueDrawingInput } from '@/data/apiGateway';
-import { Eyebrow, Button, Modal } from '@/components';
+import { Eyebrow, Button, Modal, LocationContext, EditState } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { pathOf } from '@/lib/locationTree';
 import { Download, FileText, History, ChevronRight, X, Plus, Lock, Check, HardHat, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
@@ -337,7 +337,7 @@ function DrawingLocationBlock({ drawing }: { drawing: Drawing }) {
   // it's reactive, so if the register goes idle/loading/error while the location editor is OPEN, the
   // picker + Unfile disable immediately and every location mutation command is prevented until 'ready'.
   const locked = useStore(drawingMutationsBlocked);
-  const place = pathOf(nodes, drawing.nodeId).join(' › ');
+  const filed = Boolean(drawing.nodeId && nodes.some((n) => n.id === drawing.nodeId));
   const [editing, setEditing] = useState(false);
 
   return (
@@ -346,14 +346,37 @@ function DrawingLocationBlock({ drawing }: { drawing: Drawing }) {
         <MapPin size={13} /> LOCATION
       </div>
       {!editing && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 13, fontWeight: place ? 600 : 400, color: place ? 'var(--ink)' : 'var(--muted)' }}>
-            {place || 'Not filed to a location (project-wide)'}
-          </span>
-          {canFile && (
-            <button onClick={() => { if (!locked) setEditing(true); }} disabled={locked} data-testid="drawing-refile" style={{ marginLeft: 'auto', background: 'transparent', border: '1px solid var(--hairline)', borderRadius: 8, padding: '5px 10px', fontSize: 12, cursor: locked ? 'not-allowed' : 'pointer', opacity: locked ? 0.5 : 1, color: 'var(--accent)' }}>
-              {place ? 'Move' : 'File to a location'}
-            </button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <LocationContext nodeId={drawing.nodeId} fallback="Not filed to a location (project-wide)" compact testId={`drawing-place-${drawing.id}`} />
+          {/* Every one of these states used to look the same from outside: a control that was
+              simply absent or greyed. Each now states its reason, and offers the action when there is one. */}
+          {!canFile ? (
+            <EditState
+              state="restricted"
+              reason="Only the PMC files a drawing to a location."
+              testId="drawing-location-state"
+            />
+          ) : (
+            // The control stays VISIBLE while the register is unsettled — the user can see what
+            // will be possible — but it is disabled AND the reason is stated beside it, rather
+            // than a greyed button that explains nothing.
+            <EditState
+              state={locked ? 'paused' : 'editable'}
+              reason={
+                locked
+                  ? 'The drawing register is still loading — location changes are paused until it refreshes.'
+                  : filed
+                    ? 'You can move this drawing to another location.'
+                    : 'This drawing is not filed to a place yet.'
+              }
+              action={{
+                label: filed ? 'Move' : 'File to a location',
+                onClick: () => { if (!locked) setEditing(true); },
+                disabled: locked,
+                testId: 'drawing-refile',
+              }}
+              testId="drawing-location-state"
+            />
           )}
         </div>
       )}

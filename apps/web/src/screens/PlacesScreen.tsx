@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectVisibleDecisions } from '@/store/selectors';
@@ -43,6 +43,19 @@ export function PlacesScreen() {
   const inspections = useStore(useShallow((s) => (s.role === 'pmc' || s.role === 'engineer' ? s.placedInspections : [])));
 
   const [sel, setSel] = useState<string | null>(null); // null = whole project
+  // Entering the Site Map from an entity's location breadcrumb: adopt the requested place ONCE,
+  // then clear the intent so a later manual walk isn't yanked back to it.
+  const placeFocus = useStore((s) => s.placeFocus);
+  const clearPlaceFocus = useStore((s) => s.clearPlaceFocus);
+  useEffect(() => {
+    if (placeFocus === null) return;
+    setSel(placeFocus);
+    // A crumb tapped INSIDE the drawing viewer requests a place while this screen is already
+    // on stage: without closing the overlay the destination changes behind it and the crumb
+    // looks inert. The viewer is the only overlay carrying crumbs, so it is the only one closed.
+    setOpenDrawing(null);
+    clearPlaceFocus();
+  }, [placeFocus, clearPlaceFocus]);
   const [zoom, setZoom] = useState<string | null>(null);
   const [openDrawing, setOpenDrawing] = useState<Drawing | null>(null);
 

@@ -19,6 +19,8 @@
 .tab {
   flex: 1;
   min-width: 0;
+  /* five tabs at a 390px viewport leave 78px each — comfortably past the 44px target */
+  min-height: 44px;
   border: none;
   background: transparent;
   display: flex;
@@ -26,7 +28,7 @@
   align-items: center;
   justify-content: center;
   gap: 3px;
-  padding: 8px 2px;
+  padding: 8px 4px;
   color: var(--muted);
   cursor: pointer;
 }
@@ -57,7 +59,8 @@
   justify-content: center;
 }
 .label {
-  font-size: 10px;
+  /* legibility floor: 11px, not the compressed 10px a 13-tab bar forced */
+  font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;

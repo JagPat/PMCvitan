@@ -2,7 +2,7 @@ import { useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { gatesFor, activityReady, selectSchToday, pctOf, phaseRollup, activitiesInPhase, selectVisibleDecisions } from '@/store/selectors';
-import { Eyebrow, GateDot, ActivityChip, Button, Modal } from '@/components';
+import { Eyebrow, GateDot, ActivityChip, Button, Modal, LocationContext } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { PencilRuler, Pencil, Plus, ShieldCheck, X } from '@/lib/icons';
 import { dayLabel, gateColor, can, diffCivilDays, formatCivilDate, type Activity, type Phase, type Gate } from '@vitan/shared';
@@ -75,7 +75,11 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
             )}
           </div>
           <div style={{ fontWeight: 600, fontSize: 14.5, marginTop: 4 }}>{a.name}</div>
-          <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 1 }}>{a.zone}</div>
+          {/* WHERE this work belongs — the filed location trail (a zone-filed activity shows the
+              zone itself, never an invented room). Falls back to the legacy free-text `zone`. */}
+          <div style={{ marginTop: 2 }}>
+            <LocationContext nodeId={a.nodeId} fallback={a.zone} compact testId={`sched-place-${a.id}`} />
+          </div>
           {linkedDrawing?.current && (
             <button
               onClick={() => setScreen('drawings')}
