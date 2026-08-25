@@ -164,6 +164,34 @@ function* plpgsqlExpressions(value, lineno) {
   }
 }
 
+/**
+ * Read one PL/pgSQL fragment as SQL, in whichever reading its parse mode calls for.
+ *
+ * `parseMode` 0 is a complete statement. Every other mode is a fragment the grammar accepts only in
+ * a value position, which `SELECT` supplies. The assignment modes additionally carry their TARGET
+ * in the same string — `NEW."disputedAtVersion" := (SELECT …)` — and the right-hand side of one of
+ * those is where a real query can hide; 91 fragments across this corpus are assignments, and 19 of
+ * them assign the result of a sub-select. The split point is not guessed: every `:=` in the text is
+ * offered to the parser in turn and the first reading it ACCEPTS is the one used, so a quoted
+ * identifier that happens to contain `:=` cannot mis-split it.
+ */
+function parseFragment(expr) {
+  const candidates = expr.parseMode === 0 ? [expr.query] : [`SELECT ${expr.query}`];
+  if (expr.parseMode !== 0) {
+    for (let at = expr.query.indexOf(':='); at !== -1; at = expr.query.indexOf(':=', at + 2)) {
+      candidates.push(`SELECT (${expr.query.slice(at + 2)})`);
+    }
+  }
+  for (const text of candidates) {
+    try {
+      return parseSql(text);
+    } catch {
+      // try the next reading
+    }
+  }
+  return null;
+}
+
 const ROUTINE_STATEMENTS = new Set(['DoStmt', 'CreateFunctionStmt']);
 
 // A routine's body is the string the raw parser already extracted, so its position in the file is
@@ -241,17 +269,11 @@ export function parseMigration(sql) {
     const compiled = parsePlpgsqlStatement(body.statementSql);
     const routine = { ...body, tree: compiled };
     for (const expr of plpgsqlExpressions(compiled, 1)) {
-      // parseMode 0 is a complete statement; anything else is an expression fragment, which the
-      // grammar reads only in a value position. `SELECT` supplies that position and nothing else.
-      const text = expr.parseMode === 0 ? expr.query : `SELECT ${expr.query}`;
-      let exprTree;
-      try {
-        exprTree = parseSql(text);
-      } catch {
-        // A fragment the statement grammar refuses even in a value position — an `EXECUTE … USING`
-        // list and its kin. It carries no catalog query; it is skipped rather than guessed at, and
-        // `migration-lint.test.mjs` pins how many of these the corpus contains so the number
-        // cannot grow unnoticed.
+      const exprTree = parseFragment(expr);
+      if (exprTree === null) {
+        // Refused in every reading the grammar offers. Counted rather than shrugged off:
+        // `migration-lint.test.mjs` pins the corpus total at zero, so a construct this adapter
+        // cannot read cannot appear without failing a test.
         routine.unparsed = (routine.unparsed ?? 0) + 1;
         continue;
       }
