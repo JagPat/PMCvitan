@@ -308,6 +308,8 @@ describe("a delivery's storage note is a question, not a derivation (R2-F1)", ()
 
     fireEvent.change(r.getByTestId('mat-name'), { target: { value: 'Italian Marble' } });
     fireEvent.change(r.getByTestId('mat-qty'), { target: { value: '42 boxes' } });
+    // the note is optional, so it now opens folded — hidden, but still a typed question
+    fireEvent.click(r.getByTestId('mat-more-toggle'));
     fireEvent.change(r.getByTestId('mat-storage'), { target: { value: 'covered, on pallets' } });
     fireEvent.click(r.getByTestId('save-material'));
 
@@ -366,5 +368,49 @@ describe('the empty Site Map still offers Add here (R2-F4)', () => {
     const { PlacesScreen } = await import('@/screens/PlacesScreen');
     const r = render(<PlacesScreen />);
     expect(r.queryByTestId('place-add-empty')).not.toBeInTheDocument();
+  });
+});
+
+describe('secondary fields fold away, mandatory ones never do', () => {
+  it('a delivery opens as what arrived, how much and where — the rest is a fold away', async () => {
+    await load();
+    const { AddMaterialModal } = await import('@/screens/modals/AddMaterialModal');
+    const r = render(<AddMaterialModal context={captureAtPlace('villa-b', 'bath')} onClose={() => {}} />);
+    // the two fields the domain requires, and the place, are the opening form
+    expect(r.getByTestId('mat-name')).toBeInTheDocument();
+    expect(r.getByTestId('mat-qty')).toBeInTheDocument();
+    expect(r.getByTestId('mat-place-trail')).toBeInTheDocument();
+    // storage detail and the decision link block nothing, so neither is asked up front
+    expect(r.queryByTestId('mat-storage')).not.toBeInTheDocument();
+    expect(r.queryByTestId('mat-decision')).not.toBeInTheDocument();
+
+    fireEvent.click(r.getByTestId('mat-more-toggle'));
+    expect(r.getByTestId('mat-storage')).toBeInTheDocument();
+    expect(r.getByTestId('mat-decision')).toBeInTheDocument();
+  });
+
+  it("a decision's two options stay visible — the server contract requires them", async () => {
+    await load();
+    const { IssueDecisionModal } = await import('@/screens/modals/IssueDecisionModal');
+    const r = render(<IssueDecisionModal context={captureAtPlace('villa-b', 'bath')} onClose={() => {}} />);
+    // options.min(2) is a DOMAIN rule, so hiding the second would offer a save the API refuses
+    expect(r.getByTestId('dec-opt-0')).toBeInTheDocument();
+    expect(r.getByTestId('dec-opt-1')).toBeInTheDocument();
+    // what an option OPTIONALLY carries does fold away, per option
+    expect(r.queryByPlaceholderText('₹ delta (0 = base)')).not.toBeInTheDocument();
+    fireEvent.click(r.getByTestId('dec-opt-0-more-toggle'));
+    // …and opening one option's details does not open the other's
+    expect(r.getAllByPlaceholderText('₹ delta (0 = base)')).toHaveLength(1);
+  });
+
+  it('a fold never hides the reason a disabled button will not move', async () => {
+    await load();
+    const { AddMaterialModal } = await import('@/screens/modals/AddMaterialModal');
+    const r = render(<AddMaterialModal context={captureAtPlace('villa-b', 'bath')} onClose={() => {}} />);
+    // save is blocked, and BOTH fields that block it are on screen unfolded
+    expect(r.getByTestId('save-material')).toBeDisabled();
+    fireEvent.change(r.getByTestId('mat-name'), { target: { value: 'Italian Marble' } });
+    fireEvent.change(r.getByTestId('mat-qty'), { target: { value: '40 sqm' } });
+    expect(r.getByTestId('save-material')).not.toBeDisabled();
   });
 });
