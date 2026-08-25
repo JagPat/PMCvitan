@@ -2232,3 +2232,41 @@ test('the post-mutation check does not disturb a unit that stayed on main', asyn
   assert.equal(result.draft, false);
   assert.equal(result.base.ref, 'main');
 });
+
+test('a NO-OP draft transition still returns freshly fetched evidence', async () => {
+  // ROUND 4's finding, reproduced. An exhaustion check begins with the pull request ALREADY in
+  // draft, so `setDraft(..., true)` has nothing to mutate. Its no-op branch used to return the
+  // caller's object — the one `refreshCurrentHead` read moments earlier — so a retarget in that
+  // window was re-validated against a stale base, accepted, and `enforceReviewConvergence` then
+  // applied the repository-wide replacement label to a pull request that had left `main`.
+  //
+  // The predicate was never the defect; its input was. This asserts the CLIENT's contract: the
+  // returned object is always a fresh read, so no caller can be handed staleness to validate.
+  const expectedHead = 'b'.repeat(40);
+  const alreadyDraft = {
+    number: 800,
+    state: 'open',
+    draft: true,
+    node_id: 'PR_800',
+    body: '<!-- correction-owner: claude -->',
+    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/800',
+  };
+
+  let fetches = 0;
+  const client = new reviewGate.GitHubClient({ repository: 'JagPat/PMCvitan', token: 't' });
+  // The live read reflects the retarget that happened after the caller's earlier refresh.
+  client.pullRequest = async () => {
+    fetches += 1;
+    return { ...alreadyDraft, base: { ref: 'release', repo: { full_name: 'JagPat/PMCvitan' } } };
+  };
+  client.graphql = async () => { throw new Error('a no-op transition must not mutate'); };
+
+  const updated = await client.setDraft(alreadyDraft, true);
+
+  assert.equal(fetches, 1, 'the no-op branch must refetch rather than echo its argument');
+  assert.equal(updated.base.ref, 'release',
+    'and the caller must receive the LIVE base, not the one it passed in');
+  assert.notEqual(updated, alreadyDraft, 'the returned object is not the input object');
+});

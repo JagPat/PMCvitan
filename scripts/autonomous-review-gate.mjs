@@ -658,8 +658,22 @@ export class GitHubClient {
     });
   }
 
+  // Returns the LIVE pull request after ensuring the requested draft state — never the object
+  // it was handed. The no-op branch refetches for the same reason the mutating branch does.
+  //
+  // MEASURED as a P1: when an exhaustion check begins with the pull request already in draft,
+  // this method took its no-op branch and returned the CALLER'S object, which
+  // `refreshCurrentHead` had read moments earlier. A retarget in that window was therefore
+  // re-validated against a stale base, `isCurrentReviewUnit` accepted it, and
+  // `enforceReviewConvergence` went on to apply the repository-wide replacement label and a
+  // failure status to a pull request that had left `main`.
+  //
+  // The predicate was not the defect — its INPUT was. A guard can only be as current as the
+  // object it is given, so freshness is made structural here rather than remembered at each
+  // call site; that is the same reason acceptance itself is one predicate rather than a check
+  // per site. An extra read on a no-op is the whole cost.
   async setDraft(pullRequest, draft) {
-    if (Boolean(pullRequest.draft) === draft) return pullRequest;
+    if (Boolean(pullRequest.draft) === draft) return this.pullRequest(pullRequest.number);
     const mutation = draft
       ? `mutation($id: ID!) {
           convertPullRequestToDraft(input: { pullRequestId: $id }) {
