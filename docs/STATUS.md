@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: 8a4b0db8
-open_pr: PENDING
+open_pr: 425
 next_task: none
 blocking_directive: none
 updated: 2026-08-25
