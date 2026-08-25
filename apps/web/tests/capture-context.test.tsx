@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { ProjectNode } from '@vitan/shared';
 import { zoneLabelFor, captureAtPlace, captureGlobal, inheritsLocation } from '@/lib/captureContext';
-import { createOptionsFor } from '@/lib/createOptions';
+import { createOptionsFor, materialBlockedReason } from '@/lib/createOptions';
 
 /**
  * Unit A — capture context and context-inherited creation.
@@ -231,5 +231,89 @@ describe('the Site Map can create at the place it is showing', () => {
     expect(r.getByTestId('create-material')).toBeInTheDocument();
     expect(r.queryByTestId('create-inspection')).not.toBeInTheDocument();
     expect(r.queryByTestId('create-decision')).not.toBeInTheDocument();
+  });
+});
+
+// ── Codex round 1 ───────────────────────────────────────────────────────────────────────
+
+describe('a delivery is only offered when the log that carries it is open (F1)', () => {
+  it('names the reason rather than guessing, for each server precondition', () => {
+    // DailyLogService.addMaterial 404s with no log and 409s once it is submitted
+    expect(materialBlockedReason(null, false)).toMatch(/start today/i);
+    expect(materialBlockedReason({ submitted: true }, false)).toMatch(/already submitted/i);
+    expect(materialBlockedReason({ submitted: false }, false)).toBeNull();
+  });
+
+  it('a FAILED log read invents no reason — the server error is the honest fallback', () => {
+    expect(materialBlockedReason(null, true)).toBeNull();
+  });
+
+  it('the menu disables the delivery and says why when no log is open', async () => {
+    await load({ role: 'engineer', dailyLog: null });
+    const { PlacesScreen } = await import('@/screens/PlacesScreen');
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-add'));
+    expect(r.getByTestId('create-material')).toBeDisabled();
+    expect(r.getByTestId('create-material-blocked').textContent).toMatch(/start today/i);
+  });
+
+  it('a submitted log blocks it too, with its own reason', async () => {
+    await load({ role: 'engineer', dailyLog: { date: '01 Aug', checkedIn: true, checkinTime: null, submitted: true, crew: [], materials: [], progress: 0, photos: [] } });
+    const { PlacesScreen } = await import('@/screens/PlacesScreen');
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-add'));
+    expect(r.getByTestId('create-material')).toBeDisabled();
+    expect(r.getByTestId('create-material-blocked').textContent).toMatch(/already submitted/i);
+  });
+
+  it('an OPEN log leaves it enabled and describing itself', async () => {
+    await load({ role: 'engineer', dailyLog: { date: '01 Aug', checkedIn: true, checkinTime: null, submitted: false, crew: [], materials: [], progress: 0, photos: [] } });
+    const { PlacesScreen } = await import('@/screens/PlacesScreen');
+    const r = render(<PlacesScreen />);
+    fireEvent.click(r.getByTestId('place-add'));
+    expect(r.getByTestId('create-material')).not.toBeDisabled();
+    expect(r.queryByTestId('create-material-blocked')).not.toBeInTheDocument();
+  });
+});
+
+describe('the components barrel has no import cycle (F2)', () => {
+  it('LocationPicker reaches Button directly, not back through the barrel', async () => {
+    const src = (await import('@/components/LocationPicker.tsx?raw')).default;
+    // barrel → InheritedContext → LocationPicker → barrel would close a cycle the
+    // module-boundary rule forbids
+    expect(src).toContain("from './Button'");
+    expect(src).not.toContain("from '@/components'");
+  });
+});
+
+describe('changing an inherited place opens ON that place (F3)', () => {
+  it('the picker is seeded from the value it was given, not left blank', async () => {
+    await load();
+    const { IssueChecklistModal } = await import('@/screens/modals/IssueChecklistModal');
+    const r = render(<IssueChecklistModal context={captureAtPlace('villa-b', 'bath')} onClose={() => {}} />);
+    fireEvent.click(r.getByTestId('chk-place-change'));
+    // blank selects beside a still-set nodeId let a user "clear" the location and save it
+    // anyway, filing the record where the UI showed nothing
+    const selects = r.container.querySelectorAll('select');
+    expect(selects.length).toBeGreaterThan(1);
+    expect((selects[0] as HTMLSelectElement).value).toBe('gf');
+    expect((selects[1] as HTMLSelectElement).value).toBe('bath');
+  });
+
+  it('a deeper place seeds every level of its trail', async () => {
+    await load();
+    const { IssueChecklistModal } = await import('@/screens/modals/IssueChecklistModal');
+    const r = render(<IssueChecklistModal context={captureAtPlace('villa-b', 'shower')} onClose={() => {}} />);
+    fireEvent.click(r.getByTestId('chk-place-change'));
+    const values = Array.from(r.container.querySelectorAll('select')).map((el) => (el as HTMLSelectElement).value);
+    expect(values.slice(0, 3)).toEqual(['gf', 'bath', 'shower']);
+  });
+
+  it('an unfiled form still opens the picker empty', async () => {
+    await load();
+    const { IssueChecklistModal } = await import('@/screens/modals/IssueChecklistModal');
+    const r = render(<IssueChecklistModal onClose={() => {}} />);
+    const first = r.container.querySelector('select') as HTMLSelectElement;
+    expect(first.value).toBe('');
   });
 });

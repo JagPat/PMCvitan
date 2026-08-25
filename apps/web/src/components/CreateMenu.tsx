@@ -1,6 +1,6 @@
 import { type CSSProperties } from 'react';
 import { useStore } from '@/store/store';
-import { createOptionsFor, type CreateKind } from '@/lib/createOptions';
+import { createOptionsFor, materialBlockedReason, type CreateKind } from '@/lib/createOptions';
 import { Modal } from './Modal';
 
 /**
@@ -28,6 +28,16 @@ export function CreateMenu({
 }) {
   const role = useStore((s) => s.role);
   const options = createOptionsFor(role);
+  // A delivery is recorded onto the daily log, so permission is not the whole answer (see
+  // `materialBlockedReason`). The log arrives with the project snapshot, so inside the
+  // project-load boundary this reads settled truth rather than an unfetched slice.
+  // a PRIMITIVE selector (null = no log at all) so the subscription never re-renders on an
+  // unrelated daily-log field changing
+  const logSubmitted = useStore((s) => s.dailyLog?.submitted ?? null);
+  const logReadFailed = useStore((s) => s.dailyLogLoad === 'error');
+  const blocked: Partial<Record<CreateKind, string | null>> = {
+    material: materialBlockedReason(logSubmitted === null ? null : { submitted: logSubmitted }, logReadFailed),
+  };
 
   return (
     <Modal onClose={onClose} maxWidth={420} labelledBy="create-menu-title">
@@ -35,20 +45,43 @@ export function CreateMenu({
         <div id="create-menu-title" style={{ fontWeight: 700, fontSize: 17 }}>{title}</div>
         {subtitle && <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>{subtitle}</div>}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 14 }}>
-          {options.map((o) => (
-            <button key={o.kind} onClick={() => onPick(o.kind)} data-testid={`create-${o.kind}`} style={row}>
-              <o.icon size={18} style={{ flex: 'none', color: 'var(--accent)' }} />
-              <span style={{ minWidth: 0 }}>
-                <span style={{ display: 'block', fontWeight: 600, fontSize: 14 }}>{o.label}</span>
-                <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>{o.detail}</span>
-              </span>
-            </button>
-          ))}
+          {options.map((o) => {
+            const reason = blocked[o.kind] ?? null;
+            return (
+              <button
+                key={o.kind}
+                onClick={() => onPick(o.kind)}
+                disabled={reason !== null}
+                data-testid={`create-${o.kind}`}
+                style={reason ? { ...row, ...rowBlocked } : row}
+              >
+                <o.icon size={18} style={{ flex: 'none', color: reason ? 'var(--faint)' : 'var(--accent)' }} />
+                <span style={{ minWidth: 0 }}>
+                  <span style={{ display: 'block', fontWeight: 600, fontSize: 14 }}>{o.label}</span>
+                  {/* the REASON replaces the description: a disabled row that still describes
+                      what it would have done, without saying why it cannot, is the silently
+                      inert control this work exists to remove */}
+                  <span
+                    style={{ display: 'block', fontSize: 12, color: reason ? 'var(--amber-text)' : 'var(--muted)', marginTop: 2 }}
+                    data-testid={reason ? `create-${o.kind}-blocked` : undefined}
+                  >
+                    {reason ?? o.detail}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
         </div>
       </div>
     </Modal>
   );
 }
+
+const rowBlocked: CSSProperties = {
+  background: 'var(--amber-chip)',
+  borderColor: 'var(--amber-border)',
+  cursor: 'not-allowed',
+};
 
 const row: CSSProperties = {
   display: 'flex',

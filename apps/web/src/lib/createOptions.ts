@@ -34,3 +34,29 @@ const OPTIONS: readonly CreateOption[] = [
 export function createOptionsFor(role: TokenRole): readonly CreateOption[] {
   return OPTIONS.filter((o) => can(o.action, role));
 }
+
+/**
+ * Why a delivery cannot be recorded right now, or `null` when it can.
+ *
+ * A delivery is recorded ONTO a daily log: `DailyLogService.addMaterial` 404s with no log
+ * and 409s once the log is submitted. Permission alone therefore does not mean the command
+ * will be accepted, and offering the form regardless would take a name and a quantity and
+ * then fail — the dead-end this whole unit exists to remove.
+ *
+ * Permission and readiness are answered differently on purpose. A role that may never do
+ * something is not shown the option at all; a role whose turn simply has not come is shown
+ * it with the reason, because that is a state they can act on.
+ *
+ * A FAILED log read returns null rather than a guess: we do not know whether a log is open,
+ * and inventing "start one first" would be as wrong as the dead end. The server's own error
+ * is the honest fallback in that case.
+ */
+export function materialBlockedReason(
+  dailyLog: { submitted: boolean } | null,
+  logReadFailed: boolean,
+): string | null {
+  if (logReadFailed) return null;
+  if (!dailyLog) return 'Start today\u2019s site log first — a delivery is recorded onto it.';
+  if (dailyLog.submitted) return 'Today\u2019s log is already submitted — start a new day to record a delivery.';
+  return null;
+}
