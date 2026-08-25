@@ -56,6 +56,17 @@ jobs:
   # The loop's own machinery. NOT gated on the classification: `docs/STATUS.md`
   # is parsed by the runner state machine, so even a Markdown-only change can
   # break these. They are seconds, not minutes.
+  #
+  # `lint:migrations` runs HERE rather than in `api`, and the reason is measured
+  # rather than aesthetic. (1) This is the only REQUIRED job that is not gated on
+  # `battery-plan.outputs.run_products`, so it runs on every SHA — including the
+  # PR-body edits where the product jobs are skipped by design. A claim about
+  # what the corpus contains that can be skipped is not a claim. (2) The check is
+  # STATIC: no database, no build, no Prisma client. `api` carries
+  # `timeout-minutes: 60` and a Postgres service this would not use, and putting
+  # a pre-review check behind an hour-budgeted job delays exactly the feedback it
+  # exists to give. (3) It is cheap: measured on this repository, all 91
+  # migrations parse with PostgreSQL's own grammar in 1.4s.
   automation:
     needs: [review-scope]
     runs-on: ubuntu-latest
@@ -70,6 +81,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Migration readability
+        run: pnpm lint:migrations
       - name: Autonomous review state tests
         run: pnpm test:automation
 
@@ -88,6 +101,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Migration readability
+        run: pnpm lint:migrations
       - name: Autonomous review state tests
         run: pnpm test:automation
       - name: Typecheck

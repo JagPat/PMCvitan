@@ -16,11 +16,25 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: e5d3c4fd
-open_pr: 428
+open_pr: 431
 next_task: none
 blocking_directive: none
 updated: 2026-08-25
 ```
+
+**THE OPEN PR IS A TOOLING UNIT, NOT PHASE 6 TASK 4.** #431 adds `pnpm lint:migrations` —
+a parser adapter over PostgreSQL's own grammar plus the claim that every SQL query in all 91
+migrations is either a readable site or a NAMED unreadable fragment. It ships **no rule and no
+exemption ledger**, so it detects no defect; `docs/MIGRATION_INVARIANTS.md` names the three live
+defects that currently have no alarm at all. It changes no `apps/**` file, no schema and no
+migration, and does not advance task 4.
+
+It **replaces #430**, which reached the two-finding-head limit and was closed. #430 carried the
+adapter *and* the enforcement rule; its second head drew five findings, four of them the same
+family — the rule was where the difficulty is, and at 1,500 changed lines the unit had no room to
+address it. #430 in turn replaced #423 (a hand-written SQL lexer, closed at the same limit). The
+foundation lands first; the rule lands on top of an adapter reviewed for what it reads. Neither
+closed branch may be rebased or force-pushed — both histories are the handover record.
 
 **UNIT A MERGED AS #424 at `main` `8a4b0db8`** — the capture-context spine, the Site Map's
 `Add here`, and every finding from #422's two review rounds. The open PR is the first of
