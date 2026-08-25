@@ -184,6 +184,13 @@ closing that gap would have meant deleting the deferral record or the honesty se
 compensating control for a reduced rule set. This cut measures inside the budget with the probes
 still attached to their rules. The full ladder is in the pull request body.
 
+**Lineage: `Replaces: none`.** The close-at-limit unit #426 was discharged by #427, which merged
+to `main` at `e5d3c4fd` declaring `Replaces: #426`; #425 is not part of that settlement — its
+obligation left the queue when its `review-replacement-required` label was removed, and no merged
+unit names it. Executing `assessReplacementLineage` against the live label and merge records
+leaves no undischarged obligation, so this unit's `Replaces: none` is admissible on its own terms
+and is not a claim on any lineage obligation.
+
 ## Design: enumerate and classify, do not grep
 
 This is deliberately **not** a list of known-bad patterns. A grep for the seven fragments the B1
