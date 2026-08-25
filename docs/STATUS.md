@@ -15,12 +15,36 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 959393d9
+reviewed_merge: 36215d37
 open_pr: 429
 next_task: none
 blocking_directive: none
 updated: 2026-08-25
 ```
+
+**#433 MERGED at `36215d37`; the open PR is now #429**, the photo capture stamp — the last unit
+of the low-effort data-entry initiative (frontend + docs, no schema, no migration, no API). The
+tooling lane's own account of #433 follows and is preserved verbatim.
+
+**#433 WAS A TOOLING UNIT, NOT PHASE 6 TASK 4.** #433 settles the parser binding this
+repository reads its own migrations with — `pg-query-emscripten` (libpg_query 16) through its raw
+entry points — plus the claim that all 91 migrations parse through it and that it neither leaks nor
+truncates. It ships **no rule, no sites, no coverage accounting and no rule-support helpers**, so it
+detects no defect; `docs/MIGRATION_INVARIANTS.md` names the three live defects that have no alarm at
+all. No `apps/**` file, no schema, no migration, no CI workflow change. Does not advance task 4.
+
+It **replaces #432** — the FOURTH unit in this lineage to reach the two-finding-head limit, after
+#423 (a hand-written SQL lexer), #430 (binding + enforcement rule) and #431 (binding + site
+attribution + a coverage claim). Sixteen findings across the four, every one reducing to *a check
+narrower than the object it judges* — the defect the eventual rules exist to detect, restated as
+their implementation. The last two rounds found it in the TESTS rather than the code: a probe that
+searched the source for a guard's message, and a leak probe that passed with the fix deleted. Each
+replacement removed the surface that had just drawn findings; this one removes `relationsIn` (rule
+support) and replaces the leak probe with one that observes the allocator. **This lineage has cost
+four PRs and merged nothing; whether to continue it is a judgement for JagPat, recorded here so the
+cost is visible rather than buried in loop history.** None of `claude/migration-invariant-linter`,
+`claude/migration-invariant-linter-v2`, `claude/migration-parser-adapter` or
+`claude/migration-parser-binding` may be rebased or force-pushed; all four are the handover record.
 
 **UNIT A MERGED AS #424 at `main` `8a4b0db8`** — the capture-context spine, the Site Map's
 `Add here`, and every finding from #422's two review rounds. The open PR is the first of
