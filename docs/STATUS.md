@@ -16,11 +16,21 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: e5d3c4fd
-open_pr: 428
+open_pr: 430
 next_task: none
 blocking_directive: none
 updated: 2026-08-25
 ```
+
+**`open_pr: 430` IS A TOOLING UNIT, NOT PHASE 6 TASK 4.** #430
+(`claude/migration-invariant-linter-v2`) adds `pnpm lint:migrations` and wires it into the
+required `automation` job. It is `scripts/`, `.github/workflows/ci.yml`, `package.json`,
+`pnpm-lock.yaml` and one doc: no `apps/web` file, no `apps/api` file, no schema, no migration,
+no API change. It does NOT advance phase 6 task 4, and it does not touch the UI/UX lane's work.
+It carries `Replaces: #423` — the previous attempt at the same unit, which hand-wrote a SQL
+lexer, reached the two-finding-head limit and was closed. This one parses with PostgreSQL's own
+grammar via `libpg_query`. The rules it defers, and the two live defects it found on
+already-merged migrations, are recorded in `docs/MIGRATION_INVARIANTS.md`.
 
 **UNIT A MERGED AS #424 at `main` `8a4b0db8`** — the capture-context spine, the Site Map's
 `Add here`, and every finding from #422's two review rounds. The open PR is the first of
