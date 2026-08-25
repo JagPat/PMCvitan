@@ -141,12 +141,40 @@ OUT="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)"; RC=$?
 say "G. the post-deploy invocation — 'verify' — asked directly"
 OUT="$(DATABASE_URL="$URL" node dist/platform/enforcement/enforcement.cli.js verify 2>&1)"; RC=$?
 [ "$RC" = "0" ] && ok "verify accepts the deployed database" || { bad "verify rejected a clean deployed database (exit $RC)"; printf '%s\n' "$OUT" | tail -15; }
-$PSQL -c 'ALTER TABLE "Activity" ENABLE REPLICA TRIGGER ALL' >/dev/null 2>&1 \
-  || $PSQL -c 'ALTER TABLE "Activity" DISABLE TRIGGER ALL' >/dev/null
-OUT="$(DATABASE_URL="$URL" node dist/platform/enforcement/enforcement.cli.js verify 2>&1)"; RC=$?
-[ "$RC" = "3" ] && ok "verify REFUSES a schema whose seals stopped firing (exit 3) — a migration that disables something and fails to restore it does not pass" \
-                || bad "verify returned $RC on a dirty schema (expected 3)"
-$PSQL -c 'ALTER TABLE "Activity" ENABLE TRIGGER ALL' >/dev/null
+# The dirty state used here is REPLICA, not DISABLED, deliberately: `R` is the state that looks
+# enabled and is inert, so it is the one worth driving through the real artifact. The trigger is
+# discovered rather than named — a hard-coded name silently stops testing anything the day that
+# object moves, and `ENABLE REPLICA TRIGGER` takes ONE trigger name (there is no `ALL` form, which
+# an earlier head of this script got wrong: the invalid statement failed, a `||` fallback quietly
+# disabled the table's triggers instead, and this step passed while measuring `D` and reporting `R`
+# — the exact defect shape this whole unit exists to refuse, in the proof of the unit).
+PAIR="$($PSQL -tAF'|' -c "SELECT c.relname, t.tgname FROM pg_trigger t
+                            JOIN pg_class c ON c.oid = t.tgrelid
+                            JOIN pg_namespace n ON n.oid = c.relnamespace
+                           WHERE n.nspname = 'public' AND NOT t.tgisinternal
+                           ORDER BY c.relname, t.tgname LIMIT 1" | tr -d '[:space:]')"
+R_TABLE="${PAIR%%|*}"; R_TRIGGER="${PAIR##*|}"
+if [ -z "$R_TABLE" ] || [ -z "$R_TRIGGER" ] || [ "$R_TABLE" = "$PAIR" ]; then
+  bad "found no user trigger to drive the replica-state probe with (got '$PAIR')"
+else
+  # No `||` fallback and no swallowed stderr: an ALTER that does not do what it says must be loud.
+  $PSQL -c "ALTER TABLE \"$R_TABLE\" ENABLE REPLICA TRIGGER \"$R_TRIGGER\"" >/dev/null || bad "could not set $R_TABLE.$R_TRIGGER to replica"
+  STATE="$($PSQL -tAc "SELECT t.tgenabled FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+                        WHERE c.relname = '$R_TABLE' AND t.tgname = '$R_TRIGGER'" | tr -d '[:space:]')"
+  # Assert the state we MEANT to create really exists, so this step can never again pass while
+  # measuring something else.
+  [ "$STATE" = "R" ] && ok "$R_TABLE.$R_TRIGGER is at tgenabled=R — enabled-looking and inert on an origin connection" \
+                     || bad "expected tgenabled=R on $R_TABLE.$R_TRIGGER, found '$STATE'"
+  OUT="$(DATABASE_URL="$URL" node dist/platform/enforcement/enforcement.cli.js verify 2>&1)"; RC=$?
+  [ "$RC" = "3" ] && ok "verify REFUSES it (exit 3) — a migration that disables something and fails to restore it does not pass" \
+                  || bad "verify returned $RC on a replica-state schema (expected 3)"
+  printf '%s\n' "$OUT" | grep -q "$R_TRIGGER" && ok "and NAMES the offending trigger" || bad "the diagnostic did not name $R_TRIGGER"
+  printf '%s\n' "$OUT" | grep -q "session_replication_role" \
+    && ok "explaining that replica state does not fire for the application" || bad "the diagnostic did not explain the replica state"
+  $PSQL -c "ALTER TABLE \"$R_TABLE\" ENABLE TRIGGER \"$R_TRIGGER\"" >/dev/null
+  OUT="$(DATABASE_URL="$URL" node dist/platform/enforcement/enforcement.cli.js verify 2>&1)"; RC=$?
+  [ "$RC" = "0" ] && ok "and accepts it again once restored to origin" || bad "verify returned $RC after restoring $R_TRIGGER (expected 0)"
+fi
 recreate
 OUT="$(DATABASE_URL="$URL" node dist/platform/enforcement/enforcement.cli.js preflight 2>&1)"; RCP=$?
 OUT2="$(DATABASE_URL="$URL" node dist/platform/enforcement/enforcement.cli.js verify 2>&1)"; RCV=$?
