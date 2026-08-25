@@ -15,27 +15,37 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: d37a1c7
-open_pr: 417
+reviewed_merge: d4ca11e
+open_pr: 420
 next_task: none
 blocking_directive: none
-updated: 2026-08-24
+updated: 2026-08-25
 ```
 
-**`open_pr: 417` IS A USER-DIRECTED UX UNIT, NOT PHASE 6 TASK 4.** #417
-(`claude/pmcvitan-mobile-places-n3fxup`) is the mobile information-architecture unit —
-the primary/More bottom-nav split, the top-bar project switcher, the shared location
-breadcrumb and the standardised editing states. It is `apps/web` only: no schema, no
-migration, no API change. It occupies `open_pr` because it is the one live autonomous
-draft and the hourly watchdog shepherds whatever is open; it does not advance phase 6
-task 4, which has NO open PR of its own. Read `task: 4` as where the PHASE stands, and
-`open_pr` as what is actually in review right now.
+**`open_pr: 420` IS A USER-DIRECTED UX UNIT, NOT PHASE 6 TASK 4.** #420
+(`claude/pmcvitan-mobile-places-n3fxup`) is the UX completion audit that follows merged
+#417: location context on the Inspection Review, Engineer Checklist and Client Decision
+surfaces, and a stated reason on the Schedule's restricted actions and on a decided
+inspection. It is `apps/web` only — four screens and one test file: no schema, no
+migration, no API change. It does NOT advance phase 6 task 4, which still has no open PR
+of its own. Read `task: 4` as where the PHASE stands, and `open_pr` as what is actually
+in review right now.
+
+**TWO AUTONOMOUS PRs ARE LIVE, AND `open_pr` HOLDS ONE SLOT.** #419
+(`claude/lineage-base-acceptance`) is open alongside this unit — a `scripts/`-only
+governance fix defining "still the unit under review" once, so a retargeted pull request
+can no longer mint a repository-wide obligation. That is the ROOT CAUSE of the stale
+obligation chain this file records below; it is not this unit's work and is not
+duplicated here. #419 deliberately does not touch STATUS (its body says so), so this unit
+carries the `open_pr` correction the hourly watchdog asked for. A later reader should
+expect `open_pr` to name whichever draft the watchdog last shepherded, not the only PR
+in flight.
 
 `task_state` stays `in_progress` rather than `in_review` deliberately: the live-file pin
 in `autonomous-status-state.test.mjs` requires STATUS to still resolve a next step AFTER
 the PR it names merges, and `in_review` is defined BY its open PR — so a merge would
 leave the runner with none. With `in_progress` the open-PR branch still resolves to
-`pr:417` while #417 is open, and the runner falls back to task 4 once it merges.
+`pr:420` while #420 is open, and the runner falls back to task 4 once it merges.
 
 **THE #408→#415 LINEAGE IS SETTLED, AND ITS FOUR STALE OBLIGATIONS WERE CLEARED ON
 2026-08-24 BY THE OWNER'S EXPLICIT DECISION.** The chain is #408 → #409 → #410 → #411 →
