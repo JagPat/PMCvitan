@@ -15,28 +15,17 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 756563c8
-open_pr: 424
+reviewed_merge: 8a4b0db8
+open_pr: 425
 next_task: none
 blocking_directive: none
 updated: 2026-08-25
 ```
 
-**THE OPEN PR REPLACES #422, WHICH REACHED THE TWO-FINDING-HEAD LIMIT.** #422 carried the
-same unit and took two Codex rounds: round 1 (the delivery option not gated on an open daily
-log, a components-barrel import cycle, and `LocationPicker` discarding its `value` so Change
-rendered blank over a set node) and round 2 (a delivery's `zone` holding STORAGE detail
-rather than a location, the failed-log-read case needing to fail closed, an inherited node
-deleted under an open form staying saveable, and `Add here` missing from the empty Site Map).
-All nine are fixed here; the round-2 five were reproduced red before the rebuild, and #422
-was closed without a third correction head.
-
-**`open_pr` IS A USER-DIRECTED UX UNIT, NOT PHASE 6 TASK 4.** The open PR is Unit A of the
-low-effort data-entry initiative: a `CaptureContext` spine, context-inherited creation
-forms, and the Site Map gaining the ability to create at the place it is showing. It is
-`apps/web` only — no schema, no migration, no API change. It does NOT advance phase 6
-task 4, which still has no open PR of its own. Read `task: 4` as where the PHASE stands,
-and `open_pr` as what is actually in review right now.
+**UNIT A MERGED AS #424 at `main` `8a4b0db8`** — the capture-context spine, the Site Map's
+`Add here`, and every finding from #422's two review rounds. The open PR is the first of
+three units split out of it to stay inside the review budget: this one is the data-entry
+audit (docs only), followed by progressive disclosure and the photo capture-stamp fix.
 
 **THE PRECEDING UX LINEAGE IS CLOSED.** #417 (mobile IA: primary tabs + More, a phone
 project switcher, the shared `LocationContext`/`EditState`) merged at `d4ca11e`. Its
