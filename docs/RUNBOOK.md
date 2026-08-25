@@ -1319,6 +1319,17 @@ nothing here needs updating when a migration adds a seal:
    enabled and is inert. Internal `RI_ConstraintTrigger` rows are covered too, because a foreign key
    *is* those triggers (4 per key on PG 16); a finding names the key they implement.
 2. **No foreign key is `NOT VALID`.** Its existing rows were never checked.
+3. **Every foreign key's internal implementation is COMPLETE and firing.** Clauses 1 and 2 judge the
+   state of objects that EXIST; a trigger *removed* from `pg_trigger` — what a partial restore or a
+   hand repair amounts to — is not a disabled trigger, and the survivors are all `O`. MEASURED on
+   PG 16.13: with one referencing-side `RI_FKey_check_ins` deleted, an orphan **committed**,
+   `convalidated` stayed `true`, **and clause 1 reported nothing**. So each key must carry four
+   ENFORCING internal row triggers — INSERT and UPDATE on the referencing table, DELETE and UPDATE on
+   the referenced one — which is what PostgreSQL creates for every referential action (the action
+   picks the parent-side *function*, never the number of slots). The full measurement, including the
+   shapes it REFUSES rather than passes (partitioned or derived keys, unmeasured action codes), is in
+   `apps/api/src/platform/enforcement/enforcement-check.ts`. No such key exists in this schema today;
+   if one appears the deploy stops and names it.
 
 MEASURED on PG 16.13, and the reason clause 1 exists: with a table's triggers switched off by
 `ALTER TABLE … DISABLE TRIGGER ALL`, an INSERT of an **orphaned row committed** while
@@ -1349,18 +1360,21 @@ ALTER TABLE public."<Table>" ENABLE TRIGGER "<trigger>";        -- or ENABLE TRI
 ALTER TABLE public."<Table>" VALIDATE CONSTRAINT "<constraint>";
 ```
 
-**Re-enabling does not retro-check what got in while the trigger was off.** `VALIDATE CONSTRAINT`
-does, and will fail while an offending row is present — that failure is the useful signal, and the
-row is a data question to settle before the deploy proceeds. If the triggers were off, look for what
-was written in that window before re-enabling.
+A key reported by **clause 3** as incompletely implemented is repaired by re-creating the key, which
+is what re-creates its triggers — PostgreSQL refuses `DROP TRIGGER` on an internal one, so there is
+nothing smaller to fix. Read the definition first, then drop and re-add it verbatim:
 
-**The most likely cause is an aborted repair.** The T45, T2C and T3C repair engines disable named
-`*_append_only` triggers to apply an operator plan — inside one transaction, re-enabling and
-asserting them before commit, so a completed or rolled-back repair always leaves them on. A database
-found at rest with one of them off is a repair that died in a way the transaction did not cover.
-Re-run the relevant `*:preflight` and repair per §T45 / §P4T2C / §P4T3C2 before re-enabling by hand.
-The other cause is a restore: `pg_restore` disables triggers while loading, and a run that failed
-part-way leaves them that way.
+```sql
+SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = '<constraint>';
+ALTER TABLE public."<Table>" DROP CONSTRAINT "<constraint>";
+ALTER TABLE public."<Table>" ADD CONSTRAINT "<constraint>" <the definition printed above>;
+```
+
+The `ADD` scans existing rows and **will fail if an orphan got in while the key was not enforcing** —
+that failure is the useful signal, and the orphan is a data question to settle before the deploy
+proceeds. Never re-add it `NOT VALID` to get past this: that trades one finding for the other. A key
+reported as an **unmeasured shape** is not broken — the schema has grown a partitioned or derived
+foreign key — and the fix is to measure that shape and extend the check, not to skip the key.
 
 ### Why this is asked twice
 
@@ -1374,4 +1388,9 @@ same claim as the guards enforcing.
 `apps/api/scripts/schema-enforcement-production-runner-proof.sh` drives the real `migrate.sh`
 through all of it: fresh/empty, already-clean, dirty-by-trigger and dirty-by-key with a migration
 pending (aborting before Prisma, migration not recorded), repaired, already-checked, the post-deploy
-seam, and a coupling step that unwires the check and requires the dirty state to be accepted again.
+seam asked directly, a coupling step that unwires the preflight and requires the dirty state to be
+accepted again, and — state I — a deploy that SUCCEEDS while leaving the schema dirty, refused after
+Prisma on BOTH the ordinary and the P3005 path, with each of those two call sites neutered in turn to
+prove the refusal came from it. That the proof itself is RUN is pinned separately, by
+`scripts/ci-baseline-proof-wiring.test.mjs` in the required `automation` job: a proof cannot detect
+that it was unwired from CI.

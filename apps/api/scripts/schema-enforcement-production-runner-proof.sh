@@ -2,7 +2,8 @@
 # Schema enforcement — the check must behave correctly ON THE REAL PRODUCTION RUNNER, in every
 # database state that runner can meet. Modelled on scripts/t45-production-runner-proof.sh and
 # scripts/schedule-b1-baseline-proof.sh: it invokes `scripts/migrate.sh` itself, never a stand-in,
-# because the thing under test is the wiring as much as the check.
+# because the thing under test is the wiring as much as the check. The one stand-in anywhere in this
+# file is `prisma` in state I, and only there — stated at that state, with why nothing else will do.
 #
 # The states, and what each one is FOR:
 #
@@ -20,12 +21,19 @@
 #      then deploys the pending migration cleanly. A gate that cannot be cleared is a wall.
 #   F. ALREADY-CHECKED — the runner re-run over the now-deployed database is a no-op that passes.
 #   G. THE POST-DEPLOY SEAM, asked directly. `enforcement verify` must fail on a dirty schema and
-#      must fail with exit 4 on an empty one, where `preflight` passes. Stated honestly: this step
-#      invokes the second migrate.sh call site directly rather than through the runner, because
-#      synthesising a migration that disables a seal and fails to restore it would mean adding a
-#      migration to a checksum-frozen tree. The wiring itself is asserted in step H.
-#   H. COUPLING — with the preflight block removed from a COPY of migrate.sh, state C is accepted.
-#      So a mutation that unwires this check fails this script.
+#      must fail with exit 4 on an empty one, where `preflight` passes. This is the CLI's own
+#      contract, not the wiring — the wiring is state I.
+#   H. COUPLING (the PREFLIGHT) — with the preflight block removed from a COPY of migrate.sh, state
+#      C is accepted. So a mutation that unwires the preflight fails this script.
+#   I. THE POST-DEPLOY SEAM, THROUGH THE RUNNER, on BOTH success paths — and its coupling. A deploy
+#      that SUCCEEDS while leaving the schema not enforcing must be refused AFTER Prisma, by the real
+#      runner. States C/D cannot reach it (a dirty database is refused before Prisma, which is the
+#      point of the preflight), so the state has to be built the other way round: a CLEAN database,
+#      and a deploy that dirties it. Reproducing that with a real migration would mean adding a file
+#      to a checksum-frozen tree, so `prisma` ALONE is stood in for — migrate.sh runs verbatim, and
+#      every verifier it calls is the compiled artifact. Then each of the two post-deploy call sites
+#      is neutered in turn in a COPY of migrate.sh and the dirty database must be ACCEPTED again: a
+#      mutation that deletes EITHER post-deploy `verify` fails this script.
 #
 # DESTRUCTIVE for the scratch database only.
 set -u
@@ -52,6 +60,15 @@ recreate() { psql -v ON_ERROR_STOP=1 -X -q "$ADMIN" -c "DROP DATABASE IF EXISTS 
              psql -v ON_ERROR_STOP=1 -X -q "$ADMIN" -c "CREATE DATABASE \"$DB\"" >/dev/null; }
 recorded()  { $PSQL -tAc "SELECT count(*) FROM _prisma_migrations WHERE migration_name = '$PENDING'" 2>/dev/null | tr -d '[:space:]'; }
 
+# A coupling step is only evidence if its mutation LANDED. `sed`/`awk` that match nothing produce an
+# identical copy, the unmutated runner refuses as it should, and the step would read as proven when
+# nothing was tested. So every mutated copy is compared against the original first.
+mutated() { # $1 = mutated copy — fails the proof if it is byte-identical to scripts/migrate.sh
+  if cmp -s "$1" scripts/migrate.sh; then
+    bad "the coupling mutation matched nothing in migrate.sh — the step below would prove nothing"; return 1
+  fi; return 0
+}
+
 HOLD=""
 restore_pending() { [ -n "$HOLD" ] && [ -d "$HOLD/$PENDING" ] && mv "$HOLD/$PENDING" "prisma/migrations/$PENDING"
                     [ -n "$HOLD" ] && rmdir "$HOLD" 2>/dev/null; HOLD=""; return 0; }
@@ -66,11 +83,12 @@ deploy_all_but_pending() {
 say "0. the compiled artifacts the production runner requires"
 pnpm --filter @vitan/shared build >/tmp/enf-shared.log 2>&1 || { bad "shared build failed"; tail -10 /tmp/enf-shared.log; exit 1; }
 pnpm --filter api build >/tmp/enf-api.log 2>&1 || { bad "api build failed"; tail -20 /tmp/enf-api.log; exit 1; }
-for a in dist/platform/t45/t45.cli.js dist/labour/t2c/t2c.cli.js dist/labour/t3c/t3c.cli.js \
-         dist/activities/b1/b1.cli.js dist/platform/enforcement/enforcement.cli.js; do
-  [ -f "$a" ] || { bad "compiled migrate.sh artifact missing: $a"; exit 1; }
-done
-ok "every compiled artifact migrate.sh runs is present, including dist/platform/enforcement/enforcement.cli.js"
+# DERIVED from migrate.sh, not listed here. A hand-written list is only as complete as the day it
+# was written, so a sixth verifier added to the runner would go untested behind a five-entry list.
+ARTIFACTS="$(grep -o 'dist/[A-Za-z0-9/_.-]*\.js' scripts/migrate.sh | sort -u)"
+[ -n "$ARTIFACTS" ] || { bad "migrate.sh names no compiled artifact — this step would prove nothing"; exit 1; }
+for a in $ARTIFACTS; do [ -f "$a" ] || { bad "compiled migrate.sh artifact missing: $a"; exit 1; }; done
+ok "every compiled artifact migrate.sh names is present: $(echo $ARTIFACTS)"
 
 # ══ A. FRESH/EMPTY ════════════════════════════════════════════════════════════════════════════
 say "A. a fresh, empty database"
@@ -190,6 +208,7 @@ $PSQL -c 'ALTER TABLE "Activity" DISABLE TRIGGER ALL' >/dev/null
 UNWIRED="$(mktemp)"
 # Remove only the preflight invocation, leaving the rest of the runner intact.
 sed 's|if ! node "$ENF_CHECK" preflight; then|if false; then|' scripts/migrate.sh > "$UNWIRED"
+mutated "$UNWIRED" && ok "the preflight invocation really was removed from the copy"
 OUT="$(DATABASE_URL="$URL" sh "$UNWIRED" 2>&1)"; RC=$?
 rm -f "$UNWIRED"
 if [ "$RC" = "0" ] || [ "$(recorded)" = "1" ]; then
@@ -199,6 +218,96 @@ else
   printf '%s\n' "$OUT" | tail -20
 fi
 $PSQL -c 'ALTER TABLE "Activity" ENABLE TRIGGER ALL' >/dev/null 2>&1
+
+# ══ I. THE POST-DEPLOY SEAM, THROUGH THE REAL RUNNER ══════════════════════════════════════════
+# The state under test is a deploy that SUCCEEDS and leaves the schema not enforcing. The preflight
+# cannot produce it — it refuses a dirty database before Prisma — so the database is CLEAN here and
+# the DEPLOY is what dirties it. `prisma` alone is stood in for, to synthesise that without adding a
+# migration to a checksum-frozen tree; migrate.sh is executed verbatim and every verifier it invokes
+# is the real compiled artifact.
+PROBE_FK='Activity_postdeploy_probe_fkey'
+DIRTY_SQL="ALTER TABLE \"Activity\" ADD CONSTRAINT \"$PROBE_FK\" FOREIGN KEY (\"projectId\") REFERENCES \"Project\"(\"id\") NOT VALID"
+clean_probe_fk() { $PSQL -c "ALTER TABLE \"Activity\" DROP CONSTRAINT IF EXISTS \"$PROBE_FK\"" >/dev/null 2>&1; }
+
+make_shim() { # $1 = ordinary | p3005 — prints the directory to put first on PATH
+  d="$(mktemp -d)"
+  cat > "$d/npx" <<SHIM
+#!/bin/sh
+# Stands in for \`prisma migrate deploy\` ONLY. On the p3005 run the FIRST deploy answers P3005 so
+# migrate.sh takes its baseline branch; the deploy that then SUCCEEDS leaves the schema dirty, which
+# is the state no ledger can show and the post-deploy call exists to catch.
+if [ "\$1" != "prisma" ]; then echo "enf-shim: unexpected npx \$*" >&2; exit 127; fi
+case "\$2 \$3" in
+  "migrate resolve") exit 0 ;;
+  "migrate deploy")
+    n=\$(cat "$d/calls" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" > "$d/calls"
+    if [ "$1" = "p3005" ] && [ "\$n" = "1" ]; then
+      echo "Error: P3005 The database schema is not empty."
+      exit 1
+    fi
+    psql -v ON_ERROR_STOP=1 -X -q "$BARE" -c '$DIRTY_SQL' >/dev/null || exit 1
+    echo "No pending migrations to apply."
+    exit 0 ;;
+  *) echo "enf-shim: unexpected npx \$*" >&2; exit 127 ;;
+esac
+SHIM
+  chmod +x "$d/npx"; printf '%s' "$d"
+}
+
+run_dirtying_deploy() { # $1 = ordinary|p3005 ; $2 = runner to execute — sets OUT / RC
+  clean_probe_fk
+  d="$(make_shim "$1")"
+  OUT="$(PATH="$d:$PATH" DATABASE_URL="$URL" sh "$2" 2>&1)"; RC=$?
+  rm -rf "$d"
+}
+
+# The two post-deploy call sites, neutered one at a time. `awk` rather than `sed` because the two
+# lines are byte-identical and only their ORDER distinguishes them.
+neuter_verify() { # $1 = 1 (ordinary path) | 2 (P3005 path) -> prints the mutated runner
+  awk -v want="$1" -v pat='if ! node "$ENF_CHECK" verify; then' \
+    'index($0, pat) > 0 { c++; if (c == want) $0 = substr($0, 1, index($0, pat) - 1) "if false; then" } { print }' \
+    scripts/migrate.sh
+}
+
+say "I. a deploy that SUCCEEDS while leaving the schema dirty — the ORDINARY post-deploy path"
+recreate
+DATABASE_URL="$URL" sh scripts/migrate.sh >/tmp/enf-i-base.log 2>&1 || { bad "the clean baseline deploy for state I failed"; tail -20 /tmp/enf-i-base.log; }
+run_dirtying_deploy ordinary scripts/migrate.sh
+[ "$RC" != "0" ] && ok "migrate.sh REFUSED the deploy (exit $RC)" || bad "migrate.sh reported a successful deploy over a schema the deploy left not enforcing"
+printf '%s\n' "$OUT" | grep -q "schema enforcement preflight FAILED" \
+  && bad "the PREFLIGHT refused it — this step must exercise the POST-DEPLOY call, not the preflight" \
+  || ok "the preflight passed, so the database was clean when Prisma started"
+printf '%s\n' "$OUT" | grep -q "schema enforcement verification FAILED" \
+  && ok "and the ORDINARY post-deploy call is what refused it" || bad "the refusal did not come from the ordinary post-deploy verify"
+printf '%s\n' "$OUT" | grep -q "$PROBE_FK" && ok "the diagnostic NAMES what the deploy left behind" || bad "the post-deploy diagnostic did not name the object"
+
+say "I.2 the same question on the P3005 BASELINE path, which resolves migrations without running them"
+run_dirtying_deploy p3005 scripts/migrate.sh
+[ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC)" || bad "the baseline path reported a good deploy over a dirty schema"
+printf '%s\n' "$OUT" | grep -q "pre-baseline database detected (P3005)" \
+  && ok "the baseline branch really was taken" || bad "the P3005 branch was not taken; this step measures nothing"
+printf '%s\n' "$OUT" | grep -q "schema enforcement is not intact after baseline + deploy" \
+  && ok "and the P3005 post-deploy call — a DIFFERENT call site — is what refused it" \
+  || bad "the refusal did not come from the P3005 post-deploy verify"
+
+say "I.3 coupling — with ONLY the ordinary post-deploy verify removed from a COPY, the dirty deploy is accepted"
+COPY1="$(mktemp)"; neuter_verify 1 > "$COPY1"
+if mutated "$COPY1"; then
+  run_dirtying_deploy ordinary "$COPY1"
+  [ "$RC" = "0" ] && ok "the unwired runner reported the deploy GOOD — so the refusal above came from that call and nothing else" \
+                  || { bad "state I was still refused with the ordinary post-deploy verify removed; the coupling is not proven"; printf '%s\n' "$OUT" | tail -20; }
+fi
+rm -f "$COPY1"
+
+say "I.4 coupling — and with ONLY the P3005 post-deploy verify removed, the baseline path accepts it too"
+COPY2="$(mktemp)"; neuter_verify 2 > "$COPY2"
+if mutated "$COPY2"; then
+  run_dirtying_deploy p3005 "$COPY2"
+  [ "$RC" = "0" ] && ok "the unwired baseline path reported the deploy GOOD — deleting EITHER post-deploy call now fails this proof" \
+                  || { bad "state I.2 was still refused with the P3005 post-deploy verify removed; the coupling is not proven"; printf '%s\n' "$OUT" | tail -20; }
+fi
+rm -f "$COPY2"
+clean_probe_fk
 
 say "cleanup"
 psql -v ON_ERROR_STOP=1 -X -q "$ADMIN" -c "DROP DATABASE IF EXISTS \"$DB\" WITH (FORCE)" >/dev/null

@@ -317,9 +317,12 @@ jobs:
       # toolchain and the PostgreSQL service, and the proof builds its own scratch database and
       # never touches `pmcvitan_test`.
       #
-      # It proves its own coupling (step H unwires the preflight from a copy of migrate.sh and
-      # requires the dirty database to be accepted again), so deleting the wiring cannot pass
-      # silently here either.
+      # The proof mutates migrate.sh to prove the RUNNER is coupled to the check — step H for the
+      # preflight, steps I.3/I.4 for each post-deploy call site. That says nothing about whether THIS
+      # STEP still exists: a proof cannot detect that it was itself unwired. So the step is pinned by
+      # `scripts/ci-baseline-proof-wiring.test.mjs` in the required `automation` job, alongside the
+      # one above — deleting it turns that job red instead of quietly removing the only execution of
+      # the production runner over a not-enforcing database.
       - name: Schema enforcement production-runner proof (the real migrate.sh over dirty databases)
         timeout-minutes: 25
         run: bash apps/api/scripts/schema-enforcement-production-runner-proof.sh

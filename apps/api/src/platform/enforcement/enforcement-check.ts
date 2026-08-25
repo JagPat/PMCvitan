@@ -29,15 +29,25 @@ import type { PrismaClient } from '@prisma/client';
  *      commit. A trigger that does not fire is not a weaker seal; it is no seal. So a disabled
  *      trigger is ALWAYS wrong at rest, and the property needs no exceptions.
  *
- *      The one apparent exception is deliberate and is a FEATURE, not a false positive. The T45,
- *      T2C and T3C repair engines disable named `*_append_only` triggers to apply an operator's
- *      plan — but they do so INSIDE `prisma.$transaction`, re-enable every one of them, and assert
- *      the full immutability set is enabled, all before commit (t45-repair.service.ts:186-201,
- *      t3c-repair.service.ts:940-959, t2c-repair.service.ts:218-231). VERIFIED by reading those
- *      engines, not assumed. DDL is transactional in PostgreSQL, so a rollback undoes the DISABLE
- *      too, and the ACCESS EXCLUSIVE lock the ALTER takes means a concurrent reader sees the
- *      pre-transaction state. Therefore no committed database is ever legitimately at rest with one
- *      of them off — and a database left dirty by an aborted repair is exactly what this catches.
+ *      The apparent exceptions are deliberate and are a FEATURE, not a false positive. EVERY path in
+ *      this repository that disables a trigger does so inside ONE transaction and re-enables it
+ *      before commit — VERIFIED by reading each, not assumed:
+ *
+ *        · the T45, T2C and T3C repair engines disable named `*_append_only` triggers to apply an
+ *          operator's plan, then re-enable them and ASSERT the full immutability set is enabled,
+ *          all inside `prisma.$transaction` (t45-repair.service.ts:186-201, t2c:218-231,
+ *          t3c:940-959);
+ *        · `prisma/seed.ts` disables two named seals for its sanctioned destructive wipe, inside
+ *          `prisma.$transaction([…])` (seed.ts:63-80 and 116-147), and says so in its own comment;
+ *        · migrations 20261222 / 20261224 / 20270420 disable a frozen-column trigger to rewrite a
+ *          snapshot and re-enable it in the same file, which `prisma migrate deploy` runs in a
+ *          transaction.
+ *
+ *      DDL is transactional in PostgreSQL, so a rollback undoes the DISABLE too, and the ACCESS
+ *      EXCLUSIVE lock the ALTER takes means a concurrent reader sees the pre-transaction state. This
+ *      check runs BEFORE Prisma and AFTER a completed deploy, never during one. So no committed
+ *      database is ever legitimately at rest with a trigger off — and a database left dirty by an
+ *      aborted repair, seed or restore is exactly what this catches.
  *
  *   2. NO FOREIGN KEY IS UNVALIDATED.  `NOT VALID` means existing rows were never checked, so the
  *      key's promise is retroactively untrue however well it behaves from now on.
@@ -77,6 +87,44 @@ import type { PrismaClient } from '@prisma/client';
  * which no `migrate.sh` check previously covered at all). Each finding is ATTRIBUTED — an internal
  * trigger is reported as the foreign key it implements, because "RI_ConstraintTrigger_c_24644 is
  * disabled" is not something an operator can act on.
+ *
+ * ─── CLAUSE 3: PRESENCE, NOT ONLY STATE — THE SAME DEFECT SHAPE ONE LEVEL DOWN AGAIN ────────────
+ *
+ * Clauses 1 and 2 judge the STATE of objects that EXIST. Absence is a failure mode neither can see,
+ * and absence permits exactly the writes they refuse. MEASURED on PG 16.13: with one referencing-side
+ * `RI_FKey_check_ins` trigger removed from `pg_trigger` by catalog surgery — what a partial restore
+ * or a hand repair amounts to, and the only way this arises, since PostgreSQL refuses `DROP TRIGGER`
+ * on an internal one — an INSERT of an orphaned row COMMITTED, `convalidated` stayed `true`, AND
+ * CLAUSE 1 REPORTED NOTHING, because the two surviving triggers were both `O`.
+ *
+ * So each key is correlated with its REQUIRED inventory, MEASURED rather than assumed. A key between
+ * two ORDINARY tables is exactly FOUR internal row triggers, in four fixed SLOTS:
+ *
+ *   on the REFERENCING table   an INSERT row trigger   and   an UPDATE row trigger
+ *   on the REFERENCED  table   a  DELETE row trigger   and   an UPDATE row trigger
+ *
+ * The action only chooses which FUNCTION fills a parent-side slot (`RI_FKey_noaction_del`,
+ * `_cascade_del`, `_setnull_del`, `_setdefault_del`, `_restrict_del`, and the `_upd` series) — never
+ * how many slots there are. MEASURED across all 25 `ON DELETE` × `ON UPDATE` pairs, plus a
+ * self-referential key (both sides one table), a composite key, a `MATCH FULL` key, a `DEFERRABLE
+ * INITIALLY DEFERRED` key and a `NOT VALID` key: four every time. So the requirement is stated by
+ * SLOT, and needs no table of action-to-function names to keep in step with.
+ *
+ * The slot must be filled by an ENFORCING trigger, which is why this is not clause 1 restated: a
+ * trigger absent and a trigger present at `D` are the same physical fact — the slot does not fire —
+ * and one predicate covers both. It also closes a hole clause 1 has by construction: clause 1 is
+ * scoped by the TRIGGER'S table, so a key referencing a table in another schema had its parent-side
+ * triggers outside the question; here they are reached through `tgconstraint` wherever they live.
+ *
+ * AND IT FAILS CLOSED. An enumeration treated as the whole is the defect that closed both
+ * predecessors, so the shapes above are not a list of what to check — they are a list of what was
+ * MEASURED, and anything outside it REFUSES. A key refuses when its action code is not one measured
+ * here; when either participating relation is not an ordinary table (MEASURED: a PARTITIONED
+ * participant produces a genuinely different inventory — a leaf partition's derived constraint
+ * carries only the 2 referencing-side triggers, and a partitioned REFERENCED side splits the
+ * parent-side slots one pair per partition); or when it is a derived constraint (`conparentid <> 0`)
+ * rather than one an operator declared. No such key exists in this schema — all 387 are ordinary,
+ * non-derived and four-triggered — and if one appears, the deploy stops and names it.
  */
 
 /** ENFORCING ⟺ `O` (origin) or `A` (always). Stated once, positively, and nowhere else. */
@@ -105,6 +153,32 @@ export interface ConstraintFinding {
   constraint: string;
 }
 
+/**
+ * The referential-action codes `pg_constraint.confdeltype` / `confupdtype` hold, each MEASURED on
+ * PG 16.13 to produce the same four-slot inventory. A code outside this map is a shape this file has
+ * not measured, and is REFUSED rather than assumed to behave like these.
+ */
+export const MEASURED_REFERENTIAL_ACTIONS: Readonly<Record<string, string>> = {
+  a: 'NO ACTION',
+  r: 'RESTRICT',
+  c: 'CASCADE',
+  n: 'SET NULL',
+  d: 'SET DEFAULT',
+};
+
+/** MEASURED, not assumed: four slots, for every action pair, self-reference, MATCH FULL and DEFERRABLE. */
+export const REQUIRED_RI_TRIGGERS = 4;
+
+/** A foreign key whose internal implementation is incomplete, or whose shape was never measured. */
+export interface ForeignKeyShapeFinding {
+  table: string;
+  constraint: string;
+  /** What is wrong, in the terms an operator acts on. */
+  why: string;
+  /** Enforcing internal RI triggers actually attached to the constraint, against the required 4. */
+  enforcingTriggers: number;
+}
+
 export interface EnforcementReport {
   schema: string;
   /** False only for a database with no application tables at all (fresh/empty). */
@@ -114,6 +188,8 @@ export interface EnforcementReport {
   counts: { tables: number; triggers: number; foreignKeys: number };
   disabledTriggers: { total: number; sample: TriggerFinding[] };
   unvalidatedForeignKeys: { total: number; sample: ConstraintFinding[] };
+  /** Clause 3: a key missing part of its internal implementation, or of an unmeasured shape. */
+  incompleteForeignKeys: { total: number; sample: ForeignKeyShapeFinding[] };
 }
 
 /**
@@ -166,6 +242,7 @@ export async function checkEnforcement(prisma: Client, schema = applicationSchem
       counts: { tables, triggers, foreignKeys },
       disabledTriggers: { total: 0, sample: [] },
       unvalidatedForeignKeys: { total: 0, sample: [] },
+      incompleteForeignKeys: { total: 0, sample: [] },
     };
   }
 
@@ -203,6 +280,85 @@ export async function checkEnforcement(prisma: Client, schema = applicationSchem
     schema,
   );
 
+  // CLAUSE 3. Every foreign key's internal implementation is COMPLETE and firing. The four slots
+  // are counted with the ENFORCING predicate applied, so an absent trigger and a trigger present at
+  // `D` are one answer: the slot does not fire. The triggers are reached through `tgconstraint`
+  // WITHOUT a schema filter — a key declared in this schema is judged by its whole implementation,
+  // including a parent-side trigger that lives on a table somewhere else.
+  const keys = await prisma.$queryRawUnsafe<
+    Array<{
+      table: string; constraint: string; upd: string; del: string;
+      derived: boolean; childKind: string; parentKind: string;
+      enforcing: number; insOnChild: number; updOnChild: number; delOnParent: number; updOnParent: number;
+    }>
+  >(
+    `SELECT c.relname AS "table", k.conname AS "constraint",
+            k.confupdtype::text AS "upd", k.confdeltype::text AS "del",
+            (k.conparentid <> 0) AS "derived",
+            c.relkind::text AS "childKind", f.relkind::text AS "parentKind",
+            (SELECT count(*)::int FROM pg_trigger t
+              WHERE t.tgconstraint = k.oid AND (t.tgenabled = 'O' OR t.tgenabled = 'A')) AS "enforcing",
+            (SELECT count(*)::int FROM pg_trigger t
+              WHERE t.tgconstraint = k.oid AND (t.tgenabled = 'O' OR t.tgenabled = 'A')
+                AND t.tgrelid = k.conrelid  AND (t.tgtype::int & 1) = 1 AND (t.tgtype::int & 4)  = 4)  AS "insOnChild",
+            (SELECT count(*)::int FROM pg_trigger t
+              WHERE t.tgconstraint = k.oid AND (t.tgenabled = 'O' OR t.tgenabled = 'A')
+                AND t.tgrelid = k.conrelid  AND (t.tgtype::int & 1) = 1 AND (t.tgtype::int & 16) = 16) AS "updOnChild",
+            (SELECT count(*)::int FROM pg_trigger t
+              WHERE t.tgconstraint = k.oid AND (t.tgenabled = 'O' OR t.tgenabled = 'A')
+                AND t.tgrelid = k.confrelid AND (t.tgtype::int & 1) = 1 AND (t.tgtype::int & 8)  = 8)  AS "delOnParent",
+            (SELECT count(*)::int FROM pg_trigger t
+              WHERE t.tgconstraint = k.oid AND (t.tgenabled = 'O' OR t.tgenabled = 'A')
+                AND t.tgrelid = k.confrelid AND (t.tgtype::int & 1) = 1 AND (t.tgtype::int & 16) = 16) AS "updOnParent"
+       FROM pg_constraint k
+       JOIN pg_class c ON c.oid = k.conrelid
+       JOIN pg_class f ON f.oid = k.confrelid
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = $1 AND k.contype = 'f'
+      ORDER BY c.relname, k.conname`,
+    schema,
+  );
+
+  const keyFindings: ForeignKeyShapeFinding[] = [];
+  for (const k of keys) {
+    const at = { table: k.table, constraint: k.constraint, enforcingTriggers: Number(k.enforcing) };
+
+    // UNMEASURED SHAPES REFUSE. Not "these are the interesting cases" — these are the cases the
+    // four-slot inventory below was measured against, and a key outside them is judged by nothing.
+    if (k.derived) {
+      keyFindings.push({ ...at, why: 'a DERIVED constraint (conparentid <> 0) — its inventory is split across a partition hierarchy, a shape this check has not measured; refusing rather than judging it by a rule measured on ordinary keys' });
+      continue;
+    }
+    if (k.childKind !== 'r' || k.parentKind !== 'r') {
+      keyFindings.push({ ...at, why: `relkind ${JSON.stringify(k.childKind)} references relkind ${JSON.stringify(k.parentKind)} — the four-slot inventory was measured for ORDINARY tables only (a PARTITIONED participant splits the slots per partition); refusing` });
+      continue;
+    }
+    // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so a code of "constructor" or
+    // "toString" would read as measured. The domain is a single char today and cannot produce one —
+    // but a fail-closed test that has an exception for two strings is not fail-closed.
+    if (!Object.hasOwn(MEASURED_REFERENTIAL_ACTIONS, k.upd) || !Object.hasOwn(MEASURED_REFERENTIAL_ACTIONS, k.del)) {
+      keyFindings.push({ ...at, why: `ON UPDATE code ${JSON.stringify(k.upd)} / ON DELETE code ${JSON.stringify(k.del)} — at least one is not a referential action this check has measured; refusing` });
+      continue;
+    }
+
+    // The MEASURED requirement. `enforcing !== 4` alone catches every removal, because the four
+    // slots are distinct triggers; the per-slot predicates then SAY WHICH ONE, and pin the shape
+    // against a key that somehow carries four triggers in the wrong places. For a SELF-referential
+    // key both sides are one table, so its two UPDATE triggers satisfy both UPDATE slots — and the
+    // count of four is what makes losing one of them a finding.
+    const missing: string[] = [];
+    if (k.insOnChild < 1) missing.push('the referencing-side INSERT check');
+    if (k.updOnChild < 1) missing.push('the referencing-side UPDATE check');
+    if (k.delOnParent < 1) missing.push(`the referenced-side DELETE action (ON DELETE ${MEASURED_REFERENTIAL_ACTIONS[k.del]})`);
+    if (k.updOnParent < 1) missing.push(`the referenced-side UPDATE action (ON UPDATE ${MEASURED_REFERENTIAL_ACTIONS[k.upd]})`);
+
+    if (missing.length > 0) {
+      keyFindings.push({ ...at, why: `missing or not firing: ${missing.join(', ')} — the key is validated in the catalog and does not enforce` });
+    } else if (Number(k.enforcing) !== REQUIRED_RI_TRIGGERS) {
+      keyFindings.push({ ...at, why: `${k.enforcing} enforcing internal trigger(s), and PostgreSQL 16 implements this key with exactly ${REQUIRED_RI_TRIGGERS}` });
+    }
+  }
+
   const triggerFindings: TriggerFinding[] = disabled.map((row) => ({
     table: row.table,
     trigger: row.trigger,
@@ -220,17 +376,18 @@ export async function checkEnforcement(prisma: Client, schema = applicationSchem
     schema,
     applicable: true,
     note: `schema "${schema}": ${triggers} triggers and ${foreignKeys} foreign keys over ${tables} tables`,
-    enforcing: triggerFindings.length === 0 && unvalidated.length === 0,
+    enforcing: triggerFindings.length === 0 && unvalidated.length === 0 && keyFindings.length === 0,
     counts: { tables, triggers, foreignKeys },
     disabledTriggers: { total: triggerFindings.length, sample: triggerFindings.slice(0, SAMPLE_LIMIT) },
     unvalidatedForeignKeys: { total: unvalidated.length, sample: unvalidated.slice(0, SAMPLE_LIMIT) },
+    incompleteForeignKeys: { total: keyFindings.length, sample: keyFindings.slice(0, SAMPLE_LIMIT) },
   };
 }
 
 /** The NAMED diagnostic: every offending object identified, with the count it was sampled from. */
 export function summarizeEnforcement(report: EnforcementReport): string {
   const lines: string[] = [];
-  const { disabledTriggers: dt, unvalidatedForeignKeys: fk } = report;
+  const { disabledTriggers: dt, unvalidatedForeignKeys: fk, incompleteForeignKeys: ik } = report;
 
   if (dt.total > 0) {
     lines.push(`NOT ENFORCING — ${dt.total} trigger(s) in schema "${report.schema}" do not fire:`);
@@ -247,6 +404,14 @@ export function summarizeEnforcement(report: EnforcementReport): string {
     lines.push(`NOT VALIDATED — ${fk.total} foreign key(s) in schema "${report.schema}" never checked their existing rows:`);
     for (const f of fk.sample) lines.push(`  ${report.schema}."${f.table}" constraint "${f.constraint}" is NOT VALID`);
     if (fk.total > fk.sample.length) lines.push(`  … and ${fk.total - fk.sample.length} more (sample bounded at ${SAMPLE_LIMIT}).`);
+  }
+
+  if (ik.total > 0) {
+    lines.push(`NOT ENFORCING — ${ik.total} foreign key(s) in schema "${report.schema}" are not completely implemented:`);
+    for (const f of ik.sample) {
+      lines.push(`  ${report.schema}."${f.table}" constraint "${f.constraint}" has ${f.enforcingTriggers}/${REQUIRED_RI_TRIGGERS} enforcing internal triggers — ${f.why}`);
+    }
+    if (ik.total > ik.sample.length) lines.push(`  … and ${ik.total - ik.sample.length} more (sample bounded at ${SAMPLE_LIMIT}).`);
   }
 
   return lines.join('\n');

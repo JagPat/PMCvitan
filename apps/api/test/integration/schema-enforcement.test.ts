@@ -3,6 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   applicationSchema,
   checkEnforcement,
+  REQUIRED_RI_TRIGGERS,
+  SAMPLE_LIMIT,
   summarizeEnforcement,
 } from '../../src/platform/enforcement/enforcement-check';
 
@@ -35,6 +37,7 @@ let scratch: PrismaClient;
 
 /** Re-create the scratch schema from nothing, so each probe starts from a database known clean. */
 async function resetScratch(): Promise<void> {
+  await scratch.$executeRawUnsafe(`DROP TABLE IF EXISTS "PartChild"`);
   await scratch.$executeRawUnsafe(`DROP TABLE IF EXISTS "Child"`);
   await scratch.$executeRawUnsafe(`DROP TABLE IF EXISTS "Parent"`);
   await scratch.$executeRawUnsafe(`CREATE TABLE "Parent" ("id" int PRIMARY KEY)`);
@@ -50,6 +53,31 @@ async function resetScratch(): Promise<void> {
        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION probe_seal()`,
   );
   await scratch.$executeRawUnsafe(`INSERT INTO "Parent" VALUES (1)`);
+}
+
+/**
+ * Catalog surgery leaves a database whose DDL no longer works — `DROP TABLE` on the mutilated table
+ * answers `could not find tuple for trigger`, because the constraint's dependency record outlives
+ * the row that was taken away. That is not a flaw in the probe; it is what the state IS, and it is
+ * why a probe that performs it must have a database of its own to throw away. `DROP DATABASE` is a
+ * file-level operation and is unaffected.
+ */
+async function withSurgeryDatabase(body: (db: PrismaClient) => Promise<void>): Promise<void> {
+  const name = `${SCRATCH_DB}_surgery`;
+  await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+  await admin.$executeRawUnsafe(`CREATE DATABASE "${name}"`);
+  const db = new PrismaClient({ datasources: { db: { url: urlFor(name) } } });
+  try {
+    await db.$executeRawUnsafe(`CREATE TABLE "Parent" ("id" int PRIMARY KEY)`);
+    await db.$executeRawUnsafe(
+      `CREATE TABLE "Child" ("id" int PRIMARY KEY, "parentId" int REFERENCES "Parent"("id"))`,
+    );
+    await db.$executeRawUnsafe(`INSERT INTO "Parent" VALUES (1)`);
+    await body(db);
+  } finally {
+    await db.$disconnect();
+    await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+  }
 }
 
 beforeAll(async () => {
@@ -74,6 +102,7 @@ describe('schema enforcement — the live catalog, not the SQL that wrote it', (
     expect(report.enforcing).toBe(true);
     expect(report.disabledTriggers.total).toBe(0);
     expect(report.unvalidatedForeignKeys.total).toBe(0);
+    expect(report.incompleteForeignKeys.total).toBe(0);
     // The foreign key really is implemented as internal triggers, which is why clause 1 has to
     // cover them: MEASURED at 4 per key on PG 16, so the schema is not trigger-free.
     expect(report.counts.triggers).toBeGreaterThan(0);
@@ -171,6 +200,93 @@ describe('schema enforcement — the live catalog, not the SQL that wrote it', (
     expect((await checkEnforcement(scratch, 'public')).enforcing).toBe(true);
   });
 
+  it('NAMES a foreign key that LOST an internal trigger — absence, which clause 1 cannot see', async () => {
+    // THE PROBE FOR THE STATE CLAUSES 1 AND 2 ARE BOTH BLIND TO. Clause 1 asks whether every trigger
+    // that EXISTS is enabled; a trigger removed from `pg_trigger` by a partial restore or a catalog
+    // repair is not a disabled trigger, it is no trigger, and the survivors are all `O`.
+    await withSurgeryDatabase(async (db) => {
+      // `DROP TRIGGER` refuses an internal RI trigger ("because constraint … requires it"), so the
+      // catalog surgery a broken restore amounts to is reproduced directly — the only way this
+      // state arises in the field.
+      const removed = await db.$executeRawUnsafe(
+        `DELETE FROM pg_trigger t
+          USING pg_constraint k, pg_proc p
+          WHERE t.tgconstraint = k.oid AND p.oid = t.tgfoid
+            AND k.conname = 'Child_parentId_fkey' AND p.proname = 'RI_FKey_check_ins'`,
+      );
+      expect(removed).toBe(1);
+
+      // REPRODUCE-FIRST, executed: the key is now a lie, exactly as in the DISABLE probe…
+      await db.$executeRawUnsafe(`INSERT INTO "Child" VALUES (20, 999)`);
+      const orphans = await db.$queryRawUnsafe<Array<{ n: bigint }>>(
+        `SELECT count(*) AS n FROM "Child" WHERE "parentId" = 999`,
+      );
+      expect(Number(orphans[0].n)).toBe(1);
+      const [{ convalidated }] = await db.$queryRawUnsafe<Array<{ convalidated: boolean }>>(
+        `SELECT convalidated FROM pg_constraint WHERE conname = 'Child_parentId_fkey'`,
+      );
+      expect(convalidated).toBe(true);
+
+      const report = await checkEnforcement(db, 'public');
+
+      // …and the point of this probe: the two clauses that shipped see NOTHING. Every surviving
+      // trigger is `O`, and the key is validated. Without clause 3 this database reports ENFORCING.
+      expect(report.disabledTriggers.total).toBe(0);
+      expect(report.unvalidatedForeignKeys.total).toBe(0);
+
+      expect(report.enforcing).toBe(false);
+      expect(report.incompleteForeignKeys.total).toBe(1);
+      expect(report.incompleteForeignKeys.sample[0]).toMatchObject({
+        table: 'Child',
+        constraint: 'Child_parentId_fkey',
+        enforcingTriggers: 3,
+      });
+      const summary = summarizeEnforcement(report);
+      expect(summary).toContain('Child_parentId_fkey');
+      expect(summary).toContain('referencing-side INSERT check');
+      expect(summary).toContain(`3/${REQUIRED_RI_TRIGGERS}`);
+    });
+  });
+
+  it('counts a slot filled by a DISABLED trigger as unfilled — absence and D are one physical fact', async () => {
+    // Clause 3 asks whether the slot FIRES, not whether a row is present, so it also covers the
+    // hole clause 1 has by construction: clause 1 is scoped by the trigger's own table, so a
+    // parent-side trigger on a table outside the scanned schema was never in the question.
+    await resetScratch();
+    await scratch.$executeRawUnsafe(`ALTER TABLE "Child" DISABLE TRIGGER ALL`);
+    const report = await checkEnforcement(scratch, 'public');
+    expect(report.incompleteForeignKeys.total).toBe(1);
+    expect(report.incompleteForeignKeys.sample[0].enforcingTriggers).toBe(2); // the two parent-side ones survive
+    expect(report.incompleteForeignKeys.sample[0].why).toContain('referencing-side INSERT check');
+    await scratch.$executeRawUnsafe(`ALTER TABLE "Child" ENABLE TRIGGER ALL`);
+    expect((await checkEnforcement(scratch, 'public')).incompleteForeignKeys.total).toBe(0);
+  });
+
+  it('REFUSES a foreign key whose shape it has not measured, rather than passing it', async () => {
+    // An enumeration treated as the whole is the defect that closed both predecessors. The four-slot
+    // inventory was measured for ordinary, non-derived keys across all 25 action pairs; a PARTITIONED
+    // participant produces a different one (a leaf partition's derived constraint carries only the two
+    // referencing-side triggers). That shape does not exist in this schema — and if it ever appears,
+    // the deploy stops and says so.
+    await resetScratch();
+    await scratch.$executeRawUnsafe(
+      `CREATE TABLE "PartChild" ("id" int, "parentId" int REFERENCES "Parent"("id"), PRIMARY KEY ("id"))
+         PARTITION BY RANGE ("id")`,
+    );
+    await scratch.$executeRawUnsafe(`CREATE TABLE "PartChild_1" PARTITION OF "PartChild" FOR VALUES FROM (0) TO (100)`);
+
+    const report = await checkEnforcement(scratch, 'public');
+    expect(report.enforcing).toBe(false);
+    const why = report.incompleteForeignKeys.sample.map((f) => f.why).join(' | ');
+    expect(why).toContain('DERIVED constraint');   // the leaf partition's own constraint row
+    expect(why).toContain('relkind "p"');          // the partitioned root
+    // …and the ordinary key on the same schema is NOT swept up with them: refusing the unmeasured
+    // shape is not refusing everything.
+    expect(report.incompleteForeignKeys.sample.some((f) => f.constraint === 'Child_parentId_fkey')).toBe(false);
+
+    await scratch.$executeRawUnsafe(`DROP TABLE "PartChild"`);
+  });
+
   it('reports a fresh/empty schema as NOT APPLICABLE rather than clean', async () => {
     const report = await checkEnforcement(scratch, 'a_schema_that_does_not_exist');
     expect(report.applicable).toBe(false);
@@ -182,13 +298,19 @@ describe('schema enforcement — the live catalog, not the SQL that wrote it', (
 
   it('bounds the printed sample without bounding the count', async () => {
     await resetScratch();
+    // Enough seals to EXCEED the cap. Asserting `total === sample.length` under it would pass for
+    // any cap at all, including none — the bound has to be crossed to be measured.
+    for (let i = 0; i <= SAMPLE_LIMIT; i++) {
+      await scratch.$executeRawUnsafe(
+        `CREATE TRIGGER "Child_bulk_${i}" AFTER INSERT ON "Child" FOR EACH ROW EXECUTE FUNCTION probe_seal()`,
+      );
+    }
     await scratch.$executeRawUnsafe(`ALTER TABLE "Child" DISABLE TRIGGER ALL`);
-    await scratch.$executeRawUnsafe(`ALTER TABLE "Parent" DISABLE TRIGGER ALL`);
     const report = await checkEnforcement(scratch, 'public');
-    expect(report.disabledTriggers.total).toBe(report.disabledTriggers.sample.length); // under the cap here
-    expect(report.disabledTriggers.sample.length).toBeGreaterThan(1); // not just the first
+    expect(report.disabledTriggers.total).toBeGreaterThan(SAMPLE_LIMIT);
+    expect(report.disabledTriggers.sample.length).toBe(SAMPLE_LIMIT);
+    expect(summarizeEnforcement(report)).toContain(`sample bounded at ${SAMPLE_LIMIT}`);
     await scratch.$executeRawUnsafe(`ALTER TABLE "Child" ENABLE TRIGGER ALL`);
-    await scratch.$executeRawUnsafe(`ALTER TABLE "Parent" ENABLE TRIGGER ALL`);
   });
 
   it('accepts the REAL migrated application database — every seal it carries fires', async () => {
@@ -203,6 +325,10 @@ describe('schema enforcement — the live catalog, not the SQL that wrote it', (
       expect(report.enforcing).toBe(true);
       expect(report.counts.triggers).toBeGreaterThan(100);
       expect(report.counts.foreignKeys).toBeGreaterThan(50);
+      // Clause 3 over the real schema is the precision claim that matters most, because it is the
+      // clause that REFUSES shapes it has not measured: every foreign key this repository declares
+      // must be an ordinary, non-derived, four-slot key, or a deploy would stop on it.
+      expect(report.incompleteForeignKeys.total).toBe(0);
     } finally {
       await app.$disconnect();
     }
