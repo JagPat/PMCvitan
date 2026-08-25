@@ -8,6 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -74,11 +75,34 @@ test('a routine body the PL/pgSQL parser refuses throws', () => {
     /PL\/pgSQL compilation failed:/);
 });
 
-test('a call before loadParser would be refused rather than crash', () => {
-  // Asserted from the source rather than by unloading the module, which no test can do once the
-  // parser is loaded process-wide. The guard exists and names what the caller forgot.
-  assert.match(readFileSync(join(HERE, 'pg-parse.mjs'), 'utf8'),
-    /call loadParser\(\) first/);
+test('a call before loadParser is refused by name, in a FRESH process', () => {
+  // This is exercised in a child process because the parser is loaded process-wide and no test can
+  // unload it. An earlier version of this probe searched the SOURCE for the guard's message, which
+  // proved the string exists and nothing about the behaviour — a check narrower than the object it
+  // judges, in the test rather than the code. The guard was in fact unreachable: `pg.raw_parse`
+  // evaluated at the call site dereferenced a null `pg` first, so callers saw a TypeError.
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e',
+    `import { parseSql } from ${JSON.stringify(join(HERE, 'pg-parse.mjs'))};\n`
+    + 'try { parseSql("SELECT 1"); process.stdout.write("NO THROW"); }\n'
+    + 'catch (err) { process.stdout.write(err.constructor.name + ": " + err.message); }',
+  ], { encoding: 'utf8' });
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /^Error: pg-parse: call loadParser\(\) first$/,
+    'the caller is told what they forgot — not a TypeError from a null dereference');
+});
+
+test('text with an embedded NUL is refused, never parsed as its prefix', () => {
+  // libpg_query reads a NUL-terminated C string, so a NUL inside the text ends it early: the
+  // parser reads the prefix, returns a clean tree for it, and everything after is gone with no
+  // error anywhere. A caller could not tell a short file from a truncated read, which is precisely
+  // the silent-truncation failure this binding's claim rules out.
+  const truncating = 'SELECT 1 FROM pg_constraint;\u0000 SELECT 1 FROM pg_trigger;';
+  assert.throws(() => parseSql(truncating), /embedded NUL byte at offset 28/);
+
+  // And the refusal is precise, not merely strict: the same text without the NUL parses whole,
+  // with BOTH relations visible. A binding that rejected this too would be useless.
+  const whole = truncating.replace('\u0000', '');
+  assert.deepEqual(relationsIn(parseSql(whole)), ['pg_constraint', 'pg_trigger']);
 });
 
 // ── The two questions the binding is asked ───────────────────────────────────────────────────

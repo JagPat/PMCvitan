@@ -58,15 +58,33 @@ export async function loadParser() {
   return pg;
 }
 
-/** Hand `text` to a raw libpg_query entry point on the heap, and give the heap back afterwards. */
-function callWithText(rawFn, text) {
+/**
+ * Hand `text` to a raw libpg_query entry point on the heap, and give the heap back afterwards.
+ *
+ * `select` is a FUNCTION that picks the entry point off the loaded module, not the entry point
+ * itself. That is not a style choice: passing `pg.raw_parse` dereferences `pg` at the CALL SITE,
+ * before this function runs, so an unloaded parser produced `TypeError: Cannot read properties of
+ * null` and the guard below — written precisely to say what the caller forgot — was unreachable.
+ * The check has to happen before anything touches `pg`, so nothing may touch `pg` until it has.
+ */
+function callWithText(select, text) {
   if (pg === null) throw new Error('pg-parse: call loadParser() first');
   const bytes = Buffer.from(text, 'utf8');
-  const buffer = new Uint8Array(bytes.length + 1); // libpg_query reads a NUL-terminated C string
+  // AN EMBEDDED NUL WOULD TRUNCATE THIS SILENTLY. libpg_query reads a NUL-terminated C string, so
+  // a NUL inside the text ends it early: the parser reads the prefix, returns a clean tree for it,
+  // and everything after that byte is gone with no error anywhere. That is the exact failure this
+  // binding exists to refuse — a caller cannot tell a short file from a truncated read — so it is
+  // refused here rather than reported as a successful parse of part of the input.
+  const nul = bytes.indexOf(0);
+  if (nul !== -1) {
+    throw new Error(`pg-parse: refusing text with an embedded NUL byte at offset ${nul}; `
+      + 'libpg_query would read only the bytes before it and report success');
+  }
+  const buffer = new Uint8Array(bytes.length + 1); // the terminator this adds is the only one
   buffer.set(bytes);
   const pointer = pg.allocate(buffer, 0); // 0 = ALLOC_NORMAL: the heap, not the 64 KB stack
   try {
-    return rawFn.call(pg, pointer);
+    return select(pg).call(pg, pointer);
   } finally {
     pg._free(pointer);
   }
@@ -82,7 +100,7 @@ const raise = (result, what) => {
 
 /** Parse SQL with PostgreSQL's grammar. Throws with the server's own message. */
 export function parseSql(sql) {
-  const result = callWithText(pg.raw_parse, sql);
+  const result = callWithText((parser) => parser.raw_parse, sql);
   raise(result, 'SQL parse failed');
   return JSON.parse(result.parse_tree);
 }
@@ -98,7 +116,7 @@ export function parseSql(sql) {
  * and fails to compile, which is how this was found: four merged migrations refused to parse.
  */
 export function parsePlpgsqlStatement(statementSql) {
-  const result = callWithText(pg.raw_parse_plpgsql, statementSql);
+  const result = callWithText((parser) => parser.raw_parse_plpgsql, statementSql);
   raise(result, 'PL/pgSQL compilation failed');
   const funcs = JSON.parse(result.plpgsql_funcs || '[]');
   if (funcs.length !== 1) throw new Error(`pg-parse: expected 1 compiled routine, got ${funcs.length}`);
