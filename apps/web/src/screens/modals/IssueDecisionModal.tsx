@@ -23,7 +23,8 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
   const inherited = inheritsLocation(context);
   const [title, setTitle] = useState('');
   const [nodeId, setNodeId] = useState<string | null>(context?.nodeId ?? null);
-  const [options, setOptions] = useState<OptionDraft[]>([blankOption(), blankOption()]);
+  // lazy, so the two starting options are built once rather than on every render
+  const [options, setOptions] = useState<OptionDraft[]>(() => [blankOption(), blankOption()]);
 
   const setOpt = (i: number, patch: Partial<OptionDraft>) =>
     setOptions((prev) => prev.map((o, j) => (j === i ? { ...o, ...patch } : patch.recommended ? { ...o, recommended: false } : o)));
@@ -75,7 +76,11 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
         </div>
 
         {options.map((o, i) => (
-          <div key={i} style={{ marginTop: 14, padding: 12, border: '1px solid var(--hairline)', borderRadius: 12, background: 'var(--panel)' }}>
+          // keyed by the option's OWN id, never its slot: `MoreDetails` holds its open
+          // state locally, so an index key would hand a removed option's disclosure to
+          // whichever option slid into the slot — collapsing the one the user opened and
+          // opening its neighbour under the label of the one they were editing.
+          <div key={o.id} style={{ marginTop: 14, padding: 12, border: '1px solid var(--hairline)', borderRadius: 12, background: 'var(--panel)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)' }}>OPTION {String.fromCharCode(65 + i)}</span>
               {options.length > 2 && (
@@ -122,6 +127,8 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
 }
 
 interface OptionDraft {
+  /** Stable across reordering and removal — see the `key` on the option row. */
+  id: string;
   material: string;
   delta: string; // rupee delta as typed
   swatch: SwatchKey;
@@ -130,6 +137,9 @@ interface OptionDraft {
 }
 
 const SWATCH_KEYS = Object.keys(SW) as SwatchKey[];
-const blankOption = (): OptionDraft => ({ material: '', delta: '0', swatch: 'tile', recommended: false });
+// A counter rather than a random id: unique within a form is all `key` needs, and a
+// deterministic sequence keeps the probes readable.
+let optionSeq = 0;
+const blankOption = (): OptionDraft => ({ id: `opt-${(optionSeq += 1)}`, material: '', delta: '0', swatch: 'tile', recommended: false });
 
 const fldD: CSSProperties = { height: 42, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none' };

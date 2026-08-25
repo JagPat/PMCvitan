@@ -414,3 +414,29 @@ describe('secondary fields fold away, mandatory ones never do', () => {
     expect(r.getByTestId('save-material')).not.toBeDisabled();
   });
 });
+
+describe('disclosure state belongs to an option, not to a slot', () => {
+  it('removing an earlier option leaves the opened option open, and its neighbour closed', async () => {
+    await load();
+    const { IssueDecisionModal } = await import('@/screens/modals/IssueDecisionModal');
+    const r = render(<IssueDecisionModal context={captureAtPlace('villa-b', 'bath')} onClose={() => {}} />);
+
+    // three options, each identifiable
+    fireEvent.click(r.getByText('+ Add another option'));
+    fireEvent.change(r.getByTestId('dec-opt-0'), { target: { value: 'Option A material' } });
+    fireEvent.change(r.getByTestId('dec-opt-1'), { target: { value: 'Option B material' } });
+    fireEvent.change(r.getByTestId('dec-opt-2'), { target: { value: 'Option C material' } });
+
+    // open B's details, then delete A
+    fireEvent.click(r.getByTestId('dec-opt-1-more-toggle'));
+    expect(r.getByTestId('dec-opt-1-more-body')).toBeInTheDocument();
+    fireEvent.click(r.getByLabelText('Remove option 1'));
+
+    // B has shifted into slot 0 and must have kept its OWN open state; C must not inherit it.
+    // With an index key React reuses slot 1's open component for C, collapsing B and opening
+    // C — so the user edits a delta believing it belongs to the option they opened.
+    expect((r.getByTestId('dec-opt-0') as HTMLInputElement).value).toBe('Option B material');
+    expect(r.getByTestId('dec-opt-0-more-body')).toBeInTheDocument();
+    expect(r.queryByTestId('dec-opt-1-more-body')).not.toBeInTheDocument();
+  });
+});
