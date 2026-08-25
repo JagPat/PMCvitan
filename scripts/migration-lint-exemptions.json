@@ -2,25 +2,35 @@
   "__README__": [
     "Migrations merged BEFORE scripts/migration-lint.mjs existed, with a written reason each.",
     "",
-    "RECORDED, not suppressed. The measured verdict of MI-000 and MI-004 over the 91 migrations on",
-    "main at 8a4b0db8 is ONE finding, listed below with what it is.",
+    "RECORDED, not suppressed. The measured verdict of MI-001, MI-002 and MI-003 over the 91",
+    "migrations on main at 8a4b0db8 is 15 findings across 3 migrations, every one listed below with",
+    "what it is. TWO ARE LIVE DEFECTS of the exact classes the schedule-B1 lineage kept finding, on",
+    "already-merged files. They are REPORTED, not fixed: apps/api/prisma/** is read-only to this",
+    "unit, and each is named in docs/MIGRATION_INVARIANTS.md as a candidate for its own unit.",
     "",
-    "THIS LEDGER SHRANK DURING THE #423 CORRECTION, and not because anything was swept away. MI-001,",
-    "MI-002 and MI-003 moved to the follow-on units (see the SCOPE note in scripts/migration-lint.mjs),",
-    "so their corpus findings moved with them. Every one is recorded — with its per-site count, and",
-    "with the two LIVE DEFECTS among them named as live — in the deferral table in",
-    "docs/MIGRATION_INVARIANTS.md, which is where this repository already records a deferred rule's",
-    "measured evidence. Nothing was deferred silently and no live defect stopped being reported.",
+    "EVERY COUNT HERE IS PER SITE. Codex findings F2/F3 against head c6e9ff17 were the same defect:",
+    "each rule asked its question of the FILE, so one satisfied site discharged every other and one",
+    "correct guard shielded an arbitrary number of defective neighbours. MI-001 alone went from 4",
+    "findings to 13 once that was corrected — the two sites in the B1 migration were INVISIBLE",
+    "before it, excused by a third section's pg_get_triggerdef. That is the rule working.",
     "",
-    "The per-site binding those rules gained RAISED their corpus counts sharply — MI-001 alone went",
-    "from 4 findings to 13 once one guard's definition read stopped excusing every other guard in the",
-    "file. That is the rule working. The deferral table carries the corrected numbers, not the old ones.",
+    "MI-000 and MI-004 are deferred to the follow-on unit; their corrected implementations, fixtures",
+    "and this ledger's previous MI-004 entry are committed at a8b401ba on this branch and recorded",
+    "in docs/MIGRATION_INVARIANTS.md. Nothing was deferred silently.",
     "",
     "A NEW migration cannot join this list without an owner editing this file, which is the point:",
     "the cost of an exception is a visible diff, not silence. Two tests keep it honest — every entry",
     "must name a real migration and rule with a checkable reason, and none may be DEAD."
   ],
-  "20270826000000_phase6_t4b_approval_attribution": {
-    "MI-004": "ACCEPTED WITH A RECORDED DIVERGENCE. Line 11 is a bare top-level `LOCK TABLE \"Decision\", \"Membership\"`. Under `prisma migrate deploy` this is correct and the file says so: the schema engine sends the script to a connection already in a transaction, MEASURED at 20270930000000_schedule_dependency_graph/migration.sql:75-79. It is NOT tolerant of the no-transaction caller AGENTS.md contemplates, where LOCK TABLE is a hard error — the B1 migration wraps its own lock as `DO $$ BEGIN LOCK TABLE ...; END $$;` (line 1245) for exactly that reason. It fails LOUDLY rather than silently, which is why this is a divergence from precedent rather than a live production defect."
+  "20270225000000_phase4_t3_correction3": {
+    "MI-001": "ACCEPTED — 10 sites, up from 3 before the per-site binding. Every one resolves a catalog object by name inside a guard that refuses, and none reads a definition IN THAT GUARD. The comparison lives in the compiled `t3c seals` verifier (dist/.../t3c.cli.js), which apps/api/scripts/migrate.sh invokes on the deploy success path at line 120 and again after baseline at line 291, so a wrong definition IS refused — just not by this file. The migration's own guards are a presence census in front of that verifier rather than the verifier itself.",
+    "MI-002": "LIVE DEFECT — REPORTED, NOT FIXED. Line 169 verifies the prerequisite composite foreign keys by conname + conrelid + contype='f' + convalidated, and never reads pg_trigger.tgenabled on tgconstraint. This is exactly the a222e91 (PR #411) class: `ALTER TABLE ... DISABLE TRIGGER ALL` leaves every column that guard reads unchanged while the keys stop enforcing, so a restored database with NO containment satisfies the prerequisite and is baselined as correct. apps/api/prisma/** is read-only to this unit, so this is recorded and reported rather than repaired here; it needs its own unit."
+  },
+  "20270920000000_decision_option_kinds": {
+    "MI-001": "ACCEPTED — 1 site. Line 552 resolves a trigger by tgname inside a guard that refuses, without comparing pg_get_triggerdef. The consequence here is a FAILED APPLY rather than a false clearance: the guard runs during the migration's own apply, when the trigger it names has just been created by this same file, so a same-named foreign object means the apply aborts. A wrong definition is not silently accepted; the migration refuses to finish.",
+    "MI-003": "LIVE DEFECT — REPORTED, NOT FIXED. Line 273 installs CONSTRAINT TRIGGERs and verifies them against the catalog, but the file names no RUNBOOK procedure and apps/api/scripts/migrate.sh has no counterpart that re-asks the question. Once its row is in _prisma_migrations the seals are never checked again, so a restore that drops or disables them yields a GREEN deploy over a database whose guards are gone — the a222e91 (PR #411) class exactly. apps/api/prisma/** is read-only to this unit; recorded and reported rather than repaired here."
+  },
+  "20270930000000_schedule_dependency_graph": {
+    "MI-001": "ACCEPTED — 2 sites (sections 1 and 9, both pg_trigger), and both were INVISIBLE before the per-site binding because section 8's pg_get_triggerdef excused them at file scope. Accepted on the merged evidence: section 8 stands between them and refuses a wrong definition, and section 9 enumerates every component the deparse renders for five triggers that carry no WHEN clause and no arguments, so the name plus the enumerated components is the whole definition for those five. The finding is that sections 1 and 9 depend on section 8 having run, which is true in this file and is not a property the linter can see."
   }
 }

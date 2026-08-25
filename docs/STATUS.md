@@ -24,21 +24,29 @@ updated: 2026-08-25
 
 **`open_pr: 423` IS A TOOLING UNIT, NOT PHASE 6 TASK 4.** #423
 (`claude/migration-invariant-linter`) adds `pnpm lint:migrations` — a lexical scanner for
-PostgreSQL migrations plus two executable invariants drawn from the schedule-B1 lineage
+PostgreSQL migrations plus three executable invariants drawn from the schedule-B1 lineage
 (#354→#415), which spent sixteen heads rediscovering one shape — and wires it into the required
-`automation` job. MI-000 is the enumerate-and-classify backstop: every statement, constraint and
-`DO` block in all 91 migrations classifies, and an unrecognised construct fails rather than passing
-by being unmentioned. MI-004 refuses a `SET LOCAL` or `LOCK TABLE` outside the transaction it
-actually stands between. **The unit narrowed during the #423 correction round:** MI-001/MI-002 (the
-catalog-guard pair) and MI-003 (which needs a shell parser for `migrate.sh`) are built, corrected
-and measured, but ship as two follow-on units rather than pushing this one past the 1,500-line
-review budget — the seam is taken at shared machinery, not claimed as an exception, and every
-deferral including its two LIVE DEFECTS is recorded with measured evidence in
+`automation` job. MI-001 refuses an object judged by NAME where the guard needed to compare its
+DEFINITION; MI-002 refuses a foreign key verified VALID without being asked whether it ENFORCES;
+MI-003 refuses a seal verified at apply time that no deploy-time counterpart ever re-checks. These
+three are the classes the lineage actually produced, and they found **two live defects on
+already-merged migrations** — `20270225000000_phase4_t3_correction3:169` (MI-002) and
+`20270920000000_decision_option_kinds:273` (MI-003) — both REPORTED, not fixed, because
+`apps/api/prisma/**` is read-only to this unit. Each needs its own unit, and shipping these rules
+now means those units land with a CI backstop rather than an assertion.
+
+**THE UNIT WAS RE-CUT AT THIS HEAD, AND IT IS OVER BUDGET.** The prior head `a8b401ba` shipped
+MI-000 (the enumerate-and-classify totality backstop) and MI-004 (transaction scope); this head
+ships the three P1 rules instead and defers those two, whose corrected implementations, fixtures
+and tests remain committed at `a8b401ba` on this branch — `git show a8b401ba` is the whole handover.
+The re-cut measures **1,859 changed lines across 19 files** against a 1,500-line budget. **No
+`justified-large` marker is claimed**; the measured seams are set out in the PR body for the
+owner's decision. Every deferral, its RED/GREEN evidence and both live defects are recorded in
 `docs/MIGRATION_INVARIANTS.md`. It is `scripts/`, `.github/workflows/ci.yml`, `package.json` and
-one new doc: no `apps/web` file, no schema, no migration, no API change, and `apps/api/prisma/**` is
-read-only to it. It does NOT advance phase 6 task 4. It carries `Replaces: none` deliberately: it is
-a fresh tooling unit carrying no part of #422's capture-context work, and #422's replacement
-obligation was discharged by #424, which merged at `8a4b0db` and is merged into this branch.
+one doc: no `apps/web` file, no schema, no migration, no API change. It does NOT advance phase 6
+task 4. It carries `Replaces: none` deliberately: it is a fresh tooling unit carrying no part of
+#422's capture-context work, and #422's replacement obligation was discharged by #424, which merged
+at `8a4b0db` and is merged into this branch.
 
 **#424 REPLACED #422, WHICH REACHED THE TWO-FINDING-HEAD LIMIT, AND HAS MERGED.** #422 carried the
 same unit and took two Codex rounds: round 1 (the delivery option not gated on an open daily
