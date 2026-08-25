@@ -88,6 +88,9 @@ describe('a DECIDED inspection is a record, not a live queue item', () => {
     // re-approving would re-send the decision — the store has no `decided` guard
     expect(r.queryByTestId('send-reinspection')).not.toBeInTheDocument();
     expect(r.getByTestId('review-reject-0')).toBeDisabled();
+    // …and it must not prescribe a next step that presumes the outcome: a rejection ALREADY
+    // created the corrective checklist, so "issue a new checklist" would duplicate it (Codex R2).
+    expect(state.textContent).not.toMatch(/issue a new checklist/i);
   });
 
   it('a decided CLOSING review names its activity without asserting the outcome (Codex P1)', async () => {
@@ -113,6 +116,32 @@ describe('a DECIDED inspection is a record, not a live queue item', () => {
     expect(r.getByTestId('send-reinspection')).toBeInTheDocument();
     expect(r.getByTestId('review-reject-0')).not.toBeDisabled();
     expect(r.queryByTestId('review-decided-INSP-1')).not.toBeInTheDocument();
+  });
+});
+
+describe('the demo producer carries the location into the review it generates (Codex R2)', () => {
+  it("a closing review inherits the completed activity's filed node, not just its free text", async () => {
+    // The earlier probes constructed a Review WITH nodeId, so they bypassed the producer:
+    // `completeActivity` built its closing review from `zone` alone, and every generated
+    // closing inspection therefore read as unplaced however the activity was filed.
+    const useStore = await load({
+      activities: [{
+        id: 'ACT-9', name: 'Terrace waterproofing', zone: 'Terrace', decisionId: null, phaseId: null,
+        nodeId: 'zoneA', ps: 0, pe: 5, as: 1, ae: null, status: 'in-progress',
+        gm: 'ok', gt: 'ok', gi: 'ok',
+      }],
+    });
+    act(() => { useStore.getState().completeActivity('ACT-9'); });
+
+    const closing = useStore.getState().reviews.find((r) => r.closing && r.activityId === 'ACT-9');
+    expect(closing).toBeDefined();
+    expect(closing!.nodeId).toBe('zoneA');
+
+    // …and the screen therefore renders the real trail rather than the free-text fallback
+    act(() => { useStore.setState({ activeReviewId: closing!.id }); });
+    const { InspectionReviewScreen } = await import('@/screens/InspectionReviewScreen');
+    const r = render(<InspectionReviewScreen />);
+    expect(r.getByTestId(`review-place-${closing!.id}`).textContent).toBe('Site›Zone A');
   });
 });
 

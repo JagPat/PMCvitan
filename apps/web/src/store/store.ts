@@ -3856,6 +3856,10 @@ export const useStore = create<Store>()(
           id: closingId,
           title: 'Closing inspection: ' + (act ? act.name : id),
           zone: act?.zone ?? '',
+          // the closing review inherits the activity's FILED location, not just its free-text
+          // zone — otherwise every generated closing inspection reads as unplaced on the
+          // review screen even when the activity it closes sits on the location tree
+          ...(act?.nodeId ? { nodeId: act.nodeId } : {}),
           by: 'You (demo)',
           date: 'today',
           decided: false,

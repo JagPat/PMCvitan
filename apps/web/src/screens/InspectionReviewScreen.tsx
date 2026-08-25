@@ -192,7 +192,7 @@ export function InspectionReviewScreen() {
             // activity, where the outcome actually shows.
             reason={review.closing
               ? `Reviewed — the closing decision for ${review.activityName ?? review.activityId ?? 'this activity'} is recorded. Its outcome shows on that activity in the Schedule.`
-              : 'Reviewed — this inspection has been decided. Issue a new checklist if it must be re-checked.'}
+              : 'Reviewed — this inspection has been decided; its outcome and any re-inspection it created are recorded.'}
             testId={`review-decided-${review.id}`}
           />
         ) : (
