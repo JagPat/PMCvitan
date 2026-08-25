@@ -15,27 +15,52 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: d37a1c7
-open_pr: 417
+reviewed_merge: 2b5d12f
+open_pr: 421
 next_task: none
 blocking_directive: none
-updated: 2026-08-24
+updated: 2026-08-25
 ```
 
-**`open_pr: 417` IS A USER-DIRECTED UX UNIT, NOT PHASE 6 TASK 4.** #417
-(`claude/pmcvitan-mobile-places-n3fxup`) is the mobile information-architecture unit —
-the primary/More bottom-nav split, the top-bar project switcher, the shared location
-breadcrumb and the standardised editing states. It is `apps/web` only: no schema, no
-migration, no API change. It occupies `open_pr` because it is the one live autonomous
-draft and the hourly watchdog shepherds whatever is open; it does not advance phase 6
-task 4, which has NO open PR of its own. Read `task: 4` as where the PHASE stands, and
+**`open_pr: 421` IS A USER-DIRECTED UX UNIT, NOT PHASE 6 TASK 4.** #421
+(`claude/pmcvitan-ux-audit-replacement`) is the UX completion audit that follows merged
+#417: location context on the Inspection Review, Engineer Checklist and Client Decision
+surfaces, and a stated reason on the Schedule's restricted actions and on a decided
+inspection. It is `apps/web` only — four screens, the store's closing-review producer and
+one test file: no schema, no migration, no API change. It does NOT advance phase 6 task 4,
+which still has no open PR of its own. Read `task: 4` as where the PHASE stands, and
 `open_pr` as what is actually in review right now.
+
+**#421 REPLACES #420, WHICH REACHED THE TWO-FINDING-HEAD LIMIT.** #420 carried the same
+unit and took two Codex rounds: round 1 (a rejected closing inspection described as
+signed off; a checklist claiming a review still pending; a gate override offered as the
+remedy for a blocked activity) and round 2 (`completeActivity` omitting `nodeId` from the
+closing review it generates; "issue a new checklist" duplicating the re-inspection a
+rejection already creates). Both round-2 fixes were reproduced RED and made, but pushing
+them to #420 would have been a forbidden third correction head — so #420 was closed with
+that evidence recorded and the corrected unit was rebuilt from current `main` `2b5d12f` on
+a new branch, carrying `Replaces: #420`. The new branch is deliberate: reusing #420's
+branch would have force-pushed over a closed PR's reviewed head, and this repository's own
+practice (#409→#410→#411→#412→#415) gives each replacement its own branch.
+
+**THE ROOT CAUSE OF THE STALE OBLIGATION CHAIN IS FIXED — #419 MERGED at `main`
+`2b5d12f`, which is this unit's base.** `claude/lineage-base-acceptance` defines "still the unit under review" once
+and accepts a live pull request only through it, so a retargeted pull request can no
+longer mint a repository-wide obligation for work that could never land on `main`. That
+is the defect behind the four-link residue this file records below, and it is not this
+unit's work: #419 is `scripts/`-only and was merged into this branch rather than
+duplicated. #419 deliberately did not touch STATUS (its body says so), which is why this
+unit carries the `open_pr` correction the hourly watchdog asked for.
+
+**`open_pr` HOLDS ONE SLOT, AND MORE THAN ONE AUTONOMOUS DRAFT CAN BE LIVE.** While this
+unit was open, #419 was open beside it. Read `open_pr` as whichever draft the watchdog
+last shepherded, not as the only PR in flight.
 
 `task_state` stays `in_progress` rather than `in_review` deliberately: the live-file pin
 in `autonomous-status-state.test.mjs` requires STATUS to still resolve a next step AFTER
 the PR it names merges, and `in_review` is defined BY its open PR — so a merge would
 leave the runner with none. With `in_progress` the open-PR branch still resolves to
-`pr:417` while #417 is open, and the runner falls back to task 4 once it merges.
+`pr:421` while #421 is open, and the runner falls back to task 4 once it merges.
 
 **THE #408→#415 LINEAGE IS SETTLED, AND ITS FOUR STALE OBLIGATIONS WERE CLEARED ON
 2026-08-24 BY THE OWNER'S EXPLICIT DECISION.** The chain is #408 → #409 → #410 → #411 →

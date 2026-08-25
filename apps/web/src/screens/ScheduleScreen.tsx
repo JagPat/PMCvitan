@@ -1,8 +1,8 @@
 import { useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { gatesFor, activityReady, selectSchToday, pctOf, phaseRollup, activitiesInPhase, selectVisibleDecisions } from '@/store/selectors';
-import { Eyebrow, GateDot, ActivityChip, Button, Modal, LocationContext } from '@/components';
+import { gatesFor, activityReady, selectSchToday, pctOf, phaseRollup, activitiesInPhase, selectVisibleDecisions, type GateVM } from '@/store/selectors';
+import { Eyebrow, GateDot, ActivityChip, Button, Modal, LocationContext, EditState } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { PencilRuler, Pencil, Plus, ShieldCheck, X } from '@/lib/icons';
 import { dayLabel, gateColor, can, diffCivilDays, formatCivilDate, type Activity, type Phase, type Gate } from '@vitan/shared';
@@ -33,6 +33,38 @@ function ActionButton({ a, ready }: { a: Activity; ready: boolean }) {
   return <Button variant="light" disabled style={{ background: 'var(--amber-chip)', color: 'var(--amber-text)', border: '1px solid var(--amber-border)', fontSize: 12.5, padding: '9px 14px' }}>Waiting</Button>;
 }
 
+/**
+ * The reason an activity cannot be acted on, or null when nothing restricts it.
+ *
+ * It states what the domain already decided — the blocked note the server wrote, the gates
+ * `gatesFor` derived, the sign-off the PMC still owes — and names the next valid step. It
+ * grants nothing: `activityReady` and the server still decide what may start.
+ */
+function restrictionOf(a: Activity, gates: GateVM[], ready: boolean): string | null {
+  if (a.status === 'blocked') {
+    // NOT an override: that records a GateOverride and nothing else, while `start` refuses
+    // every status but not_started — so a blocked activity stays unstartable and the PMC is
+    // left with an audited override that changed nothing. Resolving the blocker is the path.
+    return a.block
+      ? `Blocked — ${a.block}. Resolve the blocker on site; the activity returns to the schedule once it clears.`
+      : 'Blocked on site. Resolve the recorded blocker; the activity returns to the schedule once it clears.';
+  }
+  if (a.status === 'awaiting-signoff') {
+    return 'Completion is claimed — the PMC\u2019s closing inspection sign-off is what marks it done.';
+  }
+  if (a.status === 'not-started' && !ready) {
+    const holding = gates.filter((g) => g.v === 'fail' || g.v === 'wait');
+    if (holding.length === 0) return null;
+    // ONE blocker is the actionable case, so it carries its full derived reason. Several
+    // blockers are named but not explained: four reasons is a paragraph on a phone, and the
+    // gate dots keep the detail for anyone who wants it.
+    if (holding.length === 1) return `Cannot start yet — ${holding[0]!.label.toLowerCase()}: ${holding[0]!.reason}`;
+    const labels = holding.map((g) => g.label.toLowerCase());
+    return `Cannot start yet — waiting on ${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}.`;
+  }
+  return null;
+}
+
 /** Task 6: real civil dates are canonical when present — offsets for the timeline are
  *  DERIVED from the schedule anchor at render time; legacy ints are the demo fallback. */
 function offsetOf(anchor: string | null, iso: string | null | undefined, legacy: number | null): number | null {
@@ -50,6 +82,7 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
   const revokeOverride = useStore((s) => s.revokeOverride);
   const gates = gatesFor(state, a);
   const ready = activityReady(state, a);
+  const restriction = restrictionOf(a, gates, ready);
   // the controlled drawing this activity builds from (Drawings Slice 2 linkage)
   const linkedDrawing = state.drawings.find((d) => !d.draft && d.activityId === a.id);
   const anchor = state.scheduleStartDate;
@@ -117,7 +150,12 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: g.source === 'override' ? '#31567F' : 'var(--muted)', fontWeight: g.source === 'override' ? 700 : 400 }}>{g.k}</span>
             </div>
           ))}
-          {onOverride && (
+          {/* An override sets a GATE reading, and `start` refuses every status but not_started —
+              so on a blocked activity it records an audited decision that cannot change the
+              outcome. The affordance is withdrawn rather than left as a dead end; the banner
+              below states the blocked reason and the next valid step. Revoking an override
+              already recorded stays available on its chip. */}
+          {onOverride && a.status !== 'blocked' && (
             <button onClick={() => onOverride(a)} title="Record a gate override (expires automatically)" aria-label={`Override a gate on ${a.name}`} data-testid={`override-${a.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 2, marginTop: 1 }}>
               <ShieldCheck size={13} />
             </button>
@@ -126,6 +164,15 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
 
         <ActionButton a={a} ready={ready} />
       </div>
+      {/* Why this activity cannot be started/completed right now, in words rather than a
+          hover tooltip — the gate dots carry the same conclusions, but `title` is unreachable
+          on touch. Rendered ONLY when something actually restricts the activity: a ready or
+          running or finished row gets no banner. */}
+      {restriction && (
+        <div style={{ marginTop: 10 }}>
+          <EditState state="workflow" reason={restriction} testId={`sched-restriction-${a.id}`} />
+        </div>
+      )}
       {(a.overrides?.length ?? 0) > 0 && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 9 }}>
           {a.overrides!.map((o) => (

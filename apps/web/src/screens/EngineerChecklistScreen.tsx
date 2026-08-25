@@ -1,6 +1,6 @@
 import { useRef, type CSSProperties } from 'react';
 import { useStore, checklistFrozen } from '@/store/store';
-import { EmptyState, Eyebrow, StatTile, Button } from '@/components';
+import { EmptyState, Eyebrow, StatTile, Button, LocationContext, EditState } from '@/components';
 import { Camera } from '@/lib/icons';
 import type { ItemState } from '@vitan/shared';
 import { inspectionsReadMode } from '@/data/apiGateway';
@@ -92,11 +92,34 @@ export function EngineerChecklistScreen() {
         <div style={{ padding: '10px 0 14px' }}>
           <Eyebrow size={9}>TODAY'S INSPECTION</Eyebrow>
           <div style={{ fontWeight: 700, fontSize: 21, marginTop: 4, lineHeight: 1.2 }}>{checklist.title}</div>
-          <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>{checklist.zone} · {checklist.date}</div>
+          {/* WHERE this check is carried out — the filed trail, tappable back to the Site Map. */}
+          <div style={{ marginTop: 4 }}>
+            <LocationContext nodeId={checklist.nodeId} fallback={checklist.zone} compact testId="checklist-place" />
+          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{checklist.date}</div>
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <StatTile label="DONE" value={`${doneCount}/${checklist.items.length}`} />
             <StatTile label="PHOTOS" value={photoCount} />
           </div>
+          {/* Every item control below is read-only once a submit is dispatched. The submit
+              button carries the same state, but it sits past a long list on a phone — so the
+              reason is stated ONCE here, where the disabled controls actually are. */}
+          {frozen && (
+            <div style={{ marginTop: 12 }}>
+              <EditState
+                state={checklist.submitted ? 'locked' : 'paused'}
+                // `Checklist` carries no `decided` field, and an ALREADY-REVIEWED checklist can
+                // still come back as the engineer's current one — so the lock says what is
+                // certain (it was submitted, it is now a record) without claiming a pending review.
+                reason={checklist.submitted
+                  ? 'Submitted — this checklist is now a submitted record, so it can no longer be edited.'
+                  : submissionStatus === 'queued'
+                    ? 'Queued offline — editing is paused until it reaches the architect. It sends when you reconnect.'
+                    : 'Submitting — editing is paused until it reaches the architect.'}
+                testId="checklist-frozen-reason"
+              />
+            </div>
+          )}
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

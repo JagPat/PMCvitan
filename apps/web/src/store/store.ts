@@ -2251,6 +2251,10 @@ export const useStore = create<Store>()(
             id: s.checklist.id,
             title: s.checklist.title,
             zone: s.checklist.zone,
+            // the review inherits the checklist's FILED location, not just its legacy zone
+            // text: a checklist raised against a room is reviewed at that room, and dropping
+            // `nodeId` here would leave every demo-path review reading as unplaced.
+            ...(s.checklist.nodeId ? { nodeId: s.checklist.nodeId } : {}),
             by: 'Site Engineer',
             date: s.checklist.date,
             decided: false,
@@ -3856,6 +3860,10 @@ export const useStore = create<Store>()(
           id: closingId,
           title: 'Closing inspection: ' + (act ? act.name : id),
           zone: act?.zone ?? '',
+          // the closing review inherits the activity's FILED location, not just its free-text
+          // zone — otherwise every generated closing inspection reads as unplaced on the
+          // review screen even when the activity it closes sits on the location tree
+          ...(act?.nodeId ? { nodeId: act.nodeId } : {}),
           by: 'You (demo)',
           date: 'today',
           decided: false,
