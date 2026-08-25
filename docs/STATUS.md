@@ -16,11 +16,27 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: e5d3c4fd
-open_pr: 428
+open_pr: 432
 next_task: none
 blocking_directive: none
 updated: 2026-08-25
 ```
+
+**THE OPEN PR IS A TOOLING UNIT, NOT PHASE 6 TASK 4.** #432 adds the parser binding this
+repository will read its own migrations with: `pg-query-emscripten` (libpg_query 16) called
+through its raw entry points, plus the claim that all 91 migrations parse through it. It ships
+**no rule, no sites, no line attribution and no coverage accounting**, so it detects no defect;
+`docs/MIGRATION_INVARIANTS.md` names the three live defects that have no alarm at all. It changes
+no `apps/**` file, no schema and no migration, and does not advance task 4.
+
+It **replaces #431**, the THIRD unit in this lineage to reach the two-finding-head limit — after
+#423 (a hand-written SQL lexer) and #430 (binding + enforcement rule). Every finding across all
+three reduced to one shape: *a check narrower than the object it judges*, which is the defect the
+eventual rules exist to detect, restated as their implementation. Site attribution and the
+coverage claim — where every #431 finding landed — are deferred whole and start again on top of a
+binding reviewed for what it is. None of `claude/migration-invariant-linter`,
+`claude/migration-invariant-linter-v2` or `claude/migration-parser-adapter` may be rebased or
+force-pushed; all three are the handover record.
 
 **UNIT A MERGED AS #424 at `main` `8a4b0db8`** — the capture-context spine, the Site Map's
 `Add here`, and every finding from #422's two review rounds. The open PR is the first of
