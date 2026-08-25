@@ -2,7 +2,7 @@ import { useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectActiveReview } from '@/store/selectors';
-import { Eyebrow, ResultChip, Button, Modal } from '@/components';
+import { Eyebrow, ResultChip, Button, Modal, LocationContext, EditState } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { X, Plus, Minus } from '@/lib/icons';
 import { swatch as swatchGradient, can, type Review } from '@vitan/shared';
@@ -115,9 +115,12 @@ export function InspectionReviewScreen() {
             </div>
           )}
           <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em' }}>{review.title}</div>
-          <div style={{ display: 'flex', gap: 12, marginTop: 7, fontSize: 12.5, color: 'var(--muted)', flexWrap: 'wrap' }}>
-            <span>{review.zone}</span>
-            <span>·</span>
+          {/* WHERE this inspection was carried out — the filed trail, tappable back to the
+              Site Map. Falls back to the legacy free-text zone for a review with no node. */}
+          <div style={{ marginTop: 7 }}>
+            <LocationContext nodeId={review.nodeId} fallback={review.zone} compact testId={`review-place-${review.id}`} />
+          </div>
+          <div style={{ display: 'flex', gap: 12, marginTop: 4, fontSize: 12.5, color: 'var(--muted)', flexWrap: 'wrap' }}>
             <span>Submitted by {review.by}</span>
             <span>·</span>
             <span>{review.date}</span>
@@ -162,8 +165,10 @@ export function InspectionReviewScreen() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 7, justifyContent: 'center' }}>
                   <Button
                     variant={it.rejected ? 'danger' : 'dangerOutline'}
-                    onClick={() => toggleReject(i)}
-                    style={{ padding: '9px 14px', fontSize: 12, whiteSpace: 'nowrap' }}
+                    onClick={() => { if (!review.decided) toggleReject(i); }}
+                    disabled={review.decided}
+                    data-testid={`review-reject-${i}`}
+                    style={{ padding: '9px 14px', fontSize: 12, whiteSpace: 'nowrap', cursor: review.decided ? 'not-allowed' : 'pointer', opacity: review.decided ? 0.5 : 1 }}
                   >
                     {it.rejected ? 'Rejected ✕' : 'Reject item'}
                   </Button>
@@ -175,11 +180,26 @@ export function InspectionReviewScreen() {
       )}
 
       <div className={styles.stickyFoot} style={{ marginTop: 26 }}>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <Button variant="success" onClick={approveInspection} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Approve Inspection</Button>
-          <Button variant="dangerOutline" onClick={sendReinspection} data-testid="send-reinspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Send Rejections &amp; Create Re-inspection</Button>
-        </div>
-        <div style={{ textAlign: 'center', fontSize: 11.5, color: 'var(--faint)', marginTop: 9 }}>{summary}</div>
+        {/* A decided review is the RECORD of a decision, not a queue item: re-approving would
+            re-send it. The verdict is stated and the actions are withdrawn, rather than left
+            live over a decision that has already been made. */}
+        {review.decided ? (
+          <EditState
+            state="locked"
+            reason={review.closing
+              ? `Signed off — approving this closing inspection is what marked ${review.activityName ?? review.activityId ?? 'the activity'} done.`
+              : 'Reviewed — this inspection has been decided. Issue a new checklist if it must be re-checked.'}
+            testId={`review-decided-${review.id}`}
+          />
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+              <Button variant="success" onClick={approveInspection} style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Approve Inspection</Button>
+              <Button variant="dangerOutline" onClick={sendReinspection} data-testid="send-reinspection" style={{ flex: 1, minWidth: 200, padding: 15, fontSize: 14 }}>Send Rejections &amp; Create Re-inspection</Button>
+            </div>
+            <div style={{ textAlign: 'center', fontSize: 11.5, color: 'var(--faint)', marginTop: 9 }}>{summary}</div>
+          </>
+        )}
       </div>
     </div>
   );
