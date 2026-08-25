@@ -15,19 +15,61 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 54ae560
-open_pr: 415
+reviewed_merge: d37a1c7
+open_pr: 417
 next_task: none
 blocking_directive: none
 updated: 2026-08-24
 ```
 
-**EIGHTEEN obligations are pending: the fifteen listed below plus #410, #411 and #412.**
-#410 closed at the two-finding-head limit and was claimed by #411; #411 then closed
-at the same limit and was claimed by #412; #412 has now closed at the same limit and
-is claimed by the open PR, which carries `Replaces: #412`. Neither #410 nor #411 is
-re-claimed — each was settled by its successor's own admission, and an obligation is
-discharged exactly once.
+**`open_pr: 417` IS A USER-DIRECTED UX UNIT, NOT PHASE 6 TASK 4.** #417
+(`claude/pmcvitan-mobile-places-n3fxup`) is the mobile information-architecture unit —
+the primary/More bottom-nav split, the top-bar project switcher, the shared location
+breadcrumb and the standardised editing states. It is `apps/web` only: no schema, no
+migration, no API change. It occupies `open_pr` because it is the one live autonomous
+draft and the hourly watchdog shepherds whatever is open; it does not advance phase 6
+task 4, which has NO open PR of its own. Read `task: 4` as where the PHASE stands, and
+`open_pr` as what is actually in review right now.
+
+`task_state` stays `in_progress` rather than `in_review` deliberately: the live-file pin
+in `autonomous-status-state.test.mjs` requires STATUS to still resolve a next step AFTER
+the PR it names merges, and `in_review` is defined BY its open PR — so a merge would
+leave the runner with none. With `in_progress` the open-PR branch still resolves to
+`pr:417` while #417 is open, and the runner falls back to task 4 once it merges.
+
+**THE #408→#415 LINEAGE IS SETTLED, AND ITS FOUR STALE OBLIGATIONS WERE CLEARED ON
+2026-08-24 BY THE OWNER'S EXPLICIT DECISION.** The chain is #408 → #409 → #410 → #411 →
+#412 → **#415**, which MERGED at `main` `d37a1c7` carrying schedule B1 unit A.
+`settlementOf()` discharges only the obligation a merged PR names DIRECTLY, and #415
+declares `Replaces: #412` — so #412 was discharged, while #408, #409, #410 and #411 each
+had their claim taken by a PR that ITSELF closed unmerged and so stayed pending forever
+even though the work landed. An UNFULFILLED obligation is a repository-wide block:
+`assessReplacementLineage` refuses every `Replaces: none` unit while one exists, which is
+how an unrelated UX unit (#417) came to fail `review-scope` with
+`exhausted PR #411 still requires a replacement` — and then, as each was cleared, with
+`#409` behind it. The `review-replacement-required` labels on #408, #409, #410 and #411
+were removed, with the reasoning recorded as a comment on each. **No unit was made to
+declare a lineage it does not carry** — having #417 claim `Replaces: #411` would have
+discharged that obligation on merge while holding none of its work, which is the exact
+ledger corruption the rule exists to prevent.
+
+**A LABEL IS NOT ITSELF A BLOCK, AND THE DISTINCTION MATTERS.** `pending` is the labelled
+set MINUS the FULFILLED set: a labelled PR whose obligation has a merged direct claimant
+is filtered out and blocks nothing, so its label is a historical marker rather than a
+live obligation. Ten other PRs carry the label today — #381 (merged claimant #382), #394
+(#395), #396 (#407), #397 (#406), #398 (#405), #399 (#404), #400 (#403), #401 (#402) and
+#412 (#415) — and every one of them is fulfilled. **They were deliberately left alone.**
+Only an obligation with no merged direct claimant blocks, and after this clearance there
+are none.
+
+**THE LATENT TRAP, RECORDED FOR THE NEXT LONG CHAIN.** A lineage settles only at the link
+the merged PR names. Every earlier link whose own claimant closed unmerged stays pending
+forever, and the gate surfaces them ONE AT A TIME (`pending[0]`), so clearing one reveals
+the next — four rounds, in this case. The durable fix is transitive settlement: follow the
+`Replaces:` chain from a merged claimant and discharge every obligation on it, rather than
+demanding a direct claim. That changes the governance gate itself and belongs in its own
+review unit. Until it lands, when a replacement merges, check it against EVERY obligation
+in its chain rather than only the one it names.
 
 **#411 WAS MULTIPLY CLAIMED, WHICH THE OWNER'S 2026-08-21 DECISION PERMITS.** #413
 (`claude/phase6-schedule-b1-round2`) and #414 (`claude/phase6-schedule-b1-graph`) were

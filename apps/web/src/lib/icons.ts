@@ -19,6 +19,8 @@ export {
   ArrowRight,
   ArrowUpRight,
   ChevronRight,
+  ChevronDown,
+  MoreHorizontal,
   Play,
   Hand,
   QrCode,
