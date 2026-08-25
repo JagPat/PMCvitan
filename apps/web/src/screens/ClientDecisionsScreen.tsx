@@ -1,7 +1,7 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectPending, selectReapproval } from '@/store/selectors';
-import { Eyebrow, Swatch, Button } from '@/components';
+import { Eyebrow, Swatch, Button, LocationContext } from '@/components';
 import { Check } from '@/lib/icons';
 import { signed, type Decision } from '@vitan/shared';
 import { groupDecisions } from '@/lib/locationTree';
@@ -77,9 +77,10 @@ function PendingCard({ d, subLabel, onApprove }: { d: Decision; subLabel: string
   return (
     <div style={{ background: '#fff', border: '1px solid rgba(35,33,28,.12)', borderRadius: 16, overflow: 'hidden', boxShadow: 'var(--sh-card)' }}>
       <div style={{ padding: '15px 16px 12px', borderBottom: '1px solid rgba(35,33,28,.08)' }}>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)' }}>
-          {d.id} · {subLabel || d.room}
-        </div>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)' }}>{d.id}</div>
+        {/* WHERE this choice applies — the same trail the PMC's register shows, so the client
+            and the architect read one coordinate. Falls back to the legacy free-text room. */}
+        <LocationContext nodeId={d.nodeId} fallback={subLabel || d.room} compact testId={`client-decision-place-${d.id}`} />
         <div style={{ fontWeight: 700, fontSize: 18, marginTop: 3 }}>{d.title}</div>
         {d.status === 'change' && d.changeRequest && (
           <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 10, background: 'var(--red-chip, rgba(180,70,46,.08))', fontSize: 12.5 }} data-testid={`cr-context-${d.id}`}>
