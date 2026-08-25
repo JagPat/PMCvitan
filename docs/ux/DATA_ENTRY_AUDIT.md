@@ -104,8 +104,10 @@ refuses:
   *optionally* carries folds away.
 - **A checklist needs at least one item.** An empty checklist asks the engineer nothing.
 
-Only a mandatory domain rule may block a save, and only a mandatory domain rule may stay in
-the opening form.
+Only a mandatory domain rule may block a save. The opening form is that rule's fields plus
+the place: *what happened* and *where* are the two questions the principle keeps, so a
+delivery's `nodeId` stays visible even though the domain does not demand it. Everything else
+folds.
 
 ## 6 · Architecture
 
@@ -118,12 +120,9 @@ CreateMenu                 ← one option list for both devices
         ↓
 the existing modals, each taking `context?`
         ↓  InheritedContext — states the place, offers Change
-        ↓  MoreDetails      — folds away what the domain does not require  (NOT YET SHIPPED)
+        ↓  MoreDetails      — folds away what the domain does not require
 the existing store commands, outbox, permissions and validation
 ```
-
-`MoreDetails` is the one box above that is not yet on `main`: progressive disclosure is §10
-of the brief, a principle of its own, and it went to its own review unit.
 
 Nothing new sits behind the interaction layer. A phone and a desktop produce the same
 records under the same rules; only the entry point's placement differs.
@@ -187,6 +186,11 @@ depends on a decision nobody has made. Two entry taps, a description and a confi
 if the media contract keeps requiring bytes for every `kind`, a photo is mandatory and the
 floor is 5. §9 records why that is currently the binding constraint.
 
+Folding optional fields away moves no number here, and was never going to: these counts are
+of entries a save actually requires, and an optional field is by definition not one. What
+disclosure changes is how much form a user reads before reaching the fields that do block —
+which this table cannot measure, and which is the part people call paperwork.
+
 **A delivery's tap count did not improve, and the row should not pretend otherwise.** Five
 before, five after. What changed is what the record carries: the location now arrives with
 it, where before it was either absent or cost extra taps to pick. The remaining wins in
@@ -231,9 +235,6 @@ this row are the ones §9 still lists as unshipped.
   The place is a second gap in the same flow, and a gap this audit originally hid by listing
   both as context a photo already has. Neither is: `photoNode` starts null behind an optional
   picker, and the upload sends no `takenAt`.
-- **Progressive disclosure.** Also its own unit. Folding a form's optional fields under
-  More details is §10 of the brief; Unit A did the §3 half. Both modals therefore still
-  show every optional field today.
 - **Two open questions were removed from §4 rather than answered there**, because a table
   that reports measurements should not also carry proposals — each proposal it held was
   wrong. They stay open here. *Can `phaseId` be defaulted?* Not today: no place-to-phase

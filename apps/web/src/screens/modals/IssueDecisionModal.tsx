@@ -1,6 +1,6 @@
 import { useState, type CSSProperties } from 'react';
 import { useStore, type IssueDecisionPayload } from '@/store/store';
-import { Button, Modal, InheritedContext } from '@/components';
+import { Button, Modal, InheritedContext, MoreDetails } from '@/components';
 import { X } from '@/lib/icons';
 import { swatch as swatchGradient, SW, type SwatchKey } from '@vitan/shared';
 import { inheritsLocation, type CaptureContext } from '@/lib/captureContext';
@@ -14,15 +14,17 @@ import { inheritsLocation, type CaptureContext } from '@/lib/captureContext';
  * Publish button the API would refuse.
  *
  * Everything else an option carries — the price delta, the swatch, the sample photo, the
- * recommendation — is optional and blocks nothing. Folding it under a More-details
- * disclosure is progressive disclosure: its own principle, and its own review unit.
+ * recommendation — is optional and blocks nothing, so each option opens as the one field
+ * that DOES block: its material. The rest folds, per option rather than form-wide, so
+ * opening one option's details does not unfold the others.
  */
 export function IssueDecisionModal({ context, onClose }: { context?: CaptureContext; onClose: () => void }) {
   const issueDecision = useStore((s) => s.issueDecision);
   const inherited = inheritsLocation(context);
   const [title, setTitle] = useState('');
   const [nodeId, setNodeId] = useState<string | null>(context?.nodeId ?? null);
-  const [options, setOptions] = useState<OptionDraft[]>([blankOption(), blankOption()]);
+  // lazy, so the two starting options are built once rather than on every render
+  const [options, setOptions] = useState<OptionDraft[]>(() => [blankOption(), blankOption()]);
 
   const setOpt = (i: number, patch: Partial<OptionDraft>) =>
     setOptions((prev) => prev.map((o, j) => (j === i ? { ...o, ...patch } : patch.recommended ? { ...o, recommended: false } : o)));
@@ -63,7 +65,8 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
       <div style={{ padding: '18px 20px', maxHeight: '80vh', overflowY: 'auto' }}>
         <div id="issue-dec-title" style={{ fontWeight: 700, fontSize: 17 }}>New decision</div>
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
-          What is being decided, and between which options. <b>Save as draft</b> to keep working
+          What is being decided, and between which options. A price delta, a swatch and a sample
+          photo sit under each option's <b>More details</b>. <b>Save as draft</b> to keep working
           privately, or <b>Publish</b> to send it to the client to choose.
         </div>
         <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title (e.g. Veneer finish, Lock & hardware)" style={{ ...fldD, marginTop: 14, width: '100%' }} data-testid="dec-title" />
@@ -73,7 +76,11 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
         </div>
 
         {options.map((o, i) => (
-          <div key={i} style={{ marginTop: 14, padding: 12, border: '1px solid var(--hairline)', borderRadius: 12, background: 'var(--panel)' }}>
+          // keyed by the option's OWN id, never its slot: `MoreDetails` holds its open
+          // state locally, so an index key would hand a removed option's disclosure to
+          // whichever option slid into the slot — collapsing the one the user opened and
+          // opening its neighbour under the label of the one they were editing.
+          <div key={o.id} style={{ marginTop: 14, padding: 12, border: '1px solid var(--hairline)', borderRadius: 12, background: 'var(--panel)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)' }}>OPTION {String.fromCharCode(65 + i)}</span>
               {options.length > 2 && (
@@ -84,20 +91,22 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
             </div>
             <input value={o.material} onChange={(e) => setOpt(i, { material: e.target.value })} placeholder="Material (e.g. Italian Marble)" style={{ ...fldD, width: '100%' }} data-testid={`dec-opt-${i}`} />
 
-            <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <input value={o.delta} onChange={(e) => setOpt(i, { delta: e.target.value })} placeholder="₹ delta (0 = base)" style={{ ...fldD, flex: '0 0 130px' }} />
-              <select value={o.swatch} onChange={(e) => setOpt(i, { swatch: e.target.value as SwatchKey })} style={{ ...fldD, flex: '0 0 120px' }} aria-label="Swatch">
-                {SWATCH_KEYS.map((k) => <option key={k} value={k}>{k}</option>)}
-              </select>
-              <span style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid var(--hairline)', background: o.photo ? `center/cover url(${o.photo.preview})` : swatchGradient(o.swatch) }} />
-              <label style={{ fontSize: 12, color: 'var(--accent)', cursor: 'pointer' }}>
-                {o.photo ? 'Change photo' : 'Add sample photo'}
-                <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => pickPhoto(i, e.target.files?.[0] ?? null)} />
-              </label>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
-                <input type="radio" name="recommended" checked={o.recommended} onChange={() => setOpt(i, { recommended: true })} /> Recommended
-              </label>
-            </div>
+            <MoreDetails testId={`dec-opt-${i}-more`}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input value={o.delta} onChange={(e) => setOpt(i, { delta: e.target.value })} placeholder="₹ delta (0 = base)" style={{ ...fldD, flex: '0 0 130px' }} />
+                <select value={o.swatch} onChange={(e) => setOpt(i, { swatch: e.target.value as SwatchKey })} style={{ ...fldD, flex: '0 0 120px' }} aria-label="Swatch">
+                  {SWATCH_KEYS.map((k) => <option key={k} value={k}>{k}</option>)}
+                </select>
+                <span style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid var(--hairline)', background: o.photo ? `center/cover url(${o.photo.preview})` : swatchGradient(o.swatch) }} />
+                <label style={{ fontSize: 12, color: 'var(--accent)', cursor: 'pointer' }}>
+                  {o.photo ? 'Change photo' : 'Add sample photo'}
+                  <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => pickPhoto(i, e.target.files?.[0] ?? null)} />
+                </label>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
+                  <input type="radio" name="recommended" checked={o.recommended} onChange={() => setOpt(i, { recommended: true })} /> Recommended
+                </label>
+              </div>
+            </MoreDetails>
           </div>
         ))}
 
@@ -118,6 +127,8 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
 }
 
 interface OptionDraft {
+  /** Stable across reordering and removal — see the `key` on the option row. */
+  id: string;
   material: string;
   delta: string; // rupee delta as typed
   swatch: SwatchKey;
@@ -126,6 +137,9 @@ interface OptionDraft {
 }
 
 const SWATCH_KEYS = Object.keys(SW) as SwatchKey[];
-const blankOption = (): OptionDraft => ({ material: '', delta: '0', swatch: 'tile', recommended: false });
+// A counter rather than a random id: unique within a form is all `key` needs, and a
+// deterministic sequence keeps the probes readable.
+let optionSeq = 0;
+const blankOption = (): OptionDraft => ({ id: `opt-${(optionSeq += 1)}`, material: '', delta: '0', swatch: 'tile', recommended: false });
 
 const fldD: CSSProperties = { height: 42, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none' };

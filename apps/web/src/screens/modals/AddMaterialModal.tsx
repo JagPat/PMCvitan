@@ -2,7 +2,7 @@ import { useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectVisibleDecisions } from '@/store/selectors';
-import { Button, Modal, Swatch, InheritedContext } from '@/components';
+import { Button, Modal, Swatch, InheritedContext, MoreDetails } from '@/components';
 import { SW, type SwatchKey } from '@vitan/shared';
 import { inheritsLocation, type CaptureContext } from '@/lib/captureContext';
 
@@ -17,9 +17,9 @@ import { inheritsLocation, type CaptureContext } from '@/lib/captureContext';
  * the one the storekeeper actually recorded, so it stays a field — relabelled to say what
  * it is, and optional, because it always was.
  *
- * Only a name and a quantity block the save, as the domain requires; the decision link and
- * the swatch stay optional. Folding those under a More-details disclosure is progressive
- * disclosure — its own principle and its own review unit.
+ * Only a name and a quantity block the save, as the domain requires. The three fields that
+ * block nothing — storage, the decision link and the swatch — open folded: the form asks
+ * what arrived, how much, and where, and the storekeeper who has more to say opens it.
  */
 export function AddMaterialModal({ context, onClose }: { context?: CaptureContext; onClose: () => void }) {
   const addSiteMaterial = useStore((s) => s.addSiteMaterial);
@@ -55,34 +55,38 @@ export function AddMaterialModal({ context, onClose }: { context?: CaptureContex
       <div style={{ padding: '18px 20px', maxHeight: '80vh', overflowY: 'auto' }}>
         <div id="add-mat-title" style={{ fontWeight: 700, fontSize: 17 }}>Record material delivery</div>
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
-          What arrived, how much, and how it is stored. Linking it to a locked decision lets the
-          PMC confirm the delivery matches what the client approved.
+          What arrived, how much, and where. Under <b>More details</b>: how it is stored, and a
+          link to a locked decision so the PMC can confirm the delivery matches what the client
+          approved.
         </div>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Material (e.g. Italian Marble slabs)" style={{ ...fldM, marginTop: 14, width: '100%' }} data-testid="mat-name" />
         <input value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Qty (e.g. 40 sqm)" style={{ ...fldM, marginTop: 10, width: '100%' }} data-testid="mat-qty" />
-        {/* where and how it is STORED — not the location, which the place below carries */}
-        <input value={storage} onChange={(e) => setStorage(e.target.value)} placeholder="Stored how? (optional — e.g. covered, on pallets)" style={{ ...fldM, marginTop: 10, width: '100%' }} data-testid="mat-storage" />
 
         <div style={{ marginTop: 12 }}>
           <InheritedContext value={nodeId} onChange={setNodeId} inherited={inherited} idPrefix="mat-loc" testId="mat-place" />
         </div>
 
-        <div style={{ ...sectionLabel, marginTop: 16 }}>LINK TO DECISION (optional)</div>
-        <select value={decisionId} onChange={(e) => setDecisionId(e.target.value)} style={{ ...fldM, width: '100%' }} data-testid="mat-decision" aria-label="Link to decision">
-          <option value="">— No linked decision —</option>
-          {decisions.map((d) => (
-            <option key={d.id} value={d.id}>{d.id} · {d.title}</option>
-          ))}
-        </select>
+        <MoreDetails testId="mat-more">
+          {/* where and how it is STORED — not the location, which the place above carries */}
+          <input value={storage} onChange={(e) => setStorage(e.target.value)} placeholder="Stored how? (e.g. covered, on pallets)" style={{ ...fldM, width: '100%' }} data-testid="mat-storage" />
 
-        <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
-          <Swatch swatch={swatch} size={40} radius={9} />
-          <select value={swatch} onChange={(e) => setSwatch(e.target.value as SwatchKey)} style={{ ...fldM, flex: 1, minWidth: 0 }} aria-label="Material swatch">
-            {swatchKeys.map((k) => (
-              <option key={k} value={k}>{k}</option>
+          <div style={{ ...sectionLabel, marginTop: 14 }}>LINK TO DECISION</div>
+          <select value={decisionId} onChange={(e) => setDecisionId(e.target.value)} style={{ ...fldM, width: '100%' }} data-testid="mat-decision" aria-label="Link to decision">
+            <option value="">— No linked decision —</option>
+            {decisions.map((d) => (
+              <option key={d.id} value={d.id}>{d.id} · {d.title}</option>
             ))}
           </select>
-        </div>
+
+          <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
+            <Swatch swatch={swatch} size={40} radius={9} />
+            <select value={swatch} onChange={(e) => setSwatch(e.target.value as SwatchKey)} style={{ ...fldM, flex: 1, minWidth: 0 }} aria-label="Material swatch">
+              {swatchKeys.map((k) => (
+                <option key={k} value={k}>{k}</option>
+              ))}
+            </select>
+          </div>
+        </MoreDetails>
 
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
