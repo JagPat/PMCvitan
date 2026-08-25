@@ -108,8 +108,11 @@ export function EngineerChecklistScreen() {
             <div style={{ marginTop: 12 }}>
               <EditState
                 state={checklist.submitted ? 'locked' : 'paused'}
+                // `Checklist` carries no `decided` field, and an ALREADY-REVIEWED checklist can
+                // still come back as the engineer's current one — so the lock says what is
+                // certain (it was submitted, it is now a record) without claiming a pending review.
                 reason={checklist.submitted
-                  ? 'Submitted — this checklist is now the architect\u2019s to review, so it can no longer be edited.'
+                  ? 'Submitted — this checklist is now a submitted record, so it can no longer be edited.'
                   : submissionStatus === 'queued'
                     ? 'Queued offline — editing is paused until it reaches the architect. It sends when you reconnect.'
                     : 'Submitting — editing is paused until it reaches the architect.'}

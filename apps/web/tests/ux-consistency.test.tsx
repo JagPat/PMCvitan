@@ -90,14 +90,20 @@ describe('a DECIDED inspection is a record, not a live queue item', () => {
     expect(r.getByTestId('review-reject-0')).toBeDisabled();
   });
 
-  it('a closing sign-off says what its approval already did', async () => {
+  it('a decided CLOSING review names its activity without asserting the outcome (Codex P1)', async () => {
+    // `sendReinspection` also sets decided:true and keeps closing:true, but returns the
+    // activity to execution — so approval cannot be inferred from `decided` alone, and
+    // `Review` carries no approved/rejected field to read.
     await load({
       reviews: [review({ decided: true, closing: true, activityId: 'ACT-1', activityName: 'Terrace waterproofing' })],
       activeReviewId: 'INSP-1',
     });
     const { InspectionReviewScreen } = await import('@/screens/InspectionReviewScreen');
     const r = render(<InspectionReviewScreen />);
-    expect(r.getByTestId('review-decided-INSP-1').textContent).toContain('Terrace waterproofing');
+    const text = r.getByTestId('review-decided-INSP-1').textContent ?? '';
+    expect(text).toContain('Terrace waterproofing');
+    expect(text).not.toMatch(/signed off/i);
+    expect(text).not.toMatch(/marked .* done/i);
   });
 
   it('an UNDECIDED review keeps both actions live and shows no locked banner', async () => {
@@ -143,6 +149,11 @@ describe("the field checklist says where it is, and why it is read-only", () => 
     expect(state).toHaveAttribute('data-edit-state', 'locked');
     expect(state.textContent).toContain('Submitted');
     expect(r.getByTestId('evidence-0')).toBeDisabled();
+    // `Checklist` carries no `decided` field, and the serializer can still return an
+    // ALREADY-REVIEWED checklist as the engineer's current one — so the lock must not
+    // claim a review is still pending (Codex P2).
+    expect(state.textContent).not.toMatch(/to review/i);
+    expect(state.textContent).not.toMatch(/awaiting/i);
   });
 
   it('a QUEUED submission reads as a transient pause, not a permanent lock', async () => {
@@ -240,7 +251,9 @@ describe('the schedule says WHY an activity cannot be acted on', () => {
     const r = render(<ScheduleScreen />);
     const state = r.getByTestId('sched-restriction-ACT-1');
     expect(state.textContent).toContain('Ponding test failed — drain slope');
-    expect(state.textContent).toContain('override');
+    // A gate override records a GateOverride and nothing else; `start` refuses any status
+    // but not_started, so offering it here sends the PMC down a dead end (Codex P2).
+    expect(state.textContent).not.toMatch(/override/i);
   });
 
   it('an activity awaiting sign-off says whose decision completes it', async () => {

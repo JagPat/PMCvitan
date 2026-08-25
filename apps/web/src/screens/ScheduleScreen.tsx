@@ -42,9 +42,12 @@ function ActionButton({ a, ready }: { a: Activity; ready: boolean }) {
  */
 function restrictionOf(a: Activity, gates: GateVM[], ready: boolean): string | null {
   if (a.status === 'blocked') {
+    // NOT an override: that records a GateOverride and nothing else, while `start` refuses
+    // every status but not_started — so a blocked activity stays unstartable and the PMC is
+    // left with an audited override that changed nothing. Resolving the blocker is the path.
     return a.block
-      ? `Blocked — ${a.block}. Clear it on site, or record a gate override with a reason.`
-      : 'Blocked on site. Clear the blocker, or record a gate override with a reason.';
+      ? `Blocked — ${a.block}. Resolve the blocker on site; the activity returns to the schedule once it clears.`
+      : 'Blocked on site. Resolve the recorded blocker; the activity returns to the schedule once it clears.';
   }
   if (a.status === 'awaiting-signoff') {
     return 'Completion is claimed — the PMC\u2019s closing inspection sign-off is what marks it done.';

@@ -186,8 +186,12 @@ export function InspectionReviewScreen() {
         {review.decided ? (
           <EditState
             state="locked"
+            // `decided` alone does NOT mean approved: rejecting a closing inspection also sets
+            // it, returning the activity to execution with a re-inspection. `Review` carries no
+            // approved/rejected field, so the wording states what IS known and points at the
+            // activity, where the outcome actually shows.
             reason={review.closing
-              ? `Signed off — approving this closing inspection is what marked ${review.activityName ?? review.activityId ?? 'the activity'} done.`
+              ? `Reviewed — the closing decision for ${review.activityName ?? review.activityId ?? 'this activity'} is recorded. Its outcome shows on that activity in the Schedule.`
               : 'Reviewed — this inspection has been decided. Issue a new checklist if it must be re-checked.'}
             testId={`review-decided-${review.id}`}
           />
