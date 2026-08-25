@@ -2,11 +2,14 @@
   "__README__": [
     "Migrations merged BEFORE scripts/migration-lint.mjs existed, with a written reason each.",
     "",
-    "RECORDED, not suppressed. The measured verdict of MI-001, MI-002 and MI-003 over the 91",
-    "migrations on main at 8a4b0db8 is 15 findings across 3 migrations, every one listed below with",
-    "what it is. TWO ARE LIVE DEFECTS of the exact classes the schedule-B1 lineage kept finding, on",
-    "already-merged files. They are REPORTED, not fixed: apps/api/prisma/** is read-only to this",
-    "unit, and each is named in docs/MIGRATION_INVARIANTS.md as a candidate for its own unit.",
+    "RECORDED, not suppressed. The measured verdict of MI-001 and MI-002 over the 91 migrations",
+    "on main at e5d3c4fd is 14 findings across 3 migrations, every one listed below with what it",
+    "is. ONE IS A LIVE DEFECT of the exact class the schedule-B1 lineage kept finding, on an",
+    "already-merged file: 20270225000000_phase4_t3_correction3:169, caught by MI-002. It is",
+    "REPORTED, not fixed: apps/api/prisma/** is read-only to this unit, and it is named in",
+    "docs/MIGRATION_INVARIANTS.md as a candidate for its own unit. A SECOND live defect,",
+    "20270920000000_decision_option_kinds:273, is caught only by MI-003, which this unit DEFERS —",
+    "so it has no CI backstop here and no entry below. Deferring the rule did not unfind it.",
     "",
     "EVERY COUNT HERE IS PER SITE. Codex findings F2/F3 against head c6e9ff17 were the same defect:",
     "each rule asked its question of the FILE, so one satisfied site discharged every other and one",
@@ -14,9 +17,9 @@
     "findings to 13 once that was corrected — the two sites in the B1 migration were INVISIBLE",
     "before it, excused by a third section's pg_get_triggerdef. That is the rule working.",
     "",
-    "MI-000 and MI-004 are deferred to the follow-on unit; their corrected implementations, fixtures",
-    "and this ledger's previous MI-004 entry are committed at a8b401ba on this branch and recorded",
-    "in docs/MIGRATION_INVARIANTS.md. Nothing was deferred silently.",
+    "MI-000, MI-003 and MI-004 are deferred to the follow-on unit; their corrected implementations,",
+    "fixtures and this ledger's previous MI-003 and MI-004 entries are committed on this branch and",
+    "recorded in docs/MIGRATION_INVARIANTS.md. Nothing was deferred silently.",
     "",
     "A NEW migration cannot join this list without an owner editing this file, which is the point:",
     "the cost of an exception is a visible diff, not silence. Two tests keep it honest — every entry",
@@ -27,8 +30,7 @@
     "MI-002": "LIVE DEFECT — REPORTED, NOT FIXED. Line 169 verifies the prerequisite composite foreign keys by conname + conrelid + contype='f' + convalidated, and never reads pg_trigger.tgenabled on tgconstraint. This is exactly the a222e91 (PR #411) class: `ALTER TABLE ... DISABLE TRIGGER ALL` leaves every column that guard reads unchanged while the keys stop enforcing, so a restored database with NO containment satisfies the prerequisite and is baselined as correct. apps/api/prisma/** is read-only to this unit, so this is recorded and reported rather than repaired here; it needs its own unit."
   },
   "20270920000000_decision_option_kinds": {
-    "MI-001": "ACCEPTED — 1 site. Line 552 resolves a trigger by tgname inside a guard that refuses, without comparing pg_get_triggerdef. The consequence here is a FAILED APPLY rather than a false clearance: the guard runs during the migration's own apply, when the trigger it names has just been created by this same file, so a same-named foreign object means the apply aborts. A wrong definition is not silently accepted; the migration refuses to finish.",
-    "MI-003": "LIVE DEFECT — REPORTED, NOT FIXED. Line 273 installs CONSTRAINT TRIGGERs and verifies them against the catalog, but the file names no RUNBOOK procedure and apps/api/scripts/migrate.sh has no counterpart that re-asks the question. Once its row is in _prisma_migrations the seals are never checked again, so a restore that drops or disables them yields a GREEN deploy over a database whose guards are gone — the a222e91 (PR #411) class exactly. apps/api/prisma/** is read-only to this unit; recorded and reported rather than repaired here."
+    "MI-001": "ACCEPTED — 1 site. Line 552 resolves a trigger by tgname inside a guard that refuses, without comparing pg_get_triggerdef. The consequence here is a FAILED APPLY rather than a false clearance: the guard runs during the migration's own apply, when the trigger it names has just been created by this same file, so a same-named foreign object means the apply aborts. A wrong definition is not silently accepted; the migration refuses to finish."
   },
   "20270930000000_schedule_dependency_graph": {
     "MI-001": "ACCEPTED — 2 sites (sections 1 and 9, both pg_trigger), and both were INVISIBLE before the per-site binding because section 8's pg_get_triggerdef excused them at file scope. Accepted on the merged evidence: section 8 stands between them and refuses a wrong definition, and section 9 enumerates every component the deparse renders for five triggers that carry no WHEN clause and no arguments, so the name plus the enumerated components is the whole definition for those five. The finding is that sections 1 and 9 depend on section 8 having run, which is true in this file and is not a property the linter can see."

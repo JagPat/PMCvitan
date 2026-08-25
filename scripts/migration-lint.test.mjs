@@ -14,15 +14,16 @@
 //   96c9cc4  = head of PR #412  — fixes them; also the head that added the deploy-time verifier
 //   2f0e2af9 = head of PR #415  — the merged head, squashed to main as d37a1c7e
 //
-// MI-000 and MI-004 are deferred to the follow-on unit. Their corrected implementations, fixtures
-// and tests are committed at a8b401ba on this branch and recorded in docs/MIGRATION_INVARIANTS.md.
+// MI-000, MI-003 and MI-004 are deferred to the follow-on unit. Their corrected implementations,
+// fixtures and tests are committed on this branch — MI-000 and MI-004 at a8b401ba, MI-003 at
+// 08835700 — and recorded in docs/MIGRATION_INVARIANTS.md. Nothing was deferred silently.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { lintMigration, lintAll, parseMigration, guardedProcedureTokens, RULE_IDS, MIGRATIONS_DIR } from './migration-lint.mjs';
+import { lintMigration, lintAll, parseMigration, RULE_IDS, MIGRATIONS_DIR } from './migration-lint.mjs';
 import { statements, dollarBlocks } from './migration-sql-scan.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -48,28 +49,11 @@ const CASES = [
     red: { head: 'a222e91 (PR #411)', sql: fixture('mi002-red-a222e91.sql') },
     green: { head: '96c9cc4 (PR #412)', sql: fixture('green-96c9cc4.sql') },
   },
-  {
-    // MI-003's RED and GREEN are the SAME migration. What differs is migrate.sh: at a222e91 the
-    // seals were verified only by a PREFLIGHT, which runs against the database as it WAS.
-    rule: 'MI-003',
-    finding: 'seals verified only while the migration was applying, so once its row was in '
-      + '_prisma_migrations a restore that disabled a seal still produced a green deploy',
-    red: {
-      head: 'a222e91 (PR #411)',
-      sql: fixture('mi003-seals.sql'),
-      context: { migrateSh: fixture('mi003-red-migrate-preflight-only.sh') },
-    },
-    green: {
-      head: '96c9cc4 (PR #412)',
-      sql: fixture('mi003-seals.sql'),
-      context: { migrateSh: fixture('mi003-green-migrate-invoked.sh') },
-    },
-  },
 ];
 
 for (const c of CASES) {
   test(`${c.rule} fires on the head that produced its finding — ${c.red.head}`, () => {
-    const findings = lintMigration({ name: `${c.rule}-red`, sql: c.red.sql, context: c.red.context ?? {} });
+    const findings = lintMigration({ name: `${c.rule}-red`, sql: c.red.sql });
     const mine = findings.filter((f) => f.rule === c.rule);
     assert.ok(mine.length > 0,
       `${c.rule} did not fire on ${c.red.head}, the head that produced its finding: ${c.finding}.\n`
@@ -78,7 +62,7 @@ for (const c of CASES) {
   });
 
   test(`${c.rule} clears on the head that fixed it — ${c.green.head}`, () => {
-    const findings = lintMigration({ name: `${c.rule}-green`, sql: c.green.sql, context: c.green.context ?? {} });
+    const findings = lintMigration({ name: `${c.rule}-green`, sql: c.green.sql });
     const mine = findings.filter((f) => f.rule === c.rule);
     assert.deepEqual(mine.map((f) => `${f.rule}@${f.line}: ${f.message.slice(0, 90)}`), [],
       `${c.rule} still fires on ${c.green.head}, which corrected the defect. The rule is detecting `
@@ -131,20 +115,11 @@ const DECOY_CASES = [
     decoy: 'the first guard genuinely joins pg_trigger on tgconstraint and refuses tgenabled in (D, R)',
     site: 31,
   },
-  {
-    id: 'F1',
-    rule: 'MI-003',
-    title: 'a procedure token printed by an echo is not an invocation that verifies anything',
-    was: 'the rule stripped COMMENT lines and asked whether the token appeared in the remaining post-deploy text',
-    sql: fixture('mi003-seals.sql'),
-    context: { migrateSh: fixture('mi003-decoy-migrate-echo-only.sh') },
-    decoy: 'the adjacent §OTHER procedure IS properly verified, in the failure branch of a real command',
-  },
 ];
 
 for (const c of DECOY_CASES) {
   test(`${c.rule} binds to the SITE, not the file — ${c.id}: ${c.title}`, () => {
-    const findings = lintMigration({ name: `${c.rule}-decoy`, sql: c.sql, context: c.context ?? {} });
+    const findings = lintMigration({ name: `${c.rule}-decoy`, sql: c.sql });
     const mine = findings.filter((f) => f.rule === c.rule);
     assert.ok(mine.length > 0,
       `${c.rule} did not fire on the unguarded site. Codex ${c.id}: ${c.was}.\n`
@@ -157,41 +132,6 @@ for (const c of DECOY_CASES) {
     }
   });
 }
-
-// ── MI-003's shell parser: what counts as an INVOCATION ───────────────────────────────────────
-// The rule's whole claim rests on telling a command that VERIFIES from a sentence that DESCRIBES.
-// It fails CLOSED: a construct the parser cannot read yields no guarded tokens, so the rule fires.
-
-test('F1: only a token guarded by a real post-deploy invocation counts', () => {
-  const invoked = guardedProcedureTokens(fixture('mi003-green-migrate-invoked.sh'));
-  assert.ok(invoked.has('section B1'),
-    `a token inside the failure branch of \`node "$B1_SEALS" seals\` must count: ${JSON.stringify([...invoked])}`);
-
-  const echoOnly = guardedProcedureTokens(fixture('mi003-decoy-migrate-echo-only.sh'));
-  assert.equal(echoOnly.has('section B1'), false,
-    'a token named only by an `echo` was accepted as evidence that something verified the seals');
-  assert.ok(echoOnly.has('§OTHER'),
-    `the adjacent, genuinely-invoked procedure must still count: ${JSON.stringify([...echoOnly])}`);
-
-  const preflightOnly = guardedProcedureTokens(fixture('mi003-red-migrate-preflight-only.sh'));
-  assert.equal(preflightOnly.has('section B1'), false,
-    'a verifier that runs BEFORE `prisma migrate deploy` answers about the database as it WAS');
-});
-
-test('the repository\'s own migrate.sh is read correctly', () => {
-  // The live file is the one worked precedent, so it is asserted directly rather than in a fixture.
-  // If a later unit rewrites migrate.sh, this test says so instead of MI-003 silently going green.
-  const sh = join(HERE, '..', 'apps', 'api', 'scripts', 'migrate.sh');
-  const guarded = guardedProcedureTokens(readFileSync(sh, 'utf8'));
-  assert.ok(guarded.has('section B1'),
-    'apps/api/scripts/migrate.sh invokes `node "$B1_SEALS" seals` on the deploy success path and names '
-    + `"section B1" in its failure branch; the parser no longer sees it: ${JSON.stringify([...guarded])}`);
-  assert.ok(guarded.has('§P4T3C3'),
-    `the T3C seal verification is the same shape and must also be seen: ${JSON.stringify([...guarded])}`);
-  assert.equal(guarded.has('§T45'), false,
-    'the T45 check is a PREFLIGHT — it runs before the deploy and cannot answer whether the seals are '
-    + 'armed now, so it must not be read as a post-deploy verification');
-});
 
 // ── The scanner desyncs — findings F6 and F7 ──────────────────────────────────────────────────
 // These are not per-site bugs; they are places where TEXT masqueraded as executable SQL or hid it.
@@ -337,25 +277,27 @@ test('no exemption is dead — each one still suppresses something', () => {
   assert.deepEqual(dead, [], 'an exemption suppresses nothing and should be deleted');
 });
 
-// ── The two LIVE DEFECTS this unit reports but does not fix ───────────────────────────────────
-// apps/api/prisma/** is read-only to this unit, so both are recorded in the exemption ledger with
-// a written reason and named in docs/MIGRATION_INVARIANTS.md as candidates for their own units.
-// This test pins them: if a later unit FIXES one, the exemption goes dead and the test above says
-// so. If a later unit makes one WORSE, or a third appears, this count changes and says that.
+// ── The LIVE DEFECT this unit reports, and the one it CANNOT ─────────────────────────────────
+// The B1 lineage's shape is live on two already-merged migrations. This unit ships a backstop for
+// exactly one of them, and the asymmetry is the cost of the cut, not an oversight:
+//
+//   20270225000000_phase4_t3_correction3:169  MI-002  — SHIPS HERE. Pinned below, exempted with a
+//     written reason, and the exemption goes dead the day a later unit fixes it.
+//   20270920000000_decision_option_kinds:273  MI-003  — NO BACKSTOP IN THIS UNIT. MI-003 is
+//     deferred, so nothing in CI fires on it. It is still real; see docs/MIGRATION_INVARIANTS.md.
+//
+// apps/api/prisma/** is read-only to this unit, so neither is repaired here.
 
-test('the corpus carries exactly the two live defects this unit reported', () => {
+test('the corpus carries exactly the one live defect this unit can still see', () => {
   const all = lintAll({ applyExemptions: false });
   const live = all
-    .filter((f) => (f.rule === 'MI-002' && f.migration === '20270225000000_phase4_t3_correction3')
-      || (f.rule === 'MI-003' && f.migration === '20270920000000_decision_option_kinds'))
+    .filter((f) => f.rule === 'MI-002' && f.migration === '20270225000000_phase4_t3_correction3')
     .map((f) => `${f.rule} ${f.migration}:${f.line}`);
-  assert.deepEqual(live, [
-    'MI-002 20270225000000_phase4_t3_correction3:169',
-    'MI-003 20270920000000_decision_option_kinds:273',
-  ], 'the live defects this unit reported have moved, been fixed, or multiplied — update '
+  assert.deepEqual(live, ['MI-002 20270225000000_phase4_t3_correction3:169'],
+    'the live defect this unit reported has moved, been fixed, or multiplied — update '
     + 'docs/MIGRATION_INVARIANTS.md and the exemption ledger to match what is actually true now');
-  assert.equal(all.length, 15,
-    'the per-site corpus count changed. It was measured at 15 findings across 3 migrations on main '
-    + 'at 8a4b0db8 (MI-001 13, MI-002 1, MI-003 1); a different number means a migration changed or '
-    + 'a rule did, and the ledger and the doc both state the old figure.');
+  assert.equal(all.length, 14,
+    'the per-site corpus count changed. It was measured at 14 findings across 3 migrations on main '
+    + 'at e5d3c4fd (MI-001 13, MI-002 1); a different number means a migration changed or a rule '
+    + 'did, and the ledger and the doc both state the old figure.');
 });

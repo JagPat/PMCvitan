@@ -7,24 +7,20 @@
 // same shape somewhere new, because nothing in the repository could state the shape itself. This
 // file states it, executably, before review rather than after.
 //
-// THIS UNIT SHIPS THE THREE RULES THAT DETECT THAT CLASS DIRECTLY:
+// THIS UNIT SHIPS THE TWO RULES THAT DETECT THAT CLASS DIRECTLY:
 //
 //   MI-001  an object judged by NAME where a definition comparison was required
 //   MI-002  a foreign key verified VALID without ever being asked whether it ENFORCES
-//   MI-003  a guard verified at APPLY time and never asked again on any later deploy
 //
-// They are the reason the unit exists, and they are what found the two latent defects on already
-// merged migrations recorded in docs/MIGRATION_INVARIANTS.md. Shipping them first means the
-// follow-up units that fix those defects land with a CI backstop that proves the fix holds.
+// MI-001 found ten sites and MI-002 found the live defect on an already-merged migration that
+// docs/MIGRATION_INVARIANTS.md reports, so the unit that fixes it lands with a CI backstop.
 //
-// WHAT IS DEFERRED, AND WHERE IT LIVES. MI-000 (the enumerate-and-classify totality backstop) and
-// MI-004 (transaction scope) are deferred to the follow-on unit. They are genuinely foundational,
-// which is what makes deferring them defensible: they are about THIS LINTER'S OWN HONESTY rather
-// than about the historical failure mode, and they lose nothing by landing second. Their corrected
-// per-site implementations, their fixtures and their exemption ledger entries are NOT re-derivable
-// prose — they are committed code at `a8b401ba` on this branch, the head this one replaces, and
-// docs/MIGRATION_INVARIANTS.md records exactly what state each was left in with its RED/GREEN
-// evidence. The follow-on starts from corrected code and does not rediscover Codex F4, F5 or F6/F7.
+// WHAT IS DEFERRED, AND WHERE IT LIVES. MI-000 and MI-004 are committed, corrected and green at
+// a8b401ba; MI-003 at 08835700. Both are ancestors of this head, so `git show <sha>` is the whole
+// handover and no fix from those rounds needs rediscovering. NEVER REBASE OR FORCE-PUSH THIS
+// BRANCH — that history IS the deferral record. docs/MIGRATION_INVARIANTS.md states each rule's
+// state with its RED/GREEN evidence, and names the live defect that loses its CI alarm to MI-003's
+// deferral: deferring the rule did not unfind the defect, it removed the alarm.
 //
 // THE SCANNER SHIPS HERE REGARDLESS OF THE CUT, and that is deliberate. Every rule's correctness
 // rests on `migration-sql-scan.mjs` identifying statements and blocks correctly; two of the seven
@@ -287,141 +283,9 @@ function ruleForeignKeyEnforcement(file) {
   return out;
 }
 
-/**
- * Which RUNBOOK procedure tokens does `migrate.sh` actually GUARD WITH AN INVOCATION, after the
- * deploy has succeeded?
- *
- * CODEX F1 AGAINST HEAD c6e9ff17, and it is the reason this rule needs a shell parser at all. That
- * head asked whether the token appeared anywhere in the post-deploy text with comment lines
- * stripped. But AN `echo` IS AN EXECUTABLE LINE TOO. `migrate.sh` line 130 reads
- *
- *     echo "[migrate] This deploy is NOT good. Repair per docs/RUNBOOK.md section B1, then redeploy."
- *
- * so the token was present after the deploy whether or not anything verified anything, and a
- * migration whose seals were never re-checked would have been reported GREEN by the mere presence
- * of the sentence that says what to do when they fail. A token matched where an ACT was required —
- * the same error the rule exists to detect.
- *
- * So the token must stand INSIDE THE FAILURE BRANCH OF A REAL INVOCATION: `if ! <command>; then …
- * <token> … fi`, where `<command>` runs something rather than printing. That is the shape all three
- * worked precedents already have (T45, T2C, T3C), and it is the shape #412 added for B1:
- *
- *     if ! node "$B1_SEALS" seals; then
- *       echo "… Repair per docs/RUNBOOK.md section B1, then redeploy."
- *       exit 1
- *     fi
- *
- * The parser is deliberately small and refuses what it cannot read: a construct it does not
- * recognise yields NO guarded tokens, so the rule fires rather than clearing. Failing closed is the
- * whole point — this is a rule about verification that must not itself verify by assumption.
- */
-const PRINTS_ONLY = /^(echo|printf|:|true|false|test|\[|\[\[|exit|return|continue|break|local|export|unset)$/u;
-
-export function guardedProcedureTokens(sh) {
-  const guarded = new Set();
-  const lines = sh.split('\n');
-  // Where does the deploy happen? Everything before it answers about the database as it WAS.
-  const deployAt = lines.findIndex((l) => !/^\s*#/u.test(l)
-    && /(^|[^A-Za-z0-9_])(npx\s+)?prisma\s+migrate\s+deploy\b/u.test(l));
-  if (deployAt === -1) return guarded;
-
-  const stack = [];
-  for (let i = deployAt; i < lines.length; i += 1) {
-    const raw = lines[i];
-    const code = raw.replace(/^\s*#.*$/u, '');
-
-    // `if ! <cmd>; then` / `if <cmd>; then` — record whether <cmd> INVOKES or merely prints.
-    const open = /^\s*(?:el)?if\s+(!\s*)?(.+?)\s*;\s*then\s*$/u.exec(code);
-    if (open) {
-      const first = (open[2].trim().split(/\s+/u)[0] ?? '').replace(/^["']/u, '');
-      // A leading VAR=value assignment prefix is not the command; skip past any of them.
-      const head = open[2].trim().replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/u, '').split(/\s+/u)[0] ?? '';
-      const word = (head || first).replace(/^["']/u, '');
-      stack.push({ invokes: word.length > 0 && !PRINTS_ONLY.test(word) });
-      continue;
-    }
-    if (/^\s*(if|while|until|for|case)\b/u.test(code) && !/\bfi\b/u.test(code)) { stack.push({ invokes: false }); continue; }
-    if (/^\s*(fi|done|esac)\b/u.test(code)) { stack.pop(); continue; }
-
-    if (!stack.some((f) => f.invokes)) continue;
-    for (const m of raw.matchAll(/RUNBOOK\.md`?\s+(§[A-Za-z0-9]+|section\s+[A-Za-z0-9]+)/gu)) {
-      guarded.add(m[1].replace(/\s+/u, ' '));
-    }
-  }
-  return guarded;
-}
-
-/**
- * MI-003 — a guard checked only at apply time.
- *
- * RED at `a222e91` (PR #411): five seals were verified in a block that ran ONLY while the migration
- * was applied. Once the row was in `_prisma_migrations`, `migrate.sh` returned 0 after checking
- * unrelated seals (T45, T2C, T3C), so a restore that disabled a B1 seal produced a GREEN deploy
- * over a database whose guards were gone. GREEN at `96c9cc4` (PR #412), which invoked
- * `node "$B1_SEALS" seals` on the deploy success path — the shape T45/T2C/T3C already had.
- *
- * NOT PURELY ENUMERABLE, and the reason is the finding itself: nothing in a migration's SQL names
- * the verifier that should re-ask its question on every deploy. The link between the B1 migration
- * and `dist/activities/b1/b1.cli.js` existed only in a human's head. Enumeration cannot recover a
- * link never written down, so the rule reads the one the corpus already has — the shared
- * `docs/RUNBOOK.md §X` procedure token both files name. A migration using no RUNBOOK procedure may
- * declare the link explicitly with `-- migration-invariants: deploy-verifier <token>`.
- */
-function ruleApplyTimeOnly(file, context) {
-  // In scope: a migration that INSTALLS SEALS — trigger guards that refuse writes — and verifies
-  // them against the catalog. A migration that only diagnoses data has nothing to stay armed.
-  // Seals arrive two ways in this repository and both count. A plain top-level `CREATE TRIGGER`
-  // is one; the other — the shape the whole B1 lineage uses — is dynamic DDL, where the statement
-  // lives in a string literal handed to `EXECUTE` so the CREATE can be made conditional on a
-  // catalog probe. Counting only the first found no seals in the file that produced this finding.
-  const dynamicSeal = /\bCREATE\s+(CONSTRAINT\s+)?TRIGGER\b/iu;
-  const installsSeals = file.statements.some((s) => s.kind === 'CREATE TRIGGER')
-    || file.literalValues.some((v) => dynamicSeal.test(v));
-  const selfVerifies = file.blocks.some((b) => b.roles.includes('catalog-guard')
-    && /\bRAISE\s+EXCEPTION\b/iu.test(b.maskedBody));
-  if (!installsSeals || !selfVerifies) return [];
-
-  const explicit = /--\s*migration-invariants:\s*deploy-verifier\s+(\S+)/iu.exec(file.sql);
-  const tokens = explicit
-    ? [explicit[1]]
-    : [...new Set([...file.sql.matchAll(/RUNBOOK\.md`?\s+(§[A-Za-z0-9]+|section\s+[A-Za-z0-9]+)/gu)]
-      .map((m) => m[1].replace(/\s+/u, ' ')))];
-
-  const line = file.statements.find((s) => s.kind === 'CREATE TRIGGER')?.line
-    ?? file.blocks.find((b) => b.roles.includes('catalog-guard'))?.line ?? 1;
-  const advice = 'Once the migration row is in _prisma_migrations its verification is never asked '
-    + 'again, so a restore or an ALTER TABLE … DISABLE TRIGGER that removes a seal yields a GREEN '
-    + 'deploy over a database whose guards are gone — PR #411 head a222e91 shipped exactly that, and '
-    + 'PR #412 head 96c9cc4 added `node "$B1_SEALS" seals` on the deploy success path. T45, T2C and '
-    + 'T3C are three worked precedents in apps/api/scripts/migrate.sh.';
-
-  if (tokens.length === 0) {
-    return [finding('MI-003', line,
-      'this migration installs seals and verifies them, but names no procedure that ties it to a '
-      + `deploy-time counterpart. ${advice} Name the repair procedure (docs/RUNBOOK.md §X) in this `
-      + 'file and in migrate.sh, or declare `-- migration-invariants: deploy-verifier <token>`.')];
-  }
-
-  const guarded = guardedProcedureTokens(context.migrateSh ?? '');
-  if (tokens.some((t) => guarded.has(t))) return [];
-
-  const namedAnywhere = tokens.filter((t) => (context.migrateSh ?? '').includes(t));
-  if (namedAnywhere.length > 0) {
-    return [finding('MI-003', line,
-      `apps/api/scripts/migrate.sh names ${namedAnywhere.map((t) => `"${t}"`).join(' / ')}, but never `
-      + 'inside the failure branch of a command that VERIFIES anything after `prisma migrate deploy` '
-      + 'succeeds. A procedure token in an `echo`, or in a preflight that runs against the database as '
-      + `it WAS, does not re-ask whether the seals are armed now. ${advice}`)];
-  }
-  return [finding('MI-003', line,
-    `this migration installs seals under procedure ${tokens.map((t) => `"${t}"`).join(' / ')}, which `
-    + `apps/api/scripts/migrate.sh never invokes. ${advice}`)];
-}
-
 const RULES = [
   ['MI-001', ruleNameOverDefinition],
   ['MI-002', ruleForeignKeyEnforcement],
-  ['MI-003', ruleApplyTimeOnly],
 ];
 
 export const RULE_IDS = RULES.map(([id]) => id);
@@ -454,19 +318,13 @@ export function parseMigration(sql) {
   };
 }
 
-/** Lint one migration. `context` supplies the cross-file facts MI-003 needs. */
-export function lintMigration({ name, sql, context = {} }) {
+/** Lint one migration. */
+export function lintMigration({ name, sql }) {
   const file = parseMigration(sql);
   const findings = [];
-  for (const [, rule] of RULES) findings.push(...rule(file, context));
+  for (const [, rule] of RULES) findings.push(...rule(file));
   return findings.map((f) => ({ ...f, migration: name }))
     .sort((a, b) => a.line - b.line || a.rule.localeCompare(b.rule));
-}
-
-/** Read the repository-level context once, for every migration in a run. */
-export function repoContext(root = REPO_ROOT) {
-  const read = (p) => (existsSync(join(root, p)) ? readFileSync(join(root, p), 'utf8') : '');
-  return { migrateSh: read('apps/api/scripts/migrate.sh') };
 }
 
 /** Migrations merged before this linter existed, each with a written reason. Recorded, not
@@ -477,13 +335,12 @@ export const EXEMPTIONS = new Map(Object.entries(JSON.parse(
     : '{}',
 )));
 
-export function lintAll({ root = REPO_ROOT, dir = MIGRATIONS_DIR, applyExemptions = true } = {}) {
+export function lintAll({ dir = MIGRATIONS_DIR, applyExemptions = true } = {}) {
   const out = [];
-  const context = repoContext(root);
   for (const name of readdirSync(dir).sort()) {
     const file = join(dir, name, 'migration.sql');
     if (!existsSync(file)) continue;
-    const findings = lintMigration({ name, sql: readFileSync(file, 'utf8'), context });
+    const findings = lintMigration({ name, sql: readFileSync(file, 'utf8') });
     for (const f of findings) {
       const exempt = applyExemptions && (EXEMPTIONS.get(name) ?? {})[f.rule];
       if (exempt) continue;
