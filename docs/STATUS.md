@@ -15,54 +15,28 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 756563c8
+reviewed_merge: 8a4b0db8
 open_pr: 423
 next_task: none
 blocking_directive: none
 updated: 2026-08-25
 ```
 
+**UNIT A MERGED AS #424 at `main` `8a4b0db8`** — the capture-context spine, the Site Map's
+`Add here`, and every finding from #422's two review rounds. Three units were split out of
+it to stay inside the review budget: the data-entry audit (docs only), which merged as #427
+at `e5d3c4fd`; progressive disclosure; and the photo capture-stamp fix. The last two are
+still to come and are not this unit's work.
+
 **`open_pr: 423` IS A TOOLING UNIT, NOT PHASE 6 TASK 4.** #423
-(`claude/migration-invariant-linter`) adds `pnpm lint:migrations` — a lexical scanner for
-PostgreSQL migrations plus three executable invariants drawn from the schedule-B1 lineage
-(#354→#415), which spent sixteen heads rediscovering one shape — and wires it into the required
-`automation` job. MI-001 refuses an object judged by NAME where the guard needed to compare its
-DEFINITION; MI-002 refuses a foreign key verified VALID without being asked whether it ENFORCES;
-MI-003 refuses a seal verified at apply time that no deploy-time counterpart ever re-checks. These
-three are the classes the lineage actually produced, and they found **two live defects on
-already-merged migrations** — `20270225000000_phase4_t3_correction3:169` (MI-002) and
-`20270920000000_decision_option_kinds:273` (MI-003) — both REPORTED, not fixed, because
-`apps/api/prisma/**` is read-only to this unit. Each needs its own unit, and shipping these rules
-now means those units land with a CI backstop rather than an assertion.
-
-**THE UNIT WAS RE-CUT AT THIS HEAD, AND IT IS OVER BUDGET.** The prior head `a8b401ba` shipped
-MI-000 (the enumerate-and-classify totality backstop) and MI-004 (transaction scope); this head
-ships the three P1 rules instead and defers those two, whose corrected implementations, fixtures
-and tests remain committed at `a8b401ba` on this branch — `git show a8b401ba` is the whole handover.
-The re-cut measures **1,859 changed lines across 19 files** against a 1,500-line budget. **No
-`justified-large` marker is claimed**; the measured seams are set out in the PR body for the
-owner's decision. Every deferral, its RED/GREEN evidence and both live defects are recorded in
-`docs/MIGRATION_INVARIANTS.md`. It is `scripts/`, `.github/workflows/ci.yml`, `package.json` and
-one doc: no `apps/web` file, no schema, no migration, no API change. It does NOT advance phase 6
-task 4. It carries `Replaces: none` deliberately: it is a fresh tooling unit carrying no part of
-#422's capture-context work, and #422's replacement obligation was discharged by #424, which merged
-at `8a4b0db` and is merged into this branch.
-
-**#424 REPLACED #422, WHICH REACHED THE TWO-FINDING-HEAD LIMIT, AND HAS MERGED.** #422 carried the
-same unit and took two Codex rounds: round 1 (the delivery option not gated on an open daily
-log, a components-barrel import cycle, and `LocationPicker` discarding its `value` so Change
-rendered blank over a set node) and round 2 (a delivery's `zone` holding STORAGE detail
-rather than a location, the failed-log-read case needing to fail closed, an inherited node
-deleted under an open form staying saveable, and `Add here` missing from the empty Site Map).
-All nine were fixed in #424; the round-2 five were reproduced red before the rebuild, and #422
-was closed without a third correction head.
-
-**#424 WAS A USER-DIRECTED UX UNIT, NOT PHASE 6 TASK 4.** It was Unit A of the
-low-effort data-entry initiative: a `CaptureContext` spine, context-inherited creation
-forms, and the Site Map gaining the ability to create at the place it is showing. It was
-`apps/web` only — no schema, no migration, no API change. It did NOT advance phase 6
-task 4, which still has no open PR of its own. Read `task: 4` as where the PHASE stands,
-and `open_pr` as what is actually in review right now.
+(`claude/migration-invariant-linter`) adds `pnpm lint:migrations` and wires it into the
+required `automation` job. It is `scripts/`, `.github/workflows/ci.yml`, `package.json` and
+one doc: no `apps/web` file, no schema, no migration, no API change. It does NOT advance
+phase 6 task 4. It carries `Replaces: none` deliberately — a fresh tooling unit carrying no
+part of #422's capture-context work, whose replacement obligation #424 discharged at
+`8a4b0db8`. The unit is being re-cut to fit the 1,500-line review budget; the rules it
+defers, and the two live defects it found on already-merged migrations, are recorded in
+`docs/MIGRATION_INVARIANTS.md`.
 
 **THE PRECEDING UX LINEAGE IS CLOSED.** #417 (mobile IA: primary tabs + More, a phone
 project switcher, the shared `LocationContext`/`EditState`) merged at `d4ca11e`. Its
