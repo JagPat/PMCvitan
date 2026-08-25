@@ -79,7 +79,8 @@ expensive even when it costs one tap.
 | project | every flow | already scoped — never asked (already correct) |
 | `nodeId` | decision, activity, inspection, material | inherited from the surface; shown as `Master Bathroom · Change` |
 | `nodeId` on a **photo** | photo | **NOT inherited.** Unit A wired `CaptureContext` into the three modals and never into photo capture: `DailyLogScreen` still holds a `photoNode` that starts null behind an optional `LocationPicker`. A photo is the one record type still asked for its place by hand — see §9 |
-| `zone` (free text) | activity, inspection | **derived** from `nodeId` by `locationLabelFor` (the full path, as the existing data writes it) |
+| `zone` (free text) | inspection | **derived** from `nodeId` by `locationLabelFor` (the full path, as the existing data writes it) |
+| `zone` on an **activity** | activity | **still asked twice.** `PlanActivityModal` keeps `zone` and `nodeId` as independent inputs and submits `zone.trim()` with no `locationLabelFor` call, so a node can be picked while the free text stays empty or contradicts it. Unit A derived `zone` for the checklist only — see §9 |
 | `zone` on a **material** | material | **NOT derivable** — it holds storage detail ("covered, on pallets"), so it stays a question |
 | author, date, time | all | already server-derived |
 | `takenAt`, geo | photo | **not sent.** The upload is `{ kind, mime, data, nodeId? }`, so for a photo queued offline the eventual *upload* time stands in for the capture time. Sending them is its own unit — see §9 |
@@ -150,13 +151,32 @@ here`, then choosing the record type — and an earlier version of this table om
 from the "after" column while counting the equivalent taps in "before". The comparison was
 therefore flattering itself by one step in every row.
 
-| Workflow | Before | After Unit A | Target |
+| Workflow | Before | After Unit A | Floor |
 |---|---|---|---|
-| Decision from a place | ~10 steps, location re-picked | **6**, location inherited | 4 |
-| Inspection from a place | ~9, location entered **twice** | **5**, asked once | 3 |
-| Material from a place | 5–6 | **5** — see below | 3 |
-| Site observation | **impossible** | still impossible | 3 |
+| Decision from a place | ~10 steps, location re-picked | **6**, location inherited | **6 — already there** |
+| Inspection from a place | ~9, location entered **twice** | **5**, asked once | **5 — already there** |
+| Material from a place | 5–6 | **5** — see below | **5 — already there** |
+| Site observation | **impossible** | still impossible | 4 |
 | Desktop photo | file dialog only | unchanged | 2 (drag/paste) |
+
+An earlier version of this column set *targets* of 4 / 3 / 3 for the first three rows. They
+are not reachable, and a measurement document does not get to publish goals it has not
+checked against its own arithmetic. Each place flow spends two entry taps (`Add here`, then
+the record type) and one confirmation, and what sits between them is the fields the server
+refuses to save without: a title and two option materials for a decision, a title and one
+item for an inspection, a name and a quantity for a delivery. 2 + 3 + 1, 2 + 2 + 1, 2 + 2 + 1
+— **6 / 5 / 5, which is exactly where Unit A landed.**
+
+That is the more useful finding and it was hidden behind the wrong number: these three flows
+are at their floor. No further field can come out without the API rejecting the save, so
+§5's two long forms are not the only things a mandatory rule protects — the whole remaining
+length of all three is mandatory.
+
+The one lever left is the entry model rather than the form. A `+` that opens a record type
+directly from the place already on screen would spend one tap where two are spent now, making
+the floor 5 / 4 / 4 — and that is the *only* thing that moves these rows. It is §7's subject,
+and §7's answer is still "not yet". The observation row's 4 assumes the same two entry taps
+plus a description and a confirmation, since that flow does not exist to measure.
 
 **A delivery's tap count did not improve, and the row should not pretend otherwise.** Five
 before, five after. What changed is what the record carries: the location now arrives with
@@ -175,11 +195,21 @@ this row are the ones §9 still lists as unshipped.
   (`media.service.ts` resolves and project-checks it), but the web's `UploadMediaInput` has
   no such field, so `addProgressPhoto` never sends one — and `SnapshotService` folds
   **project-wide** `kind: 'progress'` media, attaching the newest 12 to whichever log is
-  current. A day-two log therefore shows day-one photos and counts them as today's progress.
-  This is a real defect, not a wording problem, and it is NOT fixed by the capture-stamp
-  unit below: adding `takenAt` makes the mis-binding *visible* without correcting it. Either
-  the upload carries its log, or progress photos are defined as project-wide and the daily
-  log stops counting them as its own.
+  current. A day-two log therefore shows day-one photos in its gallery.
+
+  The failure is the gallery's scope, and only that. An earlier version of this bullet said
+  the log also *counted* those photos as today's progress; it does not, and the distinction
+  decides where a fix belongs. `DailyLog.progress` is `@default(0)` and is written in exactly
+  one place — `daily-log.submit`, from a number the engineer supplies (`daily-log.service.ts`
+  writes `progress: input.progress`). It is self-reported at submission and never derived
+  from media at all; `addProgressPhoto` increments it in the client only, which is what made
+  it look like a photo count. So a day-two log shows day-one photos beside a count of zero,
+  and a fix that adjusted the count would be repairing the wrong thing.
+
+  It is NOT fixed by the capture-stamp unit below either: adding `takenAt` makes the
+  mis-binding *visible* — yesterday's date in today's gallery — without correcting it. Either
+  the upload carries its log and the gallery is scoped to it, or progress photos are defined
+  as project-wide and the daily log stops presenting them as its own.
 - **The photo capture stamp — and the photo's place.** The stamp is its own review unit:
   making the daily log's "geo + time stamped" claim true is about what a photo *carries*.
   The place is a second gap in the same flow, and a gap this audit originally hid by listing
@@ -188,6 +218,9 @@ this row are the ones §9 still lists as unshipped.
 - **Progressive disclosure.** Also its own unit. Folding a form's optional fields under
   More details is §10 of the brief; Unit A did the §3 half. Both modals therefore still
   show every optional field today.
-- **The Activity form** keeps its nine flat controls and its day-offset dates.
+- **The Activity form** keeps its nine flat controls, its day-offset dates, and the
+  duplicate location question. `zone` and `nodeId` are still independent inputs there, so
+  picking a place leaves the free-text field to be typed anyway — or left contradicting it.
+  Unit A derived `zone` for the checklist only, and §4 briefly claimed the activity with it.
 - **Desktop density**: no command entry, no drag/drop, no paste, no split views.
 - **The universal `+`** and its device-specific shells.
