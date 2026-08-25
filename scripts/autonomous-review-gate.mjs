@@ -808,9 +808,9 @@ export function eligibleShape(pullRequest) {
   return {
     state: pullRequest.state,
     headRefName: pullRequest.head.ref,
-    baseRefName: pullRequest.base.ref,
+    baseRefName: pullRequest.base?.ref,
     headRepository: { nameWithOwner: pullRequest.head.repo?.full_name },
-    baseRepository: { nameWithOwner: pullRequest.base.repo?.full_name },
+    baseRepository: { nameWithOwner: pullRequest.base?.repo?.full_name },
   };
 }
 
@@ -943,10 +943,34 @@ export async function settleRecoveryRequest(
   );
 }
 
+// The live pull request, re-verified — or null, which every caller treats as "stop".
+//
+// ELIGIBILITY IS RE-ASKED HERE, and that is the correction Codex's P1 on the first head
+// required. Checking the base once in `run()` answers a question about the moment the
+// workflow STARTED. A pull request's base is not immutable: retargeting `main` -> `release`
+// changes NEITHER the head SHA NOR the state, so both existing guards below pass, and a
+// controller polling Codex would carry on and mutate a unit that can no longer land on
+// `main`. The damaging one is exhaustion — `enforceReviewConvergence` reaches
+// `markReplacementRequired` only through this function, so a stale base would mint exactly
+// the repository-wide obligation the eligibility rule exists to prevent.
+//
+// This is the same failure this unit was written to close, one level up: the FIRST head
+// checked the right attribute at one moment, and the object it describes can change after
+// that moment. Siting the re-check here rather than at each call site is what makes it
+// exhaustive — every lifecycle mutation (promotion out of draft, publishing a finding,
+// recording exhaustion, every sticky-comment and status write) reads the live pull request
+// through this one function, so there is no path that mutates without passing it.
 async function refreshCurrentHead(client, number, expectedHead) {
   const pullRequest = await client.pullRequest(number);
   if (pullRequest.state !== 'open' || pullRequest.head.sha !== expectedHead) {
     console.log('Pull request closed or a newer head superseded this workflow.');
+    return null;
+  }
+  if (!isEligiblePullRequest(eligibleShape(pullRequest))) {
+    console.log(
+      'Pull request is no longer eligible (base retargeted, or head repository changed); '
+      + 'leaving it untouched.',
+    );
     return null;
   }
   return pullRequest;
