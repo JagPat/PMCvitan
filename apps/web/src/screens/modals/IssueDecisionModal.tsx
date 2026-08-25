@@ -85,18 +85,18 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
             <input value={o.material} onChange={(e) => setOpt(i, { material: e.target.value })} placeholder="Material (e.g. Italian Marble)" style={{ ...fldD, width: '100%' }} data-testid={`dec-opt-${i}`} />
 
             <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                <input value={o.delta} onChange={(e) => setOpt(i, { delta: e.target.value })} placeholder="₹ delta (0 = base)" style={{ ...fldD, flex: '0 0 130px' }} />
-                <select value={o.swatch} onChange={(e) => setOpt(i, { swatch: e.target.value as SwatchKey })} style={{ ...fldD, flex: '0 0 120px' }} aria-label="Swatch">
-                  {SWATCH_KEYS.map((k) => <option key={k} value={k}>{k}</option>)}
-                </select>
-                <span style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid var(--hairline)', background: o.photo ? `center/cover url(${o.photo.preview})` : swatchGradient(o.swatch) }} />
-                <label style={{ fontSize: 12, color: 'var(--accent)', cursor: 'pointer' }}>
-                  {o.photo ? 'Change photo' : 'Add sample photo'}
-                  <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => pickPhoto(i, e.target.files?.[0] ?? null)} />
-                </label>
-                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
-                  <input type="radio" name="recommended" checked={o.recommended} onChange={() => setOpt(i, { recommended: true })} /> Recommended
-                </label>
+              <input value={o.delta} onChange={(e) => setOpt(i, { delta: e.target.value })} placeholder="₹ delta (0 = base)" style={{ ...fldD, flex: '0 0 130px' }} />
+              <select value={o.swatch} onChange={(e) => setOpt(i, { swatch: e.target.value as SwatchKey })} style={{ ...fldD, flex: '0 0 120px' }} aria-label="Swatch">
+                {SWATCH_KEYS.map((k) => <option key={k} value={k}>{k}</option>)}
+              </select>
+              <span style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid var(--hairline)', background: o.photo ? `center/cover url(${o.photo.preview})` : swatchGradient(o.swatch) }} />
+              <label style={{ fontSize: 12, color: 'var(--accent)', cursor: 'pointer' }}>
+                {o.photo ? 'Change photo' : 'Add sample photo'}
+                <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => pickPhoto(i, e.target.files?.[0] ?? null)} />
+              </label>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
+                <input type="radio" name="recommended" checked={o.recommended} onChange={() => setOpt(i, { recommended: true })} /> Recommended
+              </label>
             </div>
           </div>
         ))}

@@ -55,8 +55,8 @@ export function AddMaterialModal({ context, onClose }: { context?: CaptureContex
       <div style={{ padding: '18px 20px', maxHeight: '80vh', overflowY: 'auto' }}>
         <div id="add-mat-title" style={{ fontWeight: 700, fontSize: 17 }}>Record material delivery</div>
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
-          What arrived, how much, and how it is stored. Link it to a locked decision under More
-          details so the PMC can confirm the delivery matches what the client approved.
+          What arrived, how much, and how it is stored. Linking it to a locked decision lets the
+          PMC confirm the delivery matches what the client approved.
         </div>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Material (e.g. Italian Marble slabs)" style={{ ...fldM, marginTop: 14, width: '100%' }} data-testid="mat-name" />
         <input value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Qty (e.g. 40 sqm)" style={{ ...fldM, marginTop: 10, width: '100%' }} data-testid="mat-qty" />
@@ -68,20 +68,20 @@ export function AddMaterialModal({ context, onClose }: { context?: CaptureContex
         </div>
 
         <div style={{ ...sectionLabel, marginTop: 16 }}>LINK TO DECISION (optional)</div>
-          <select value={decisionId} onChange={(e) => setDecisionId(e.target.value)} style={{ ...fldM, width: '100%' }} data-testid="mat-decision" aria-label="Link to decision">
-            <option value="">— No linked decision —</option>
-            {decisions.map((d) => (
-              <option key={d.id} value={d.id}>{d.id} · {d.title}</option>
+        <select value={decisionId} onChange={(e) => setDecisionId(e.target.value)} style={{ ...fldM, width: '100%' }} data-testid="mat-decision" aria-label="Link to decision">
+          <option value="">— No linked decision —</option>
+          {decisions.map((d) => (
+            <option key={d.id} value={d.id}>{d.id} · {d.title}</option>
+          ))}
+        </select>
+
+        <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
+          <Swatch swatch={swatch} size={40} radius={9} />
+          <select value={swatch} onChange={(e) => setSwatch(e.target.value as SwatchKey)} style={{ ...fldM, flex: 1, minWidth: 0 }} aria-label="Material swatch">
+            {swatchKeys.map((k) => (
+              <option key={k} value={k}>{k}</option>
             ))}
           </select>
-
-          <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
-            <Swatch swatch={swatch} size={40} radius={9} />
-            <select value={swatch} onChange={(e) => setSwatch(e.target.value as SwatchKey)} style={{ ...fldM, flex: 1, minWidth: 0 }} aria-label="Material swatch">
-              {swatchKeys.map((k) => (
-                <option key={k} value={k}>{k}</option>
-              ))}
-            </select>
         </div>
 
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
