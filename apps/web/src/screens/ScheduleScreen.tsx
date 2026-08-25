@@ -150,7 +150,12 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: g.source === 'override' ? '#31567F' : 'var(--muted)', fontWeight: g.source === 'override' ? 700 : 400 }}>{g.k}</span>
             </div>
           ))}
-          {onOverride && (
+          {/* An override sets a GATE reading, and `start` refuses every status but not_started —
+              so on a blocked activity it records an audited decision that cannot change the
+              outcome. The affordance is withdrawn rather than left as a dead end; the banner
+              below states the blocked reason and the next valid step. Revoking an override
+              already recorded stays available on its chip. */}
+          {onOverride && a.status !== 'blocked' && (
             <button onClick={() => onOverride(a)} title="Record a gate override (expires automatically)" aria-label={`Override a gate on ${a.name}`} data-testid={`override-${a.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 2, marginTop: 1 }}>
               <ShieldCheck size={13} />
             </button>

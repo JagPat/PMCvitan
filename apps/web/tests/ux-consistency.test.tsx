@@ -143,6 +143,26 @@ describe('the demo producer carries the location into the review it generates (C
     const r = render(<InspectionReviewScreen />);
     expect(r.getByTestId(`review-place-${closing!.id}`).textContent).toBe('Site›Zone A');
   });
+
+  it("a submitted checklist's review inherits the checklist's filed node (Codex R1/#421)", async () => {
+    // The other producer on this path: submitting a checklist pushes a review built from
+    // `zone` alone, so every review reaching the PMC queue through the normal field workflow
+    // read as unplaced — the fix on `completeActivity` covered only the closing case.
+    const useStore = await load({
+      role: 'engineer',
+      checklist: checklist({ items: [{ name: 'Ponding test', state: 'pass', photos: 0, note: '' }] }),
+    });
+    act(() => { useStore.getState().submitInspection(); });
+
+    const generated = useStore.getState().reviews.find((r) => r.id === 'CHK-1');
+    expect(generated).toBeDefined();
+    expect(generated!.nodeId).toBe('zoneA');
+
+    act(() => { useStore.setState({ role: 'pmc', activeReviewId: 'CHK-1' }); });
+    const { InspectionReviewScreen } = await import('@/screens/InspectionReviewScreen');
+    const r = render(<InspectionReviewScreen />);
+    expect(r.getByTestId('review-place-CHK-1').textContent).toBe('Site›Zone A');
+  });
 });
 
 // ── Field checklist ────────────────────────────────────────────────────────────────────
@@ -305,5 +325,39 @@ describe('the schedule says WHY an activity cannot be acted on', () => {
     const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
     const r = render(<ScheduleScreen />);
     expect(r.queryByTestId('sched-restriction-ACT-1')).not.toBeInTheDocument();
+  });
+
+  it('the override affordance is withdrawn on a blocked row, not just argued against (Codex R1/#421)', async () => {
+    // Saying "resolve the blocker" while still offering the shield leaves the dead end in
+    // place: the PMC records an audited override and the activity stays unstartable.
+    await load({ activities: [activity({ status: 'blocked', block: 'Ponding test failed' })] });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    expect(r.queryByTestId('override-ACT-1')).not.toBeInTheDocument();
+    // …and the row still explains itself rather than going silent
+    expect(r.getByTestId('sched-restriction-ACT-1').textContent).toContain('Ponding test failed');
+  });
+
+  it('a startable row keeps the override — the withdrawal is scoped to blocked', async () => {
+    await load({ activities: [activity({ gm: 'wait' })] });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    expect(r.getByTestId('override-ACT-1')).toBeInTheDocument();
+  });
+
+  it('an override ALREADY recorded on a blocked row stays revocable', async () => {
+    // Withdrawing the record affordance must not strand governance: an override that exists
+    // is still the PMC's to revoke, whatever the activity's status.
+    await load({
+      activities: [activity({
+        status: 'blocked', block: 'Ponding test failed',
+        overrides: [{ id: 'OV-1', gate: 'material', state: 'ok', actorName: 'A. Patel', reason: 'set on site', expiresAt: '2026-12-01T00:00:00.000Z' }],
+      })],
+    });
+    const { ScheduleScreen } = await import('@/screens/ScheduleScreen');
+    const r = render(<ScheduleScreen />);
+    expect(r.queryByTestId('override-ACT-1')).not.toBeInTheDocument();
+    const chip = r.getByTestId('override-chip-OV-1');
+    expect(chip.querySelector('button[aria-label="Revoke override"]')).not.toBeNull();
   });
 });

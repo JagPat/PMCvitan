@@ -2251,6 +2251,10 @@ export const useStore = create<Store>()(
             id: s.checklist.id,
             title: s.checklist.title,
             zone: s.checklist.zone,
+            // the review inherits the checklist's FILED location, not just its legacy zone
+            // text: a checklist raised against a room is reviewed at that room, and dropping
+            // `nodeId` here would leave every demo-path review reading as unplaced.
+            ...(s.checklist.nodeId ? { nodeId: s.checklist.nodeId } : {}),
             by: 'Site Engineer',
             date: s.checklist.date,
             decided: false,
