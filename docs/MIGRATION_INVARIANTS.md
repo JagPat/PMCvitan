@@ -24,11 +24,11 @@ and it is easy to get off by one round.
 | Rule | The invariant | RED at | GREEN at |
 |---|---|---|---|
 | **MI-001** | An object resolved by NAME inside a guard that refuses must be compared by DEFINITION *in that guard* — and the definition must actually be *compared*, not merely fetched and NULL-tested. | `a222e91` (#411) | `96c9cc4` (#412) |
-| **MI-002** | A foreign key verified through `pg_constraint` must also be asked whether it ENFORCES, via `pg_trigger.tgenabled` on `tgconstraint`, *in the same guard*. | `a222e91` (#411) | `96c9cc4` (#412) |
 
-**Both are one concern: IS THE CHECK AS WIDE AS THE OBJECT IT JUDGES?** Each rule's full reasoning
-— the exact interleaving, what was measured, and why the narrower form passed review — is in the
-comment above its implementation in `scripts/migration-lint.mjs`.
+**This is the lineage's concern in its most direct form: IS THE CHECK AS WIDE AS THE OBJECT IT
+JUDGES?** MI-001 is the rule that found the most sites — thirteen, up from four once the per-site
+binding landed. Its full reasoning is in the comment above its implementation in
+`scripts/migration-lint.mjs`.
 
 ## The per-site correction — Codex findings F1, F2, F3, F4
 
@@ -39,7 +39,7 @@ check.**
 | | The rule asked | The question that matters | Ships here? |
 |---|---|---|---|
 | MI-001 (F2) | does this FILE contain a definition read? | is **this guard's** object compared by definition? | yes |
-| MI-002 (F3) | does this FILE mention `tgconstraint`? | does **this key's** guard read enforcement? | yes |
+| MI-002 (F3) | does this FILE mention `tgconstraint`? | does **this key's** guard read enforcement? | no — deferred, corrected |
 | MI-003 (F1) | does this FILE's `migrate.sh` contain the token? | did a verifier **actually run**? | no — deferred, corrected |
 | MI-004 (F4) | does this FILE contain a `BEGIN`? | is **this statement** inside a transaction? | no — deferred, corrected |
 
@@ -78,15 +78,16 @@ double-quoted name) is only observable through MI-000's totality claim, so it tr
 here was implemented, corrected against its Codex finding, and left with green tests. None of it is
 prose to be re-derived: it is committed code on this branch, and the follow-on unit starts from it.
 
-### MI-000, MI-003, MI-004 — deferred as COMMITTED, CORRECTED CODE
+### MI-000, MI-002, MI-003, MI-004 — deferred as COMMITTED, CORRECTED CODE
 
 | Rule | The invariant | RED at | GREEN at | State, and where |
 |---|---|---|---|---|
 | **MI-000** | Every statement, constraint and `DO` block classifies. An unrecognised construct is a finding. | — (corpus property) | — | Implemented, corrected for F5, tests green at **`a8b401ba`** |
+| **MI-002** | A foreign key verified through `pg_constraint` must also be asked whether it ENFORCES, via `pg_trigger.tgenabled` on `tgconstraint`, *in the same guard*. | `a222e91` (#411) | `96c9cc4` (#412) | Implemented, corrected for F3 per-site, tests green at **`f3f00a88`** |
 | **MI-003** | A migration that installs seals and verifies them must have a counterpart *invoked* from `migrate.sh` after `prisma migrate deploy` succeeds — an invocation, never a diagnostic that merely names the repair procedure. | `a222e91` (#411) | `96c9cc4` (#412) | Implemented, corrected for F1 per-site, tests green at **`08835700`** |
 | **MI-004** | No `SET LOCAL` or `LOCK TABLE` outside the `BEGIN`…`COMMIT` it actually stands between. | `c1054005` (#410) | `2f0e2af9` (#415) | Implemented, corrected for F4 per-site, tests green at **`a8b401ba`** |
 
-Both SHAs are ancestors of this head on this branch, so `git show <sha>` is the whole handover.
+Every SHA is an ancestor of this head on this branch, so `git show <sha>` is the whole handover.
 **This branch must never be rebased or force-pushed**: that history *is* the deferral record.
 
 * **`a8b401ba`** carries MI-000 and MI-004 — implementations, fixtures
@@ -94,6 +95,10 @@ Both SHAs are ancestors of this head on this branch, so `git show <sha>` is the 
   `green-2f0e2af9.sql`), RED/GREEN and adjacent-decoy tests, and the MI-004 exemption-ledger entry
   (`20270826000000_phase6_t4b_approval_attribution`, a bare top-level `LOCK TABLE`, accepted with a
   recorded divergence).
+* **`f3f00a88`** carries MI-002 — `ruleForeignKeyEnforcement`, its two fixtures
+  (`mi002-red-a222e91.sql`, `mi002-decoy-adjacent-guard.sql`), the F3 adjacent-decoy test, its
+  RED/GREEN pair, and its exemption-ledger entry
+  (`20270225000000_phase4_t3_correction3` / MI-002, the live defect below).
 * **`08835700`** carries MI-003 — `ruleApplyTimeOnly`, the `guardedProcedureTokens` shell parser,
   its four fixtures (`mi003-seals.sql`, `mi003-red-migrate-preflight-only.sh`,
   `mi003-green-migrate-invoked.sh`, `mi003-decoy-migrate-echo-only.sh`), the F1 adjacent-decoy
@@ -130,33 +135,38 @@ fourteen merged migrations, where a rename re-adds the key rather than blocking 
 MI-007 must exclude FOREIGN KEY (including it flagged seven `ON DELETE` action changes in
 `20261025000000_phase2_module_boundaries` alone, a file that adds no data-validating constraint).
 
-## The LIVE DEFECTS — one with a backstop here, one without
+## The LIVE DEFECTS — NEITHER has a backstop in this unit
 
-`apps/api/prisma/**` is read-only to this unit, so neither is repaired here. **They are not
-symmetrical, and a reader must not assume coverage this unit does not have:**
+Two defects of the B1 lineage's exact classes are live on already-merged migrations. **This unit
+ships no rule that fires on either, and a reader must not assume coverage it does not have.**
+`apps/api/prisma/**` is read-only to this unit, so neither is repaired here either.
 
-* **`20270225000000_phase4_t3_correction3:169` — MI-002. BACKSTOPPED BY THIS UNIT.** Verifies the
+* **`20270225000000_phase4_t3_correction3:169` — MI-002. NO BACKSTOP IN THIS UNIT.** Verifies the
   prerequisite composite foreign keys by `conname` + `conrelid` + `contype='f'` + `convalidated`,
   and never reads `tgenabled`. `DISABLE TRIGGER ALL` leaves every column that guard reads unchanged
   while the keys stop enforcing, so a restored database with no containment passes the prerequisite
-  and is baselined. Recorded in the exemption ledger with a written reason and pinned by a test, so
-  the unit that fixes it lands against a CI check rather than an assertion.
+  and is baselined. MI-002 is deferred, so it has no exemption entry and nothing in CI fires on it.
+  The backstop arrives with MI-002, corrected and green at `f3f00a88`.
 * **`20270920000000_decision_option_kinds:273` — MI-003. NO BACKSTOP IN THIS UNIT.** Installs
   `CONSTRAINT TRIGGER`s and verifies them against the catalog, but names no RUNBOOK procedure and
   has no counterpart in `migrate.sh`. Once its row is in `_prisma_migrations` the seals are never
   checked again, so a restore that drops or disables them yields a green deploy. **MI-003 is
   deferred, so nothing in CI fires on this today** — it has no exemption entry, because an exemption
   for a rule that does not run would suppress nothing and the no-dead-exemption test would refuse
-  it. Deferring the rule did not unfind the defect; it removed the alarm. The backstop arrives with
-  MI-003.
+  it. The backstop arrives with MI-003, corrected and green at `08835700`.
+
+**Deferring a rule did not unfind its defect; it removed the alarm.** Both sites are pinned by a
+test in `migration-lint.test.mjs` that asserts this unit's silence on them is what we think it is,
+so the day a later unit lands either rule, the count moves and the test says so.
 
 ## The measured corpus verdict, per site
 
-14 findings across 3 migrations on `main` at `e5d3c4fd` — MI-001 13, MI-002 1 — every one recorded
-in `scripts/migration-lint-exemptions.json` with a written, checkable reason. At `08835700`, with
-MI-003 still in, the same corpus measured 15.
+13 findings across 3 migrations on `main` at `e5d3c4fd`, all MI-001 and **all accepted** — every one
+recorded in `scripts/migration-lint-exemptions.json` with a written, checkable reason. The same
+corpus measured 14 at `f3f00a88` with MI-002 in, and 15 at `08835700` with MI-003 in as well; the
+difference between 13 and 15 is exactly the two live defects this unit can no longer see.
 
-The per-site binding **raised these counts sharply, and that is the rules working.** MI-001 alone
+The per-site binding **raised this count sharply, and that is the rule working.** MI-001
 went from 4 to 13 once one guard's definition read stopped excusing every other guard in the file.
 Two of those thirteen — the B1 migration's sections 1 and 9, both `pg_trigger` — were **invisible
 before the correction**, excused by section 8's `pg_get_triggerdef`. Ten are in
@@ -168,8 +178,11 @@ compiled `t3c seals` verifier that gates every `migrate.sh` path. One is in
 
 This unit is inside the 1,500-line standard budget and carries `review-size: standard`. **No
 `justified-large` marker is claimed, and none was ever claimed** — the overage was cut, not
-excused. What was cut, what each rung measured, and why the probes were never separated from their
-rules are in the pull request body.
+excused. Two cuts were built and measured against post-merge `main` before this one was chosen:
+MI-001 + MI-002 + the scanner measured **1,576 changed lines across 15 files**, still 76 over, and
+closing that gap would have meant deleting the deferral record or the honesty sections that are the
+compensating control for a reduced rule set. This cut measures inside the budget with the probes
+still attached to their rules. The full ladder is in the pull request body.
 
 ## Design: enumerate and classify, do not grep
 
@@ -204,9 +217,11 @@ let a future construct through silently.
 
 Stated plainly, because a linter trusted beyond its reach is worse than none:
 
-* **Nothing about correctness of the rule being enforced.** MI-002 checks that a key is asked
-  whether it enforces. It cannot tell you the key should not exist, or that the seal beside it is
-  about the wrong thing.
+* **Nothing about correctness of the rule being enforced.** MI-001 checks that a guard compares a
+  definition. It cannot tell you the object should not exist, or that the seal beside it is about
+  the wrong thing.
+* **A foreign key verified VALID but never asked whether it ENFORCES** — that is MI-002, deferred;
+  one live defect of that class is on `main` today with no CI alarm, named above.
 * **`provolatile`, `proconfig`, ownership, the column contract.** Several B1 rounds turned on
   catalog attributes beyond the classes here.
 * **An unrecognised construct, during `pnpm lint:migrations`** — that is MI-000, deferred; see the
@@ -238,14 +253,15 @@ Run `pnpm lint:migrations` first; it is 0.5s. Then, for what it cannot see:
 
 `scripts/migration-lint-exemptions.json` records migrations merged before the linter existed, with
 a written reason each. They are **recorded, not suppressed**: the measured verdict over the 91
-migrations on `main` at `e5d3c4fd` is 14 findings across 3 files, and each is listed there with what
-it is. One is marked **LIVE DEFECT** and is reported as a candidate for its own unit rather than
-fixed by this unit, whose file surface does not include `apps/api/prisma/**`.
+migrations on `main` at `e5d3c4fd` is 13 findings across 3 files, and each is listed there with what
+it is. **All thirteen are accepted**: this unit ships no rule that fires on a live defect. The two
+that are live need MI-002 and MI-003, and the ledger says so rather than staying silent.
 
 Two tests keep the ledger honest: every exemption must name a real migration and a real rule with a
 checkable reason, and none may be *dead* — one that suppresses nothing is a claim about the corpus
 that has stopped being true, and hides the next migration that reintroduces the shape. That second
-test is why MI-003's ledger entry travels with MI-003 rather than staying behind as a comment.
+test is why the MI-002 and MI-003 ledger entries travel with their rules rather than staying behind
+as comments: an exemption for a rule that does not run suppresses nothing.
 
 ## Adding a rule
 

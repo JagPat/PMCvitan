@@ -236,56 +236,8 @@ function ruleNameOverDefinition(file) {
   return out;
 }
 
-/**
- * MI-002 — a foreign key asserted VALID without asserting it ENFORCES.
- *
- * RED at `a222e91` (PR #411): five keys compared by `conname`, `contype='f'`, `conrelid` and the
- * `confrelid` OID — none of which decides whether the key ACTS. `ALTER TABLE … DISABLE TRIGGER ALL`
- * leaves every one of those catalog rows intact and identical while the key enforces nothing, which
- * is precisely what a restore can leave behind. GREEN at `96c9cc4` (PR #412), which reads
- * `pg_trigger.tgenabled` on `tgconstraint` for each key's four internal triggers.
- */
-function ruleForeignKeyEnforcement(file) {
-  const out = [];
-  // `contype = 'f'` SPECIFICALLY. The literal is blanked in the mask, so the value is resolved by
-  // POSITION against the literal table rather than by asking whether the file contains an 'f'
-  // anywhere — a first draft did the latter and flagged 20270225000000_phase4_t3_correction3, whose
-  // verification asks `contype = 'c'` about CHECK constraints and has no foreign keys in it at all.
-  const sites = [...file.masked.matchAll(/\bcontype\s*=\s*'/giu)]
-    .map((m) => ({ quote: m.index + m[0].length - 1, index: m.index }))
-    .filter(({ quote }) => file.literalsIn(quote, quote + 1).some((l) => l.value === 'f'));
-
-  // CODEX F3 AGAINST HEAD c6e9ff17. This took the FIRST such site in the file and then asked
-  // whether the FILE mentioned `tgconstraint` and `tgenabled` anywhere. One guard that read the
-  // enforcement state discharged every other foreign-key verification in the file, however many
-  // there were and wherever they stood. The enforcement read has to be IN the guard that refuses,
-  // because it is that guard's verdict that is wrong without it.
-  const reported = new Set();
-  for (const site of sites) {
-    const block = file.blocks.find((b) => site.index >= b.bodyStart && site.index < b.bodyEnd);
-    // A `contype='f'` outside any DO block is a bare statement; it is judged against the file, but
-    // only against the part of it that is not inside some other block's body.
-    const scope = block ? block.maskedBody : file.masked;
-    if (/\btgconstraint\b/iu.test(scope) && /\btgenabled\b/iu.test(scope)) continue;
-    // One finding per guard, not one per mention: the defect is the guard's, and a guard that
-    // verifies five keys the same wrong way has one thing to fix.
-    const key = block ? `b${block.start}` : `f${file.lineOf(site.index)}`;
-    if (reported.has(key)) continue;
-    reported.add(key);
-    out.push(finding('MI-002', file.lineOf(site.index),
-      'this guard verifies foreign keys through pg_constraint (contype = \'f\') without reading '
-      + 'pg_trigger.tgenabled on tgconstraint IN THIS GUARD. Every column in pg_constraint — including '
-      + 'convalidated and the confrelid OID — survives ALTER TABLE … DISABLE TRIGGER ALL unchanged, so a '
-      + 'key that enforces nothing passes this check intact. PR #411 head a222e91 verified five keys this '
-      + 'way; PR #412 head 96c9cc4 added the enforcement read. Join pg_trigger on tgconstraint and refuse '
-      + 'tgenabled in (D, R). An enforcement read in a different block does not answer for this one.'));
-  }
-  return out;
-}
-
 const RULES = [
   ['MI-001', ruleNameOverDefinition],
-  ['MI-002', ruleForeignKeyEnforcement],
 ];
 
 export const RULE_IDS = RULES.map(([id]) => id);

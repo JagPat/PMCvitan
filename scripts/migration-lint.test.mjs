@@ -42,13 +42,6 @@ const CASES = [
     red: { head: 'a222e91 (PR #411)', sql: fixture('mi001-red-a222e91.sql') },
     green: { head: '96c9cc4 (PR #412)', sql: fixture('green-96c9cc4.sql') },
   },
-  {
-    rule: 'MI-002',
-    finding: 'five foreign keys verified through pg_constraint — conname, contype, conrelid, confrelid — '
-      + 'none of which changes when ALTER TABLE ... DISABLE TRIGGER ALL stops the key enforcing',
-    red: { head: 'a222e91 (PR #411)', sql: fixture('mi002-red-a222e91.sql') },
-    green: { head: '96c9cc4 (PR #412)', sql: fixture('green-96c9cc4.sql') },
-  },
 ];
 
 for (const c of CASES) {
@@ -105,15 +98,6 @@ const DECOY_CASES = [
     sql: fixture('mi001-decoy-adjacent-guard.sql'),
     decoy: 'the first guard genuinely fetches pg_get_constraintdef and compares what came back',
     site: 27,
-  },
-  {
-    id: 'F3',
-    rule: 'MI-002',
-    title: 'a foreign-key guard with no enforcement read is no longer excused by a neighbour that has one',
-    was: 'the rule took the first contype=\'f\' site and asked whether the FILE mentioned tgconstraint and tgenabled',
-    sql: fixture('mi002-decoy-adjacent-guard.sql'),
-    decoy: 'the first guard genuinely joins pg_trigger on tgconstraint and refuses tgenabled in (D, R)',
-    site: 31,
   },
 ];
 
@@ -277,27 +261,31 @@ test('no exemption is dead — each one still suppresses something', () => {
   assert.deepEqual(dead, [], 'an exemption suppresses nothing and should be deleted');
 });
 
-// ── The LIVE DEFECT this unit reports, and the one it CANNOT ─────────────────────────────────
-// The B1 lineage's shape is live on two already-merged migrations. This unit ships a backstop for
-// exactly one of them, and the asymmetry is the cost of the cut, not an oversight:
+// ── The two LIVE DEFECTS, NEITHER of which this unit can see ──────────────────────────────────
+// Both are real, both are on already-merged migrations, and this unit ships no rule that fires on
+// either — MI-002 and MI-003, the rules that catch them, are deferred. That is the cost of the cut
+// and it is pinned here so no reader assumes coverage this unit does not have:
 //
-//   20270225000000_phase4_t3_correction3:169  MI-002  — SHIPS HERE. Pinned below, exempted with a
-//     written reason, and the exemption goes dead the day a later unit fixes it.
-//   20270920000000_decision_option_kinds:273  MI-003  — NO BACKSTOP IN THIS UNIT. MI-003 is
-//     deferred, so nothing in CI fires on it. It is still real; see docs/MIGRATION_INVARIANTS.md.
+//   20270225000000_phase4_t3_correction3:169  needs MI-002 (corrected, green at f3f00a88)
+//   20270920000000_decision_option_kinds:273  needs MI-003 (corrected, green at 08835700)
 //
-// apps/api/prisma/** is read-only to this unit, so neither is repaired here.
+// This test asserts the SILENCE is what we think it is: MI-001 sees neither site, so the corpus
+// count is 13 accepted findings and nothing else. If a later unit lands MI-002 or MI-003, this
+// count moves and the test says so.
 
-test('the corpus carries exactly the one live defect this unit can still see', () => {
+test('the corpus is 13 accepted MI-001 findings, and no rule here sees either live defect', () => {
   const all = lintAll({ applyExemptions: false });
-  const live = all
-    .filter((f) => f.rule === 'MI-002' && f.migration === '20270225000000_phase4_t3_correction3')
-    .map((f) => `${f.rule} ${f.migration}:${f.line}`);
-  assert.deepEqual(live, ['MI-002 20270225000000_phase4_t3_correction3:169'],
-    'the live defect this unit reported has moved, been fixed, or multiplied — update '
-    + 'docs/MIGRATION_INVARIANTS.md and the exemption ledger to match what is actually true now');
-  assert.equal(all.length, 14,
-    'the per-site corpus count changed. It was measured at 14 findings across 3 migrations on main '
-    + 'at e5d3c4fd (MI-001 13, MI-002 1); a different number means a migration changed or a rule '
-    + 'did, and the ledger and the doc both state the old figure.');
+  assert.deepEqual([...new Set(all.map((f) => f.rule))], ['MI-001'],
+    'this unit ships MI-001 only; a finding of another rule means the cut changed');
+  assert.equal(all.length, 13,
+    'the per-site corpus count changed. It was measured at 13 findings across 3 migrations on main '
+    + 'at e5d3c4fd, all MI-001 and all accepted; a different number means a migration changed or a '
+    + 'rule did, and the ledger and the doc both state the old figure.');
+  const unseen = all.filter((f) =>
+    (f.migration === '20270225000000_phase4_t3_correction3' && f.line === 169)
+    || (f.migration === '20270920000000_decision_option_kinds' && f.line === 273));
+  assert.deepEqual(unseen, [],
+    'a rule in this unit now fires on a site this unit documents as having NO backstop. That is '
+    + 'good news, but docs/MIGRATION_INVARIANTS.md and the exemption ledger both say otherwise — '
+    + 'update them before this passes.');
 });
