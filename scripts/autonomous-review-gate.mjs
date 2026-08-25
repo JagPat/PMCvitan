@@ -800,12 +800,17 @@ export class GitHubClient {
   }
 }
 
-function eligibleShape(pullRequest) {
+// `baseRefName` is projected because eligibility ASKS about it: an off-`main` unit must
+// never enter the lifecycle, since exhaustion takes no base test and would mint a
+// repository-wide obligation for work that could not land on `main`. The projection was the
+// reason the rule could not be sited here before — the shape simply did not carry the base.
+export function eligibleShape(pullRequest) {
   return {
     state: pullRequest.state,
     headRefName: pullRequest.head.ref,
+    baseRefName: pullRequest.base?.ref,
     headRepository: { nameWithOwner: pullRequest.head.repo?.full_name },
-    baseRepository: { nameWithOwner: pullRequest.base.repo?.full_name },
+    baseRepository: { nameWithOwner: pullRequest.base?.repo?.full_name },
   };
 }
 
@@ -938,16 +943,55 @@ export async function settleRecoveryRequest(
   );
 }
 
+/**
+ * Is this fetched object still the unit this workflow is acting on?
+ *
+ * ONE PREDICATE, APPLIED WHEREVER SUCH AN OBJECT IS ACCEPTED — and the reason it is one
+ * predicate rather than a check per call site is that three review rounds each added one
+ * more attribute at one more place, and each time the gap moved rather than closed:
+ *
+ *   round 1  the base was never asked at all; `eligibleShape` did not even project it, so an
+ *            off-`main` unit entered the lifecycle and its exhaustion minted a
+ *            repository-wide obligation for work that could never land on `main`.
+ *   round 2  the base was asked ONCE, at `run()` start. A retarget mid-poll changes neither
+ *            the head SHA nor the state, so the controller carried on mutating.
+ *   round 3  the base was asked before `client.setDraft()`, but that call REFETCHES and
+ *            returns the post-mutation object, and the helper accepted it on `state` and
+ *            `head.sha` alone. A retarget inside the mutation window was accepted and
+ *            `reviewAttempt()` proceeded with an off-`main` object, so the ready transition
+ *            could still trigger Codex on an ineligible unit.
+ *
+ * Every one of those is the same defect: an object accepted on fewer attributes than decide
+ * whether it is the thing being acted on. A fourth site would be a fourth chance to forget,
+ * so acceptance is defined once, here, and there is no other way to say yes to a live pull
+ * request. `state`, `head.sha` and eligibility are one verdict, not three checks that
+ * different call sites may sample from.
+ *
+ * NO ANCESTRY, at any placement: `main` advances under an open unit constantly and a squash
+ * merge breaks the relation a second way, so an ancestry test refuses ordinary valid work.
+ * This reads `base.ref` and nothing else.
+ */
+function isCurrentReviewUnit(pullRequest, expectedHead) {
+  return Boolean(pullRequest)
+    && pullRequest.state === 'open'
+    && pullRequest.head?.sha === expectedHead
+    && isEligiblePullRequest(eligibleShape(pullRequest));
+}
+
+// The live pull request, re-verified — or null, which every caller treats as "stop".
 async function refreshCurrentHead(client, number, expectedHead) {
   const pullRequest = await client.pullRequest(number);
-  if (pullRequest.state !== 'open' || pullRequest.head.sha !== expectedHead) {
-    console.log('Pull request closed or a newer head superseded this workflow.');
+  if (!isCurrentReviewUnit(pullRequest, expectedHead)) {
+    console.log(
+      'Pull request is closed, superseded by a newer head, or no longer eligible '
+      + '(base retargeted, or head repository changed); leaving it untouched.',
+    );
     return null;
   }
   return pullRequest;
 }
 
-async function setDraftForCurrentHead(
+export async function setDraftForCurrentHead(
   client,
   number,
   expectedHead,
@@ -955,10 +999,11 @@ async function setDraftForCurrentHead(
 ) {
   const pullRequest = await refreshCurrentHead(client, number, expectedHead);
   if (!pullRequest) return null;
+  // `client.setDraft` REFETCHES and returns the post-mutation pull request, so `updated` is
+  // authoritative evidence about a moment AFTER the guard above ran — and a retarget inside
+  // that window would otherwise be accepted. It is held to the identical verdict.
   const updated = await client.setDraft(pullRequest, draft);
-  return updated.state === 'open' && updated.head.sha === expectedHead
-    ? updated
-    : null;
+  return isCurrentReviewUnit(updated, expectedHead) ? updated : null;
 }
 
 export async function completeReviewedPullRequest(

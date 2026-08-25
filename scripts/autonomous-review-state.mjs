@@ -1,3 +1,5 @@
+import { isLineageBase } from './lineage-policy.mjs';
+
 export const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
 export const CODEX_GRAPHQL_LOGIN = 'chatgpt-codex-connector';
 
@@ -43,6 +45,43 @@ function findingIdentity(comment) {
     .join('\0');
 }
 
+/**
+ * May the controller act on this pull request at all?
+ *
+ * THE BASE REF IS PART OF THAT QUESTION, and it is the third and last placement of the
+ * lineage base rule. #402 put the rule at ADMISSION (`assessReviewScope`, so the required
+ * `review-scope` check fails an off-`main` unit) and at SETTLEMENT (`settlementOf`, so a
+ * merge that never touched `main` discharges nothing). Neither stops an off-`main` unit
+ * from ENTERING the lifecycle, and entering is what does the damage.
+ *
+ * MEASURED on this repository, before this guard: `eligibleShape` did not project
+ * `base.ref` at all, so a unit targeting `release` was eligible; the orchestrator then ran
+ * its whole lifecycle on it. EXHAUSTION TAKES NO BASE TEST — deliberately, because
+ * suppressing an obligation there would be a waiver path, letting a `release`-targeted unit
+ * draw findings across two heads and have them neither fixed nor carried. So the off-`main`
+ * unit is labelled `review-replacement-required`, which is a REPOSITORY-WIDE obligation, and
+ * `assessReplacementLineage` then refuses every fresh `main` unit:
+ *
+ *     exhausted PR #500 still requires a replacement; declare Replaces: #500
+ *     before starting fresh work
+ *
+ * Every unit in the repository is blocked behind work that was never eligible to land on
+ * `main` at all. A claimant merging off-`main` is the narrower failure; this is the one that
+ * stops the loop, and admission cannot prevent it because admission fails a CHECK while the
+ * lifecycle carries on around it.
+ *
+ * UNCONDITIONAL, where the admission rule is gated on `preReviewRequired`. The two moments
+ * answer different questions and take different risks. Admission FAILS A REQUIRED CHECK, so
+ * applying it retroactively would turn a unit red that was valid when it opened — hence the
+ * gate. Eligibility only decides NOT TO ACT, which is what this function already does for a
+ * fork and for a closed pull request: the controller leaves the pull request untouched and
+ * changes nothing. Refusing is therefore fail-closed at both ends, and there is no
+ * retroactive failure to protect against.
+ *
+ * NO ANCESTRY, here or at any placement. `main` advances under an open unit constantly and a
+ * squash merge breaks the relation a second way, so an ancestry test refuses ordinary valid
+ * work. This reads `base.ref` and nothing else.
+ */
 export function isEligiblePullRequest(pullRequest) {
   const state = String(pullRequest?.state ?? '').toUpperCase();
   const headRepository = pullRequest?.headRepository?.nameWithOwner;
@@ -51,7 +90,8 @@ export function isEligiblePullRequest(pullRequest) {
   return (
     state === 'OPEN' &&
     typeof headRepository === 'string' &&
-    headRepository === baseRepository
+    headRepository === baseRepository &&
+    isLineageBase(pullRequest?.baseRefName)
   );
 }
 
