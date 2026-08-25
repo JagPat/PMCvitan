@@ -121,6 +121,26 @@ describe('switching from the top bar goes through the existing store path', () =
     expect(r.queryByTestId('project-sheet')).not.toBeInTheDocument();
   });
 
+  it('does NOT offer Portfolio to a role that cannot open it (Codex P2)', async () => {
+    // `screensFor` gives Portfolio to pmc ONLY. An unconditional row advertises a destination
+    // RouteBridge immediately bounces — it would briefly mount PortfolioScreen and start its
+    // data load before redirecting the user to their own home screen.
+    const { TopBar } = await loadBar({ role: 'engineer' });
+    const r = render(<TopBar />);
+    fireEvent.click(r.getByTestId('mobile-project-switcher'));
+    expect(r.getByTestId('project-sheet')).toBeInTheDocument();
+    // the switch itself still works for this role — only the Portfolio row is withheld
+    expect(r.getByTestId('project-sheet-ambli')).toBeInTheDocument();
+    expect(r.queryByTestId('project-sheet-portfolio')).not.toBeInTheDocument();
+  });
+
+  it('still offers Portfolio to a PMC, who can open it', async () => {
+    const { TopBar } = await loadBar({ role: 'pmc' });
+    const r = render(<TopBar />);
+    fireEvent.click(r.getByTestId('mobile-project-switcher'));
+    expect(r.getByTestId('project-sheet-portfolio')).toBeInTheDocument();
+  });
+
   it('the top bar reads project identity from the store, so an external switch is reflected without local state', async () => {
     const { useStore, TopBar } = await loadBar();
     const r = render(<TopBar />);

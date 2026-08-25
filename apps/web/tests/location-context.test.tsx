@@ -144,6 +144,36 @@ describe('the Site Map adopts the requested place, once', () => {
   });
 });
 
+describe('following a crumb from inside an open overlay actually shows the destination', () => {
+  it('closes the drawing viewer when a place request is consumed in place (Codex P2)', async () => {
+    // A drawing opened from the Site Map renders its own location block, whose crumbs call
+    // `openPlace`. The screen is ALREADY 'places', so the focus effect moves `sel` behind the
+    // still-open modal and the crumb appears to do nothing until the viewer is closed by hand.
+    const drawingRev = {
+      id: 'r1', rev: 'A', status: 'for_construction', mime: 'application/pdf',
+      url: '/drawings/rev/r1', sizeBytes: 10, note: '', issuedBy: 'PMC', issuedAt: 'now', acks: [],
+    };
+    const { useStore } = await load({
+      drawings: [{
+        id: 'DWG-1', number: 'A-101', title: 'Plan', discipline: 'architectural', zone: 'GF',
+        activityId: null, decisionId: null, draft: false, current: drawingRev,
+        ackedByMe: false, revisions: [drawingRev], nodeId: 'zoneA',
+      }],
+    });
+    const { PlacesScreen } = await import('@/screens/PlacesScreen');
+    act(() => { useStore.getState().openPlace('zoneA'); });
+    const r = render(<PlacesScreen />);
+
+    fireEvent.click(r.getByTestId('place-drawing-A-101'));
+    expect(r.getByTestId('drawing-place-DWG-1')).toBeInTheDocument(); // the viewer is open
+
+    // follow a crumb from inside the viewer — the destination must become visible
+    act(() => { useStore.getState().openPlace('site'); });
+    expect(r.queryByTestId('drawing-place-DWG-1')).not.toBeInTheDocument();
+    expect(r.getByTestId('place-breadcrumb').textContent).toContain('Site');
+  });
+});
+
 describe('zone-level and site-level work is FILED and READ where it belongs (no pseudo-rooms)', () => {
   it('an excavation filed directly on the Site is listed at the Site', async () => {
     const { useStore } = await load({ activities: [activity('A-1', 'Excavation', 'site')] });

@@ -5,7 +5,7 @@ import { useProjectSwitch } from './useProjectSwitch';
 import { CreateProjectModal } from './ProjectSwitcher';
 import { Check, Plus, X, LayoutGrid } from '@/lib/icons';
 import { ROLE_LABEL } from '@/lib/screens';
-import type { NavItem } from './useNavItems';
+import { useNavItems, type NavItem } from './useNavItems';
 import styles from './MobileSheet.module.css';
 
 /**
@@ -103,6 +103,10 @@ export function ProjectSheet({ onClose }: { onClose: () => void }) {
   const { memberships, activeProjectId, adminOrg, switchProject } = useProjectSwitch();
   const setScreen = useStore((s) => s.setScreen);
   const [creating, setCreating] = useState(false);
+  // Portfolio is a pmc-only screen (`screensFor`), so offering it unconditionally would
+  // advertise a destination `RouteBridge` immediately bounces — mounting PortfolioScreen and
+  // starting its load before redirecting the user home. Same permission source as the nav.
+  const canOpenPortfolio = useNavItems().some((n) => n.key === 'portfolio');
 
   if (creating && adminOrg) return <CreateProjectModal orgId={adminOrg.id} onClose={onClose} />;
 
@@ -128,17 +132,19 @@ export function ProjectSheet({ onClose }: { onClose: () => void }) {
           </button>
         );
       })}
-      <button
-        className={styles.row}
-        data-testid="project-sheet-portfolio"
-        onClick={() => {
-          setScreen('portfolio');
-          onClose();
-        }}
-      >
-        <LayoutGrid size={18} />
-        <span className={styles.rowLabel}>All projects (Portfolio)</span>
-      </button>
+      {canOpenPortfolio && (
+        <button
+          className={styles.row}
+          data-testid="project-sheet-portfolio"
+          onClick={() => {
+            setScreen('portfolio');
+            onClose();
+          }}
+        >
+          <LayoutGrid size={18} />
+          <span className={styles.rowLabel}>All projects (Portfolio)</span>
+        </button>
+      )}
       {adminOrg && (
         <button className={styles.row} data-testid="project-sheet-new" onClick={() => setCreating(true)} style={{ color: 'var(--accent)' }}>
           <Plus size={18} />

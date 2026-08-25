@@ -50,6 +50,10 @@ export function PlacesScreen() {
   useEffect(() => {
     if (placeFocus === null) return;
     setSel(placeFocus);
+    // A crumb tapped INSIDE the drawing viewer requests a place while this screen is already
+    // on stage: without closing the overlay the destination changes behind it and the crumb
+    // looks inert. The viewer is the only overlay carrying crumbs, so it is the only one closed.
+    setOpenDrawing(null);
     clearPlaceFocus();
   }, [placeFocus, clearPlaceFocus]);
   const [zoom, setZoom] = useState<string | null>(null);
