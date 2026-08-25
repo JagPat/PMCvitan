@@ -33,8 +33,9 @@ and `open_pr` as what is actually in review right now.
 project switcher, the shared `LocationContext`/`EditState`) merged at `d4ca11e`. Its
 completion audit ran as #420, which reached the two-finding-head limit and was replaced by
 #421 (`Replaces: #420`) carrying every finding from both of its rounds; #421 took one
-further Codex round of its own and merged clean at `756563c8`. The `docs/ux/DATA_ENTRY_AUDIT.md`
-this unit adds is the measurement that justifies what follows it.
+further Codex round of its own and merged clean at `756563c8`. The measurement that justifies this
+work (`docs/ux/DATA_ENTRY_AUDIT.md`) and the photo capture-stamp fix are each held for their
+own review unit, to keep this one inside the review budget.
 
 `task_state` stays `in_progress` rather than `in_review` deliberately: the live-file pin in
 `autonomous-status-state.test.mjs` requires STATUS to still resolve a next step AFTER the
