@@ -150,20 +150,35 @@ export function migrationNames(dir = MIGRATIONS_DIR) {
   return readdirSync(dir).sort().filter((n) => existsSync(join(dir, n, 'migration.sql')));
 }
 
+/**
+ * Lint the whole corpus.
+ *
+ * Returns findings AND exempted findings separately. An exemption suppresses the BUILD FAILURE, not
+ * the report: the CLI prints every exempted finding with its written reason on each run, so a live
+ * defect this unit is not allowed to repair stays visible in the same output as a failing one
+ * rather than disappearing into a JSON file nobody opens.
+ */
 export function lintAll({ dir = MIGRATIONS_DIR, applyExemptions = true } = {}) {
-  const out = [];
+  const findings = [];
+  const exempted = [];
   for (const name of migrationNames(dir)) {
     for (const f of lintMigration({ name, sql: readFileSync(join(dir, name, 'migration.sql'), 'utf8') })) {
-      if (applyExemptions && (EXEMPTIONS.get(name) ?? {})[f.rule]) continue;
-      out.push(f);
+      const reason = applyExemptions ? (EXEMPTIONS.get(name) ?? {})[f.rule] : undefined;
+      if (reason) exempted.push({ ...f, reason });
+      else findings.push(f);
     }
   }
-  return out;
+  return Object.assign(findings, { exempted });
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   await loadParser();
   const findings = lintAll();
+  for (const f of findings.exempted) {
+    const live = f.reason.startsWith('LIVE DEFECT');
+    console.error(`${f.migration}/migration.sql:${f.line}  ${f.rule}  ${live ? 'LIVE DEFECT (recorded, not repaired here)' : 'RECORDED EXEMPTION'}: ${f.reason}`);
+  }
+  if (findings.exempted.length > 0) console.error('');
   for (const f of findings) {
     console.error(`${f.migration}/migration.sql:${f.line}  ${f.rule}  ${f.message}`);
   }
@@ -175,5 +190,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     process.exit(1);
   }
   const n = migrationNames().length;
-  console.log(`migration-lint: clean (${n} migrations, ${RULE_IDS.length} rule${RULE_IDS.length === 1 ? '' : 's'}).`);
+  const recorded = findings.exempted.length;
+  console.log(`migration-lint: clean (${n} migrations, ${RULE_IDS.length} rule${RULE_IDS.length === 1 ? '' : 's'}`
+    + `${recorded > 0 ? `, ${recorded} recorded exemption${recorded === 1 ? '' : 's'} printed above` : ''}).`);
 }
