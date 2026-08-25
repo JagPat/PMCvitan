@@ -23,9 +23,18 @@ updated: 2026-08-25
 ```
 
 **`open_pr: 423` IS A TOOLING UNIT, NOT PHASE 6 TASK 4.** #423
-(`claude/migration-invariant-linter`) adds `pnpm lint:migrations` — five executable migration
-invariants (MI-000..MI-004) drawn from the schedule-B1 lineage (#354→#415), which spent sixteen
-heads rediscovering one shape — and wires it into the required `automation` job. It is `scripts/`, `.github/workflows/ci.yml`, `package.json` and
+(`claude/migration-invariant-linter`) adds `pnpm lint:migrations` — a lexical scanner for
+PostgreSQL migrations plus two executable invariants drawn from the schedule-B1 lineage
+(#354→#415), which spent sixteen heads rediscovering one shape — and wires it into the required
+`automation` job. MI-000 is the enumerate-and-classify backstop: every statement, constraint and
+`DO` block in all 91 migrations classifies, and an unrecognised construct fails rather than passing
+by being unmentioned. MI-004 refuses a `SET LOCAL` or `LOCK TABLE` outside the transaction it
+actually stands between. **The unit narrowed during the #423 correction round:** MI-001/MI-002 (the
+catalog-guard pair) and MI-003 (which needs a shell parser for `migrate.sh`) are built, corrected
+and measured, but ship as two follow-on units rather than pushing this one past the 1,500-line
+review budget — the seam is taken at shared machinery, not claimed as an exception, and every
+deferral including its two LIVE DEFECTS is recorded with measured evidence in
+`docs/MIGRATION_INVARIANTS.md`. It is `scripts/`, `.github/workflows/ci.yml`, `package.json` and
 one new doc: no `apps/web` file, no schema, no migration, no API change, and `apps/api/prisma/**` is
 read-only to it. It does NOT advance phase 6 task 4. It carries `Replaces: none` deliberately: it is
 a fresh tooling unit carrying no part of #422's capture-context work, and #422's replacement

@@ -21,6 +21,98 @@
 const DOLLAR_TAG = /^\$([A-Za-z_-￿][A-Za-z0-9_-￿]*)?\$/u;
 
 /**
+ * Is the quote at `i` the opening of an ESCAPE-STRING literal — `E'…'`?
+ *
+ * With `standard_conforming_strings` on (the default since 9.1) this prefix is the ONE place
+ * PostgreSQL gives a backslash meaning inside a literal. The `E` must be a prefix and not the tail
+ * of an identifier, so `value_e'x'` is not one and neither is `"colE"'x'`.
+ */
+function isEscapeString(text, i) {
+  if (i === 0) return false;
+  const prev = text[i - 1];
+  if (prev !== 'E' && prev !== 'e') return false;
+  return !/[A-Za-z0-9_$"]/u.test(i >= 2 ? text[i - 2] : '');
+}
+
+/**
+ * Advance past the single-quoted literal starting at `i`; return the offset just past its closing
+ * quote (or the end of input if it is unterminated).
+ *
+ * `''` is an escaped quote and does not end a literal. Inside an `E'…'` literal NEITHER does `\'`,
+ * and getting that wrong is Codex finding F7 against head c6e9ff17: `SELECT E'abc\'def';` ended at
+ * the ESCAPED quote, so the real closing quote opened a second literal that ran on to the next
+ * quote in the file. Everything between — in the probe, a whole `SET LOCAL` statement — was masked
+ * as string content, and three statements were read as one. A scanner that loses a statement makes
+ * every rule above it silently narrower than the file it judges, and it fails OPEN.
+ *
+ * EVERY pass that walks a literal calls this one function, because three hand-rolled copies of the
+ * loop is exactly how the three passes came to disagree about where a literal ends.
+ */
+export function endOfSingleQuoted(text, i) {
+  const escapes = isEscapeString(text, i);
+  let k = i + 1;
+  while (k < text.length) {
+    if (escapes && text[k] === '\\' && k + 1 < text.length) { k += 2; continue; }
+    if (text[k] === "'" && text[k + 1] === "'") { k += 2; continue; }
+    if (text[k] === "'") { k += 1; break; }
+    k += 1;
+  }
+  return k;
+}
+
+/** Advance past the block comment starting at `i`. Block comments NEST in PostgreSQL, unlike C. */
+function endOfBlockComment(text, i) {
+  let depth = 1;
+  let k = i + 2;
+  while (k < text.length && depth > 0) {
+    if (text.slice(k, k + 2) === '/*') { depth += 1; k += 2; continue; }
+    if (text.slice(k, k + 2) === '*/') { depth -= 1; k += 2; continue; }
+    k += 1;
+  }
+  return k;
+}
+
+/** Advance past the double-quoted identifier starting at `i`. `""` is an escaped quote. */
+function endOfQuotedIdentifier(text, i) {
+  let k = i + 1;
+  while (k < text.length) {
+    if (text[k] === '"' && text[k + 1] === '"') { k += 2; continue; }
+    if (text[k] === '"') { k += 1; break; }
+    k += 1;
+  }
+  return k;
+}
+
+/** The simple backslash escapes PostgreSQL decodes inside an `E'…'` literal. */
+const SIMPLE_ESCAPES = { b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+
+/**
+ * Decode one backslash escape at `k` (which points at the `\`), returning `[text, nextOffset]`.
+ * PostgreSQL's rule for a backslash before anything it does not recognise is that the backslash is
+ * IGNORED and the character stands for itself, which is what the final branch does. The corpus uses
+ * exactly one escape-string shape — `btrim(x, E' \t\n\x0B\f\r')` — and it exercises the simple and
+ * hex forms, so decoding them is not speculative.
+ */
+function decodeEscape(text, k) {
+  const c = text[k + 1];
+  if (c === undefined) return ['\\', k + 1];
+  if (SIMPLE_ESCAPES[c]) return [SIMPLE_ESCAPES[c], k + 2];
+  if (c === 'x') {
+    const m = /^[0-9A-Fa-f]{1,2}/u.exec(text.slice(k + 2, k + 4));
+    if (m) return [String.fromCodePoint(parseInt(m[0], 16)), k + 2 + m[0].length];
+  }
+  if (c === 'u' || c === 'U') {
+    const width = c === 'u' ? 4 : 8;
+    const m = new RegExp(`^[0-9A-Fa-f]{${width}}`, 'u').exec(text.slice(k + 2, k + 2 + width));
+    if (m) return [String.fromCodePoint(parseInt(m[0], 16)), k + 2 + width];
+  }
+  const oct = /^[0-7]{1,3}/u.exec(text.slice(k + 1, k + 4));
+  if (oct) return [String.fromCodePoint(parseInt(oct[0], 8)), k + 1 + oct[0].length];
+  return [c, k + 2];
+}
+
+
+/**
  * Scan `sql` and return `{ mask, lineOf }`.
  *
  * `mask` is the same length as `sql`, with comment/literal/dollar-body bytes blanked to spaces.
@@ -52,26 +144,15 @@ export function scan(sql) {
     if (two === '/*') {
       // Block comments NEST in PostgreSQL, unlike C. `/* /* */ */` is one comment, and a scanner
       // that stopped at the first `*/` would resume inside a comment and mask real SQL as code.
-      let depth = 1;
-      let k = i + 2;
-      while (k < sql.length && depth > 0) {
-        if (sql.slice(k, k + 2) === '/*') { depth += 1; k += 2; continue; }
-        if (sql.slice(k, k + 2) === '*/') { depth -= 1; k += 2; continue; }
-        k += 1;
-      }
+      const k = endOfBlockComment(sql, i);
       blank(i, k);
       i = k;
       continue;
     }
 
     if (sql[i] === "'") {
-      // A single-quoted literal. `''` is an escaped quote and does NOT end it.
-      let k = i + 1;
-      while (k < sql.length) {
-        if (sql[k] === "'" && sql[k + 1] === "'") { k += 2; continue; }
-        if (sql[k] === "'") { k += 1; break; }
-        k += 1;
-      }
+      // A single-quoted literal — `''` and, in an `E'…'`, `\'` are escaped quotes that do NOT end it.
+      const k = endOfSingleQuoted(sql, i);
       // Keep the delimiters as code so a rule can still see that a literal was PRESENT.
       mask[i] = "'";
       blank(i + 1, Math.max(i + 1, k - 1));
@@ -83,13 +164,7 @@ export function scan(sql) {
     if (sql[i] === '"') {
       // A quoted IDENTIFIER is code, not a literal — `"ActivityDependency"` is the object's name
       // and every rule here needs to read it. It is left intact; only the escape rule matters.
-      let k = i + 1;
-      while (k < sql.length) {
-        if (sql[k] === '"' && sql[k + 1] === '"') { k += 2; continue; }
-        if (sql[k] === '"') { k += 1; break; }
-        k += 1;
-      }
-      i = k;
+      i = endOfQuotedIdentifier(sql, i);
       continue;
     }
 
@@ -163,22 +238,23 @@ export function dollarBlocks(sql) {
           }
         }
       }
-      // Skip over the constructs that can CONTAIN a `$` that is not a tag.
+      // SKIP EVERY CONSTRUCT THAT CAN CONTAIN A `$` THAT IS NOT A TAG, and the omissions here are
+      // Codex finding F6 against head c6e9ff17: this walk skipped line comments and literals but
+      // NOT block comments or quoted identifiers. Two block comments carrying a matching `$tag$`
+      // therefore opened a block at the first and closed it at the second, and `statements()` —
+      // which asks this function which offsets are inside a block — found no top-level semicolon
+      // in between and merged every real statement under the leading one. The fabricated block's
+      // body held an UPDATE, so it classified as a data-backfill and MI-000 was content while
+      // MI-004 never saw the `SET LOCAL` at all. PROSE HID EXECUTABLE SQL, which is the same
+      // failure direction as a comment being read AS code: the file is not what the linter read.
       if (text.slice(i, i + 2) === '--') {
         const nl = text.indexOf('\n', i);
         i = nl === -1 ? text.length : nl;
         continue;
       }
-      if (text[i] === "'") {
-        let k = i + 1;
-        while (k < text.length) {
-          if (text[k] === "'" && text[k + 1] === "'") { k += 2; continue; }
-          if (text[k] === "'") { k += 1; break; }
-          k += 1;
-        }
-        i = k;
-        continue;
-      }
+      if (text.slice(i, i + 2) === '/*') { i = endOfBlockComment(text, i); continue; }
+      if (text[i] === "'") { i = endOfSingleQuoted(text, i); continue; }
+      if (text[i] === '"') { i = endOfQuotedIdentifier(text, i); continue; }
       i += 1;
     }
   };
@@ -227,33 +303,36 @@ export function literals(sql) {
   let i = 0;
   while (i < sql.length) {
     if (sql.slice(i, i + 2) === '--') { const nl = sql.indexOf('\n', i); i = nl === -1 ? sql.length : nl; continue; }
+    if (sql.slice(i, i + 2) === '/*') { i = endOfBlockComment(sql, i); continue; }
     if (sql[i] === '$') {
       const m = DOLLAR_TAG.exec(sql.slice(i));
       // Literals inside a dollar-quoted body are still literals: the PL/pgSQL inside a `DO` block
       // is where these files state their inventories. Recurse rather than skip.
       if (m) { i += m[0].length; continue; }
     }
-    if (sql[i] === '"') {
-      let k = i + 1;
-      while (k < sql.length) {
-        if (sql[k] === '"' && sql[k + 1] === '"') { k += 2; continue; }
-        if (sql[k] === '"') { k += 1; break; }
-        k += 1;
-      }
-      i = k;
-      continue;
-    }
+    if (sql[i] === '"') { i = endOfQuotedIdentifier(sql, i); continue; }
     if (sql[i] === "'") {
-      let k = i + 1;
+      // The BOUNDARY comes from the shared reader so this pass cannot disagree with `scan` about
+      // where the literal ends; the VALUE is decoded here because a caller comparing it to
+      // 'pg_catalog' or 'f' needs what PostgreSQL would see, not the source bytes.
+      const escapes = isEscapeString(sql, i);
+      const end = endOfSingleQuoted(sql, i);
       let value = '';
-      while (k < sql.length) {
+      let k = i + 1;
+      while (k < end) {
+        if (escapes && sql[k] === '\\' && k + 1 < end) {
+          const [text, next] = decodeEscape(sql, k);
+          value += text;
+          k = next;
+          continue;
+        }
         if (sql[k] === "'" && sql[k + 1] === "'") { value += "'"; k += 2; continue; }
-        if (sql[k] === "'") { k += 1; break; }
+        if (sql[k] === "'") break;
         value += sql[k];
         k += 1;
       }
       out.push({ value, start: i, line: lineOf(i) });
-      i = k;
+      i = end;
       continue;
     }
     i += 1;

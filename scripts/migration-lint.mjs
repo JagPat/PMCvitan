@@ -12,16 +12,35 @@
 // judges — the exact defect it exists to catch, restated as its own implementation. So wherever
 // the artifact is ENUMERABLE this file enumerates it and classifies EVERY member (MI-000), and an
 // unrecognised construct FAILS rather than passing by being unmentioned. Two rules cannot be
-// expressed that way — MI-003 here, and MI-006 in the follow-on unit — and each says why.
+// expressed that way — MI-003 and MI-006 — and both ship in a follow-on unit; see SCOPE below.
 //
-// SCOPE. This unit ships the four rules that share ONE shape: A PROTECTION THAT IS PRESENT BUT
-// INERT — a check that looks like it verifies (MI-001), a key that looks valid but does not
-// enforce (MI-002), a guard that looks installed but is never re-asked (MI-003), a pin that
-// looks set but does nothing (MI-004). All four come from the #410 and #411→#412 rounds.
-// Three further classes the same lineage produced are DIFFERENT concerns and ship separately
-// rather than pushing this unit past the 1,500-line review budget: snapshot-vs-lock isolation
-// (#412→#415 F-B), Prisma constraint-name drift (#412→#415 F-C), and diagnostic-first additive
-// migrations. docs/MIGRATION_INVARIANTS.md records all three with their measured evidence.
+// SCOPE, AND WHY IT NARROWED DURING THE #423 CORRECTION. This unit ships what it takes to READ a
+// migration TOTALLY — the lexical scanner and the enumerate-and-classify backstop (MI-000) — plus
+// the one rule that judges a file purely by its own STATEMENT STRUCTURE: MI-004, a pin that looks
+// set but does nothing.
+//
+// The four rules that interrogate CATALOG GUARDS or ANOTHER FILE ship separately:
+//
+//   MI-001, MI-002  the catalog-guard pair. Both read pg_constraint/pg_trigger/pg_proc inside a
+//                   refusing DO block and share every piece of machinery that does it, so they are
+//                   one reviewable concern and move together.
+//   MI-003, MI-006  the two rules that are not purely enumerable, and the two that leave the
+//                   migration file. Closing Codex F1 meant MI-003 could no longer read the RUNBOOK
+//                   token as evidence a verifier ran; identifying the invocation took a SHELL
+//                   PARSER for apps/api/scripts/migrate.sh. Parsing bash is not the same concern as
+//                   reading PostgreSQL.
+//
+// ALL FOUR WERE IN THIS UNIT AT HEAD c6e9ff17, and the split is the honest consequence of the
+// correction rather than a change of mind. That head measured 1,383 changed lines against a 1,500
+// budget — 92% of it — so proving seven findings, four of them with two-site adjacent-decoy
+// fixtures, could not fit. The seam is taken at shared machinery rather than an exception claimed
+// for the size, which is what the first head did with MI-005/006/007. The per-site corrections for
+// MI-001, MI-002 and MI-003 are written and proven; they travel WITH their rules.
+//
+// Three further classes the same lineage produced are deferred for the same reason: snapshot-vs-lock
+// isolation (#412→#415 F-B), Prisma constraint-name drift (#412→#415 F-C), and diagnostic-first
+// additive migrations. docs/MIGRATION_INVARIANTS.md records every deferral with its measured
+// corpus evidence, so nothing is deferred silently.
 //
 // HOW TO ADD A RULE. Prove it RED against the real historical commit that produced the finding,
 // pin that fragment in `scripts/fixtures/migration-lint/`, and cite the PR and head in the rule's
@@ -31,7 +50,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { statements, dollarBlocks, scan, literals } from './migration-sql-scan.mjs';
+import { statements, dollarBlocks, scan } from './migration-sql-scan.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = join(HERE, '..');
@@ -77,6 +96,9 @@ const CONSTRAINT_KINDS = [
   ['UNIQUE', /^UNIQUE\b/iu],
   ['CHECK', /^CHECK\b/iu],
   ['EXCLUDE', /^EXCLUDE\b/iu],
+  // A column-level `REFERENCES t (c)` IS a foreign key; PostgreSQL names it and stores it in
+  // pg_constraint with contype 'f' exactly as the table-level spelling does.
+  ['FOREIGN KEY', /^REFERENCES\b/iu],
 ];
 
 // The ROLES a `DO` block plays in this repository's migrations. Every top-level `DO` block must
@@ -108,16 +130,6 @@ const BLOCK_ROLES = [
   ['function-body', (body) => /\bRETURNS\s+TRIGGER\b|\bLANGUAGE\s+plpgsql\b/iu.test(body)],
 ];
 
-// Functions that read an object's DEFINITION rather than its name.
-const DEFINITION_READS = /\b(pg_get_constraintdef|pg_get_triggerdef|pg_get_indexdef|pg_get_functiondef|pg_get_expr|prosrc)\b/iu;
-
-// Resolving a catalog object BY NAME.
-const NAME_RESOLUTIONS = [
-  ['pg_constraint', /\bconname\s*(=|IN\b)/iu, /\b(pg_get_constraintdef|conbin)\b/iu],
-  ['pg_trigger', /\btgname\s*(=|IN\b)/iu, /\b(pg_get_triggerdef)\b/iu],
-  ['pg_proc', /\bproname\s*(=|IN\b)/iu, /\b(prosrc|pg_get_functiondef)\b/iu],
-];
-
 function classifyStatement(masked) {
   const hit = STATEMENT_KINDS.find(([, rx]) => rx.test(masked));
   return hit ? hit[0] : null;
@@ -132,22 +144,67 @@ function classifyBlock(body, enclosingKind) {
 }
 
 /**
- * Enumerate every constraint the file CREATES, with its kind. Covers both the inline form
- * (`CONSTRAINT "x" FOREIGN KEY …` inside a CREATE TABLE) and the added form
- * (`ADD CONSTRAINT "x" CHECK …`).
+ * Enumerate every constraint the file CREATES, with its kind.
+ *
+ * EVERY FORM, and that word is the whole point. The first head required a DOUBLE-QUOTED explicit
+ * name — `CONSTRAINT "x" CHECK …` — which is Codex finding F5 against head c6e9ff17: ordinary
+ * PostgreSQL that this repository's own migrations are simply not in the habit of writing
+ * (`CONSTRAINT ck CHECK (a > 0)`, an inline `a int CHECK (a > 0)`, a table-level `UNIQUE (a)`)
+ * produced an EMPTY inventory and therefore a clean MI-000. A backstop whose claim is TOTALITY,
+ * reporting "I classified everything" about constructs it never enumerated, is the same false
+ * comfort as a name standing in for a definition — one level up, in the rule that exists to stop it.
+ *
+ * The forms are read off PostgreSQL's own grammar rather than off this corpus, because here the
+ * corpus is not the authority: the risk is precisely the syntax nobody has written YET.
+ *
+ *   named        `CONSTRAINT <name> <kind>`, the name quoted or not
+ *   table-level  `PRIMARY KEY (…)`, `FOREIGN KEY (…)`, `UNIQUE (…)`, `CHECK (…)`, `EXCLUDE …`
+ *   column-level the same keywords after a column definition, plus a bare `REFERENCES t (c)`
+ *
+ * The alternation is ordered so the named form consumes its own kind keyword, and a `REFERENCES`
+ * belonging to a FOREIGN KEY clause is consumed by that clause — otherwise one constraint would be
+ * counted twice, and an inventory that over-counts is no more honest than one that under-counts.
  */
 export function constraintsCreated(sql) {
   const { mask, lineOf } = scan(sql);
   const out = [];
-  const rx = /\bCONSTRAINT\s+"([^"]+)"\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)/giu;
+  const rx = new RegExp(
+    // (1) the named form — quoted or unquoted name, then the kind
+    '\\bCONSTRAINT\\s+(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_$]*))'
+      + '\\s+(PRIMARY\\s+KEY|FOREIGN\\s+KEY|UNIQUE|CHECK|EXCLUDE)\\b'
+    // (2) the implicitly named form — the kind keyword standing alone
+    + '|\\b(PRIMARY\\s+KEY|FOREIGN\\s+KEY|UNIQUE(?!\\s+INDEX)|CHECK|EXCLUDE|REFERENCES)\\b',
+    'giu',
+  );
   let m;
+  let skipNextReferences = false;
   while ((m = rx.exec(mask)) !== null) {
-    // `DROP CONSTRAINT "x"` and `RENAME CONSTRAINT` are not creations.
+    const named = m[3] !== undefined;
+    const raw = (named ? m[3] : m[4]).trim();
+
+    // `DROP CONSTRAINT x`, `RENAME CONSTRAINT` and `VALIDATE CONSTRAINT` are not creations. The
+    // named branch already cannot match `DROP CONSTRAINT x` (no kind follows), but `ALTER TABLE …
+    // DROP CONSTRAINT x, ADD CONSTRAINT y CHECK …` puts them in one statement, so this still reads.
     const before = mask.slice(Math.max(0, m.index - 24), m.index);
-    if (/\b(DROP|RENAME|VALIDATE)\s+$/iu.test(before)) continue;
-    const tail = m[2];
-    const kind = CONSTRAINT_KINDS.find(([, k]) => k.test(tail));
-    out.push({ name: m[1], kind: kind ? kind[0] : null, raw: tail.trim(), line: lineOf(m.index), offset: m.index });
+    if (named && /\b(DROP|RENAME|VALIDATE)\s+$/iu.test(before)) continue;
+
+    // `FOREIGN KEY (cols) REFERENCES t (c)` is ONE constraint. Its `REFERENCES` is consumed here so
+    // the standalone branch does not count the same clause a second time.
+    if (raw.toUpperCase().replace(/\s+/u, ' ') === 'REFERENCES') {
+      if (skipNextReferences) { skipNextReferences = false; continue; }
+    }
+    const kind = CONSTRAINT_KINDS.find(([, k]) => k.test(raw));
+    skipNextReferences = kind?.[0] === 'FOREIGN KEY';
+
+    out.push({
+      // An implicitly named constraint has no name in the source; PostgreSQL derives one at
+      // execution time. `null` says so rather than inventing a name the file does not contain.
+      name: named ? (m[1] ?? m[2]) : null,
+      kind: kind ? kind[0] : null,
+      raw,
+      line: lineOf(m.index),
+      offset: m.index,
+    });
   }
   return out;
 }
@@ -174,7 +231,8 @@ function ruleUnclassified(file) {
   for (const c of file.constraints) {
     if (!c.kind) {
       out.push(finding('MI-000', c.line,
-        `constraint "${c.name}" has an unclassified kind ("${c.raw}"). MI-006 and MI-007 branch on `
+        `constraint ${c.name ? `"${c.name}"` : `(implicitly named) at line ${c.line}`} has an `
+        + `unclassified kind ("${c.raw}"). MI-006 and MI-007 branch on `
         + 'constraint kind; an unknown kind would be skipped by both in silence.'));
     }
   }
@@ -187,185 +245,6 @@ function ruleUnclassified(file) {
     }
   }
   return out;
-}
-
-/**
- * MI-001 — an object judged by NAME where a definition comparison exists.
- *
- * RED at `a222e91` (PR #411). Section 1g looked the install barrier up by `conname` and read its
- * PRESENCE as "this table is unwritable, so it cannot have acquired a row":
- *
- *     SELECT pg_get_constraintdef(k.oid) INTO v_barrier
- *       FROM pg_constraint k WHERE k.conname = 'ActivityDependency_install_incomplete_check' …;
- *     IF v_barrier IS NOT NULL THEN … 'the install barrier is still in place' … END IF;
- *
- * The definition was FETCHED and never COMPARED — only NULL-tested — so a same-named hollow
- * `CHECK (true)` satisfied it while admitting every INSERT. GREEN at `96c9cc4` (PR #412). The shape
- * returned as #415's finding F-A (RED `96c9cc4`, GREEN `2f0e2af9`). Detection is in two halves
- * because the first head defeats the obvious one: (b) below is what catches `a222e91`, which DID
- * call pg_get_constraintdef.
- */
-function ruleNameOverDefinition(file) {
-  const out = [];
-
-  // (a) asks of the FILE and only of guards that REFUSE. Per-block flags the B1 guard's own split
-  // (1g is a presence census, 8 holds the comparison) on every head including the merged one;
-  // unscoped by refusal it flagged the create-if-absent idiom in seventeen merged migrations, where
-  // a wrong object yields a duplicate-name error rather than a false clearance. Measured both ways.
-  const refusingGuards = file.blocks.filter((b) => b.roles.includes('catalog-guard') && /\bRAISE\s+EXCEPTION\b/iu.test(b.maskedBody));
-  for (const [catalog, byName, defRead] of NAME_RESOLUTIONS) {
-    const site = refusingGuards.find((b) => byName.test(b.maskedBody)
-      // A `pg_catalog` function resolved by name is a BUILT-IN with no definition to compare —
-      // `prosrc` for a C function is the linker symbol, not a body. Schema + name is the correct
-      // pin, which is what MI-002's GREEN form does; demanding `prosrc` would be meaningless.
-      && !(catalog === 'pg_proc' && /\bnspname\s*=\s*'/iu.test(b.maskedBody)
-           && file.literalsIn(b.bodyStart, b.bodyEnd).some((l) => l.value === 'pg_catalog')));
-    if (!site) continue;
-    if (defRead.test(file.masked)) continue;
-    out.push(finding('MI-001', site.line,
-      `this migration resolves a ${catalog} object by NAME inside a guard that REFUSES on what it finds, and `
-      + 'never reads that object\'s DEFINITION anywhere. A same-named object with another definition satisfies '
-      + 'a name test while meaning something else — PR #411 head a222e91 read a hollow CHECK (true) as proof '
-      + `the table was unwritable. Compare it with ${catalog === 'pg_proc' ? 'prosrc' : `pg_get_${catalog.replace('pg_', '')}def`}.`));
-  }
-
-  for (const b of file.blocks) {
-    if (!b.roles.includes('catalog-guard')) continue;
-    const body = b.maskedBody;
-
-    // (b) A definition fetched INTO a variable that is only ever NULL-tested is a presence test
-    // wearing a definition test's clothes. This is the `a222e91` shape exactly, and it is the half
-    // that matters: (a) alone passes that head, because the head DID call pg_get_constraintdef —
-    // it simply never compared what came back.
-    const intoRx = /\bINTO\s+((?:STRICT\s+)?[A-Za-z_][A-Za-z0-9_]*)/giu;
-    let m;
-    while ((m = intoRx.exec(body)) !== null) {
-      const variable = m[1].replace(/^STRICT\s+/iu, '');
-      const selectStart = body.lastIndexOf('SELECT', m.index);
-      if (selectStart === -1) continue;
-      const selectList = body.slice(selectStart, m.index);
-      if (!DEFINITION_READS.test(selectList)) continue;
-
-      const uses = [...body.matchAll(new RegExp(`\\b${variable}\\b`, 'giu'))].filter((u) => u.index !== m.index + m[0].indexOf(variable));
-      const compared = uses.some((u) => {
-        const after = body.slice(u.index + variable.length, u.index + variable.length + 40);
-        const before = body.slice(Math.max(0, u.index - 40), u.index);
-        const nullTest = /^\s*IS\s+(NOT\s+)?NULL\b/iu.test(after);
-        if (nullTest) return false;
-        return /^\s*(=|<>|!=|~|!~|\|\|)/u.test(after) || /(=|<>|!=)\s*$/u.test(before);
-      });
-      if (!compared) {
-        out.push(finding('MI-001', b.line + countLines(body.slice(0, m.index)),
-          `"${variable}" receives an object DEFINITION and is then only tested for NULL. That is a `
-          + 'presence check with a definition read in front of it: the object is judged by the NAME '
-          + 'that found it, not by what it says. PR #411 head a222e91 shipped exactly this and a '
-          + 'hollow CHECK (true) of the right name passed. Compare the value.'));
-      }
-    }
-  }
-  return out;
-}
-
-/**
- * MI-002 — a foreign key asserted VALID without asserting it ENFORCES.
- *
- * RED at `a222e91` (PR #411): five keys compared by `conname`, `contype='f'`, `conrelid` and the
- * `confrelid` OID — none of which decides whether the key ACTS. `ALTER TABLE … DISABLE TRIGGER ALL`
- * leaves every one of those catalog rows intact and identical while the key enforces nothing, which
- * is precisely what a restore can leave behind. GREEN at `96c9cc4` (PR #412), which reads
- * `pg_trigger.tgenabled` on `tgconstraint` for each key's four internal triggers.
- */
-function ruleForeignKeyEnforcement(file) {
-  // `contype = 'f'` SPECIFICALLY. The literal is blanked in the mask, so the value is resolved by
-  // POSITION against the literal table rather than by asking whether the file contains an 'f'
-  // anywhere — a first draft did the latter and flagged 20270225000000_phase4_t3_correction3, whose
-  // verification asks `contype = 'c'` about CHECK constraints and has no foreign keys in it at all.
-  const body = file.masked;
-  const site = [...body.matchAll(/\bcontype\s*=\s*'/giu)]
-    .map((m) => ({ quote: m.index + m[0].length - 1, index: m.index }))
-    .find(({ quote }) => file.literalsIn(quote, quote + 1).some((l) => l.value === 'f'));
-  if (!site) return [];
-  if (/\btgconstraint\b/iu.test(body) && /\btgenabled\b/iu.test(body)) return [];
-  const line = file.lineOf(site.index);
-  return [finding('MI-002', line,
-    'this migration verifies foreign keys through pg_constraint (contype = \'f\') without ever reading '
-    + 'pg_trigger.tgenabled on tgconstraint. Every column in pg_constraint — including convalidated and '
-    + 'the confrelid OID — survives ALTER TABLE … DISABLE TRIGGER ALL unchanged, so a key that enforces '
-    + 'nothing passes this check intact. PR #411 head a222e91 verified five keys this way; PR #412 head '
-    + '96c9cc4 added the enforcement read. Join pg_trigger on tgconstraint and refuse tgenabled in (D, R).')];
-}
-
-/**
- * MI-003 — a guard checked only at apply time.
- *
- * RED at `a222e91` (PR #411): five seals were verified in a block that ran ONLY while the migration
- * was applied. Once the row was in `_prisma_migrations`, `migrate.sh` returned 0 after checking
- * unrelated seals (T45, T2C, T3C), so a restore that disabled a B1 seal produced a GREEN deploy
- * over a database whose guards were gone. GREEN at `96c9cc4` (PR #412), which invoked
- * `node "$B1_SEALS" seals` on the deploy success path — the shape T45/T2C/T3C already had.
- *
- * NOT PURELY ENUMERABLE, and the reason is the finding itself: nothing in a migration's SQL names
- * the verifier that should re-ask its question on every deploy. See the link comment below.
- */
-function ruleApplyTimeOnly(file, context) {
-  // In scope: a migration that INSTALLS SEALS — trigger guards that refuse writes — and verifies
-  // them against the catalog. A migration that only diagnoses data has nothing to stay armed.
-  // Seals arrive two ways in this repository and both count. A plain top-level `CREATE TRIGGER`
-  // is one; the other — the shape the whole B1 lineage uses — is dynamic DDL, where the statement
-  // lives in a string literal handed to `EXECUTE` so the CREATE can be made conditional on a
-  // catalog probe. Counting only the first found no seals in the file that produced this finding.
-  const dynamicSeal = /\bCREATE\s+(CONSTRAINT\s+)?TRIGGER\b/iu;
-  const installsSeals = file.statements.some((s) => s.kind === 'CREATE TRIGGER')
-    || file.literalValues.some((v) => dynamicSeal.test(v));
-  const selfVerifies = file.blocks.some((b) => b.roles.includes('catalog-guard') && /\bRAISE\s+EXCEPTION\b/iu.test(b.maskedBody));
-  if (!installsSeals || !selfVerifies) return [];
-
-  // THE LINK, and why it is read rather than invented. `migrate.sh` names each verifier's repair
-  // procedure — `docs/RUNBOOK.md §T45`, `§P4T3C3`, `section B1` — and so does the migration that
-  // installs it. That shared token is the only machine-readable connection between a migration and
-  // its deploy-time counterpart that this repository already has, so the rule reads it instead of
-  // requiring a new annotation on 92 merged files. A migration using no RUNBOOK procedure may
-  // declare the link explicitly with `-- migration-invariants: deploy-verifier <token>`.
-  const explicit = /--\s*migration-invariants:\s*deploy-verifier\s+(\S+)/iu.exec(file.sql);
-  const tokens = explicit
-    ? [explicit[1]]
-    : [...new Set([...file.sql.matchAll(/RUNBOOK\.md`?\s+(§[A-Za-z0-9]+|section\s+[A-Za-z0-9]+)/gu)].map((m) => m[1].replace(/\s+/u, ' ')))];
-
-  const line = file.statements.find((s) => s.kind === 'CREATE TRIGGER')?.line
-    ?? file.blocks.find((b) => b.roles.includes('catalog-guard'))?.line ?? 1;
-  const advice = 'Once the migration row is in _prisma_migrations its verification is never asked '
-    + 'again, so a restore or an ALTER TABLE … DISABLE TRIGGER that removes a seal yields a GREEN '
-    + 'deploy over a database whose guards are gone — PR #411 head a222e91 shipped exactly that, and '
-    + 'PR #412 head 96c9cc4 added `node "$B1_SEALS" seals` on the deploy success path. T45, T2C and '
-    + 'T3C are three worked precedents in apps/api/scripts/migrate.sh.';
-
-  if (tokens.length === 0) {
-    return [finding('MI-003', line,
-      'this migration installs seals and verifies them, but names no procedure that ties it to a '
-      + `deploy-time counterpart. ${advice} Name the repair procedure (docs/RUNBOOK.md §X) in this `
-      + 'file and in migrate.sh, or declare `-- migration-invariants: deploy-verifier <token>`.')];
-  }
-
-  // COMMENT LINES ARE STRIPPED FIRST, and this is not a detail. At PR #411 head a222e91 the string
-  // "docs/RUNBOOK.md section B1" already appeared in migrate.sh AFTER the deploy — inside a comment
-  // explaining an unrelated migration-resolution branch. A rule that searched the raw text found it
-  // and reported the head GREEN, which is the same failure the rule is about: a token matched where
-  // an ACT was required. Only executable lines count as an invocation.
-  const migrateSh = context.migrateSh ?? '';
-  const executable = migrateSh.split('\n').filter((l) => !/^\s*#/u.test(l)).join('\n');
-  const deployAt = executable.search(/^\s*(out=\$\()?\s*(npx\s+)?prisma\s+migrate\s+deploy/mu);
-  const afterDeploy = deployAt === -1 ? '' : executable.slice(deployAt);
-  if (tokens.some((t) => afterDeploy.includes(t))) return [];
-
-  if (tokens.some((t) => migrateSh.includes(t))) {
-    return [finding('MI-003', line,
-      `apps/api/scripts/migrate.sh names ${tokens.map((t) => `"${t}"`).join(' / ')} only BEFORE `
-      + '`prisma migrate deploy`. A preflight runs against the database as it WAS, not as the deploy '
-      + `left it, so it cannot answer whether the seals are armed now. ${advice}`)];
-  }
-  return [finding('MI-003', line,
-    `this migration installs seals under procedure ${tokens.map((t) => `"${t}"`).join(' / ')}, which `
-    + `apps/api/scripts/migrate.sh never invokes. ${advice}`)];
 }
 
 /**
@@ -385,15 +264,24 @@ function ruleApplyTimeOnly(file, context) {
  */
 function ruleInertTransactionScoped(file) {
   const out = [];
-  const opensTransaction = file.statements.some((s) => s.kind === 'BEGIN');
+  // TRANSACTION DEPTH IN STATEMENT ORDER. Codex F4 against head c6e9ff17: this asked
+  // `file.statements.some(s => s.kind === 'BEGIN')` — a question about the FILE, blind to position
+  // and to order — so ANY `BEGIN` anywhere accepted EVERY top-level `SET LOCAL` and `LOCK TABLE`,
+  // including one after the matching COMMIT and including one whose `BEGIN` appears LATER in the
+  // file. `BEGIN; … COMMIT; SET LOCAL search_path = public;` reported clean while that pin was as
+  // inert as the c1054005 head's. Each scoped statement is now judged where it actually stands.
+  let depth = 0;
   for (const s of file.statements) {
+    if (s.kind === 'BEGIN') { depth += 1; continue; }
+    if (s.kind === 'COMMIT') { depth = Math.max(0, depth - 1); continue; }
     const isSetLocal = /^\s*SET\s+LOCAL\b/iu.test(s.masked);
     const isLock = s.kind === 'LOCK';
     if (!isSetLocal && !isLock) continue;
-    if (opensTransaction) continue;
+    if (depth > 0) continue;
     out.push(finding('MI-004', s.line,
-      `${isSetLocal ? '`SET LOCAL`' : '`LOCK TABLE`'} at top level in a file that opens no explicit `
-      + 'transaction block. `prisma migrate deploy` does supply one (measured — see '
+      `${isSetLocal ? '`SET LOCAL`' : '`LOCK TABLE`'} at top level, OUTSIDE any explicit transaction `
+      + 'block — this statement does not stand between a `BEGIN` and its `COMMIT`. '
+      + '`prisma migrate deploy` does supply one (measured — see '
       + '20270930000000_schedule_dependency_graph/migration.sql:75-79), but AGENTS.md requires these '
       + 'files to tolerate a caller that supplies NO transaction, and under that caller '
       + (isSetLocal
@@ -410,19 +298,10 @@ function ruleInertTransactionScoped(file) {
 
 const RULES = [
   ['MI-000', ruleUnclassified],
-  ['MI-001', ruleNameOverDefinition],
-  ['MI-002', ruleForeignKeyEnforcement],
-  ['MI-003', ruleApplyTimeOnly],
   ['MI-004', ruleInertTransactionScoped],
 ];
 
 export const RULE_IDS = RULES.map(([id]) => id);
-
-function countLines(text) {
-  let n = 0;
-  for (const ch of text) if (ch === '\n') n += 1;
-  return n;
-}
 
 /** Parse one migration into the inventories the rules read. */
 export function parseMigration(sql) {
@@ -440,7 +319,6 @@ export function parseMigration(sql) {
         roles: classifyBlock(b.body, enclosing?.kind ?? null),
       };
     });
-  const lits = literals(sql);
   return {
     sql,
     masked: mask,
@@ -448,26 +326,16 @@ export function parseMigration(sql) {
     statements: stmts,
     blocks,
     constraints: constraintsCreated(sql),
-    literalValues: lits.map((l) => l.value),
-    literalsIn: (from, to) => lits.filter((l) => l.start >= from && l.start < to),
   };
 }
 
-/** Lint one migration. `context` supplies the cross-file facts MI-003 and MI-006 need. */
+/** Lint one migration. Every rule this unit ships answers from the migration file alone; the
+ *  cross-file `context` the deferred MI-003/MI-006 need arrives with them. */
 export function lintMigration({ name, sql, context = {} }) {
   const file = parseMigration(sql);
   const findings = [];
   for (const [, rule] of RULES) findings.push(...rule(file, context));
   return findings.map((f) => ({ ...f, migration: name })).sort((a, b) => a.line - b.line || a.rule.localeCompare(b.rule));
-}
-
-/** Read the repository-level context once, for every migration in a run. */
-export function repoContext(root = REPO_ROOT) {
-  const read = (p) => (existsSync(join(root, p)) ? readFileSync(join(root, p), 'utf8') : '');
-  return {
-    migrateSh: read('apps/api/scripts/migrate.sh'),
-    prismaSchema: read('apps/api/prisma/schema.prisma'),
-  };
 }
 
 /** Migrations merged before this linter existed, each with a written reason. Recorded, not
@@ -479,12 +347,11 @@ export const EXEMPTIONS = new Map(Object.entries(JSON.parse(
 )));
 
 export function lintAll({ root = REPO_ROOT, dir = MIGRATIONS_DIR, applyExemptions = true } = {}) {
-  const context = repoContext(root);
   const out = [];
   for (const name of readdirSync(dir).sort()) {
     const file = join(dir, name, 'migration.sql');
     if (!existsSync(file)) continue;
-    const findings = lintMigration({ name, sql: readFileSync(file, 'utf8'), context });
+    const findings = lintMigration({ name, sql: readFileSync(file, 'utf8') });
     for (const f of findings) {
       const exempt = applyExemptions && (EXEMPTIONS.get(name) ?? {})[f.rule];
       if (exempt) continue;
