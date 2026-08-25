@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // mechanism) — the round-6 pin asserts they read decision rows THROUGH the shared rule
 import placesSrc from '@/screens/PlacesScreen.tsx?raw';
 import scheduleSrc from '@/screens/ScheduleScreen.tsx?raw';
-import dailyLogSrc from '@/screens/DailyLogScreen.tsx?raw';
+import addMaterialSrc from '@/screens/modals/AddMaterialModal.tsx?raw';
 import portfolioSrc from '@/screens/PortfolioScreen.tsx?raw';
 import { render, cleanup } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
@@ -204,7 +204,9 @@ describe('P10 (web half): a withdrawn decision is pmc-only on every selector sur
     const screens: Array<[string, string]> = [
       ['PlacesScreen', placesSrc],
       ['ScheduleScreen', scheduleSrc],
-      ['DailyLogScreen', dailyLogSrc],
+      // The daily log's decision read lives in the delivery form it opens; the modal moved
+      // out of the screen, so the tripwire follows the READ rather than the filename.
+      ['AddMaterialModal', addMaterialSrc],
       ['PortfolioScreen', portfolioSrc],
     ];
     for (const [screen, src] of screens) {

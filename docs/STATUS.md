@@ -15,33 +15,41 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 2b5d12f
-open_pr: 421
+reviewed_merge: 756563c8
+open_pr: PENDING
 next_task: none
 blocking_directive: none
 updated: 2026-08-25
 ```
 
-**`open_pr: 421` IS A USER-DIRECTED UX UNIT, NOT PHASE 6 TASK 4.** #421
-(`claude/pmcvitan-ux-audit-replacement`) is the UX completion audit that follows merged
-#417: location context on the Inspection Review, Engineer Checklist and Client Decision
-surfaces, and a stated reason on the Schedule's restricted actions and on a decided
-inspection. It is `apps/web` only — four screens, the store's closing-review producer and
-one test file: no schema, no migration, no API change. It does NOT advance phase 6 task 4,
-which still has no open PR of its own. Read `task: 4` as where the PHASE stands, and
-`open_pr` as what is actually in review right now.
+**THE OPEN PR REPLACES #422, WHICH REACHED THE TWO-FINDING-HEAD LIMIT.** #422 carried the
+same unit and took two Codex rounds: round 1 (the delivery option not gated on an open daily
+log, a components-barrel import cycle, and `LocationPicker` discarding its `value` so Change
+rendered blank over a set node) and round 2 (a delivery's `zone` holding STORAGE detail
+rather than a location, the failed-log-read case needing to fail closed, an inherited node
+deleted under an open form staying saveable, and `Add here` missing from the empty Site Map).
+All nine are fixed here; the round-2 five were reproduced red before the rebuild, and #422
+was closed without a third correction head.
 
-**#421 REPLACES #420, WHICH REACHED THE TWO-FINDING-HEAD LIMIT.** #420 carried the same
-unit and took two Codex rounds: round 1 (a rejected closing inspection described as
-signed off; a checklist claiming a review still pending; a gate override offered as the
-remedy for a blocked activity) and round 2 (`completeActivity` omitting `nodeId` from the
-closing review it generates; "issue a new checklist" duplicating the re-inspection a
-rejection already creates). Both round-2 fixes were reproduced RED and made, but pushing
-them to #420 would have been a forbidden third correction head — so #420 was closed with
-that evidence recorded and the corrected unit was rebuilt from current `main` `2b5d12f` on
-a new branch, carrying `Replaces: #420`. The new branch is deliberate: reusing #420's
-branch would have force-pushed over a closed PR's reviewed head, and this repository's own
-practice (#409→#410→#411→#412→#415) gives each replacement its own branch.
+**`open_pr` IS A USER-DIRECTED UX UNIT, NOT PHASE 6 TASK 4.** The open PR is Unit A of the
+low-effort data-entry initiative: a `CaptureContext` spine, context-inherited creation
+forms, and the Site Map gaining the ability to create at the place it is showing. It is
+`apps/web` only — no schema, no migration, no API change. It does NOT advance phase 6
+task 4, which still has no open PR of its own. Read `task: 4` as where the PHASE stands,
+and `open_pr` as what is actually in review right now.
+
+**THE PRECEDING UX LINEAGE IS CLOSED.** #417 (mobile IA: primary tabs + More, a phone
+project switcher, the shared `LocationContext`/`EditState`) merged at `d4ca11e`. Its
+completion audit ran as #420, which reached the two-finding-head limit and was replaced by
+#421 (`Replaces: #420`) carrying every finding from both of its rounds; #421 took one
+further Codex round of its own and merged clean at `756563c8`. The measurement that justifies this
+work (`docs/ux/DATA_ENTRY_AUDIT.md`) and the photo capture-stamp fix are each held for their
+own review unit, to keep this one inside the review budget.
+
+`task_state` stays `in_progress` rather than `in_review` deliberately: the live-file pin in
+`autonomous-status-state.test.mjs` requires STATUS to still resolve a next step AFTER the
+PR it names merges, and `in_review` is defined BY its open PR — so a merge would leave the
+runner with none.
 
 **THE ROOT CAUSE OF THE STALE OBLIGATION CHAIN IS FIXED — #419 MERGED at `main`
 `2b5d12f`, which is this unit's base.** `claude/lineage-base-acceptance` defines "still the unit under review" once
