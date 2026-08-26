@@ -15,17 +15,33 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 559083b7
-open_pr: 440
+reviewed_merge: a714bc3e
+open_pr: none
 next_task: none
 blocking_directive: none
 updated: 2026-08-26
 ```
 
-**THE OPEN PR IS #440 — THE PROGRESS-PHOTO CAPTURE STAMP, NOT PHASE 6 TASK 4.** It REPLACES
-#439, which replaced #429; both closed at the two-finding-head limit. Every paragraph BELOW this
+**#440 MERGED at `a714bc3e` — THE PROGRESS-PHOTO CAPTURE STAMP IS DELIVERED AND CLEARED. There
+is NO open PR.** #440 replaced #439, which replaced #429; both were closed at the two-finding-head
+limit, and #440 took a clean Codex +1 on its second head `4ff0e8b4`. Every paragraph BELOW this
 one records an EARLIER unit; where one of them says "the open PR", read it as the open PR of its
-own day, not as #440.
+own day, not as anything currently open.
+
+The low-effort data-entry initiative's delivered units are #424 (capture context), #427 (the
+data-entry audit), #428 (progressive disclosure) and #440 (the capture stamp). Units C–E of the
+brief — the universal `+`, desktop search/add, and mobile navigation — are NOT started: the brief
+asked for them to be evaluated and PROPOSED before anything replaces the current mobile nav, and
+that proposal is owed to JagPat. Three items are recorded as open and awaiting his decision:
+
+1. **Units C–E.** §7's prerequisite is that `canSwitch = memberships.length > 1 ||
+   Boolean(adminOrg)` leaves a single-project PMC unable to reach Portfolio at all.
+2. **The daily-log gallery's scope.** `SnapshotService` folds project-wide `kind: 'progress'`
+   media onto whichever log is current. The log does NOT count them — `DailyLog.progress` is
+   operator-entered at `daily-log.submit` — so a fix aimed at the count repairs the wrong thing.
+   #440 makes the defect VISIBLE (yesterday's date in today's gallery) rather than corrected.
+3. **Quick Capture's blocker.** `createMediaSchema` requires `mime` and `data.min(1)` for EVERY
+   kind, so the "caption + note kind on media" shape JagPat chose still demands a photo.
 
 The daily log has always told the user its progress photos are "geo + time stamped". They were
 not: `UploadMediaInput` accepts `takenAt`/`geoLat`/`geoLng` and the store sent none of them.
@@ -74,8 +90,9 @@ plus a corrupted variant, and include a 5000-byte `0xff` run to prove the marker
 hang nor throw. Every finding carried here was reproduced RED in ISOLATION — the one fix
 reverted, the rest left in place — so no probe passes for the wrong reason.
 
-#440 carries ONE in-branch correction for the five Codex findings on head `8fa29c9c` (its first
-finding-bearing head), all P2, each reproduced RED in ISOLATION. Four are the same rule the unit
+#440 carried ONE in-branch correction for the five Codex findings on head `8fa29c9c` (its first
+finding-bearing head), all P2, each reproduced RED in ISOLATION; the corrected head `4ff0e8b4`
+took a fresh clean Codex +1 through the exact-head gate and merged. Four are the same rule the unit
 already turned on — a stamp that reads as plausible but is not what the photo recorded is worse
 than no stamp, because it becomes permanent capture evidence:
 
