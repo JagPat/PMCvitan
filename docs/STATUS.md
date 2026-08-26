@@ -15,8 +15,8 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: a714bc3e
-open_pr: none
+reviewed_merge: 0818c96f
+open_pr: 444
 next_task: none
 blocking_directive: none
 updated: 2026-08-26
@@ -44,9 +44,28 @@ unit that genuinely carries scope forward.
 Three items remain, each with an executable next unit — none waits on sign-off:
 
 1. **Units C-E** (the universal `+`, desktop search/add, mobile navigation). The brief said to
-   evaluate and PROPOSE before anything replaces the current mobile nav, so the next unit is that
-   proposal — a docs unit shaped like #427. Only the implementation waits on a decision, and the
-   proposal is what makes a decision possible.
+   evaluate and PROPOSE before anything replaces the current mobile nav. **The proposal is SPLIT
+   after #443 reached the two-finding-head limit carrying all three at once**: both of its review
+   rounds landed on Unit C's mount and Unit C's pricing, so the replacement #444
+   (`docs/ux/CREATE_CONTROL_PROPOSAL.md`, `Replaces: #443`) carries **Unit C alone**, and Units D
+   and E move to their own proposal. Nothing waits on sign-off — #444's §6 names the next unit
+   (mount `CreateMenu` in `LeftRail` for desktop and as a floating action for mobile) and its four
+   acceptance tests.
+   **Three corrections are recorded so they are not re-earned.** (a) A shell mount is OUTSIDE
+   `ProjectLoadBoundary`: `AppShell.tsx:39-41` wraps only `<ScreenView />`, while `switchProject`
+   (`store.ts:3366`) empties every project-owned field before the auth request goes out and leaves
+   `activeProjectId` and the gateway live until `applyAuthResult` — so a persistent `+` could file
+   a decision against the project just left, and C1 must gate on `projectLoadState`. (b) Only
+   **two roles** can create at all — `decision.create`/`inspection.create` are pmc-only and
+   `dailyLog.addMaterial` is engineer+pmc — and both are overflow roles already at the
+   five-control cap (4 destinations + More), so a `+` tab costs a sixth control or evicts
+   `portfolio`/`daily-log`. (c) A global search must NOT be filtered by "the same `ROLE_POLICY`
+   that governs the screens": screen visibility comes from `screensFor` plus module and capability
+   filtering, and the reads are role-invariant (`activities.controller.ts:22` and
+   `drawings.controller.ts:25` use `@RolesFor('project.read')`, granted to all five roles in
+   `policy.ts:198`).
+   **EIGHT create modals exist and FIVE have a single entry point**, so the `+` is scoped
+   explicitly to the three capture records `CreateKind` already carries.
    **The proposal must establish the navigation gap FROM THE CODE.** An earlier draft asserted
    that `canSwitch = memberships.length > 1 || Boolean(adminOrg)` leaves a single-project PMC
    unable to reach Portfolio. **That is false**, recorded here so it is not re-derived:
