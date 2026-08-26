@@ -6,10 +6,7 @@ import { selectTotalWorkers } from '@/store/selectors';
 import { EmptyState, Eyebrow, Swatch, PhotoViewer, Button } from '@/components';
 import { AddMaterialModal } from '@/screens/modals/AddMaterialModal';
 import { LocationPicker } from '@/components/LocationPicker';
-import { captureStamp, type CaptureStamp } from '@/lib/captureStamp';
-
-/** EXIF lives in the JPEG APP1 segment near the start; 64 KB covers it with room to spare. */
-const EXIF_HEAD_BYTES = 64 * 1024;
+import { captureStamp } from '@/lib/captureStamp';
 import { pathOf } from '@/lib/locationTree';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
 import { can, labourLabels } from '@vitan/shared';
@@ -63,20 +60,14 @@ export function DailyLogScreen() {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onload = async () => {
+      reader.onload = () => {
         if (typeof reader.result !== 'string') return;
-        // The photo's OWN capture metadata, read from the head of the file (EXIF sits in the
-        // APP1 segment near the start, so there is no reason to re-read megabytes). This and
-        // the FileReader above both run BEFORE the photo is accepted, so the durable queue
-        // inside `addProgressPhoto` is still reached synchronously — nothing that was taken
-        // in can be lost to a reload while metadata is being read.
-        let stamp: CaptureStamp = {};
-        try {
-          stamp = captureStamp(new Uint8Array(await file.slice(0, EXIF_HEAD_BYTES).arrayBuffer()));
-        } catch {
-          // an unreadable file still uploads; it simply carries no stamp
-        }
-        addProgressPhoto(reader.result, photoNode, stamp);
+        // The photo's OWN capture metadata, taken from the bytes this read already produced.
+        // No `await` on this path on purpose: a second yield here — even one as innocent as
+        // `file.slice().arrayBuffer()` — would suspend between the user choosing a photo and
+        // the store queueing it, a window in which a project switch redirects the upload and
+        // a reload loses the photo. `captureStamp` decodes the head of the data URL instead.
+        addProgressPhoto(reader.result, photoNode, captureStamp(reader.result));
       };
       reader.readAsDataURL(file);
     }

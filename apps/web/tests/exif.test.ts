@@ -110,6 +110,13 @@ function jpegWithExif(tiff: Uint8Array): Uint8Array {
   return new Uint8Array([0xff, 0xd8, 0xff, 0xe1, size >> 8, size & 0xff, ...payload, 0xff, 0xd9]);
 }
 
+/** What the picker hands the store: the whole file as a base64 data URL. */
+function dataUrlOf(bytes: Uint8Array): string {
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return `data:image/jpeg;base64,${btoa(binary)}`;
+}
+
 const AHMEDABAD = {
   lat: [[23, 1], [1, 1], [48, 1]] as number[][],   // 23° 1' 48"  N
   latRef: 'N',
@@ -122,12 +129,12 @@ describe('a photo is stamped from what it recorded at the shutter', () => {
     const bytes = jpegWithExif(buildExif({ dateTimeOriginal: '2026:08:11 09:15:30' }));
     expect(readExif(bytes)?.takenAtLocal).toBe('2026:08:11 09:15:30');
     // and it reaches the media contract in the shape the column documents
-    expect(captureStamp(bytes).takenAt).toBe('11 Aug 2026 · 9:15 AM');
+    expect(captureStamp(dataUrlOf(bytes)).takenAt).toBe('11 Aug 2026 · 9:15 AM');
   });
 
   it('reads where the SHUTTER was, not where the phone is now', () => {
     const bytes = jpegWithExif(buildExif({ dateTimeOriginal: '2026:08:11 09:15:30', gps: AHMEDABAD }));
-    const stamp = captureStamp(bytes);
+    const stamp = captureStamp(dataUrlOf(bytes));
     expect(stamp.geoLat).toBeCloseTo(23.03, 2);
     expect(stamp.geoLng).toBeCloseTo(72.57, 2);
   });
@@ -136,13 +143,13 @@ describe('a photo is stamped from what it recorded at the shutter', () => {
     const bytes = jpegWithExif(buildExif({
       gps: { lat: [[33, 1], [51, 1], [54, 1]], latRef: 'S', lng: [[151, 1], [12, 1], [36, 1]], lngRef: 'W' },
     }));
-    const stamp = captureStamp(bytes);
+    const stamp = captureStamp(dataUrlOf(bytes));
     expect(stamp.geoLat).toBeCloseTo(-33.865, 2);
     expect(stamp.geoLng).toBeCloseTo(-151.21, 2);
   });
 
   it('formats afternoon and midnight the way the column documents', () => {
-    const at = (s: string) => captureStamp(jpegWithExif(buildExif({ dateTimeOriginal: s }))).takenAt;
+    const at = (s: string) => captureStamp(dataUrlOf(jpegWithExif(buildExif({ dateTimeOriginal: s })))).takenAt;
     expect(at('2026:08:11 13:05:00')).toBe('11 Aug 2026 · 1:05 PM');
     expect(at('2026:08:11 00:30:00')).toBe('11 Aug 2026 · 12:30 AM');
     expect(at('2026:08:11 12:00:00')).toBe('11 Aug 2026 · 12:00 PM');
@@ -153,41 +160,115 @@ describe('a photo that records nothing is stamped with nothing', () => {
   it('invents no time for a file with no EXIF at all', () => {
     const plain = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
     expect(readExif(plain)).toBeNull();
-    expect(captureStamp(plain)).toEqual({});
-    expect(hasStamp(captureStamp(plain))).toBe(false);
+    expect(captureStamp(dataUrlOf(plain))).toEqual({});
+    expect(hasStamp(captureStamp(dataUrlOf(plain)))).toBe(false);
   });
 
   it('invents no time for a PNG, a screenshot, or empty bytes', () => {
     for (const b of [new Uint8Array([0x89, 0x50, 0x4e, 0x47]), new Uint8Array(), new Uint8Array([0xff, 0xd8])]) {
-      expect(captureStamp(b)).toEqual({});
+      expect(captureStamp(dataUrlOf(b))).toEqual({});
     }
   });
 
   it('survives truncated and corrupt bytes without throwing', () => {
     const full = jpegWithExif(buildExif({ dateTimeOriginal: '2026:08:11 09:15:30', gps: AHMEDABAD }));
     for (let cut = 1; cut < full.length; cut += 1) {
-      expect(() => captureStamp(full.slice(0, cut))).not.toThrow();
+      expect(() => captureStamp(dataUrlOf(full.slice(0, cut)))).not.toThrow();
     }
     const scrambled = Uint8Array.from(full, (b, i) => (i > 4 && i % 7 === 0 ? b ^ 0xff : b));
-    expect(() => captureStamp(scrambled)).not.toThrow();
+    expect(() => captureStamp(dataUrlOf(scrambled))).not.toThrow();
   });
 
   it('rejects the "unset" date some cameras write', () => {
-    expect(captureStamp(jpegWithExif(buildExif({ dateTimeOriginal: '0000:00:00 00:00:00' }))).takenAt).toBeUndefined();
+    expect(captureStamp(dataUrlOf(jpegWithExif(buildExif({ dateTimeOriginal: '0000:00:00 00:00:00' })))).takenAt).toBeUndefined();
   });
 
   it('drops a coordinate with a zero denominator rather than reporting the wrong ocean', () => {
     const bytes = jpegWithExif(buildExif({
       gps: { lat: [[23, 0], [1, 1], [48, 1]], latRef: 'N', lng: [[72, 1], [34, 1], [12, 1]], lngRef: 'E' },
     }));
-    expect(captureStamp(bytes).geoLat).toBeUndefined();
+    expect(captureStamp(dataUrlOf(bytes)).geoLat).toBeUndefined();
   });
 
   it('drops coordinates with no hemisphere — a half-fix is not a fix', () => {
     const bytes = jpegWithExif(buildExif({
       gps: { lat: [[23, 1], [1, 1], [48, 1]], latRef: 'X', lng: [[72, 1], [34, 1], [12, 1]], lngRef: 'E' },
     }));
-    expect(captureStamp(bytes).geoLat).toBeUndefined();
-    expect(captureStamp(bytes).geoLng).toBeUndefined();
+    expect(captureStamp(dataUrlOf(bytes)).geoLat).toBeUndefined();
+    expect(captureStamp(dataUrlOf(bytes)).geoLng).toBeUndefined();
+  });
+});
+
+/**
+ * The four findings from `20311f92`, each pinned.
+ *
+ * F1 (the picker's second yield) is pinned in `media.test.ts`, where the store can observe
+ * that nothing suspends between choosing a photo and queueing it. The other three are here.
+ */
+describe('corrupt metadata yields no stamp rather than a plausible wrong one', () => {
+  const at = (s: string) => captureStamp(dataUrlOf(jpegWithExif(buildExif({ dateTimeOriginal: s })))).takenAt;
+
+  it('F2: refuses a date that never existed', () => {
+    expect(at('2026:02:31 09:15:00')).toBeUndefined(); // 31 February
+    expect(at('2027:02:29 09:15:00')).toBeUndefined(); // 2027 is not a leap year
+    expect(at('2026:13:01 09:15:00')).toBeUndefined(); // month 13
+    expect(at('2026:00:10 09:15:00')).toBeUndefined(); // month 0
+  });
+
+  it('F2: refuses an impossible clock', () => {
+    expect(at('2026:08:11 09:99:00')).toBeUndefined(); // 99 minutes
+    expect(at('2026:08:11 09:15:99')).toBeUndefined(); // 99 seconds
+    expect(at('2026:08:11 24:00:00')).toBeUndefined(); // hour 24
+  });
+
+  it('F2: still accepts a real leap day', () => {
+    expect(at('2028:02:29 09:15:00')).toBe('29 Feb 2028 · 9:15 AM');
+  });
+
+  it('F4: refuses a hemisphere letter from the wrong axis', () => {
+    // a corrupt 'W' on latitude used to pass and come back POSITIVE — a plausible wrong place
+    const wrongLat = jpegWithExif(buildExif({
+      gps: { lat: [[23, 1], [1, 1], [48, 1]], latRef: 'W', lng: [[72, 1], [34, 1], [12, 1]], lngRef: 'E' },
+    }));
+    expect(captureStamp(dataUrlOf(wrongLat)).geoLat).toBeUndefined();
+
+    const wrongLng = jpegWithExif(buildExif({
+      gps: { lat: [[23, 1], [1, 1], [48, 1]], latRef: 'N', lng: [[72, 1], [34, 1], [12, 1]], lngRef: 'N' },
+    }));
+    expect(captureStamp(dataUrlOf(wrongLng)).geoLng).toBeUndefined();
+  });
+});
+
+describe('a large APP1 segment is still read', () => {
+  it('F3: finds EXIF behind a preceding APP0, and past a segment longer than the bytes held', () => {
+    const tiff = buildExif({ dateTimeOriginal: '2026:08:11 09:15:30', gps: AHMEDABAD });
+    const app1 = [0xff, 0xe1, 0, 0, 0x45, 0x78, 0x69, 0x66, 0, 0, ...tiff];
+    // declare a segment far larger than what follows — a real APP1 carrying a thumbnail does
+    // exactly this, and the head we decode can stop inside it
+    const declared = 0xfffd;
+    app1[2] = declared >> 8;
+    app1[3] = declared & 0xff;
+    const app0 = [0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0];
+    const bytes = new Uint8Array([0xff, 0xd8, ...app0, ...app1]);
+
+    const stamp = captureStamp(dataUrlOf(bytes));
+    expect(stamp.takenAt).toBe('11 Aug 2026 · 9:15 AM');
+    expect(stamp.geoLat).toBeCloseTo(23.03, 2);
+  });
+
+  it('F3: decodes past 64 KiB of leading segments', () => {
+    const filler = new Array(70 * 1024).fill(0);
+    // one oversized APP0-style segment cannot exceed 0xffff, so pad with several
+    const segments: number[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const size = 24 * 1024;
+      segments.push(0xff, 0xe0, size >> 8, size & 0xff, ...filler.slice(0, size - 2));
+    }
+    const tiff = buildExif({ dateTimeOriginal: '2026:08:11 14:05:00' });
+    const app1 = [0xff, 0xe1, ((tiff.length + 8) >> 8) & 0xff, (tiff.length + 8) & 0xff, 0x45, 0x78, 0x69, 0x66, 0, 0, ...tiff];
+    const bytes = new Uint8Array([0xff, 0xd8, ...segments, ...app1]);
+    expect(bytes.length).toBeGreaterThan(64 * 1024);
+
+    expect(captureStamp(dataUrlOf(bytes)).takenAt).toBe('11 Aug 2026 · 2:05 PM');
   });
 });

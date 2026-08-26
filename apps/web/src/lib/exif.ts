@@ -16,7 +16,9 @@
  * honest answer is no stamp at all, and the daily log says so rather than inventing one.
  *
  * Deliberately minimal: JPEG APP1 only, the four tags below, every read bounds-checked, and
- * any surprise answered with null. This runs on arbitrary bytes a user chose.
+ * any surprise answered with null. This runs on arbitrary bytes a user chose, and it is given
+ * only the head of the file — so a segment may legitimately declare a length beyond the bytes
+ * in hand without that being corruption.
  */
 export interface ExifCapture {
   /** `DateTimeOriginal`, the camera's own wall clock: `YYYY:MM:DD HH:MM:SS`, no zone. */
@@ -65,8 +67,8 @@ export function readExif(bytes: Uint8Array): ExifCapture | null {
     const gpsPtr = numberOf(view, tiff, ifd0.get(TAG_GPS_IFD), le);
     if (gpsPtr !== null) {
       const gps = readIfd(view, tiff, tiff + gpsPtr, le);
-      const lat = coordinate(view, tiff, gps?.get(TAG_GPS_LAT), gps?.get(TAG_GPS_LAT_REF), 'S', 90, le);
-      const lng = coordinate(view, tiff, gps?.get(TAG_GPS_LNG), gps?.get(TAG_GPS_LNG_REF), 'W', 180, le);
+      const lat = coordinate(view, tiff, gps?.get(TAG_GPS_LAT), gps?.get(TAG_GPS_LAT_REF), 'N', 'S', 90, le);
+      const lng = coordinate(view, tiff, gps?.get(TAG_GPS_LNG), gps?.get(TAG_GPS_LNG_REF), 'E', 'W', 180, le);
       // a half-fix is not a fix: both or neither
       if (lat !== null && lng !== null) {
         out.lat = lat;
@@ -94,11 +96,15 @@ function findTiffHeader(b: Uint8Array): number | null {
     }
     if (marker === 0xda) return null; // start of scan: past every metadata segment
     const size = (b[p + 2] << 8) | b[p + 3];
-    if (size < 2 || p + 2 + size > b.length) return null;
+    if (size < 2) return null;
     if (marker === 0xe1 && p + 10 <= b.length) {
       const tag = String.fromCharCode(b[p + 4], b[p + 5], b[p + 6], b[p + 7]);
       if (tag === 'Exif' && b[p + 8] === 0 && b[p + 9] === 0) return p + 10;
     }
+    // A segment may DECLARE a length running past the bytes we hold — an APP1 alone can
+    // approach 64 KiB. That is not a reason to give up on a segment whose signature is right
+    // here: only the reads that follow need the bytes, and each of those is bounds-checked.
+    if (p + 2 + size > b.length) return null;
     p += 2 + size;
   }
   return null;
@@ -168,6 +174,7 @@ function coordinate(
   tiff: number,
   dms: Entry | undefined,
   ref: Entry | undefined,
+  positive: 'N' | 'E',
   negative: 'S' | 'W',
   limit: number,
   le: boolean,
@@ -175,8 +182,11 @@ function coordinate(
   if (!dms || dms.type !== 5 || dms.count !== 3) return null;
   const at = valuesAt(view, tiff, dms, le);
   if (at === null) return null;
+  // EXIF permits only N/S on latitude and E/W on longitude. Accepting either pair on either
+  // axis turns a corrupt 'W' latitude into a plausible POSITIVE one — a location in the wrong
+  // place reads as truth, where no location at all reads as what it is.
   const hemisphere = asciiOf(view, tiff, ref, le);
-  if (hemisphere !== 'N' && hemisphere !== 'S' && hemisphere !== 'E' && hemisphere !== 'W') return null;
+  if (hemisphere !== positive && hemisphere !== negative) return null;
 
   let degrees = 0;
   for (let i = 0; i < 3; i += 1) {

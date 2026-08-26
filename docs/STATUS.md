@@ -60,8 +60,35 @@ one. Three consequences fall out of that, each closing a defect the earlier shap
 The EXIF reader is deliberately narrow — JPEG APP1 only, four tags, every read bounds-checked,
 any surprise answered with null — because it runs on arbitrary bytes a user chose. Its probes
 build real JPEG+TIFF fixtures rather than checking in opaque binaries, and sweep every truncated
-prefix of a valid file plus a corrupted variant to prove it cannot throw. Gates: `pnpm check`
-EXIT 0 — web 908/908, API 793/793, automation 292/292. No schema, no migration, no API change.
+prefix of a valid file plus a corrupted variant to prove it cannot throw.
+
+#439 carries ONE in-branch correction for the four Codex findings on head `20311f92` (its first
+finding-bearing head), each reproduced RED in ISOLATION — the one fix reverted, the rest left in
+place — so no probe passes for the wrong reason:
+
+- **F1 (P1) — one turn from read to queue.** The picker still yielded once: `file.slice()
+  .arrayBuffer()` re-read the file for EXIF after the data URL was already in hand. That window
+  is the same hazard the replacement existed to remove — a project switch redirects the upload,
+  a reload loses the selection. `captureStamp` now takes the DATA URL and decodes its head
+  synchronously, so the picker has no `await` at all. Probed at the screen: a stubbed
+  FileReader fires `onload`, and `addProgressPhoto` is asserted called with NO flush, timer or
+  await after it (RED against the rejected shape: 0 calls).
+- **F2 (P2) — a date that never existed.** Validation checked only that the month mapped to a
+  name and the day was 1–31, so `2026:02:31 09:99:00` was uploaded as `31 Feb 2026 · 9:99 AM`.
+  Minutes and seconds are now bounded and the day is validated against the real calendar by
+  round trip (31 Feb rolls to 3 Mar and is refused; 29 Feb 2028 is kept).
+- **F3 (P2) — enough bytes, and no premature abort.** Two halves, each reproduced separately: a
+  valid APP1 can approach 64 KiB and may follow an APP0, so the 64 KiB budget could stop short
+  (now 256 KiB); and `findTiffHeader` aborted whenever a segment DECLARED a length beyond the
+  resident head, before even inspecting the `Exif` signature — the reads that follow are all
+  bounds-checked, so that check now happens only when advancing past the segment.
+- **F4 (P2) — a hemisphere from the wrong axis.** Any of N/S/E/W was accepted on either
+  coordinate, so a corrupt `W` latitude passed and came back POSITIVE — a plausible location in
+  the wrong place, which reads as truth where no location reads as what it is. Latitude now
+  admits only N/S and longitude only E/W.
+
+Gates: `pnpm check` EXIT 0 — web 915/915, API 793/793, automation 292/292. No schema, no
+migration, no API change.
 
 #435 asks the DATABASE whether its guards actually fire — before a migration lands on it and
 again after one does. It states two CLOSED properties of the whole application schema: no trigger
