@@ -212,9 +212,23 @@ export interface ForeignKeyShapeFinding {
  * tool that rebuilds `pg_class` rows — the same provenance as the states the other clauses catch.
  */
 export interface TriggerBypassFinding {
+  /**
+   * NOT always the application schema. A foreign key declared here may REFERENCE a table
+   * elsewhere, and clause 3 already judges that table's parent-side RI triggers without a schema
+   * filter — so a bypass there is exactly as invisible, and is scanned for the same reason.
+   */
+  schema: string;
   table: string;
   /** Triggers the table carries that PostgreSQL will not consult while the flag is false. */
   triggers: number;
+  /**
+   * A ready-to-run repair statement, quoted BY POSTGRESQL (`format('%I')` + `quote_literal`) rather
+   * than by interpolating catalog text into SQL here. An identifier may legally contain a quote,
+   * and a restored object name is exactly where an odd one turns up: interpolated raw, it produces
+   * invalid SQL at best, and at worst terminates the literal so that an operator who copies the
+   * advertised command runs a statement this file appended for them.
+   */
+  repair: string;
 }
 
 export interface EnforcementReport {
@@ -314,16 +328,37 @@ export async function checkEnforcement(prisma: Client, schema = applicationSchem
 
   // CLAUSE 4. Tables PostgreSQL skips the triggers of. Asked of the TABLE, because clause 1 asks
   // each trigger about itself and every one of them answers "enabled" while none of them runs.
-  const bypassed = await prisma.$queryRawUnsafe<Array<{ table: string; triggers: number }>>(
-    `SELECT c.relname AS "table",
-            (SELECT count(*)::int FROM pg_trigger t WHERE t.tgrelid = c.oid) AS "triggers"
-       FROM pg_class c
+  const bypassed = await prisma.$queryRawUnsafe<
+    Array<{ schema: string; table: string; triggers: number; repair: string }>
+  >(
+    // The scanned set matches CLAUSE 3's reach deliberately. A key declared in this schema is
+    // judged by its WHOLE implementation, including the parent-side triggers on a referenced table
+    // in another schema — so `relhastriggers = false` on that referenced table hides a bypass that
+    // clause 3 then counts as four enforcing triggers, and a DELETE there can orphan a row while
+    // this check reports `enforcing: true`. Scanning only `$1` would be narrower than the object
+    // being judged, which is the defect this whole check exists to refuse.
+    `WITH scanned AS (
+       SELECT c.oid
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1 AND c.relkind IN ('r','p')
+       UNION
+       SELECT k.confrelid
+         FROM pg_constraint k
+         JOIN pg_class c ON c.oid = k.conrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1 AND k.contype = 'f' AND k.confrelid <> 0
+     )
+     SELECT n.nspname AS "schema",
+            c.relname AS "table",
+            (SELECT count(*)::int FROM pg_trigger t WHERE t.tgrelid = c.oid) AS "triggers",
+            quote_literal(format('%I.%I', n.nspname, c.relname)) AS "repair"
+       FROM scanned s
+       JOIN pg_class c ON c.oid = s.oid
        JOIN pg_namespace n ON n.oid = c.relnamespace
-      WHERE n.nspname = $1
-        AND c.relkind IN ('r','p')
+      WHERE c.relkind IN ('r','p')
         AND NOT c.relhastriggers
         AND EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid = c.oid)
-      ORDER BY c.relname`,
+      ORDER BY n.nspname, c.relname`,
     schema,
   );
 
@@ -492,11 +527,13 @@ export function summarizeEnforcement(report: EnforcementReport): string {
   // Last, and for the same reason the role check is first: while this fires, clause 1 reads CLEAN
   // for every trigger on the table and says nothing at all about it.
   if (bt.total > 0) {
-    lines.push(`NOT ENFORCING — ${bt.total} table(s) in schema "${report.schema}" have relhastriggers = FALSE, `
-      + `so PostgreSQL does not consult their triggers at all (every tgenabled still reads as enabled):`);
+    lines.push(`NOT ENFORCING — ${bt.total} table(s) reachable from schema "${report.schema}" have `
+      + `relhastriggers = FALSE, so PostgreSQL does not consult their triggers at all `
+      + `(every tgenabled still reads as enabled):`);
     for (const f of bt.sample) {
-      lines.push(`  ${report.schema}."${f.table}" carries ${f.triggers} trigger(s), none of which can fire. `
-        + `Repair: UPDATE pg_class SET relhastriggers = true WHERE oid = '${report.schema}."${f.table}"'::regclass;`);
+      const elsewhere = f.schema === report.schema ? '' : ' [referenced from this schema, and judged by clause 3]';
+      lines.push(`  ${f.schema}.${f.table} carries ${f.triggers} trigger(s), none of which can fire${elsewhere}. `
+        + `Repair: UPDATE pg_class SET relhastriggers = true WHERE oid = ${f.repair}::regclass;`);
     }
     if (bt.total > bt.sample.length) lines.push(`  … and ${bt.total - bt.sample.length} more (sample bounded at ${SAMPLE_LIMIT}).`);
   }

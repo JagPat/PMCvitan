@@ -222,6 +222,78 @@ describe('schema enforcement — the live catalog, not the SQL that wrote it', (
     await expect(scratch.$executeRawUnsafe(`INSERT INTO "Child" VALUES (42, 1)`)).rejects.toThrow();
   });
 
+  it('NAMES a bypassed table in ANOTHER schema that this schema\'s foreign key references', async () => {
+    // CODEX P2 on af93acdc. Clause 3 reaches a key's parent-side RI triggers WITHOUT a schema
+    // filter, by design. So if the REFERENCED table lives elsewhere and is bypassed, its four RI
+    // triggers all still read 'O', clause 3 counts them enforcing, and a schema-filtered clause 4
+    // never looks at the table — a DELETE there orphans a row while the report says enforcing.
+    await resetScratch();
+    await scratch.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "other" CASCADE`);
+    await scratch.$executeRawUnsafe(`CREATE SCHEMA "other"`);
+    await scratch.$executeRawUnsafe(`CREATE TABLE "other"."Ref" ("id" int PRIMARY KEY)`);
+    await scratch.$executeRawUnsafe(`INSERT INTO "other"."Ref" VALUES (1)`);
+    await scratch.$executeRawUnsafe(
+      `ALTER TABLE "Child" ADD CONSTRAINT "Child_ref_fkey" FOREIGN KEY ("parentId") REFERENCES "other"."Ref"("id")`,
+    );
+    try {
+      await scratch.$executeRawUnsafe(
+        `UPDATE pg_class SET relhastriggers = false WHERE oid = 'other."Ref"'::regclass`,
+      );
+
+      const report = await checkEnforcement(scratch, 'public');
+
+      // The two clauses that CAN see this table both read clean — which is what makes it a gap.
+      expect(report.disabledTriggers.total).toBe(0);
+      expect(report.incompleteForeignKeys.total).toBe(0);
+
+      expect(report.enforcing).toBe(false);
+      expect(report.bypassedTables.sample.map((f) => `${f.schema}.${f.table}`)).toContain('other.Ref');
+      expect(summarizeEnforcement(report)).toContain('referenced from this schema');
+    } finally {
+      await scratch.$executeRawUnsafe(
+        `UPDATE pg_class SET relhastriggers = true WHERE oid = 'other."Ref"'::regclass`,
+      ).catch(() => undefined);
+      await scratch.$executeRawUnsafe(`ALTER TABLE "Child" DROP CONSTRAINT "Child_ref_fkey"`).catch(() => undefined);
+      await scratch.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "other" CASCADE`).catch(() => undefined);
+    }
+  });
+
+  it('quotes the advertised repair statement, so a quote in an identifier cannot append a statement', async () => {
+    // CODEX P2 on af93acdc. An identifier may legally contain a single quote. Interpolated raw into
+    // the repair command it terminates the literal, and an operator who copies the line runs
+    // whatever follows. PostgreSQL does the quoting now (format('%I') + quote_literal), so the
+    // statement stays one statement.
+    await resetScratch();
+    const evil = `Ev'il"Tbl`;
+    await scratch.$executeRawUnsafe(`CREATE TABLE "Ev'il""Tbl" ("id" int PRIMARY KEY)`);
+    await scratch.$executeRawUnsafe(
+      `CREATE CONSTRAINT TRIGGER "evil_seal" AFTER INSERT ON "Ev'il""Tbl"
+         DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION probe_seal()`,
+    );
+    try {
+      await scratch.$executeRawUnsafe(
+        `UPDATE pg_class SET relhastriggers = false WHERE oid = 'public."Ev''il""Tbl"'::regclass`,
+      );
+      const report = await checkEnforcement(scratch, 'public');
+      const found = report.bypassedTables.sample.find((f) => f.table === evil);
+      expect(found).toBeDefined();
+
+      // The repair is a SINGLE well-formed literal: both quote characters are escaped, so the
+      // statement PostgreSQL parses is the one the diagnostic shows.
+      expect(found!.repair).toBe(`'public."Ev''il""Tbl"'`);
+      const [{ ok }] = await scratch.$queryRawUnsafe<Array<{ ok: string }>>(
+        `SELECT ${found!.repair}::regclass::text AS ok`,
+      );
+      expect(ok).toContain('Ev');
+      expect(summarizeEnforcement(report)).toContain(found!.repair);
+    } finally {
+      await scratch.$executeRawUnsafe(
+        `UPDATE pg_class SET relhastriggers = true WHERE oid = 'public."Ev''il""Tbl"'::regclass`,
+      ).catch(() => undefined);
+      await scratch.$executeRawUnsafe(`DROP TABLE IF EXISTS "Ev'il""Tbl"`).catch(() => undefined);
+    }
+  });
+
   it('NAMES an unvalidated foreign key', async () => {
     await resetScratch();
     await scratch.$executeRawUnsafe(`INSERT INTO "Child" VALUES (14, NULL)`).catch(() => undefined);
