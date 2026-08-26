@@ -222,7 +222,7 @@ describe('schema enforcement — the live catalog, not the SQL that wrote it', (
     await expect(scratch.$executeRawUnsafe(`INSERT INTO "Child" VALUES (42, 1)`)).rejects.toThrow();
   });
 
-  it('NAMES a bypassed table in ANOTHER schema that this schema\'s foreign key references', async () => {
+  it('CONVERGENCE 4 — a bypassed parent in ANOTHER schema, referenced by this schema\'s foreign key', async () => {
     // CODEX P2 on af93acdc. Clause 3 reaches a key's parent-side RI triggers WITHOUT a schema
     // filter, by design. So if the REFERENCED table lives elsewhere and is bypassed, its four RI
     // triggers all still read 'O', clause 3 counts them enforcing, and a schema-filtered clause 4
@@ -258,7 +258,7 @@ describe('schema enforcement — the live catalog, not the SQL that wrote it', (
     }
   });
 
-  it('quotes the advertised repair statement, so a quote in an identifier cannot append a statement', async () => {
+  it('CONVERGENCE 5 — quoted identifiers: a quote in a name cannot append a statement to the repair', async () => {
     // CODEX P2 on af93acdc. An identifier may legally contain a single quote. Interpolated raw into
     // the repair command it terminates the literal, and an operator who copies the line runs
     // whatever follows. PostgreSQL does the quoting now (format('%I') + quote_literal), so the
@@ -510,13 +510,83 @@ describe('schema enforcement — the live catalog, not the SQL that wrote it', (
     });
   });
 
-  it('reports a fresh/empty schema as NOT APPLICABLE rather than clean', async () => {
+  it('CONVERGENCE 1 — a TRULY empty schema is still NOT APPLICABLE (states A and G preserved)', async () => {
+    // The convergence widened applicability from "no r/p tables" to "no relations at all". This is
+    // the probe that the widening did not cost the fresh-database behaviour the deploy path needs:
+    // states A and G of the production runner proof both rest on an empty schema reading this way.
     const report = await checkEnforcement(scratch, 'a_schema_that_does_not_exist');
     expect(report.applicable).toBe(false);
-    expect(report.counts.tables).toBe(0);
+    expect(report.counts.relations).toBe(0);
     expect(report.note).toContain('fresh or empty');
     // The two migrate.sh callers differ on what this means, and the CLI — not this function —
     // decides: preflight passes, verify fails with exit 4.
+  });
+
+  it('CONVERGENCE 2 — a schema holding ONLY a foreign table is applicable, and its bypass is named', async () => {
+    // CODEX P2 on c8be27a2, and the fourth finding of one shape. Applicability counted r/p only, so
+    // this schema short-circuited to `applicable: false` with an empty bypass set and preflight
+    // ACCEPTED a relhastriggers = false relation. One universe now answers both questions.
+    await scratch.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "only_ft" CASCADE`);
+    await scratch.$executeRawUnsafe(`CREATE SCHEMA "only_ft"`);
+    await scratch.$executeRawUnsafe(`CREATE EXTENSION IF NOT EXISTS postgres_fdw`);
+    await scratch.$executeRawUnsafe(
+      `CREATE SERVER IF NOT EXISTS "conv_srv" FOREIGN DATA WRAPPER postgres_fdw
+         OPTIONS (host 'localhost', dbname '${SCRATCH_DB}')`,
+    );
+    try {
+      await scratch.$executeRawUnsafe(
+        `CREATE FOREIGN TABLE "only_ft"."Ft" ("id" int) SERVER "conv_srv" OPTIONS (table_name 'absent')`,
+      );
+      await scratch.$executeRawUnsafe(
+        `CREATE TRIGGER "Ft_seal" BEFORE INSERT ON "only_ft"."Ft" FOR EACH ROW EXECUTE FUNCTION probe_seal()`,
+      );
+      await scratch.$executeRawUnsafe(
+        `UPDATE pg_class SET relhastriggers = false WHERE oid = 'only_ft."Ft"'::regclass`,
+      );
+
+      const report = await checkEnforcement(scratch, 'only_ft');
+      expect(report.applicable).toBe(true);          // was false — the short circuit
+      expect(report.counts.relations).toBeGreaterThan(0);
+      expect(report.disabledTriggers.total).toBe(0); // clause 1 still sees nothing: that is the gap
+      expect(report.enforcing).toBe(false);
+      expect(report.bypassedTables.sample.map((f) => f.table)).toContain('Ft');
+    } finally {
+      await scratch.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "only_ft" CASCADE`).catch(() => undefined);
+      await scratch.$executeRawUnsafe(`DROP SERVER IF EXISTS "conv_srv" CASCADE`).catch(() => undefined);
+    }
+  });
+
+  it('CONVERGENCE 3 — a schema holding ONLY a trigger-bearing view is applicable, and its bypass is named', async () => {
+    // The same shape one relkind over. A view carries INSTEAD OF triggers, so it is a seal surface;
+    // any check that enumerates "kinds that can be sealed" eventually omits one, which is why the
+    // universe enumerates none.
+    await scratch.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "only_view" CASCADE`);
+    await scratch.$executeRawUnsafe(`CREATE SCHEMA "only_view"`);
+    try {
+      await scratch.$executeRawUnsafe(`CREATE VIEW "only_view"."V" AS SELECT 1 AS id`);
+      await scratch.$executeRawUnsafe(
+        `CREATE FUNCTION "only_view".v_seal() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$`,
+      );
+      await scratch.$executeRawUnsafe(
+        `CREATE TRIGGER "V_seal" INSTEAD OF INSERT ON "only_view"."V"
+           FOR EACH ROW EXECUTE FUNCTION "only_view".v_seal()`,
+      );
+      const [{ relkind }] = await scratch.$queryRawUnsafe<Array<{ relkind: string }>>(
+        `SELECT relkind::text AS relkind FROM pg_class WHERE oid = 'only_view."V"'::regclass`,
+      );
+      expect(relkind).toBe('v');
+
+      await scratch.$executeRawUnsafe(
+        `UPDATE pg_class SET relhastriggers = false WHERE oid = 'only_view."V"'::regclass`,
+      );
+      const report = await checkEnforcement(scratch, 'only_view');
+      expect(report.applicable).toBe(true);
+      expect(report.disabledTriggers.total).toBe(0);
+      expect(report.enforcing).toBe(false);
+      expect(report.bypassedTables.sample.map((f) => f.table)).toContain('V');
+    } finally {
+      await scratch.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "only_view" CASCADE`).catch(() => undefined);
+    }
   });
 
   it('bounds the printed sample without bounding the count', async () => {

@@ -151,6 +151,47 @@ const roleEnforces = (role: string): boolean => (ENFORCING_SESSION_ROLES as read
  */
 export const SAMPLE_LIMIT = 25;
 
+/**
+ * THE APPLICATION RELATION UNIVERSE — stated once here, and derived from nowhere else.
+ *
+ * WHY THIS EXISTS. #436 and #437 drew FOUR review findings and every one was the same defect: a
+ * clause whose reach was written as its own filter, so widening one left the others behind.
+ * Excluded cross-schema parents, then a relkind filter that excluded foreign tables, then an
+ * applicability count that still excluded them one level up. Each fix was correct and each exposed
+ * the next seam, because there were four independent answers to "which relations does this check
+ * judge?" — see docs/reviews/schema-enforcement-convergence.md.
+ *
+ * A relation is in the universe when it is IN the application schema, or when an application-schema
+ * FOREIGN KEY REFERENCES it — clause 3 already judges a key by its whole implementation including
+ * parent-side triggers that live elsewhere, so the parent is in scope for every clause or for none.
+ *
+ * THERE IS NO relkind FILTER, and that absence is the point. Foreign tables carry row triggers
+ * (verified on PG16), views carry INSTEAD OF triggers, partitioned tables carry both. Every list of
+ * "kinds that can be sealed" is a list that a later PostgreSQL outgrows, and enumerating them is
+ * what produced findings 3 and 4. Membership is "PostgreSQL has a pg_class row for it here"; what
+ * each clause ASKS of a member is driven by what that member actually HAS — triggers present, a
+ * flag off, a constraint unvalidated — never by what kind it is. A relation with no triggers has
+ * nothing to bypass and is simply never reported.
+ */
+const UNIVERSE = `
+  WITH universe AS (
+    SELECT oid, nspname, relname, bool_or(in_schema) AS in_schema
+      FROM (
+        SELECT c.oid, n.nspname, c.relname, true AS in_schema
+          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = $1
+        UNION ALL
+        SELECT f.oid, fn.nspname, f.relname, false
+          FROM pg_constraint k
+          JOIN pg_class c ON c.oid = k.conrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          JOIN pg_class f ON f.oid = k.confrelid
+          JOIN pg_namespace fn ON fn.oid = f.relnamespace
+         WHERE n.nspname = $1 AND k.contype = 'f' AND k.confrelid <> 0
+      ) u
+     GROUP BY oid, nspname, relname
+  )`;
+
 export interface TriggerFinding {
   table: string;
   trigger: string;
@@ -237,7 +278,7 @@ export interface EnforcementReport {
   applicable: boolean;
   note: string;
   enforcing: boolean;
-  counts: { tables: number; triggers: number; foreignKeys: number };
+  counts: { relations: number; triggers: number; foreignKeys: number };
   /** The live session's `session_replication_role`. `O` triggers are inert unless it enforces. */
   sessionReplicationRole: string;
   disabledTriggers: { total: number; sample: TriggerFinding[] };
@@ -271,18 +312,19 @@ type Client = Pick<PrismaClient, '$queryRawUnsafe'>;
  * question rather than filtered out of it.
  */
 export async function checkEnforcement(prisma: Client, schema = applicationSchema()): Promise<EnforcementReport> {
-  const [{ tables, triggers, foreignKeys, role }] = await prisma.$queryRawUnsafe<
-    Array<{ tables: number; triggers: number; foreignKeys: number; role: string }>
+  // Applicability, the trigger count and the key count all read the SAME universe, so none of them
+  // can drift from the clauses below. `relations` counts only the members IN the schema: a parent in
+  // another schema extends what the clauses REACH, and does not make an empty schema non-empty.
+  const [{ relations, triggers, foreignKeys, role }] = await prisma.$queryRawUnsafe<
+    Array<{ relations: number; triggers: number; foreignKeys: number; role: string }>
   >(
-    `SELECT
+    `${UNIVERSE}
+     SELECT
        current_setting('session_replication_role') AS "role",
-       (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-         WHERE n.nspname = $1 AND c.relkind IN ('r','p')) AS "tables",
-       (SELECT count(*)::int FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
-          JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1) AS "triggers",
-       (SELECT count(*)::int FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid
-          JOIN pg_namespace n ON n.oid = c.relnamespace
-         WHERE n.nspname = $1 AND k.contype = 'f') AS "foreignKeys"`,
+       (SELECT count(*)::int FROM universe WHERE in_schema) AS "relations",
+       (SELECT count(*)::int FROM pg_trigger t JOIN universe u ON u.oid = t.tgrelid) AS "triggers",
+       (SELECT count(*)::int FROM pg_constraint k JOIN universe u ON u.oid = k.conrelid
+         WHERE k.contype = 'f' AND u.in_schema) AS "foreignKeys"`,
     schema,
   );
 
@@ -290,13 +332,13 @@ export async function checkEnforcement(prisma: Client, schema = applicationSchem
   // with nothing to say. Reported as NOT APPLICABLE rather than clean, and the two callers in
   // migrate.sh then differ on what that means: before Prisma it passes (the migrations that build
   // the schema still have to run), after a successful deploy it is a failure.
-  if (tables === 0) {
+  if (relations === 0) {
     return {
       schema,
       applicable: false,
-      note: `schema "${schema}" contains no application tables — fresh or empty database, nothing to verify`,
+      note: `schema "${schema}" contains no relations at all — fresh or empty database, nothing to verify`,
       enforcing: roleEnforces(role),
-      counts: { tables, triggers, foreignKeys },
+      counts: { relations, triggers, foreignKeys },
       sessionReplicationRole: role,
       disabledTriggers: { total: 0, sample: [] },
       unvalidatedForeignKeys: { total: 0, sample: [] },
@@ -311,18 +353,17 @@ export async function checkEnforcement(prisma: Client, schema = applicationSchem
   const disabled = await prisma.$queryRawUnsafe<
     Array<{ table: string; trigger: string; state: string; internal: boolean; implements: string | null }>
   >(
-    `SELECT c.relname AS "table",
+    `${UNIVERSE}
+     SELECT u.relname AS "table",
             t.tgname  AS "trigger",
             t.tgenabled::text AS "state",
             t.tgisinternal AS "internal",
             k.conname AS "implements"
        FROM pg_trigger t
-       JOIN pg_class c ON c.oid = t.tgrelid
-       JOIN pg_namespace n ON n.oid = c.relnamespace
+       JOIN universe u ON u.oid = t.tgrelid
        LEFT JOIN pg_constraint k ON k.oid = t.tgconstraint
-      WHERE n.nspname = $1
-        AND NOT (t.tgenabled = 'O' OR t.tgenabled = 'A')
-      ORDER BY c.relname, t.tgname`,
+      WHERE NOT (t.tgenabled = 'O' OR t.tgenabled = 'A')
+      ORDER BY u.nspname, u.relname, t.tgname`,
     schema,
   );
 
@@ -344,27 +385,16 @@ export async function checkEnforcement(prisma: Client, schema = applicationSchem
     // clause 3 then counts as four enforcing triggers, and a DELETE there can orphan a row while
     // this check reports `enforcing: true`. Scanning only `$1` would be narrower than the object
     // being judged, which is the defect this whole check exists to refuse.
-    `WITH scanned AS (
-       SELECT c.oid
-         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = $1
-       UNION
-       SELECT k.confrelid
-         FROM pg_constraint k
-         JOIN pg_class c ON c.oid = k.conrelid
-         JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = $1 AND k.contype = 'f' AND k.confrelid <> 0
-     )
-     SELECT n.nspname AS "schema",
-            c.relname AS "table",
-            (SELECT count(*)::int FROM pg_trigger t WHERE t.tgrelid = c.oid) AS "triggers",
-            quote_literal(format('%I.%I', n.nspname, c.relname)) AS "repair"
-       FROM scanned s
-       JOIN pg_class c ON c.oid = s.oid
-       JOIN pg_namespace n ON n.oid = c.relnamespace
+    `${UNIVERSE}
+     SELECT u.nspname AS "schema",
+            u.relname AS "table",
+            (SELECT count(*)::int FROM pg_trigger t WHERE t.tgrelid = u.oid) AS "triggers",
+            quote_literal(format('%I.%I', u.nspname, u.relname)) AS "repair"
+       FROM universe u
+       JOIN pg_class c ON c.oid = u.oid
       WHERE NOT c.relhastriggers
-        AND EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid = c.oid)
-      ORDER BY n.nspname, c.relname`,
+        AND EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid = u.oid)
+      ORDER BY u.nspname, u.relname`,
     schema,
   );
 
@@ -476,11 +506,12 @@ export async function checkEnforcement(prisma: Client, schema = applicationSchem
   return {
     schema,
     applicable: true,
-    note: `schema "${schema}": ${triggers} triggers and ${foreignKeys} foreign keys over ${tables} tables`,
+    note: `schema "${schema}": ${triggers} triggers and ${foreignKeys} foreign keys over ${relations} `
+      + 'relations (this schema, plus every relation its foreign keys reference)',
     enforcing: roleEnforces(role)
       && triggerFindings.length === 0 && unvalidated.length === 0 && keyFindings.length === 0
       && bypassed.length === 0,
-    counts: { tables, triggers, foreignKeys },
+    counts: { relations, triggers, foreignKeys },
     sessionReplicationRole: role,
     disabledTriggers: { total: triggerFindings.length, sample: triggerFindings.slice(0, SAMPLE_LIMIT) },
     unvalidatedForeignKeys: { total: unvalidated.length, sample: unvalidated.slice(0, SAMPLE_LIMIT) },
