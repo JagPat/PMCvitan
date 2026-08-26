@@ -226,6 +226,17 @@ export function emptyModuleReadState(): ModuleReadState {
   };
 }
 
+/**
+ * The scope a piece of work belongs to, read off the live state.
+ *
+ * ONE definition, so the store's own guards and any caller that must capture a scope BEFORE
+ * an async boundary (the photo picker, whose `FileReader` resolves after the user may have
+ * switched projects) cannot drift apart.
+ */
+export function projectScopeOf(state: { activeProjectId: string; projectScopeGeneration: number }): ProjectScope {
+  return { projectId: state.activeProjectId, generation: state.projectScopeGeneration };
+}
+
 export function isCurrentProjectScope(
   currentProjectId: string,
   currentGeneration: number,

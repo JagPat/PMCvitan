@@ -55,7 +55,7 @@ export function ClientHealthScreen() {
                 <div style={{ height: 170, position: 'relative', background: '#000' }}>
                   <img src={p.url} alt={`Site photo ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 </div>
-                <div style={{ padding: '9px 12px', background: '#fff', fontSize: 12, color: 'var(--muted)' }}>{p.takenAt ? p.takenAt.slice(0, 10) : ''}</div>
+                <div style={{ padding: '9px 12px', background: '#fff', fontSize: 12, color: 'var(--muted)' }}>{p.takenAt ?? ''}</div>
               </div>
             ))}
           </div>

@@ -15,16 +15,67 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: e5d3c4fd
-open_pr: 435
+reviewed_merge: 559083b7
+open_pr: 440
 next_task: none
 blocking_directive: none
 updated: 2026-08-26
 ```
 
-**THE OPEN PR IS #435 — A DEPLOY-TIME SCHEMA-ENFORCEMENT GATE, NOT PHASE 6 TASK 4.** Every
-paragraph BELOW this one records an EARLIER unit; where one of them says "the open PR", read it
-as the open PR of its own day, not as #435.
+**THE OPEN PR IS #440 — THE PROGRESS-PHOTO CAPTURE STAMP, NOT PHASE 6 TASK 4.** It REPLACES
+#439, which replaced #429; both closed at the two-finding-head limit. Every paragraph BELOW this
+one records an EARLIER unit; where one of them says "the open PR", read it as the open PR of its
+own day, not as #440.
+
+The daily log has always told the user its progress photos are "geo + time stamped". They were
+not: `UploadMediaInput` accepts `takenAt`/`geoLat`/`geoLng` and the store sent none of them.
+
+The APPROACH was rejected twice, both times for claiming more than the file supports — stamping
+the wall clock at selection time (#429 head 1), then trusting `File.lastModified`, which copying
+or editing an old photo rewrites to today (#429 head 2). It has NOT been challenged since. The
+stamp reads what the photo itself recorded: EXIF `DateTimeOriginal` is written at the shutter and
+survives being copied, EXIF GPS records where the SHUTTER was rather than where the phone is now,
+and a file carrying neither gets NO stamp — the daily log says so instead of inventing one.
+
+`Media.takenAt` is a `String` the schema documents as a DISPLAY timestamp ("03 Jul 2026 · 9:12
+AM"), which the seed writes and both earlier heads violated by sending a UTC ISO instant. EXIF's
+clock is the camera's own local time — for a site photo, the site's — so it is formatted to the
+documented shape and no timezone is invented. That also fixes a PRE-EXISTING display bug:
+Dashboard and Client Health rendered `takenAt.slice(0, 10)`, turning the seed's own "03 Jul 2026"
+into "03 Jul 202".
+
+The four review rounds since have been about implementation, and each is carried here:
+
+- **Nothing async between accepting a photo and making it durable.** `addProgressPhoto` is
+  synchronous, and `captureStamp` takes the DATA URL the picker already produced and decodes its
+  head — so there is no geolocation await (#429) and no second file read (#439 head 1) sitting in
+  that window, where a reload loses the photo outright.
+- **The photo belongs to the project it was chosen in.** `readAsDataURL` is ITSELF an async
+  boundary, and this defect PREDATES the stamp: `main` dispatches from `onload` with nothing
+  binding the photo to its project, so a switch mid-read files A's photo — and A's `photoNode` —
+  under B's gateway. The picker now captures the scope at selection through the new shared
+  `projectScopeOf`, and the store drops a photo whose scope has moved.
+- **Metadata that cannot be true yields no stamp.** Minutes and seconds are bounded and the day
+  is checked against the real calendar by round trip, so `2026:02:31 09:99:00` is refused rather
+  than recorded as `31 Feb 2026 · 9:99 AM`; a real leap day is kept.
+- **Valid EXIF is actually found.** 256 KiB of head is decoded (one APP1 can approach 64 KiB and
+  may follow an APP0); a segment declaring a length past the resident head no longer aborts the
+  search before the `Exif` signature is even inspected; and a marker introduced by repeated
+  `0xff` fill bytes — `FF FF E1` is legal — is read as the marker it is.
+- **A coordinate is all-or-nothing, and axis-correct.** Latitude admits only N/S and longitude
+  only E/W, so a corrupt `W` latitude yields nothing instead of a plausible POSITIVE one; a zero
+  denominator or missing hemisphere drops the pair. A location in the wrong place reads as truth;
+  no location reads as what it is.
+
+The reader is narrow on purpose — JPEG APP1, four tags, every read bounds-checked, any surprise
+answered with null — because it runs on bytes a user chose. Its probes build real JPEG+TIFF
+fixtures rather than checking in opaque binaries, sweep every truncated prefix of a valid file
+plus a corrupted variant, and include a 5000-byte `0xff` run to prove the marker walk can neither
+hang nor throw. Every finding carried here was reproduced RED in ISOLATION — the one fix
+reverted, the rest left in place — so no probe passes for the wrong reason.
+
+Gates: `pnpm check` EXIT 0 — web 920/920, API 793/793, automation 292/292. No schema, no
+migration, no API change.
 
 #435 asks the DATABASE whether its guards actually fire — before a migration lands on it and
 again after one does. It states two CLOSED properties of the whole application schema: no trigger
