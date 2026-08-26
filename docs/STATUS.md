@@ -15,7 +15,7 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: e1735e21
+reviewed_merge: 559083b7
 open_pr: 429
 next_task: none
 blocking_directive: none
