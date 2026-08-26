@@ -184,6 +184,156 @@ describe('schema enforcement — the live catalog, not the SQL that wrote it', (
     expect(summarizeEnforcement(report)).toContain('"Child_seal"');
   });
 
+  it('NAMES a table whose triggers PostgreSQL skips wholesale — every tgenabled still reads enabled', async () => {
+    // CLAUSE 4. `relhastriggers = false` is the executor's fast path: the table's triggers are not
+    // looked up at all. Every pg_trigger row survives and every tgenabled still reads 'O', so
+    // clause 1 — which asks each trigger about ITSELF — reports the table perfectly sealed.
+    //
+    // MEASURED against this file's own check before clause 4 existed: `enforcement verify` returned
+    // `ok: true, enforcing: true` over exactly this state. That is a check narrower than the object
+    // it judges, which is the shape this whole unit exists to refuse.
+    await resetScratch();
+    await scratch.$executeRawUnsafe(
+      `UPDATE pg_class SET relhastriggers = false WHERE oid = 'public."Child"'::regclass`,
+    );
+
+    // The seal is genuinely inert, not merely flagged: this INSERT is what `Child_seal` refuses.
+    await scratch.$executeRawUnsafe(`INSERT INTO "Child" VALUES (41, 1)`);
+
+    const report = await checkEnforcement(scratch, 'public');
+
+    // Clause 1 sees nothing — that is the point, and asserting it is what proves clause 4 is not
+    // redundant with it. If this ever becomes non-zero, clause 1 grew to cover this and clause 4
+    // should be re-examined rather than left as a second opinion.
+    expect(report.disabledTriggers.total).toBe(0);
+
+    expect(report.enforcing).toBe(false);
+    expect(report.bypassedTables.total).toBe(1);
+    expect(report.bypassedTables.sample[0]).toMatchObject({ table: 'Child' });
+    expect(report.bypassedTables.sample[0].triggers).toBeGreaterThan(0);
+    expect(summarizeEnforcement(report)).toContain('relhastriggers = FALSE');
+    expect(summarizeEnforcement(report)).toContain('"Child"');
+
+    // Precise, not merely strict: restoring the flag restores the verdict AND the seal.
+    await scratch.$executeRawUnsafe(
+      `UPDATE pg_class SET relhastriggers = true WHERE oid = 'public."Child"'::regclass`,
+    );
+    expect((await checkEnforcement(scratch, 'public')).bypassedTables.total).toBe(0);
+    await expect(scratch.$executeRawUnsafe(`INSERT INTO "Child" VALUES (42, 1)`)).rejects.toThrow();
+  });
+
+  it('CONVERGENCE 4 — a bypassed parent in ANOTHER schema, referenced by this schema\'s foreign key', async () => {
+    // CODEX P2 on af93acdc. Clause 3 reaches a key's parent-side RI triggers WITHOUT a schema
+    // filter, by design. So if the REFERENCED table lives elsewhere and is bypassed, its four RI
+    // triggers all still read 'O', clause 3 counts them enforcing, and a schema-filtered clause 4
+    // never looks at the table — a DELETE there orphans a row while the report says enforcing.
+    await resetScratch();
+    await scratch.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "other" CASCADE`);
+    await scratch.$executeRawUnsafe(`CREATE SCHEMA "other"`);
+    await scratch.$executeRawUnsafe(`CREATE TABLE "other"."Ref" ("id" int PRIMARY KEY)`);
+    await scratch.$executeRawUnsafe(`INSERT INTO "other"."Ref" VALUES (1)`);
+    await scratch.$executeRawUnsafe(
+      `ALTER TABLE "Child" ADD CONSTRAINT "Child_ref_fkey" FOREIGN KEY ("parentId") REFERENCES "other"."Ref"("id")`,
+    );
+    try {
+      await scratch.$executeRawUnsafe(
+        `UPDATE pg_class SET relhastriggers = false WHERE oid = 'other."Ref"'::regclass`,
+      );
+
+      const report = await checkEnforcement(scratch, 'public');
+
+      // The two clauses that CAN see this table both read clean — which is what makes it a gap.
+      expect(report.disabledTriggers.total).toBe(0);
+      expect(report.incompleteForeignKeys.total).toBe(0);
+
+      expect(report.enforcing).toBe(false);
+      expect(report.bypassedTables.sample.map((f) => `${f.schema}.${f.table}`)).toContain('other.Ref');
+      expect(summarizeEnforcement(report)).toContain('referenced from this schema');
+    } finally {
+      await scratch.$executeRawUnsafe(
+        `UPDATE pg_class SET relhastriggers = true WHERE oid = 'other."Ref"'::regclass`,
+      ).catch(() => undefined);
+      await scratch.$executeRawUnsafe(`ALTER TABLE "Child" DROP CONSTRAINT "Child_ref_fkey"`).catch(() => undefined);
+      await scratch.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "other" CASCADE`).catch(() => undefined);
+    }
+  });
+
+  it('CONVERGENCE 5 — quoted identifiers: a quote in a name cannot append a statement to the repair', async () => {
+    // CODEX P2 on af93acdc. An identifier may legally contain a single quote. Interpolated raw into
+    // the repair command it terminates the literal, and an operator who copies the line runs
+    // whatever follows. PostgreSQL does the quoting now (format('%I') + quote_literal), so the
+    // statement stays one statement.
+    await resetScratch();
+    const evil = `Ev'il"Tbl`;
+    await scratch.$executeRawUnsafe(`CREATE TABLE "Ev'il""Tbl" ("id" int PRIMARY KEY)`);
+    await scratch.$executeRawUnsafe(
+      `CREATE CONSTRAINT TRIGGER "evil_seal" AFTER INSERT ON "Ev'il""Tbl"
+         DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION probe_seal()`,
+    );
+    try {
+      await scratch.$executeRawUnsafe(
+        `UPDATE pg_class SET relhastriggers = false WHERE oid = 'public."Ev''il""Tbl"'::regclass`,
+      );
+      const report = await checkEnforcement(scratch, 'public');
+      const found = report.bypassedTables.sample.find((f) => f.table === evil);
+      expect(found).toBeDefined();
+
+      // The repair is a SINGLE well-formed literal: both quote characters are escaped, so the
+      // statement PostgreSQL parses is the one the diagnostic shows.
+      expect(found!.repair).toBe(`'public."Ev''il""Tbl"'`);
+      const [{ ok }] = await scratch.$queryRawUnsafe<Array<{ ok: string }>>(
+        `SELECT ${found!.repair}::regclass::text AS ok`,
+      );
+      expect(ok).toContain('Ev');
+      expect(summarizeEnforcement(report)).toContain(found!.repair);
+    } finally {
+      await scratch.$executeRawUnsafe(
+        `UPDATE pg_class SET relhastriggers = true WHERE oid = 'public."Ev''il""Tbl"'::regclass`,
+      ).catch(() => undefined);
+      await scratch.$executeRawUnsafe(`DROP TABLE IF EXISTS "Ev'il""Tbl"`).catch(() => undefined);
+    }
+  });
+
+  it('NAMES a bypassed FOREIGN table — clause 1 judges triggers on any relation kind, so this must too', async () => {
+    // CODEX P2 on 20e80b3c. A foreign table carries row triggers and a relhastriggers flag like any
+    // other relation — VERIFIED on PG16 before this probe was written, not assumed. Clause 1 sees
+    // its trigger at tgenabled 'O'; a clause 4 restricted to relkind IN ('r','p') never looked at
+    // the relation, so writes through it bypassed the trigger with enforcing: true.
+    await resetScratch();
+    await scratch.$executeRawUnsafe(`CREATE EXTENSION IF NOT EXISTS postgres_fdw`);
+    await scratch.$executeRawUnsafe(
+      `CREATE SERVER IF NOT EXISTS "probe_srv" FOREIGN DATA WRAPPER postgres_fdw
+         OPTIONS (host 'localhost', dbname '${SCRATCH_DB}')`,
+    );
+    await scratch.$executeRawUnsafe(
+      `CREATE FOREIGN TABLE "Remote" ("id" int) SERVER "probe_srv" OPTIONS (table_name 'absent')`,
+    );
+    await scratch.$executeRawUnsafe(
+      `CREATE TRIGGER "Remote_seal" BEFORE INSERT ON "Remote" FOR EACH ROW EXECUTE FUNCTION probe_seal()`,
+    );
+    try {
+      const [{ relkind }] = await scratch.$queryRawUnsafe<Array<{ relkind: string }>>(
+        `SELECT relkind::text AS relkind FROM pg_class WHERE oid = 'public."Remote"'::regclass`,
+      );
+      expect(relkind).toBe('f'); // the probe is about a relation kind clause 4 used to exclude
+
+      await scratch.$executeRawUnsafe(
+        `UPDATE pg_class SET relhastriggers = false WHERE oid = 'public."Remote"'::regclass`,
+      );
+      const report = await checkEnforcement(scratch, 'public');
+
+      expect(report.disabledTriggers.total).toBe(0); // clause 1 sees nothing — the gap
+      expect(report.enforcing).toBe(false);
+      expect(report.bypassedTables.sample.map((f) => f.table)).toContain('Remote');
+    } finally {
+      await scratch.$executeRawUnsafe(
+        `UPDATE pg_class SET relhastriggers = true WHERE oid = 'public."Remote"'::regclass`,
+      ).catch(() => undefined);
+      await scratch.$executeRawUnsafe(`DROP FOREIGN TABLE IF EXISTS "Remote"`).catch(() => undefined);
+      await scratch.$executeRawUnsafe(`DROP SERVER IF EXISTS "probe_srv" CASCADE`).catch(() => undefined);
+    }
+  });
+
   it('NAMES an unvalidated foreign key', async () => {
     await resetScratch();
     await scratch.$executeRawUnsafe(`INSERT INTO "Child" VALUES (14, NULL)`).catch(() => undefined);
@@ -360,13 +510,134 @@ describe('schema enforcement — the live catalog, not the SQL that wrote it', (
     });
   });
 
-  it('reports a fresh/empty schema as NOT APPLICABLE rather than clean', async () => {
+  it('CONVERGENCE 1 — a TRULY empty schema is still NOT APPLICABLE (states A and G preserved)', async () => {
+    // The convergence widened applicability from "no r/p tables" to "no relations at all". This is
+    // the probe that the widening did not cost the fresh-database behaviour the deploy path needs:
+    // states A and G of the production runner proof both rest on an empty schema reading this way.
     const report = await checkEnforcement(scratch, 'a_schema_that_does_not_exist');
     expect(report.applicable).toBe(false);
-    expect(report.counts.tables).toBe(0);
+    expect(report.counts.relations).toBe(0);
     expect(report.note).toContain('fresh or empty');
     // The two migrate.sh callers differ on what this means, and the CLI — not this function —
     // decides: preflight passes, verify fails with exit 4.
+  });
+
+  it('CONVERGENCE 2 — a schema holding ONLY a foreign table is applicable, and its bypass is named', async () => {
+    // CODEX P2 on c8be27a2, and the fourth finding of one shape. Applicability counted r/p only, so
+    // this schema short-circuited to `applicable: false` with an empty bypass set and preflight
+    // ACCEPTED a relhastriggers = false relation. One universe now answers both questions.
+    await scratch.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "only_ft" CASCADE`);
+    await scratch.$executeRawUnsafe(`CREATE SCHEMA "only_ft"`);
+    await scratch.$executeRawUnsafe(`CREATE EXTENSION IF NOT EXISTS postgres_fdw`);
+    await scratch.$executeRawUnsafe(
+      `CREATE SERVER IF NOT EXISTS "conv_srv" FOREIGN DATA WRAPPER postgres_fdw
+         OPTIONS (host 'localhost', dbname '${SCRATCH_DB}')`,
+    );
+    try {
+      await scratch.$executeRawUnsafe(
+        `CREATE FOREIGN TABLE "only_ft"."Ft" ("id" int) SERVER "conv_srv" OPTIONS (table_name 'absent')`,
+      );
+      await scratch.$executeRawUnsafe(
+        `CREATE TRIGGER "Ft_seal" BEFORE INSERT ON "only_ft"."Ft" FOR EACH ROW EXECUTE FUNCTION probe_seal()`,
+      );
+      await scratch.$executeRawUnsafe(
+        `UPDATE pg_class SET relhastriggers = false WHERE oid = 'only_ft."Ft"'::regclass`,
+      );
+
+      const report = await checkEnforcement(scratch, 'only_ft');
+      expect(report.applicable).toBe(true);          // was false — the short circuit
+      expect(report.counts.relations).toBeGreaterThan(0);
+      expect(report.disabledTriggers.total).toBe(0); // clause 1 still sees nothing: that is the gap
+      expect(report.enforcing).toBe(false);
+      expect(report.bypassedTables.sample.map((f) => f.table)).toContain('Ft');
+    } finally {
+      await scratch.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "only_ft" CASCADE`).catch(() => undefined);
+      await scratch.$executeRawUnsafe(`DROP SERVER IF EXISTS "conv_srv" CASCADE`).catch(() => undefined);
+    }
+  });
+
+  it('CONVERGENCE 3 — a schema holding ONLY a trigger-bearing view is applicable, and its bypass is named', async () => {
+    // The same shape one relkind over. A view carries INSTEAD OF triggers, so it is a seal surface;
+    // any check that enumerates "kinds that can be sealed" eventually omits one, which is why the
+    // universe enumerates none.
+    await scratch.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "only_view" CASCADE`);
+    await scratch.$executeRawUnsafe(`CREATE SCHEMA "only_view"`);
+    try {
+      await scratch.$executeRawUnsafe(`CREATE VIEW "only_view"."V" AS SELECT 1 AS id`);
+      await scratch.$executeRawUnsafe(
+        `CREATE FUNCTION "only_view".v_seal() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$`,
+      );
+      await scratch.$executeRawUnsafe(
+        `CREATE TRIGGER "V_seal" INSTEAD OF INSERT ON "only_view"."V"
+           FOR EACH ROW EXECUTE FUNCTION "only_view".v_seal()`,
+      );
+      const [{ relkind }] = await scratch.$queryRawUnsafe<Array<{ relkind: string }>>(
+        `SELECT relkind::text AS relkind FROM pg_class WHERE oid = 'only_view."V"'::regclass`,
+      );
+      expect(relkind).toBe('v');
+
+      await scratch.$executeRawUnsafe(
+        `UPDATE pg_class SET relhastriggers = false WHERE oid = 'only_view."V"'::regclass`,
+      );
+      const report = await checkEnforcement(scratch, 'only_view');
+      expect(report.applicable).toBe(true);
+      expect(report.disabledTriggers.total).toBe(0);
+      expect(report.enforcing).toBe(false);
+      expect(report.bypassedTables.sample.map((f) => f.table)).toContain('V');
+    } finally {
+      await scratch.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "only_view" CASCADE`).catch(() => undefined);
+    }
+  });
+
+  it('CONVERGENCE 6 — a schema holding only a SEQUENCE stays NOT APPLICABLE, so verify still exits 4', async () => {
+    // CODEX P2 on c14f9ea1. The universe is every pg_class row, so counting it directly made this
+    // schema applicable: all clause arrays empty, `enforcing: true`, and `verify` exits 0 where the
+    // contract says 4 — a deploy that created only non-table objects would pass the final gate.
+    // Applicability now counts only relations THIS CHECK WOULD JUDGE (carrying a trigger or a
+    // constraint), which is still derived from what a relation HAS, not from a list of relkinds.
+    await scratch.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "seq_only" CASCADE`);
+    await scratch.$executeRawUnsafe(`CREATE SCHEMA "seq_only"`);
+    try {
+      await scratch.$executeRawUnsafe(`CREATE SEQUENCE "seq_only"."s"`);
+      const report = await checkEnforcement(scratch, 'seq_only');
+      expect(report.applicable).toBe(false);
+      expect(report.counts.relations).toBe(0);
+      expect(report.note).toContain('fresh or empty');
+    } finally {
+      await scratch.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "seq_only" CASCADE`).catch(() => undefined);
+    }
+  });
+
+  it('CONVERGENCE 7 — a disabled trigger on a cross-schema parent is named in ITS OWN schema', async () => {
+    // CODEX P2 on c14f9ea1. Clause 1 reaches the whole universe, so this trigger IS found — but the
+    // projection dropped its schema and the diagnostic printed it under the application schema:
+    // `othr."Ref"` reported as `public."Ref"`, sending an operator to a different or absent object.
+    await resetScratch();
+    await scratch.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "othr" CASCADE`);
+    await scratch.$executeRawUnsafe(`CREATE SCHEMA "othr"`);
+    try {
+      await scratch.$executeRawUnsafe(`CREATE TABLE "othr"."Ref" ("id" int PRIMARY KEY)`);
+      await scratch.$executeRawUnsafe(
+        `CREATE TRIGGER "Ref_seal" BEFORE INSERT ON "othr"."Ref" FOR EACH ROW EXECUTE FUNCTION probe_seal()`,
+      );
+      await scratch.$executeRawUnsafe(`ALTER TABLE "othr"."Ref" DISABLE TRIGGER "Ref_seal"`);
+      await scratch.$executeRawUnsafe(
+        `ALTER TABLE "Child" ADD CONSTRAINT "Child_othr_fkey" FOREIGN KEY ("parentId") REFERENCES "othr"."Ref"("id")`,
+      );
+
+      const report = await checkEnforcement(scratch, 'public');
+      const found = report.disabledTriggers.sample.find((f) => f.trigger === 'Ref_seal');
+      expect(found).toBeDefined();                 // clause 1 reaches it — the widening works
+      expect(found!.schema).toBe('othr');          // and it says WHERE, which is the finding
+      expect(found!.table).toBe('Ref');
+
+      const summary = summarizeEnforcement(report);
+      expect(summary).toContain('othr."Ref"');
+      expect(summary).not.toContain('public."Ref"'); // the misdirection this probe exists for
+    } finally {
+      await scratch.$executeRawUnsafe(`ALTER TABLE "Child" DROP CONSTRAINT IF EXISTS "Child_othr_fkey"`).catch(() => undefined);
+      await scratch.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "othr" CASCADE`).catch(() => undefined);
+    }
   });
 
   it('bounds the printed sample without bounding the count', async () => {
