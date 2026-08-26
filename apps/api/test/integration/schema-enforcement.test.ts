@@ -62,18 +62,21 @@ async function resetScratch(): Promise<void> {
  * why a probe that performs it must have a database of its own to throw away. `DROP DATABASE` is a
  * file-level operation and is unaffected.
  */
-async function withSurgeryDatabase(body: (db: PrismaClient) => Promise<void>): Promise<void> {
+async function withSurgeryDatabase(
+  body: (db: PrismaClient, url: string) => Promise<void>,
+): Promise<void> {
   const name = `${SCRATCH_DB}_surgery`;
   await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
   await admin.$executeRawUnsafe(`CREATE DATABASE "${name}"`);
-  const db = new PrismaClient({ datasources: { db: { url: urlFor(name) } } });
+  const url = urlFor(name);
+  const db = new PrismaClient({ datasources: { db: { url } } });
   try {
     await db.$executeRawUnsafe(`CREATE TABLE "Parent" ("id" int PRIMARY KEY)`);
     await db.$executeRawUnsafe(
       `CREATE TABLE "Child" ("id" int PRIMARY KEY, "parentId" int REFERENCES "Parent"("id"))`,
     );
     await db.$executeRawUnsafe(`INSERT INTO "Parent" VALUES (1)`);
-    await body(db);
+    await body(db, url);
   } finally {
     await db.$disconnect();
     await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
@@ -204,30 +207,58 @@ describe('schema enforcement — the live catalog, not the SQL that wrote it', (
     // THE PROBE FOR THE STATE CLAUSES 1 AND 2 ARE BOTH BLIND TO. Clause 1 asks whether every trigger
     // that EXISTS is enabled; a trigger removed from `pg_trigger` by a partial restore or a catalog
     // repair is not a disabled trigger, it is no trigger, and the survivors are all `O`.
-    await withSurgeryDatabase(async (db) => {
+    await withSurgeryDatabase(async (db, url) => {
       // `DROP TRIGGER` refuses an internal RI trigger ("because constraint … requires it"), so the
       // catalog surgery a broken restore amounts to is reproduced directly — the only way this
       // state arises in the field.
+      //
+      // ON THE CONNECTION THAT PERFORMS THE DELETE, and before it, following the precedent
+      // `schedule-dependency-graph.test.ts` P33 sets for the same surgery. This probe judges a
+      // state it has to CREATE, so its setup must not be the one statement able to fail quietly
+      // into a vacuous pass.
+      await db.$executeRawUnsafe(`SET allow_system_table_mods = on`);
+
+      // A row of "Child" FIRST, so this backend has really built the table's trigger descriptors.
+      // Catalog DML sends no relcache invalidation, so the backend that performed the surgery goes
+      // on enforcing a key the catalog no longer describes — MEASURED: with the cache warm the
+      // orphan below is REFUSED here. Warming it deliberately is what stops this probe from
+      // passing on the accident that nothing had yet touched "Child".
+      await db.$executeRawUnsafe(`INSERT INTO "Child" VALUES (19, 1)`);
+
       const removed = await db.$executeRawUnsafe(
         `DELETE FROM pg_trigger t
           USING pg_constraint k, pg_proc p
           WHERE t.tgconstraint = k.oid AND p.oid = t.tgfoid
             AND k.conname = 'Child_parentId_fkey' AND p.proname = 'RI_FKey_check_ins'`,
       );
-      expect(removed).toBe(1);
-
-      // REPRODUCE-FIRST, executed: the key is now a lie, exactly as in the DISABLE probe…
-      await db.$executeRawUnsafe(`INSERT INTO "Child" VALUES (20, 999)`);
-      const orphans = await db.$queryRawUnsafe<Array<{ n: bigint }>>(
-        `SELECT count(*) AS n FROM "Child" WHERE "parentId" = 999`,
+      expect(removed, 'the surgery removed exactly the referencing-side INSERT check').toBe(1);
+      const [{ n: surviving }] = await db.$queryRawUnsafe<Array<{ n: bigint }>>(
+        `SELECT count(*) AS n FROM pg_trigger t JOIN pg_constraint k ON k.oid = t.tgconstraint
+          WHERE k.conname = 'Child_parentId_fkey'`,
       );
-      expect(Number(orphans[0].n)).toBe(1);
-      const [{ convalidated }] = await db.$queryRawUnsafe<Array<{ convalidated: boolean }>>(
-        `SELECT convalidated FROM pg_constraint WHERE conname = 'Child_parentId_fkey'`,
-      );
-      expect(convalidated).toBe(true);
+      expect(Number(surviving), 'and the catalog now carries three of the four').toBe(3);
 
-      const report = await checkEnforcement(db, 'public');
+      // REPRODUCE-FIRST, executed, on a FRESH backend — which is both what makes this measure the
+      // catalog rather than a stale cache, and what the field sequence is: a restore, then an
+      // application connecting to what it left.
+      const restored = new PrismaClient({ datasources: { db: { url } } });
+      let report: Awaited<ReturnType<typeof checkEnforcement>>;
+      try {
+        // The key is now a lie, exactly as in the DISABLE probe…
+        await restored.$executeRawUnsafe(`INSERT INTO "Child" VALUES (20, 999)`);
+        const orphans = await restored.$queryRawUnsafe<Array<{ n: bigint }>>(
+          `SELECT count(*) AS n FROM "Child" WHERE "parentId" = 999`,
+        );
+        expect(Number(orphans[0].n), 'the orphan the absent check would have refused').toBe(1);
+        const [{ convalidated }] = await restored.$queryRawUnsafe<Array<{ convalidated: boolean }>>(
+          `SELECT convalidated FROM pg_constraint WHERE conname = 'Child_parentId_fkey'`,
+        );
+        expect(convalidated, 'while the flag a presence-only guard reads still says fine').toBe(true);
+
+        report = await checkEnforcement(restored, 'public');
+      } finally {
+        await restored.$disconnect();
+      }
 
       // …and the point of this probe: the two clauses that shipped see NOTHING. Every surviving
       // trigger is `O`, and the key is validated. Without clause 3 this database reports ENFORCING.
