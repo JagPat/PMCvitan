@@ -74,7 +74,33 @@ plus a corrupted variant, and include a 5000-byte `0xff` run to prove the marker
 hang nor throw. Every finding carried here was reproduced RED in ISOLATION — the one fix
 reverted, the rest left in place — so no probe passes for the wrong reason.
 
-Gates: `pnpm check` EXIT 0 — web 920/920, API 793/793, automation 292/292. No schema, no
+#440 carries ONE in-branch correction for the five Codex findings on head `8fa29c9c` (its first
+finding-bearing head), all P2, each reproduced RED in ISOLATION. Four are the same rule the unit
+already turned on — a stamp that reads as plausible but is not what the photo recorded is worse
+than no stamp, because it becomes permanent capture evidence:
+
+- **DMS components are bounded individually.** Summing first silently NORMALISED nonsense:
+  `23° 90′ 0″ N` became a perfectly plausible `24.5° N`. Minutes and seconds must each be under
+  60 and the degree component within its own limit, or there is no coordinate.
+- **EOI is terminal.** `0xd9` sat inside the standalone-marker range, so `[SOI, EOI, APP1]` was
+  stamped from bytes appended AFTER the image. Concatenated data is not this photo.
+- **Reads are confined to the DECLARING segment.** A malformed APP1 whose declared length ends
+  before its own `Exif` signature, or whose TIFF offsets point into a later segment, could have
+  bytes from elsewhere in the file read back as capture metadata. `findTiffHeader` now returns
+  the segment end alongside the header and every read is bounded by it (clamped to the bytes
+  actually held, so a large APP1 running past the decoded head still yields what is resident).
+- **The local demo keeps the stamp.** The demo path inserted photos with no `takenAt` and no
+  coordinates while the UI said they had been stamped — the same false claim on a different
+  path. The stamp now travels there too (`Photo`/`MediaRef` gain optional `geoLat`/`geoLng` so
+  the demo store mirrors what the server holds), and the toast names a stamp only when one was
+  attached.
+- **A rendered stamp is bounded.** `takenAt` is a free `String` and the API accepts an unbounded
+  `z.string()`, so an authorized upload can put a near-request-limit value in it; rendering the
+  whole thing builds a multi-megabyte text node. `stampText` caps display at 64 characters —
+  a display bound, never validation, so nothing stored changes. Applied to Places as well as the
+  two consumers Codex named: the same defect was there, pre-existing.
+
+Gates: `pnpm check` EXIT 0 — web 929/929, API 793/793, automation 292/292. No schema, no
 migration, no API change.
 
 #435 asks the DATABASE whether its guards actually fire — before a migration lands on it and

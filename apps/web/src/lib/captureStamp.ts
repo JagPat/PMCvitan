@@ -102,3 +102,20 @@ function displayTime(exifLocal: string): string | null {
   const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
   return `${String(day).padStart(2, '0')} ${MONTHS[month - 1]} ${y} · ${hour12}:${min} ${suffix}`;
 }
+
+/**
+ * How long a rendered `takenAt` may be.
+ *
+ * The documented shape ("03 Jul 2026 · 9:12 AM") is around twenty characters. The column is a
+ * free `String` and `apps/api/src/contracts.ts` accepts an unbounded `z.string()`, so an
+ * authorized upload can put a value near the request-body limit in it. Rendering that whole
+ * value builds a multi-megabyte wrapping text node and stalls the screen, so display is capped.
+ * This is a display bound, not validation: it never changes what is stored.
+ */
+const STAMP_DISPLAY_MAX = 64;
+
+/** A `takenAt` as it should be shown: bounded, and empty when there is nothing to show. */
+export function stampText(takenAt: string | null | undefined): string {
+  if (!takenAt) return '';
+  return takenAt.length > STAMP_DISPLAY_MAX ? `${takenAt.slice(0, STAMP_DISPLAY_MAX)}…` : takenAt;
+}

@@ -3937,6 +3937,9 @@ export const useStore = create<Store>()(
         return;
       }
       const [, mime, base64] = m;
+      // what the PHOTO recorded — shared by the server and local-demo paths below, so the
+      // demo store mirrors what the server would hold rather than dropping it
+      const stamped = stamp ?? {};
       if (gateway) {
         // Location spine: tag the photo with the place it shows, if one was chosen.
         //
@@ -3944,7 +3947,6 @@ export const useStore = create<Store>()(
         // bytes it had already read, so nothing async sits between accepting this photo and
         // durably queueing it below. A file that carries no capture metadata contributes no
         // keys here, and the media contract stores nothing rather than something invented.
-        const stamped = stamp ?? {};
         const input = { kind: 'progress' as const, mime, data: base64, ...stamped, ...(nodeId ? { nodeId } : {}) };
         // Phase 8 media offline queue: when offline, show the photo optimistically
         // (local data URL) and queue the upload for replay on reconnect — instead
@@ -3985,16 +3987,33 @@ export const useStore = create<Store>()(
         return;
       }
       // local demo: keep the data URL as the image source; also place it on the tree
-      // (with the chosen node) so the Place view reflects it without a server.
+      // (with the chosen node) so the Place view reflects it without a server. The stamp
+      // travels here too — the demo is a supported mode, and a record that drops what the
+      // photo carried while the UI says it was stamped is the same false claim on a
+      // different path.
       set((s) => {
         if (s.dailyLog) {
-          s.dailyLog.photos.unshift({ url: dataUrl });
+          s.dailyLog.photos.unshift({ url: dataUrl, ...stamped });
           s.dailyLog.progress += 1;
         }
-        s.photos.unshift({ id: `demo-photo-${s.photos.length + 1}`, url: dataUrl, nodeId: nodeId ?? undefined, kind: 'progress' });
+        s.photos.unshift({
+          id: `demo-photo-${s.photos.length + 1}`,
+          url: dataUrl,
+          nodeId: nodeId ?? undefined,
+          kind: 'progress',
+          ...stamped,
+        });
       });
       get().record('Progress photo');
-      get().flash(get().online ? 'Progress photo added — geo + time stamped.' : 'Photo saved offline — will upload when signal returns.');
+      if (!get().online) {
+        get().flash('Photo saved offline — will upload when signal returns.');
+      } else {
+        get().flash(
+          hasStamp(stamped)
+            ? 'Progress photo added — stamped from the photo.'
+            : 'Progress photo added.',
+        );
+      }
     },
     submitDailyLog: () => {
       const dl = get().dailyLog;

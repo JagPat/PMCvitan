@@ -104,3 +104,32 @@ describe('addProgressPhoto — the photo carries its own stamp', () => {
     expect(s().toast).toMatch(/stamped from the photo/);
   });
 });
+
+/**
+ * Codex on `8fa29c9c` — the local demo is a supported mode, and it was dropping the stamp
+ * while the UI claimed the photo had been stamped. Same false claim, different path.
+ */
+describe('addProgressPhoto — local demo keeps the stamp too', () => {
+  const STAMP = { takenAt: '11 Aug 2026 · 9:15 AM', geoLat: 23.03, geoLng: 72.57 };
+
+  it('records what the photo carried on both the log and the place tree', () => {
+    s().addProgressPhoto(PNG, 'r-living', STAMP);
+
+    expect(s().dailyLog!.photos[0]).toMatchObject(STAMP);
+    expect(s().photos[0]).toMatchObject({ ...STAMP, nodeId: 'r-living', kind: 'progress' });
+  });
+
+  it('says a stamp was attached only when one actually was', () => {
+    s().addProgressPhoto(PNG, null, STAMP);
+    expect(s().toast).toMatch(/stamped from the photo/);
+
+    s().addProgressPhoto(PNG, null, {});
+    expect(s().toast).toBe('Progress photo added.');
+  });
+
+  it('still reports the offline case as offline', () => {
+    useStore.setState((st) => { st.online = false; });
+    s().addProgressPhoto(PNG, null, STAMP);
+    expect(s().toast).toMatch(/saved offline/i);
+  });
+});

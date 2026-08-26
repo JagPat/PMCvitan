@@ -4,6 +4,7 @@ import { selectPending, selectReviewPending, selectActiveReview, selectFailedCou
 import { API_BASE } from '@/data/apiGateway';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
+import { stampText } from '@/lib/captureStamp';
 import { swatch as swatchGradient } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -170,7 +171,7 @@ export function DashboardScreen() {
                   </div>
                   <div style={{ padding: '9px 11px', background: 'var(--panel)' }}>
                     <div style={{ fontSize: 11.5, fontWeight: 600, textTransform: 'capitalize' }}>{p.kind}</div>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)', marginTop: 2 }}>{p.takenAt ?? ''}</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)', marginTop: 2 }}>{stampText(p.takenAt)}</div>
                   </div>
                 </div>
               ))}

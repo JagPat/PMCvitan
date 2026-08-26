@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readExif } from '@/lib/exif';
-import { captureStamp, hasStamp } from '@/lib/captureStamp';
+import { captureStamp, hasStamp, stampText } from '@/lib/captureStamp';
 
 /**
  * Unit B — a progress photo's stamp comes from the PHOTO, never from the moment it was picked.
@@ -302,5 +302,85 @@ describe('a legal marker introduced by fill bytes is still a marker', () => {
     const bytes = new Uint8Array([0xff, 0xd8, ...new Array(5000).fill(0xff)]);
     expect(() => captureStamp(dataUrlOf(bytes))).not.toThrow();
     expect(captureStamp(dataUrlOf(bytes))).toEqual({});
+  });
+});
+
+/**
+ * The five findings from `8fa29c9c`. Three are parser hardening against bytes a user chose;
+ * the local-demo stamp and the display cap are probed in `media.test.ts` and `format` below.
+ *
+ * The theme is one rule: a stamp that reads as plausible but is not what the photo recorded
+ * is worse than no stamp, because it becomes permanent capture evidence.
+ */
+describe('malformed metadata is refused, not normalised', () => {
+  it('A: refuses DMS components at or beyond 60 instead of carrying them over', () => {
+    // 23° 90′ 0″ would normalise to a perfectly plausible 24.5°
+    const badMinutes = jpegWithExif(buildExif({
+      gps: { lat: [[23, 1], [90, 1], [0, 1]], latRef: 'N', lng: [[72, 1], [34, 1], [12, 1]], lngRef: 'E' },
+    }));
+    expect(captureStamp(dataUrlOf(badMinutes)).geoLat).toBeUndefined();
+
+    const badSeconds = jpegWithExif(buildExif({
+      gps: { lat: [[23, 1], [1, 1], [60, 1]], latRef: 'N', lng: [[72, 1], [34, 1], [12, 1]], lngRef: 'E' },
+    }));
+    expect(captureStamp(dataUrlOf(badSeconds)).geoLat).toBeUndefined();
+
+    // and the degree component is still bounded on its own
+    const badDegrees = jpegWithExif(buildExif({
+      gps: { lat: [[91, 1], [0, 1], [0, 1]], latRef: 'N', lng: [[72, 1], [34, 1], [12, 1]], lngRef: 'E' },
+    }));
+    expect(captureStamp(dataUrlOf(badDegrees)).geoLat).toBeUndefined();
+  });
+
+  it('D: stops at the end-of-image marker, so appended bytes are not this photo', () => {
+    const tiff = buildExif({ dateTimeOriginal: '2026:08:11 09:15:30' });
+    const payload = [0x45, 0x78, 0x69, 0x66, 0, 0, ...tiff];
+    const size = payload.length + 2;
+    // SOI, EOI, then something shaped exactly like an EXIF APP1 concatenated afterwards
+    const bytes = new Uint8Array([
+      0xff, 0xd8,
+      0xff, 0xd9,
+      0xff, 0xe1, size >> 8, size & 0xff, ...payload,
+    ]);
+
+    expect(captureStamp(dataUrlOf(bytes))).toEqual({});
+  });
+
+  it('C: refuses a segment whose declared length ends before its own Exif signature', () => {
+    const tiff = buildExif({ dateTimeOriginal: '2026:08:11 09:15:30' });
+    const payload = [0x45, 0x78, 0x69, 0x66, 0, 0, ...tiff];
+    // the bytes are all present, but the segment declares it ends inside the signature
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe1, 0x00, 0x05, ...payload, 0xff, 0xd9]);
+
+    expect(captureStamp(dataUrlOf(bytes))).toEqual({});
+  });
+
+  it('C: does not read a TIFF offset that points outside the declaring segment', () => {
+    const tiff = buildExif({ dateTimeOriginal: '2026:08:11 09:15:30' });
+    const payload = [0x45, 0x78, 0x69, 0x66, 0, 0, ...tiff];
+    // declare a segment that stops just after the TIFF header, so IFD0 lies beyond its end
+    const truncated = 2 + 6 + 8;
+    const bytes = new Uint8Array([
+      0xff, 0xd8,
+      0xff, 0xe1, truncated >> 8, truncated & 0xff, ...payload,
+      0xff, 0xd9,
+    ]);
+
+    // the bytes are in hand, but they are not this segment's to offer
+    expect(captureStamp(dataUrlOf(bytes))).toEqual({});
+  });
+});
+
+describe('a rendered stamp is bounded', () => {
+  it('E: caps an abnormally long value rather than building a huge text node', () => {
+    const huge = 'x'.repeat(5_000);
+    const shown = stampText(huge);
+    expect(shown.length).toBeLessThanOrEqual(65);
+    expect(shown.endsWith('…')).toBe(true);
+  });
+
+  it('E: leaves a normal stamp exactly as it is, and empty stays empty', () => {
+    expect(stampText('11 Aug 2026 · 9:15 AM')).toBe('11 Aug 2026 · 9:15 AM');
+    for (const v of [null, undefined, '']) expect(stampText(v)).toBe('');
   });
 });
