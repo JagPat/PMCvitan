@@ -16,29 +16,50 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: e5d3c4fd
-open_pr: 433
+open_pr: 435
 next_task: none
 blocking_directive: none
-updated: 2026-08-25
+updated: 2026-08-26
 ```
 
-**THE OPEN PR IS A TOOLING UNIT, NOT PHASE 6 TASK 4.** #433 settles the parser binding this
-repository reads its own migrations with — `pg-query-emscripten` (libpg_query 16) through its raw
-entry points — plus the claim that all 91 migrations parse through it and that it neither leaks nor
-truncates. It ships **no rule, no sites, no coverage accounting and no rule-support helpers**, so it
-detects no defect; `docs/MIGRATION_INVARIANTS.md` names the three live defects that have no alarm at
-all. No `apps/**` file, no schema, no migration, no CI workflow change. Does not advance task 4.
+**THE OPEN PR IS #435 — A DEPLOY-TIME SCHEMA-ENFORCEMENT GATE, NOT PHASE 6 TASK 4.** Every
+paragraph BELOW this one records an EARLIER unit; where one of them says "the open PR", read it
+as the open PR of its own day, not as #435.
 
-It **replaces #432** — the FOURTH unit in this lineage to reach the two-finding-head limit, after
-#423 (a hand-written SQL lexer), #430 (binding + enforcement rule) and #431 (binding + site
-attribution + a coverage claim). Sixteen findings across the four, every one reducing to *a check
-narrower than the object it judges* — the defect the eventual rules exist to detect, restated as
-their implementation. The last two rounds found it in the TESTS rather than the code: a probe that
-searched the source for a guard's message, and a leak probe that passed with the fix deleted. Each
-replacement removed the surface that had just drawn findings; this one removes `relationsIn` (rule
-support) and replaces the leak probe with one that observes the allocator. **This lineage has cost
-four PRs and merged nothing; whether to continue it is a judgement for JagPat, recorded here so the
-cost is visible rather than buried in loop history.** None of `claude/migration-invariant-linter`,
+#435 asks the DATABASE whether its guards actually fire — before a migration lands on it and
+again after one does. It states two CLOSED properties of the whole application schema: no trigger
+is disabled (enforcing means `tgenabled` is `O` or `A`, since both `D` and `R` fail to fire on an
+ordinary connection), and no foreign key is unvalidated. Clause 3 then correlates every foreign
+key with its required internal-trigger inventory BY SLOT and REFUSES an unmeasured shape rather
+than passing it; a fourth reads the live `session_replication_role`, because an `O` trigger is
+inert under `replica`. Because the properties are closed, there is no list of expected objects to
+keep in step with.
+
+It **does** touch `apps/**` — the check and its CLI (`apps/api/src/platform/enforcement/`), the
+reproduce-first integration suite, `apps/api/scripts/migrate.sh` (the preflight before Prisma and
+the verify on both post-deploy success paths), and the production-runner proof — and it changes
+`.github/workflows/ci.yml` plus its wiring pin. It adds **no migration**: `apps/api/prisma/**` is
+byte-identical to `main`.
+
+It **replaces #434**, which closed at the two-finding-head limit with CI GREEN on its head
+`670e9b79` — the round limit, not a defect in the work. #435 is that unit carried forward plus
+both of #434's round-2 P1s. At **1,556 changed lines across 11 files** it is 56 over the standard
+line budget and is accepted as `justified-large` by the owner's decision recorded on the PR on
+2026-08-26: the check, its `migrate.sh` wiring and the proof of that wiring are one unit, because
+the check alone is called by nothing and the proof's whole subject is the wiring. **#431, #430 and
+#423 remain transitive residue, to be reconciled BY COMMENT after this merges — #435 claims none
+of them** and declares exactly one replacement source.
+
+**THE PARSER LINEAGE IS SETTLED: #433 MERGED at `main` `36215d3`, which is #435's base.** #433
+settled the parser this repository reads its own migrations with — `pg-query-emscripten`
+(libpg_query 16) through its raw entry points — and discharged #432. It shipped no rule and no
+sites, so it detects no defect; `docs/MIGRATION_INVARIANTS.md` still names three live defects with
+no alarm at all. Before it, FOUR units in that lineage reached the two-finding-head limit — #423 (a
+hand-written SQL lexer), #430 (binding + enforcement rule), #431 (binding + site attribution + a
+coverage claim) and #432 — sixteen findings across the four, every one reducing to *a check
+narrower than the object it judges*: the defect the eventual rules exist to detect, restated as
+their implementation. **That lineage cost five PRs to land one binding, recorded here so the cost
+stays visible rather than buried in loop history.** None of `claude/migration-invariant-linter`,
 `claude/migration-invariant-linter-v2`, `claude/migration-parser-adapter` or
 `claude/migration-parser-binding` may be rebased or force-pushed; all four are the handover record.
 
