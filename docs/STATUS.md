@@ -15,17 +15,65 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 559083b7
-open_pr: 440
+reviewed_merge: a714bc3e
+open_pr: none
 next_task: none
 blocking_directive: none
 updated: 2026-08-26
 ```
 
-**THE OPEN PR IS #440 — THE PROGRESS-PHOTO CAPTURE STAMP, NOT PHASE 6 TASK 4.** It REPLACES
-#439, which replaced #429; both closed at the two-finding-head limit. Every paragraph BELOW this
-one records an EARLIER unit; where one of them says "the open PR", read it as the open PR of its
-own day, not as #440.
+**#440 MERGED at `a714bc3e` — THE PROGRESS-PHOTO CAPTURE STAMP IS DELIVERED AND CLEARED.** This
+record carries the POST-merge state, so `open_pr` is `none`: a status-only handoff must not leave
+a closed PR number in the file, because `assessRunnerState` resolves any non-`none` `open_pr`
+before the still-active task and the loop would keep returning a PR that no longer exists. Every
+paragraph BELOW this one records an EARLIER unit; where one of them says "the open PR", read it
+as the open PR of its own day.
+
+The low-effort data-entry initiative's delivered units are #424 (capture context), #427 (the
+data-entry audit), #428 (progressive disclosure) and #440 (the capture stamp). #440 replaced #439,
+which replaced #429 — both closed at the two-finding-head limit.
+
+**#429's ledger obligation is NOT discharged, and must not be discharged by a record like this
+one.** #440 declared `Replaces: #439`, so #429 — whose own claimant #439 closed unmerged — is
+still owed. An earlier attempt to settle it by declaring `Replaces: #429` on a docs-only record
+was refused on review, correctly: a replacement is "limited to the unresolved unit", this carries
+none of #429's implementation, and letting a no-op documentation change satisfy the ledger would
+attribute delivered work to a claimant containing no part of it. The obligation stays open for a
+unit that genuinely carries scope forward.
+
+Three items remain, each with an executable next unit — none waits on sign-off:
+
+1. **Units C-E** (the universal `+`, desktop search/add, mobile navigation). The brief said to
+   evaluate and PROPOSE before anything replaces the current mobile nav, so the next unit is that
+   proposal — a docs unit shaped like #427. Only the implementation waits on a decision, and the
+   proposal is what makes a decision possible.
+   **The proposal must establish the navigation gap FROM THE CODE.** An earlier draft asserted
+   that `canSwitch = memberships.length > 1 || Boolean(adminOrg)` leaves a single-project PMC
+   unable to reach Portfolio. **That is false**, recorded here so it is not re-derived:
+   `screensFor('pmc')` includes `portfolio` (`apps/web/src/lib/screens.ts:137-148`),
+   `MOBILE_PRIMARY_PREFERENCE` gives it a permanent bottom tab
+   (`apps/web/src/lib/mobileNav.ts:13-15`), and `LeftRail` renders every permitted item.
+   `canSwitch` is read only by `TopBar.tsx` and `ProjectSwitcher.tsx`, where it disables the
+   project-switcher chip — it gates no screen.
+2. **The daily-log gallery's scope.** `SnapshotService` folds project-wide `kind: 'progress'`
+   media onto whichever log is current, while `DailyLog.progress` is operator-entered at
+   `daily-log.submit` — so a fix aimed at the count repairs the wrong thing. Neither candidate
+   meaning is implementable as a read alone, and the unit must settle the WRITE path first:
+   - *the log's own photos* requires `addProgressPhoto` to send `dailyLogId`, which the contract
+     has always accepted (`apps/api/src/contracts.ts:158`, `media.service.ts:79`) and the client
+     has never sent. Scoping the read without that would hide every photo uploaded by the current
+     and previous releases.
+   - *the project's photos on that civil date* requires a timestamp every row has, and #440
+     deliberately leaves `takenAt` ABSENT when the file carries no EXIF — so a fallback must be
+     named, or those rows are unclassifiable.
+   Either way the unit owes mixed-version handling for rows already written without the field.
+3. **Quick Capture's blocker.** `createMediaSchema` requires `mime` and `data.min(1)` for EVERY
+   kind, so a `note` cannot be recorded without a photo. Relaxing those two is necessary and NOT
+   sufficient: the schema has no caption field and `Media` has no text column, so a `note` would
+   persist an empty row. The unit is the whole path — a caption field on the contract under the
+   repository's non-blank convention (`z.string().trim().min(1)`), the column to hold it, the
+   write, and the read that exposes it — with `mime`/`data` still required for every kind that is
+   a photo.
 
 The daily log has always told the user its progress photos are "geo + time stamped". They were
 not: `UploadMediaInput` accepts `takenAt`/`geoLat`/`geoLng` and the store sent none of them.
