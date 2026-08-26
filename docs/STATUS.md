@@ -50,13 +50,20 @@ Three items remain, each with an executable next unit — none waits on sign-off
 
 1. **Units C-E** (the universal `+`, desktop search/add, mobile navigation). The PROPOSAL the
    brief asked for is DELIVERED — `docs/ux/CREATE_AND_NAVIGATION_PROPOSAL.md`, continuing the
-   audit's §7 "not yet". Implementation waits on JagPat picking a path; the proposal is what
-   makes that choice possible. Its measured findings: `CreateMenu` already exists and is mounted
-   in exactly ONE screen (Places), so Unit C is a second mount of a shipped mechanism, not a new
-   one; a pmc has 9 of 13 screens behind More and an engineer 7 of 11, while contractor and
-   consultant fit their bars exactly; `daily-log` reaches the engineer's bar by top-up rather
-   than by preference, so any change to `MOBILE_PRIMARY_PREFERENCE` can silently displace it;
-   and one search input exists in the whole application (`DecisionLogScreen.tsx:121`).
+   audit's §7 "not yet" — and it RECOMMENDS C1, E1 and D1. **The next unit is C1**: mount the
+   existing `CreateMenu` in `LeftRail` (desktop) and as a floating action (mobile), with tests
+   that a create-less role sees no control at either width. It spends no nav slot, so it needs
+   no answer from anyone before it can start. E1 is current behaviour and needs no unit; D1
+   follows C1; D2 needs a plan before code.
+   Its measured findings: `CreateMenu` already exists and is mounted in exactly ONE screen
+   (Places), so Unit C is a second mount of a shipped mechanism, not a new one; a pmc has 9 of
+   13 screens behind More and an engineer 7 of 11, while contractor and consultant fit their
+   bars exactly; EIGHT create modals exist and FIVE have a single entry point, so the proposal
+   scopes `+` explicitly to the three capture records `CreateKind` already carries; `daily-log`
+   reaches the engineer's bar by top-up rather than by preference, and the exposure is the
+   ROLE'S SCREEN ORDER — adding `daily-log` to `MOBILE_PRIMARY_PREFERENCE` changes no role's bar,
+   because no role holds both it and `portfolio`; and one search input exists in the whole
+   application (`DecisionLogScreen.tsx:121`).
    It recommends mounting `+` WITHOUT spending a nav slot, which leaves `splitMobileNav`,
    `MOBILE_PRIMARY_PREFERENCE` and `screensFor` untouched and keeps Unit E decidable later on
    evidence.
