@@ -9,10 +9,13 @@
   height: 52px;
   border-radius: 26px;
   border: none;
+  /* An ink FILL on the light canvas, NOT an ink surface: `:focus-visible` paints the ring as a
+     box-shadow OUTSIDE the button, so it lands on the canvas rather than on this fill. The
+     inherited light ring is the correct one — its accent edge is 4.29:1 against `--canvas`,
+     where the dark ring's `--sidebar-text` edge would be 1.03:1 and effectively invisible.
+     F-1a's inventory states this rule; an earlier head of this PR claimed the dark ring here
+     and would have made the FAB's focus indicator disappear. */
   background: var(--ink);
-  /* ink surface — the focus ring must follow it, or a keyboard user tabbing to the FAB
-     gets the light ring against a dark fill and sees nothing (F-1a) */
-  --active-focus-ring: var(--focus-ring-dark);
   color: var(--sidebar-text);
   display: flex;
   align-items: center;

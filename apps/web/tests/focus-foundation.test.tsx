@@ -438,9 +438,11 @@ describe('F-1a ink-surface inventory', () => {
   };
 
   // css file → how that ink surface resolves the dark ring
-  const CSS_INVENTORY: Record<string, 'sets-active-focus-ring' | 'element-data-surface'> = {
+  const CSS_INVENTORY: Record<string, 'sets-active-focus-ring' | 'element-data-surface' | 'light-ring-fill'> = {
     'layout/TopBar.module.css': 'sets-active-focus-ring',
-    'layout/CreateControl.module.css': 'sets-active-focus-ring',
+    // an ink-FILLED control on the light canvas — the ring draws outside it, so it keeps the
+    // light ring. The TSX inventory expresses this as `marked: 0`; this is its CSS equivalent.
+    'layout/CreateControl.module.css': 'light-ring-fill',
     'layout/NotificationPanel.module.css': 'sets-active-focus-ring',
     'layout/LeftRail.module.css': 'element-data-surface',
   };
@@ -479,6 +481,13 @@ describe('F-1a ink-surface inventory', () => {
     for (const [f, mode] of Object.entries(CSS_INVENTORY)) {
       if (mode === 'sets-active-focus-ring') {
         expect(read(`../src/${f}`)).toMatch(/--active-focus-ring:\s*var\(--focus-ring-dark\)/);
+      } else if (mode === 'light-ring-fill') {
+        // The ring paints on the SURROUNDING surface, so a fill must NOT claim the dark ring:
+        // `--sidebar-text` against `--canvas` is 1.03:1, versus 4.29:1 for the light ring's
+        // accent edge. Both numbers are computed from the tokens below.
+        expect(read(`../src/${f}`)).not.toMatch(/--active-focus-ring/);
+        expect(contrast(token('--sidebar-text'), token('--canvas'))).toBeLessThan(1.5);
+        expect(contrast(token('--accent'), token('--canvas'))).toBeGreaterThan(3);
       } else {
         // The component the stylesheet belongs to carries the mark itself.
         const component = f.replace('.module.css', '.tsx');
