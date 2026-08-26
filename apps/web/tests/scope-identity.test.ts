@@ -195,3 +195,76 @@ describe('outbox replay is pinned to the scope that queued it (finding 1)', () =
     expect(globalThis.localStorage.getItem('vitan.outbox.anon.project-b')).toBeNull();
   });
 });
+
+/**
+ * Codex F2 — the capture stamp introduced an `await` between the gateway null-check and the
+ * upload, and an await is a scope boundary. Read after it, `gateway` is a mutable module
+ * binding sign-out clears and `currentScope()` names whichever project is current THEN — so a
+ * photo chosen in project A could upload through project B's gateway and satisfy B's own
+ * check. Both are pinned ahead of the await; these probes hold the window open to prove it.
+ */
+describe('a photo chosen in one project never follows the user into another (F2)', () => {
+  /** Hold the stamp open on the permission query, so the scope can move while it awaits. */
+  function stallStamp(): { release: () => void } {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    vi.stubGlobal('navigator', {
+      permissions: { query: async () => { await gate; return { state: 'denied' }; } },
+      geolocation: { getCurrentPosition: vi.fn() },
+    });
+    return { release };
+  }
+
+  it('drops the capture when the project switches while the stamp is being taken', async () => {
+    const uploadMedia = vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' });
+    s()._setGateway({ uploadMedia } as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    const { release } = stallStamp();
+    const before = s().dailyLog?.progress ?? 0;
+
+    const pending = s().addProgressPhoto('data:image/png;base64,aGk=', null);
+    bumpScope();      // the user switches to project B mid-stamp
+    release();
+    await pending;
+    await flush();
+
+    // never uploaded: it belongs to a project we have left
+    expect(uploadMedia).not.toHaveBeenCalled();
+    expect(s().dailyLog?.progress ?? 0).toBe(before);
+    vi.unstubAllGlobals();
+  });
+
+  it('does not queue the capture into the NEW project outbox when offline', async () => {
+    s()._setGateway({ uploadMedia: vi.fn() } as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; st.outbox = []; });
+    const { release } = stallStamp();
+
+    const pending = s().addProgressPhoto('data:image/png;base64,aGk=', null);
+    bumpScope();
+    release();
+    await pending;
+    await flush();
+
+    // the dangerous case: a queued photo replaying into another project's daily log
+    expect(s().outbox.filter((o) => o.t === 'uploadMedia')).toEqual([]);
+    vi.unstubAllGlobals();
+  });
+
+  it('uses the gateway it started with when sign-out clears the live one mid-stamp', async () => {
+    const uploadMedia = vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' });
+    s()._setGateway({ uploadMedia } as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    const { release } = stallStamp();
+
+    const pending = s().addProgressPhoto('data:image/png;base64,aGk=', null);
+    s()._setGateway(null); // signed out while the stamp was in flight
+    release();
+    // pinned, so this resolves rather than throwing `null.uploadMedia` into a promise
+    // no caller holds — the screen dispatches this with `void`
+    await expect(pending).resolves.toBeUndefined();
+    await flush();
+
+    expect(uploadMedia).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+});

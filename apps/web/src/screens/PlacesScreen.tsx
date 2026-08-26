@@ -9,6 +9,7 @@ import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
 import { AddMaterialModal } from '@/screens/modals/AddMaterialModal';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { captureAtPlace } from '@/lib/captureContext';
+import { civilDateOf } from '@/lib/civilDate';
 import { DrawingViewer } from '@/screens/DrawingsScreen';
 import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus } from '@/lib/icons';
 import { childrenOf, subtreeIds, trailOf, placeContents, type DrawingRelation, type PlacedDrawing } from '@/lib/locationTree';
@@ -375,6 +376,9 @@ function IntentReality({
   onOpenDrawing: () => void;
   onZoom: (url: string) => void;
 }) {
+  // Codex F3: a photo's takenAt is a UTC instant — read its civil date in the SITE's zone,
+  // not the UTC one `slice(0, 10)` used to show.
+  const timeZone = useStore((s) => s.timeZone);
   const { drawing, relation } = placed;
   const cur = drawing.current;
   const acks = cur?.acks ?? [];
@@ -427,7 +431,7 @@ function IntentReality({
             ))}
             {photos.length > 4 && <span style={{ fontSize: 11, color: 'var(--faint)' }}>+{photos.length - 4}</span>}
           </div>
-          {hero?.takenAt && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>Latest · {hero.takenAt}</div>}
+          {hero?.takenAt && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>Latest · {civilDateOf(hero.takenAt, timeZone)}</div>}
         </div>
       </div>
     </div>

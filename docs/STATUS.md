@@ -22,10 +22,37 @@ blocking_directive: none
 updated: 2026-08-26
 ```
 
-**#435 MERGED at `e1735e21`; the open PR is now #429** — the photo capture stamp, the last unit
+**#438 MERGED at `559083b7`; the open PR is now #429** — the photo capture stamp, the last unit
 of the low-effort data-entry initiative (frontend + docs, no schema, no migration, no API). Every
 paragraph BELOW this one records an EARLIER unit; where one of them says "the open PR", read it as
 the open PR of its own day, not as #429.
+
+#429 carries ONE in-branch correction for the three Codex findings on head `97a4931f` (its first
+finding-bearing head). All three were real, and each is fixed at the level it was raised:
+
+- **F1 (P1) — a chosen file keeps its own time.** `capture="environment"` is a hint the picker may
+  ignore, so an existing gallery image could be stamped with the moment it was SELECTED: an old
+  site photo filed under today, in the very field the daily log orders by. `captureStamp` now takes
+  the time from `File.lastModified` when the file carries a usable one, refusing a zero, non-finite
+  or future value rather than inventing a date. The COUPLED defect Codex did not name is fixed with
+  it: a photo taken days ago was not taken where the device is standing now, so a non-live file
+  carries its time ALONE and the position lookup is skipped entirely.
+- **F2 (P1) — the await is a scope boundary.** The stamp introduced an `await` between the gateway
+  null-check and the upload. Both the gateway (a mutable module binding sign-out clears) and the
+  project scope are now pinned AHEAD of it, and a scope that has moved abandons the capture — so a
+  photo chosen in project A can neither upload through project B's gateway nor queue into B's
+  outbox, and a cleared gateway no longer throws `null.uploadMedia` into a promise no caller holds.
+- **F3 (P2) — read the civil date in the SITE's zone.** `takenAt` stays a true UTC instant (the
+  right thing to store); the three DISPLAY consumers stop slicing a UTC date off it. New
+  `civilDateOf` formats the instant through the existing project-timezone precedent, so an
+  Ahmedabad small-hours photo stops being filed under yesterday — and Places stops printing a raw
+  ISO string.
+
+Reproduce-first: the three F2 probes are RED at `97a4931f`, one reproducing Codex's exact
+`TypeError: Cannot read properties of null (reading 'uploadMedia')`. F1's old signature could not
+receive a file at all, so its probes pin the corrected contract; the F3 probe carries the old
+`slice(0, 10)` result beside the corrected one. Gates: `pnpm check` EXIT 0 — web 911/911 (+12),
+API 793/793, automation 292/292.
 
 #435 asks the DATABASE whether its guards actually fire — before a migration lands on it and
 again after one does. It states two CLOSED properties of the whole application schema: no trigger

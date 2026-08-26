@@ -13,7 +13,7 @@
  */
 
 import { create } from 'zustand';
-import { captureStamp } from '@/lib/captureStamp';
+import { captureStamp, type CaptureSource } from '@/lib/captureStamp';
 import { immer } from 'zustand/middleware/immer';
 import { castDraft } from 'immer';
 import {
@@ -588,7 +588,7 @@ export interface AppActions {
   scanWorker: () => void;
   crewStep: (idx: number, delta: number) => void;
   addProgress: () => void;
-  addProgressPhoto: (dataUrl: string, nodeId?: string | null) => Promise<void>;
+  addProgressPhoto: (dataUrl: string, nodeId?: string | null, source?: CaptureSource | null) => Promise<void>;
   submitDailyLog: () => void;
   flagMismatch: (idx: number) => void;
   record: (label: string) => void;
@@ -3922,7 +3922,7 @@ export const useStore = create<Store>()(
       set((s) => { if (s.dailyLog) s.dailyLog.progress += 1; });
       get().record('Progress photo');
     },
-    addProgressPhoto: async (dataUrl, nodeId) => {
+    addProgressPhoto: async (dataUrl, nodeId, source) => {
       const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
       if (!m) {
         get().flash('Could not read that photo — please try again.');
@@ -3951,7 +3951,20 @@ export const useStore = create<Store>()(
       //
       // It is awaited BEFORE the offline branch on purpose — a queued photo must carry the
       // moment it was TAKEN, not the moment the queue happened to drain days later.
-      const stamp = await captureStamp();
+      //
+      // That await is a SCOPE BOUNDARY, so both the gateway and the scope are pinned here,
+      // ahead of it (Codex F2). `gateway` is a mutable module binding that sign-out clears,
+      // and reading it after the await would throw into a promise no caller holds; reading
+      // `currentScope()` after the await would name whichever project is current THEN, so a
+      // photo chosen in project A could upload through project B's gateway and satisfy B's
+      // own scope check.
+      const g = gateway;
+      const scope = currentScope();
+      const stamp = await captureStamp(source);
+      // Switching project or signing out during the stamp abandons the capture: it belongs
+      // to a project we have left, and neither uploading it there nor queueing it here is
+      // right. Same silent drop every other post-await scope guard makes.
+      if (!scopeStillCurrent(scope)) return;
       // Location spine: tag the photo with the place it shows, if one was chosen.
       const input = { kind: 'progress' as const, mime, data: base64, ...stamp, ...(nodeId ? { nodeId } : {}) };
       // Phase 8 media offline queue: when offline, show the photo optimistically
@@ -3970,10 +3983,9 @@ export const useStore = create<Store>()(
         get().flash('Photo saved offline — will upload when signal returns.');
         return;
       }
-      // raw-DTO reconcile: pin the reply to the scope that uploaded it — a late
+      // raw-DTO reconcile: the reply is pinned to the scope that uploaded it — a late
       // reply must never land on ANOTHER project's daily log (finding 3)
-      const scope = currentScope();
-      gateway
+      g
         .uploadMedia(input)
         .then((res) => {
           if (!scopeStillCurrent(scope)) return;

@@ -4,6 +4,7 @@ import { selectPending, selectReviewPending, selectActiveReview, selectFailedCou
 import { API_BASE } from '@/data/apiGateway';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
+import { civilDateOf } from '@/lib/civilDate';
 import { swatch as swatchGradient } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -12,6 +13,8 @@ export function DashboardScreen() {
   const reviewPending = useStore(selectReviewPending);
   const activeReview = useStore(selectActiveReview);
   const failedCount = useStore(selectFailedCount);
+  // Codex F3: a photo's takenAt is a UTC instant — read its civil date in the SITE's zone.
+  const timeZone = useStore((s) => s.timeZone);
   const workers = useStore(selectTotalWorkers);
   const materialsCount = useStore((s) => s.dailyLog?.materials.length ?? 0);
   const progress = useStore((s) => s.dailyLog?.progress ?? 0);
@@ -170,7 +173,7 @@ export function DashboardScreen() {
                   </div>
                   <div style={{ padding: '9px 11px', background: 'var(--panel)' }}>
                     <div style={{ fontSize: 11.5, fontWeight: 600, textTransform: 'capitalize' }}>{p.kind}</div>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)', marginTop: 2 }}>{p.takenAt ? p.takenAt.slice(0, 10) : ''}</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)', marginTop: 2 }}>{civilDateOf(p.takenAt, timeZone)}</div>
                   </div>
                 </div>
               ))}

@@ -4,6 +4,7 @@ import { selectApprovedDecisions, selectPending, selectTotalWorkers } from '@/st
 import { API_BASE } from '@/data/apiGateway';
 import { Eyebrow, ProgressBar, Swatch } from '@/components';
 import { ArrowRight } from '@/lib/icons';
+import { civilDateOf } from '@/lib/civilDate';
 import { signed, swatch as swatchGradient } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -12,6 +13,8 @@ export function ClientHealthScreen() {
   const pending = useStore(useShallow(selectPending));
   const workers = useStore(selectTotalWorkers);
   const checkedIn = useStore((s) => s.dailyLog?.checkedIn ?? false);
+  // Codex F3: a photo's takenAt is a UTC instant — read its civil date in the SITE's zone.
+  const timeZone = useStore((s) => s.timeZone);
   const setScreen = useStore((s) => s.setScreen);
   const short = useStore((s) => s.short); // live project identity, not the seed
   const stage = useStore((s) => s.stage);
@@ -55,7 +58,7 @@ export function ClientHealthScreen() {
                 <div style={{ height: 170, position: 'relative', background: '#000' }}>
                   <img src={p.url} alt={`Site photo ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 </div>
-                <div style={{ padding: '9px 12px', background: '#fff', fontSize: 12, color: 'var(--muted)' }}>{p.takenAt ? p.takenAt.slice(0, 10) : ''}</div>
+                <div style={{ padding: '9px 12px', background: '#fff', fontSize: 12, color: 'var(--muted)' }}>{civilDateOf(p.takenAt, timeZone)}</div>
               </div>
             ))}
           </div>

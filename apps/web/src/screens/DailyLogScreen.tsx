@@ -62,7 +62,11 @@ export function DailyLogScreen() {
       reader.onload = () => {
         // `void`: the action is async now (it awaits the capture stamp) and reports its own
         // outcome through a flash, so there is nothing here to await or to catch.
-        if (typeof reader.result === 'string') void addProgressPhoto(reader.result, photoNode);
+        //
+        // The file goes with it: `capture="environment"` cannot stop the picker returning an
+        // existing gallery image, and the file's own time is what keeps an old site photo from
+        // being filed under today (Codex F1).
+        if (typeof reader.result === 'string') void addProgressPhoto(reader.result, photoNode, file);
       };
       reader.readAsDataURL(file);
     }
