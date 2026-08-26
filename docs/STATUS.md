@@ -16,32 +16,48 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: a714bc3e
-open_pr: none
+open_pr: 441
 next_task: none
 blocking_directive: none
 updated: 2026-08-26
 ```
 
-**#440 MERGED at `a714bc3e` — THE PROGRESS-PHOTO CAPTURE STAMP IS DELIVERED AND CLEARED. There
-is NO open PR.** #440 replaced #439, which replaced #429; both were closed at the two-finding-head
-limit, and #440 took a clean Codex +1 on its second head `4ff0e8b4`. Every paragraph BELOW this
-one records an EARLIER unit; where one of them says "the open PR", read it as the open PR of its
-own day, not as anything currently open.
+**#440 MERGED at `a714bc3e` — THE PROGRESS-PHOTO CAPTURE STAMP IS DELIVERED AND CLEARED. THE OPEN
+PR IS #441, THIS RECORD ITSELF.** #440 replaced #439, which replaced #429; both were closed at the
+two-finding-head limit, and #440 took a clean Codex +1 on its second head `4ff0e8b4`. #441 declares
+`Replaces: #429` — the obligation #440 could not retire, because a replacement names its immediate
+predecessor and #429's own claimant #439 closed unmerged. Every paragraph BELOW this one records an
+EARLIER unit; where one of them says "the open PR", read it as the open PR of its own day, not as
+#441.
 
 The low-effort data-entry initiative's delivered units are #424 (capture context), #427 (the
-data-entry audit), #428 (progressive disclosure) and #440 (the capture stamp). Units C–E of the
-brief — the universal `+`, desktop search/add, and mobile navigation — are NOT started: the brief
-asked for them to be evaluated and PROPOSED before anything replaces the current mobile nav, and
-that proposal is owed to JagPat. Three items are recorded as open and awaiting his decision:
+data-entry audit), #428 (progressive disclosure) and #440 (the capture stamp). Three items remain,
+and each has an EXECUTABLE next unit — none waits on sign-off:
 
-1. **Units C–E.** §7's prerequisite is that `canSwitch = memberships.length > 1 ||
-   Boolean(adminOrg)` leaves a single-project PMC unable to reach Portfolio at all.
+1. **Units C–E** (the universal `+`, desktop search/add, mobile navigation). The brief said to
+   evaluate and PROPOSE before anything replaces the current mobile nav, so the next unit is that
+   proposal — a docs unit shaped like #427, which is autonomous work. Only the implementation
+   waits on a decision, and the proposal is what makes a decision possible.
+   **The proposal must establish the navigation gap FROM THE CODE.** An earlier draft of this
+   record asserted that `canSwitch = memberships.length > 1 || Boolean(adminOrg)` leaves a
+   single-project PMC unable to reach Portfolio. **That is false**, and it is recorded here so it
+   is not re-derived: `screensFor('pmc')` includes `portfolio`
+   (`apps/web/src/lib/screens.ts:137-148`), `MOBILE_PRIMARY_PREFERENCE` gives it a permanent
+   bottom tab (`apps/web/src/lib/mobileNav.ts:13-15`), and `LeftRail` renders every permitted
+   item. `canSwitch` is read only by `TopBar.tsx` and `ProjectSwitcher.tsx`, where it disables the
+   project-switcher chip — it gates no screen. The proposal owes a gap measured the way #427
+   measured its rows, not a premise carried forward.
 2. **The daily-log gallery's scope.** `SnapshotService` folds project-wide `kind: 'progress'`
    media onto whichever log is current. The log does NOT count them — `DailyLog.progress` is
    operator-entered at `daily-log.submit` — so a fix aimed at the count repairs the wrong thing.
-   #440 makes the defect VISIBLE (yesterday's date in today's gallery) rather than corrected.
+   #440 makes the defect VISIBLE (yesterday's date in today's gallery) rather than corrected. The
+   next unit states what a daily-log gallery means — the log's own photos, or the project's on
+   that civil date — with the read each answer implies; that statement is what the fix needs, and
+   writing it is autonomous.
 3. **Quick Capture's blocker.** `createMediaSchema` requires `mime` and `data.min(1)` for EVERY
-   kind, so the "caption + note kind on media" shape JagPat chose still demands a photo.
+   kind, so the "caption + note kind on media" shape cannot carry a note without a photo. The next
+   unit is the contract change that lets a `note` kind omit both, with the media service and its
+   readers following — a normal reproduce-first unit, not a question.
 
 The daily log has always told the user its progress photos are "geo + time stamped". They were
 not: `UploadMediaInput` accepts `takenAt`/`geoLat`/`geoLng` and the store sent none of them.
