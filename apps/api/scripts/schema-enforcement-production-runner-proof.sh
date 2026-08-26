@@ -17,6 +17,11 @@
 #      offending objects, and leave the pending migration NOT RECORDED — a dirty database must
 #      never receive a partial migration.
 #   D. DIRTY, UNVALIDATED FOREIGN KEY, same pending migration. Same refusal, different clause.
+#   D2. DIRTY, TRIGGERS BYPASSED WHOLESALE (`relhastriggers = false`), same pending migration. The
+#      third clause, and the one the other two structurally cannot reach: every pg_trigger row
+#      survives and every tgenabled still reads 'O', so a per-trigger check reports the table
+#      perfectly sealed while PostgreSQL consults none of them. MEASURED before the clause existed:
+#      `enforcement verify` returned ok:true over exactly this state.
 #   E. REPAIRED — the operator re-enables the triggers and validates the key, and the SAME runner
 #      then deploys the pending migration cleanly. A gate that cannot be cleared is a wall.
 #   F. ALREADY-CHECKED — the runner re-run over the now-deployed database is a no-op that passes.
@@ -142,9 +147,26 @@ OUT="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)"; RC=$?
 printf '%s\n' "$OUT" | grep -q "Activity_enf_probe_fkey" && ok "the diagnostic NAMES the unvalidated key" || bad "the unvalidated key was not named"
 [ "$(recorded)" = "0" ] && ok "and $PENDING is still not recorded" || bad "the pending migration was recorded despite the refusal"
 
+# ══ D2. DIRTY — TRIGGERS BYPASSED WHOLESALE ═══════════════════════════════════════════════════
+say "D2. the third clause — relhastriggers = false, which a per-trigger check cannot see"
+$PSQL -c 'ALTER TABLE "Activity" VALIDATE CONSTRAINT "Activity_enf_probe_fkey"' >/dev/null
+$PSQL -c 'UPDATE pg_class SET relhastriggers = false WHERE oid = '"'"'public."Activity"'"'"'::regclass' >/dev/null
+# Proof the other clauses are blind to it, not merely quiet: every trigger on the table still reads
+# as an enforcing state, so clause 1 has nothing to report.
+OFF="$($PSQL -t -A -c 'SELECT count(*) FROM pg_trigger t WHERE t.tgrelid = '"'"'public."Activity"'"'"'::regclass AND NOT (t.tgenabled = '"'"'O'"'"' OR t.tgenabled = '"'"'A'"'"')')"
+[ "$OFF" = "0" ] && ok "every trigger on the table still reads ENABLED — clause 1 sees nothing here" \
+                 || bad "the tamper also disabled triggers ($OFF), so this state does not isolate the clause"
+OUT="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)"; RC=$?
+[ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC)" || bad "migrate.sh accepted a table whose triggers are bypassed"
+printf '%s\n' "$OUT" | grep -q "relhastriggers" && ok "the diagnostic NAMES the bypass" || bad "the bypass was not named"
+printf '%s\n' "$OUT" | grep -q '"Activity"' && ok "and NAMES the table" || bad "the bypassed table was not named"
+[ "$(recorded)" = "0" ] && ok "and $PENDING is still not recorded" || bad "the pending migration was recorded despite the refusal"
+$PSQL -c 'UPDATE pg_class SET relhastriggers = true WHERE oid = '"'"'public."Activity"'"'"'::regclass' >/dev/null
+
 # ══ E. REPAIRED ═══════════════════════════════════════════════════════════════════════════════
 say "E. the operator repairs it, and the SAME runner then deploys"
-$PSQL -c 'ALTER TABLE "Activity" VALIDATE CONSTRAINT "Activity_enf_probe_fkey"' >/dev/null
+# Both prior dirty states are now repaired: D2 validated the key and restored the flag above.
+$PSQL -c 'ALTER TABLE "Activity" VALIDATE CONSTRAINT "Activity_enf_probe_fkey"' >/dev/null 2>&1 || true
 OUT="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" = "0" ] && ok "migrate.sh exited 0 after the repair — the gate can be cleared" \
                 || { bad "migrate.sh still refused after repair (exit $RC)"; printf '%s\n' "$OUT" | tail -25; }
