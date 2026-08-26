@@ -1,0 +1,56 @@
+/* The mobile trigger: a floating action, so it costs no bottom-tab slot.
+   Sits above the tab bar and clear of the home indicator. */
+.fab {
+  position: fixed;
+  right: 16px;
+  bottom: calc(72px + env(safe-area-inset-bottom));
+  z-index: 40;
+  width: 52px;
+  height: 52px;
+  border-radius: 26px;
+  border: none;
+  background: var(--ink);
+  /* ink surface — the focus ring must follow it, or a keyboard user tabbing to the FAB
+     gets the light ring against a dark fill and sees nothing (F-1a) */
+  --active-focus-ring: var(--focus-ring-dark);
+  color: var(--sidebar-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 18px rgba(35, 33, 28, 0.28);
+  cursor: pointer;
+}
+/* the complement of LeftRail.module.css — the desktop shell renders the rail control instead */
+@media (min-width: 640px) {
+  .fab {
+    display: none;
+  }
+}
+
+/* The desktop trigger, rendered inside the rail. `TopBar` cannot hold it: that bar is
+   display:none from 640px upward, so a control mounted there is invisible at every desktop
+   width. `LeftRail` is the shell that renders where `TopBar` does not. */
+.railButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(237, 231, 218, 0.22);
+  background: rgba(237, 231, 218, 0.08);
+  color: var(--sidebar-text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.railButton:hover {
+  background: rgba(237, 231, 218, 0.14);
+}
+@media (max-width: 639.98px) {
+  .railButton {
+    display: none;
+  }
+}

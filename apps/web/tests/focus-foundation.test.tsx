@@ -440,6 +440,7 @@ describe('F-1a ink-surface inventory', () => {
   // css file → how that ink surface resolves the dark ring
   const CSS_INVENTORY: Record<string, 'sets-active-focus-ring' | 'element-data-surface'> = {
     'layout/TopBar.module.css': 'sets-active-focus-ring',
+    'layout/CreateControl.module.css': 'sets-active-focus-ring',
     'layout/NotificationPanel.module.css': 'sets-active-focus-ring',
     'layout/LeftRail.module.css': 'element-data-surface',
   };

@@ -33,6 +33,28 @@ import type { AllocateLabourInput } from '../data/apiGateway';
  */
 export type ProjectLoadState = 'idle' | 'switching' | 'loading' | 'ready' | 'error';
 
+/**
+ * Whether project-owned data can be trusted right now.
+ *
+ * ONE definition, because two consumers must never disagree about it. `ProjectLoadBoundary`
+ * uses it to decide whether screens may render at all; every control mounted in the SHELL —
+ * outside that boundary, and so not unmounted by it — uses the same answer to decide whether
+ * it may be shown or submitted.
+ *
+ * The distinction matters because `switchProject` empties every project-owned field BEFORE
+ * the auth request goes out, while `activeProjectId` and the gateway keep addressing the OLD
+ * project until `applyAuthResult` adopts the server's answer. A shell-mounted control that
+ * stayed live across that window would write the new project's record into the old one.
+ * `'error'` is not usable either: a failed switch deliberately KEEPS the old authenticated
+ * identity, so the same mis-filing is possible after it.
+ *
+ * `'idle'` IS usable — it is the local-demo and pre-fetch state, where the store's own data
+ * is the truth and there is no transition in flight.
+ */
+export function projectDataUsable(state: ProjectLoadState): boolean {
+  return state !== 'switching' && state !== 'loading' && state !== 'error';
+}
+
 /** Captured at request time; a response only applies if the scope is unchanged. */
 export interface ProjectScope {
   projectId: string;
