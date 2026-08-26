@@ -15,8 +15,8 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 2e2d6f19
-open_pr: 446
+reviewed_merge: fd9367c9
+open_pr: none
 next_task: none
 blocking_directive: none
 updated: 2026-08-26
@@ -49,15 +49,23 @@ Three items remain, each with an executable next unit — none waits on sign-off
    `f8d48347` with a fresh Codex +1 on the exact head `baa3facd`. It is SPLIT from Units D and E:
    #443 carried all three, reached the two-finding-head limit with both rounds landing on Unit C,
    and #444 (`Replaces: #443`) carries Unit C alone.
-   **C1 IS IMPLEMENTED** (PR #446): `CreateControl` mounts the existing `CreateMenu` as a floating
-   action (mobile) and `CreateRailButton` in `LeftRail` (desktop), spending NO nav slot, with the
-   context `captureGlobal` — a `+` from nowhere in particular inherits nothing and the form asks.
-   The gate wraps the FLOW, not the trigger: `useCanCreateNow` is the ONE rule both mounts read,
-   and the shared `projectDataUsable` predicate is now the single authority
-   `ProjectLoadBoundary` itself uses, so the boundary and the shell cannot disagree about a state
-   added later. All six §6 acceptance tests pass, and the two that matter reproduce RED against a
-   trigger-only gate. **Units D and E still owe their own proposal**, which §6 pre-loads with the
-   two corrections found here.
+   **C1 IS DELIVERED AND CLEARED** — merged as PR #446 at `main` `fd9367c9`, a fresh Codex +1 on
+   the exact head `a8bde4d0` after ONE correction round. `CreateControl` mounts the existing
+   `CreateMenu` as a floating action (mobile) and `CreateRailButton` in `LeftRail` (desktop),
+   spending NO nav slot, with the context `captureGlobal` — a `+` from nowhere in particular
+   inherits nothing and the form asks. The gate wraps the FLOW, not the trigger: `useCanCreateNow`
+   is the ONE rule both mounts read, and the shared `projectDataUsable` predicate is the single
+   authority `ProjectLoadBoundary` itself uses, so the boundary and the shell cannot disagree
+   about a state added later. All six §6 acceptance tests pass; the two that matter reproduce RED
+   against a trigger-only gate.
+   **The correction round's lesson is pinned so it is not re-earned**: the FAB is an ink FILL on
+   the light canvas, NOT an ink surface — `:focus-visible` paints the ring OUTSIDE the control, so
+   claiming `--focus-ring-dark` there puts `--sidebar-text` (1.03:1) against `--canvas` and the
+   indicator disappears; the light ring's accent edge is 4.29:1. F-1a's inventory gained a third
+   mode, `light-ring-fill`, for an ink fill declared in CSS (its two container modes were the only
+   choices before, which is how the wrong classification got picked).
+   **Units D and E still owe their own proposal**, which the merged Unit-C document's §6 pre-loads
+   with the two corrections found there (the real visibility rules for D2 + caller-shaped bakes).
    **Five corrections are recorded so they are not re-earned.** (a) A shell mount is OUTSIDE
    `ProjectLoadBoundary`: `AppShell.tsx:39-41` wraps only `<ScreenView />`, while `switchProject`
    (`store.ts:3366`) empties every project-owned field before the auth request goes out and leaves
