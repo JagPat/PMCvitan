@@ -15,23 +15,28 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: a714bc3e
-open_pr: none
+reviewed_merge: 0818c96f
+open_pr: 443
 next_task: none
 blocking_directive: none
 updated: 2026-08-26
 ```
 
-**#440 MERGED at `a714bc3e` — THE PROGRESS-PHOTO CAPTURE STAMP IS DELIVERED AND CLEARED.** This
-record carries the POST-merge state, so `open_pr` is `none`: a status-only handoff must not leave
-a closed PR number in the file, because `assessRunnerState` resolves any non-`none` `open_pr`
-before the still-active task and the loop would keep returning a PR that no longer exists. Every
+**THE OPEN PR IS #443 — THE UNITS C-E CREATE-AND-NAVIGATION PROPOSAL, NOT PHASE 6 TASK 4.** Every
 paragraph BELOW this one records an EARLIER unit; where one of them says "the open PR", read it
-as the open PR of its own day.
+as the open PR of its own day, not as #443.
 
 The low-effort data-entry initiative's delivered units are #424 (capture context), #427 (the
-data-entry audit), #428 (progressive disclosure) and #440 (the capture stamp). #440 replaced #439,
-which replaced #429 — both closed at the two-finding-head limit.
+data-entry audit), #428 (progressive disclosure), #440 (the capture stamp) and #442 (the record
+of them). #440 replaced #439, which replaced #429 — both closed at the two-finding-head limit —
+and #442 replaced #441 on the same rule.
+
+**Note for whoever writes the NEXT status-only handoff.** #442 was a docs-only PR whose whole
+purpose was recording a post-merge state, and it carried `open_pr: none` deliberately: a status
+handoff must not leave a PR number behind it, because `assessRunnerState` resolves any non-`none`
+`open_pr` before the still-active task and the loop would keep returning a PR that no longer
+exists. #443 is a different case — a proposal that is genuinely open — so it names itself here,
+per the ordinary convention. The two rules do not conflict; they apply to different PRs.
 
 **#429's ledger obligation is NOT discharged, and must not be discharged by a record like this
 one.** #440 declared `Replaces: #439`, so #429 — whose own claimant #439 closed unmerged — is
@@ -43,18 +48,30 @@ unit that genuinely carries scope forward.
 
 Three items remain, each with an executable next unit — none waits on sign-off:
 
-1. **Units C-E** (the universal `+`, desktop search/add, mobile navigation). The brief said to
-   evaluate and PROPOSE before anything replaces the current mobile nav, so the next unit is that
-   proposal — a docs unit shaped like #427. Only the implementation waits on a decision, and the
-   proposal is what makes a decision possible.
-   **The proposal must establish the navigation gap FROM THE CODE.** An earlier draft asserted
-   that `canSwitch = memberships.length > 1 || Boolean(adminOrg)` leaves a single-project PMC
-   unable to reach Portfolio. **That is false**, recorded here so it is not re-derived:
+1. **Units C-E** (the universal `+`, desktop search/add, mobile navigation). The PROPOSAL the
+   brief asked for is DELIVERED — `docs/ux/CREATE_AND_NAVIGATION_PROPOSAL.md`, continuing the
+   audit's §7 "not yet". Implementation waits on JagPat picking a path; the proposal is what
+   makes that choice possible. Its measured findings: `CreateMenu` already exists and is mounted
+   in exactly ONE screen (Places), so Unit C is a second mount of a shipped mechanism, not a new
+   one; a pmc has 9 of 13 screens behind More and an engineer 7 of 11, while contractor and
+   consultant fit their bars exactly; `daily-log` reaches the engineer's bar by top-up rather
+   than by preference, so any change to `MOBILE_PRIMARY_PREFERENCE` can silently displace it;
+   and one search input exists in the whole application (`DecisionLogScreen.tsx:121`).
+   It recommends mounting `+` WITHOUT spending a nav slot, which leaves `splitMobileNav`,
+   `MOBILE_PRIMARY_PREFERENCE` and `screensFor` untouched and keeps Unit E decidable later on
+   evidence.
+   The proposal establishes its gap FROM THE CODE, and corrects a claim that had been restated
+   wrongly. An earlier draft of this record asserted that `canSwitch = memberships.length > 1 ||
+   Boolean(adminOrg)` leaves a single-project PMC unable to reach Portfolio. **That is false**:
    `screensFor('pmc')` includes `portfolio` (`apps/web/src/lib/screens.ts:137-148`),
    `MOBILE_PRIMARY_PREFERENCE` gives it a permanent bottom tab
    (`apps/web/src/lib/mobileNav.ts:13-15`), and `LeftRail` renders every permitted item.
    `canSwitch` is read only by `TopBar.tsx` and `ProjectSwitcher.tsx`, where it disables the
-   project-switcher chip — it gates no screen.
+   project-switcher chip — it gates no screen. The AUDIT's own §7 never said otherwise: it says
+   that user cannot open the SWITCHER SHEET, which carries an *All projects (Portfolio)* row.
+   The surviving constraint is narrower and still binding — taking Portfolio's tab for `+`
+   removes that user's only route to it, because the sheet they would fall back on is the thing
+   they cannot open.
 2. **The daily-log gallery's scope.** `SnapshotService` folds project-wide `kind: 'progress'`
    media onto whichever log is current, while `DailyLog.progress` is operator-entered at
    `daily-log.submit` — so a fix aimed at the count repairs the wrong thing. Neither candidate
