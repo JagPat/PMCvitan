@@ -9,6 +9,7 @@ import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
 import { AddMaterialModal } from '@/screens/modals/AddMaterialModal';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { captureAtPlace } from '@/lib/captureContext';
+import { stampText } from '@/lib/captureStamp';
 import { DrawingViewer } from '@/screens/DrawingsScreen';
 import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus } from '@/lib/icons';
 import { childrenOf, subtreeIds, trailOf, placeContents, type DrawingRelation, type PlacedDrawing } from '@/lib/locationTree';
@@ -427,7 +428,7 @@ function IntentReality({
             ))}
             {photos.length > 4 && <span style={{ fontSize: 11, color: 'var(--faint)' }}>+{photos.length - 4}</span>}
           </div>
-          {hero?.takenAt && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>Latest · {hero.takenAt}</div>}
+          {hero?.takenAt && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>Latest · {stampText(hero.takenAt)}</div>}
         </div>
       </div>
     </div>

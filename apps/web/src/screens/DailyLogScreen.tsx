@@ -6,6 +6,8 @@ import { selectTotalWorkers } from '@/store/selectors';
 import { EmptyState, Eyebrow, Swatch, PhotoViewer, Button } from '@/components';
 import { AddMaterialModal } from '@/screens/modals/AddMaterialModal';
 import { LocationPicker } from '@/components/LocationPicker';
+import { captureStamp } from '@/lib/captureStamp';
+import { projectScopeOf } from '@/store/projectScope';
 import { pathOf } from '@/lib/locationTree';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
 import { can, labourLabels } from '@vitan/shared';
@@ -58,9 +60,20 @@ export function DailyLogScreen() {
   const onPickPhoto = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      // The scope this photo was CHOSEN in, captured before the read begins. `readAsDataURL`
+      // is an async boundary the store cannot see across: by the time `onload` fires the user
+      // may have switched projects and `useApiSync` may have installed another gateway, and
+      // this photo would then be filed under a project it has nothing to do with.
+      const pickedIn = projectScopeOf(useStore.getState());
       const reader = new FileReader();
       reader.onload = () => {
-        if (typeof reader.result === 'string') addProgressPhoto(reader.result, photoNode);
+        if (typeof reader.result !== 'string') return;
+        // The photo's OWN capture metadata, taken from the bytes this read already produced.
+        // No `await` on this path on purpose: a second yield here — even one as innocent as
+        // `file.slice().arrayBuffer()` — would suspend between the user choosing a photo and
+        // the store queueing it, a window in which a project switch redirects the upload and
+        // a reload loses the photo. `captureStamp` decodes the head of the data URL instead.
+        addProgressPhoto(reader.result, photoNode, captureStamp(reader.result), pickedIn);
       };
       reader.readAsDataURL(file);
     }
@@ -271,7 +284,7 @@ export function DailyLogScreen() {
         <div style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 13, padding: 13, display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 600, fontSize: 13.5 }}>{dailyLog.progress} progress photos</div>
-            <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>Geo + time stamped, tied to activity</div>
+            <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>Stamped with the time and place the photo itself recorded</div>
           </div>
           <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPickPhoto} data-testid="progress-file" style={{ display: 'none' }} />
           <button onClick={() => fileRef.current?.click()} data-testid="add-progress-photo" style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>

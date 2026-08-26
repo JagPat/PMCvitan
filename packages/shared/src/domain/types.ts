@@ -439,6 +439,9 @@ export interface Photo {
   id: string;
   url: string;
   takenAt?: string;
+  /** where the SHUTTER was, when the photo's own EXIF recorded it */
+  geoLat?: number;
+  geoLng?: number;
   /** location-tree node this photo shows (undefined = unplaced) */
   nodeId?: string;
   kind: string; // progress | inspection | material
@@ -494,6 +497,8 @@ export interface MediaRef {
   id?: string;
   url: string;
   takenAt?: string;
+  geoLat?: number;
+  geoLng?: number;
 }
 
 export interface DailyLog {

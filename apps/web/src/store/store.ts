@@ -62,7 +62,7 @@ import {
   ROLE_POLICY,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
-import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
+import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type ProjectLoadState, type ProjectScope } from './projectScope';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
@@ -76,6 +76,7 @@ import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCo
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
 import { COMMERCIAL_OP_PERMISSION, advanceCoalesceKey, budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, approveCoalesceKey, payCoalesceKey, reverseCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import { todayCivil } from '@/lib/civilDate';
+import { hasStamp, type CaptureStamp } from '@/lib/captureStamp';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
 /**
@@ -587,7 +588,13 @@ export interface AppActions {
   scanWorker: () => void;
   crewStep: (idx: number, delta: number) => void;
   addProgress: () => void;
-  addProgressPhoto: (dataUrl: string, nodeId?: string | null) => void;
+  /**
+   * `stamp` is what the PHOTO's own EXIF carries — empty when the file records nothing.
+   * `pickedIn` is the scope the file was CHOSEN in: the picker's `FileReader` resolves after
+   * an async boundary, so without it a photo chosen in project A can arrive here once B's
+   * gateway is installed.
+   */
+  addProgressPhoto: (dataUrl: string, nodeId?: string | null, stamp?: CaptureStamp, pickedIn?: ProjectScope) => void;
   submitDailyLog: () => void;
   flagMismatch: (idx: number) => void;
   record: (label: string) => void;
@@ -959,10 +966,7 @@ export const useStore = create<Store>()(
 
     /** The scope a network request is issued FOR — pass to applySnapshot so a reply
      *  that lands after the scope changed (switch, sign-in) is dropped, not applied. */
-    const currentScope = (): ProjectScope => ({
-      projectId: get().activeProjectId,
-      generation: get().projectScopeGeneration,
-    });
+    const currentScope = (): ProjectScope => projectScopeOf(get());
 
     /** Is a scope captured at request time still the live one? Guards EVERY
      *  post-await project mutation — including raw-DTO paths that don't go
@@ -3921,16 +3925,29 @@ export const useStore = create<Store>()(
       set((s) => { if (s.dailyLog) s.dailyLog.progress += 1; });
       get().record('Progress photo');
     },
-    addProgressPhoto: (dataUrl, nodeId) => {
+    addProgressPhoto: (dataUrl, nodeId, stamp, pickedIn) => {
+      // The file was chosen BEFORE the read that produced this data URL, and a project switch
+      // (or sign-out, or re-auth) in between makes this photo — and its `photoNode` — belong
+      // to a project we have left. Uploading it through whichever gateway is installed now
+      // would file A's evidence under B. Same silent drop as every other scope guard here.
+      if (pickedIn && !scopeStillCurrent(pickedIn)) return;
       const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
       if (!m) {
         get().flash('Could not read that photo — please try again.');
         return;
       }
       const [, mime, base64] = m;
+      // what the PHOTO recorded — shared by the server and local-demo paths below, so the
+      // demo store mirrors what the server would hold rather than dropping it
+      const stamped = stamp ?? {};
       if (gateway) {
         // Location spine: tag the photo with the place it shows, if one was chosen.
-        const input = { kind: 'progress' as const, mime, data: base64, ...(nodeId ? { nodeId } : {}) };
+        //
+        // The stamp is whatever the photo's own EXIF recorded — computed by the caller from
+        // bytes it had already read, so nothing async sits between accepting this photo and
+        // durably queueing it below. A file that carries no capture metadata contributes no
+        // keys here, and the media contract stores nothing rather than something invented.
+        const input = { kind: 'progress' as const, mime, data: base64, ...stamped, ...(nodeId ? { nodeId } : {}) };
         // Phase 8 media offline queue: when offline, show the photo optimistically
         // (local data URL) and queue the upload for replay on reconnect — instead
         // of losing it. Mirrors runRemoteOrQueue for the JSON mutations.
@@ -3959,22 +3976,44 @@ export const useStore = create<Store>()(
               s.dailyLog.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
               s.dailyLog.progress += 1;
             });
-            get().flash('Progress photo uploaded — geo + time stamped, visible to PMC.');
+            // say what the photo actually carried, not what the feature is called
+            get().flash(
+              hasStamp(stamped)
+                ? 'Progress photo uploaded — stamped from the photo, visible to PMC.'
+                : 'Progress photo uploaded — visible to PMC.',
+            );
           })
           .catch(() => get().flash('Could not upload the photo — please try again.'));
         return;
       }
       // local demo: keep the data URL as the image source; also place it on the tree
-      // (with the chosen node) so the Place view reflects it without a server.
+      // (with the chosen node) so the Place view reflects it without a server. The stamp
+      // travels here too — the demo is a supported mode, and a record that drops what the
+      // photo carried while the UI says it was stamped is the same false claim on a
+      // different path.
       set((s) => {
         if (s.dailyLog) {
-          s.dailyLog.photos.unshift({ url: dataUrl });
+          s.dailyLog.photos.unshift({ url: dataUrl, ...stamped });
           s.dailyLog.progress += 1;
         }
-        s.photos.unshift({ id: `demo-photo-${s.photos.length + 1}`, url: dataUrl, nodeId: nodeId ?? undefined, kind: 'progress' });
+        s.photos.unshift({
+          id: `demo-photo-${s.photos.length + 1}`,
+          url: dataUrl,
+          nodeId: nodeId ?? undefined,
+          kind: 'progress',
+          ...stamped,
+        });
       });
       get().record('Progress photo');
-      get().flash(get().online ? 'Progress photo added — geo + time stamped.' : 'Photo saved offline — will upload when signal returns.');
+      if (!get().online) {
+        get().flash('Photo saved offline — will upload when signal returns.');
+      } else {
+        get().flash(
+          hasStamp(stamped)
+            ? 'Progress photo added — stamped from the photo.'
+            : 'Progress photo added.',
+        );
+      }
     },
     submitDailyLog: () => {
       const dl = get().dailyLog;

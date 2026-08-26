@@ -15,16 +15,93 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: e5d3c4fd
-open_pr: 435
+reviewed_merge: 559083b7
+open_pr: 440
 next_task: none
 blocking_directive: none
 updated: 2026-08-26
 ```
 
-**THE OPEN PR IS #435 — A DEPLOY-TIME SCHEMA-ENFORCEMENT GATE, NOT PHASE 6 TASK 4.** Every
-paragraph BELOW this one records an EARLIER unit; where one of them says "the open PR", read it
-as the open PR of its own day, not as #435.
+**THE OPEN PR IS #440 — THE PROGRESS-PHOTO CAPTURE STAMP, NOT PHASE 6 TASK 4.** It REPLACES
+#439, which replaced #429; both closed at the two-finding-head limit. Every paragraph BELOW this
+one records an EARLIER unit; where one of them says "the open PR", read it as the open PR of its
+own day, not as #440.
+
+The daily log has always told the user its progress photos are "geo + time stamped". They were
+not: `UploadMediaInput` accepts `takenAt`/`geoLat`/`geoLng` and the store sent none of them.
+
+The APPROACH was rejected twice, both times for claiming more than the file supports — stamping
+the wall clock at selection time (#429 head 1), then trusting `File.lastModified`, which copying
+or editing an old photo rewrites to today (#429 head 2). It has NOT been challenged since. The
+stamp reads what the photo itself recorded: EXIF `DateTimeOriginal` is written at the shutter and
+survives being copied, EXIF GPS records where the SHUTTER was rather than where the phone is now,
+and a file carrying neither gets NO stamp — the daily log says so instead of inventing one.
+
+`Media.takenAt` is a `String` the schema documents as a DISPLAY timestamp ("03 Jul 2026 · 9:12
+AM"), which the seed writes and both earlier heads violated by sending a UTC ISO instant. EXIF's
+clock is the camera's own local time — for a site photo, the site's — so it is formatted to the
+documented shape and no timezone is invented. That also fixes a PRE-EXISTING display bug:
+Dashboard and Client Health rendered `takenAt.slice(0, 10)`, turning the seed's own "03 Jul 2026"
+into "03 Jul 202".
+
+The four review rounds since have been about implementation, and each is carried here:
+
+- **Nothing async between accepting a photo and making it durable.** `addProgressPhoto` is
+  synchronous, and `captureStamp` takes the DATA URL the picker already produced and decodes its
+  head — so there is no geolocation await (#429) and no second file read (#439 head 1) sitting in
+  that window, where a reload loses the photo outright.
+- **The photo belongs to the project it was chosen in.** `readAsDataURL` is ITSELF an async
+  boundary, and this defect PREDATES the stamp: `main` dispatches from `onload` with nothing
+  binding the photo to its project, so a switch mid-read files A's photo — and A's `photoNode` —
+  under B's gateway. The picker now captures the scope at selection through the new shared
+  `projectScopeOf`, and the store drops a photo whose scope has moved.
+- **Metadata that cannot be true yields no stamp.** Minutes and seconds are bounded and the day
+  is checked against the real calendar by round trip, so `2026:02:31 09:99:00` is refused rather
+  than recorded as `31 Feb 2026 · 9:99 AM`; a real leap day is kept.
+- **Valid EXIF is actually found.** 256 KiB of head is decoded (one APP1 can approach 64 KiB and
+  may follow an APP0); a segment declaring a length past the resident head no longer aborts the
+  search before the `Exif` signature is even inspected; and a marker introduced by repeated
+  `0xff` fill bytes — `FF FF E1` is legal — is read as the marker it is.
+- **A coordinate is all-or-nothing, and axis-correct.** Latitude admits only N/S and longitude
+  only E/W, so a corrupt `W` latitude yields nothing instead of a plausible POSITIVE one; a zero
+  denominator or missing hemisphere drops the pair. A location in the wrong place reads as truth;
+  no location reads as what it is.
+
+The reader is narrow on purpose — JPEG APP1, four tags, every read bounds-checked, any surprise
+answered with null — because it runs on bytes a user chose. Its probes build real JPEG+TIFF
+fixtures rather than checking in opaque binaries, sweep every truncated prefix of a valid file
+plus a corrupted variant, and include a 5000-byte `0xff` run to prove the marker walk can neither
+hang nor throw. Every finding carried here was reproduced RED in ISOLATION — the one fix
+reverted, the rest left in place — so no probe passes for the wrong reason.
+
+#440 carries ONE in-branch correction for the five Codex findings on head `8fa29c9c` (its first
+finding-bearing head), all P2, each reproduced RED in ISOLATION. Four are the same rule the unit
+already turned on — a stamp that reads as plausible but is not what the photo recorded is worse
+than no stamp, because it becomes permanent capture evidence:
+
+- **DMS components are bounded individually.** Summing first silently NORMALISED nonsense:
+  `23° 90′ 0″ N` became a perfectly plausible `24.5° N`. Minutes and seconds must each be under
+  60 and the degree component within its own limit, or there is no coordinate.
+- **EOI is terminal.** `0xd9` sat inside the standalone-marker range, so `[SOI, EOI, APP1]` was
+  stamped from bytes appended AFTER the image. Concatenated data is not this photo.
+- **Reads are confined to the DECLARING segment.** A malformed APP1 whose declared length ends
+  before its own `Exif` signature, or whose TIFF offsets point into a later segment, could have
+  bytes from elsewhere in the file read back as capture metadata. `findTiffHeader` now returns
+  the segment end alongside the header and every read is bounded by it (clamped to the bytes
+  actually held, so a large APP1 running past the decoded head still yields what is resident).
+- **The local demo keeps the stamp.** The demo path inserted photos with no `takenAt` and no
+  coordinates while the UI said they had been stamped — the same false claim on a different
+  path. The stamp now travels there too (`Photo`/`MediaRef` gain optional `geoLat`/`geoLng` so
+  the demo store mirrors what the server holds), and the toast names a stamp only when one was
+  attached.
+- **A rendered stamp is bounded.** `takenAt` is a free `String` and the API accepts an unbounded
+  `z.string()`, so an authorized upload can put a near-request-limit value in it; rendering the
+  whole thing builds a multi-megabyte text node. `stampText` caps display at 64 characters —
+  a display bound, never validation, so nothing stored changes. Applied to Places as well as the
+  two consumers Codex named: the same defect was there, pre-existing.
+
+Gates: `pnpm check` EXIT 0 — web 929/929, API 793/793, automation 292/292. No schema, no
+migration, no API change.
 
 #435 asks the DATABASE whether its guards actually fire — before a migration lands on it and
 again after one does. It states two CLOSED properties of the whole application schema: no trigger
