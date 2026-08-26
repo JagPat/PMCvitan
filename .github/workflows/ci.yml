@@ -311,6 +311,15 @@ jobs:
         timeout-minutes: 25
         run: bash apps/api/scripts/schedule-b1-baseline-proof.sh
 
+      # The same question asked of EVERY enforcement object rather than one migration's inventory.
+      # Drives the real `migrate.sh` over a ledger-complete database, switches one object off at a
+      # time by each mechanism that leaves it present-but-not-enforcing, and requires a refusal that
+      # NAMES it — then requires a pass once repaired, so the check is proven precise and not merely
+      # strict. Pinned by `scripts/ci-baseline-proof-wiring.test.mjs` for the same reason as above.
+      - name: Armed-seal falsification proof (every enforcement object, tampered and refused)
+        timeout-minutes: 20
+        run: bash apps/api/scripts/armed-seals-falsification-proof.sh
+
   # The ONE required status.
   #
   # `always()` is load-bearing: without it a failing job would SKIP this gate,

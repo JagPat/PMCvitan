@@ -128,3 +128,42 @@ test('the proof script itself reports a verdict the step can fail on', async () 
   // of the deploy-time seal verifier disappeared.
   assert.match(source, /STATE F/u, 'the proof must cover the ledger-complete database whose guards were switched off');
 });
+
+// ── The armed-seal falsification proof — the same requirement, for the unscoped verifier ────────
+// `armed-seals-falsification-proof.sh` is the only test that drives the production `migrate.sh`
+// over a database whose guards have been switched OFF. Without it the deploy-time armed-seal check
+// could regress to accepting everything and every required job would still pass, because no other
+// suite tampers with the catalog. The walk above is reused rather than restated: this is the same
+// concern — a proof that must be RUN BY A REQUIRED JOB — asked about a second script.
+const ARMED_SCRIPT = 'apps/api/scripts/armed-seals-falsification-proof.sh';
+
+test('the armed-seal falsification proof is a step of the `api` job', async () => {
+  const jobs = parseJobs(await readFile(WORKFLOW, 'utf8'));
+  assert.equal(stepsRunning(jobs.get(HOST_JOB), ARMED_SCRIPT), 1,
+    `exactly one step of \`${HOST_JOB}\` must run ${ARMED_SCRIPT}`);
+});
+
+test('the armed-seal detection FAILS when its step is removed — it is not merely running', async () => {
+  const yaml = await readFile(WORKFLOW, 'utf8');
+  const withoutStep = yaml.split('\n').filter((line) => !line.includes(ARMED_SCRIPT)).join('\n');
+  assert.equal(stepsRunning(parseJobs(withoutStep).get(HOST_JOB), ARMED_SCRIPT), 0,
+    'the fixture must not still contain the step, or this test proves nothing');
+});
+
+test('the armed-seal proof reports a verdict, and covers every unarming mechanism it claims', async () => {
+  const source = await readFile(new URL(`../${ARMED_SCRIPT}`, import.meta.url), 'utf8');
+  assert.match(source, /\[armed-seals\] PASSED/u);
+  assert.match(source, /\[armed-seals\] FAILED/u);
+  // Each is a distinct way an object stays in the catalog and stops enforcing. Deleting one would
+  // let the proof keep reporting PASSED while covering less than the verifier claims to check.
+  assert.match(source, /F1 disabled trigger/u, 'must cover a DISABLED trigger');
+  assert.match(source, /F2 blinded foreign key/u, 'must cover a key whose internal RI triggers are off');
+  assert.match(source, /F3 NOT VALID constraint/u, 'must cover a constraint that was never validated');
+  assert.match(source, /F4 relhastriggers bypass/u, 'must cover the relhastriggers table-wide bypass');
+  // The baseline is what makes a refusal meaningful: a checker that refuses everything proves
+  // nothing, so the untampered pass and the repaired pass are both required to be asserted.
+  assert.match(source, /untampered ledger-complete database deploys clean/u,
+    'must assert that an intact database still passes');
+  assert.match(source, /passes again once repaired/u,
+    'must assert the check is precise, not merely strict');
+});

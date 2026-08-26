@@ -11,11 +11,7 @@ overrides:
 
 importers:
 
-  .:
-    devDependencies:
-      pg-query-emscripten:
-        specifier: ^5.1.0
-        version: 5.1.0
+  .: {}
 
   apps/api:
     dependencies:
@@ -2070,9 +2066,6 @@ packages:
 
   perfect-debounce@1.0.0:
     resolution: {integrity: sha512-xCy9V055GLEqoFaHoC1SoLIaLmWctgCUaBaWxDZ7/Zx4CTyX7cJQLJOok/orfjZAh9kEYpjJa4d0KcJmCbctZA==}
-
-  pg-query-emscripten@5.1.0:
-    resolution: {integrity: sha512-H1ZWOzLRddmHuE4GZqFjjo55hA9zMiePz/WDDGANA/EnvILCJps9pcRucyGd+MFvapeYOy6TWSYz6DbtBOaxRQ==}
 
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
@@ -4410,8 +4403,6 @@ snapshots:
   pathe@2.0.3: {}
 
   perfect-debounce@1.0.0: {}
-
-  pg-query-emscripten@5.1.0: {}
 
   picocolors@1.1.1: {}
 

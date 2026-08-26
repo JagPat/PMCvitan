@@ -1301,3 +1301,32 @@ over a populated COMPLETE one — plus a sixth state that is not a baseline stat
 LEDGER-COMPLETE database whose guards were switched off afterwards, in three shapes (a disabled
 seal, a lost internal foreign-key trigger, a hollowed function body), each of which the runner must
 refuse and then accept again once repaired. CI runs that script in the required `api` job.
+
+## §SEALS. A deploy refused because an enforcement object is not enforcing
+
+`scripts/migrate.sh` runs `seals armed` on the ordinary success path, after
+`prisma migrate deploy` reports the ledger complete. A complete ledger is not a working guard: once
+a migration is recorded nothing re-reads it, so a badly restored database deploys green with its
+guards switched off. The check asks the catalog whether every enforcement object in the `public`
+schema is switched on, so it covers objects no migration-specific verifier was ever written for.
+
+**The message names every object and why it does not enforce.** Four causes, four repairs:
+
+| Reported | What happened | Repair |
+|---|---|---|
+| `trigger … is DISABLED` | `ALTER TABLE … DISABLE TRIGGER`, or a restore that left it off | `ALTER TABLE "T" ENABLE TRIGGER "name";` |
+| `foreign key has DISABLED internal RI triggers` | `ALTER TABLE … DISABLE TRIGGER ALL` — the key reads as valid and contains nothing | `ALTER TABLE "T" ENABLE TRIGGER ALL;` |
+| `constraint is NOT VALID` | added `NOT VALID` and never validated | `ALTER TABLE "T" VALIDATE CONSTRAINT "name";` — it will fail if data already violates it, which is the finding |
+| `relhastriggers is FALSE while the table carries triggers` | a direct catalog write; PostgreSQL skips every trigger on the table | `UPDATE pg_class SET relhastriggers = true WHERE oid = 'public."T"'::regclass;` (requires `allow_system_table_mods`) |
+| `unclassified … contype` | a constraint kind the check has never classified | classify it in `armed-seals.ts` — do not skip it |
+
+Re-run `scripts/migrate.sh` after repairing. It exits 0 once every object is armed; the check is
+proven precise, so a clean database is not refused.
+
+**Investigate before repairing.** A disabled seal in production means something disabled it. Re-arming
+restores enforcement going forward but says nothing about what was written while it was off — query
+the affected table for rows that the guard would now refuse, and reconcile them deliberately.
+
+**Never repair by weakening the check.** If an object genuinely should not be armed, remove it in a
+migration with a written reason; do not exempt it here. There is no exemption list on purpose:
+`docs/MIGRATION_INVARIANTS.md` records why four review units that maintained one all failed.

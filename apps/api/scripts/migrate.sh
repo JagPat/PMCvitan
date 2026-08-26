@@ -105,6 +105,26 @@ if [ ! -f "$B1_SEALS" ]; then
   exit 1
 fi
 
+# ── Armed seals — the UNSCOPED question, asked of every enforcement object ────────────────────────
+# T45/T2C/T3C/B1 above each verify ONE migration's hand-written inventory. Between them they cover a
+# few dozen objects out of 1,051, and which ones is a historical accident: whichever migration drew a
+# review finding got a verifier. Everything else deploys unverified, which is not a gap in those
+# verifiers but the absence of a total one.
+#
+# MEASURED before this was added: with `DecisionOption_kind_selectable_ins/upd` DISABLED, this runner
+# exited 0 and never named them. The seals were installed by 20270920000000, verified once while that
+# migration applied, and never asked about again.
+#
+# This asks the CATALOG instead of any file: is every enforcement object armed? Total by
+# construction, and it needs no inventory to maintain — a deployed database has no legitimate reason
+# to hold a disabled or NOT VALID enforcement object, so any is a finding. Fail closed on a missing
+# artifact, exactly like the four above.
+ARMED_SEALS="dist/platform/seals/seals.cli.js"
+if [ ! -f "$ARMED_SEALS" ]; then
+  echo "[migrate] ERROR: compiled armed-seal verifier ($ARMED_SEALS) is missing — the build is incomplete; refusing to deploy."
+  exit 1
+fi
+
 out=$(npx prisma migrate deploy 2>&1)
 code=$?
 echo "$out"
@@ -128,6 +148,15 @@ if [ $code -eq 0 ]; then
   if ! node "$B1_SEALS" seals; then
     echo "[migrate] ERROR: 'prisma migrate deploy' succeeded but the schedule B1 seal verification FAILED — the ledger is complete while a dependency-graph guard is missing, disabled, hollowed or unowned."
     echo "[migrate] This deploy is NOT good. Repair per docs/RUNBOOK.md section B1, then redeploy."
+    exit 1
+  fi
+  # And the same question of EVERYTHING ELSE. The three checks above know which objects to ask about;
+  # this one asks the catalog, so a guard installed by a migration nobody wrote a verifier for is
+  # covered too. Exit 4 ("no tables") is a failure here and not a pass, for the same reason it is one
+  # for B1: after a successful deploy the schema must exist.
+  if ! node "$ARMED_SEALS" armed; then
+    echo "[migrate] ERROR: 'prisma migrate deploy' succeeded but an enforcement object in this database is NOT ARMED — it is present in the catalog and does not enforce."
+    echo "[migrate] This deploy is NOT good. Repair per docs/RUNBOOK.md §SEALS, then redeploy."
     exit 1
   fi
   exit 0
