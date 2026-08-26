@@ -76,6 +76,7 @@ import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCo
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
 import { COMMERCIAL_OP_PERMISSION, advanceCoalesceKey, budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, approveCoalesceKey, payCoalesceKey, reverseCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import { todayCivil } from '@/lib/civilDate';
+import { hasStamp, type CaptureStamp } from '@/lib/captureStamp';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
 /**
@@ -587,7 +588,8 @@ export interface AppActions {
   scanWorker: () => void;
   crewStep: (idx: number, delta: number) => void;
   addProgress: () => void;
-  addProgressPhoto: (dataUrl: string, nodeId?: string | null) => void;
+  /** `stamp` is what the PHOTO's own EXIF carries — empty when the file records nothing. */
+  addProgressPhoto: (dataUrl: string, nodeId?: string | null, stamp?: CaptureStamp) => void;
   submitDailyLog: () => void;
   flagMismatch: (idx: number) => void;
   record: (label: string) => void;
@@ -3921,7 +3923,7 @@ export const useStore = create<Store>()(
       set((s) => { if (s.dailyLog) s.dailyLog.progress += 1; });
       get().record('Progress photo');
     },
-    addProgressPhoto: (dataUrl, nodeId) => {
+    addProgressPhoto: (dataUrl, nodeId, stamp) => {
       const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
       if (!m) {
         get().flash('Could not read that photo — please try again.');
@@ -3930,7 +3932,13 @@ export const useStore = create<Store>()(
       const [, mime, base64] = m;
       if (gateway) {
         // Location spine: tag the photo with the place it shows, if one was chosen.
-        const input = { kind: 'progress' as const, mime, data: base64, ...(nodeId ? { nodeId } : {}) };
+        //
+        // The stamp is whatever the photo's own EXIF recorded — computed by the caller from
+        // bytes it had already read, so nothing async sits between accepting this photo and
+        // durably queueing it below. A file that carries no capture metadata contributes no
+        // keys here, and the media contract stores nothing rather than something invented.
+        const stamped = stamp ?? {};
+        const input = { kind: 'progress' as const, mime, data: base64, ...stamped, ...(nodeId ? { nodeId } : {}) };
         // Phase 8 media offline queue: when offline, show the photo optimistically
         // (local data URL) and queue the upload for replay on reconnect — instead
         // of losing it. Mirrors runRemoteOrQueue for the JSON mutations.
@@ -3959,7 +3967,12 @@ export const useStore = create<Store>()(
               s.dailyLog.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
               s.dailyLog.progress += 1;
             });
-            get().flash('Progress photo uploaded — geo + time stamped, visible to PMC.');
+            // say what the photo actually carried, not what the feature is called
+            get().flash(
+              hasStamp(stamped)
+                ? 'Progress photo uploaded — stamped from the photo, visible to PMC.'
+                : 'Progress photo uploaded — visible to PMC.',
+            );
           })
           .catch(() => get().flash('Could not upload the photo — please try again.'));
         return;

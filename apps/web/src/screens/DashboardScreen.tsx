@@ -170,7 +170,7 @@ export function DashboardScreen() {
                   </div>
                   <div style={{ padding: '9px 11px', background: 'var(--panel)' }}>
                     <div style={{ fontSize: 11.5, fontWeight: 600, textTransform: 'capitalize' }}>{p.kind}</div>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)', marginTop: 2 }}>{p.takenAt ? p.takenAt.slice(0, 10) : ''}</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)', marginTop: 2 }}>{p.takenAt ?? ''}</div>
                   </div>
                 </div>
               ))}

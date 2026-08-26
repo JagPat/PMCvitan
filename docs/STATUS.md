@@ -15,16 +15,53 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: e5d3c4fd
-open_pr: 435
+reviewed_merge: 559083b7
+open_pr: 439
 next_task: none
 blocking_directive: none
 updated: 2026-08-26
 ```
 
-**THE OPEN PR IS #435 — A DEPLOY-TIME SCHEMA-ENFORCEMENT GATE, NOT PHASE 6 TASK 4.** Every
-paragraph BELOW this one records an EARLIER unit; where one of them says "the open PR", read it
-as the open PR of its own day, not as #435.
+**THE OPEN PR IS #439 — THE PROGRESS-PHOTO CAPTURE STAMP, NOT PHASE 6 TASK 4.** It REPLACES
+#429, closed at the two-finding-head limit. Every paragraph BELOW this one records an EARLIER
+unit; where one of them says "the open PR", read it as the open PR of its own day, not as #439.
+
+The daily log has always told the user its progress photos are "geo + time stamped". They were
+not: `UploadMediaInput` accepts `takenAt`/`geoLat`/`geoLng` and the store sent none of them. Two
+earlier shapes of this fix were rejected on review, and BOTH were rejected for the same reason —
+claiming more than the file supports:
+
+- Stamping the wall clock at selection time. `capture="environment"` is a hint the picker may
+  ignore, so the file can be any image on the phone; an old site photo was filed under today.
+- Falling back to `File.lastModified`. Copying, downloading or editing an old photo rewrites it
+  to today, so the value passed the liveness test and ALSO picked up the engineer's current
+  coordinates — a photo claiming a time and a place that were both wrong.
+
+This replacement reads what the photo itself recorded. EXIF `DateTimeOriginal` is written at the
+shutter and survives being copied; EXIF GPS records where the SHUTTER was, not where the phone
+is now. A file that carries neither gets NO stamp, and the daily log says so instead of inventing
+one. Three consequences fall out of that, each closing a defect the earlier shapes carried:
+
+- **Nothing async sits between accepting a photo and making it durable.** EXIF is parsed from the
+  head of the file the picker had already read, so `addProgressPhoto` is synchronous again and
+  the offline branch queues exactly as it did before this unit existed. The rejected shape put a
+  geolocation await (up to 1.5s, behind an unbounded permission query) in that gap, where a
+  reload lost the photo outright.
+- **No `await` means no scope hazard.** The rejected shape read the mutable `gateway` binding and
+  `currentScope()` across an await, so a photo chosen in project A could upload through project
+  B's gateway. There is no longer a boundary to cross.
+- **`Media.takenAt` is a String the schema documents as a DISPLAY timestamp** ("03 Jul 2026 ·
+  9:12 AM"), which the seed writes and the rejected shape violated by sending a UTC ISO instant.
+  EXIF's clock is the camera's own local time — for a site photo, the site's local time — so it
+  is formatted to the documented shape and no timezone is invented. This also fixes a
+  PRE-EXISTING display bug: Dashboard and Client Health rendered `takenAt.slice(0, 10)`, which
+  turns the seed's own "03 Jul 2026" into "03 Jul 202".
+
+The EXIF reader is deliberately narrow — JPEG APP1 only, four tags, every read bounds-checked,
+any surprise answered with null — because it runs on arbitrary bytes a user chose. Its probes
+build real JPEG+TIFF fixtures rather than checking in opaque binaries, and sweep every truncated
+prefix of a valid file plus a corrupted variant to prove it cannot throw. Gates: `pnpm check`
+EXIT 0 — web 908/908, API 793/793, automation 292/292. No schema, no migration, no API change.
 
 #435 asks the DATABASE whether its guards actually fire — before a migration lands on it and
 again after one does. It states two CLOSED properties of the whole application schema: no trigger

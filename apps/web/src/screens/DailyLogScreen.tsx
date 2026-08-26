@@ -6,6 +6,10 @@ import { selectTotalWorkers } from '@/store/selectors';
 import { EmptyState, Eyebrow, Swatch, PhotoViewer, Button } from '@/components';
 import { AddMaterialModal } from '@/screens/modals/AddMaterialModal';
 import { LocationPicker } from '@/components/LocationPicker';
+import { captureStamp, type CaptureStamp } from '@/lib/captureStamp';
+
+/** EXIF lives in the JPEG APP1 segment near the start; 64 KB covers it with room to spare. */
+const EXIF_HEAD_BYTES = 64 * 1024;
 import { pathOf } from '@/lib/locationTree';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
 import { can, labourLabels } from '@vitan/shared';
@@ -59,8 +63,20 @@ export function DailyLogScreen() {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') addProgressPhoto(reader.result, photoNode);
+      reader.onload = async () => {
+        if (typeof reader.result !== 'string') return;
+        // The photo's OWN capture metadata, read from the head of the file (EXIF sits in the
+        // APP1 segment near the start, so there is no reason to re-read megabytes). This and
+        // the FileReader above both run BEFORE the photo is accepted, so the durable queue
+        // inside `addProgressPhoto` is still reached synchronously — nothing that was taken
+        // in can be lost to a reload while metadata is being read.
+        let stamp: CaptureStamp = {};
+        try {
+          stamp = captureStamp(new Uint8Array(await file.slice(0, EXIF_HEAD_BYTES).arrayBuffer()));
+        } catch {
+          // an unreadable file still uploads; it simply carries no stamp
+        }
+        addProgressPhoto(reader.result, photoNode, stamp);
       };
       reader.readAsDataURL(file);
     }
@@ -271,7 +287,7 @@ export function DailyLogScreen() {
         <div style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 13, padding: 13, display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 600, fontSize: 13.5 }}>{dailyLog.progress} progress photos</div>
-            <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>Geo + time stamped, tied to activity</div>
+            <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>Stamped with the time and place the photo itself recorded</div>
           </div>
           <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPickPhoto} data-testid="progress-file" style={{ display: 'none' }} />
           <button onClick={() => fileRef.current?.click()} data-testid="add-progress-photo" style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
