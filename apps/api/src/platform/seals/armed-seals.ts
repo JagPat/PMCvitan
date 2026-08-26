@@ -47,6 +47,22 @@ export type RawQueryable = {
  * own migrations. Claiming otherwise here would be the very thing this file refuses.
  */
 
+/**
+ * WHICH SCHEMAS ARE JUDGED — every one that is not PostgreSQL's own.
+ *
+ * Written once and interpolated, rather than repeated in each query below. An earlier draft of this
+ * file hard-coded `nspname = 'public'` in nine places. Today that is not narrow — this database has
+ * exactly one application schema, measured — but it is narrow BY CONSTRUCTION: a migration that
+ * adds a schema would leave every enforcement object in it silently unjudged, which is precisely the
+ * defect this file exists to report, committed inside this file. Nine copies of a predicate is also
+ * how the copies come to disagree.
+ *
+ * The catalog's own schemas are excluded because their constraints are PostgreSQL's, not this
+ * repository's — verified: `information_schema` carries two domain CHECKs and 48 unique constraints
+ * that no deploy should ever be judged on.
+ */
+const APP_SCHEMA = "n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema'";
+
 export type ArmedSealFinding = {
   /** `trigger` | `foreign_key` | `constraint` | `table` — what kind of object is unarmed. */
   kind: string;
@@ -87,7 +103,7 @@ const UNARMED_SQL = `
     FROM pg_trigger t
     JOIN pg_class c ON t.tgrelid = c.oid
     JOIN pg_namespace n ON c.relnamespace = n.oid
-   WHERE NOT t.tgisinternal AND n.nspname = 'public' AND t.tgenabled = 'D'
+   WHERE NOT t.tgisinternal AND ${APP_SCHEMA} AND t.tgenabled = 'D'
   UNION ALL
   SELECT 'foreign_key',
          (c.relname || '.' || k.conname),
@@ -95,7 +111,7 @@ const UNARMED_SQL = `
     FROM pg_constraint k
     JOIN pg_class c ON k.conrelid = c.oid
     JOIN pg_namespace n ON c.relnamespace = n.oid
-   WHERE k.contype = 'f' AND n.nspname = 'public'
+   WHERE k.contype = 'f' AND ${APP_SCHEMA}
      AND EXISTS (SELECT 1 FROM pg_trigger g WHERE g.tgconstraint = k.oid AND g.tgenabled = 'D')
   UNION ALL
   SELECT 'constraint',
@@ -104,14 +120,25 @@ const UNARMED_SQL = `
     FROM pg_constraint k
     JOIN pg_class c ON k.conrelid = c.oid
     JOIN pg_namespace n ON c.relnamespace = n.oid
-   WHERE n.nspname = 'public' AND k.contype IN ('f', 'c') AND NOT k.convalidated
+   WHERE ${APP_SCHEMA} AND k.contype IN ('f', 'c') AND NOT k.convalidated
+  UNION ALL
+  -- The same question for a DOMAIN constraint. Its conrelid is 0, so the relation join above
+  -- silently drops it; ALTER DOMAIN ... ADD CONSTRAINT ... NOT VALID is a real statement, and this
+  -- repository having no domains TODAY is not the same as never.
+  SELECT 'domain_constraint',
+         (t.typname || '.' || k.conname),
+         'domain constraint is NOT VALID — it was never validated, so values already stored are unchecked'
+    FROM pg_constraint k
+    JOIN pg_type t ON k.contypid = t.oid
+    JOIN pg_namespace n ON t.typnamespace = n.oid
+   WHERE k.contypid <> 0 AND ${APP_SCHEMA} AND NOT k.convalidated
   UNION ALL
   SELECT 'table',
          c.relname,
          'relhastriggers is FALSE while the table carries triggers — PostgreSQL skips all of them'
     FROM pg_class c
     JOIN pg_namespace n ON c.relnamespace = n.oid
-   WHERE n.nspname = 'public' AND NOT c.relhastriggers
+   WHERE ${APP_SCHEMA} AND NOT c.relhastriggers
      AND EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid = c.oid)
   ORDER BY 1, 2
 `;
@@ -125,13 +152,13 @@ const CONSIDERED_SQL = `
   SELECT (
     (SELECT count(*) FROM pg_trigger t JOIN pg_class c ON t.tgrelid = c.oid
        JOIN pg_namespace n ON c.relnamespace = n.oid
-      WHERE NOT t.tgisinternal AND n.nspname = 'public')
+      WHERE NOT t.tgisinternal AND ${APP_SCHEMA})
   + (SELECT count(*) FROM pg_constraint k JOIN pg_class c ON k.conrelid = c.oid
        JOIN pg_namespace n ON c.relnamespace = n.oid
-      WHERE n.nspname = 'public' AND k.contype IN ('f','c','u','x','p'))
+      WHERE ${APP_SCHEMA} AND k.contype IN ('f','c','u','x','p'))
   + (SELECT count(*) FROM pg_proc p JOIN pg_language l ON p.prolang = l.oid
        JOIN pg_namespace n ON p.pronamespace = n.oid
-      WHERE l.lanname = 'plpgsql' AND n.nspname = 'public')
+      WHERE l.lanname = 'plpgsql' AND ${APP_SCHEMA})
   )::int AS n
 `;
 
@@ -144,15 +171,20 @@ const CONSIDERED_SQL = `
 const UNCLASSIFIED_SQL = `
   SELECT DISTINCT k.contype::text AS contype
     FROM pg_constraint k
-    JOIN pg_class c ON k.conrelid = c.oid
-    JOIN pg_namespace n ON c.relnamespace = n.oid
-   WHERE n.nspname = 'public' AND k.contype NOT IN ('f','c','u','x','p','t')
+    LEFT JOIN pg_class c ON k.conrelid = c.oid
+    LEFT JOIN pg_namespace rn ON c.relnamespace = rn.oid
+    LEFT JOIN pg_type t ON k.contypid = t.oid
+    LEFT JOIN pg_namespace tn ON t.typnamespace = tn.oid
+   WHERE COALESCE(rn.nspname, tn.nspname) IS NOT NULL
+     AND COALESCE(rn.nspname, tn.nspname) NOT LIKE 'pg\\_%'
+     AND COALESCE(rn.nspname, tn.nspname) <> 'information_schema'
+     AND k.contype NOT IN ('f','c','u','x','p','t')
 `;
 
 export async function verifyArmedSeals(prisma: RawQueryable): Promise<ArmedSealReport> {
   const present = await prisma.$queryRawUnsafe<{ n: number }[]>(
     `SELECT count(*)::int AS n FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid
-      WHERE n.nspname = 'public' AND c.relkind = 'r'`,
+      WHERE ${APP_SCHEMA} AND c.relkind = 'r'`,
   );
   if ((present[0]?.n ?? 0) === 0) {
     return { applicable: false, considered: 0, armed: false, findings: [] };
