@@ -464,7 +464,22 @@ $PSQL2 -c 'SET allow_system_table_mods = on;
             WHERE g.tgconstraint = c.oid
               AND c.conname = '"'"'ActivityDependency_revokedBy_fkey'"'"'
               AND g.tgfoid = '"'"'pg_catalog."RI_FKey_check_upd"'"'"'::regproc' >/dev/null
-tamper_and_expect_refusal "F2 lost internal FK trigger" 'RI_FKey_check_upd'
+# TWO gates refuse this shape now, and they are asserted separately because they answer different
+# questions. `migrate.sh` runs the WHOLE-SCHEMA enforcement preflight BEFORE Prisma, and a lost
+# internal foreign-key trigger is exactly what its clause 3 asks about — so the runner stops there
+# and never reaches the post-deploy B1 verifier. What it names is the KEY and the slot that does not
+# fire, which is the object an operator repairs (the DROP/ADD below IS that repair; PostgreSQL
+# refuses `DROP TRIGGER` on an internal one, so there is nothing smaller to name). The B1 seal
+# inventory — which this state was written for, and which the preflight now shadows — is then asked
+# DIRECTLY and must still name the internal trigger. Nothing this state used to prove is dropped.
+tamper_and_expect_refusal "F2 lost internal FK trigger" 'ActivityDependency_revokedBy_fkey'
+B1OUT="$(DATABASE_URL="$URL2" node dist/activities/b1/b1.cli.js seals 2>&1)"; B1RC=$?
+[ "$B1RC" != "0" ] \
+  && ok "F2 lost internal FK trigger: the B1 seal inventory, asked directly, also refuses (exit $B1RC)" \
+  || bad "F2 lost internal FK trigger: the B1 seal inventory reported the guards intact"
+printf '%s\n' "$B1OUT" | grep -q 'RI_FKey_check_upd' \
+  && ok "F2 lost internal FK trigger: and names the internal trigger — RI_FKey_check_upd" \
+  || { bad "F2 lost internal FK trigger: the B1 inventory did not name 'RI_FKey_check_upd'"; printf '%s\n' "$B1OUT" | tail -6; }
 # Re-added by dropping and re-adding the key, which is the repair the refusal names.
 $PSQL2 -c 'ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_revokedBy_fkey";
            ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_revokedBy_fkey"

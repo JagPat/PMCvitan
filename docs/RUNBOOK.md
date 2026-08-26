@@ -1302,31 +1302,105 @@ LEDGER-COMPLETE database whose guards were switched off afterwards, in three sha
 seal, a lost internal foreign-key trigger, a hollowed function body), each of which the runner must
 refuse and then accept again once repaired. CI runs that script in the required `api` job.
 
-## §SEALS. A deploy refused because an enforcement object is not enforcing
+## §ENF. Schema enforcement — the deploy aborts because a guard does not fire
 
-`scripts/migrate.sh` runs `seals armed` on the ordinary success path, after
-`prisma migrate deploy` reports the ledger complete. A complete ledger is not a working guard: once
-a migration is recorded nothing re-reads it, so a badly restored database deploys green with its
-guards switched off. The check asks the catalog whether every enforcement object in the `public`
-schema is switched on, so it covers objects no migration-specific verifier was ever written for.
+`scripts/migrate.sh` refused with **`schema enforcement preflight FAILED`**, or a successful deploy
+was rejected by **`schema enforcement verification FAILED`**.
 
-**The message names every object and why it does not enforce.** Four causes, four repairs:
+### What was asked
 
-| Reported | What happened | Repair |
-|---|---|---|
-| `trigger … is DISABLED` | `ALTER TABLE … DISABLE TRIGGER`, or a restore that left it off | `ALTER TABLE "T" ENABLE TRIGGER "name";` |
-| `foreign key has DISABLED internal RI triggers` | `ALTER TABLE … DISABLE TRIGGER ALL` — the key reads as valid and contains nothing | `ALTER TABLE "T" ENABLE TRIGGER ALL;` |
-| `constraint is NOT VALID` | added `NOT VALID` and never validated | `ALTER TABLE "T" VALIDATE CONSTRAINT "name";` — it will fail if data already violates it, which is the finding |
-| `relhastriggers is FALSE while the table carries triggers` | a direct catalog write; PostgreSQL skips every trigger on the table | `UPDATE pg_class SET relhastriggers = true WHERE oid = 'public."T"'::regclass;` (requires `allow_system_table_mods`) |
-| `unclassified … contype` | a constraint kind the check has never classified | classify it in `armed-seals.ts` — do not skip it |
+Two closed properties of the **whole application schema** — not a list of expected objects, so
+nothing here needs updating when a migration adds a seal:
 
-Re-run `scripts/migrate.sh` after repairing. It exits 0 once every object is armed; the check is
-proven precise, so a clean database is not refused.
+1. **No trigger is disabled.** This repository's design is DB-enforced seals, so a trigger that does
+   not fire is not a weaker guard, it is no guard. Enforcing means `pg_trigger.tgenabled` is `O`
+   (origin) or `A` (always). `D` never fires. **`R` (replica) fires only when
+   `session_replication_role = 'replica'`, so it does not fire for the application** — it looks
+   enabled and is inert. Internal `RI_ConstraintTrigger` rows are covered too, because a foreign key
+   *is* those triggers (4 per key on PG 16); a finding names the key they implement.
+2. **No foreign key is `NOT VALID`.** Its existing rows were never checked.
+3. **Every foreign key's internal implementation is COMPLETE and firing.** Clauses 1 and 2 judge the
+   state of objects that EXIST; a trigger *removed* from `pg_trigger` — what a partial restore or a
+   hand repair amounts to — is not a disabled trigger, and the survivors are all `O`. MEASURED on
+   PG 16.13: with one referencing-side `RI_FKey_check_ins` deleted, an orphan **committed**,
+   `convalidated` stayed `true`, **and clause 1 reported nothing**. So each key must carry four
+   ENFORCING internal row triggers — INSERT and UPDATE on the referencing table, DELETE and UPDATE on
+   the referenced one — which is what PostgreSQL creates for every referential action (the action
+   picks the parent-side *function*, never the number of slots). The full measurement, including the
+   shapes it REFUSES rather than passes (partitioned or derived keys, unmeasured action codes), is in
+   `apps/api/src/platform/enforcement/enforcement-check.ts`. No such key exists in this schema today;
+   if one appears the deploy stops and names it.
 
-**Investigate before repairing.** A disabled seal in production means something disabled it. Re-arming
-restores enforcement going forward but says nothing about what was written while it was off — query
-the affected table for rows that the guard would now refuse, and reconcile them deliberately.
+4. **The session itself is in an enforcing replication role.** Whether a trigger fires is a property
+   of `tgenabled` **relative to `session_replication_role`**, so clauses 1-3 are half a question
+   until this one is asked. MEASURED on PG 16.13: under `replica` an `O` seal was **inert** and a
+   foreign key **admitted an orphan**, while every trigger stayed `O` and the key stayed
+   `convalidated` — clauses 1-3 read a perfect schema over a database enforcing nothing. `origin`
+   and `local` were measured to fire `O`; any other role is refused. The check and the API share
+   one `DATABASE_URL`, so a role or database defaulted to `replica` (`ALTER ROLE …`/`ALTER DATABASE
+   … SET session_replication_role`) is inert for both. Repair: `ALTER ROLE "<role>" [IN DATABASE
+   "<db>"] RESET session_replication_role;` (or `ALTER DATABASE`), then redeploy.
 
-**Never repair by weakening the check.** If an object genuinely should not be armed, remove it in a
-migration with a written reason; do not exempt it here. There is no exemption list on purpose:
-`docs/MIGRATION_INVARIANTS.md` records why four review units that maintained one all failed.
+MEASURED on PG 16.13, and the reason clause 1 exists: with a table's triggers switched off by
+`ALTER TABLE … DISABLE TRIGGER ALL`, an INSERT of an **orphaned row committed** while
+`pg_constraint.convalidated` stayed `true`. A check that reads only `convalidated` cannot see this.
+
+### Read what it names
+
+The diagnostic lists every offending object — schema, table, trigger, the `tgenabled` state found,
+and for an internal trigger the foreign key it implements — bounded to a sample of 25 with the true
+total printed. Run it by hand at any time (read-only; it never writes):
+
+```
+pnpm --filter api enforcement:preflight              # from source
+node dist/platform/enforcement/enforcement.cli.js preflight   # the compiled artifact the runner uses
+```
+
+Exit 0 means every guard enforces. Exit 3 lists what does not. Exit 4 means the schema has no
+application tables — which `preflight` treats as a fresh database and passes, and `verify` treats as
+a failure, because after a successful deploy the schema must exist.
+
+### Repair
+
+A disabled trigger and a `NOT VALID` key are both operator-repairable, and neither repair invents
+data:
+
+```sql
+ALTER TABLE public."<Table>" ENABLE TRIGGER "<trigger>";        -- or ENABLE TRIGGER ALL
+ALTER TABLE public."<Table>" VALIDATE CONSTRAINT "<constraint>";
+```
+
+A key reported by **clause 3** as incompletely implemented is repaired by re-creating the key, which
+is what re-creates its triggers — PostgreSQL refuses `DROP TRIGGER` on an internal one, so there is
+nothing smaller to fix. Read the definition first, then drop and re-add it verbatim:
+
+```sql
+SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = '<constraint>';
+ALTER TABLE public."<Table>" DROP CONSTRAINT "<constraint>";
+ALTER TABLE public."<Table>" ADD CONSTRAINT "<constraint>" <the definition printed above>;
+```
+
+The `ADD` scans existing rows and **will fail if an orphan got in while the key was not enforcing** —
+that failure is the useful signal, and the orphan is a data question to settle before the deploy
+proceeds. Never re-add it `NOT VALID` to get past this: that trades one finding for the other. A key
+reported as an **unmeasured shape** is not broken — the schema has grown a partitioned or derived
+foreign key — and the fix is to measure that shape and extend the check, not to skip the key.
+
+### Why this is asked twice
+
+**Before Prisma**, because a dirty database must never receive a partial migration: a migration
+applied over switched-off seals writes rows nothing validated, and every later deploy sees a
+complete ledger and re-reads nothing. Failing here means Prisma never starts and **no migration is
+recorded**. **After a successful deploy**, because a migration that disables something and fails to
+restore it must not pass — `prisma migrate deploy` proves the ledger is complete, which is not the
+same claim as the guards enforcing.
+
+`apps/api/scripts/schema-enforcement-production-runner-proof.sh` drives the real `migrate.sh`
+through all of it: fresh/empty, already-clean, dirty-by-trigger and dirty-by-key with a migration
+pending (aborting before Prisma, migration not recorded), repaired, already-checked, the post-deploy
+seam asked directly, a coupling step that unwires the preflight and requires the dirty state to be
+accepted again, and — state I — a deploy that SUCCEEDS while leaving the schema dirty, refused after
+Prisma on BOTH the ordinary and the P3005 path, with each of those two call sites neutered in turn to
+prove the refusal came from it. That the proof itself is RUN is pinned separately, by
+`scripts/ci-baseline-proof-wiring.test.mjs` in the required `automation` job: a proof cannot detect
+that it was unwired from CI.

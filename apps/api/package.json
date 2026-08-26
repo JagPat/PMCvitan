@@ -2,7 +2,7 @@
   "name": "api",
   "private": true,
   "version": "0.0.0",
-  "description": "Vitan PMC backend \u2014 NestJS + Prisma REST API.",
+  "description": "Vitan PMC backend — NestJS + Prisma REST API.",
   "scripts": {
     "build": "prisma generate && tsc -p tsconfig.json",
     "start": "node dist/main.js",
@@ -34,7 +34,8 @@
     "t3c:migration-state": "tsx src/labour/t3c/t3c.cli.ts migration-state",
     "t3c:repair": "tsx src/labour/t3c/t3c.cli.ts repair",
     "b1:seals": "tsx src/activities/b1/b1.cli.ts seals",
-    "seals:armed": "tsx src/platform/seals/seals.cli.ts armed"
+    "enforcement:preflight": "tsx src/platform/enforcement/enforcement.cli.ts preflight",
+    "enforcement:verify": "tsx src/platform/enforcement/enforcement.cli.ts verify"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

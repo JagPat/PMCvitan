@@ -86,6 +86,39 @@ else
   exit 1
 fi
 
+# ── Schema enforcement preflight — EVERY trigger fires, EVERY foreign key is validated ──────────
+# Run the COMPILED check (never tsx) AFTER the three preflights and BEFORE `prisma migrate deploy`,
+# and AGAIN after a successful deploy (below). Unlike those three it asks nothing about a
+# particular migration's data: it states two CLOSED properties of the whole application schema —
+# no trigger is disabled, no foreign key is unvalidated — so it needs no list of expected objects
+# to keep in step with, and a seal installed by a migration written after this file is covered the
+# day it lands.
+#
+# It is schema-aware in the only way this question can be: a fresh or empty database has no
+# application tables, reports "not applicable" and passes here, so the migrations that CREATE the
+# schema still run. Any database that HAS tables is eligible — there is no version gate, because
+# the property is true of every schema at every version.
+#
+# WHY BEFORE PRISMA: a dirty database must never receive a partial migration. A migration applied
+# over switched-off seals writes rows nothing validated, and every later deploy sees a complete
+# ledger and re-reads nothing.  MEASURED on PG 16.13: with a table's triggers disabled by
+# `ALTER TABLE ... DISABLE TRIGGER ALL`, an INSERT of an orphaned row COMMITTED while
+# `pg_constraint.convalidated` stayed true — so a check that reads only `convalidated` (as the
+# prerequisite guards in 20270225000000 do) cannot see this, and this one can.
+# The compiled artifact is produced by the image build; a missing artifact means a broken build — fail closed.
+ENF_CHECK="dist/platform/enforcement/enforcement.cli.js"
+if [ -f "$ENF_CHECK" ]; then
+  echo "[migrate] schema enforcement preflight (compiled artifact): node $ENF_CHECK preflight"
+  if ! node "$ENF_CHECK" preflight; then
+    echo "[migrate] schema enforcement preflight FAILED — a trigger does not fire or a foreign key was never validated."
+    echo "[migrate] Repair per docs/RUNBOOK.md §ENF, then redeploy. Prisma was NOT started."
+    exit 1
+  fi
+else
+  echo "[migrate] ERROR: compiled schema enforcement check ($ENF_CHECK) is missing — the build is incomplete; refusing to deploy."
+  exit 1
+fi
+
 # ── B1 seal verifier (schedule dependency graph) — declared here, RUN AFTER the deploy ──────────
 # Not a preflight. `20270930000000_schedule_dependency_graph` completes its own install and proves
 # every object before it lifts its write barrier, so there is nothing useful to ask BEFORE Prisma
@@ -102,26 +135,6 @@ fi
 B1_SEALS="dist/activities/b1/b1.cli.js"
 if [ ! -f "$B1_SEALS" ]; then
   echo "[migrate] ERROR: compiled B1 seal verifier ($B1_SEALS) is missing — the build is incomplete; refusing to deploy."
-  exit 1
-fi
-
-# ── Armed seals — the UNSCOPED question, asked of every enforcement object ────────────────────────
-# T45/T2C/T3C/B1 above each verify ONE migration's hand-written inventory. Between them they cover a
-# few dozen objects out of 1,051, and which ones is a historical accident: whichever migration drew a
-# review finding got a verifier. Everything else deploys unverified, which is not a gap in those
-# verifiers but the absence of a total one.
-#
-# MEASURED before this was added: with `DecisionOption_kind_selectable_ins/upd` DISABLED, this runner
-# exited 0 and never named them. The seals were installed by 20270920000000, verified once while that
-# migration applied, and never asked about again.
-#
-# This asks the CATALOG instead of any file: is every enforcement object armed? Total by
-# construction, and it needs no inventory to maintain — a deployed database has no legitimate reason
-# to hold a disabled or NOT VALID enforcement object, so any is a finding. Fail closed on a missing
-# artifact, exactly like the four above.
-ARMED_SEALS="dist/platform/seals/seals.cli.js"
-if [ ! -f "$ARMED_SEALS" ]; then
-  echo "[migrate] ERROR: compiled armed-seal verifier ($ARMED_SEALS) is missing — the build is incomplete; refusing to deploy."
   exit 1
 fi
 
@@ -150,13 +163,13 @@ if [ $code -eq 0 ]; then
     echo "[migrate] This deploy is NOT good. Repair per docs/RUNBOOK.md section B1, then redeploy."
     exit 1
   fi
-  # And the same question of EVERYTHING ELSE. The three checks above know which objects to ask about;
-  # this one asks the catalog, so a guard installed by a migration nobody wrote a verifier for is
-  # covered too. Exit 4 ("no tables") is a failure here and not a pass, for the same reason it is one
-  # for B1: after a successful deploy the schema must exist.
-  if ! node "$ARMED_SEALS" armed; then
-    echo "[migrate] ERROR: 'prisma migrate deploy' succeeded but an enforcement object in this database is NOT ARMED — it is present in the catalog and does not enforce."
-    echo "[migrate] This deploy is NOT good. Repair per docs/RUNBOOK.md §SEALS, then redeploy."
+  # And the whole-schema question, asked again now that the deploy has finished. A migration that
+  # disables a trigger to do its work and fails to restore it leaves every migration applied and
+  # nothing to re-run — the ledger is complete and the seal is off. Exit 4 ("no application tables")
+  # is a failure HERE too and not a pass: after a successful deploy the schema must exist.
+  if ! node "$ENF_CHECK" verify; then
+    echo "[migrate] ERROR: 'prisma migrate deploy' succeeded but schema enforcement verification FAILED — the ledger is complete while a trigger does not fire or a foreign key is unvalidated."
+    echo "[migrate] This deploy is NOT good. Repair per docs/RUNBOOK.md §ENF, then redeploy."
     exit 1
   fi
   exit 0
@@ -324,6 +337,13 @@ if echo "$out" | grep -q "P3005"; then
   if ! node "$B1_SEALS" seals; then
     echo "[migrate] ERROR: the schedule B1 guards are not installed and enforcing after baseline + deploy — refusing to start."
     echo "[migrate] See docs/RUNBOOK.md section B1."
+    exit 1
+  fi
+  # The baseline path resolves migrations as applied without running them, so it is the path most
+  # able to leave the ledger claiming guards the schema does not have. Ask the schema directly.
+  if ! node "$ENF_CHECK" verify; then
+    echo "[migrate] ERROR: schema enforcement is not intact after baseline + deploy — refusing to start."
+    echo "[migrate] See docs/RUNBOOK.md §ENF."
     exit 1
   fi
   exit 0

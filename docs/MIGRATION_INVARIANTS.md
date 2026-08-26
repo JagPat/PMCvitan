@@ -1,120 +1,149 @@
-# Migration invariants
+# Reading this repository's migrations — the parser binding
 
-**How this repository knows its database is still guarded — and why it stopped trying to prove that
-by reading SQL.**
+## What this unit ships
 
-## The question
+**One decision and one claim.**
 
-Schedule B1 (`ActivityDependency`) ran `#354 → #360 → #361 → #363 → #408 → #409 → #410 → #411 →
-#412 → #415` and merged at the sixteenth head. Every round drew the same class of finding:
+* **Decision** — how this repository reads its own migrations programmatically, and with which
+  parser.
+* **Claim** — all 91 migrations parse with PostgreSQL's own grammar through this binding, and the
+  binding neither leaks nor truncates on the largest of them.
+
+It ships nothing else: **no sites, no line attribution, no coverage accounting, and no rule.**
+
+## Why this exists at all
+
+`ActivityDependency` ran #354 → #360 → #361 → #363 → #408 → #409 → #410 → #411 → #412 → #415 and
+merged only at the sixteenth head. Every round drew the same class of finding:
 
 > **A check narrower than the object it judges.**
 
-A constraint resolved by NAME where its DEFINITION was the guarantee. A foreign key verified VALID
-without being asked whether it ENFORCES. A seal verified while its migration applied and never
-asked about again. Each fix was correct; the next round found the shape somewhere new.
+Each individual fix was correct. The next round found the same shape somewhere new, because nothing
+in the repository could state the shape itself. The intent is to state it executably, as rules that
+run before review rather than findings that arrive after it. **This unit is the parser those rules
+will eventually be written against, and nothing more.**
 
-## The four units that tried to read it, and why they are retired
+## Why the scope is this narrow
 
-| Unit | Approach | Outcome |
-|---|---|---|
-| **#423** | hand-written SQL lexer + rules MI-000…MI-004 | closed at the two-finding-head limit |
-| **#430** | libpg_query binding + an enforcement rule | closed at the limit |
-| **#431** | binding + site attribution + a coverage claim | closed at the limit |
-| **#432 → #433** | binding only; no rule, no sites, no coverage | #433 merged, and **detected nothing** |
+Three pull requests in this lineage reached the two-finding-head limit and were closed:
 
-**Four PRs, sixteen findings, and not one rule ever merged.** Every finding reduced to *a check
-narrower than the object it judges* — the defect the rules existed to detect, restated as their
-implementation. The last two rounds found it in the TESTS: a probe that searched source text for a
-guard's message, and a leak probe that passed with the fix deleted.
+| PR | What it carried | Why it closed |
+| --- | --- | --- |
+| #423 | a hand-written SQL lexer and regexes over it | seven round-2 findings, all reducing to *this linter enumerates a subset of PostgreSQL and treats the subset as the whole* — two of them the lexer desyncing on a dollar tag inside a block comment and a backslash escape ending an `E''` string early |
+| #430 | the binding **plus an enforcement rule** | five findings across two heads — the rule's entry condition, its alias resolution flattening nested query scopes, its evidence gathered per statement rather than per `UNION` branch, an enablement test proving *constrained* rather than *enforcing* |
+| #431 | the binding **plus site attribution and a total-coverage claim** | seven findings across two heads — dynamic SQL read as its own string literal, `LANGUAGE sql` bodies skipped entirely, multi-command dynamic SQL collapsed into one site, routine bodies located by file-wide byte equality, top-level sites reported at line 1 |
 
-That is not bad luck across four attempts. **Any static reader must MODEL the objects it reasons
-about, and a model is narrower than the thing it models**, so the method returns its own reflection
-however well it is written. A fifth attempt inherits it.
+**The findings did not scatter.** Every one is the same shape as the defect the rules exist to
+detect, restated as their implementation. And the last round is the clearest illustration: a
+correction discovered that libpg_query omits `stmt_location` for a first statement, applied the fix
+where the probe pointed, and left the identical root cause two functions away — where it put **67 of
+88** first top-level sites on line 1 with the file header baked into their text.
 
-It also protected the wrong thing. A migration's source being well-shaped is not the property
-anyone needs. The property is **this database is guarded right now**, and what breaks it is a bad
-restore, a `prisma db push`, or an `ALTER TABLE … DISABLE TRIGGER ALL` — none of which touch the
-source a linter reads.
+What survived all three reviews untouched is what is here: **the choice of parser, and the two
+measured defects in using it.** Attribution and coverage — where every #431 finding landed — start
+again on top of a binding reviewed for what it is.
 
-**Retired, by JagPat's decision.** `scripts/pg-parse.mjs` and its `pg-query-emscripten` dependency
-are removed with this unit: #433 shipped them, nothing consumed them, and dead machinery for an
-abandoned approach is how the next attempt starts. **Never rebase or force-push
-`claude/migration-invariant-linter`, `claude/migration-invariant-linter-v2`,
-`claude/migration-parser-adapter` or `claude/migration-parser-binding`** — those four histories are
-the handover record, and every rule ever written for them is committed there:
+## The parser, decided by measurement
 
-* MI-001 / MI-002 (name-over-definition; FK enforcement) — `d750175d`, with their exemption ledger
-* MI-003 (apply-time-only seal) with its `migrate.sh` shell parser — `08835700`
-* MI-000 (totality) and MI-004 (transaction scope) — `a8b401ba`
-* MI-005 / MI-006 / MI-007 with measured corpus evidence — `a8b401ba`
+`pg-query-emscripten@5.1.0` — libpg_query 16, matching the `postgres:16` service every database job
+in `.github/workflows/ci.yml` runs against.
 
-## What replaces them
+| | install | PG grammar | PL/pgSQL |
+| --- | --- | --- | --- |
+| `pg-query-emscripten@5.1.0` **(chosen)** | 1.7 s, no build step, zero deps | 16 | `parsePlpgsql` |
+| `libpg-query` (`pg16` 16.7.3 / `pg17` 17.7.4) | 0.9 s / 1.5 s, WASM — no node-gyp | 16 or 17 | **none, at any dist-tag** |
 
-**Ask the catalog, not the files — on every deploy, about everything.**
+Install time did not decide it and neither did node-gyp, which current `libpg-query` no longer uses.
+`libpg-query` exposes `parse`, `parseSync`, `loadModule` and error helpers, and **no PL/pgSQL
+parser**. Every guard in this repository lives inside a `DO` block, whose body is one opaque string
+literal to the SQL grammar, so it could not read a single guard. That is the measured reason.
 
-`seals armed` (`apps/api/src/platform/seals/`) asks PostgreSQL whether every enforcement object in
-the `public` schema is switched on. `scripts/migrate.sh` runs it on the ordinary success path,
-beside `t45`, `t2c`, `t3c seals` and `b1 seals`.
+### Two defects in the chosen library, handled rather than absorbed
 
-**Total by construction: you cannot be narrower than the object you judge when the object IS the
-catalog and you asked it.** There is no inventory to maintain, no snapshot to regenerate, no site
-attribution and no coverage accounting — the three surfaces that drew the findings that closed #431
-and #432. Measured on a ledger-complete database: **1,051 enforcement objects** — 387 foreign keys,
-187 user triggers, 180 CHECKs, 132 primary keys, 165 plpgsql bodies.
+* **The convenience wrappers copy input onto the WASM stack and never unwind it.** `allocate(…,
+  ALLOC_STACK)`, and the `_free` that follows does not apply to a stack pointer. Measured: an
+  instance dies after 44,590–62,874 cumulative input bytes — an emscripten 64 KB stack — and the
+  largest migration here is 177,493 bytes, which the wrappers cannot parse **at all, on any
+  instance, ever**. The binding uses the raw entry points with a **heap** allocation it frees.
+  Measured after: 20,000 parses in 2.6 s with no growth, and the 177 KB file parses. The alternative
+  considered and rejected was recycling the module on a byte budget, which would have hidden a
+  library defect behind a magic number and still could not have parsed the largest file.
+* **`parsePlpgsql` over a whole file aborts at the first routine it dislikes** and reports nothing
+  about any other, so one awkward block would blind a reader to the rest of the file without saying
+  so. Routines are compiled **one at a time**, from the routine's own statement text **verbatim** —
+  not re-wrapped in a `DO` of our own, because a trigger function re-wrapped that way loses `NEW`
+  and `OLD` and fails to compile. That is how four merged migrations were found to break.
 
-Four mechanisms leave an object present in the catalog and not enforcing. Each is real and each was
-reproduced against a live PG16 before the check was written:
+Both are pinned by `scripts/pg-parse.test.mjs`, and the heap one is pinned by **observing the
+allocator**, not by parsing a lot and hoping. An earlier probe sent 4,000 short statements (~204 KB)
+and asserted they still parsed — which reproduces the *stack* exhaustion and says nothing about the
+heap, since 204 KB of leaked heap sits comfortably inside an already-17 MB WASM heap. Measured: that
+probe passed with `_free` deleted outright. What distinguishes the two is address reuse — freed and
+re-requested, the same size returns to the same address; retained, each request takes a fresh one.
+Measured: **1 distinct address across 8 parses when freed, 8 when not.** A test that survives the
+removal of the fix it protects is a check narrower than the object it judges.
 
-| | Mechanism | Why a catalog-reading guard misses it |
-|---|---|---|
-| **F1** | trigger `DISABLED` | it still exists; only `tgenabled` moved |
-| **F2** | foreign key blinded by `DISABLE TRIGGER ALL` | `conname`, `contype`, `conrelid`, `confrelid` **and `convalidated`** are byte-for-byte unchanged |
-| **F3** | constraint added `NOT VALID`, never validated | it is present and enforces nothing for rows already there |
-| **F4** | `relhastriggers = false` | every trigger row survives intact and PostgreSQL skips all of them |
+## Nothing here decides what SQL is
 
-`apps/api/scripts/armed-seals-falsification-proof.sh` drives the **real** `migrate.sh` over a
-ledger-complete database, applies each mechanism in turn, and requires a refusal that NAMES the
-object — then requires a pass once repaired, so the check is proven **precise and not merely
-strict**. Its CI wiring is pinned by `scripts/ci-baseline-proof-wiring.test.mjs`, so deleting the
-step turns a required job red.
+The binding exposes the tree and the identity fields on it, and **decides nothing about what they
+mean**. `relationsIn` — a helper that answered "which relations does this query name" — was removed
+for exactly that reason: it lowercased `RangeVar.relname` and dropped `schemaname`, so `pg_trigger`,
+`public.pg_trigger` and `"PG_TRIGGER"` all came back as `pg_trigger`, though PostgreSQL treats them
+as three different objects. A rule asking whether a guard reads `pg_trigger` would then accept
+evidence from a same-named **user** relation. What counts as "the catalog relation", how the search
+path bears on it, and what may be concluded from an unqualified name are decisions belonging to the
+rule that needs them, so the helper is deferred with the rest of the rule support.
 
-### What this deliberately does not claim
+`libpg_query` **is** the PostgreSQL server's parser, compiled from the same C sources. It is asked
+both questions a hand-written lexer answered by guessing — `raw_parse` for the raw tree (statement
+boundaries, dollar quoting, every literal form, comments, all of it, by construction) and
+`raw_parse_plpgsql` for routine bodies. The tree walk needs no list of node types: a node is
+`{ NodeType: { …fields… } }` and node names are UpperCamelCase while field names are lowerCamelCase,
+which is the parser's own convention across all 300-odd types. Enumerating the ones this repository
+happens to use would rebuild the very defect this line of work retires.
 
-It verifies that an object is **armed**, not that its **definition** is the one the migration
-installed. A body hollowed by `CREATE OR REPLACE` keeps its name, OID, volatility and search_path
-pin, and this check cannot see it — measured: the digest changes, `migrate.sh` exits 0. That
-question needs a canonical expectation to compare against. `t3c seals` and `b1 seals` already
-answer it for their own migrations, which is why all three run: **they compose.** Extending
-canonical-body verification to the whole catalog is the natural next unit, and claiming it here
-would be the very thing this file refuses.
+Where the binding stops, it says so: SQL the grammar refuses and a routine body PL/pgSQL rejects both
+**throw**, carrying the server's own message. Silence is the failure mode this work exists to refuse.
 
-## The live defects, and what backstops them now
+## What is deferred, and what has NO alarm
 
-`apps/api/prisma/**` is read-only to this unit, so none is repaired here.
+**This unit detects no defect.** It ships no rule, so nothing in CI fires on any of the following.
+Deferring a rule did not unfind its defect; it removed the alarm, and this section is that alarm.
+
+### Deferred work
+
+* **Rule support** — `relationsIn` and, from #430, `relationAliases`/`referencesColumnOf`. Each
+  answers a question only a rule asks, and each was found to answer it more narrowly than
+  PostgreSQL's own identity model.
+* **Sites, line attribution and the coverage claim** — every #431 finding landed here. A site is one
+  SQL query as the grammar sees it, and getting its position and its boundaries right is where the
+  difficulty turned out to be: byte offsets that libpg_query omits, routine bodies located by
+  content rather than by structure, dynamic SQL, `LANGUAGE sql` bodies, and routines created inside
+  dynamic SQL. `git show` on the closed `claude/migration-parser-adapter` branch is the record.
+* **The rules.** MI-000 (statement-kind totality), MI-002 (an object judged by NAME where a
+  definition comparison was required), MI-003 (a guard verified at APPLY time and never asked again
+  on a later deploy) and MI-004 (transaction scope) were written, corrected and left **green** on the
+  closed `claude/migration-invariant-linter` branch at `a8b401ba`, `f3f00a88` and `08835700`. The
+  enforcement rule — *a migration that verifies a prerequisite object must verify that the object
+  ENFORCES, not merely that it EXISTS* — was that branch's `MI-002` and #430's `MI-001`.
+
+**Never rebase or force-push `claude/migration-invariant-linter`, `claude/migration-invariant-linter-v2`
+or `claude/migration-parser-adapter`.** Those histories are the handover.
+
+### The live defects nothing currently detects
+
+`apps/api/prisma/**` is read-only to this unit, so none is repaired here, and **none has a backstop**.
 
 * **`20270225000000_phase4_t3_correction3:167`** verifies prerequisite composite foreign keys by
-  `conname` + `conrelid` + `contype='f'` + `convalidated`, never reading `tgenabled`. **Now
-  backstopped (F2):** a deploy over a database whose keys were blinded is refused, even though this
-  migration's own guard would still pass.
-* **`20270415000000_phase5_t3_measurement:39-74`** — eight `IF NOT EXISTS (… WHERE conname = '…')`
-  guards that do not read `conrelid`, so a same-named constraint on any table satisfies them.
-  **Not backstopped.** This is a *false clearance at apply time*, not an unarmed object; it needs
-  the canonical-definition unit above.
-* **`20270920000000_decision_option_kinds:273`** installs `CONSTRAINT TRIGGER`s, verifies them once
-  while applying, and names no deploy-time counterpart. **Now backstopped (F1)** — and this is the
-  measurement that produced this unit: with those two seals disabled, `migrate.sh` exited 0 and
-  never named them.
-
-## If a deploy refuses
-
-See `docs/RUNBOOK.md §SEALS`. The refusal names every object and why it does not enforce; the
-repair is to re-arm or re-validate it and redeploy. **Never** repair by weakening the check.
-
-## Adding an enforcement object
-
-Nothing to register. Install it in a migration and the catalog carries it into the inventory on the
-next deploy — that is the point of asking the catalog rather than keeping a list. If you add a
-constraint *kind* PostgreSQL has never had, `seals armed` reports it as `unclassified` and fails,
-rather than skipping the row: a kind nobody reasoned about is exactly how a check ends up narrower
-than the object it judges.
+  `conname` + `conrelid` + `contype = 'f'` + `convalidated`, and never reads `pg_trigger.tgenabled`.
+  A foreign key is implemented as internal `RI_ConstraintTrigger` rows — four per key on PG16 — and
+  `ALTER TABLE … DISABLE TRIGGER ALL` switches them off while leaving every one of those columns
+  byte-for-byte unchanged. A restored database with **no containment at all** passes the prerequisite
+  and is baselined as correct.
+* **`20270415000000_phase5_t3_measurement:39-74`** is weaker still: eight
+  `IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '…')` guards, each followed by
+  `ADD CONSTRAINT … FOREIGN KEY`, which do not even read `conrelid` — so a same-named constraint on
+  any table satisfies them.
+* **`20270920000000_decision_option_kinds:273`** installs `CONSTRAINT TRIGGER`s and verifies them
+  against the catalog, but names no RUNBOOK procedure and has no counterpart in `migrate.sh`. Once
+  its row is in `_prisma_migrations` the seals are never checked again.
