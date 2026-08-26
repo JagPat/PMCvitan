@@ -15,8 +15,8 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 0818c96f
-open_pr: 444
+reviewed_merge: f8d48347
+open_pr: none
 next_task: none
 blocking_directive: none
 updated: 2026-08-26
@@ -44,28 +44,42 @@ unit that genuinely carries scope forward.
 Three items remain, each with an executable next unit — none waits on sign-off:
 
 1. **Units C-E** (the universal `+`, desktop search/add, mobile navigation). The brief said to
-   evaluate and PROPOSE before anything replaces the current mobile nav. **The proposal is SPLIT
-   after #443 reached the two-finding-head limit carrying all three at once**: both of its review
-   rounds landed on Unit C's mount and Unit C's pricing, so the replacement #444
-   (`docs/ux/CREATE_CONTROL_PROPOSAL.md`, `Replaces: #443`) carries **Unit C alone**, and Units D
-   and E move to their own proposal. Nothing waits on sign-off — #444's §6 names the next unit
-   (mount `CreateMenu` in `LeftRail` for desktop and as a floating action for mobile) and its four
-   acceptance tests.
-   **Three corrections are recorded so they are not re-earned.** (a) A shell mount is OUTSIDE
+   evaluate and PROPOSE before anything replaces the current mobile nav. **The UNIT C proposal is
+   DELIVERED and CLEARED** — `docs/ux/CREATE_CONTROL_PROPOSAL.md`, merged as PR #444 at `main`
+   `f8d48347` with a fresh Codex +1 on the exact head `baa3facd`. It is SPLIT from Units D and E:
+   #443 carried all three, reached the two-finding-head limit with both rounds landing on Unit C,
+   and #444 (`Replaces: #443`) carries Unit C alone.
+   **THE NEXT UNIT IS C1, and it waits on nobody**: mount the existing `CreateMenu` in `LeftRail`
+   (desktop) and as a floating action (mobile), spending no nav slot, with the SIX acceptance tests
+   in §6 — including the two project-switch probes below. **Units D and E still owe their own
+   proposal**, which §6 pre-loads with the two corrections found here.
+   **Five corrections are recorded so they are not re-earned.** (a) A shell mount is OUTSIDE
    `ProjectLoadBoundary`: `AppShell.tsx:39-41` wraps only `<ScreenView />`, while `switchProject`
    (`store.ts:3366`) empties every project-owned field before the auth request goes out and leaves
    `activeProjectId` and the gateway live until `applyAuthResult` — so a persistent `+` could file
-   a decision against the project just left, and C1 must gate on `projectLoadState`. (b) Only
-   **two roles** can create at all — `decision.create`/`inspection.create` are pmc-only and
-   `dailyLog.addMaterial` is engineer+pmc — and both are overflow roles already at the
-   five-control cap (4 destinations + More), so a `+` tab costs a sixth control or evicts
-   `portfolio`/`daily-log`. (c) A global search must NOT be filtered by "the same `ROLE_POLICY`
-   that governs the screens": screen visibility comes from `screensFor` plus module and capability
-   filtering, and the reads are role-invariant (`activities.controller.ts:22` and
-   `drawings.controller.ts:25` use `@RolesFor('project.read')`, granted to all five roles in
-   `policy.ts:198`).
+   a decision against the project just left. (b) **Gating the TRIGGER is not enough**: an already-open
+   menu or modal survives a Back/Forward switch (`RouteBridge.tsx:54` starts `switchProject` from the
+   URL) and NO create modal reads `projectLoadState` today — the open flow must close or refuse, and
+   the acceptance probe must assert no command reached the OLD gateway. (c) That exposure binds
+   **C1, C2 AND C3** — `BottomTabs` renders after and outside the boundary exactly like `LeftRail`;
+   only the slot cost separates them. (d) Only **two roles** hold the menu's actions
+   (`decision.create`/`inspection.create` pmc-only, `dailyLog.addMaterial` engineer+pmc), and both
+   are overflow roles already at the five-control cap (4 destinations + More), so a `+` tab costs a
+   sixth control or evicts `portfolio`/`daily-log`. (e) A global search must NOT be filtered by "the
+   same `ROLE_POLICY` that governs the screens" — visibility comes from `screensFor` plus module and
+   capability filtering, the reads are role-invariant (`@RolesFor('project.read')` is granted to all
+   five roles at `policy.ts:198`), AND each module query shapes results PER CALLER inside a kind
+   (`ActivitiesController` passes `user.role === 'pmc'`; `bakeDrawings` filters
+   `!d.draft || d.authorId === userId`), so D2 must return results through each module's own bake.
    **EIGHT create modals exist and FIVE have a single entry point**, so the `+` is scoped
-   explicitly to the three capture records `CreateKind` already carries.
+   explicitly to the three capture records `CreateKind` already carries — but the modal list is NOT
+   the capture surface: `attendance.record`, `labour.work.record` and `activity.output.record` open
+   no modal and are granted to **contractor**, which therefore holds capture authority and must not
+   be called "create-less". Each is excluded from `CreateKind` because it needs a context a menu
+   cannot supply (a worker + civil date + shift, an active allocation, or an activity).
+   **An open gap, recorded not fixed:** `screensFor('contractor')` carries neither `labour` nor
+   `site-schedule`, so those three capture permissions have NO UI route at all. C1 does not close
+   it; it belongs to whichever unit next takes up contractor's surfaces.
    **The proposal must establish the navigation gap FROM THE CODE.** An earlier draft asserted
    that `canSwitch = memberships.length > 1 || Boolean(adminOrg)` leaves a single-project PMC
    unable to reach Portfolio. **That is false**, recorded here so it is not re-derived:
