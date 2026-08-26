@@ -15,32 +15,49 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: e5d3c4fd
-open_pr: 433
+reviewed_merge: 36215d37
+open_pr: 436
 next_task: none
 blocking_directive: none
-updated: 2026-08-25
+updated: 2026-08-26
 ```
 
-**THE OPEN PR IS A TOOLING UNIT, NOT PHASE 6 TASK 4.** #433 settles the parser binding this
-repository reads its own migrations with — `pg-query-emscripten` (libpg_query 16) through its raw
-entry points — plus the claim that all 91 migrations parse through it and that it neither leaks nor
-truncates. It ships **no rule, no sites, no coverage accounting and no rule-support helpers**, so it
-detects no defect; `docs/MIGRATION_INVARIANTS.md` names the three live defects that have no alarm at
-all. No `apps/**` file, no schema, no migration, no CI workflow change. Does not advance task 4.
+**THE OPEN PR IS A TOOLING UNIT, NOT PHASE 6 TASK 4.** #436 makes the deploy runner ask the
+CATALOG whether every enforcement object in the database is switched on, and **retires the
+migration-linter lineage** on JagPat's explicit decision. `seals armed` runs on `migrate.sh`'s
+ordinary success path beside `t45`, `t2c`, `t3c seals` and `b1 seals`. No migration byte changed;
+`apps/api/prisma/**` is read-only to it. Does not advance task 4.
 
-It **replaces #432** — the FOURTH unit in this lineage to reach the two-finding-head limit, after
-#423 (a hand-written SQL lexer), #430 (binding + enforcement rule) and #431 (binding + site
-attribution + a coverage claim). Sixteen findings across the four, every one reducing to *a check
-narrower than the object it judges* — the defect the eventual rules exist to detect, restated as
-their implementation. The last two rounds found it in the TESTS rather than the code: a probe that
-searched the source for a guard's message, and a leak probe that passed with the fix deleted. Each
-replacement removed the surface that had just drawn findings; this one removes `relationsIn` (rule
-support) and replaces the leak probe with one that observes the allocator. **This lineage has cost
-four PRs and merged nothing; whether to continue it is a judgement for JagPat, recorded here so the
-cost is visible rather than buried in loop history.** None of `claude/migration-invariant-linter`,
+**WHY THE LINEAGE IS RETIRED.** #423 (hand-written SQL lexer), #430 (binding + enforcement rule),
+#431 (binding + site attribution + coverage) and #432/#433 (binding only) cost four PRs and sixteen
+findings and merged nothing that detects anything. Every finding reduced to *a check narrower than
+the object it judges* — the defect the rules existed to detect, restated as their implementation.
+That is structural: a static reader must MODEL the objects it reasons about, and a model is narrower
+than the thing it models. It also protected the wrong thing — a migration's SOURCE being well-shaped
+is not the property anyone needs; the property is THIS DATABASE IS GUARDED RIGHT NOW, and a bad
+restore, `prisma db push` or `DISABLE TRIGGER` never touches the source a linter reads.
+
+Asking the catalog is **total by construction**: you cannot be narrower than the object you judge
+when the object IS the catalog and you asked it. No inventory, no snapshot, no site attribution, no
+coverage accounting — the three surfaces that closed #431 and #432. Measured: **1,051 enforcement
+objects**, and a fresh ledger apply reproduces that inventory byte-for-byte. Four mechanisms leave an
+object present and not enforcing (disabled trigger; key blinded by `DISABLE TRIGGER ALL`, where
+`convalidated` is unchanged; `NOT VALID`; `relhastriggers = false`), each reproduced on live PG16
+before the check was written, each proved by `armed-seals-falsification-proof.sh` driving the REAL
+`migrate.sh` and requiring a refusal that NAMES the object — then a pass once repaired, so the check
+is precise and not merely strict. Its CI wiring is pinned; deleting the step turns a required job red.
+
+**THE MEASUREMENT THAT PRODUCED IT:** with `DecisionOption_kind_selectable_ins/upd` disabled,
+`migrate.sh` exited 0 and never named them. Two of the three live defects are now backstopped
+(`20270225000000_phase4_t3_correction3:167`, `20270920000000_decision_option_kinds:273`); the third
+(`20270415000000_phase5_t3_measurement:39-74`) is a false clearance at APPLY time, not an unarmed
+object, and needs canonical-definition verification — stated as the next unit, not claimed here.
+
+Retiring the lineage removes its machinery: `scripts/pg-parse.mjs` and the `pg-query-emscripten`
+dependency shipped in #433 and nothing consumed them. **None of `claude/migration-invariant-linter`,
 `claude/migration-invariant-linter-v2`, `claude/migration-parser-adapter` or
-`claude/migration-parser-binding` may be rebased or force-pushed; all four are the handover record.
+`claude/migration-parser-binding` may be rebased or force-pushed; all four are the handover record**,
+and every rule ever written is committed there with its RED/GREEN evidence.
 
 **UNIT A MERGED AS #424 at `main` `8a4b0db8`** — the capture-context spine, the Site Map's
 `Add here`, and every finding from #422's two review rounds. The open PR is the first of
