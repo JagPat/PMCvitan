@@ -37,12 +37,17 @@ async function main(): Promise<void> {
       process.stdout.write(JSON.stringify({ ok: report.enforcing && (report.applicable || cmd === 'preflight'), ...report }, null, 2) + '\n');
 
       if (!report.applicable) {
-        if (cmd === 'preflight') return; // fresh/empty database — nothing to verify, and nothing wrong.
-        process.stderr.write(
-          `\nschema enforcement NOT APPLICABLE after a successful deploy: ${report.note}. On a post-deploy path this is a failure, not a pass. See docs/RUNBOOK.md §ENF.\n`,
-        );
-        process.exitCode = 4;
-        return;
+        if (cmd === 'verify') {
+          process.stderr.write(
+            `\nschema enforcement NOT APPLICABLE after a successful deploy: ${report.note}. On a post-deploy path this is a failure, not a pass. See docs/RUNBOOK.md §ENF.\n`,
+          );
+          process.exitCode = 4;
+          return;
+        }
+        // Only the SCHEMA-shaped part of "not applicable" is a pass: the session's replication role
+        // is a property of the CONNECTION, so an empty database reached in replica mode falls
+        // through to the refusal below rather than letting the schema-building migrations run.
+        if (report.enforcing) return;
       }
 
       if (!report.enforcing) {

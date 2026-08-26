@@ -131,6 +131,20 @@ import type { PrismaClient } from '@prisma/client';
 export const ENFORCING_TRIGGER_STATES = ['O', 'A'] as const;
 
 /**
+ * …AND ONLY IF THE SESSION IS IN AN ENFORCING ROLE. Firing is a property of `tgenabled` RELATIVE to
+ * `session_replication_role`, so the clause above is half a question until this one is asked.
+ * MEASURED on PG 16.13 with an `O` seal that raises and a key whose internal RI triggers are `O`:
+ * under `origin` and under `local` the seal raised and the orphan was REFUSED — under `replica` the
+ * seal was INERT and THE ORPHAN COMMITTED, while every trigger stayed `O` and the key stayed
+ * `convalidated`, so clauses 1-3 see a perfect schema over a database that enforces nothing. The
+ * check and the API share one `DATABASE_URL`: a role or database defaulted to `replica` is inert
+ * for both. A role outside the two measured here REFUSES rather than passes.
+ */
+export const ENFORCING_SESSION_ROLES = ['origin', 'local'] as const;
+
+const roleEnforces = (role: string): boolean => (ENFORCING_SESSION_ROLES as readonly string[]).includes(role);
+
+/**
  * How many offending objects are PRINTED. Every one is COUNTED and returned; this bounds the
  * report, never the judgement. A restore that disabled one table's triggers produces dozens of
  * findings and an operator needs the shape of the damage, not the first row of it.
@@ -186,6 +200,8 @@ export interface EnforcementReport {
   note: string;
   enforcing: boolean;
   counts: { tables: number; triggers: number; foreignKeys: number };
+  /** The live session's `session_replication_role`. `O` triggers are inert unless it enforces. */
+  sessionReplicationRole: string;
   disabledTriggers: { total: number; sample: TriggerFinding[] };
   unvalidatedForeignKeys: { total: number; sample: ConstraintFinding[] };
   /** Clause 3: a key missing part of its internal implementation, or of an unmeasured shape. */
@@ -215,10 +231,11 @@ type Client = Pick<PrismaClient, '$queryRawUnsafe'>;
  * question rather than filtered out of it.
  */
 export async function checkEnforcement(prisma: Client, schema = applicationSchema()): Promise<EnforcementReport> {
-  const [{ tables, triggers, foreignKeys }] = await prisma.$queryRawUnsafe<
-    Array<{ tables: number; triggers: number; foreignKeys: number }>
+  const [{ tables, triggers, foreignKeys, role }] = await prisma.$queryRawUnsafe<
+    Array<{ tables: number; triggers: number; foreignKeys: number; role: string }>
   >(
     `SELECT
+       current_setting('session_replication_role') AS "role",
        (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
          WHERE n.nspname = $1 AND c.relkind IN ('r','p')) AS "tables",
        (SELECT count(*)::int FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
@@ -238,8 +255,9 @@ export async function checkEnforcement(prisma: Client, schema = applicationSchem
       schema,
       applicable: false,
       note: `schema "${schema}" contains no application tables — fresh or empty database, nothing to verify`,
-      enforcing: true,
+      enforcing: roleEnforces(role),
       counts: { tables, triggers, foreignKeys },
+      sessionReplicationRole: role,
       disabledTriggers: { total: 0, sample: [] },
       unvalidatedForeignKeys: { total: 0, sample: [] },
       incompleteForeignKeys: { total: 0, sample: [] },
@@ -376,8 +394,10 @@ export async function checkEnforcement(prisma: Client, schema = applicationSchem
     schema,
     applicable: true,
     note: `schema "${schema}": ${triggers} triggers and ${foreignKeys} foreign keys over ${tables} tables`,
-    enforcing: triggerFindings.length === 0 && unvalidated.length === 0 && keyFindings.length === 0,
+    enforcing: roleEnforces(role)
+      && triggerFindings.length === 0 && unvalidated.length === 0 && keyFindings.length === 0,
     counts: { tables, triggers, foreignKeys },
+    sessionReplicationRole: role,
     disabledTriggers: { total: triggerFindings.length, sample: triggerFindings.slice(0, SAMPLE_LIMIT) },
     unvalidatedForeignKeys: { total: unvalidated.length, sample: unvalidated.slice(0, SAMPLE_LIMIT) },
     incompleteForeignKeys: { total: keyFindings.length, sample: keyFindings.slice(0, SAMPLE_LIMIT) },
@@ -388,6 +408,15 @@ export async function checkEnforcement(prisma: Client, schema = applicationSchem
 export function summarizeEnforcement(report: EnforcementReport): string {
   const lines: string[] = [];
   const { disabledTriggers: dt, unvalidatedForeignKeys: fk, incompleteForeignKeys: ik } = report;
+
+  // First, because when it fires the three clauses below all read CLEAN and say nothing.
+  if (!roleEnforces(report.sessionReplicationRole)) {
+    lines.push(`NOT ENFORCING — this connection's session_replication_role is `
+      + `${JSON.stringify(report.sessionReplicationRole)}, so every 'O' (origin) trigger is INERT for it, `
+      + `INCLUDING the internal triggers implementing every foreign key. The API connects with the same `
+      + `DATABASE_URL role, so its seals do not fire either — and the clauses below cannot see this, `
+      + `because every trigger is present and enabled. Enforcing roles: ${ENFORCING_SESSION_ROLES.join(', ')}.`);
+  }
 
   if (dt.total > 0) {
     lines.push(`NOT ENFORCING — ${dt.total} trigger(s) in schema "${report.schema}" do not fire:`);

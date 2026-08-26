@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   applicationSchema,
   checkEnforcement,
+  ENFORCING_SESSION_ROLES,
   REQUIRED_RI_TRIGGERS,
   SAMPLE_LIMIT,
   summarizeEnforcement,
@@ -62,21 +63,18 @@ async function resetScratch(): Promise<void> {
  * why a probe that performs it must have a database of its own to throw away. `DROP DATABASE` is a
  * file-level operation and is unaffected.
  */
-async function withSurgeryDatabase(
-  body: (db: PrismaClient, url: string) => Promise<void>,
-): Promise<void> {
+async function withSurgeryDatabase(body: (db: PrismaClient) => Promise<void>): Promise<void> {
   const name = `${SCRATCH_DB}_surgery`;
   await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
   await admin.$executeRawUnsafe(`CREATE DATABASE "${name}"`);
-  const url = urlFor(name);
-  const db = new PrismaClient({ datasources: { db: { url } } });
+  const db = new PrismaClient({ datasources: { db: { url: urlFor(name) } } });
   try {
     await db.$executeRawUnsafe(`CREATE TABLE "Parent" ("id" int PRIMARY KEY)`);
     await db.$executeRawUnsafe(
       `CREATE TABLE "Child" ("id" int PRIMARY KEY, "parentId" int REFERENCES "Parent"("id"))`,
     );
     await db.$executeRawUnsafe(`INSERT INTO "Parent" VALUES (1)`);
-    await body(db, url);
+    await body(db);
   } finally {
     await db.$disconnect();
     await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
@@ -207,21 +205,17 @@ describe('schema enforcement — the live catalog, not the SQL that wrote it', (
     // THE PROBE FOR THE STATE CLAUSES 1 AND 2 ARE BOTH BLIND TO. Clause 1 asks whether every trigger
     // that EXISTS is enabled; a trigger removed from `pg_trigger` by a partial restore or a catalog
     // repair is not a disabled trigger, it is no trigger, and the survivors are all `O`.
-    await withSurgeryDatabase(async (db, url) => {
-      // `DROP TRIGGER` refuses an internal RI trigger ("because constraint … requires it"), so the
-      // catalog surgery a broken restore amounts to is reproduced directly — the only way this
-      // state arises in the field.
-      //
-      // ON THE CONNECTION THAT PERFORMS THE DELETE, and before it, following the precedent
-      // `schedule-dependency-graph.test.ts` P33 sets for the same surgery. This probe judges a
-      // state it has to CREATE, so its setup must not be the one statement able to fail quietly
-      // into a vacuous pass.
+    await withSurgeryDatabase(async (db) => {
+      // `DROP TRIGGER` refuses an internal RI trigger, so the catalog surgery a broken restore
+      // amounts to is reproduced directly — the only way this state arises in the field. The GUC
+      // is set ON THE CONNECTION THAT PERFORMS THE DELETE, the precedent P33 of
+      // `schedule-dependency-graph.test.ts` sets for the same surgery: a probe that judges a state
+      // it must CREATE cannot have its setup fail quietly into a vacuous pass.
       await db.$executeRawUnsafe(`SET allow_system_table_mods = on`);
 
-      // A row of "Child" FIRST, so this backend has really built the table's trigger descriptors.
-      // Catalog DML sends no relcache invalidation, so the backend that performed the surgery goes
-      // on enforcing a key the catalog no longer describes — MEASURED: with the cache warm the
-      // orphan below is REFUSED here. Warming it deliberately is what stops this probe from
+      // And a row of "Child" FIRST, so this backend has really built the table's trigger
+      // descriptors. Catalog DML sends no relcache invalidation — MEASURED: with the cache warm
+      // the orphan below is REFUSED here. Warming it deliberately is what stops this probe from
       // passing on the accident that nothing had yet touched "Child".
       await db.$executeRawUnsafe(`INSERT INTO "Child" VALUES (19, 1)`);
 
@@ -238,10 +232,10 @@ describe('schema enforcement — the live catalog, not the SQL that wrote it', (
       );
       expect(Number(surviving), 'and the catalog now carries three of the four').toBe(3);
 
-      // REPRODUCE-FIRST, executed, on a FRESH backend — which is both what makes this measure the
-      // catalog rather than a stale cache, and what the field sequence is: a restore, then an
-      // application connecting to what it left.
-      const restored = new PrismaClient({ datasources: { db: { url } } });
+      // REPRODUCE-FIRST, executed, on a FRESH backend — both what makes this measure the catalog
+      // rather than a stale cache, and what the field sequence is: a restore, then an application
+      // connecting to what it left.
+      const restored = new PrismaClient({ datasources: { db: { url: urlFor(`${SCRATCH_DB}_surgery`) } } });
       let report: Awaited<ReturnType<typeof checkEnforcement>>;
       try {
         // The key is now a lie, exactly as in the DISABLE probe…
@@ -316,6 +310,54 @@ describe('schema enforcement — the live catalog, not the SQL that wrote it', (
     expect(report.incompleteForeignKeys.sample.some((f) => f.constraint === 'Child_parentId_fkey')).toBe(false);
 
     await scratch.$executeRawUnsafe(`DROP TABLE "PartChild"`);
+  });
+
+  it('FAILS a session in replica mode, where every `O` trigger — foreign keys included — is inert', async () => {
+    // THE STATE ALL THREE CLAUSES READ AS PERFECT. Firing is a property of `tgenabled` RELATIVE to
+    // `session_replication_role`; asking about `tgenabled` alone is half the question. Set on the
+    // DATABASE rather than by a bare `SET`, so every connection inherits it — what `ALTER ROLE` /
+    // `ALTER DATABASE ... SET` does in the field, and what makes this deterministic under a pool.
+    const withRole = async (role: string, body: (db: PrismaClient) => Promise<void>) => {
+      await resetScratch();
+      await scratch.$executeRawUnsafe(`ALTER DATABASE "${SCRATCH_DB}" SET session_replication_role = '${role}'`);
+      const db = new PrismaClient({ datasources: { db: { url: urlFor(SCRATCH_DB) } } });
+      try { await body(db); } finally {
+        await db.$disconnect();
+        await scratch.$executeRawUnsafe(`ALTER DATABASE "${SCRATCH_DB}" RESET session_replication_role`);
+      }
+    };
+
+    await withRole('replica', async (db) => {
+      // REPRODUCE-FIRST, executed: the seal that raises unconditionally does not raise, and the key
+      // admits an orphan — on a schema where nothing was disabled, dropped or invalidated.
+      await db.$executeRawUnsafe(`INSERT INTO "Child" VALUES (40, 999)`);
+      const [{ n }] = await db.$queryRawUnsafe<Array<{ n: bigint }>>(
+        `SELECT count(*) AS n FROM "Child" WHERE "parentId" = 999`,
+      );
+      expect(Number(n), 'the orphan committed and the seal never fired').toBe(1);
+
+      const report = await checkEnforcement(db, 'public');
+      // The three clauses that shipped see NOTHING: every trigger present and `O`, the key
+      // validated, all four slots filled. Without this one the check reports ENFORCING while the
+      // API — sharing this DATABASE_URL role — has no seals at all.
+      expect(report.disabledTriggers.total).toBe(0);
+      expect(report.unvalidatedForeignKeys.total).toBe(0);
+      expect(report.incompleteForeignKeys.total).toBe(0);
+
+      expect(report.sessionReplicationRole).toBe('replica');
+      expect(report.enforcing).toBe(false);
+      expect(summarizeEnforcement(report)).toContain('session_replication_role');
+    });
+
+    // The precision half: refusing `replica` is not refusing everything. MEASURED on PG 16.13 —
+    // under `local` the same seal raised and the same key refused the same orphan, exactly as under
+    // `origin` (which every other probe here already runs under), so both are accepted.
+    expect([...ENFORCING_SESSION_ROLES]).toEqual(['origin', 'local']);
+    await withRole('local', async (db) => {
+      await expect(db.$executeRawUnsafe(`INSERT INTO "Child" VALUES (41, 999)`))
+        .rejects.toThrow(/Child_parentId_fkey/);
+      expect((await checkEnforcement(db, 'public')).enforcing).toBe(true);
+    });
   });
 
   it('reports a fresh/empty schema as NOT APPLICABLE rather than clean', async () => {

@@ -1331,6 +1331,16 @@ nothing here needs updating when a migration adds a seal:
    `apps/api/src/platform/enforcement/enforcement-check.ts`. No such key exists in this schema today;
    if one appears the deploy stops and names it.
 
+4. **The session itself is in an enforcing replication role.** Whether a trigger fires is a property
+   of `tgenabled` **relative to `session_replication_role`**, so clauses 1-3 are half a question
+   until this one is asked. MEASURED on PG 16.13: under `replica` an `O` seal was **inert** and a
+   foreign key **admitted an orphan**, while every trigger stayed `O` and the key stayed
+   `convalidated` — clauses 1-3 read a perfect schema over a database enforcing nothing. `origin`
+   and `local` were measured to fire `O`; any other role is refused. The check and the API share
+   one `DATABASE_URL`, so a role or database defaulted to `replica` (`ALTER ROLE …`/`ALTER DATABASE
+   … SET session_replication_role`) is inert for both. Repair: `ALTER ROLE "<role>" [IN DATABASE
+   "<db>"] RESET session_replication_role;` (or `ALTER DATABASE`), then redeploy.
+
 MEASURED on PG 16.13, and the reason clause 1 exists: with a table's triggers switched off by
 `ALTER TABLE … DISABLE TRIGGER ALL`, an INSERT of an **orphaned row committed** while
 `pg_constraint.convalidated` stayed `true`. A check that reads only `convalidated` cannot see this.
