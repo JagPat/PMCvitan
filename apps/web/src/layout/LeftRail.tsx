@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useNavItems } from './useNavItems';
 import { RolePicker } from './RolePicker';
 import { ProjectSwitcher } from './ProjectSwitcher';
+import { CreateRailButton } from './CreateControl';
 import { Bell, Power } from '@/lib/icons';
 import { DEV_AUTH } from '@/data/apiGateway';
 import { ROLE_LABEL } from '@/lib/screens';
@@ -56,6 +57,12 @@ export function LeftRail() {
           </button>
         </div>
       )}
+
+      {/* The DESKTOP create trigger. It cannot live in `TopBar`: that bar is display:none from
+          640px upward, so a control mounted there is invisible at every desktop width. */}
+      <div className={styles.persona} style={{ paddingTop: 4 }}>
+        <CreateRailButton />
+      </div>
 
       <nav className={`${styles.nav} vscroll`}>
         <div className={styles.navLabel}>SCREENS</div>

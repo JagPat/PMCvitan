@@ -15,8 +15,8 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: f8d48347
-open_pr: none
+reviewed_merge: 2e2d6f19
+open_pr: 446
 next_task: none
 blocking_directive: none
 updated: 2026-08-26
@@ -49,10 +49,15 @@ Three items remain, each with an executable next unit — none waits on sign-off
    `f8d48347` with a fresh Codex +1 on the exact head `baa3facd`. It is SPLIT from Units D and E:
    #443 carried all three, reached the two-finding-head limit with both rounds landing on Unit C,
    and #444 (`Replaces: #443`) carries Unit C alone.
-   **THE NEXT UNIT IS C1, and it waits on nobody**: mount the existing `CreateMenu` in `LeftRail`
-   (desktop) and as a floating action (mobile), spending no nav slot, with the SIX acceptance tests
-   in §6 — including the two project-switch probes below. **Units D and E still owe their own
-   proposal**, which §6 pre-loads with the two corrections found here.
+   **C1 IS IMPLEMENTED** (PR #446): `CreateControl` mounts the existing `CreateMenu` as a floating
+   action (mobile) and `CreateRailButton` in `LeftRail` (desktop), spending NO nav slot, with the
+   context `captureGlobal` — a `+` from nowhere in particular inherits nothing and the form asks.
+   The gate wraps the FLOW, not the trigger: `useCanCreateNow` is the ONE rule both mounts read,
+   and the shared `projectDataUsable` predicate is now the single authority
+   `ProjectLoadBoundary` itself uses, so the boundary and the shell cannot disagree about a state
+   added later. All six §6 acceptance tests pass, and the two that matter reproduce RED against a
+   trigger-only gate. **Units D and E still owe their own proposal**, which §6 pre-loads with the
+   two corrections found here.
    **Five corrections are recorded so they are not re-earned.** (a) A shell mount is OUTSIDE
    `ProjectLoadBoundary`: `AppShell.tsx:39-41` wraps only `<ScreenView />`, while `switchProject`
    (`store.ts:3366`) empties every project-owned field before the auth request goes out and leaves

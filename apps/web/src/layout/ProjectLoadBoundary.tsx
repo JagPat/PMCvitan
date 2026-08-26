@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Button } from '@/components';
-import type { ProjectLoadState } from '@/store/projectScope';
+import { projectDataUsable, type ProjectLoadState } from '@/store/projectScope';
 
 interface ProjectLoadBoundaryProps {
   state: ProjectLoadState;
@@ -19,14 +19,12 @@ interface ProjectLoadBoundaryProps {
  *  - 'idle' (local demo / pre-fetch) or 'ready' (snapshot applied) → the screens.
  */
 export function ProjectLoadBoundary({ state, error, label, onRetry, children }: ProjectLoadBoundaryProps) {
-  if (state === 'switching' || state === 'loading') {
-    return (
-      <div data-testid="project-switching" style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '80px 16px' }}>
-        <div style={{ fontWeight: 600, color: 'var(--ink)' }}>Loading {label}…</div>
-        <div style={{ marginTop: 6 }}>Fetching this project’s decisions, schedule and site data.</div>
-      </div>
-    );
-  }
+  // `projectDataUsable` is the single authority (see its doc comment): it decides here whether
+  // screens render, and it decides in the shell whether a control mounted OUTSIDE this boundary
+  // may be shown or submitted. An earlier arrangement listed the states twice, which is how the
+  // two could disagree about a state added later.
+  if (projectDataUsable(state)) return <>{children}</>;
+
   if (state === 'error') {
     return (
       <div data-testid="project-load-error" style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '80px 16px' }}>
@@ -38,5 +36,13 @@ export function ProjectLoadBoundary({ state, error, label, onRetry, children }: 
       </div>
     );
   }
-  return <>{children}</>;
+
+  // 'switching' / 'loading' — the project data underneath is already empty, so nothing stale
+  // can flash behind this.
+  return (
+    <div data-testid="project-switching" style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '80px 16px' }}>
+      <div style={{ fontWeight: 600, color: 'var(--ink)' }}>Loading {label}…</div>
+      <div style={{ marginTop: 6 }}>Fetching this project’s decisions, schedule and site data.</div>
+    </div>
+  );
 }

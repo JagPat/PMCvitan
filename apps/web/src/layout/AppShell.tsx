@@ -6,6 +6,7 @@ import { TopBar } from './TopBar';
 import { BottomTabs } from './BottomTabs';
 import { NotificationPanel } from './NotificationPanel';
 import { ModalHost } from './ModalHost';
+import { CreateControl } from './CreateControl';
 import { ScreenView } from './ScreenView';
 import { RouteBridge } from './RouteBridge';
 import { ProjectLoadBoundary } from './ProjectLoadBoundary';
@@ -43,6 +44,10 @@ export function AppShell() {
         </main>
       </div>
       <BottomTabs />
+      {/* Unit C1 — the universal create control. Mounted in the shell so it is reachable from
+          every screen; it gates ITSELF on project-load state, because the shell is outside
+          `ProjectLoadBoundary` and nothing here unmounts it during a transition. */}
+      <CreateControl />
       <NotificationPanel />
       <ModalHost />
       {toast && <Toast message={toast} />}

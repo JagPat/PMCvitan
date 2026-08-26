@@ -176,6 +176,11 @@ export interface AppState {
   screen: ScreenKey;
   lang: Lang;
   notifOpen: boolean;
+  /** The universal create control's menu is open. Shell state, like `notifOpen`: the trigger
+   *  lives in `LeftRail` (desktop) and the flow renders in `AppShell`, so the flag is shared
+   *  rather than duplicated. Whether it may be ACTED on is a separate question — see
+   *  `projectDataUsable`, which every reader applies. */
+  createOpen: boolean;
   toast: string | null;
   modal: ModalState;
   decisions: Decision[];
@@ -371,6 +376,8 @@ export interface AppActions {
   clearPlaceFocus: () => void;
   setLang: (l: Lang) => void;
   toggleNotif: () => void;
+  openCreate: () => void;
+  closeCreate: () => void;
   flash: (msg: string) => void;
   openQr: () => void;
   closeModal: () => void;
@@ -829,6 +836,7 @@ export function getInitialState(): AppState {
     screen: initialScreen(),
     lang: 'en',
     notifOpen: false,
+    createOpen: false,
     toast: null,
     modal: { type: null },
     decisions: structuredClone(SEED_DECISIONS),
@@ -1815,6 +1823,9 @@ export const useStore = create<Store>()(
         s.role = role;
         s.screen = first;
         s.notifOpen = false;
+        // a persona switch changes which options `createOptionsFor` yields, so an open menu
+        // would be showing the previous role's list
+        s.createOpen = false;
         s.modal = { type: null };
         // an explicit persona switch is dev auth — drop any real OTP session
         s.sessionToken = null;
@@ -1834,6 +1845,7 @@ export const useStore = create<Store>()(
         s.role = 'client';
         s.screen = screensFor('client')[0].key;
         s.notifOpen = false;
+        s.createOpen = false;
         s.modal = { type: null };
         // WEB-02: quarantine this user's queued work — it stays persisted under THEIR
         // scope key and resumes on their next sign-in; the next user never replays it.
@@ -1867,6 +1879,8 @@ export const useStore = create<Store>()(
       }),
     setLang: (l) => set((s) => { s.lang = l; }),
     toggleNotif: () => set((s) => { s.notifOpen = !s.notifOpen; }),
+    openCreate: () => set((s) => { s.createOpen = true; }),
+    closeCreate: () => set((s) => { s.createOpen = false; }),
     flash: (msg) => {
       set((s) => { s.toast = msg; });
       if (toastTimer) clearTimeout(toastTimer);
