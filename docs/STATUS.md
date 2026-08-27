@@ -15,8 +15,8 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: a839f328
-open_pr: 449
+reviewed_merge: bc106bda
+open_pr: 450
 next_task: none
 blocking_directive: none
 updated: 2026-08-26
@@ -66,7 +66,9 @@ Three items remain, each with an executable next unit — none waits on sign-off
    indicator disappears; the light ring's accent edge is 4.29:1. F-1a's inventory gained a third
    mode, `light-ring-fill`, for an ink fill declared in CSS (its two container modes were the only
    choices before, which is how the wrong classification got picked).
-   **The Units D and E proposal is DELIVERED** (PR #449, `Replaces: #448` — #448 closed at the
+   **The Units D and E proposal is DELIVERED AND CLEARED** — PR #449 merged at `main` `bc106bda`
+   with a fresh Codex +1 on the exact head `1403ef17`, first attempt, no findings. (It was
+   `Replaces: #448` — #448 closed at the
    two-finding-head limit; its six carried corrections plus three more from head 2 are folded in:
    the register is NOT append-only (`DrawingsController.remove` exists) so the D1 rationale rests
    on who holds the screen, not accumulation; the split is measured from `useNavItems`'s REAL
@@ -92,6 +94,12 @@ Three items remain, each with an executable next unit — none waits on sign-off
    cross More); E2 rides with the next `screensFor`/`MOBILE_PRIMARY_PREFERENCE` change; E3 not
    taken. The contractor capture gap is explicitly OUTSIDE it — a screen-set question with its own
    evaluation.
+   **The gate settle window is CORRECTED** (PR #450): `CHECK_TIMEOUT_MS` was tuned to 25 minutes
+   when the api battery's integration step ran ~11-13 minutes, but since the compiled `migrate.sh`
+   production-runner proofs joined the job it measures ~28 minutes end-to-end (six consecutive
+   runs on PRs #443-#449: 27.9-28.6), so EVERY early orchestrator wake published a false "Checks
+   did not settle: api" — PR #444 hit it on 2026-08-26. Now 40 minutes (same headroom ratio), with
+   `auto-merge.yml`'s derived terminal budget raised 90→105 and both comments naming the coupling.
    **Five corrections are recorded so they are not re-earned.** (a) A shell mount is OUTSIDE
    `ProjectLoadBoundary`: `AppShell.tsx:39-41` wraps only `<ScreenView />`, while `switchProject`
    (`store.ts:3366`) empties every project-owned field before the auth request goes out and leaves
