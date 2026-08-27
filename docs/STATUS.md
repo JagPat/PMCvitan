@@ -100,6 +100,18 @@ Three items remain, each with an executable next unit — none waits on sign-off
    runs on PRs #443-#449: 27.9-28.6), so EVERY early orchestrator wake published a false "Checks
    did not settle: api" — PR #444 hit it on 2026-08-26. Now 40 minutes (same headroom ratio), with
    `auto-merge.yml`'s derived terminal budget raised 90→105 and both comments naming the coupling.
+   **The contractor capture gap is EVALUATED AND PROPOSED** (PR #451,
+   `docs/ux/CONTRACTOR_CAPTURE_PROPOSAL.md`). Measured: the three contractor grants
+   (`attendance.record`/`labour.work.record`/`activity.output.record`) are intentional — §C's
+   seals make the recording party untrusted by construction — but unreachable: the muster and
+   worked-minutes UIs live only on `LabourScreen`, whose reads are ALL `labour.read`
+   (pmc/engineer), so handing contractor the hub 403s every tab AND would expose the §F
+   commercial chain; and `activity.output.record` has NO web dispatcher for ANY role (an
+   all-roles surface gap, recorded separately). RECOMMENDS O2 staged as two units — (1) an
+   own-scope capture read contract (my allocations today, my crews' workers; nothing commercial;
+   the adversarial cannot-read-rates test is the point), then (2) the minimal capture surface
+   dispatching the three EXISTING commands — refusing O1 (rate leak) and O3 (contradicts the
+   cleared architecture). Neither unit is started by the proposal.
    **Five corrections are recorded so they are not re-earned.** (a) A shell mount is OUTSIDE
    `ProjectLoadBoundary`: `AppShell.tsx:39-41` wraps only `<ScreenView />`, while `switchProject`
    (`store.ts:3366`) empties every project-owned field before the auth request goes out and leaves
