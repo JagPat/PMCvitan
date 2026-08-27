@@ -15,11 +15,11 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: bc106bda
-open_pr: 450
+reviewed_merge: 0bbd6a2d
+open_pr: 452
 next_task: none
 blocking_directive: none
-updated: 2026-08-26
+updated: 2026-08-27
 ```
 
 **#440 MERGED at `a714bc3e` — THE PROGRESS-PHOTO CAPTURE STAMP IS DELIVERED AND CLEARED.** This
@@ -100,6 +100,36 @@ Three items remain, each with an executable next unit — none waits on sign-off
    runs on PRs #443-#449: 27.9-28.6), so EVERY early orchestrator wake published a false "Checks
    did not settle: api" — PR #444 hit it on 2026-08-26. Now 40 minutes (same headroom ratio), with
    `auto-merge.yml`'s derived terminal budget raised 90→105 and both comments naming the coupling.
+   **The contractor capture gap is EVALUATED AND PROPOSED** (PR #452, `Replaces: #451` —
+   #451 closed at the two-finding-head limit; `docs/ux/CONTRACTOR_CAPTURE_PROPOSAL.md`).
+   Measured: the three contractor grants
+   (`attendance.record`/`labour.work.record`/`activity.output.record`) are intentional — §C's
+   seals make the recording party untrusted by construction — but unreachable: the muster and
+   worked-minutes UIs live only on `LabourScreen`, whose reads are ALL `labour.read`
+   (pmc/engineer), so handing contractor the hub 403s every tab AND would expose the §F
+   commercial chain; and `activity.output.record` has NO web dispatcher for ANY role (an
+   all-roles surface gap, recorded separately). RECOMMENDS O2 staged as FOUR units in
+   order — (1) the ATTRIBUTION SHAPE as an additive migration ALONE (the repository's
+   mandatory migration seam: nullable, diagnostic-first, old release byte-identical), and it
+   must bind the WORKER/CREW side, not just the memberships — `Worker`/`Crew` carry no
+   supplier identity (`schema.prisma:2662,2716`) and an in-house allocation has
+   `capacityCommitmentId = null`, so a membership-side-only link cannot define "own" (the
+   `Vendor`/`ProjectVendor` §H reuse pattern, with membership↔party closing the loop);
+   (2) the OWNERSHIP ENFORCEMENT (service only) INSIDE the
+   `recordWork`/`recordOutput`/`recordAttendance` transactions, since today contractor A
+   could submit contractor B's allocation/activity id and the writes would accept it (the
+   grants are safe only because no UI reaches them; read filtering is NOT write
+   authorization; in-house no-party workers are NOT silently opened to any contractor);
+   (3) the own-scope capture read contract (nothing commercial; the adversarial
+   cannot-read-rates test is the point); (4) the minimal capture surface — where a
+   contractor JWT merely CITING a bound `deviceId` is replayable citation-only evidence
+   (`manualReason` musters assert `labour.override`, pmc-only, at
+   `labour-capacity.service.ts:523`; the web's only muster dispatcher always sends
+   `manualReason` and none sends `deviceId`), so the server contract is EXTENDED with a
+   fresh device-authenticated proof (the device attests via its own channel or signs a
+   server nonce) and attendance is simply NOT OFFERED until this unit lands — refusing O1
+   (rate leak) and O3 (contradicts the cleared architecture). None of the four is started
+   by the proposal.
    **Five corrections are recorded so they are not re-earned.** (a) A shell mount is OUTSIDE
    `ProjectLoadBoundary`: `AppShell.tsx:39-41` wraps only `<ScreenView />`, while `switchProject`
    (`store.ts:3366`) empties every project-owned field before the auth request goes out and leaves
