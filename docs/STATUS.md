@@ -33,13 +33,15 @@ The low-effort data-entry initiative's delivered units are #424 (capture context
 data-entry audit), #428 (progressive disclosure) and #440 (the capture stamp). #440 replaced #439,
 which replaced #429 — both closed at the two-finding-head limit.
 
-**#429's ledger obligation is NOT discharged, and must not be discharged by a record like this
-one.** #440 declared `Replaces: #439`, so #429 — whose own claimant #439 closed unmerged — is
-still owed. An earlier attempt to settle it by declaring `Replaces: #429` on a docs-only record
-was refused on review, correctly: a replacement is "limited to the unresolved unit", this carries
-none of #429's implementation, and letting a no-op documentation change satisfy the ledger would
-attribute delivered work to a claimant containing no part of it. The obligation stays open for a
-unit that genuinely carries scope forward.
+**#429's ledger obligation is SETTLED by explicit reconciliation, not by a claim.** Its scope
+landed on `main` through the admitted chain #439 (`Replaces: #429`) → #440 (`Replaces: #439`,
+merged, clean exact-head +1), but the direct-only `settlementOf` cannot infer that chain, so the
+`review-replacement-required` label on #429 kept blocking every honest `Replaces: none` unit. The
+orchestrator cleared it as an explicitly recorded one-time reconciliation
+(https://github.com/JagPat/PMCvitan/pull/429#issuecomment-5429971224) — NOT a waiver precedent,
+and NOT a discharge by false claim: the earlier attempt to settle it by declaring `Replaces:
+#429` on a docs-only record was refused on review, correctly, and stays refused. The durable fix
+— settlement following the declared chain — remains its own future unit.
 
 Three items remain, each with an executable next unit — none waits on sign-off:
 
@@ -77,7 +79,9 @@ Three items remain, each with an executable next unit — none waits on sign-off
    (`DecisionLogScreen.tsx:121`) is the pattern (client-side over loaded rows, a composed haystack
    whose location path is DERIVED via `locationSegments`→`pathOf`, composing with the screen's
    other controls); the Drawings register is the standout unfiltered list (all five roles hold it,
-   grouped by discipline, monotonically growing). It RECOMMENDS: **D1-Drawings as the next unit**
+   grouped by discipline, scanned by identity — and NOT append-only, `DrawingsController.remove`
+   exists, so the rationale is who holds the screen and how it is used). It RECOMMENDS:
+   **D1-Drawings as the next unit**
    (clone the Decision Log filter onto the register, EIGHT acceptance tests — incl. the legacy-zone
    fallback, the rendered discipline/revision labels, the filter-aware consultant scoped-empty
    predicate, and rendering under the existing unavailable/stale guards); **D2 specified but NOT built** — its §3 carries the two
