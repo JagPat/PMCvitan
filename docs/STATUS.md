@@ -15,8 +15,8 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: fd9367c9
-open_pr: none
+reviewed_merge: a839f328
+open_pr: 449
 next_task: none
 blocking_directive: none
 updated: 2026-08-26
@@ -33,13 +33,15 @@ The low-effort data-entry initiative's delivered units are #424 (capture context
 data-entry audit), #428 (progressive disclosure) and #440 (the capture stamp). #440 replaced #439,
 which replaced #429 — both closed at the two-finding-head limit.
 
-**#429's ledger obligation is NOT discharged, and must not be discharged by a record like this
-one.** #440 declared `Replaces: #439`, so #429 — whose own claimant #439 closed unmerged — is
-still owed. An earlier attempt to settle it by declaring `Replaces: #429` on a docs-only record
-was refused on review, correctly: a replacement is "limited to the unresolved unit", this carries
-none of #429's implementation, and letting a no-op documentation change satisfy the ledger would
-attribute delivered work to a claimant containing no part of it. The obligation stays open for a
-unit that genuinely carries scope forward.
+**#429's ledger obligation is SETTLED by explicit reconciliation, not by a claim.** Its scope
+landed on `main` through the admitted chain #439 (`Replaces: #429`) → #440 (`Replaces: #439`,
+merged, clean exact-head +1), but the direct-only `settlementOf` cannot infer that chain, so the
+`review-replacement-required` label on #429 kept blocking every honest `Replaces: none` unit. The
+orchestrator cleared it as an explicitly recorded one-time reconciliation
+(https://github.com/JagPat/PMCvitan/pull/429#issuecomment-5429971224) — NOT a waiver precedent,
+and NOT a discharge by false claim: the earlier attempt to settle it by declaring `Replaces:
+#429` on a docs-only record was refused on review, correctly, and stays refused. The durable fix
+— settlement following the declared chain — remains its own future unit.
 
 Three items remain, each with an executable next unit — none waits on sign-off:
 
@@ -64,8 +66,32 @@ Three items remain, each with an executable next unit — none waits on sign-off
    indicator disappears; the light ring's accent edge is 4.29:1. F-1a's inventory gained a third
    mode, `light-ring-fill`, for an ink fill declared in CSS (its two container modes were the only
    choices before, which is how the wrong classification got picked).
-   **Units D and E still owe their own proposal**, which the merged Unit-C document's §6 pre-loads
-   with the two corrections found there (the real visibility rules for D2 + caller-shaped bakes).
+   **The Units D and E proposal is DELIVERED** (PR #449, `Replaces: #448` — #448 closed at the
+   two-finding-head limit; its six carried corrections plus three more from head 2 are folded in:
+   the register is NOT append-only (`DrawingsController.remove` exists) so the D1 rationale rests
+   on who holds the screen, not accumulation; the split is measured from `useNavItems`'s REAL
+   pipeline (`enabledScreensFor` with capabilities) over three configurations — every role's BAR
+   is invariant, only More varies (pmc 6–9, engineer 4–7); and every haystack term is the RENDERED
+   text ("Sketches & References", "Rev B"), with eight acceptance tests. The document is
+   `docs/ux/SEARCH_AND_NAV_PROPOSAL.md`),
+   closing the debt the Unit-C document's §6 recorded. Measured: HALF of Unit D already shipped —
+   C1's `CreateRailButton` is the desktop "add"; the app's ONE search input
+   (`DecisionLogScreen.tsx:121`) is the pattern (client-side over loaded rows, a composed haystack
+   whose location path is DERIVED via `locationSegments`→`pathOf`, composing with the screen's
+   other controls); the Drawings register is the standout unfiltered list (all five roles hold it,
+   grouped by discipline, scanned by identity — and NOT append-only, `DrawingsController.remove`
+   exists, so the rationale is who holds the screen and how it is used). It RECOMMENDS:
+   **D1-Drawings as the next unit**
+   (clone the Decision Log filter onto the register, EIGHT acceptance tests — incl. the legacy-zone
+   fallback, the rendered discipline/revision labels, the filter-aware consultant scoped-empty
+   predicate, and rendering under the existing unavailable/stale guards); **D2 specified but NOT built** — its §3 carries the two
+   Unit-C corrections verbatim (authorization derives from `screensFor` + module/capability, NOT
+   `ROLE_POLICY`; results return through each module's caller-shaped bake; a draft match routes to
+   Drafts, never to a register that drops the row), triggered by evidence
+   that D1 leaves the cross-screen question unmet; **E1 stands** (C1 removed the main reason to
+   cross More); E2 rides with the next `screensFor`/`MOBILE_PRIMARY_PREFERENCE` change; E3 not
+   taken. The contractor capture gap is explicitly OUTSIDE it — a screen-set question with its own
+   evaluation.
    **Five corrections are recorded so they are not re-earned.** (a) A shell mount is OUTSIDE
    `ProjectLoadBoundary`: `AppShell.tsx:39-41` wraps only `<ScreenView />`, while `switchProject`
    (`store.ts:3366`) empties every project-owned field before the auth request goes out and leaves
