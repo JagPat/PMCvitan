@@ -15,8 +15,8 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 0bbd6a2d
-open_pr: 456
+reviewed_merge: 7ba95421
+open_pr: none
 next_task: none
 blocking_directive: none
 updated: 2026-08-27
@@ -100,9 +100,16 @@ Three items remain, each with an executable next unit — none waits on sign-off
    runs on PRs #443-#449: 27.9-28.6), so EVERY early orchestrator wake published a false "Checks
    did not settle: api" — PR #444 hit it on 2026-08-26. Now 40 minutes (same headroom ratio), with
    `auto-merge.yml`'s derived terminal budget raised 90→105 and both comments naming the coupling.
-   **The contractor capture gap is EVALUATED AND PROPOSED** (PR #456, `Replaces: #455`;
-   the chain is #451 → #452 → #453 → #454 → #455 → #456, each predecessor closed at the
-   two-finding-head limit; `docs/ux/CONTRACTOR_CAPTURE_PROPOSAL.md`).
+   **The contractor capture proposal is DELIVERED AND CLEARED — PR #456 MERGED at `main`
+   `7ba95421` with a fresh Codex +1 on the exact head `2819393e`** (the chain was
+   #451 → #452 → #453 → #454 → #455 → #456, each predecessor closed at the
+   two-finding-head limit; ten review rounds and 59 findings, every one verified against
+   the code and folded or recorded; `docs/ux/CONTRACTOR_CAPTURE_PROPOSAL.md`). This
+   record carries the POST-merge state, so `open_pr` is `none` — a status-only handoff
+   must not leave a closed PR number in the file. The proposal's §4.1 carries FOURTEEN
+   acceptance criteria for the future implementation units 1-4, recorded by the owner's
+   two decisions on #455; NONE of the seven units (unit 0's fail-closed guard included)
+   is started — each waits on JagPat's explicit approval.
    Measured: the three contractor grants
    (`attendance.record`/`labour.work.record`/`activity.output.record`) are intentional — §C's
    seals make the recording party untrusted by construction — but unreachable: the muster and
