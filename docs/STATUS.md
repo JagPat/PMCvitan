@@ -256,7 +256,19 @@ Three items remain, each with an executable next unit — none waits on sign-off
    OWNER DIRECTED (2026-08-27, on #455): record the four into §4.1 exactly like the eight
    (items 9-12, recording-only) and open the replacement the gate requires — PR #456,
    `Replaces: #455` — with no further correction heads on #455; `open_pr` names #456 until
-   it merges.
+   it merges. Round 9 (#456 head `992188fa`, four P1s — all internal-consistency
+   corrections OF the recorded criteria) is folded under the same standing direction,
+   recording the reviewer's own resolutions verbatim: criterion 3 corrected (`MATCH FULL`
+   would reject the legacy `(projectId, NULL, NULL)` tuple since `projectId` is never
+   null — the seal is `MATCH SIMPLE` + an all-or-none CHECK over the two nullable
+   columns); criterion 4 corrected (the backfill writes only where a binding demonstrably
+   existed at allocation insert — pre-binding allocations keep NULL as pre-attribution
+   truth or are explicitly released/adopted, never silently stamped); criterion 13 added
+   (each party binding owes its labour-source row at commit and the source cannot be
+   removed while its binding origin remains — the source pattern's inverse seal,
+   mirrored); criterion 14 added (the freezes admit exactly ONE DB-verified
+   `NULL → server-derived party` transition for the staged backfills, closed after old
+   writers retire).
    **Five corrections are recorded so they are not re-earned.** (a) A shell mount is OUTSIDE
    `ProjectLoadBoundary`: `AppShell.tsx:39-41` wraps only `<ScreenView />`, while `switchProject`
    (`store.ts:3366`) empties every project-owned field before the auth request goes out and leaves

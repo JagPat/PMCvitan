@@ -361,12 +361,21 @@ against real code; this document deliberately designs no further mechanism for t
    with an active allocation must be refused, or the allocation atomically
    released/reassigned in the same lifecycle — otherwise `workerPartyAtCreation` strands
    against the new binding and work and output attribute to different parties.
-3. **Unit 3:** the output's nullable composite FK must be `MATCH FULL` (or an equivalent
-   all-or-none CHECK on `allocationId`/`partySnapshot`) — `MATCH SIMPLE` skips the check
-   when the snapshot component is null.
+3. **Unit 3:** the output's nullable composite FK stays `MATCH SIMPLE` with an
+   all-or-none CHECK over `allocationId`/`partySnapshot` (null together or set together) —
+   bare `MATCH SIMPLE` alone skips the FK when the snapshot component is null, but
+   `MATCH FULL` is WRONG here: `projectId` is never null, so `MATCH FULL` would reject the
+   legacy `(projectId, NULL, NULL)` tuple that §4 explicitly requires old-release and
+   pmc/engineer inserts to keep committing (corrected in review round 9).
 4. **Unit 3:** allocations predating the migration need a staged `workerPartyAtCreation`
    backfill — including rows the previous release creates during the deployment window —
-   before contractor capture enables.
+   before contractor capture enables; and the backfill writes ONLY where a binding
+   demonstrably existed when the allocation was inserted. An allocation created before its
+   worker was ever bound keeps NULL as the pre-attribution truth (§4's own principle) or is
+   explicitly released/adopted through a new attributable lifecycle fact — never silently
+   stamped with a later binding, which would let the composite FK authorize party output
+   against an allocation that predates the party's ownership (corrected in review
+   round 9).
 5. **Unit 1:** the crew-party equality seal scopes to ACTIVE roster edges
    (`removedAt IS NULL`); historical memberships must not block legitimate binds or
    rebinds.
@@ -404,6 +413,22 @@ same way, by the same owner decision:
     the requirement head and dated demand slice (`labour-capacity.service.ts:636-665`): the
     output path performs the SAME live-demand derivation under the readiness serialization,
     or requirement changes atomically release affected allocations.
+
+Two further P1 findings from the round-9 review of the recorded criteria are carried the
+same way (alongside the round-9 corrections folded into criteria 3 and 4 above):
+
+13. **Units 1-2:** each `Worker`/`Crew`/`Membership` party binding owes its labour-source
+    row at commit, and removing that source is refused while its binding origin remains —
+    the existing source pattern's inverse/origin seal, mirrored: without it, an alternate
+    writer can bind while a company source keeps `ProjectParty` valid, omit the labour
+    source, and leave `releasePartyAssociationIfUnsourced` to die on the binding FK instead
+    of the promised refusal-or-reassignment lifecycle when that company is later removed.
+14. **Units 1-3:** the freeze rules admit exactly ONE DB-verified
+    `NULL → server-derived party` transition for the staged backfills (the allocation's
+    `workerPartyAtCreation`, the commitment supplier party), closed after old writers
+    retire — a null-safe freeze would reject every backfill, while an ordinary `<>`
+    comparison would let arbitrary null transitions bypass the freeze; the single verified
+    transition is the only opening.
 
 **The `activity.output.record` UI gap (§1.3) is recorded for whichever unit builds the
 output surface for pmc/engineer** — it is the same missing dispatcher for all three roles,
