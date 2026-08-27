@@ -165,10 +165,18 @@ Three items remain, each with an executable next unit — none waits on sign-off
    (slice-bound output, in-charge equality, snapshot columns in the append-only trigger
    enumeration, record-vs-rebind lock serialization, DB-side snapshot population for
    mixed-version writers, the migration/commands split, the rollout-sequenced attendance
-   lift), and the three P1s on #453 head `772f2ed9` (crew-party equality as a DB seal
-   covering old writers and direct SQL; rebind gated on DB-side serialization that covers
-   old writers; the output snapshot split into its own unit-3 migration because unit 1 has
-   no worker fact to derive from before the allocation reference exists).
+   lift), and the six findings (5 P1 + 1 P2) on #453 head `772f2ed9` (crew-party equality
+   as a DB seal covering old writers and direct SQL; rebind gated on DB-side serialization
+   that covers old writers; the output snapshot split into its own unit-3 migration because
+   unit 1 has no worker fact to derive from before the allocation reference exists; the
+   enumeration-extension claim corrected to `LabourAttendance` ONLY — `LabourWorkFact` and
+   `ActivityWorkOutput` use the generic full-row `phase3_immutable_row()` trigger, which
+   already covers new columns and is retained, never replaced; the labour-source release
+   protocol ASSIGNED to unit 2, the same unit that first creates a labour source, because
+   `releasePartyAssociationIfUnsourced` today counts only company+vendor sources; and the
+   membership-binding lock routed through a new `OrgsParticipant` operation with declared
+   workflow edges, since `Membership` is Orgs-owned and neither leaf Labour nor Activities
+   may lock it directly).
    **Five corrections are recorded so they are not re-earned.** (a) A shell mount is OUTSIDE
    `ProjectLoadBoundary`: `AppShell.tsx:39-41` wraps only `<ScreenView />`, while `switchProject`
    (`store.ts:3366`) empties every project-owned field before the auth request goes out and leaves

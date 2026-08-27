@@ -141,17 +141,23 @@ inseparable-unit justification exists or is claimed:
    project-contained party reference on `Worker`/`Crew`, the membership↔party link, and the
    party-snapshot columns on the two WORKER-CARRYING evidence tables (`LabourAttendance`,
    `LabourWorkFact`; the output snapshot is unit 3's, below) — anchored on `ProjectParty`
-   with a NEW labour justification source and its release protocol (§2 — removing a
-   contractor company that still owns workers is a defined refusal-or-reassignment, decided
-   through the participant channel, never an FK accident and never Orgs reading Labour
-   tables). Nullable, additive, diagnostic-first, writing no rows. Four DB seals belong to
+   with a NEW orgs-owned `ProjectPartyLabourSource`-shaped justification table matching the
+   existing source pattern (§2 — the release-path SERVICE change that teaches
+   `releasePartyAssociationIfUnsourced` to count it is unit 2's, deployed before any labour
+   source can exist, so removing a contractor company that still owns workers is a defined
+   refusal-or-reassignment, never an FK accident and never Orgs reading Labour tables).
+   Nullable, additive, diagnostic-first, writing no rows. Four DB seals belong to
    this SAME migration or the shape is not what it claims, because during the mixed-version
    window the OLD release and any alternate writer keep writing these tables with no
    knowledge of the new columns:
-   - **the append-only triggers extend over the new columns** — the §C triggers freeze
-     evidence by ENUMERATED column comparison (`phase4_t3_attendance_append_only` and
-     siblings), so a party snapshot left out of that enumeration is silently mutable,
-     exactly the reattribution the snapshot exists to prevent;
+   - **the attendance append-only trigger extends over the new column** — precision
+     matters here: only `LabourAttendance` freezes evidence by ENUMERATED, revocation-aware
+     column comparison (`phase4_t3_attendance_append_only`), so a party snapshot left out
+     of THAT enumeration is silently mutable and the migration must add it;
+     `LabourWorkFact_append_only` and `ActivityWorkOutput_append_only` instead call the
+     generic `phase3_immutable_row()`, which rejects EVERY update and delete and therefore
+     already covers any added column — those two are RETAINED unchanged, never replaced
+     with an enumeration (that substitution would weaken full-row immutability);
    - **the DB is the ONLY writer of the snapshot** — a BEFORE INSERT trigger derives it
      from the worker's binding for EVERY writer, old release included (writers never supply
      it), recording the party bound AT THE MOMENT OF INSERT and NULL while the worker is
@@ -176,7 +182,17 @@ inseparable-unit justification exists or is claimed:
    membership↔party, with the backfill on existing projects binding a crew and its active
    memberships in ONE transaction (the unit-1 equality seal refuses anything else) —
    because references that nothing can write leave the later units vacuously green and the
-   capture context empty. The invariants: **the binding is FROZEN once evidence relies on
+   capture context empty. This unit ALSO owns the release-protocol service change, and must
+   — no later unit can: the labour justification source is an orgs-owned
+   `ProjectPartyLabourSource`-shaped table (unit 1's migration, matching the existing
+   source pattern) written through the participant channel, but
+   `OrgsParticipant.releasePartyAssociationIfUnsourced` today counts ONLY company and
+   vendor sources before deleting `ProjectParty` — so once the first labour source exists,
+   removing a project's last company would try to delete a still-justified association and
+   die on the FK/deferred seal instead of returning the defined domain outcome. The SAME
+   unit that first creates a labour source therefore extends that count over it (the
+   association survives while labour justifies it) and wires the labour source's own
+   release as the explicit refusal-or-reassignment protocol §2 requires. The invariants: **the binding is FROZEN once evidence relies on
    it** — the initial bind is explicit and attributable, a rebind is a CAS lifecycle
    (release + new bind, audited) whose reliant-evidence guard re-derives under its own row
    lock, made race-free against every concurrent first-fact insert by unit 1's `FOR SHARE`
@@ -189,12 +205,13 @@ inseparable-unit justification exists or is claimed:
    carries NO worker or allocation fact (`contracts.ts:1260` — activity, date, shift,
    quantity), so unit 1's derivation has nothing to read there and its snapshot cannot ship
    in unit 1 honestly. This migration adds the nullable allocation-reference and
-   party-snapshot columns to `ActivityWorkOutput`, extends ITS append-only trigger over
-   them, and derives the snapshot from the cited allocation's worker binding when the
-   reference is present (old-release and pmc/engineer inserts carry no reference and commit
-   with a null snapshot — legitimate: their attribution stays the recording principal, and
-   contractor output remains refused by unit 0 until unit 4 makes the reference mandatory
-   for contractor callers).
+   party-snapshot columns to `ActivityWorkOutput` (its generic `phase3_immutable_row()`
+   append-only trigger rejects every update, so it covers the new columns unchanged and is
+   RETAINED, not replaced) and derives the snapshot from the cited allocation's worker
+   binding when the reference is present (old-release and pmc/engineer inserts carry no
+   reference and commit with a null snapshot — legitimate: their attribution stays the
+   recording principal, and contractor output remains refused by unit 0 until unit 4 makes
+   the reference mandatory for contractor callers).
 4. **The ownership enforcement** (service only, schema untouched): re-derive "own" INSIDE
    the `recordWork`/`recordOutput`/`recordAttendance` transactions from the unit-1
    relations, so a contractor token is refused on another party's allocation, activity or
@@ -202,7 +219,12 @@ inseparable-unit justification exists or is claimed:
    minutes and output. Two requirements are part of the check, not optional hardening:
    **the record path locks the binding rows it derives authority from** (the same rows
    rebind locks — the service-level discipline on top of unit 1's DB seal, both orderings
-   proven under the deterministic barrier); and **the output reference is slice-bound** —
+   proven under the deterministic barrier), and the MEMBERSHIP half of that lock is routed,
+   not read: `Membership` is Orgs-owned, so neither the leaf Labour module nor Activities
+   may `FOR UPDATE` it directly — a new `OrgsParticipant` operation locks and returns the
+   caller's active membership binding INSIDE the caller's transaction (the same
+   participant shape every cross-module lock already uses), with that workflow-participant
+   edge DECLARED by each calling module; and **the output reference is slice-bound** —
    `recordActivityOutputSchema` carries its own `civilDate`/`shift`, so "a live allocation
    on that activity" is not enough (contractor A's Monday/day allocation must not authorize
    an output recorded for Friday/night): the allocation's project, activity, civil date and
