@@ -107,11 +107,18 @@ Three items remain, each with an executable next unit — none waits on sign-off
    worked-minutes UIs live only on `LabourScreen`, whose reads are ALL `labour.read`
    (pmc/engineer), so handing contractor the hub 403s every tab AND would expose the §F
    commercial chain; and `activity.output.record` has NO web dispatcher for ANY role (an
-   all-roles surface gap, recorded separately). RECOMMENDS O2 staged as two units — (1) an
-   own-scope capture read contract (my allocations today, my crews' workers; nothing commercial;
-   the adversarial cannot-read-rates test is the point), then (2) the minimal capture surface
-   dispatching the three EXISTING commands — refusing O1 (rate leak) and O3 (contradicts the
-   cleared architecture). Neither unit is started by the proposal.
+   all-roles surface gap, recorded separately). RECOMMENDS O2 staged as THREE units in
+   order — (1) the OWNERSHIP RELATION the schema lacks (no path from an app `Membership` to a
+   worker/crew/supplier defines "own"), enforced INSIDE the write transactions, since today
+   contractor A could submit contractor B's allocation/activity id and `recordWork`/`recordOutput`
+   would accept it (the grants are safe only because no UI reaches them; read filtering is NOT
+   write authorization); (2) the own-scope capture read contract (nothing commercial; the
+   adversarial cannot-read-rates test is the point); (3) the minimal capture surface — with
+   attendance DEVICE-EVIDENCED (`manualReason` musters assert `labour.override`, pmc-only, at
+   `labour-capacity.service.ts:523`; the web's only muster dispatcher always sends
+   `manualReason` and none sends `deviceId`, so a new device-participating dispatcher is
+   required and a cited-but-absent device is refused by name) — refusing O1 (rate leak) and O3
+   (contradicts the cleared architecture). None of the three is started by the proposal.
    **Five corrections are recorded so they are not re-earned.** (a) A shell mount is OUTSIDE
    `ProjectLoadBoundary`: `AppShell.tsx:39-41` wraps only `<ScreenView />`, while `switchProject`
    (`store.ts:3366`) empties every project-owned field before the auth request goes out and leaves

@@ -37,7 +37,21 @@ evidence) has no web dispatcher at all: the route is exercised by the API suites
 and no role can reach it from the UI. That is an **all-roles** surface gap, not a
 contractor-authorization gap, and it should not be solved as a side effect of one.
 
-### 1.4 Why the grants are intentional
+### 1.4 The attendance path a contractor can actually use
+
+The muster command has two evidence branches, and they are NOT equally available
+(`labour-capacity.service.ts:513-524`): a `manualReason` muster is a **pmc exception** — the
+service asserts `labour.override`, granted to pmc alone (`policy.ts:79`) — while the
+`deviceId` branch (the worker's OWN bound device) is the path left open to the site roles.
+The web's only muster dispatcher, `musterWorker`, **always sends `manualReason`**, and no web
+dispatcher sends `deviceId` at all. So even with a screen, the only existing dispatch path
+403s a contractor by design. The consequence for §4: a contractor attendance capture must be
+**device-evidenced with the worker's device participating** (the §H QR/tap shape that
+anonymous onboarding already uses), and manual musters stay what they are — a pmc exception.
+A capture flow that merely *cited* a worker's bound `deviceId` without the device in the loop
+would satisfy the seal while hollowing out the evidence, and is refused here by name.
+
+### 1.5 Why the grants are intentional
 
 The cleared Phase-4 architecture names attendance, effort and output as **site facts** —
 "something happened and a site user records it as it happens" — and §C's seals make the
@@ -56,6 +70,16 @@ What a contractor needs is not the Labour hub. It is **capture with the context 
 records require**: today's own allocations (to record minutes against), the workers on their
 own crews (to muster), and the activity being worked (for output). None of that is
 `labour.read` — it is a narrower, own-scope read that does not exist yet.
+
+**And "own" does not exist yet either — anywhere.** `recordWork` validates project
+membership, allocation liveness and live-demand match; `recordOutput` validates that the
+activity belongs to the project; **neither ties the record to the calling user**, and the
+schema has no relation from an app `Membership` to a worker, crew or supplier that could.
+With multiple contractors on one project, contractor A could today submit contractor B's
+allocation or activity id and create immutable effort/output evidence against it — the
+grants are safe only because no UI reaches them. Filtering the new reads is NOT write
+authorization: the ownership relation must be defined in the schema and **enforced inside
+each write transaction**, or the capture surface must not ship.
 
 ## 3 · Options
 
@@ -77,24 +101,37 @@ built and reviewed.
 
 ## 4 · Recommendation, and what the next unit is
 
-**O2, staged as two units, and neither starts as a side effect of the other:**
+**O2, staged as three units, in this order, and none starts as a side effect of another:**
 
-1. **The own-scope read contract** (server): the narrow queries above, policy named for what
+1. **The ownership relation, enforced at the writes** (server, schema): define what "own"
+   means — a membership↔supplier attribution the schema currently lacks — and re-derive it
+   INSIDE `recordWork`/`recordOutput`/`recordAttendance` transactions, so a contractor token
+   is refused on another party's allocation, activity or worker regardless of what any UI
+   sends. Reproduce-first: the two-contractors probe (A submits B's ids) must be RED today
+   and refused after. Nothing about pmc/engineer behaviour changes — the own-scope check
+   binds the contractor role.
+2. **The own-scope read contract** (server): the narrow queries above, policy named for what
    it is, 404/403 semantics matching the existing capability gates, with tests proving a
    contractor token can read its own capture context and can NOT read any commercial or
    planning surface (the adversarial case is the point of the unit).
-2. **The capture surface** (web): the minimal UI over those reads, dispatching the three
-   EXISTING commands through the existing outbox discipline.
+3. **The capture surface** (web): the minimal UI over those reads, dispatching the three
+   EXISTING commands through the existing outbox discipline — with attendance
+   **device-evidenced per §1.4** (the worker's device participates, QR/tap; a new dispatcher
+   carrying `deviceId`, since none exists), never a contractor-typed `manualReason`, which
+   stays a pmc exception.
 
 **The `activity.output.record` UI gap (§1.3) is recorded for whichever unit builds the
 output surface for pmc/engineer** — it is the same missing dispatcher for all three roles,
 and building it once behind `createOptionsFor`-style filtering serves everyone.
 
-This proposal does not start either unit. Both are product scope beyond evaluate-and-propose,
-and the read contract's exact query shapes deserve their own review unit.
+This proposal starts none of the three. All are product scope beyond evaluate-and-propose;
+the ownership relation is a schema decision deserving its own review unit, and it comes
+FIRST — the surface without it is the multi-contractor forgery §2 describes.
 
 ## 5 · Outside this proposal
 
 - Any change to `ROLE_POLICY`, `screensFor`, or the Labour hub.
 - The D1-Drawings filter (the D/E proposal's next unit) — unrelated track.
-- Worker-device (`§H`) flows — anonymous onboarding and device binding are untouched.
+- Worker-device (`§H`) BINDING flows — anonymous onboarding and `orgs.workerDevice.bind` are
+  untouched. (Unit 3 *uses* an already-bound device as attendance evidence, which is §C's
+  existing contract, not a binding change.)
