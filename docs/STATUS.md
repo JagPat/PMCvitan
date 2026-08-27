@@ -71,10 +71,12 @@ Three items remain, each with an executable next unit — none waits on sign-off
    whose location path is DERIVED via `locationSegments`→`pathOf`, composing with the screen's
    other controls); the Drawings register is the standout unfiltered list (all five roles hold it,
    grouped by discipline, monotonically growing). It RECOMMENDS: **D1-Drawings as the next unit**
-   (clone the Decision Log filter onto the register, four acceptance tests incl. rendering under
-   the existing unavailable/stale guards); **D2 specified but NOT built** — its §3 carries the two
+   (clone the Decision Log filter onto the register, SIX acceptance tests — incl. the legacy-zone
+   fallback the card itself displays, the filter-aware consultant scoped-empty predicate, and
+   rendering under the existing unavailable/stale guards); **D2 specified but NOT built** — its §3 carries the two
    Unit-C corrections verbatim (authorization derives from `screensFor` + module/capability, NOT
-   `ROLE_POLICY`; results return through each module's caller-shaped bake), triggered by evidence
+   `ROLE_POLICY`; results return through each module's caller-shaped bake; a draft match routes to
+   Drafts, never to a register that drops the row), triggered by evidence
    that D1 leaves the cross-screen question unmet; **E1 stands** (C1 removed the main reason to
    cross More); E2 rides with the next `screensFor`/`MOBILE_PRIMARY_PREFERENCE` change; E3 not
    taken. The contractor capture gap is explicitly OUTSIDE it — a screen-set question with its own

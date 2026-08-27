@@ -75,15 +75,33 @@ register.** One screen, one shipped pattern, no new read, no permission surface 
 are already on the client under the screen's existing load states.
 
 The haystack follows the same composition rule: drawing number, title, discipline, current
-revision label, and the *derived* location path of any placement. Derived, not stored — the
-same `pathOf` discipline `locationSegments` uses, so search never introduces a second copy
-of a location.
+revision label, and **the location the row itself shows** — the *derived* path of any
+placement, and, when a drawing has no placement, its legacy `zone` fallback. That is the
+Decision Log's own shape, not an addition to it: `locationSegments` falls back to the stored
+`room` when `pathOf` yields nothing, and `DrawingsScreen` renders exactly the same way
+(`pathOf(nodes, d.nodeId)` when non-empty, else `d.zone`). A search that cannot find a
+drawing by the location printed on its card is broken by its own rule — what the user can
+see, the filter must match.
+
+One interaction needs deciding up front rather than discovering in review: the consultant's
+**discipline scope**. `scopeKey` is set for a consultant (`role === 'consultant'`, defaulted
+`scoped`), and the screen's scoped-empty branch reads
+`scopeKey && scoped && groups.length === 0 && drawings.length > 0` — *"No {discipline}
+drawings filed yet"*. A filter applied before grouping can empty the scoped group while
+drawings for that discipline exist, and that branch would then assert something false. The
+implementation must **update the scoped-empty predicate** to be filter-aware, not add a
+second message beside a now-lying one.
 
 Acceptance tests for that unit:
 1. Filtering narrows the register and composes with the discipline grouping.
-2. A drawing is found by its number, its title, AND its placement's location path.
-3. The empty state names the filter, not an empty register.
-4. The input renders under the screen's existing `unavailable`/`stale` guards — a filter
+2. A drawing is found by its number, its title, AND its placement's derived location path.
+3. **A placement-less drawing is found by its legacy `zone`** — the location its own card
+   displays.
+4. The empty state names the filter, not an empty register.
+5. **Search composed with the consultant's discipline scope shows exactly the
+   filter-specific empty state** — the existing scoped-empty branch must not claim "No
+   {discipline} drawings filed yet" when the search merely hid them.
+6. The input renders under the screen's existing `unavailable`/`stale` guards — a filter
    over rows that failed to load is not offered.
 
 Schedule and the rosters wait for evidence: their lists are shorter, phase- and role-scoped,
@@ -109,6 +127,13 @@ re-earned:
    `user.sub` while `bakeDrawings` filters `!d.draft || d.authorId === userId` — an
    unpublished drawing is author-private. **D2 must return results through each module's own
    caller-shaped bake, never by reading around it.**
+3. **The bake is necessary but its output is not yet routable.** `bakeDrawings` deliberately
+   RETAINS the caller's own unpublished drafts, while `DrawingsScreen` renders only
+   `!d.draft` — drafts live exclusively on `DraftsScreen`. A D2 that returned every baked
+   drawing as a Drawings-kind match would surface a result whose destination register cannot
+   render it: a dead link to the caller's own record. The contract must classify an
+   authorized draft match as a **Drafts** result (routing to the surface that renders it),
+   or exclude drafts after the bake — never emit a kind whose screen will drop the row.
 
 **Decision: D2 is not built now, and that is a decision rather than a deferral to a person.**
 Its trigger is evidence that D1's in-screen filters leave the cross-screen question unmet —
@@ -149,6 +174,7 @@ reason about, and nothing measured here needs it.
 ## 6 · The next unit
 
 **D1-Drawings, as one review unit**: the Decision Log's filter pattern cloned onto the
-Drawings register — an input, the composed derived-path haystack, the four acceptance tests
+Drawings register — an input, the haystack matching what each card displays (derived path,
+else legacy `zone`), the filter-aware scoped-empty predicate, and the six acceptance tests
 in §2. It touches no navigation logic, no policy, no server contract, and no other screen.
 E needs no unit; E2 rides with the change it guards against; D2 waits on its trigger.
