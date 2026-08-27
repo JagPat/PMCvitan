@@ -346,6 +346,41 @@ invariants and their owners, and no unit may ship with an obligation below unpro
    unit 6 lands, attendance capture is refused at the server (unit 0) and absent from the
    surface — worked minutes and output (units 1–5) do not wait for it.
 
+### 4.1 · Acceptance criteria recorded from review (owner decision, 2026-08-27)
+
+The final review round raised eight P1 findings against §4's mechanics. By the owner's
+recorded decision on PR #455, they are carried here VERBATIM as acceptance criteria for the
+implementation units that own them — the unit's own reproduce-first review proves each
+against real code; this document deliberately designs no further mechanism for them:
+
+1. **Unit 1 (with unit 2's barrier probes):** roster changes (membership, in-charge, crew
+   binding updates) must lock the CREW root before the ordered worker locks — worker-only
+   locking leaves a crew-bind vs member-insert skew — with both orderings under an explicit
+   barrier.
+2. **Units 1–2:** an ACTIVE allocation is itself binding reliance: a rebind of a worker
+   with an active allocation must be refused, or the allocation atomically
+   released/reassigned in the same lifecycle — otherwise `workerPartyAtCreation` strands
+   against the new binding and work and output attribute to different parties.
+3. **Unit 3:** the output's nullable composite FK must be `MATCH FULL` (or an equivalent
+   all-or-none CHECK on `allocationId`/`partySnapshot`) — `MATCH SIMPLE` skips the check
+   when the snapshot component is null.
+4. **Unit 3:** allocations predating the migration need a staged `workerPartyAtCreation`
+   backfill — including rows the previous release creates during the deployment window —
+   before contractor capture enables.
+5. **Unit 1:** the crew-party equality seal scopes to ACTIVE roster edges
+   (`removedAt IS NULL`); historical memberships must not block legitimate binds or
+   rebinds.
+6. **Unit 2:** the crew backfill's atomic binding set includes a non-member
+   `inchargeWorkerId` — a shape `formCrew` permits today.
+7. **Unit 1:** the evidence-conditional freeze leaves a pre-first-fact window where an
+   alternate writer can rewrite a binding outside the CAS lifecycle; the binding lifecycle
+   itself must be DB-verifiable (a permitted-transition rule or append-only binding
+   history), not conditional solely on existing evidence.
+8. **Unit 1:** the denormalized commitment supplier party joins
+   `phase4_lp_commitment_lifecycle_only`'s frozen-column enumeration in the same migration
+   that adds it (`20270201000000` defines the trigger; the new column must not be freely
+   updateable).
+
 **The `activity.output.record` UI gap (§1.3) is recorded for whichever unit builds the
 output surface for pmc/engineer** — it is the same missing dispatcher for all three roles,
 and building it once behind `createOptionsFor`-style filtering serves everyone.

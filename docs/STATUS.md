@@ -194,7 +194,7 @@ Three items remain, each with an executable next unit — none waits on sign-off
    action enables only once every serving API accepts the proof (the UI gates on the
    server's advertised contract), never in one mixed-version step — refusing O1 (rate
    leak) and O3 (contradicts the cleared architecture). None of the seven is started by
-   the proposal. SIX review rounds are folded, each finding verified against the code
+   the proposal. SEVEN review rounds are recorded, each finding verified against the code
    first: the six P1s on #452
    head `333b2d43` (open API, population path, frozen binding, one party authority, output
    attribution, the `ProjectParty` source lifecycle), the seven P1s on #452 head `f15f6436`
@@ -240,7 +240,16 @@ Three items remain, each with an executable next unit — none waits on sign-off
    trigger shapes and rollout windows are each unit's ACCEPTANCE CRITERIA, proven by that
    unit's own reproduce-first barrier probes at its own review — a docs proposal cannot
    certify concurrency mechanics, and rounds 4-6 (findings against prior remedies) are the
-   recorded evidence.
+   recorded evidence. Round 7 (#455 head `8f704ace`, eight P1s — crew-root lock ordering,
+   active allocations as binding reliance, MATCH FULL on the output FK, the allocation
+   snapshot backfill, active-edge equality scoping, the in-charge backfill set, a
+   DB-verifiable binding lifecycle for the pre-first-fact window, and the commitment party
+   joining the frozen-identity enumeration) triggered the non-convergence stop, and the
+   OWNER DECIDED on PR #455 (2026-08-27): the measured core + seven-unit staging IS the
+   deliverable; the eight are recorded VERBATIM in the proposal's §4.1 as acceptance
+   criteria for units 1-4, with no further docs-only mechanism design; O1/O3 stay refused;
+   no implementation unit (unit 0 included) starts on or expands this PR; `open_pr` names
+   #455 until it merges.
    **Five corrections are recorded so they are not re-earned.** (a) A shell mount is OUTSIDE
    `ProjectLoadBoundary`: `AppShell.tsx:39-41` wraps only `<ScreenView />`, while `switchProject`
    (`store.ts:3366`) empties every project-owned field before the auth request goes out and leaves
