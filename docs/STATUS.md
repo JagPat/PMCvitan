@@ -108,8 +108,18 @@ Three items remain, each with an executable next unit — none waits on sign-off
    record carries the POST-merge state, so `open_pr` is `none` — a status-only handoff
    must not leave a closed PR number in the file. The proposal's §4.1 carries FOURTEEN
    acceptance criteria for the future implementation units 1-4, recorded by the owner's
-   two decisions on #455; NONE of the seven units (unit 0's fail-closed guard included)
-   is started — each waits on JagPat's explicit approval.
+   two decisions on #455; NONE of the seven units is started. **Unit 0 (the fail-closed
+   contractor guard) is the RECOMMENDED NEXT UNIT, and its start is an EXECUTABLE
+   HANDOFF, not an open wait**: the three write routes are reachable by any contractor
+   bearer token today (the proposal's §2 measured exposure — the standing risk of every
+   day this waits), the GO request is ON RECORD (the completion report and the option
+   list on #455, both 2026-08-27, restated on #457), and on JagPat's GO the loop's next
+   action is the unit-0 PR — service-only, reproduce-first (the contractor-token POST of
+   another party's id that SUCCEEDS today is the RED probe), lifted per-command by units
+   4 and 6 exactly as §4 stages it. The gate itself is the owner's recorded decision on
+   #455 ("Unit 0 remains a separate later call; do not expand this unit to ship
+   fail-closed") — the loop holds until the GO lands, and this paragraph is where the
+   next runner finds both the trigger and the first action.
    Measured: the three contractor grants
    (`attendance.record`/`labour.work.record`/`activity.output.record`) are intentional — §C's
    seals make the recording party untrusted by construction — but unreachable: the muster and
