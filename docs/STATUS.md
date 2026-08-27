@@ -15,11 +15,11 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: bc106bda
-open_pr: 450
+reviewed_merge: 0bbd6a2d
+open_pr: 456
 next_task: none
 blocking_directive: none
-updated: 2026-08-26
+updated: 2026-08-27
 ```
 
 **#440 MERGED at `a714bc3e` — THE PROGRESS-PHOTO CAPTURE STAMP IS DELIVERED AND CLEARED.** This
@@ -100,6 +100,163 @@ Three items remain, each with an executable next unit — none waits on sign-off
    runs on PRs #443-#449: 27.9-28.6), so EVERY early orchestrator wake published a false "Checks
    did not settle: api" — PR #444 hit it on 2026-08-26. Now 40 minutes (same headroom ratio), with
    `auto-merge.yml`'s derived terminal budget raised 90→105 and both comments naming the coupling.
+   **The contractor capture gap is EVALUATED AND PROPOSED** (PR #456, `Replaces: #455`;
+   the chain is #451 → #452 → #453 → #454 → #455 → #456, each predecessor closed at the
+   two-finding-head limit; `docs/ux/CONTRACTOR_CAPTURE_PROPOSAL.md`).
+   Measured: the three contractor grants
+   (`attendance.record`/`labour.work.record`/`activity.output.record`) are intentional — §C's
+   seals make the recording party untrusted by construction — but unreachable: the muster and
+   worked-minutes UIs live only on `LabourScreen`, whose reads are ALL `labour.read`
+   (pmc/engineer), so handing contractor the hub 403s every tab AND would expose the §F
+   commercial chain; and `activity.output.record` has NO web dispatcher for ANY role (an
+   all-roles surface gap, recorded separately). RECOMMENDS O2 staged as SEVEN units in
+   order — (0) FAIL CLOSED NOW (service only): the three writes are open at the API today —
+   a contractor bearer token needs no web dispatcher and the missing UI is not a guard — so
+   contractor callers are refused by name until the units that make each call safe deploy
+   (not O3: grants stay declared, the refusal is temporary and lifted per-command);
+   (1) the ATTRIBUTION SHAPE as an additive migration ALONE (each migration its own unit by
+   the mandatory seam), binding the WORKER/CREW side — `Worker`/`Crew` carry no supplier
+   identity (`schema.prisma:2662,2716`) and an in-house allocation has
+   `capacityCommitmentId = null` — anchored on the source-justified `ProjectParty` with a
+   NEW labour justification source and release protocol (a bare FK would break
+   contractor-company removal or cascade away evidence —
+   `OrgsParticipant.releasePartyAssociationIfUnsourced`, `orgs.participant.ts:419`), with
+   party-snapshot columns on the two WORKER-CARRYING evidence tables and SIX DB seals in
+   the SAME migration because old-release and alternate writers keep writing these tables:
+   the `LabourAttendance` enumerated append-only comparison extended over the new column
+   (ONLY attendance enumerates — `LabourWorkFact_append_only` and
+   `ActivityWorkOutput_append_only` call the generic full-row `phase3_immutable_row()`,
+   which already covers added columns and is RETAINED unchanged, never replaced), the DB as
+   the ONLY snapshot writer (a BEFORE INSERT trigger derives the party bound AT INSERT for
+   every writer — null while unbound is the truth of that moment, pre-attribution history
+   is never rewritten), the derivation reading the binding row `FOR SHARE` so rebind
+   serializes against every writer's first-fact insert at the DB, crew-party equality as
+   DEFERRABLE INITIALLY DEFERRED constraint triggers on `CrewMembership`,
+   `Crew.inchargeWorkerId` AND `Worker`/`Crew` party-binding UPDATEs — deferred because an
+   immediate per-statement check makes backfilling an existing non-empty crew impossible;
+   the all-null roster moves to one party atomically while a mismatched COMMIT still
+   refuses from every direction — the evidence-dependent binding FREEZE as a BEFORE UPDATE
+   trigger checking MODULE-LOCAL state only (labour triggers read labour-owned facts;
+   output-fact reliance and the orgs-owned `Membership` freeze use a RELIANCE REGISTER in
+   the binding owner's module, written through its transaction-bound participant in the
+   same tx as the evidence — AGENTS.md's no-cross-module-read rule binds triggers too), and
+   a supplier-backed allocation sealed to the worker's party (the commitment's supplier
+   party DENORMALIZED onto the labour-owned chain via `ProcurementParticipant`, so the
+   equality check is labour-local, at allocation writes AND worker-binding changes under
+   the common worker lock — with the population STAGED: unit-1 column, unit-2 dual-write +
+   pmc-run backfill, enforcement ENABLED only once every serving writer populates it,
+   an explicit tested enablement step);
+   (2) the BINDING COMMANDS (service only): pmc-authored tenancy-checked bind/rebind + the
+   backfill binding a crew and its active memberships in ONE transaction — the binding
+   FROZEN once evidence relies on it (rebind is an audited CAS release+bind whose guard
+   re-derives under its own row lock, safe HERE only because unit 1's `FOR SHARE` seal
+   already covers old writers), ONE authority (the worker's party; the crew's is derived,
+   `labour.service.ts:229` today checks only containment), and BOTH source-sensitive orgs
+   lifecycle paths extended over the labour source in this same unit —
+   `releasePartyAssociationIfUnsourced` AND `renamePartyForSoleSource`
+   (`orgs.participant.ts:470`) each count only company+vendor sources today, so a
+   one-company-plus-labour party would still rename as sole-source and rewrite the
+   canonical identity behind bound workers; (3) the OUTPUT ATTRIBUTION
+   SHAPE as its own additive migration — `ActivityWorkOutput` carries NO worker or
+   allocation fact (`contracts.ts:1260`), so unit 1's derivation has nothing to read there:
+   this adds the nullable allocation-reference + party-snapshot columns (the generic
+   full-row `ActivityWorkOutput_append_only` already covers them and is retained) and the
+   slice correlation as a COMPOSITE FK — the output's
+   `(projectId, activityId, civilDate, shift, allocationId)` binds to the allocation's own
+   columns (the cleared five-column pattern), so a wrong-slice citation is unrepresentable
+   at the DB. REFERENTIAL seals only: `ActivityWorkOutput` is Activities-owned and the
+   binding is Labour-owned, so a derivation trigger there would be a cross-module read at
+   the DB — the snapshot is REFERENTIAL: the allocation captures its worker's party at
+   creation as a labour-local frozen column, and the output's
+   `(projectId, allocationId, partySnapshot)` binds by composite FK to
+   `WorkerAllocation(projectId, id, workerPartyAtCreation)`, so a fabricated snapshot
+   fails the FK structurally whoever inserts it; referenceless old-release/pmc/engineer
+   inserts commit null (their attribution stays the principal), and authority is NEVER
+   derived from the stored snapshot — unit 4 re-derives it from the FK-sealed chain;
+   (4) the OWNERSHIP ENFORCEMENT (service only) INSIDE the
+   `recordWork`/`recordOutput`/`recordAttendance` transactions, locking the binding rows it
+   derives authority from (the service discipline atop unit 1's DB seal, both orderings
+   proven under the deterministic barrier) — the output reference SLICE-BOUND to the
+   output's civil date and shift (a Monday/day allocation must not authorize a Friday/night
+   output) AND LIVE (`status='active'` re-derived under the allocation `FOR UPDATE` — the
+   FK cannot carry status, so a released allocation's tuple still matches; release-vs-record
+   serializes on the same row, both orderings probed), validated through the cycle-exempt
+   participant channel (never Activities reading Labour persistence); in-house no-party
+   workers are NOT silently opened to any contractor; (5) the own-scope capture read contract (nothing commercial; the adversarial
+   cannot-read-rates test is the point); (6) the minimal capture surface — a contractor JWT
+   merely CITING a bound `deviceId` is replayable citation-only evidence (`manualReason`
+   musters assert `labour.override`, pmc-only, at `labour-capacity.service.ts:523`), so the
+   server contract is EXTENDED with a fresh device-authenticated proof that is
+   CONTEXT-BOUND and SINGLE-USE (the server nonce is bound to project/worker/civil
+   date/shift/command, expires short, and is consumed atomically inside the muster
+   transaction — a signature alone would only move the replay), and the unit-0 lift is
+   ROLLOUT-SEQUENCED: the outbox drops non-401/408/429 4xx as terminal, so the attendance
+   action enables only once every serving API accepts the proof (the UI gates on the
+   server's advertised contract), never in one mixed-version step — refusing O1 (rate
+   leak) and O3 (contradicts the cleared architecture). None of the seven is started by
+   the proposal. SEVEN review rounds are recorded, each finding verified against the code
+   first: the six P1s on #452
+   head `333b2d43` (open API, population path, frozen binding, one party authority, output
+   attribution, the `ProjectParty` source lifecycle), the seven P1s on #452 head `f15f6436`
+   (slice-bound output, in-charge equality, snapshot columns in the append-only trigger
+   enumeration, record-vs-rebind lock serialization, DB-side snapshot population for
+   mixed-version writers, the migration/commands split, the rollout-sequenced attendance
+   lift), and the six findings (5 P1 + 1 P2) on #453 head `772f2ed9` (crew-party equality
+   as a DB seal covering old writers and direct SQL; rebind gated on DB-side serialization
+   that covers old writers; the output snapshot split into its own unit-3 migration because
+   unit 1 has no worker fact to derive from before the allocation reference exists; the
+   enumeration-extension claim corrected to `LabourAttendance` ONLY — `LabourWorkFact` and
+   `ActivityWorkOutput` use the generic full-row `phase3_immutable_row()` trigger, which
+   already covers new columns and is retained, never replaced; the labour-source release
+   protocol ASSIGNED to unit 2, the same unit that first creates a labour source, because
+   `releasePartyAssociationIfUnsourced` today counts only company+vendor sources; and the
+   membership-binding lock routed through a new `OrgsParticipant` operation with declared
+   workflow edges, since `Membership` is Orgs-owned and neither leaf Labour nor Activities
+   may lock it directly), and the seven findings (6 P1 + 1 P2) on #453 head `5d8ff2e5`
+   (the evidence-dependent binding freeze as a BEFORE UPDATE trigger, not only the CAS
+   command's guard; equality re-checked on `Worker`/`Crew` party-binding UPDATEs, not only
+   roster writes; `renamePartyForSoleSource` joining the labour-source count alongside the
+   release path; the output slice correlation as a composite FK in the unit-3 migration;
+   the output derivation taking unit 1's `FOR SHARE` lock with the rebind-vs-output
+   ordering in the barrier probes; the device proof made context-bound and single-use —
+   a signature alone merely moves the replay; and this STATUS synopsis corrected to the
+   attendance-only enumeration so the summary cannot re-teach the already-corrected
+   mistake), and the five P1s on #454 head `0cf294b3` (the cited allocation must be LIVE —
+   `status='active'` under the row lock, serialized with release, because the FK cannot
+   carry status; supplier-backed allocations sealed to the worker's party via the
+   denormalized labour-local supplier party; the output snapshot derivation moved OUT of
+   the unit-3 trigger into the participant-routed service path, because a cross-module DB
+   trigger is exactly the synchronous foreign read AGENTS.md forbids; the equality seals
+   made DEFERRABLE so an existing non-empty roster can be bound atomically at all; and the
+   `Membership` freeze predicate kept in orgs-owned reliance state maintained through
+   transaction-bound participants rather than a trigger reading Labour/Activities tables),
+   and the four P1s on #454 head `832b5d6e` (deferred equality checks permit write skew,
+   so every equality writer serializes on the worker rows in the §C stable order with the
+   deferred check as backstop; the denormalized supplier party needs dual-write + backfill
+   staging before its enforcement enables; the service-written output snapshot was
+   forgeable by alternate writers, replaced by the REFERENTIAL capture-at-allocation FK;
+   allocation creation takes the same worker lock so allocation-vs-rebind cannot skew).
+   The proposal now also states its verification boundary explicitly: named lock orders,
+   trigger shapes and rollout windows are each unit's ACCEPTANCE CRITERIA, proven by that
+   unit's own reproduce-first barrier probes at its own review — a docs proposal cannot
+   certify concurrency mechanics, and rounds 4-6 (findings against prior remedies) are the
+   recorded evidence. Round 7 (#455 head `8f704ace`, eight P1s — crew-root lock ordering,
+   active allocations as binding reliance, MATCH FULL on the output FK, the allocation
+   snapshot backfill, active-edge equality scoping, the in-charge backfill set, a
+   DB-verifiable binding lifecycle for the pre-first-fact window, and the commitment party
+   joining the frozen-identity enumeration) triggered the non-convergence stop, and the
+   OWNER DECIDED on PR #455 (2026-08-27): the measured core + seven-unit staging IS the
+   deliverable; the eight are recorded VERBATIM in the proposal's §4.1 as acceptance
+   criteria for units 1-4, with no further docs-only mechanism design; O1/O3 stay refused;
+   no implementation unit (unit 0 included) starts on or expands this PR. Round 8 (the
+   recording head `d4a4ac86`, four P1s — old-roster-writer rollout staging for the equality
+   seal; the connected-component backfill; the `phase6_project_party_sourced()` extension
+   over the labour source; the output path mirroring `recordWork`'s live-demand derivation
+   at `labour-capacity.service.ts:636-665`) hit #455's two-finding-head limit, and the
+   OWNER DIRECTED (2026-08-27, on #455): record the four into §4.1 exactly like the eight
+   (items 9-12, recording-only) and open the replacement the gate requires — PR #456,
+   `Replaces: #455` — with no further correction heads on #455; `open_pr` names #456 until
+   it merges.
    **Five corrections are recorded so they are not re-earned.** (a) A shell mount is OUTSIDE
    `ProjectLoadBoundary`: `AppShell.tsx:39-41` wraps only `<ScreenView />`, while `switchProject`
    (`store.ts:3366`) empties every project-owned field before the auth request goes out and leaves
