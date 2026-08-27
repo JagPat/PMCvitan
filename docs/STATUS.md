@@ -131,12 +131,19 @@ Three items remain, each with an executable next unit — none waits on sign-off
    every writer — null while unbound is the truth of that moment, pre-attribution history
    is never rewritten), the derivation reading the binding row `FOR SHARE` so rebind
    serializes against every writer's first-fact insert at the DB, crew-party equality as
-   BEFORE INSERT/UPDATE triggers on `CrewMembership` AND `Crew.inchargeWorkerId` firing
-   from BOTH ends (a `Worker`/`Crew` party-binding UPDATE re-checks the rosters it would
-   strand — the composite FKs prove only shared `projectId`; null-strict equality makes the
-   mismatched roster state unrepresentable from every direction), and the
-   evidence-dependent binding FREEZE as a BEFORE UPDATE trigger (an alternate writer
-   repointing a binding column directly cannot bypass the CAS rebind guard);
+   DEFERRABLE INITIALLY DEFERRED constraint triggers on `CrewMembership`,
+   `Crew.inchargeWorkerId` AND `Worker`/`Crew` party-binding UPDATEs — deferred because an
+   immediate per-statement check makes backfilling an existing non-empty crew impossible;
+   the all-null roster moves to one party atomically while a mismatched COMMIT still
+   refuses from every direction — the evidence-dependent binding FREEZE as a BEFORE UPDATE
+   trigger checking MODULE-LOCAL state only (labour triggers read labour-owned facts;
+   output-fact reliance and the orgs-owned `Membership` freeze use a RELIANCE REGISTER in
+   the binding owner's module, written through its transaction-bound participant in the
+   same tx as the evidence — AGENTS.md's no-cross-module-read rule binds triggers too), and
+   a supplier-backed allocation sealed to the worker's party (the commitment's supplier
+   party DENORMALIZED onto the labour-owned chain at creation via `ProcurementParticipant`,
+   so the equality trigger is labour-local, checked at allocation writes AND worker-binding
+   changes);
    (2) the BINDING COMMANDS (service only): pmc-authored tenancy-checked bind/rebind + the
    backfill binding a crew and its active memberships in ONE transaction — the binding
    FROZEN once evidence relies on it (rebind is an audited CAS release+bind whose guard
@@ -151,21 +158,27 @@ Three items remain, each with an executable next unit — none waits on sign-off
    SHAPE as its own additive migration — `ActivityWorkOutput` carries NO worker or
    allocation fact (`contracts.ts:1260`), so unit 1's derivation has nothing to read there:
    this adds the nullable allocation-reference + party-snapshot columns (the generic
-   full-row `ActivityWorkOutput_append_only` already covers them and is retained), the
+   full-row `ActivityWorkOutput_append_only` already covers them and is retained) and the
    slice correlation as a COMPOSITE FK — the output's
    `(projectId, activityId, civilDate, shift, allocationId)` binds to the allocation's own
    columns (the cleared five-column pattern), so a wrong-slice citation is unrepresentable
-   at the DB — and the derivation taking the SAME `FOR SHARE` binding lock as unit 1's, so
-   an output insert cannot stamp party A after a rebind's guard ran (referenceless
-   old-release/pmc/engineer inserts commit null — their attribution stays the principal);
+   at the DB. REFERENTIAL seals only: `ActivityWorkOutput` is Activities-owned and the
+   binding is Labour-owned, so a derivation trigger there would be a cross-module read at
+   the DB — the snapshot is written by the SERVICE through the Labour participant under
+   unit 1's `FOR SHARE` binding lock (the rebind-vs-output ordering joins the barrier
+   probes), referenceless old-release/pmc/engineer inserts commit null (their attribution
+   stays the principal), and authority is NEVER derived from the stored snapshot — unit 4
+   re-derives it from the FK-sealed chain, so a fabricated snapshot grants nothing;
    (4) the OWNERSHIP ENFORCEMENT (service only) INSIDE the
    `recordWork`/`recordOutput`/`recordAttendance` transactions, locking the binding rows it
    derives authority from (the service discipline atop unit 1's DB seal, both orderings
    proven under the deterministic barrier) — the output reference SLICE-BOUND to the
    output's civil date and shift (a Monday/day allocation must not authorize a Friday/night
-   output), validated through the cycle-exempt participant channel (never Activities
-   reading Labour persistence); in-house no-party workers are NOT silently opened to any
-   contractor; (5) the own-scope capture read contract (nothing commercial; the adversarial
+   output) AND LIVE (`status='active'` re-derived under the allocation `FOR UPDATE` — the
+   FK cannot carry status, so a released allocation's tuple still matches; release-vs-record
+   serializes on the same row, both orderings probed), validated through the cycle-exempt
+   participant channel (never Activities reading Labour persistence); in-house no-party
+   workers are NOT silently opened to any contractor; (5) the own-scope capture read contract (nothing commercial; the adversarial
    cannot-read-rates test is the point); (6) the minimal capture surface — a contractor JWT
    merely CITING a bound `deviceId` is replayable citation-only evidence (`manualReason`
    musters assert `labour.override`, pmc-only, at `labour-capacity.service.ts:523`), so the
@@ -177,7 +190,7 @@ Three items remain, each with an executable next unit — none waits on sign-off
    action enables only once every serving API accepts the proof (the UI gates on the
    server's advertised contract), never in one mixed-version step — refusing O1 (rate
    leak) and O3 (contradicts the cleared architecture). None of the seven is started by
-   the proposal. FOUR review rounds are folded, each finding verified against the code
+   the proposal. FIVE review rounds are folded, each finding verified against the code
    first: the six P1s on #452
    head `333b2d43` (open API, population path, frozen binding, one party authority, output
    attribution, the `ProjectParty` source lifecycle), the seven P1s on #452 head `f15f6436`
@@ -204,7 +217,15 @@ Three items remain, each with an executable next unit — none waits on sign-off
    ordering in the barrier probes; the device proof made context-bound and single-use —
    a signature alone merely moves the replay; and this STATUS synopsis corrected to the
    attendance-only enumeration so the summary cannot re-teach the already-corrected
-   mistake).
+   mistake), and the five P1s on #454 head `0cf294b3` (the cited allocation must be LIVE —
+   `status='active'` under the row lock, serialized with release, because the FK cannot
+   carry status; supplier-backed allocations sealed to the worker's party via the
+   denormalized labour-local supplier party; the output snapshot derivation moved OUT of
+   the unit-3 trigger into the participant-routed service path, because a cross-module DB
+   trigger is exactly the synchronous foreign read AGENTS.md forbids; the equality seals
+   made DEFERRABLE so an existing non-empty roster can be bound atomically at all; and the
+   `Membership` freeze predicate kept in orgs-owned reliance state maintained through
+   transaction-bound participants rather than a trigger reading Labour/Activities tables).
    **Five corrections are recorded so they are not re-earned.** (a) A shell mount is OUTSIDE
    `ProjectLoadBoundary`: `AppShell.tsx:39-41` wraps only `<ScreenView />`, while `switchProject`
    (`store.ts:3366`) empties every project-owned field before the auth request goes out and leaves

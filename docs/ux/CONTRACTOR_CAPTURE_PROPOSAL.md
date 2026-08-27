@@ -171,25 +171,43 @@ inseparable-unit justification exists or is claimed:
      guard then sees the new row and refuses) or blocks until the rebind commits and
      derives the NEW party — the guard-vs-first-fact race is closed for every writer, not
      only the new services;
-   - **crew-party equality is a DB seal, not a service promise, and it fires from BOTH
-     ends** — the same-project composite FKs on `CrewMembership` and
-     `Crew.inchargeWorkerId` prove only shared `projectId`, so an old instance or direct
-     SQL could join a party-A worker to a party-B crew; BEFORE INSERT/UPDATE triggers on
-     membership AND in-charge compare the worker's bound party with the crew's
-     (null-strict: null equals only null) and refuse the mismatch — AND the same equality
-     re-checks on any UPDATE of `Worker`'s or `Crew`'s party binding itself, because a seal
-     that fires only on roster writes lets a worker be repointed to party B while sitting
-     inside party A's crew with membership and crew untouched: a binding update is refused
-     while it would strand an active membership or in-charge relation in a crew of a
-     different party, so the mismatched roster state is unrepresentable from EVERY
-     direction, not merely filtered;
-   - **the evidence-dependent binding freeze is a DB trigger, not only the rebind
-     command's guard** — a BEFORE UPDATE trigger on the worker, crew and membership party
-     bindings refuses any change while party-stamped evidence recorded under that binding
-     exists, so an alternate writer updating the binding column directly cannot bypass the
-     CAS rebind lifecycle (the service command remains the ONLY legitimate path and keeps
-     attribution and domain errors; the trigger is the seal that makes "frozen once
-     evidence relies on it" true at PostgreSQL, not merely promised).
+   - **crew-party equality is a DB seal, not a service promise, it fires from BOTH ends,
+     and it is DEFERRED so binding a whole roster is possible at all** — the same-project
+     composite FKs on `CrewMembership` and `Crew.inchargeWorkerId` prove only shared
+     `projectId`, so an old instance or direct SQL could join a party-A worker to a party-B
+     crew; DEFERRABLE INITIALLY DEFERRED constraint triggers on membership, in-charge AND
+     on any UPDATE of `Worker`'s or `Crew`'s party binding compare the worker's bound party
+     with the crew's (null-strict: null equals only null) and refuse the mismatch AT
+     COMMIT — deferred because an IMMEDIATE per-statement check makes unit 2's backfill of
+     an existing non-empty crew impossible (updating the crew first fails on its still-null
+     workers, the worker first on its still-null crew): the all-null roster moves to one
+     party atomically inside one transaction, while a transaction that COMMITS a mismatch —
+     from either end, roster write or binding repoint — is still refused, so the mismatched
+     roster state is unrepresentable from every direction, not merely filtered;
+   - **the evidence-dependent binding freeze is a DB trigger checking MODULE-LOCAL state,
+     not only the rebind command's guard** — a BEFORE UPDATE trigger on the worker and crew
+     party bindings refuses any change while party-stamped evidence recorded under that
+     binding exists, so an alternate writer updating the binding column directly cannot
+     bypass the CAS rebind lifecycle (the service command remains the ONLY legitimate path
+     and keeps attribution and domain errors). The predicate never reads a foreign module's
+     tables — AGENTS.md's no-synchronous-cross-module-read rule binds triggers too: the
+     labour-owned worker/crew triggers may check the labour-owned attendance and work-fact
+     tables directly, but reliance arising from the Activities-owned output fact, and the
+     freeze on the ORGS-owned `Membership` binding, are checked against a RELIANCE REGISTER
+     owned by the binding's own module — the module writing party-stamped evidence registers
+     that reliance through the binding owner's transaction-bound participant IN THE SAME
+     transaction as the evidence row, and each freeze trigger reads only its own module's
+     register;
+   - **a supplier-backed allocation cannot span two parties** — a `WorkerAllocation` citing
+     a `CapacityCommitment` draws down a specific supplier's committed capacity, but the
+     existing five-column FK proves only project/fingerprint/date/shift, so a party-A worker
+     could stay allocated against party B's commitment and record work whose commercial
+     drawdown belongs to B. The commitment's supplier party is DENORMALIZED onto the
+     labour-owned commercial chain at creation (labour already validates the vendor through
+     `ProcurementParticipant` — the party travels the same way), making the equality check
+     labour-module-local: a deferred trigger refuses, at allocation writes AND at
+     worker-binding changes, an active supplier-backed allocation whose worker party is not
+     the commitment's supplier party.
 2. **The binding commands** (service only, schema untouched): the population path —
    pmc-authored, tenancy-checked `bind`/`rebind` commands for worker↔party, crew↔party and
    membership↔party, with the backfill on existing projects binding a crew and its active
@@ -224,25 +242,29 @@ inseparable-unit justification exists or is claimed:
 3. **The output attribution shape** (additive migration ALONE): `ActivityWorkOutput`
    carries NO worker or allocation fact (`contracts.ts:1260` — activity, date, shift,
    quantity), so unit 1's derivation has nothing to read there and its snapshot cannot ship
-   in unit 1 honestly. This migration adds the nullable allocation-reference and
-   party-snapshot columns to `ActivityWorkOutput` (its generic `phase3_immutable_row()`
-   append-only trigger rejects every update, so it covers the new columns unchanged and is
-   RETAINED, not replaced) and derives the snapshot from the cited allocation's worker
-   binding when the reference is present (old-release and pmc/engineer inserts carry no
-   reference and commit with a null snapshot — legitimate: their attribution stays the
-   recording principal, and contractor output remains refused by unit 0 until unit 4 makes
-   the reference mandatory for contractor callers). Two seals travel WITH the reference or
-   the trusted attribution it feeds is forgeable at the DB: **the slice correlation is a
-   composite FK, not a service promise** — the output's
-   `(projectId, activityId, civilDate, shift, allocationId)` binds to the allocation's OWN
-   columns (the cleared commitment↔PO-line five-column pattern), so a Friday/night output
-   citing a Monday/day allocation on another activity is unrepresentable however it is
-   inserted, with unit 4's service check the domain-error surface on top; and **the
-   derivation takes the SAME `FOR SHARE` binding lock as unit 1's** — without it, an
-   output insert could read party A unlocked while a rebind locks the worker, sees no
-   not-yet-committed output, recasts to party B and commits first, stamping an immutable A
-   snapshot the reliant-evidence guard never saw — this rebind-vs-output-insert ordering
-   joins the unit-4 barrier probes.
+   in unit 1 honestly. This migration is REFERENTIAL seals only — `ActivityWorkOutput` is
+   Activities-owned and the worker binding is Labour-owned, so a trigger on the output
+   table that read or locked the binding would be a synchronous cross-module read installed
+   at the DB, the exact edge AGENTS.md forbids: it adds the nullable allocation-reference
+   and party-snapshot columns (the generic `phase3_immutable_row()` append-only trigger
+   rejects every update, so it covers the new columns unchanged and is RETAINED, not
+   replaced) and **the slice correlation as a composite FK, not a service promise** — the
+   output's `(projectId, activityId, civilDate, shift, allocationId)` binds to the
+   allocation's OWN columns (the cleared commitment↔PO-line five-column pattern), so a
+   Friday/night output citing a Monday/day allocation on another activity is
+   unrepresentable however it is inserted. The SNAPSHOT is written by the SERVICE through
+   the Labour-owned participant (unit 4): the participant derives the party from the cited
+   allocation's worker binding INSIDE the output transaction while holding the same
+   `FOR SHARE` binding lock as unit 1's derivation — so the rebind-vs-output-insert
+   ordering (an unlocked insert stamping party A after a rebind's reliant-evidence guard
+   already ran) is closed, and that ordering joins the unit-4 barrier probes.
+   Old-release and pmc/engineer inserts carry no reference and commit with a null snapshot —
+   legitimate: their attribution stays the recording principal, and contractor output
+   remains refused by unit 0 until unit 4 makes the reference mandatory for contractor
+   callers. An alternate writer CAN insert a referenced row with an absent or fabricated
+   snapshot, which is why **authority is never derived from the stored snapshot**: unit 4
+   re-derives ownership from the FK-sealed allocation chain on every call, and the snapshot
+   is derived attribution history only.
 4. **The ownership enforcement** (service only, schema untouched): re-derive "own" INSIDE
    the `recordWork`/`recordOutput`/`recordAttendance` transactions from the unit-1
    relations, so a contractor token is refused on another party's allocation, activity or
@@ -255,16 +277,22 @@ inseparable-unit justification exists or is claimed:
    may `FOR UPDATE` it directly — a new `OrgsParticipant` operation locks and returns the
    caller's active membership binding INSIDE the caller's transaction (the same
    participant shape every cross-module lock already uses), with that workflow-participant
-   edge DECLARED by each calling module; and **the output reference is slice-bound** —
-   `recordActivityOutputSchema` carries its own `civilDate`/`shift`, so "a live allocation
-   on that activity" is not enough (contractor A's Monday/day allocation must not authorize
-   an output recorded for Friday/night): the allocation's project, activity, civil date and
-   shift must ALL match the output, or the output derives those fields from the cited
-   allocation — validated through the cycle-exempt participant channel, never by Activities
-   reading Labour persistence. Reproduce-first: the two-contractors probe (A submits B's
-   ids, for each of the three commands) is refused; the wrong-slice output probe is
-   refused; an in-house (no-party) worker's records stay pmc/engineer-recordable and are
-   NOT silently opened to any contractor. Nothing about pmc/engineer behaviour changes.
+   edge DECLARED by each calling module; and **the output reference is slice-bound AND
+   LIVE** — `recordActivityOutputSchema` carries its own `civilDate`/`shift`, so "an
+   allocation on that activity" is not enough in two distinct ways: the allocation's
+   project, activity, civil date and shift must ALL match the output (or the output derives
+   those fields from the cited allocation), and the allocation must be `status='active'`
+   RE-DERIVED under the allocation row's `FOR UPDATE` inside the output/work transaction —
+   the unit-3 composite FK cannot carry status, so a released allocation's tuple still
+   matches, and a contractor holding a stale id after the pmc released the allocation must
+   be refused; the release path CASes the same locked row, so release-vs-record is
+   serialized and BOTH orderings join the barrier probes. All of it is validated through
+   the cycle-exempt participant channel, never by Activities reading Labour persistence.
+   Reproduce-first: the two-contractors probe (A submits B's ids, for each of the three
+   commands) is refused; the wrong-slice output probe is refused; the released-allocation
+   probe is refused; an in-house (no-party) worker's records stay pmc/engineer-recordable
+   and are NOT silently opened to any contractor. Nothing about pmc/engineer behaviour
+   changes.
 5. **The own-scope read contract** (server): the narrow queries above, policy named for what
    it is, 404/403 semantics matching the existing capability gates, with tests proving a
    contractor token can read its own capture context and can NOT read any commercial or
