@@ -1950,7 +1950,12 @@ test('workflow recovery is exact-head serialized and has terminal time budget', 
   assert.match(gate, /event\.inputs\?\.terminal_status_id/);
   assert.match(workflow, /needs:\s*\[request-recovery\]/);
   assert.match(workflow, /autonomous-review-owner-/);
-  assert.match(workflow, /timeout-minutes:\s*90/);
+  // The terminal budget is DERIVED from the gate's settle + review windows
+  // (40m settle + two 25m review attempts + overhead). Pinning both here keeps
+  // the pair moving together: raising a gate window without the budget starves
+  // the recovery job of the time its own arithmetic promises.
+  assert.match(workflow, /timeout-minutes:\s*105/);
+  assert.match(gate, /CHECK_TIMEOUT_MS \?\? 40 \* 60_000/);
 });
 
 test('operator recovery documents the required current head SHA', async () => {

@@ -47,14 +47,21 @@ const STATUS_CONTEXT = 'codex-current-head';
 const RECOVERY_CONTEXT_PREFIX = 'codex-recovery-request/';
 const COMMENT_MARKER = '<!-- autonomous-review-state -->';
 const API_ROOT = 'https://api.github.com';
-// The settle window must exceed the LONGEST required CI job. The api battery
-// runs ~11-13 minutes; a 10-minute window made every orchestrator instance
-// woken early (e.g. by a metadata-only `edited` CI run completing while the
-// synchronize run's battery was still going) publish a false
-// "Checks did not settle" block that only healed when the real run's
-// completion re-triggered the workflow. 25 minutes covers the battery with
-// headroom and costs nothing when checks are already green.
-const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 25 * 60_000);
+// The settle window must exceed the LONGEST required CI job. When this was
+// tuned to 25 minutes the api battery's INTEGRATION step ran ~11-13 minutes;
+// since the compiled migrate.sh production-runner proofs joined the job
+// (Schedule B1 baseline + schema enforcement, steps 14-15), the api JOB
+// end-to-end measures ~28 minutes — six consecutive runs on PRs #443-#449
+// landed between 27.9 and 28.6 — so EVERY early wake (e.g. a metadata-only
+// `edited` CI run completing while the synchronize run's battery was still
+// going) expired the window and published a false "Checks did not settle"
+// block that only healed when the real run's completion re-triggered the
+// workflow. PR #444 hit exactly that on 2026-08-26. 40 minutes restores the
+// same headroom ratio the 25-minute value was chosen for, and costs nothing
+// when checks are already green. The workflow's terminal budget
+// (auto-merge.yml timeout-minutes) is derived from this constant — change
+// them together.
+const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 40 * 60_000);
 // Codex reviews of this repository land 13-23 minutes after their
 // draft-to-ready trigger (measured over PR #337's ten rounds). A 15-minute
 // attempt window expired before nearly every real review, burning the retry
