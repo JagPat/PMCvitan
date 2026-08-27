@@ -108,28 +108,40 @@ Three items remain, each with an executable next unit — none waits on sign-off
    worked-minutes UIs live only on `LabourScreen`, whose reads are ALL `labour.read`
    (pmc/engineer), so handing contractor the hub 403s every tab AND would expose the §F
    commercial chain; and `activity.output.record` has NO web dispatcher for ANY role (an
-   all-roles surface gap, recorded separately). RECOMMENDS O2 staged as FOUR units in
-   order — (1) the ATTRIBUTION SHAPE as an additive migration ALONE (the repository's
-   mandatory migration seam: nullable, diagnostic-first, old release byte-identical), and it
-   must bind the WORKER/CREW side, not just the memberships — `Worker`/`Crew` carry no
-   supplier identity (`schema.prisma:2662,2716`) and an in-house allocation has
-   `capacityCommitmentId = null`, so a membership-side-only link cannot define "own" (the
-   `Vendor`/`ProjectVendor` §H reuse pattern, with membership↔party closing the loop);
-   (2) the OWNERSHIP ENFORCEMENT (service only) INSIDE the
-   `recordWork`/`recordOutput`/`recordAttendance` transactions, since today contractor A
-   could submit contractor B's allocation/activity id and the writes would accept it (the
-   grants are safe only because no UI reaches them; read filtering is NOT write
-   authorization; in-house no-party workers are NOT silently opened to any contractor);
-   (3) the own-scope capture read contract (nothing commercial; the adversarial
-   cannot-read-rates test is the point); (4) the minimal capture surface — where a
-   contractor JWT merely CITING a bound `deviceId` is replayable citation-only evidence
-   (`manualReason` musters assert `labour.override`, pmc-only, at
+   all-roles surface gap, recorded separately). RECOMMENDS O2 staged as FIVE units in
+   order — (0) FAIL CLOSED NOW (service only): the three writes are open at the API today —
+   a contractor bearer token needs no web dispatcher and the missing UI is not a guard — so
+   contractor callers are refused by name until the units that make each call safe deploy
+   (not O3: grants stay declared, the refusal is temporary and lifted per-command);
+   (1) the ATTRIBUTION SHAPE as an additive migration + its BINDING COMMANDS (the
+   repository's mandatory migration seam; references nothing can write leave the later
+   units vacuous), binding the WORKER/CREW side, not just the memberships — `Worker`/`Crew`
+   carry no supplier identity (`schema.prisma:2662,2716`) and an in-house allocation has
+   `capacityCommitmentId = null` — anchored on the source-justified `ProjectParty` with a
+   NEW labour justification source and release protocol (a bare FK would break
+   contractor-company removal or cascade away evidence —
+   `OrgsParticipant.releasePartyAssociationIfUnsourced`, `orgs.participant.ts:419`), the
+   binding FROZEN once evidence relies on it (rebind is an audited CAS release+bind; each
+   fact snapshots its authorizing party), and ONE authority (the worker's party; crew
+   membership enforces party equality at create/change); (2) the OWNERSHIP ENFORCEMENT
+   (service only) INSIDE the `recordWork`/`recordOutput`/`recordAttendance` transactions —
+   for output the command input must gain the recorder's own-allocation reference, since
+   `recordActivityOutputSchema` names no worker and `Activity` has no party fact, validated
+   through the cycle-exempt participant channel (never Activities reading Labour
+   persistence); read filtering is NOT write authorization; in-house no-party workers are
+   NOT silently opened to any contractor; (3) the own-scope capture read contract (nothing
+   commercial; the adversarial cannot-read-rates test is the point); (4) the minimal
+   capture surface — where a contractor JWT merely CITING a bound `deviceId` is replayable
+   citation-only evidence (`manualReason` musters assert `labour.override`, pmc-only, at
    `labour-capacity.service.ts:523`; the web's only muster dispatcher always sends
    `manualReason` and none sends `deviceId`), so the server contract is EXTENDED with a
    fresh device-authenticated proof (the device attests via its own channel or signs a
-   server nonce) and attendance is simply NOT OFFERED until this unit lands — refusing O1
-   (rate leak) and O3 (contradicts the cleared architecture). None of the four is started
-   by the proposal.
+   server nonce) and attendance stays server-refused (unit 0) and absent from the surface
+   until this unit lands — refusing O1 (rate leak) and O3 (contradicts the cleared
+   architecture). None of the five is started by the proposal. The six Codex P1s on head
+   `333b2d43` (open API, population path, frozen binding, one party authority, output
+   attribution, the `ProjectParty` source lifecycle) are folded above — each verified
+   against the code first.
    **Five corrections are recorded so they are not re-earned.** (a) A shell mount is OUTSIDE
    `ProjectLoadBoundary`: `AppShell.tsx:39-41` wraps only `<ScreenView />`, while `switchProject`
    (`store.ts:3366`) empties every project-owned field before the auth request goes out and leaves
