@@ -113,8 +113,12 @@ const EXPECT: Record<string, Spec> = {
     // Phase 6 task 4a — the withdrawal evidence travels through the CONTRACT (pmc-audience only;
     // the visibility rule removes the whole row for every other viewer): withdrawnAt, the
     // withdrawer's frozen display identity, and the reason.
-    keys: ['id', 'title', 'room', 'nodeId', 'status', 'ageDays', 'photoSwatch', 'options', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(),
-    optional: ['nodeId', 'ageDays', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(), nullable: [],
+    // Phase 6 unit 4b — WHO decides. Both keys are OPTIONAL and, for a CLIENT-held decision, are
+    // absent entirely: the serializer omits them rather than emitting `'client'`, so every
+    // decision issued before this unit keeps the exact wire shape it had (P15). They appear only
+    // on a decision that actually names someone else.
+    keys: ['id', 'title', 'room', 'nodeId', 'status', 'ageDays', 'photoSwatch', 'options', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'deciderKind', 'deciderMembershipId'].sort(),
+    optional: ['nodeId', 'ageDays', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'deciderKind', 'deciderMembershipId'].sort(), nullable: [],
   },
   OptionDto: { keys: ['label', 'key', 'material', 'delta', 'swatch', 'photoUrl', 'recommended'].sort(), optional: ['photoUrl'], nullable: [] },
   ActivityDto: {
