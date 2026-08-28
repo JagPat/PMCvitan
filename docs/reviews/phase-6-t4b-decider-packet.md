@@ -97,11 +97,31 @@ Replaces: none
 ## Gates
 
 - `pnpm check` — **EXIT 0** (automation 292/292, web 948/948, API 793/793, build clean)
-- focused: `phase6-t4b-decider.test.ts` 14/14 · `decision-decider.test.tsx` 6/6
-- RED at the staged shape (first commit on this branch): 9/14 integration, 6/6 web
-- full API integration suite on a migrated database
-- `upgrade-proof.sh`
-- tripwires advanced in the same commits: mutating routes 168 → 169, external-effect dispatch sites 81 → 82, the decisions controller's ordered route signatures, the decisions service's dispatch count, and the pinned migration corpus 91 → 92
+- focused: `phase6-t4b-decider.test.ts` **14/14** · `decision-decider.test.tsx` **6/6**
+- RED at the staged shape (commit `7875b83`): **9/14** integration, **6/6** web
+- full API integration suite on a migrated database: **1297/1297 across 99 files**
+- `scripts/upgrade-proof.sh` — **PASSED** (all migrations apply over the legacy fixture and every legacy meaning survives; this unit's migration touches only the read-model table, so no forgery rejection changes)
+- tripwires advanced in the same commits: mutating routes 168 → 169, external-effect dispatch sites 81 → 82, the decisions controller's ordered route signatures, the decisions service's dispatch count, the runtime `DecisionDto` key/optionality pin, and the pinned migration corpus 91 → 92
+
+### What the full battery found, and what was done about it
+
+The battery is what caught the one real consequence of this unit that the focused
+probes could not: **five integration suites published decisions addressed to "the
+client" into a fixture project that had no client membership at all**, and publish
+now refuses that. The rule was NOT weakened to accommodate them. The fixture was
+corrected — `createTwoProjectFixture` gives both projects an active client, which is
+what every project in this product has and what that fixture claims to be a minimum
+of — and the unit's own role-holder probe was sharpened as a result: it now REMOVES
+project A's only client and asserts both halves, that publishing a client-held
+decision is refused AND that the draft door stays open, so a practice whose client is
+not yet onboarded keeps working in the register rather than being locked out of it.
+
+Stated plainly for the reviewer, because it is a behaviour change and not a test fix:
+**after this unit, a project with no active client cannot PUBLISH a client-held
+decision** (drafting is unaffected, and the same rule applies to a `pmc`-held decision
+where nobody holds effective PMC standing). That is the plan's round-10 rule, and it
+is the point of naming a decider: a published decision no one can answer is the state
+the design exists to prevent.
 
 ## Carried forward (named, not dismissed)
 
