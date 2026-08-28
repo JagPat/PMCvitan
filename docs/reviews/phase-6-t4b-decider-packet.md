@@ -102,7 +102,7 @@ readiness key must deploy as one change or the audit's serialization story is fa
 ## Pre-review checks (the template's five)
 
 1. `pnpm check` — EXIT 0 (automation 292/292 incl. the pg-parse corpus advanced 91→92; web
-   lint/typecheck/tests 942/942/build; api typecheck/tests 794/794/build).
+   lint/typecheck/tests 952/952/build; api typecheck/tests 794/794/build).
 2. Focused reproduce-first tests — `phase6-t4b-decider.test.ts` (integration, live PG: P16/
    P17/P18-ordering/P39 both layers + org + activation arms/P20/P21/P22 server halves) and
    `tests/decider.test.tsx` (web: the shared predicate, the selector mirrors, the decider
@@ -137,7 +137,7 @@ readiness key must deploy as one change or the audit's serialization story is fa
 
 ## Gates
 
-- `pnpm check` EXIT 0 — automation 292/292; web 942/942 (lint+typecheck+build clean); API
+- `pnpm check` EXIT 0 — automation 292/292; web 952/952 (lint+typecheck+build clean); API
   794/794 (typecheck+build clean).
 - Full integration battery on a pristine migrated database (92 migrations): see the PR body
   for the run's totals — includes the new `phase6-t4b-decider.test.ts` and the repaired
