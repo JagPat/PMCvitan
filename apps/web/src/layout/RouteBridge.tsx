@@ -2,7 +2,8 @@ import { useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { parseLocation, pathForScreen, screensFor, SCREEN_CAPABILITY } from '@/lib/screens';
+import { viewerIsDecider } from '@vitan/shared';
+import { parseLocation, pathForScreen, screensFor, withDeciderRoute, SCREEN_CAPABILITY } from '@/lib/screens';
 
 /**
  * Keeps the URL, the active project, and the active screen in sync — the URL is
@@ -26,6 +27,14 @@ export function RouteBridge() {
   const memberships = useStore(useShallow((s) => s.memberships));
   const capabilities = useStore(useShallow((s) => s.capabilities));
   const capabilitiesKnown = useStore((s) => s.capabilitiesKnown);
+  // Phase 6 task 4b (§A.3 round 4) — the approval route follows the DECIDER: a viewer holding at
+  // least one open decision keeps `client-decisions` reachable (the Inbox CTA lands and stays);
+  // a same-role non-decider is still bounced.
+  const isOpenDecider = useStore((s) =>
+    s.decisions.some(
+      (d) => !d.draft && (d.status === 'pending' || d.status === 'change') && viewerIsDecider(d, s.role, s.sessionUserId),
+    ),
+  );
   const setScreen = useStore((s) => s.setScreen);
   const switchProject = useStore((s) => s.switchProject);
   const navigate = useNavigate();
@@ -70,19 +79,22 @@ export function RouteBridge() {
     // like any forbidden screen. While capabilities are still UNKNOWN (cold load, shell in
     // flight or failed) nothing is bounced — a pilot deep link must survive the shell latency.
     const caps = new Set(capabilities);
-    const allowed = screensFor(role)
-      .filter((m) => {
-        const cap = SCREEN_CAPABILITY[m.key];
-        return cap === undefined || !capabilitiesKnown || caps.has(cap);
-      })
-      .map((m) => m.key);
+    const allowed = withDeciderRoute(
+      screensFor(role)
+        .filter((m) => {
+          const cap = SCREEN_CAPABILITY[m.key];
+          return cap === undefined || !capabilitiesKnown || caps.has(cap);
+        })
+        .map((m) => m.key),
+      isOpenDecider,
+    );
     if (!fromPath || !allowed.includes(fromPath)) {
       if (screen !== allowed[0]) setScreen(allowed[0]);
       return;
     }
     if (fromPath !== screen) setScreen(fromPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname, role, activeProjectId, memberships, pendingProjectId, projectLoadState, capabilities, capabilitiesKnown]);
+  }, [location.pathname, role, activeProjectId, memberships, pendingProjectId, projectLoadState, capabilities, capabilitiesKnown, isOpenDecider]);
 
   // store -> URL (canonical project-scoped path). ONE-WAY during a transition: while
   // a switch is pending or the target project is loading, the deep link's URL is the

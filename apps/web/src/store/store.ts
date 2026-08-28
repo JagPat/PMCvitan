@@ -68,7 +68,9 @@ import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
-import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
+import { jwtSub } from '@/lib/jwt';
+import { unlinkPushOnSignOut } from '@/data/push';
+import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, UpdateDecisionDraftInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
@@ -331,6 +333,11 @@ export interface AppState {
   // real session (set by a phone-OTP sign-in; null = passwordless dev auth)
   sessionToken: string | null;
   userName: string | null;
+  /** Phase 6 task 4b (§A.3) — the signed-in USER id (the JWT's `sub`), the viewer half of the
+   *  shared viewer/decider predicate: a named member-decider is recognised by comparing this to
+   *  `Decision.deciderUserId`. Null under dev/demo auth — an unknown viewer is simply never the
+   *  named decider (the server remains the authority; this only mirrors its filter). */
+  sessionUserId: string | null;
   // live project identity — seeded from PROJECT, replaced wholesale by each snapshot
   // (so switching projects re-labels every screen; never read the PROJECT seed in a screen)
   name: string;
@@ -548,6 +555,10 @@ export interface AppActions {
   issueDecision: (input: IssueDecisionPayload) => void;
   /** Publish a private draft decision → issue it to the client (works offline in the demo). */
   publishDecision: (decisionId: string) => void;
+  /** Phase 6 task 4b — edit an UNPUBLISHED draft: re-point its decider (kind / named member),
+   *  convert to/from a record (`none` ⟺ `recorded` with options replaced as one pair), or
+   *  replace its options. Server-only (drafts are server-authored in API mode). */
+  updateDecisionDraft: (decisionId: string, input: UpdateDecisionDraftInput) => void;
   /** Publish EVERY draft (decisions + drawings) in one action — the Drafts workspace "Publish all". */
   publishAllDrafts: () => void;
   /** Create a zone/room/element and resolve to its new id (for the inline location picker).
@@ -909,6 +920,7 @@ export function getInitialState(): AppState {
     notifications: structuredClone(SEED_NOTIFICATIONS),
     sessionToken: null,
     userName: null,
+    sessionUserId: null,
     name: PROJECT.name,
     short: PROJECT.short,
     descriptor: PROJECT.descriptor,
@@ -1736,6 +1748,7 @@ export const useStore = create<Store>()(
         s.screen = opts?.targetScreen && allowed.includes(opts.targetScreen) ? opts.targetScreen : allowed[0];
         s.sessionToken = res.token;
         s.userName = res.name ?? null;
+        s.sessionUserId = jwtSub(res.token);
         s.access = freshAccess(s.access.generation + 1);
         // EVERY auth result is a new session identity, so it always starts a new
         // scope generation — a reply issued FOR the previous identity (even on the
@@ -1830,6 +1843,7 @@ export const useStore = create<Store>()(
         // an explicit persona switch is dev auth — drop any real OTP session
         s.sessionToken = null;
         s.userName = null;
+        s.sessionUserId = null;
       });
     },
     /**
@@ -1837,10 +1851,16 @@ export const useStore = create<Store>()(
      * resets the access flow to 'who', and drops back to a neutral role/screen.
      * With dev auth off, the AppShell auth-gate then shows the sign-in screen.
      */
-    signOut: () =>
+    signOut: () => {
+      // Phase 6 task 4b (§A.3 round 13) — UNLINK this browser's push subscription BEFORE the
+      // token clears (the request needs the still-valid session): a shared device must not keep
+      // receiving the departing user's decider-targeted content. Fire-and-forget best-effort —
+      // the server's credential-version + expiry checks also sever a stale link.
+      if (gateway && get().sessionToken) void unlinkPushOnSignOut(gateway);
       set((s) => {
         s.sessionToken = null;
         s.userName = null;
+        s.sessionUserId = null;
         s.access = freshAccess(s.access.generation + 1);
         s.role = 'client';
         s.screen = screensFor('client')[0].key;
@@ -1861,7 +1881,8 @@ export const useStore = create<Store>()(
         s.projectLoadState = 'idle';
         s.projectLoadError = null;
         s.pendingProjectId = null;
-      }),
+      });
+    },
     setScreen: (k) =>
       set((s) => {
         s.screen = k;
@@ -3562,11 +3583,29 @@ export const useStore = create<Store>()(
             }),
           );
           const lease = beginSnapshotLease(scope); // gate round 11: before the create request
-          const snap = await gw.createDecision({ title: input.title, nodeId: input.nodeId, room: input.room, options, publish: input.publish }, newIdempotencyKey());
+          // Phase 6 task 4b — the decider designation travels with the create; omitted fields
+          // keep the server default ('client'), byte-identical legacy behaviour.
+          const snap = await gw.createDecision(
+            {
+              title: input.title,
+              nodeId: input.nodeId,
+              room: input.room,
+              options,
+              publish: input.publish,
+              ...(input.deciderKind ? { deciderKind: input.deciderKind } : {}),
+              ...(input.deciderMembershipId ? { deciderMembershipId: input.deciderMembershipId } : {}),
+            },
+            newIdempotencyKey(),
+          );
+          const record = input.deciderKind === 'none';
           consumeSnapshotResult(
             acceptSnapshot(snap, lease),
             input.publish
-              ? `Decision issued: ${input.title} — the client has been asked to choose.`
+              ? record
+                ? `Issue recorded: ${input.title} — filed for the team; no approval is required.`
+                : !input.deciderKind || input.deciderKind === 'client'
+                  ? `Decision issued: ${input.title} — the client has been asked to choose.`
+                  : `Decision issued: ${input.title} — the decider has been asked to choose.`
               : `Draft saved: ${input.title} — visible only to you until you publish it.`,
             lease.scope,
           );
@@ -3577,12 +3616,32 @@ export const useStore = create<Store>()(
         }
       })();
     },
+    updateDecisionDraft: (decisionId, input) => {
+      const d = get().decisions.find((x) => x.id === decisionId);
+      if (!d?.draft) return;
+      if (!gateway) {
+        get().flash('Editing drafts needs the server.');
+        return;
+      }
+      runRemote(
+        () => gateway!.updateDecisionDraft(decisionId, input, newIdempotencyKey()),
+        input.deciderKind === 'none'
+          ? `Draft converted to a record: ${d.title} — no approval will be required.`
+          : `Draft updated: ${d.title}.`,
+      );
+    },
     publishDecision: (decisionId) => {
       const d = get().decisions.find((x) => x.id === decisionId);
       if (!d) return;
-      // API mode: the server flips publishedAt, notifies the client, and returns a fresh snapshot.
+      // API mode: the server flips publishedAt, notifies the decider, and returns a fresh snapshot.
       if (gateway) {
-        runRemote(() => gateway!.publishDecision(decisionId, newIdempotencyKey()), `Published: ${d.title} — the client has been asked to choose.`);
+        const publishedMsg =
+          d.deciderKind === 'none'
+            ? `Published: ${d.title} — recorded for the team; no approval required.`
+            : d.deciderKind && d.deciderKind !== 'client'
+              ? `Published: ${d.title} — the decider has been asked to choose.`
+              : `Published: ${d.title} — the client has been asked to choose.`;
+        runRemote(() => gateway!.publishDecision(decisionId, newIdempotencyKey()), publishedMsg);
         return;
       }
       // Demo (no server): flip the draft live locally and raise the client's notification,

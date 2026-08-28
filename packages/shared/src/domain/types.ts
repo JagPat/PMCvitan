@@ -344,6 +344,9 @@ export interface MembershipSummary {
 
 export interface ProjectMember {
   userId: string;
+  /** Phase 6 task 4b (§A.1) — the Membership row's own id: what a NAMED member-decider
+   *  designation stores (`deciderMembershipId`), so the issue-decision picker can offer it. */
+  membershipId?: string;
   name: string;
   email: string | null;
   phone: string | null;

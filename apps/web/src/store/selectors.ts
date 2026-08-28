@@ -8,7 +8,7 @@
  * surface for the core loop.
  */
 
-import { deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type ScreenKey } from '@vitan/shared';
+import { deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsDecider, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
@@ -22,24 +22,40 @@ export function selectPending(s: AppState): Decision[] {
   return s.decisions.filter((d) => d.status === 'pending' && !d.draft);
 }
 
-/** Decisions reopened by a change request — awaiting the client's MANDATORY re-approval
- *  (Phase 1 Task 2). Work driven by them is gated until the client re-approves. */
+/** Decisions reopened by a change request — awaiting the decider's MANDATORY re-approval
+ *  (Phase 1 Task 2). Work driven by them is gated until the decider re-approves. */
 export function selectReapproval(s: AppState): Decision[] {
   return s.decisions.filter((d) => d.status === 'change' && !d.draft);
 }
 
-/** Decision log is permission-filtered: contractor & engineer never see pending rows.
- *  Private drafts are excluded for everyone — they live only in the Drafts workspace. */
+/** Phase 6 task 4b (§A.3) — the open decisions THIS VIEWER decides (the approval surface's
+ *  slice): `selectPending`/`selectReapproval` narrowed by the shared `viewerIsDecider`
+ *  predicate, so a named member-decider sees exactly their obligations and a same-role
+ *  non-decider sees none. */
+export function selectDeciderPending(s: AppState): Decision[] {
+  return selectPending(s).filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
+}
+
+export function selectDeciderReapproval(s: AppState): Decision[] {
+  return selectReapproval(s).filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
+}
+
+/** Decision log is permission-filtered: a pending row is visible only to pmc and THE DECIDER
+ *  (Phase 6 task 4b §A.3 — the shared `viewerIsDecider` predicate, so a named engineer-decider
+ *  sees their obligation in the log while a same-role non-decider and the non-deciding client
+ *  do not). Private drafts are excluded for everyone — they live only in the Drafts workspace. */
 export function selectLogDecisions(s: AppState): Decision[] {
   // Phase 6 task 4a — a WITHDRAWN decision is pmc-only (the server's decisionVisibleToViewer
   // is the authority; this selector mirrors it): withdrawal never widens an audience, and the
   // old `status !== 'pending'` negative filter would otherwise LEAK a withdrawn decision to
   // roles that never saw it while it was pending.
   if (s.role !== 'pmc') {
-    if (s.role === 'contractor' || s.role === 'engineer') {
-      return s.decisions.filter((d) => d.status !== 'pending' && d.status !== 'withdrawn' && !d.draft);
-    }
-    return s.decisions.filter((d) => d.status !== 'withdrawn' && !d.draft);
+    return s.decisions.filter(
+      (d) =>
+        !d.draft &&
+        d.status !== 'withdrawn' &&
+        (d.status !== 'pending' || viewerIsDecider(d, s.role, s.sessionUserId)),
+    );
   }
   return s.decisions.filter((d) => !d.draft);
 }
@@ -56,12 +72,15 @@ export function selectLogDecisions(s: AppState): Decision[] {
 export function selectVisibleDecisions(s: AppState): Decision[] {
   if (s.role !== 'pmc') {
     // The COMPLETE server audience rule (decisionVisibleToViewer), not just the withdrawn
-    // arm: drafts are author-private (only the pmc authors decisions here), PENDING is
-    // pmc/client-only (AUTH-02), WITHDRAWN is pmc-only. A persona switch over a still-loaded
-    // store — or demo mode, which never refetches — must not render rows the server filters
-    // (round 6 + round 10).
+    // arm: drafts are author-private (only the pmc authors decisions here), PENDING follows
+    // the DECIDER (Phase 6 task 4b §A.3 — the shared `viewerIsDecider` predicate), WITHDRAWN
+    // is pmc-only. A persona switch over a still-loaded store — or demo mode, which never
+    // refetches — must not render rows the server filters (round 6 + round 10 + 4b round 12).
     return s.decisions.filter(
-      (d) => !d.draft && d.status !== 'withdrawn' && (s.role === 'client' || d.status !== 'pending'),
+      (d) =>
+        !d.draft &&
+        d.status !== 'withdrawn' &&
+        (d.status !== 'pending' || viewerIsDecider(d, s.role, s.sessionUserId)),
     );
   }
   return s.decisions.filter((d) => !d.draft);
@@ -300,12 +319,21 @@ export function selectActionItems(s: AppState): ActionItem[] {
   const names = (xs: { title?: string; name?: string; number?: string }[], n = 3) =>
     xs.slice(0, n).map((x) => x.title ?? x.name ?? x.number ?? '').filter(Boolean).join(', ');
 
-  if (s.role === 'client' && pending.length) {
-    items.push({ key: 'client-pending', title: `${pending.length} decision${plural(pending.length)} awaiting your approval`, detail: names(pending), screen: 'client-decisions', cta: 'Review & approve', tone: 'amber' });
-  }
-  if (s.role === 'client' && changes.length) {
-    // a reopened decision BLOCKS the work driven by it until the client re-approves
-    items.push({ key: 'client-reapprove', title: `${changes.length} change request${plural(changes.length)} need${changes.length === 1 ? 's' : ''} your re-approval`, detail: names(changes), screen: 'client-decisions', cta: 'Re-approve', tone: 'red' });
+  // Phase 6 task 4b (§A.3) — the approval to-do follows THE DECIDER (the shared `viewerIsDecider`
+  // predicate): a named engineer-decider gets the item, a same-role non-decider does not, and the
+  // client no longer sees a demand for a decision they do not decide. The client keys are kept for
+  // the (unchanged) client-held case; a non-client decider gets the decider-keyed item pointing at
+  // the same approval surface (reachable via the decider route arm).
+  if (s.role !== 'pmc') {
+    const myPending = pending.filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
+    const myChanges = changes.filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
+    if (myPending.length) {
+      items.push({ key: s.role === 'client' ? 'client-pending' : 'decider-pending', title: `${myPending.length} decision${plural(myPending.length)} awaiting your approval`, detail: names(myPending), screen: 'client-decisions', cta: 'Review & approve', tone: 'amber' });
+    }
+    if (myChanges.length) {
+      // a reopened decision BLOCKS the work driven by it until the decider re-approves
+      items.push({ key: s.role === 'client' ? 'client-reapprove' : 'decider-reapprove', title: `${myChanges.length} change request${plural(myChanges.length)} need${myChanges.length === 1 ? 's' : ''} your re-approval`, detail: names(myChanges), screen: 'client-decisions', cta: 'Re-approve', tone: 'red' });
+    }
   }
 
   if (s.role === 'engineer') {

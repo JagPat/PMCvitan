@@ -1,4 +1,4 @@
-import { type CSSProperties } from 'react';
+import { useEffect, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, drawingMutationsBlocked } from '@/store/store';
 import { selectDraftDecisions, selectDraftDrawings } from '@/store/selectors';
@@ -19,6 +19,16 @@ export function DraftsScreen() {
   const decisions = useStore(useShallow(selectDraftDecisions));
   const drawings = useStore(useShallow(selectDraftDrawings));
   const publishDecision = useStore((s) => s.publishDecision);
+  // Phase 6 task 4b (§A.1/§A.2 round 8) — the draft-edit affordance: re-point WHO decides, or
+  // convert to/from a record, while the draft is still private (publication freezes the holder).
+  const updateDecisionDraft = useStore((s) => s.updateDecisionDraft);
+  const members = useStore(useShallow((s) => s.members));
+  const loadTeam = useStore((s) => s.loadTeam);
+  useEffect(() => {
+    if (decisions.length && !members.length) void loadTeam();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [decisions.length]);
+  const memberCandidates = members.filter((m) => m.status === 'active' && m.membershipId);
   const publishDrawing = useStore((s) => s.publishDrawing);
   const publishAllDrafts = useStore((s) => s.publishAllDrafts);
   const total = decisions.length + drawings.length;
@@ -60,14 +70,52 @@ export function DraftsScreen() {
           {decisions.length > 0 && (
             <Group label="Decisions">
               {decisions.map((d) => {
-                const ready = d.options.length >= 2;
+                // Phase 6 task 4b (§A.2) — readiness follows the KIND: a record (`none`) carries
+                // exactly zero options and is always publishable; every deciding kind keeps the
+                // 2-option floor (enforced server-side at publication, both doors).
+                const record = d.deciderKind === 'none';
+                const ready = record ? true : d.options.length >= 2 && (d.deciderKind !== 'member' || !!d.deciderMembershipId);
                 return (
                   <div key={d.id} data-testid={`draft-${d.id}`} style={card}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
                       <span style={mono}>{d.id}</span>
                       <span style={{ fontWeight: 700, fontSize: 15.5 }}>{d.title}</span>
-                      <span style={draftChip}>DRAFT</span>
+                      <span style={draftChip}>{record ? 'DRAFT · RECORD' : 'DRAFT'}</span>
                       <span style={placeCap}>{d.room}</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.1em', color: 'var(--muted)' }}>WHO DECIDES</span>
+                      <select
+                        value={d.deciderKind}
+                        onChange={(e) => {
+                          const kind = e.target.value as 'client' | 'pmc' | 'member' | 'none';
+                          if (kind === 'member') return updateDecisionDraft(d.id, { deciderKind: 'member', deciderMembershipId: memberCandidates[0]?.membershipId });
+                          // converting to a record must drop the options in the SAME edit (the
+                          // server refuses an optioned record); other kinds keep them.
+                          updateDecisionDraft(d.id, kind === 'none' ? { deciderKind: 'none', options: [] } : { deciderKind: kind });
+                        }}
+                        data-testid={`draft-decider-${d.id}`}
+                        style={{ height: 32, padding: '0 8px', borderRadius: 8, border: '1px solid var(--hairline)', fontSize: 12 }}
+                        aria-label="Who decides"
+                      >
+                        <option value="client">The client</option>
+                        <option value="pmc">The practice (PMC)</option>
+                        <option value="member" disabled={!memberCandidates.length}>A named member</option>
+                        <option value="none">Nobody — record only</option>
+                      </select>
+                      {d.deciderKind === 'member' && (
+                        <select
+                          value={d.deciderMembershipId ?? ''}
+                          onChange={(e) => updateDecisionDraft(d.id, { deciderKind: 'member', deciderMembershipId: e.target.value })}
+                          data-testid={`draft-decider-member-${d.id}`}
+                          style={{ height: 32, padding: '0 8px', borderRadius: 8, border: '1px solid var(--hairline)', fontSize: 12 }}
+                          aria-label="Named decider"
+                        >
+                          {memberCandidates.map((m) => (
+                            <option key={m.membershipId} value={m.membershipId}>{m.name} · {m.role}</option>
+                          ))}
+                        </select>
+                      )}
                     </div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
                       {d.options.map((o) => (
@@ -80,9 +128,13 @@ export function DraftsScreen() {
                     </div>
                     <Foot
                       ready={ready}
-                      readyLabel="Ready to publish"
-                      notReadyLabel={`Add at least ${2 - d.options.length} more option before publishing`}
-                      cta="Publish to client"
+                      readyLabel={record ? 'Ready to publish — filed for the team, no approval required' : 'Ready to publish'}
+                      notReadyLabel={
+                        d.deciderKind === 'member' && !d.deciderMembershipId
+                          ? 'Choose the named decider before publishing'
+                          : `Add at least ${2 - d.options.length} more option before publishing`
+                      }
+                      cta={record ? 'Publish record' : d.deciderKind === 'client' ? 'Publish to client' : 'Publish to decider'}
                       testid={`publish-${d.id}`}
                       onPublish={() => publishDecision(d.id)}
                     />

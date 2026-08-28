@@ -1,4 +1,5 @@
 import type { Prisma } from '@prisma/client';
+import { viewerIsDecider, type DeciderSlice } from '@vitan/shared';
 import type { DecisionDto } from '../snapshot/types';
 
 /**
@@ -74,26 +75,6 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
       recommended: o.recommended,
     })),
   };
-}
-
-/** The decider-designation slice of a decision every audience predicate consumes. */
-export interface DeciderSlice {
-  deciderKind: string;
-  /** the NAMED member's resolved user — the value the targeted dispatch and every filter compare */
-  deciderUserId?: string | null;
-}
-
-/**
- * Phase 6 task 4b (§A.3) — is this viewer THE DECIDER of the decision? `client`/`pmc` designate
- * the ROLE (any member of it decides); `member` designates ONE user, so a same-role non-decider
- * is NOT the decider; `none` is a record — nobody decides it. The ONE predicate shared by the
- * server visibility rule, the store selectors, and the projection read-path filter.
- */
-export function viewerIsDecider(d: DeciderSlice, role: string, userId?: string): boolean {
-  if (d.deciderKind === 'client') return role === 'client';
-  if (d.deciderKind === 'pmc') return role === 'pmc';
-  if (d.deciderKind === 'member') return !!userId && d.deciderUserId === userId;
-  return false;
 }
 
 /**

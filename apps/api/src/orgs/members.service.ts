@@ -11,6 +11,9 @@ import { OrgsParticipant } from './orgs.participant';
 
 export interface MemberDto {
   userId: string;
+  /** Phase 6 task 4b (§A.1) — the Membership row's own id: the value a NAMED member-decider
+   *  designation stores (`Decision.deciderMembershipId`), surfaced so the web picker can offer it. */
+  membershipId: string;
   name: string;
   email: string | null;
   phone: string | null;
@@ -87,6 +90,7 @@ export class MembersService {
     });
     return rows.map((m) => ({
       userId: m.userId,
+      membershipId: m.id,
       name: m.user.name,
       email: m.user.email,
       phone: m.user.phone,
@@ -144,7 +148,7 @@ export class MembersService {
       await emitEvent(tx, { projectId, actor, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role }, effectKey: 'membership.added', dispatch: {} });
       return m;
     });
-    return { userId: user.id, name: user.name, email: user.email, phone: user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status, credentialState: user.passwordHash ? 'active' : 'not_set' };
+    return { userId: user.id, membershipId: membership.id, name: user.name, email: user.email, phone: user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status, credentialState: user.passwordHash ? 'active' : 'not_set' };
   }
 
   async updateRole(projectId: string, requester: AuthUser, userId: string, input: UpdateMemberInput): Promise<MemberDto> {
@@ -170,7 +174,7 @@ export class MembersService {
       }
       return m;
     });
-    return { userId, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status, credentialState: existing.user.passwordHash ? 'active' : 'not_set' };
+    return { userId, membershipId: membership.id, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status, credentialState: existing.user.passwordHash ? 'active' : 'not_set' };
   }
 
   async remove(projectId: string, requester: AuthUser, userId: string): Promise<{ ok: boolean }> {
