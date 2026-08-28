@@ -8,6 +8,7 @@ import { DrawingsQueryService } from '../drawings/drawings.query';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import { SignedUrlService } from '../media/signed-url.service';
 import { isPendingDecisionNotice, isWithdrawnDecisionNotice } from '../domain/notifications';
+import { viewerIsDecider } from '@vitan/shared';
 import { ddMmmYyyy } from '../domain/dates';
 import type { Role } from '../common/auth';
 import type { ProjectShellCounts, SnapshotDto } from './types';
@@ -123,17 +124,23 @@ export class SnapshotService {
     // Task 8 — the role-filtered decision DTOs come from the decisions query (the serialization moved
     // there verbatim, so this slice is byte-identical).
     const decisionDtos = decisionSlice.decisions;
-    // Phase 6 task 4b (§A.3) — the pending-notice audience FOLLOWS the decider: a notice linked to
-    // a decision (4a stamps `decisionId`) is kept exactly when the decision itself is in this
-    // viewer's visible slice — the visibility rule already admits pmc + THE DECIDER for a pending
-    // row, so an engineer-decider sees their notice and the client no longer receives a demand for
-    // a decision they do not decide. A LEGACY unlinked notice (decisionId null, pre-4a) keeps the
-    // pre-4b pmc/client audience — every pre-4b decision is a `client`-held one.
-    const visibleDecisionIds = new Set(decisionDtos.map((d) => d.id));
+    // Phase 6 task 4b (§A.3) — the pending-notice audience FOLLOWS the decider: a notice linked
+    // to a decision (4a stamps `decisionId`) reaches pmc + THE DECIDER of that decision (the
+    // shared `viewerIsDecider` predicate over the viewer's OWN visible slice) and is stripped
+    // for everyone else — an engineer-decider sees their notice, the client no longer receives a
+    // demand for a decision they do not decide, and a stale notice on a since-approved (and so
+    // team-visible) decision still never widens past its decider. A LEGACY unlinked notice
+    // (decisionId null, pre-4a) keeps the pre-4b pmc/client audience — every pre-4b decision is
+    // a `client`-held one.
+    const visibleById = new Map(decisionDtos.map((d) => [d.id, d]));
     const hidePending = role !== 'pmc' && role !== 'client';
     const stripPendingNotice = (n: { text: string; decisionId: string | null }): boolean => {
       if (!isPendingDecisionNotice(n.text)) return false;
-      if (n.decisionId) return !visibleDecisionIds.has(n.decisionId);
+      if (role === 'pmc') return false;
+      if (n.decisionId) {
+        const d = visibleById.get(n.decisionId);
+        return !d || !viewerIsDecider({ deciderKind: d.deciderKind, deciderUserId: d.deciderUserId ?? null }, role, userId);
+      }
       return hidePending;
     };
 

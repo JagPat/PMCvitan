@@ -3722,9 +3722,13 @@ else
   echo "ok      4b-decider audit: abort names the holderless published open decisions (§P6T4B)"
 fi
 
-echo "repairing per §P6T4B: restoring a covering ACTIVE client membership on p1 (USER-2)"
-$PSQL -q -c "INSERT INTO \"Membership\"(\"id\",\"projectId\",\"userId\",\"role\",\"status\") VALUES ('UP4BD-MC','p1','USER-2','client','active') ON CONFLICT DO NOTHING;" >/dev/null \
-  || { echo "FAILED  4b-decider repair: covering membership insert"; FAIL=1; }
+echo "repairing per §P6T4B: restoring a covering ACTIVE client membership on p1 (USER-2's removed row re-activated as client)"
+# USER-2's membership UP4A-M2 exists REMOVED (a 4a fixture), so the (projectId,userId) unique
+# makes a fresh insert a no-op — the sanctioned repair here is the ordinary team command's
+# effect: re-activate that member in the covering role. The guards are not yet installed, so
+# this pre-migration write is exactly what the old build's MembersService.add would commit.
+$PSQL -q -c "UPDATE \"Membership\" SET \"role\"='client', \"status\"='active' WHERE \"id\"='UP4A-M2';" >/dev/null \
+  || { echo "FAILED  4b-decider repair: covering membership activation"; FAIL=1; }
 $PSQL --single-transaction -q -f "$MIG_DIR/$PHASE6_T4B_DECIDER_NAME/migration.sql" >/dev/null \
   || { echo "FAILED  4b-decider migration after the sanctioned repair"; FAIL=1; }
 for d in "${phase6_t4b_decider_dirs[@]}"; do
@@ -3771,13 +3775,13 @@ assert_rejects "4b-decider: DELETE of a published record is refused (a filed iss
   "DELETE FROM \"Decision\" WHERE \"id\"='UP4BD-REC'" \
   "record|permanent"
 assert_rejects "4b-decider P39: soft-removing the LAST active client while a client-held published open decision exists is refused at the DATABASE" \
-  "UPDATE \"Membership\" SET \"status\"='removed' WHERE \"id\"='UP4BD-MC'" \
+  "UPDATE \"Membership\" SET \"status\"='removed' WHERE \"id\"='UP4A-M2'" \
   "holder|client|open decision"
 assert_rejects "4b-decider P39: re-roling that last client away is refused the same way" \
-  "UPDATE \"Membership\" SET \"role\"='engineer' WHERE \"id\"='UP4BD-MC'" \
+  "UPDATE \"Membership\" SET \"role\"='engineer' WHERE \"id\"='UP4A-M2'" \
   "holder|client|open decision"
 assert_rejects "4b-decider (identity-freeze CLASS): re-homing a membership's userId is refused — a re-home is a removal plus an addition, never an UPDATE" \
-  "UPDATE \"Membership\" SET \"userId\"='USER-1' WHERE \"id\"='UP4BD-MC'" \
+  "UPDATE \"Membership\" SET \"userId\"='USER-1' WHERE \"id\"='UP4A-M2'" \
   "frozen|identity"
 assert_rejects "4b-decider (identity-freeze CLASS): re-homing a project's org is refused for the same reason (the link that selects WHOSE admins hold effective-PMC standing)" \
   "UPDATE \"Project\" SET \"orgId\"=NULL WHERE \"id\"='p1'" \
@@ -4028,27 +4032,40 @@ assert "A1-i: both task-4a option seals are untouched and armed" \
   "SELECT (COUNT(*) FILTER (WHERE tgenabled = 'O'))::text FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='\"DecisionOption\"'::regclass AND tgname IN ('DecisionOption_t4a_frozen','DecisionOption_t4a_touch');" \
   "2"
 
+# Phase 6 task 4b moved the goalposts these probes stand on, DELIBERATELY: option writes to a
+# PUBLISHED parent are now frozen (the §A.2 published-parent option freeze), so every option
+# subject below lives on the UNPUBLISHED `UPA1-DRAFT` — the one shape an option write is still
+# legal against, which is also the only shape the drain-first deploy (§P6-4a/§P6T4B) lets an
+# old release write after the 4b migration runs (the re-ordered create births unpublished).
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i: the unapproved fixture was refused"; FAIL=1; }
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch")
+VALUES ('UPA1-DRAFT','p1','Formwork approach','Hall','pending','grey');
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UPA1-DRAFTOK','UPA1-DRAFT','Panel system','a','Aluminium panel',0,'grey'),
+       ('UPA1-DRAFTMOVE','UPA1-DRAFT','Timber shutter','b','Birch ply',1750,'tan');
+SQL
+
 # ROLLOUT. The release still serving writes only the legacy columns and never mentions `kindCode`.
 # Its inserts must keep meaning the same thing on both sides of the deployment — this is the exact
-# path that release takes.
+# path that release takes (against the unpublished shape 4b leaves it).
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i rollout: a legacy-shaped option insert was refused"; FAIL=1; }
 INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
-VALUES ('UPA1-OLDREL','DL-3','Written by the old release','zz','Birch ply',1750,'tan');
+VALUES ('UPA1-OLDREL','UPA1-DRAFT','Written by the old release','zz','Birch ply',1750,'tan');
 SQL
 assert "A1-i rollout: an insert from the RUNNING RELEASE is classified and keeps its cost verbatim" \
   "SELECT \"kindCode\" || '|' || \"delta\"::text FROM \"DecisionOption\" WHERE \"id\"='UPA1-OLDREL';" \
   "material|1750"
 
 assert_rejects "A1-i: an option classified by a kind that does not exist" \
-  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X3','DL-3','O','x3','Teak',0,'brown','no-such-kind')" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X3','UPA1-DRAFT','O','x3','Teak',0,'brown','no-such-kind')" \
   "kindCode_fkey"
 assert_rejects "A1-i: an option that names neither a material nor a description, and so says nothing" \
-  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UPA1-X4','DL-3','O','x4','   ',0,'brown')" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UPA1-X4','UPA1-DRAFT','O','x4','   ',0,'brown')" \
   "says_what_it_is_check"
 # A description that is PRESENT must say something, independently of the material — otherwise a
 # nullable column ends up with two ways to mean absent, and readers only ever test for one of them.
 assert_rejects "A1-i: a whitespace-only description riding along on an option whose material is fine" \
-  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"description\") VALUES ('UPA1-X7','DL-3','O','x7','Teak',0,'brown','   ')" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"description\") VALUES ('UPA1-X7','UPA1-DRAFT','O','x7','Teak',0,'brown','   ')" \
   "says_what_it_is_check"
 assert_rejects "A1-i: a menu row that does not say which label to look up" \
   "INSERT INTO \"DecisionOptionKind\"(\"code\",\"baseKind\",\"labelKey\") VALUES ('up-blank','other','  ')" \
@@ -4063,7 +4080,7 @@ $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i precision: a described, non-
 INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey","displayOrder")
 VALUES ('up-sequencing','solution','option.kind.upSequencing',50);
 INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","description","kindCode")
-VALUES ('UPA1-DESC','DL-3','Pour in place',    'seq1',' ',0,'grey','A poured-in-place alternative to the panel system','up-sequencing');
+VALUES ('UPA1-DESC','UPA1-DRAFT','Pour in place',    'seq1',' ',0,'grey','A poured-in-place alternative to the panel system','up-sequencing');
 SQL
 assert "A1-i precision: that option is stored as what it says it is" \
   "SELECT \"kindCode\" || '|' || (SELECT \"baseKind\"::text FROM \"DecisionOptionKind\" WHERE \"code\"='up-sequencing') FROM \"DecisionOption\" WHERE \"id\"='UPA1-DESC';" \
@@ -4079,23 +4096,17 @@ assert_rejects "A1-i: re-keying a kind that options are already classified by" \
   "UPDATE \"DecisionOptionKind\" SET \"code\"='up-seq' WHERE \"code\"='up-sequencing'" \
   "kindCode_fkey"
 
-# An option's kind is part of what an approval APPROVED. `UPA1-OLDREL` hangs off DL-3, which the
-# legacy fixture publishes as approved, so re-classifying it must be refused — and the kind used
-# here is still ACTIVE precisely so the freeze is the only rule that can answer.
+# An option's kind is part of what an approval APPROVED. Phase 6 task 4b froze EVERY option of
+# a PUBLISHED parent, so DL-3 would now answer with the broader publication freeze; the subject
+# that isolates the APPROVAL-evidence rule is an option of the APPROVED, UNPUBLISHED
+# `UP4B-UNPUB-ATTR` — the kind used is still ACTIVE precisely so this freeze is the only rule
+# that can answer.
+$PSQL -q -c "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UPA1-APPR-OPT','UP4B-UNPUB-ATTR','Approved option','ap1','Teak',0,'brown');" >/dev/null \
+  || { echo "FAILED  A1-i: the approved-unpublished option fixture was refused"; FAIL=1; }
 assert_rejects "A1-i: RE-CLASSIFYING an option on a decision that carries approval evidence, whose kind is part of that evidence" \
-  "UPDATE \"DecisionOption\" SET \"kindCode\"='up-sequencing' WHERE \"id\"='UPA1-OLDREL'" \
+  "UPDATE \"DecisionOption\" SET \"kindCode\"='up-sequencing' WHERE \"id\"='UPA1-APPR-OPT'" \
   "cannot be edited"
 
-# Subjects for the retirement rules, on a decision NOBODY has approved. The freeze above is a
-# BEFORE UPDATE row trigger, so on an approved decision it answers ahead of every deferred rule —
-# an assertion about retirement written against DL-3 would silently be testing the freeze instead.
-$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i: the unapproved fixture was refused"; FAIL=1; }
-INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch")
-VALUES ('UPA1-DRAFT','p1','Formwork approach','Hall','pending','grey');
-INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
-VALUES ('UPA1-DRAFTOK','UPA1-DRAFT','Panel system','a','Aluminium panel',0,'grey'),
-       ('UPA1-DRAFTMOVE','UPA1-DRAFT','Timber shutter','b','Birch ply',1750,'tan');
-SQL
 # PRECISION — the freeze is about APPROVAL, not about classification being immutable. An option
 # on an unapproved decision may still be re-classified onto a kind the menu offers.
 $PSQL -q -c "UPDATE \"DecisionOption\" SET \"kindCode\"='up-sequencing' WHERE \"id\"='UPA1-DRAFTOK';" >/dev/null \
@@ -4110,7 +4121,7 @@ $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i: a kind could not be retired
 UPDATE "DecisionOptionKind" SET "active" = false WHERE "code" = 'up-sequencing';
 SQL
 assert_rejects "A1-i: classifying a NEW option with a kind the menu has retired" \
-  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X8','DL-3','O','x8','Teak',0,'brown','up-sequencing')" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X8','UPA1-DRAFT','O','x8','Teak',0,'brown','up-sequencing')" \
   "has been retired"
 assert_rejects "A1-i: MOVING an existing option onto a retired kind, which is the same act by another route" \
   "UPDATE \"DecisionOption\" SET \"kindCode\"='up-sequencing' WHERE \"id\"='UPA1-DRAFTMOVE'" \
@@ -4133,7 +4144,7 @@ INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey","active")
 VALUES ('up-born-closed','other','option.kind.upBornClosed',false);
 SQL
 assert_rejects "A1-i: classifying an option with a kind that was created already CLOSED" \
-  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X9','DL-3','O','x9','Teak',0,'brown','up-born-closed')" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X9','UPA1-DRAFT','O','x9','Teak',0,'brown','up-born-closed')" \
   "has been retired"
 # PRECISION — retiring is not deleting: the option classified before retirement keeps its kind.
 assert "A1-i precision: an option classified before retirement still carries that classification" \
@@ -4160,7 +4171,7 @@ SQL
 if out=$($PSQL -q -v ON_ERROR_STOP=1 2>&1 <<'SQL'
 BEGIN;
 INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","kindCode")
-VALUES ('UPA1-SAMETX','DL-3','O','stx','Teak',0,'brown','up-samefx');
+VALUES ('UPA1-SAMETX','UPA1-DRAFT','O','stx','Teak',0,'brown','up-samefx');
 SET CONSTRAINTS "DecisionOption_kind_selectable_ins" IMMEDIATE;
 UPDATE "DecisionOptionKind" SET "active" = false WHERE "code" = 'up-samefx';
 COMMIT;

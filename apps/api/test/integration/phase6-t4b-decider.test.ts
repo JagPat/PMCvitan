@@ -117,15 +117,19 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER USER'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER USER'),
     ]);
-    await t?.prisma.notification.deleteMany({ where: { projectId } });
-    await t?.prisma.membership.deleteMany({ where: { projectId: { in: [projectId, projectBId] } } });
-    await t?.prisma.orgMembership.deleteMany({ where: { orgId: { in: [orgId, orgBId] } } });
-    await t?.prisma.$executeRawUnsafe(
-      'DELETE FROM "CommandExecution" WHERE "projectId" IN ($1, $2)', // eslint-disable-line
-    ).catch(() => {});
-    await t?.prisma.user.deleteMany({ where: { id: { in: Object.values(users) } } });
-    await t?.prisma.project.deleteMany({ where: { id: { in: [projectId, projectBId] } } });
-    await t?.prisma.org.deleteMany({ where: { id: { in: [orgId, orgBId] } } });
+    // the fixture-cleanup discipline (fixtures.ts): append-only platform tables truncate, then
+    // reverse-FK-order deletes so a failed test never strands rows for the next suite
+    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
+    await t?.prisma.$transaction([
+      t.prisma.commandExecution.deleteMany({ where: { OR: [{ projectId: { in: [projectId, projectBId] } }, { organizationId: { in: [orgId, orgBId] } }] } }),
+      t.prisma.auditLog.deleteMany({ where: { projectId: { in: [projectId, projectBId] } } }),
+      t.prisma.notification.deleteMany({ where: { projectId: { in: [projectId, projectBId] } } }),
+      t.prisma.membership.deleteMany({ where: { projectId: { in: [projectId, projectBId] } } }),
+      t.prisma.orgMembership.deleteMany({ where: { orgId: { in: [orgId, orgBId] } } }),
+      t.prisma.user.deleteMany({ where: { id: { in: Object.values(users) } } }),
+      t.prisma.project.deleteMany({ where: { id: { in: [projectId, projectBId] } } }),
+      t.prisma.org.deleteMany({ where: { id: { in: [orgId, orgBId] } } }),
+    ]);
     await t?.close();
   });
 
@@ -165,8 +169,8 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     await expect(
       t.prisma.$transaction([
         t.prisma.$executeRawUnsafe(
-          `INSERT INTO "Decision" ("id","projectId","title","room","status","ageDays","authorId","deciderKind","publishedAt","updatedAt")
-           VALUES ('${id('hr1')}','${projectId}','H','R','recorded',0,'${users.pmc}','none',now(),now())`,
+          `INSERT INTO "Decision" ("id","projectId","title","room","status","ageDays","authorId","deciderKind","publishedAt")
+           VALUES ('${id('hr1')}','${projectId}','H','R','recorded',0,'${users.pmc}','none',now())`,
         ),
         t.prisma.$executeRawUnsafe(
           `INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch","recommended","order")
@@ -227,6 +231,8 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     expect((await post(pmcToken)(`/projects/${projectId}/decisions/${d.id}/publish`)).status).toBe(201);
     const closed = await patch(pmcToken)(`/projects/${projectId}/decisions/${d.id}/draft`, { deciderKind: 'pmc' });
     expect(closed.status).toBe(409);
+    // settle the obligation so later audience/count probes start from a clean register
+    expect((await post(clientToken)(`/projects/${projectId}/decisions/${d.id}/approve`, { optionIndex: 0 })).status).toBe(201);
   });
 
   // ── P17 — §A.1 the decider model on the approve path ───────────────────────────────────────

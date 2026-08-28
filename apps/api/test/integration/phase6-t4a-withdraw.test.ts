@@ -73,9 +73,21 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     rebuilder = t.app.get(ProjectionRebuilder);
     (human as { actorId: string }).actorId = f.memberUser.id;
     raceDb = new PrismaClient();
+    // Phase 6 task 4b — publication re-validates the holder's standing at the DB: the seeded
+    // client-held decisions need project A to actually HAVE an active client (the zero-holder
+    // birth the guard exists to prevent). A dedicated user outside the per-test `it-t4a-u-`
+    // wipe prefix so the standing survives every afterEach.
+    await t.prisma.user.upsert({
+      where: { id: 'it-t4ac-client' },
+      create: { id: 'it-t4ac-client', projectId: f.projectA.id, role: 'client', name: 'T4A standing client', email: 'it-t4ac-client@t.local' },
+      update: {},
+    });
+    await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: 'it-t4ac-client', role: 'client', status: 'active' } });
   });
   afterAll(async () => {
     await cleanup();
+    await t?.prisma.membership.deleteMany({ where: { userId: 'it-t4ac-client' } });
+    await t?.prisma.user.deleteMany({ where: { id: 'it-t4ac-client' } });
     await raceDb?.$disconnect();
     await f?.cleanup();
     await t?.close();
@@ -120,24 +132,32 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
   /** Seed one canonical published-pending decision with two options. */
   const seed = async (over: { status?: 'pending' | 'approved' | 'change'; draft?: boolean; title?: string } = {}): Promise<string> => {
     const id = `DL-t4a-${seq++}`;
-    await t.prisma.decision.create({
-      data: {
-        id,
-        projectId: f.projectA.id,
-        title: over.title ?? `Counter ${id}`,
-        room: 'Kitchen',
-        status: over.status ?? 'pending',
-        ageDays: 0,
-        photoSwatch: 'sw1',
-        authorId: f.memberUser.id,
-        publishedAt: over.draft ? null : new Date(),
-      },
-    });
-    await t.prisma.decisionOption.createMany({
-      data: [
-        { decisionId: id, label: 'Granite', optionKey: 'a', material: 'Granite', delta: 0, swatch: 'sw1', recommended: true, order: 0 },
-        { decisionId: id, label: 'Quartz', optionKey: 'b', material: 'Quartz', delta: 20000, swatch: 'sw2', recommended: false, order: 1 },
-      ],
+    // Phase 6 task 4b — the RE-ORDERED create the seals enforce: unpublished birth with the
+    // 2-option set nested (the option freeze refuses inserts into a published parent), then
+    // publication as a same-transaction UPDATE (the deferred floor re-counts at commit).
+    await t.prisma.$transaction(async (tx) => {
+      await tx.decision.create({
+        data: {
+          id,
+          projectId: f.projectA.id,
+          title: over.title ?? `Counter ${id}`,
+          room: 'Kitchen',
+          status: over.status ?? 'pending',
+          ageDays: 0,
+          photoSwatch: 'sw1',
+          authorId: f.memberUser.id,
+          publishedAt: null,
+          options: {
+            createMany: {
+              data: [
+                { label: 'Granite', optionKey: 'a', material: 'Granite', delta: 0, swatch: 'sw1', recommended: true, order: 0 },
+                { label: 'Quartz', optionKey: 'b', material: 'Quartz', delta: 20000, swatch: 'sw2', recommended: false, order: 1 },
+              ],
+            },
+          },
+        },
+      });
+      if (!over.draft) await tx.decision.update({ where: { id }, data: { publishedAt: new Date() } });
     });
     return id;
   };
