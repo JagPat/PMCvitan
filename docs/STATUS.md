@@ -17,7 +17,7 @@ task_state: merged
 work_item: none
 reviewed_merge: 7ba95421
 open_pr: none
-next_task: none
+next_task: phase-6-task-4
 blocking_directive: none
 updated: 2026-08-27
 ```
@@ -109,17 +109,20 @@ Three items remain, each with an executable next unit — none waits on sign-off
    must not leave a closed PR number in the file. The proposal's §4.1 carries FOURTEEN
    acceptance criteria for the future implementation units 1-4, recorded by the owner's
    two decisions on #455; NONE of the seven units is started. **Unit 0 (the fail-closed
-   contractor guard) is the RECOMMENDED NEXT UNIT, and its start is an EXECUTABLE
-   HANDOFF, not an open wait**: the three write routes are reachable by any contractor
-   bearer token today (the proposal's §2 measured exposure — the standing risk of every
-   day this waits), the GO request is ON RECORD (the completion report and the option
-   list on #455, both 2026-08-27, restated on #457), and on JagPat's GO the loop's next
-   action is the unit-0 PR — service-only, reproduce-first (the contractor-token POST of
-   another party's id that SUCCEEDS today is the RED probe), lifted per-command by units
-   4 and 6 exactly as §4 stages it. The gate itself is the owner's recorded decision on
-   #455 ("Unit 0 remains a separate later call; do not expand this unit to ship
-   fail-closed") — the loop holds until the GO lands, and this paragraph is where the
-   next runner finds both the trigger and the first action.
+   contractor guard) HAS ITS GO AND IS THE RUNNER'S NEXT MOVE — the machine record is
+   `next_task: phase-6-task-4` above**, the follow-on channel a `merged` block
+   hands to `assessRunnerState` (`work_item` stays `none`: the live-file pin forbids a
+   merged block naming a work item, since the runner would re-enter the unit that just
+   merged). The GO is the owner's recorded decision of 2026-08-27 (option (a)
+   on #457's round-2 finding, granted in-session), superseding the earlier "separate later
+   call" hold from #455: the three write routes are reachable by any contractor bearer
+   token today (the proposal's §2 measured exposure), so unit 0 ships FIRST — service
+   only, no schema: each of the three services refuses a CONTRACTOR caller outright
+   inside the same transaction that will later hold the ownership check, reproduce-first
+   (the contractor-token POST of another party's id that SUCCEEDS today is the RED
+   probe), pmc/engineer behaviour untouched, the refusal lifted per-command by units 4
+   and 6 exactly as §4 stages it. Units 1-6 still start only on the owner's approval —
+   the GO covers unit 0 alone.
    Measured: the three contractor grants
    (`attendance.record`/`labour.work.record`/`activity.output.record`) are intentional — §C's
    seals make the recording party untrusted by construction — but unreachable: the muster and
