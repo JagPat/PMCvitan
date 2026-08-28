@@ -39,6 +39,10 @@ export function DraftsScreen() {
     options: Array<{ material: string; swatch: SwatchKey; delta: string }>;
   }>>({});
   const blankConvertOption = (): { material: string; swatch: SwatchKey; delta: string } => ({ material: '', swatch: 'tile', delta: '0' });
+  // round-5 Codex F4 — a conversion PATCH in flight: the form stays OPEN (it closes only on the
+  // server's acceptance) and the draft's Publish is HELD, so a publish cannot race the confirmed
+  // conversion and permanently publish the row as a record.
+  const [convertPending, setConvertPending] = useState<Record<string, boolean>>({});
   const publishDrawing = useStore((s) => s.publishDrawing);
   const publishAllDrafts = useStore((s) => s.publishAllDrafts);
   const total = decisions.length + drawings.length;
@@ -62,11 +66,16 @@ export function DraftsScreen() {
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
           <Lock size={13} /> Work in progress, visible only to you. Keep feeding data — nothing reaches the client or the team until you <b>Publish</b>.
         </div>
-        {total >= 2 && (
-          <Button variant="ink" onClick={publishAllDrafts} disabled={drawings.length > 0 && drawingsBlocked} data-testid="publish-all" style={{ marginLeft: 'auto', flex: 'none', padding: '9px 14px', fontSize: 13, cursor: drawings.length > 0 && drawingsBlocked ? 'not-allowed' : 'pointer', opacity: drawings.length > 0 && drawingsBlocked ? 0.6 : 1 }}>
-            Publish all {total} <ArrowUpRight size={15} />
-          </Button>
-        )}
+        {total >= 2 && (() => {
+          // round-5 Codex F4 — Publish-all is the same publish door: held while any
+          // record⟺choice conversion PATCH is in flight
+          const allBlocked = (drawings.length > 0 && drawingsBlocked) || Object.values(convertPending).some(Boolean);
+          return (
+            <Button variant="ink" onClick={publishAllDrafts} disabled={allBlocked} data-testid="publish-all" style={{ marginLeft: 'auto', flex: 'none', padding: '9px 14px', fontSize: 13, cursor: allBlocked ? 'not-allowed' : 'pointer', opacity: allBlocked ? 0.6 : 1 }}>
+              Publish all {total} <ArrowUpRight size={15} />
+            </Button>
+          );
+        })()}
       </div>
 
       {empty ? (
@@ -145,6 +154,26 @@ export function DraftsScreen() {
                         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.1em', color: 'var(--muted)', marginBottom: 8 }}>
                           BACK TO A CHOICE — GIVE IT 2–4 OPTIONS (the first is recommended)
                         </div>
+                        {/* round-5 Codex F3 — converting to a NAMED member: the picker renders from
+                            the FORM's kind (the persisted row is still a record) and binds the
+                            form's membershipId, so Confirm assigns the CHOSEN member, never
+                            silently the first candidate. */}
+                        {convertForms[d.id]!.kind === 'member' && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.1em', color: 'var(--muted)' }}>NAMED DECIDER</span>
+                            <select
+                              value={convertForms[d.id]!.membershipId ?? ''}
+                              onChange={(e) => setConvertForms((f) => ({ ...f, [d.id]: { ...f[d.id]!, membershipId: e.target.value } }))}
+                              data-testid={`convert-member-${d.id}`}
+                              aria-label="Named decider for the conversion"
+                              style={{ height: 32, padding: '0 8px', borderRadius: 8, border: '1px solid var(--hairline)', fontSize: 12 }}
+                            >
+                              {memberCandidates.map((m) => (
+                                <option key={m.membershipId} value={m.membershipId}>{m.name} · {m.role}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
                         {convertForms[d.id]!.options.map((o, i) => (
                           <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
                             <input
@@ -184,22 +213,27 @@ export function DraftsScreen() {
                           <Button
                             variant="ink"
                             data-testid={`convert-confirm-${d.id}`}
-                            disabled={!convertForms[d.id]!.options.every((o) => o.material.trim()) || (convertForms[d.id]!.kind === 'member' && !convertForms[d.id]!.membershipId)}
-                            onClick={() => {
+                            disabled={convertPending[d.id] || !convertForms[d.id]!.options.every((o) => o.material.trim()) || (convertForms[d.id]!.kind === 'member' && !convertForms[d.id]!.membershipId)}
+                            onClick={async () => {
                               const form = convertForms[d.id]!;
-                              if (!form.options.every((o) => o.material.trim())) return;
-                              updateDecisionDraft(d.id, {
+                              if (!form.options.every((o) => o.material.trim()) || convertPending[d.id]) return;
+                              // round-5 Codex F4 — hold Publish and keep the form until the server
+                              // ACCEPTS the conversion; a failed PATCH leaves the form (and the
+                              // record) exactly as the user last saw them.
+                              setConvertPending((p) => ({ ...p, [d.id]: true }));
+                              const ok = await updateDecisionDraft(d.id, {
                                 deciderKind: form.kind,
                                 ...(form.kind === 'member' ? { deciderMembershipId: form.membershipId } : {}),
                                 options: form.options.map((o, i) => ({ material: o.material.trim(), delta: Number(o.delta) || 0, swatch: o.swatch, recommended: i === 0 })),
                               });
-                              setConvertForms((f) => { const { [d.id]: _drop, ...rest } = f; return rest; });
+                              setConvertPending((p) => { const { [d.id]: _x, ...rest } = p; return rest; });
+                              if (ok) setConvertForms((f) => { const { [d.id]: _drop, ...rest } = f; return rest; });
                             }}
                             style={{ padding: '6px 12px', fontSize: 11.5, marginLeft: 'auto' }}
                           >
                             Convert to a choice
                           </Button>
-                          <Button variant="outline" data-testid={`convert-cancel-${d.id}`} onClick={() => setConvertForms((f) => { const { [d.id]: _drop, ...rest } = f; return rest; })} style={{ padding: '6px 12px', fontSize: 11.5 }}>
+                          <Button variant="outline" data-testid={`convert-cancel-${d.id}`} disabled={!!convertPending[d.id]} onClick={() => setConvertForms((f) => { const { [d.id]: _drop, ...rest } = f; return rest; })} style={{ padding: '6px 12px', fontSize: 11.5 }}>
                             Cancel
                           </Button>
                         </div>
@@ -214,13 +248,16 @@ export function DraftsScreen() {
                         </div>
                       ))}
                     </div>
+                    {/* round-5 Codex F4 — a confirmed conversion in flight HOLDS this draft's publication */}
                     <Foot
-                      ready={ready}
+                      ready={ready && !convertPending[d.id]}
                       readyLabel={record ? 'Ready to publish — filed for the team, no approval required' : 'Ready to publish'}
                       notReadyLabel={
-                        d.deciderKind === 'member' && !d.deciderMembershipId
-                          ? 'Choose the named decider before publishing'
-                          : `Add at least ${2 - d.options.length} more option before publishing`
+                        convertPending[d.id]
+                          ? 'Converting to a choice — publishing is held until the edit lands'
+                          : d.deciderKind === 'member' && !d.deciderMembershipId
+                            ? 'Choose the named decider before publishing'
+                            : `Add at least ${2 - d.options.length} more option before publishing`
                       }
                       cta={record ? 'Publish record' : d.deciderKind === 'client' ? 'Publish to client' : 'Publish to decider'}
                       testid={`publish-${d.id}`}

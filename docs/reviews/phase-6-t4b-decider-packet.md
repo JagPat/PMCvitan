@@ -346,3 +346,54 @@ Migration story: `20270810`/`20270826` remain byte-for-byte unchanged; `20271015
 own, unmerged anywhere) gains the widened truncate-seal body, re-proven by a full test-database
 rebuild + the extended `upgrade-proof.sh` records-only register cycle. The two record-arm
 decision writes remain pinned in the §A lock-coverage enumeration (40).
+
+## Round-5 correction (the Codex review of PR #465 head `f49a0547` — six findings, ONE fix-forward head)
+
+Codex attempt 1/2 on the second replacement's first head returned six findings (one P1). Each
+was reproduced RED at `f49a0547` first (the one non-pausable interleaving is pinned
+structurally and stated so), then fixed forward as one batch. `20270810`/`20270826` remain
+byte-for-byte; `20271015` (this unit's own) gains the option truncate seal below, re-proven by
+a full test-database rebuild + the extended upgrade-proof.
+
+- **R5-F1 (P2, claim-predicate atomicity)** — `deciderPushTarget` ran `isProjectOperable` on
+  the pooled client, releasing its `FOR UPDATE` at statement end, so an archival committing
+  between the operability answer and the decision read still dispatched the dead-end push. The
+  whole predicate now runs in ONE `$transaction`: the project-row lock the orgs answer takes is
+  held until the decision read has happened, so an archival either happened before (seen —
+  dropped) or waits for the claim's commit. The interleaving window cannot be paused from
+  outside the service, so the probe is the behavioural arm (R3-F2: archived → dropped) plus a
+  STRUCTURAL pin (`R5-F1`) that the predicate's reads share one transaction and none escapes to
+  the pooled client.
+- **R5-F2 (P2, register attribution)** — a published pending row held by `pmc` or a named
+  member still read "awaiting client", directing its own decider at the wrong party. The
+  attribution and the change-request re-approval line now derive from the shared `deciderNoun`
+  ("awaiting the PMC" / "awaiting the named decider’s re-approval"); the client-held texts stay
+  byte-identical. Probe: `R5-F2` in `tests/decider.test.tsx`.
+- **R5-F3 (P2, conversion member picker)** — converting a record to `member` silently stored
+  `memberCandidates[0]` because the member picker rendered only for a persisted member-held
+  row. The picker now renders from the CONVERSION FORM's kind and binds the form's
+  `membershipId`, so Confirm assigns the chosen member. Probe: `R5-F3` (default visible, chosen
+  member submitted).
+- **R5-F4 (P2, conversion vs publish race)** — Confirm closed the form before the PATCH
+  resolved while Publish stayed enabled; a publish winning the server lock permanently
+  published the row as a record and the conversion then 409ed against the user's confirmed
+  choice. `updateDecisionDraft` (via `runRemote`) now resolves a settle boolean; the form stays
+  OPEN and the draft's Publish (and Publish-all) are HELD until the server accepts the edit — a
+  failed PATCH leaves the form for retry. Probes: `R5-F4` ×2 (held-then-released on success;
+  retained on failure).
+- **R5-F5 (P1, DecisionOption TRUNCATE seal)** — the option freeze is row-level only, so
+  `TRUNCATE "DecisionOption" CASCADE` could erase every option while published `Decision` rows
+  stood (choice decisions with zero options; the frozen question destroyed). `20271015` now
+  installs the statement-level `DecisionOption_t4b2_no_truncate` (refuses while any option
+  belongs to a PUBLISHED parent; drafts-only tables truncate freely; the sanctioned resets
+  disable it BY NAME — the event-catalog destructive reset gains exactly that pair). Probes:
+  the deployed trigger+body pin (`R5-F5`) and the upgrade-proof behavioural cycle — the
+  records-only scratch register gains one legally published pmc-held choice with 2 options, and
+  the hostile TRUNCATE is refused by the new seal with both options surviving (the 4a touch
+  seal guards only same-transaction touches, so the refusal is attributable).
+- **R5-F6 (P2, options-only record edit)** — a PATCH carrying ONLY a nonempty `options` array
+  on a record draft passes the contract (`deciderKind` omitted) and previously died inside the
+  transaction (observed at the reviewed head as a misleading empty-CAS 409; the seal abort
+  Codex named is the same class). The service now refuses ANY nonempty options payload whose
+  RESULTING kind is a record — a deliberate 400 from the locked-row derivation. Probe: `R5-F6`
+  (record refused + untouched; a choice draft's options-only replace still lands).

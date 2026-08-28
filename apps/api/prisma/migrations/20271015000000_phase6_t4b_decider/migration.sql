@@ -395,6 +395,29 @@ BEGIN
   RETURN NEW;
 END $fn$ LANGUAGE plpgsql;
 
+-- ── the statement-level TRUNCATE seal on DecisionOption (round-5 Codex F5) ────────────────────
+-- The row-level freeze above never fires for TRUNCATE, so `TRUNCATE "DecisionOption" CASCADE`
+-- could erase every option while the published `Decision` rows stood — committing choice
+-- decisions with zero options and destroying the frozen question/evidence set. The register
+-- seal's analogue: judged after PostgreSQL takes its ACCESS EXCLUSIVE lock, refusing while any
+-- option belongs to a PUBLISHED parent; a drafts-only option table truncates freely, and the
+-- sanctioned destructive resets may disable the NAMED trigger for exactly their wipe.
+CREATE OR REPLACE FUNCTION phase6_t4b2_option_no_truncate() RETURNS trigger AS $fn$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM "DecisionOption" o
+      JOIN "Decision" d ON d."id" = o."decisionId"
+     WHERE d."publishedAt" IS NOT NULL
+  ) THEN
+    RAISE EXCEPTION 'phase6-4b: TRUNCATE would erase published options — the frozen question/evidence set cannot be truncated away';
+  END IF;
+  RETURN NULL;
+END $fn$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS "DecisionOption_t4b2_no_truncate" ON "DecisionOption";
+CREATE TRIGGER "DecisionOption_t4b2_no_truncate"
+  BEFORE TRUNCATE ON "DecisionOption"
+  FOR EACH STATEMENT EXECUTE FUNCTION phase6_t4b2_option_no_truncate();
+
 -- ── ChangeRequest: recorded parents refuse the child; the parent identity is FROZEN ───────────
 -- (§A.2 rounds 18/19.) A change claim can neither attach to a permanent record (INSERT judged
 -- under the parent row lock) nor be RE-POINTED between decisions (a child's parent identity

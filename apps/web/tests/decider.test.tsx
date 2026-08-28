@@ -269,3 +269,110 @@ describe('round-1 Codex corrections (web arms)', () => {
     ]);
   });
 });
+
+describe('round-5 Codex corrections (web arms)', () => {
+  it('R5-F2: the register row names the ACTUAL decider — a pmc-held pending row never says "awaiting client"', async () => {
+    const { DecisionLogScreen } = await import('@/screens/DecisionLogScreen');
+    useStore.setState({
+      role: 'pmc',
+      decisions: [
+        dec({ id: 'DL-PMH', title: 'Facade fixing', deciderKind: 'pmc', ageDays: 3 }),
+        dec({ id: 'DL-CLH', title: 'Kitchen top', deciderKind: 'client', ageDays: 2 }),
+        dec({
+          id: 'DL-MCH', title: 'Rebar detail', deciderKind: 'member', deciderUserId: 'u-eng-a', status: 'change',
+          changeRequest: { reason: 'Lot rejected', costImpact: 0, timeImpactDays: 0 },
+        }),
+      ],
+    } as never);
+    const r = render(<DecisionLogScreen />);
+    const pmcRow = r.getByTestId('log-row-DL-PMH');
+    expect(pmcRow.textContent).toContain('awaiting the PMC');
+    expect(pmcRow.textContent).not.toContain('awaiting client');
+    // the client-held text stays byte-identical
+    expect(r.getByTestId('log-row-DL-CLH').textContent).toContain('awaiting client');
+    // the reopened member-held row directs its re-approval at the named decider
+    const memberRow = r.getByTestId('log-row-DL-MCH');
+    expect(memberRow.textContent).toContain('awaiting the named decider’s re-approval');
+    expect(memberRow.textContent).not.toContain('the client’s re-approval');
+  });
+
+  it('R5-F3: converting a record to a NAMED member renders the picker from the FORM kind and submits the CHOSEN member', () => {
+    const updates: Array<[string, unknown]> = [];
+    useStore.setState({
+      role: 'pmc',
+      decisions: [dec({ id: 'DL-RM', draft: true, deciderKind: 'none', options: [], photoSwatch: undefined })],
+      members: [
+        { userId: 'u-eng-a', membershipId: 'm-eng-a', name: 'Ravi', email: null, phone: null, role: 'engineer', status: 'active' },
+        { userId: 'u-eng-b', membershipId: 'm-eng-b', name: 'Asha', email: null, phone: null, role: 'engineer', status: 'active' },
+      ],
+      updateDecisionDraft: ((id: string, input: unknown) => { updates.push([id, input]); return Promise.resolve(true); }) as never,
+      loadTeam: (() => Promise.resolve()) as never,
+    } as never);
+    const r = render(<DraftsScreen />);
+
+    fireEvent.change(r.getByTestId('draft-decider-DL-RM'), { target: { value: 'member' } });
+    expect(updates).toEqual([]); // the conversion opens the form — nothing dispatched yet
+    // the picker renders FROM THE FORM's kind (the persisted row is still a record)
+    const picker = r.getByTestId('convert-member-DL-RM') as HTMLSelectElement;
+    expect(picker.value).toBe('m-eng-a'); // the default is visible, not silent
+    fireEvent.change(picker, { target: { value: 'm-eng-b' } });
+
+    fireEvent.change(r.getByTestId('convert-material-DL-RM-0'), { target: { value: 'Granite' } });
+    fireEvent.change(r.getByTestId('convert-material-DL-RM-1'), { target: { value: 'Quartz' } });
+    fireEvent.click(r.getByTestId('convert-confirm-DL-RM'));
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]![1]).toMatchObject({ deciderKind: 'member', deciderMembershipId: 'm-eng-b' });
+  });
+
+  it('R5-F4: a confirmed conversion HOLDS publication until the server accepts it — the form closes only on success', async () => {
+    const { waitFor } = await import('@testing-library/react');
+    let settle!: (ok: boolean) => void;
+    const inFlight = new Promise<boolean>((res) => { settle = res; });
+    useStore.setState({
+      role: 'pmc',
+      decisions: [dec({ id: 'DL-RP', draft: true, deciderKind: 'none', options: [], photoSwatch: undefined })],
+      members: [],
+      updateDecisionDraft: (() => inFlight) as never,
+      loadTeam: (() => Promise.resolve()) as never,
+    } as never);
+    const r = render(<DraftsScreen />);
+
+    fireEvent.change(r.getByTestId('draft-decider-DL-RP'), { target: { value: 'client' } });
+    fireEvent.change(r.getByTestId('convert-material-DL-RP-0'), { target: { value: 'Granite' } });
+    fireEvent.change(r.getByTestId('convert-material-DL-RP-1'), { target: { value: 'Quartz' } });
+    // before Confirm the record is legitimately publishable as a record
+    expect((r.getByTestId('publish-DL-RP') as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(r.getByTestId('convert-confirm-DL-RP'));
+    // the PATCH is in flight: publication is HELD, the form stays open, Confirm cannot double-fire
+    await waitFor(() => expect((r.getByTestId('publish-DL-RP') as HTMLButtonElement).disabled).toBe(true));
+    expect(r.getByTestId('convert-form-DL-RP')).toBeTruthy();
+    expect((r.getByTestId('convert-confirm-DL-RP') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByText(/publishing is held until the edit lands/)).toBeTruthy();
+
+    settle(true);
+    await waitFor(() => expect(r.queryByTestId('convert-form-DL-RP')).toBeNull());
+    expect((r.getByTestId('publish-DL-RP') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('R5-F4: a FAILED conversion keeps the form (and the record) exactly as the user last saw them', async () => {
+    const { waitFor } = await import('@testing-library/react');
+    useStore.setState({
+      role: 'pmc',
+      decisions: [dec({ id: 'DL-RF', draft: true, deciderKind: 'none', options: [], photoSwatch: undefined })],
+      members: [],
+      updateDecisionDraft: (() => Promise.resolve(false)) as never,
+      loadTeam: (() => Promise.resolve()) as never,
+    } as never);
+    const r = render(<DraftsScreen />);
+    fireEvent.change(r.getByTestId('draft-decider-DL-RF'), { target: { value: 'client' } });
+    fireEvent.change(r.getByTestId('convert-material-DL-RF-0'), { target: { value: 'Granite' } });
+    fireEvent.change(r.getByTestId('convert-material-DL-RF-1'), { target: { value: 'Quartz' } });
+    fireEvent.click(r.getByTestId('convert-confirm-DL-RF'));
+    await waitFor(() => expect((r.getByTestId('convert-confirm-DL-RF') as HTMLButtonElement).disabled).toBe(false));
+    // the failed edit left the form open for retry and publication usable again
+    expect(r.getByTestId('convert-form-DL-RF')).toBeTruthy();
+    expect((r.getByTestId('publish-DL-RF') as HTMLButtonElement).disabled).toBe(false);
+  });
+});

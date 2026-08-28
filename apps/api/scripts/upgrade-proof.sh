@@ -3833,6 +3833,40 @@ else
   echo "FAILED  4b-decider F2 precision: expected the record to survive, found count=$survived"
   FAIL=1
 fi
+
+# ---- Phase 6 task 4b (decider) round-5 F5: the DecisionOption TRUNCATE seal ------------------
+# The row-level option freeze never fires for TRUNCATE, so `TRUNCATE "DecisionOption" CASCADE`
+# could erase every option while the published Decision rows stood. Same register: one legally
+# published CHOICE decision (re-ordered create under the readiness key; the deferred floor sees
+# its 2 options at commit), then the hostile TRUNCATE — refused by the NEW statement seal (the
+# 4a touch seal only guards same-transaction touches and this register has none).
+$PSQL2 -q >/dev/null <<'SQL' || { echo "FAILED  4b-decider F5: the published choice fixture was refused"; FAIL=1; }
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtextextended('readiness:rr-p1', 0));
+INSERT INTO "Decision"("id","projectId","title","room","status","ageDays","authorId","deciderKind","photoSwatch")
+VALUES ('RR-CHOICE','rr-p1','Tile choice','Hall','pending',0,'rr-u1','pmc','sw1');
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","recommended","order")
+VALUES ('RR-CO1','RR-CHOICE','A','a','Kota',0,'sw1',true,0),
+       ('RR-CO2','RR-CHOICE','B','b','Granite',100,'sw2',false,1);
+UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='RR-CHOICE';
+COMMIT;
+SQL
+if out=$($PSQL2 -c 'TRUNCATE "DecisionOption" CASCADE' 2>&1); then
+  echo "FAILED  4b-decider F5: TRUNCATE CASCADE erased the published question's options"
+  FAIL=1
+elif ! printf '%s' "$out" | grep -q 'published options'; then
+  echo "FAILED  4b-decider F5: TRUNCATE refused, but not by the option statement seal — got: $(printf '%s' "$out" | tail -2)"
+  FAIL=1
+else
+  echo "ok      4b-decider F5: a published question's options refuse TRUNCATE by the statement seal"
+fi
+optcount=$(psql -X -tAc "SELECT COUNT(*) FROM \"DecisionOption\" WHERE \"decisionId\"='RR-CHOICE'" -d "$DB2")
+if [ "$optcount" = "2" ]; then
+  echo "ok      4b-decider F5 precision: both options survived the refused TRUNCATE"
+else
+  echo "FAILED  4b-decider F5 precision: expected 2 surviving options, found $optcount"
+  FAIL=1
+fi
 $PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB2;" >/dev/null 2>&1 || true
 
 # ---- Schedule B1 — the acyclic activity dependency graph -------------------------------------

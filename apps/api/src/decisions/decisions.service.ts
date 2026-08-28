@@ -653,6 +653,14 @@ export class DecisionsService {
         if (nextKind !== 'none' && curKind === 'none' && (input.options?.length ?? 0) < 2) {
           throw new BadRequestException('Converting a record into a choice needs its 2–4 options in the same edit');
         }
+        // round-5 Codex F6 — the mirror-image hole: an options-ONLY edit on a record draft
+        // (deciderKind omitted, so the contract's record-takes-no-options refinement never
+        // sees it) would plant options on a `recorded` row and trip the DB record seal as an
+        // uncaught abort. The RESULTING kind is a record ⇒ any nonempty options payload is a
+        // category error, whatever the edit omitted.
+        if (nextKind === 'none' && (input.options?.length ?? 0) > 0) {
+          throw new BadRequestException('A record (deciderKind none) takes no options');
+        }
         // round-1 Codex F8 — CONVERTING to a record files the frozen author's name in the
         // permanent register: they must hold CURRENT decision authority at that moment (the
         // same check the record birth door runs; the DB seal re-judges it under the readiness

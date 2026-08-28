@@ -5,7 +5,7 @@ import { selectLogDecisions } from '@/store/selectors';
 import { Eyebrow, DecisionChip, Button, Modal, LocationContext, EditState } from '@/components';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { Lock, Plus, ChevronRight, Pencil, Trash2, BookmarkPlus } from '@/lib/icons';
-import { signed, swatch as swatchGradient, decisionRail, can, type Decision } from '@vitan/shared';
+import { deciderNoun, signed, swatch as swatchGradient, decisionRail, can, type Decision } from '@vitan/shared';
 import { childrenOf, groupDecisions, locationSegments, type GroupBy } from '@/lib/locationTree';
 import styles from './responsive.module.css';
 
@@ -199,13 +199,17 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
   // Phase 6 task 4a — a withdrawn decision was never approved: it renders its options (never a
   // fabricated approval line), and its attribution names the withdrawer, not an approver.
   const neverLocked = d.status === 'pending' || d.status === 'withdrawn';
+  // round-5 Codex F2 — the open-row attribution names the ACTUAL decider (the shared
+  // `deciderNoun`): a pmc- or member-held row must not direct its own decider at the client.
+  // The client-held text stays byte-identical (the legacy default).
+  const kind = d.deciderKind ?? 'client';
   const attribution = recorded
     ? 'Issue recorded — no approval required'
     : d.status === 'withdrawn'
       ? `Withdrawn by ${d.withdrawnBy ?? 'the PMC'}${d.withdrawnAt ? ` · ${new Date(d.withdrawnAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}` : ''}`
       : d.approver
         ? `Approved by ${d.approver}${d.onBehalfOf ? ` (on behalf of the ${d.onBehalfOf})` : ''} · ${d.date}`
-        : `Ageing ${d.ageDays} days · awaiting client`;
+        : `Ageing ${d.ageDays} days · ${kind === 'client' ? 'awaiting client' : `awaiting ${deciderNoun(kind)}`}`;
   const approvedLine = recorded
     ? 'Filed on the register — nothing approvable'
     : neverLocked ? `${d.options.length} options presented` : `${d.approvedOption} — ${d.material}`;
@@ -252,7 +256,7 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
                 {d.changeRequest.costImpact === 0 ? 'No cost change' : signed(d.changeRequest.costImpact)}
                 {' · '}
                 {d.changeRequest.timeImpactDays === 0 ? 'no schedule impact' : `${d.changeRequest.timeImpactDays} day${d.changeRequest.timeImpactDays === 1 ? '' : 's'}`}
-                {' · awaiting the client’s re-approval'}
+                {` · awaiting ${deciderNoun(kind)}’s re-approval`}
               </div>
             </div>
           )}

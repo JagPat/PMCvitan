@@ -729,4 +729,61 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     expect(row.role).toBe('pmc'); // role-level delivery is untouched — only the attribution is withheld
     await t.prisma.pushSubscription.delete({ where: { endpoint } }); // keep the suite's project teardown clean
   });
+
+  // ── round-5 Codex corrections (the #465 head f49a0547) ─────────────────────────────────────
+
+  it('R5-F6: an options-ONLY edit on a record draft is a deliberate 400, never a DB seal abort', async () => {
+    const res = await post(pmcToken)(`/projects/${projectId}/decisions`, { title: `R5F6 record ${run}`, room: 'K', options: [], publish: false, deciderKind: 'none' });
+    expect(res.status).toBe(201);
+    const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId, title: `R5F6 record ${run}` } });
+    // deciderKind omitted → the contract's record-takes-no-options refinement never sees it;
+    // the service judges the RESULTING kind (still a record) against the payload
+    const planted = await patch(pmcToken)(`/projects/${projectId}/decisions/${d.id}/draft`, { options: twoOptions });
+    expect(planted.status, JSON.stringify(planted.body)).toBe(400);
+    expect(JSON.stringify(planted.body.message)).toContain('takes no options');
+    // the record is untouched — still zero options, still a record
+    expect(await t.prisma.decisionOption.count({ where: { decisionId: d.id } })).toBe(0);
+    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } })).status).toBe('recorded');
+    // precision: an options-only edit on a CHOICE draft still works (the legal replace)
+    const resC = await post(pmcToken)(`/projects/${projectId}/decisions`, { title: `R5F6 choice ${run}`, room: 'K', options: twoOptions, publish: false });
+    expect(resC.status).toBe(201);
+    const c = await t.prisma.decision.findFirstOrThrow({ where: { projectId, title: `R5F6 choice ${run}` } });
+    const replaced = await patch(pmcToken)(`/projects/${projectId}/decisions/${c.id}/draft`, { options: twoOptions.slice().reverse() });
+    expect(replaced.status, JSON.stringify(replaced.body)).toBe(200);
+  });
+
+  it('R5-F5: the DecisionOption statement-level TRUNCATE seal is deployed (the behavioural cycle runs in upgrade-proof)', async () => {
+    // the shared register here carries approval evidence the OLD arms already refuse, so the
+    // records-only behavioural proof lives in upgrade-proof.sh; the DEPLOYED trigger + body
+    // are pinned here so a drift cannot pass silently
+    const trig = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT COUNT(*)::bigint AS n FROM pg_trigger WHERE tgname = 'DecisionOption_t4b2_no_truncate' AND tgenabled = 'O'`,
+    );
+    expect(Number(trig[0]!.n)).toBe(1);
+    const rows = await t.prisma.$queryRawUnsafe<Array<{ def: string }>>(
+      `SELECT pg_get_functiondef('phase6_t4b2_option_no_truncate()'::regprocedure) AS def`,
+    );
+    expect(rows[0]!.def).toContain('"publishedAt" IS NOT NULL');
+    expect(rows[0]!.def).toContain('published options');
+  });
+
+  it('R5-F1: the decider claim predicate judges operability and the decision in ONE transaction (the project lock covers the read)', async () => {
+    // the interleaving window (archival committing BETWEEN a standalone operability statement
+    // and the decision read) cannot be paused from outside the service, so the pin is
+    // structural: the predicate's reads share one $transaction — the FOR UPDATE the orgs
+    // answer takes is then held until the decision read has happened — plus the behavioural
+    // arm (R3-F2 above) that an archived project drops the claim.
+    const { readFileSync } = await import('node:fs');
+    const { join, dirname } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../src/decisions/decisions.query.ts'), 'utf8');
+    const start = src.indexOf('async deciderPushTarget(');
+    const end = src.indexOf('\n  async ', start + 1);
+    const body = src.slice(start, end === -1 ? undefined : end);
+    expect(body).toContain('this.prisma.$transaction');
+    expect(body).toContain('isProjectOperable(tx, projectId)');
+    expect(body).toContain('tx.decision.findFirst');
+    // and no read in the predicate escapes the transaction back to the pooled client
+    expect(body).not.toContain('this.prisma.decision.findFirst');
+  });
 });

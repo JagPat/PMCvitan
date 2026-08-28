@@ -223,26 +223,33 @@ export class DecisionsQueryService {
    *     decision pending and its memberships intact, but `ProjectAccessService.authorize`
    *     refuses every request against an archived project, so a delivered demand could not be
    *     opened or satisfied. The owning module answers (participant edge); not-operable drops.
+   *     Round-5 Codex F1 — operability and the decision state are judged in ONE transaction:
+   *     `isProjectOperable` takes the project row FOR UPDATE, and holding that lock to commit
+   *     covers the decision read, so an archival committing mid-predicate either happened
+   *     before (seen — dropped) or waits for this claim's commit — the operable answer can
+   *     never go stale between the check and the decision it authorises.
    */
   async deciderPushTarget(
     projectId: string,
     decisionId: string,
   ): Promise<{ actionable: false } | { actionable: true; roles?: string[]; targetUserId?: string }> {
-    if (!(await this.orgsParticipant.isProjectOperable(this.prisma, projectId))) return { actionable: false };
-    const d = await this.prisma.decision.findFirst({
-      where: { id: decisionId, projectId },
-      select: { status: true, publishedAt: true, deciderKind: true, deciderMembership: { select: { userId: true, status: true } } },
+    return this.prisma.$transaction(async (tx) => {
+      if (!(await this.orgsParticipant.isProjectOperable(tx, projectId))) return { actionable: false };
+      const d = await tx.decision.findFirst({
+        where: { id: decisionId, projectId },
+        select: { status: true, publishedAt: true, deciderKind: true, deciderMembership: { select: { userId: true, status: true } } },
+      });
+      if (!d || d.publishedAt === null) return { actionable: false };
+      if (d.status !== 'pending' && d.status !== 'change') return { actionable: false };
+      if (d.deciderKind === 'client') return { actionable: true, roles: ['client'] };
+      if (d.deciderKind === 'pmc') return { actionable: true, roles: ['pmc'] };
+      if (d.deciderKind === 'member') {
+        const m = d.deciderMembership;
+        if (!m || m.status !== 'active') return { actionable: false };
+        return { actionable: true, targetUserId: m.userId };
+      }
+      return { actionable: false };
     });
-    if (!d || d.publishedAt === null) return { actionable: false };
-    if (d.status !== 'pending' && d.status !== 'change') return { actionable: false };
-    if (d.deciderKind === 'client') return { actionable: true, roles: ['client'] };
-    if (d.deciderKind === 'pmc') return { actionable: true, roles: ['pmc'] };
-    if (d.deciderKind === 'member') {
-      const m = d.deciderMembership;
-      if (!m || m.status !== 'active') return { actionable: false };
-      return { actionable: true, targetUserId: m.userId };
-    }
-    return { actionable: false };
   }
 
   /** Does decision `decisionId` exist in project `projectId`? The tenant-ownership check a consumer

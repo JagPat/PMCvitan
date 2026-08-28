@@ -561,7 +561,9 @@ export interface AppActions {
   /** Phase 6 task 4b — edit an UNPUBLISHED draft: re-point its decider (kind / named member),
    *  convert to/from a record (`none` ⟺ `recorded` with options replaced as one pair), or
    *  replace its options. Server-only (drafts are server-authored in API mode). */
-  updateDecisionDraft: (decisionId: string, input: UpdateDecisionDraftInput) => void;
+  /** Resolves true when the server accepted the edit (round-5 Codex F4 — the Drafts screen
+   *  holds Publish on the draft while a record⟺choice conversion is in flight). */
+  updateDecisionDraft: (decisionId: string, input: UpdateDecisionDraftInput) => Promise<boolean>;
   /** Publish EVERY draft (decisions + drawings) in one action — the Drafts workspace "Publish all". */
   publishAllDrafts: () => void;
   /** Create a zone/room/element and resolve to its new id (for the inline location picker).
@@ -1491,11 +1493,15 @@ export const useStore = create<Store>()(
       }
     };
 
-    const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: string): void => {
+    // round-5 Codex F4 — resolves true when the server ACCEPTED the command (a snapshot came
+    // back), false on failure: a caller that must hold a dependent action (the Drafts screen
+    // holds Publish while a conversion PATCH is in flight) can await the settle. Every existing
+    // fire-and-forget call site ignores the returned promise unchanged.
+    const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: string): Promise<boolean> => {
       const lease = beginSnapshotLease(currentScope()); // capture BEFORE the request
-      call()
-        .then((snap) => consumeSnapshotResult(acceptSnapshot(snap, lease), okMsg, lease.scope))
-        .catch(() => { if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.'); });
+      return call()
+        .then((snap) => { consumeSnapshotResult(acceptSnapshot(snap, lease), okMsg, lease.scope); return true; })
+        .catch(() => { if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.'); return false; });
     };
 
     // WEB-02: queued offline writes are scoped to WHO queued them and WHERE — the
@@ -3639,12 +3645,12 @@ export const useStore = create<Store>()(
     },
     updateDecisionDraft: (decisionId, input) => {
       const d = get().decisions.find((x) => x.id === decisionId);
-      if (!d?.draft) return;
+      if (!d?.draft) return Promise.resolve(false);
       if (!gateway) {
         get().flash('Editing drafts needs the server.');
-        return;
+        return Promise.resolve(false);
       }
-      runRemote(
+      return runRemote(
         () => gateway!.updateDecisionDraft(decisionId, input, newIdempotencyKey()),
         input.deciderKind === 'none'
           ? `Draft converted to a record: ${d.title} — no approval will be required.`
