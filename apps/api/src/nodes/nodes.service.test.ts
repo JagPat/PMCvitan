@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { NodesService } from './nodes.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
@@ -78,7 +79,7 @@ function make(seed: Node[] = [], decisionsByNode: Record<string, number> = {}) {
   // owning modules' participants (owner-aligned SET NULL signals); null stubs (no filed rows).
   const drawingParticipant = { unfileForDeletedNodes: vi.fn(async () => null) } as unknown as DrawingParticipant;
   const dailyLogParticipant = { unfileMaterialsForDeletedNodes: vi.fn(async () => null) } as unknown as DailyLogParticipant;
-  const svc = new NodesService(prisma, snapshot, dispatcher, new DecisionsQueryService(prisma as unknown as PrismaService), inspectionParticipant, activityParticipant, drawingParticipant, dailyLogParticipant);
+  const svc = new NodesService(prisma, snapshot, dispatcher, new DecisionsQueryService(prisma as unknown as PrismaService, new OrgsParticipant()), inspectionParticipant, activityParticipant, drawingParticipant, dailyLogParticipant);
   const user = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
   return { svc, prisma, nodes, user };
 }

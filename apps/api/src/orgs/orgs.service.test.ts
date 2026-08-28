@@ -2,7 +2,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { OrgsService } from './orgs.service';
 import type { DecisionsParticipant } from '../decisions/decisions.participant';
-import type { OrgsParticipant } from './orgs.participant';
+import { OrgsParticipant } from './orgs.participant';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import { ActivitiesQueryService } from '../activities/activities.query';
@@ -31,7 +31,7 @@ const initParticipants = (prisma: unknown) => [
   new NodeInitParticipant(),
   new ActivityParticipant(undefined as never, { assertWorkEvidenceRevisable: async () => {} } as never),
   new InspectionParticipant(),
-  new DecisionsQueryService(prisma as unknown as PrismaService),
+  new DecisionsQueryService(prisma as unknown as PrismaService, new OrgsParticipant()),
   new InspectionsQueryService(prisma as unknown as PrismaService, signedStub),
   new ActivitiesQueryService(prisma as unknown as PrismaService, undefined as never, undefined as never, undefined as never),
   // Phase 6 task 4b (§A.1) — the holder-orphan guard's two participant answers, stubbed
@@ -172,7 +172,7 @@ function makeAtomicProjectInit(throwFromInspection = false) {
     nodeInit as unknown as NodeInitParticipant,
     activityInit as unknown as ActivityParticipant,
     inspectionInit as unknown as InspectionParticipant,
-    new DecisionsQueryService(prisma as unknown as PrismaService),
+    new DecisionsQueryService(prisma as unknown as PrismaService, new OrgsParticipant()),
     new InspectionsQueryService(prisma as unknown as PrismaService, signedStub),
     new ActivitiesQueryService(prisma as unknown as PrismaService, undefined as never, undefined as never, undefined as never),
   );

@@ -106,8 +106,12 @@ export class DecisionsService {
       requestHash,
       run: async (tx) => {
         // publication is a readiness-input write (the gate reads the published decision), and
-        // the DB seals' try-acquire expects the service path to HOLD the key (§B.1)
-        if (input.publish) await lockProjectReadiness(tx, projectId);
+        // the DB seals' try-acquire expects the service path to HOLD the key (§B.1). Round-3
+        // Codex F4: the seal's recorded-birth arm fires on EVERY record INSERT — published or
+        // not — so a record create acquires the key too; otherwise a concurrent holder (an
+        // activity start, a membership command) would make the trigger's try-acquire fail an
+        // otherwise valid create instead of serializing behind it.
+        if (input.publish || record) await lockProjectReadiness(tx, projectId);
         // 4b (§A.1): a NAMED decider must be an ACTIVE membership of THIS project, answered and
         // LOCKED by the owner through the declared participant edge — the FK alone proves too
         // little (existence is not standing).
@@ -615,9 +619,24 @@ export class DecisionsService {
       idempotencyKey,
       requestHash,
       run: async (tx) => {
+        // round-3 Codex F4 — ENTERING `recorded` fires the seal's conversion arm (author
+        // authority judged under the readiness key) even on an unpublished draft, so the
+        // conversion path holds the key exactly like the record birth door (§B.1): a
+        // concurrent key holder makes this command WAIT instead of failing spuriously on
+        // the trigger's try-acquire. Taken FIRST — the same lock order every other command
+        // uses (readiness key, then row locks).
+        if (nextKind === 'none' && d.deciderKind !== 'none') await lockProjectReadiness(tx, projectId);
         if (input.deciderKind === 'member') {
           const member = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, input.deciderMembershipId!);
           if (!member) throw new BadRequestException('The named decider must be an ACTIVE member of this project');
+        }
+        // round-3 Codex F3 — the REVERSE conversion (record → choice) births the choice's
+        // presentation from its lead option's swatch, so a conversion without a usable 2–4
+        // option payload would reach the DB swatch CHECK as an uncaught transaction abort:
+        // refuse it deliberately here — only the service knows the draft's CURRENT kind
+        // (the contract cannot see what the draft is converting FROM).
+        if (nextKind !== 'none' && d.deciderKind === 'none' && (input.options?.length ?? 0) < 2) {
+          throw new BadRequestException('Converting a record into a choice needs its 2–4 options in the same edit');
         }
         // round-1 Codex F8 — CONVERTING to a record files the frozen author's name in the
         // permanent register: they must hold CURRENT decision authority at that moment (the

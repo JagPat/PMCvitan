@@ -250,3 +250,51 @@ closes unmerged and this REPLACEMENT PR (branch `claude/decision-workflow-4b-r2`
 
 No migration change in this round — `20271015` is byte-for-byte the round-1 body; the
 replacement's migration story is unchanged from the packet above.
+
+## Round-3 correction (the Codex review of head `a13c3454` — four findings, ONE fix-forward head)
+
+Codex attempt 1/2 on the replacement head returned four P2 findings. Each was reproduced RED at
+`a13c3454` first (probe names below), then fixed forward as one batch; every prior decision is
+preserved and `20271015` is byte-for-byte unchanged.
+
+- **R3-F1 (P2, PMC-held decisions in the action queue)** — `selectActionItems` guarded the
+  decider items behind `role !== 'pmc'`, so a pmc-held decision produced no approval task for
+  the signed-in PMC while the management summary described ALL pending rows as "awaiting the
+  client". The decider filtering now applies to EVERY role (a pmc-held pending/change row is
+  the PMC's own `decider-pending`/`decider-reapprove` item at the approval surface), and the
+  PMC management summaries (`pmc-pending`/`pmc-change`) cover ONLY decisions held by OTHER
+  deciders, with the "awaiting" text naming the client only when every other-held row is
+  client-held (the pre-4b world stays byte-identical — the seeded e2e assertion is untouched).
+  Probe: `tests/actionQueue.test.ts` "pmc as DECIDER" (RED at `a13c3454`).
+- **R3-F2 (P2, archived-project decider push)** — archival keeps a decision pending and its
+  memberships intact, so the claim-time predicate still reported a queued `decision.published`
+  delivery actionable and the consumer sent a demand `ProjectAccessService.authorize` would
+  refuse to open. `deciderPushTarget` now asks the ORGS-owned operability question first
+  (`OrgsParticipant.isProjectOperable`, the declared decisions → orgs participant edge — the
+  same answer the commercial activation guard uses): a non-operable project drops the claim
+  (the delivery cancels with the 4a cancellation mark, never a dead-end push). Probe: `R3-F2`
+  in `phase6-t4b-decider.test.ts` (archived → not actionable; un-archived → restored).
+- **R3-F3 (P2, record→choice conversion validation)** — a PATCH like `{deciderKind:'client'}`
+  on a record draft passed the contract, and the service then flipped the row to
+  `pending`/client with its record-era `photoSwatch` still NULL — the `Decision_t4b2_swatch_check`
+  aborted the transaction as an uncaught 500. The conversion is now refused DELIBERATELY at
+  both layers: the service (which knows the draft's CURRENT kind) returns 400 when converting
+  `none` to a choice without a 2–4 option payload, and the contract gains the two refinements
+  it can state without the current kind (a record edit never carries options; a choice kind
+  edited together with an options payload carries the full 2–4). Probe: `R3-F3` (bare
+  conversion 400; explicit-empty 400; optioned-`none` 400; the same conversion with its 2–4
+  options lands with the lead swatch installed).
+- **R3-F4 (P2, readiness acquisition for unpublished record writes)** — the lifecycle seal's
+  recorded-birth arm fires on EVERY record INSERT and its conversion arm on every entry into
+  `recorded`, but the service held the readiness key only when publishing: a concurrent key
+  holder (an activity start, a membership command) made the trigger's `phase6_try_readiness`
+  fail an otherwise valid unpublished record create or draft→record conversion. Both doors now
+  acquire `lockProjectReadiness` (first statement of the command transaction, the uniform §B.1
+  order), so they SERIALIZE instead of failing spuriously; the two record-arm writes join the
+  §A lock-coverage enumeration (`readiness-lock-coverage.test.ts`, 38 → 40). Probe: `R3-F4` —
+  a second session holds the key, the command is proven BLOCKED (never a seal failure), the
+  release lands it (both doors).
+
+No migration change in this round — `20271015` remains the round-1 body. Gates for this head:
+`pnpm check` EXIT 0; the full integration battery on a pristine migrated DB (the t4b suite is
+now 22 probes); `test:e2e:api:allmodules` and `:outbox` both green (totals in the PR thread).

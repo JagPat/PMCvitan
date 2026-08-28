@@ -42,6 +42,36 @@ describe('selectActionItems — the per-role "For You" action queue', () => {
     expect(k).toContain('pmc-pending'); // 2 decisions issued, waiting on the client
   });
 
+  it('pmc as DECIDER (4b round-3 Codex F1): a pmc-held decision is the PMC’s OWN approval task; the management summaries cover only other deciders', () => {
+    // default role is pmc — re-point the seeded pending DL-014 and the reopened DL-003 at the PMC
+    useStore.setState({
+      decisions: s().decisions.map((d) =>
+        d.id === 'DL-014' || d.id === 'DL-003' ? { ...d, deciderKind: 'pmc' as const } : d),
+    });
+    const items = selectActionItems(s());
+    // the PMC's own decider queue: the pending approval and the re-approval, at the approval surface
+    const mine = items.find((i) => i.key === 'decider-pending')!;
+    expect(mine).toBeTruthy();
+    expect(mine.title).toContain('1 decision');
+    expect(mine.title).toContain('awaiting your approval');
+    expect(mine.screen).toBe('client-decisions');
+    expect(items.map((i) => i.key)).toContain('decider-reapprove');
+    // the management summaries shrink to the OTHER-held rows: DL-011 stays with the client,
+    // and the pmc-held change request is the PMC's re-approval, not a row "to resolve"
+    const summary = items.find((i) => i.key === 'pmc-pending')!;
+    expect(summary.title).toContain('1 decision');
+    expect(summary.title).toContain('awaiting the client');
+    expect(items.map((i) => i.key)).not.toContain('pmc-change');
+
+    // a non-client other-held decision is never described as "awaiting the client"
+    useStore.setState({
+      decisions: s().decisions.map((d) =>
+        d.id === 'DL-011' ? { ...d, deciderKind: 'member' as const, deciderUserId: 'u-eng' } : d),
+    });
+    const mixed = selectActionItems(s()).find((i) => i.key === 'pmc-pending')!;
+    expect(mixed.title).toContain('awaiting its decider');
+  });
+
   it('engineer & contractor: surface the drawings to acknowledge (all 3 seeded sheets are unacked)', () => {
     s().setRole('engineer');
     const eng = selectActionItems(s()).find((i) => i.key === 'eng-ack')!;

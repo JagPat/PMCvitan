@@ -319,21 +319,21 @@ export function selectActionItems(s: AppState): ActionItem[] {
   const names = (xs: { title?: string; name?: string; number?: string }[], n = 3) =>
     xs.slice(0, n).map((x) => x.title ?? x.name ?? x.number ?? '').filter(Boolean).join(', ');
 
-  // Phase 6 task 4b (§A.3) — the approval to-do follows THE DECIDER (the shared `viewerIsDecider`
-  // predicate): a named engineer-decider gets the item, a same-role non-decider does not, and the
-  // client no longer sees a demand for a decision they do not decide. The client keys are kept for
-  // the (unchanged) client-held case; a non-client decider gets the decider-keyed item pointing at
-  // the same approval surface (reachable via the decider route arm).
-  if (s.role !== 'pmc') {
-    const myPending = pending.filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
-    const myChanges = changes.filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
-    if (myPending.length) {
-      items.push({ key: s.role === 'client' ? 'client-pending' : 'decider-pending', title: `${myPending.length} decision${plural(myPending.length)} awaiting your approval`, detail: names(myPending), screen: 'client-decisions', cta: 'Review & approve', tone: 'amber' });
-    }
-    if (myChanges.length) {
-      // a reopened decision BLOCKS the work driven by it until the decider re-approves
-      items.push({ key: s.role === 'client' ? 'client-reapprove' : 'decider-reapprove', title: `${myChanges.length} change request${plural(myChanges.length)} need${myChanges.length === 1 ? 's' : ''} your re-approval`, detail: names(myChanges), screen: 'client-decisions', cta: 'Re-approve', tone: 'red' });
-    }
+  // Phase 6 task 4b (§A.3, round-3 Codex F1) — the approval to-do follows THE DECIDER (the shared
+  // `viewerIsDecider` predicate) for EVERY role: a named engineer-decider gets the item, a
+  // same-role non-decider does not, the client no longer sees a demand for a decision they do not
+  // decide — and a PMC-HELD decision is the signed-in PMC's OWN approval task, never someone
+  // else's responsibility. The client keys are kept for the (unchanged) client-held case; any
+  // other decider gets the decider-keyed item pointing at the same approval surface (reachable
+  // via the decider route arm).
+  const myPending = pending.filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
+  const myChanges = changes.filter((d) => viewerIsDecider(d, s.role, s.sessionUserId));
+  if (myPending.length) {
+    items.push({ key: s.role === 'client' ? 'client-pending' : 'decider-pending', title: `${myPending.length} decision${plural(myPending.length)} awaiting your approval`, detail: names(myPending), screen: 'client-decisions', cta: 'Review & approve', tone: 'amber' });
+  }
+  if (myChanges.length) {
+    // a reopened decision BLOCKS the work driven by it until the decider re-approves
+    items.push({ key: s.role === 'client' ? 'client-reapprove' : 'decider-reapprove', title: `${myChanges.length} change request${plural(myChanges.length)} need${myChanges.length === 1 ? 's' : ''} your re-approval`, detail: names(myChanges), screen: 'client-decisions', cta: 'Re-approve', tone: 'red' });
   }
 
   if (s.role === 'engineer') {
@@ -350,9 +350,19 @@ export function selectActionItems(s: AppState): ActionItem[] {
   if (s.role === 'pmc') {
     if (drafts.length) items.push({ key: 'pmc-drafts', title: `${drafts.length} draft${plural(drafts.length)} in progress`, detail: names(drafts), screen: 'drafts', cta: 'Review & publish', tone: 'ink' });
     if (s.reviews.length) items.push({ key: 'pmc-reviews', title: `${s.reviews.length} inspection${plural(s.reviews.length)} awaiting your review`, detail: names(s.reviews), screen: 'inspect-review', cta: 'Review', tone: 'amber' });
-    if (changes.length) items.push({ key: 'pmc-change', title: `${changes.length} change request${plural(changes.length)} to resolve`, detail: names(changes), screen: 'decision-log', cta: 'Open', tone: 'red' });
+    // round-3 Codex F1 — the PMC MANAGEMENT summaries cover only decisions held by OTHER
+    // deciders: a PMC-held row is the PMC's own approval task (the decider items above), not
+    // something to describe as awaiting someone else. When every other-held decision is
+    // client-held (the pre-4b world), the texts are byte-identical to what they always said.
+    const otherChanges = changes.filter((d) => !viewerIsDecider(d, s.role, s.sessionUserId));
+    const otherPending = pending.filter((d) => !viewerIsDecider(d, s.role, s.sessionUserId));
+    if (otherChanges.length) items.push({ key: 'pmc-change', title: `${otherChanges.length} change request${plural(otherChanges.length)} to resolve`, detail: names(otherChanges), screen: 'decision-log', cta: 'Open', tone: 'red' });
     if (blocked.length) items.push({ key: 'pmc-blocked', title: `${blocked.length} activit${blocked.length === 1 ? 'y' : 'ies'} blocked`, detail: names(blocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'red' });
-    if (pending.length) items.push({ key: 'pmc-pending', title: `${pending.length} decision${plural(pending.length)} awaiting the client`, detail: 'Issued — waiting on client approval', screen: 'decision-log', cta: 'View', tone: 'ink' });
+    if (otherPending.length) {
+      const allClientHeld = otherPending.every((d) => (d.deciderKind ?? 'client') === 'client');
+      const who = allClientHeld ? 'the client' : otherPending.length === 1 ? 'its decider' : 'their deciders';
+      items.push({ key: 'pmc-pending', title: `${otherPending.length} decision${plural(otherPending.length)} awaiting ${who}`, detail: allClientHeld ? 'Issued — waiting on client approval' : 'Issued — waiting on each decider’s approval', screen: 'decision-log', cta: 'View', tone: 'ink' });
+    }
     // Task 6: unstarted work whose DRAWING gate blocks it — the derived conclusion, surfaced
     const drawingBlocked = s.activities.filter((a) => {
       if (a.status !== 'not-started') return false;

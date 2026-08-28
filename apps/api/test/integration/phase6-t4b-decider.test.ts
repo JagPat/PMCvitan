@@ -557,4 +557,86 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     const awareIds = aware.body.decisions.filter((d: { status: string }) => d.status !== 'recorded').map((d: { id: string }) => d.id).sort();
     expect(legacy.body.decisions.map((d: { id: string }) => d.id).sort()).toEqual(awareIds);
   });
+
+  // ── round-3 Codex corrections (the replacement head a13c3454) ──────────────────────────────
+
+  it('R3-F2: archiving the project drops a queued decider push at claim — a demand nobody could open is cancelled, not sent', async () => {
+    const did = await issue({}); // client-held, published, pending
+    const query = t.app.get(DecisionsQueryService);
+    expect(await query.deciderPushTarget(projectId, did)).toEqual({ actionable: true, roles: ['client'] });
+    // archival keeps the decision pending and every membership intact — only the project closes
+    await t.prisma.project.update({ where: { id: projectId }, data: { archivedAt: new Date() } });
+    try {
+      expect(await query.deciderPushTarget(projectId, did)).toEqual({ actionable: false });
+    } finally {
+      await t.prisma.project.update({ where: { id: projectId }, data: { archivedAt: null } });
+    }
+    // precision: un-archiving restores the claim, and the obligation is releasable
+    expect(await query.deciderPushTarget(projectId, did)).toEqual({ actionable: true, roles: ['client'] });
+    expect((await post(clientToken)(`/projects/${projectId}/decisions/${did}/approve`, { optionIndex: 0 })).status).toBe(201);
+  });
+
+  it('R3-F3: converting a record draft to a choice WITHOUT a usable option payload is a deliberate 400, never a DB abort', async () => {
+    const res = await post(pmcToken)(`/projects/${projectId}/decisions`, { title: `R3F3 record ${run}`, room: 'K', options: [], publish: false, deciderKind: 'none' });
+    expect(res.status).toBe(201);
+    const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId, title: `R3F3 record ${run}` } });
+    // options OMITTED → the service's deliberate refusal (only it knows the draft's current kind)
+    const bare = await patch(pmcToken)(`/projects/${projectId}/decisions/${d.id}/draft`, { deciderKind: 'client' });
+    expect(bare.status, JSON.stringify(bare.body)).toBe(400);
+    expect(JSON.stringify(bare.body.message)).toContain('2–4 options');
+    // an EXPLICITLY empty payload beside a choice kind → the contract half refuses
+    const empty = await patch(pmcToken)(`/projects/${projectId}/decisions/${d.id}/draft`, { deciderKind: 'client', options: [] });
+    expect(empty.status).toBe(400);
+    // and options planted beside `none` are refused too (the create door's rule, now on the edit door)
+    const optioned = await patch(pmcToken)(`/projects/${projectId}/decisions/${d.id}/draft`, { deciderKind: 'none', options: twoOptions });
+    expect(optioned.status).toBe(400);
+    // precision: the SAME conversion carrying its 2–4 options lands, lead swatch installed
+    const ok = await patch(pmcToken)(`/projects/${projectId}/decisions/${d.id}/draft`, { deciderKind: 'client', options: twoOptions });
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    const after = await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } });
+    expect(after.status).toBe('pending');
+    expect(after.photoSwatch).toBe('sw1');
+  });
+
+  it('R3-F4: an unpublished record create and a draft→record conversion SERIALIZE behind a held readiness key instead of failing on the seal', async () => {
+    // hold the project readiness key from a SECOND session, fire the command, prove it WAITS
+    // (the trigger's try-acquire must never fail a valid write), release, prove it lands
+    const runHeld = async (fire: () => Promise<{ status: number; body: unknown }>, expected: number) => {
+      let release!: () => void;
+      const released = new Promise<void>((r) => { release = r; });
+      let held!: () => void;
+      const heldP = new Promise<void>((r) => { held = r; });
+      const holder = t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtextextended('readiness:${projectId}', 0))`);
+        held();
+        await released;
+      });
+      await heldP;
+      const cmd = fire();
+      const raced = await Promise.race([
+        cmd.then((r) => r.status),
+        new Promise((r) => setTimeout(() => r('blocked'), 400)),
+      ]);
+      expect(raced, 'the command must WAIT on the readiness key, not fail on the seal').toBe('blocked');
+      release();
+      await holder;
+      const res = await cmd;
+      expect(res.status, JSON.stringify(res.body)).toBe(expected);
+    };
+
+    // the record BIRTH door with publish: false — the seal's recorded-birth arm still fires
+    await runHeld(
+      () => post(pmcToken)(`/projects/${projectId}/decisions`, { title: `R3F4 record ${run}`, room: 'K', options: [], publish: false, deciderKind: 'none' }),
+      201,
+    );
+
+    // the draft → record CONVERSION door — the seal's conversion arm fires on entry
+    const resDraft = await post(pmcToken)(`/projects/${projectId}/decisions`, { title: `R3F4 choice ${run}`, room: 'K', options: twoOptions, publish: false });
+    expect(resDraft.status).toBe(201);
+    const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId, title: `R3F4 choice ${run}` } });
+    await runHeld(
+      () => patch(pmcToken)(`/projects/${projectId}/decisions/${d.id}/draft`, { deciderKind: 'none', options: [] }),
+      200,
+    );
+  });
 });

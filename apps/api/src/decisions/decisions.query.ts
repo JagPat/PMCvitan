@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 import type { DecisionStatus } from '../domain/transitions';
 import type { DeciderKind } from '@vitan/shared';
 import type { Role } from '../common/auth';
@@ -26,7 +27,13 @@ import { readServableGeneration } from '../platform/projections/generation';
  */
 @Injectable()
 export class DecisionsQueryService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // round-3 Codex F2 — the decider push family's claim-time predicate asks the ORGS-owned
+    // project-operability question through the declared participant edge (decisions already
+    // lists `orgs` in `workflowParticipants`; the models stay read-encapsulated).
+    private readonly orgsParticipant: OrgsParticipant,
+  ) {}
 
   /**
    * The decisions slice of the project snapshot: the role-filtered `DecisionDto[]` the store hydrates,
@@ -211,12 +218,17 @@ export class DecisionsQueryService {
    *   - a role-held decision targets its role;
    *   - a member-held decision targets the named member's USER — and the STANDING arm: a
    *     membership no longer active drops the push (never a "decide this" demand to a revoked
-   *     target).
+   *     target);
+   *   - round-3 Codex F2 — the PROJECT itself must still be operable: archival keeps the
+   *     decision pending and its memberships intact, but `ProjectAccessService.authorize`
+   *     refuses every request against an archived project, so a delivered demand could not be
+   *     opened or satisfied. The owning module answers (participant edge); not-operable drops.
    */
   async deciderPushTarget(
     projectId: string,
     decisionId: string,
   ): Promise<{ actionable: false } | { actionable: true; roles?: string[]; targetUserId?: string }> {
+    if (!(await this.orgsParticipant.isProjectOperable(this.prisma, projectId))) return { actionable: false };
     const d = await this.prisma.decision.findFirst({
       where: { id: decisionId, projectId },
       select: { status: true, publishedAt: true, deciderKind: true, deciderMembership: { select: { userId: true, status: true } } },

@@ -528,6 +528,18 @@ export const updateDecisionDraftSchema = z
   .refine((v) => v.deciderKind === undefined || (v.deciderKind === 'member') === (v.deciderMembershipId !== undefined), {
     message: 'deciderMembershipId is required exactly when deciderKind is member',
   })
+  // round-3 Codex F3 — the CONTRACT half of conversion coherence (what it can see without the
+  // draft's current kind): a record edit never carries options, and a choice kind edited
+  // TOGETHER with an options payload carries the full 2–4 (an explicitly empty or one-option
+  // payload beside a choice kind is a category error whatever the draft was before). The
+  // current-kind-dependent half — converting `none` to a choice with options OMITTED — is the
+  // service's deliberate 400 (it knows the draft).
+  .refine((v) => v.deciderKind !== 'none' || v.options === undefined || v.options.length === 0, {
+    message: 'a record (deciderKind none) takes no options',
+  })
+  .refine((v) => v.deciderKind === undefined || v.deciderKind === 'none' || v.options === undefined || v.options.length >= 2, {
+    message: 'a choice deciderKind edited together with options needs the full 2–4',
+  })
   .refine((v) => Object.values(v).some((x) => x !== undefined), { message: 'Provide at least one field to update' });
 export type UpdateDecisionDraftInput = z.infer<typeof updateDecisionDraftSchema>;
 
