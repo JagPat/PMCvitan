@@ -11,16 +11,61 @@ narrative and may lag behind reality.
 
 ```yaml
 phase: 6
-phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
+phase_plan: docs/superpowers/plans/2026-08-14-decision-workflow-4b.md
 task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: 7c72044b
-open_pr: none
+open_pr: 462
 next_task: none
 blocking_directive: none
 updated: 2026-08-28
 ```
+
+**PHASE 6 TASK 4, UNIT 4b — IMPLEMENTATION IS OPEN AS PR #462** (branch
+`claude/decision-workflow-unit-4b-9mtki3` from `main` `2aee172`), on the Board's pin of
+2026-08-28: unit 4b from `2aee172`, one unit, RED then GREEN, following
+`docs/superpowers/plans/2026-08-14-decision-workflow-4b.md`, with this STATUS flip folded into
+the same PR (the folded-STATUS convention every WORK pr carries; only PLAN reviews split their
+STATUS out). `phase_plan` moves to the 4b plan because that is the document this task's
+remaining work executes; the programme frame at
+`docs/superpowers/plans/2026-08-13-decision-workflow.md` is unchanged and still holds §B's unit
+scopes. **The same pin re-states that contractor-capture units 1–6 have NO Board GO and unit 1 /
+#461 is not reopened** — the standing directive `contractor-capture-units-1-6-board-go` below is
+unchanged by this entry.
+
+**What the PR delivers is §A.1 of the 4b plan — the HOLDER SPINE — plus the one §A.3 arm §A.1
+cannot be correct without.** The plan designs 4b as three threads, and shipping all three in one
+review unit is not reviewable at the mandated budget; the unit's DATABASE shape already landed
+separately for the same reason (PR #349, `20270826000000_phase6_t4b_approval_attribution`: the
+holder columns, the frozen approval tuple, the holder freeze from publication, the
+`Membership(projectId, id)` candidate key and the `Membership.userId`/`projectId` identity
+freeze). This PR makes that shape mean something: the create contract and the shipped create
+modal state WHO decides (absent = `client`, so every pre-4b payload, notice, push body and
+serialized DTO is byte-identical — probed, not asserted); `decisions.updateDraft` re-points an
+UNPUBLISHED draft's holder, which is the exit the publish refusal names; publish takes the
+readiness lock and the decision ROW lock, derives its evidence from the LOCKED head, and refuses
+a draft whose named member has left or whose role nobody holds; `ROLE_POLICY['decision.approve']`
+becomes the route CEILING while `DecisionsService.approve` becomes the AUTHORITY that narrows to
+the actual decider (a same-role non-decider is refused at the service, with no side effects); the
+approval act freezes the exact holder tuple, so a re-approval after a change request still names
+the party that first consented; and the per-viewer audience rule widens the AUTH-02 pending
+narrowing by exactly one person — the decider's own user — on the live AND the projected path
+through the one function, with the projection row carrying the resolved decider user so live ==
+projection == rebuild by construction.
+
+**Four threads of the 4b plan are CARRIED FORWARD as their own units, named rather than
+dismissed** (the packet `docs/reviews/phase-6-t4b-decider-packet.md` lists them with their plan
+references): the §A.3 targeted-push spine (the user-level dispatch target, the subscription→user
+linkage with credential-version and token-expiry validity, the sign-out unlink, the claim-time
+per-family predicate); the remaining §A.3 audience surfaces (`countPending` and its portfolio
+caller, `selectActionItems`, the nav badge, the bell-stripping predicate, the two store
+visibility selectors, and the approval ROUTE so a named engineer-decider's Inbox CTA lands and
+stays); §A.2's record-only issue (`deciderKind: 'none'`, the terminal `recorded` status and its
+evidence seals, the zero-option create path, the gate's `recorded` arm); and §A.1's
+holder-orphan removal guard with the §B.1/§B.2 seal architecture — this PR ships the SERVICE half
+at the two transitions that can BIRTH a holderless open decision (publish, and `approved →
+change`), and does not yet stop a membership removal from orphaning one that is already open.
 
 **CONTRACTOR-CAPTURE UNIT 0 IS DELIVERED AND CLEARED — PR #459 MERGED at `main` `7c72044b`
 with a fresh exact-head Codex +1 on `6e661e6f` (attempt 1, no findings), 2026-08-28.** This
