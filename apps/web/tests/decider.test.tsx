@@ -215,3 +215,57 @@ describe('P16 (web half): the record-only issue in the create + drafts surfaces'
     expect((r.getByTestId('publish-DL-NM') as HTMLButtonElement).disabled).toBe(true);
   });
 });
+
+describe('round-1 Codex corrections (web arms)', () => {
+  it('F2: a RECORD renders as a filed fact in the log — no approver, no options arithmetic, no approval demand', async () => {
+    const { DecisionLogScreen } = await import('@/screens/DecisionLogScreen');
+    useStore.setState({
+      role: 'pmc',
+      decisions: [dec({ id: 'DL-REC', title: 'Site access route', status: 'recorded', deciderKind: 'none', options: [], photoSwatch: undefined })],
+    } as never);
+    const r = render(<DecisionLogScreen />);
+    const row = r.getByTestId('log-row-DL-REC');
+    expect(row.textContent).toContain('Issue recorded — no approval required');
+    expect(row.textContent).toContain('Filed on the register — nothing approvable');
+    expect(row.textContent).toContain('RECORDED');
+    // the approved-shape leakage the finding names is gone
+    expect(row.textContent).not.toContain('undefined');
+    expect(row.textContent).not.toContain('Infinity');
+    expect(row.textContent).not.toContain('awaiting client');
+  });
+
+  it('F6: converting a record draft back to a choice collects 2–4 options and submits them WITH the kind in one edit', () => {
+    const updates: Array<[string, unknown]> = [];
+    useStore.setState({
+      role: 'pmc',
+      decisions: [dec({ id: 'DL-RC', draft: true, deciderKind: 'none', options: [], photoSwatch: undefined })],
+      members: [],
+      updateDecisionDraft: ((id: string, input: unknown) => updates.push([id, input])) as never,
+      loadTeam: (() => Promise.resolve()) as never,
+    } as never);
+    const r = render(<DraftsScreen />);
+
+    // selecting a deciding kind does NOT dispatch a bare kind change — it opens the form
+    fireEvent.change(r.getByTestId('draft-decider-DL-RC'), { target: { value: 'client' } });
+    expect(updates).toEqual([]);
+    expect(r.getByTestId('convert-form-DL-RC')).toBeTruthy();
+
+    // Confirm stays disabled until every option names a material
+    expect((r.getByTestId('convert-confirm-DL-RC') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId('convert-material-DL-RC-0'), { target: { value: 'Granite' } });
+    fireEvent.change(r.getByTestId('convert-material-DL-RC-1'), { target: { value: 'Quartz' } });
+    fireEvent.change(r.getByTestId('convert-swatch-DL-RC-0'), { target: { value: 'marble' } });
+    expect((r.getByTestId('convert-confirm-DL-RC') as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(r.getByTestId('convert-confirm-DL-RC'));
+    expect(updates).toEqual([
+      ['DL-RC', {
+        deciderKind: 'client',
+        options: [
+          { material: 'Granite', delta: 0, swatch: 'marble', recommended: true },
+          { material: 'Quartz', delta: 0, swatch: 'tile', recommended: false },
+        ],
+      }],
+    ]);
+  });
+});

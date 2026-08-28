@@ -14,6 +14,9 @@ import { EXTERNAL_EFFECTS, type ExternalEffectDef, type ExternalEffectKey } from
 export interface PushClaimDeps {
   deciderTarget(projectId: string, decisionId: string): Promise<{ actionable: false } | { actionable: true; roles?: string[]; targetUserId?: string }>;
   markCancelled(deliveryId: string): Promise<void>;
+  /** round-1 Codex F5 — WHO currently holds a role's effective standing (orgs-owned answer):
+   *  a role claim delivers to these users' valid links, never to a subscription's stored role. */
+  roleHolderUserIds(projectId: string, role: string): Promise<string[]>;
 }
 
 /**
@@ -85,7 +88,17 @@ export function makePushConsumer(push: PushService, claims?: PushClaimDeps): Out
           await push.notifyTargetedUser(ctx.meta.projectId, payload, target.targetUserId);
           return;
         }
-        await push.notifyProject(ctx.meta.projectId, payload, target.roles);
+        // round-1 Codex F5 — a ROLE-held claim resolves the role's CURRENT effective holders
+        // (the orgs-owned answer) and delivers only to their currently-valid links: a stored
+        // subscription role is attribution at subscribe time, not standing at claim time, so a
+        // removed member's device receives nothing.
+        const holders = new Set<string>();
+        for (const role of target.roles ?? []) {
+          for (const userId of await claims.roleHolderUserIds(ctx.meta.projectId, role)) holders.add(userId);
+        }
+        for (const userId of holders) {
+          await push.notifyTargetedUser(ctx.meta.projectId, payload, userId);
+        }
         return;
       }
       // A TARGETED intent outside any family still delivers only to the target's valid links

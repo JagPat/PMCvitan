@@ -485,4 +485,58 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     const started = await post(engAToken)(`/projects/${projectId}/activities/${actId}/start`);
     expect(started.status, JSON.stringify(started.body)).toBe(201);
   });
+  // ── round-1 Codex corrections (the finding-bearing head f99634f4) ──────────────────────────
+
+  it('R1-F3: a decision INSERTED already-published is judged by the SAME holder arms as publication — role standing included', async () => {
+    // project B has NO client standing — the hostile INSERT of a published OPEN client-held row
+    // previously slipped past the member-only check; it is now refused like the publish door
+    await expect(
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "Decision"("id","projectId","title","room","status","ageDays","photoSwatch","publishedAt","deciderKind","createdAt")
+         VALUES ('t4bd-f3-hostile-${run}','${projectBId}','Holderless import','K','pending',0,'sw',now(),'client',now())`,
+      ),
+    ).rejects.toThrow(/no active client holder/i);
+    // precision: an UNPUBLISHED draft insert stays free — the new arms fire only at the
+    // published door (drafts block nothing and hold nothing)
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "Decision"("id","projectId","title","room","status","ageDays","photoSwatch","publishedAt","deciderKind","createdAt")
+       VALUES ('t4bd-f3-draft-${run}','${projectBId}','Free draft','K','pending',0,'sw',NULL,'client',now())`,
+    );
+    await t.prisma.decision.deleteMany({ where: { id: `t4bd-f3-draft-${run}` } });
+  });
+
+  it('R1-F8: converting a draft whose author LOST standing into a record is refused — command AND database', async () => {
+    // a temporary pmc authors a choice draft, then loses their standing
+    const tempId = id('f8auth');
+    await t.prisma.user.create({ data: { id: tempId, projectId, role: 'pmc', name: 'Departed PMC', email: `${tempId}@t.local` } });
+    await t.prisma.membership.create({ data: { projectId, userId: tempId, role: 'pmc', status: 'active' } });
+    const tempToken = t.issueProjectToken(tempId, projectId, 'pmc');
+    const res = await post(tempToken)(`/projects/${projectId}/decisions`, { title: 'Departed author draft', room: 'K', options: twoOptions, publish: false });
+    expect(res.status).toBe(201);
+    const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId, title: 'Departed author draft' } });
+    await t.prisma.membership.update({ where: { projectId_userId: { projectId, userId: tempId } }, data: { status: 'removed' } });
+
+    // command layer: the one drafting door refuses the conversion with the reason
+    const conv = await patch(pmcToken)(`/projects/${projectId}/decisions/${d.id}/draft`, { deciderKind: 'none', options: [] });
+    expect(conv.status).toBe(409);
+    expect(conv.body.message).toContain('author');
+
+    // DB layer: the hostile direct conversion is refused by the recorded-entry authority arm
+    await t.prisma.decisionOption.deleteMany({ where: { decisionId: d.id } }); // an unpublished parent's options are deletable
+    await expect(
+      t.prisma.$executeRawUnsafe(`UPDATE "Decision" SET "deciderKind" = 'none', "status" = 'recorded', "photoSwatch" = NULL WHERE "id" = '${d.id}'`),
+    ).rejects.toThrow(/authority/i);
+
+    // precision: restore the author's standing and the SAME conversion lands
+    await t.prisma.membership.update({ where: { projectId_userId: { projectId, userId: tempId } }, data: { status: 'active' } });
+    const ok = await patch(pmcToken)(`/projects/${projectId}/decisions/${d.id}/draft`, { deciderKind: 'none', options: [] });
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } })).status).toBe('recorded');
+    // cleanup: the unpublished record draft is discardable (its drafted/draft_updated events
+    // are not approval evidence); the temp identity leaves
+    await t.prisma.decisionEvent.deleteMany({ where: { decisionId: d.id } });
+    await t.prisma.decision.delete({ where: { id: d.id } });
+    await t.prisma.membership.delete({ where: { projectId_userId: { projectId, userId: tempId } } });
+    await t.prisma.user.delete({ where: { id: tempId } });
+  });
 });

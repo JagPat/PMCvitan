@@ -202,11 +202,27 @@ BEGIN
         RAISE EXCEPTION 'phase6-4b: a record must be authored by a user with CURRENT decision authority on its project (decision %)', NEW."id";
       END IF;
     END IF;
-    -- a MEMBER-held row born published must name an ACTIVE membership (the service path births
-    -- unpublished and publishes by UPDATE; this is the hostile-INSERT door)
-    IF NEW."publishedAt" IS NOT NULL AND NEW."deciderKind"::text = 'member'
-       AND NOT phase6_membership_is_active(NEW."projectId", NEW."deciderMembershipId") THEN
-      RAISE EXCEPTION 'phase6-4b: a published decision must name an ACTIVE membership as decider (decision %)', NEW."id";
+    -- a row born ALREADY PUBLISHED (the hostile-INSERT door — the service path births
+    -- unpublished and publishes by UPDATE) is judged by the SAME holder-standing arms as the
+    -- publication boundary, under the §B.1 protocol (round-1 Codex F3: this door previously
+    -- checked only the member kind, and without the readiness key, so a role-held published
+    -- decision could be inserted into a project with no holder, and a concurrent membership
+    -- removal could slip past the lock-free member read).
+    IF NEW."publishedAt" IS NOT NULL THEN
+      IF NOT phase6_try_readiness(NEW."projectId") THEN
+        RAISE EXCEPTION 'phase6-4b: the project readiness key is contended — retry the insert (decision %)', NEW."id";
+      END IF;
+      IF NEW."deciderKind"::text = 'member'
+         AND NOT phase6_membership_is_active(NEW."projectId", NEW."deciderMembershipId") THEN
+        RAISE EXCEPTION 'phase6-4b: a published decision must name an ACTIVE membership as decider (decision %)', NEW."id";
+      END IF;
+      -- the ROLE arms judge OPEN rows: a published pending/change decision must have an
+      -- effective holder NOW (a settled `approved` import carries no open obligation, exactly
+      -- the scope the holder-orphan audit and membership guards judge)
+      IF NEW."status"::text IN ('pending', 'change') AND NEW."deciderKind"::text IN ('client', 'pmc')
+         AND phase6_effective_role_standing(NEW."projectId", NEW."deciderKind"::text) = 0 THEN
+        RAISE EXCEPTION 'phase6-4b: this project has no active % holder — inserting a published decision nobody can decide is refused (decision %)', NEW."deciderKind"::text, NEW."id";
+      END IF;
     END IF;
     RETURN NEW;
   END IF;
@@ -252,6 +268,17 @@ BEGIN
     SELECT count(*) INTO changes FROM "ChangeRequest" c WHERE c."decisionId" = OLD."id";
     IF changes > 0 THEN
       RAISE EXCEPTION 'phase6-4b: this draft carries change-request evidence — it can never become a record (%)', OLD."id";
+    END IF;
+    -- round-1 Codex F8: EVERY transition entering `recorded` re-runs the AUTHOR-authority check
+    -- the birth door runs — the frozen author's name enters the permanent register at this
+    -- moment, so they must hold CURRENT decision authority when it does, under the §B.1
+    -- protocol (a colleague converting a departed author's draft would otherwise file a record
+    -- attributed to someone with no standing who never performed the conversion).
+    IF NOT phase6_try_readiness(NEW."projectId") THEN
+      RAISE EXCEPTION 'phase6-4b: the project readiness key is contended — retry the record conversion (decision %)', OLD."id";
+    END IF;
+    IF NOT phase6_user_decision_authority(NEW."projectId", NEW."authorId") THEN
+      RAISE EXCEPTION 'phase6-4b: a record must be authored by a user with CURRENT decision authority on its project — the draft''s author no longer holds it (decision %)', OLD."id";
     END IF;
   END IF;
 

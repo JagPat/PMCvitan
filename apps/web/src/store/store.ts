@@ -376,6 +376,9 @@ export interface AppActions {
   // shell
   setRole: (role: Role) => void;
   signOut: () => void;
+  /** the sign-out teardown (round-1 Codex F1: runs after the bounded push unlink on a
+   *  push-capable browser; directly everywhere else) */
+  completeSignOut: () => void;
   setScreen: (k: ScreenKey) => void;
   /** open the Site Map focused on one location — the breadcrumbs' navigation door */
   openPlace: (nodeId: string | null) => void;
@@ -1854,9 +1857,27 @@ export const useStore = create<Store>()(
     signOut: () => {
       // Phase 6 task 4b (§A.3 round 13) — UNLINK this browser's push subscription BEFORE the
       // token clears (the request needs the still-valid session): a shared device must not keep
-      // receiving the departing user's decider-targeted content. Fire-and-forget best-effort —
-      // the server's credential-version + expiry checks also sever a stale link.
-      if (gateway && get().sessionToken) void unlinkPushOnSignOut(gateway);
+      // receiving the departing user's decider-targeted content. Round-1 Codex F1: the handoff
+      // WAITS (bounded) for the unlink on a push-capable browser, so it does not complete while
+      // the departing user's request is still in flight — AND the server clears a link only when
+      // it still belongs to the caller, so a delayed request can never strip the next user's
+      // re-attributed link. On a browser with no push surface the teardown stays synchronous.
+      const pushCapable =
+        typeof navigator !== 'undefined' && 'serviceWorker' in navigator
+        && typeof window !== 'undefined' && 'PushManager' in window;
+      if (gateway && get().sessionToken && pushCapable) {
+        const gw = gateway;
+        void Promise.race([
+          unlinkPushOnSignOut(gw),
+          new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+        ]).finally(() => get().completeSignOut());
+        return;
+      }
+      get().completeSignOut();
+    },
+    /** The sign-out teardown itself — separated so the push unlink can complete first on a
+     *  push-capable browser (round-1 Codex F1) while every other environment stays synchronous. */
+    completeSignOut: () => {
       set((s) => {
         s.sessionToken = null;
         s.userName = null;

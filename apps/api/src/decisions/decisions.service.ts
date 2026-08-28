@@ -619,6 +619,21 @@ export class DecisionsService {
           const member = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, input.deciderMembershipId!);
           if (!member) throw new BadRequestException('The named decider must be an ACTIVE member of this project');
         }
+        // round-1 Codex F8 — CONVERTING to a record files the frozen author's name in the
+        // permanent register: they must hold CURRENT decision authority at that moment (the
+        // same check the record birth door runs; the DB seal re-judges it under the readiness
+        // key). A colleague cannot convert a departed author's draft into a record attributed
+        // to someone with no standing.
+        if (nextKind === 'none' && d.deciderKind !== 'none') {
+          const authorHoldsAuthority = d.authorId
+            ? await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, d.authorId, ['pmc'], { forUpdate: true })
+            : false;
+          if (!authorHoldsAuthority) {
+            throw new ConflictException(
+              'This draft\'s author no longer holds decision authority on the project — a record files under its author\'s name, so re-issue the record yourself instead of converting their draft',
+            );
+          }
+        }
         if (input.options === undefined && nextKind === 'none' && d.deciderKind !== 'none') {
           const remaining = await tx.decisionOption.count({ where: { decisionId } });
           if (remaining > 0) {

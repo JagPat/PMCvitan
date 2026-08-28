@@ -162,3 +162,54 @@ readiness key must deploy as one change or the audit's serialization story is fa
   delivery targeting changed server-side.
 - Contractor-capture units 1–6 stay behind the standing Board gate
   (`contractor-capture-units-1-6-board-go`); nothing here touches them.
+
+## Round-1 correction (the Codex review of head `f99634f4` — eight findings, ONE fix-forward head)
+
+Every finding was read and batched before any push; each carries its fix and its probe. The
+`20271015` migration is EDITED in place (this branch's own unmerged migration — the test DB is
+rebuilt and the upgrade proof re-run over the edited body); `20270810`/`20270826` stay
+byte-for-byte unchanged.
+
+- **F3 (P1, migration INSERT arm)** — a row born ALREADY PUBLISHED is now judged by the SAME
+  holder arms as the publication boundary, under §B.1: the readiness key serializes against a
+  concurrent membership write, a member holder must be ACTIVE, and a role-held OPEN row
+  (`pending`/`change`) must have effective standing; a settled `approved` import carries no
+  open obligation and the role arm deliberately skips it, and an UNPUBLISHED draft insert
+  stays free. Probe `R1-F3` (RED at `f99634f4`: the hostile insert died only later, at the
+  option floor with the wrong message; GREEN: refused at the boundary with the holder answer).
+- **F8 (P1, recorded entry)** — EVERY transition entering `recorded` re-runs the AUTHOR-
+  authority check the birth door runs (the frozen author's name enters the permanent register
+  at that moment), and `updateDraft` refuses the conversion with a deliberate 409 naming the
+  reason before the seal backstops it. Probe `R1-F8` (RED: the hostile conversion committed;
+  GREEN: 409 at the command + refusal at the seal + the precision arm converting cleanly once
+  standing is restored).
+- **F5 (P1, role-held decider pushes)** — a decider-family ROLE claim now resolves the role's
+  CURRENT effective holders through the orgs-owned `effectiveRoleHolderUserIds` (active
+  memberships + the membership-less org owner/admin pmc arm under the explicit-membership
+  precedence) and delivers ONLY to their currently-valid links; the stored-subscription-role
+  broadcast path is gone for the family, so a removed member's device receives nothing.
+  Pinned by the consumer unit probe in `outbox.test.ts`.
+- **F4 (P1, boundary)** — the subscribe-attribution identity check routes through the
+  orgs-owned `resolveUserIdentity`; `PushService` no longer reads the `User` table. Unit
+  probes in `push.service.test.ts`.
+- **F1 (P2, sign-out handoff)** — the server clears a push link ONLY when it still belongs to
+  the authenticated caller (`unlink(endpoint, callerUserId)`), so user A's delayed sign-out
+  request can never strip user B's re-attributed link; on a push-capable browser the handoff
+  additionally WAITS (bounded, 1.5s) for the unlink before the teardown, while every other
+  environment stays synchronous. Unit probes in `push.service.test.ts`.
+- **F2 (P1, web log)** — the register renders a RECORD as a filed fact (its own branch: no
+  approver, no options arithmetic, no approval demand, the RECORDED label) instead of leaking
+  the approved shape (`Ageing undefined`, `-Infinity`). Probe in `tests/decider.test.tsx`.
+- **F6 (P2, drafts conversion)** — converting a record draft back to a choice opens an inline
+  2–4-option form and submits kind + options (lead swatch included) in ONE `updateDraft`;
+  a bare kind change is never dispatched. Probe in `tests/decider.test.tsx`.
+- **F7 (P2, decider deep link)** — the `/client/decisions` route is judged only against a
+  SETTLED decision slice (in-flight and authed-pre-fetch states hold the route, mirroring the
+  capability branch's unknown-state posture), so a named decider's bookmarked approval link
+  survives a cold load; a settled non-decider is still bounced. Probes in
+  `tests/routeBridge.test.tsx`.
+
+Gates re-run at the correction head: `pnpm check` EXIT 0 (automation 292/292; web 956/956;
+api 796/796); full integration battery on a rebuilt pristine DB (totals in the PR thread);
+`upgrade-proof.sh` re-run end-to-end over the EDITED `20271015`; `test:e2e:api:allmodules` +
+`:outbox`.

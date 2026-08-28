@@ -35,6 +35,10 @@ export function RouteBridge() {
       (d) => !d.draft && (d.status === 'pending' || d.status === 'change') && viewerIsDecider(d, s.role, s.sessionUserId),
     ),
   );
+  // Round-1 Codex F7 — the settled-slice inputs: an authed viewer with no data yet is a read in
+  // flight; a signed-out or locally-seeded state is already as settled as it will get.
+  const authed = useStore((s) => s.sessionToken !== null);
+  const hasDecisions = useStore((s) => s.decisions.length > 0);
   const setScreen = useStore((s) => s.setScreen);
   const switchProject = useStore((s) => s.switchProject);
   const navigate = useNavigate();
@@ -79,6 +83,17 @@ export function RouteBridge() {
     // like any forbidden screen. While capabilities are still UNKNOWN (cold load, shell in
     // flight or failed) nothing is bounced — a pilot deep link must survive the shell latency.
     const caps = new Set(capabilities);
+    // Round-1 Codex F7 — the decider route is judged only against a SETTLED decision slice: on a
+    // cold load `isOpenDecider` is false merely because the viewer-scoped decisions have not
+    // arrived, and bouncing `/client/decisions` then would eat a named decider's bookmarked
+    // approval link. While the read is in flight ('loading'/'switching' — and the authed
+    // pre-fetch instant where 'idle' still holds no data) the route stays reachable, exactly
+    // the capability branch's unknown-state posture; once the slice settles ('ready', a load
+    // 'error', or local data already present) a real non-decider is bounced by this same
+    // effect re-running on the load-state change.
+    const decisionsSettled =
+      projectLoadState === 'ready' || projectLoadState === 'error'
+      || (projectLoadState === 'idle' && (!authed || hasDecisions));
     const allowed = withDeciderRoute(
       screensFor(role)
         .filter((m) => {
@@ -86,7 +101,7 @@ export function RouteBridge() {
           return cap === undefined || !capabilitiesKnown || caps.has(cap);
         })
         .map((m) => m.key),
-      isOpenDecider,
+      isOpenDecider || !decisionsSettled,
     );
     if (!fromPath || !allowed.includes(fromPath)) {
       if (screen !== allowed[0]) setScreen(allowed[0]);
@@ -94,7 +109,7 @@ export function RouteBridge() {
     }
     if (fromPath !== screen) setScreen(fromPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname, role, activeProjectId, memberships, pendingProjectId, projectLoadState, capabilities, capabilitiesKnown, isOpenDecider]);
+  }, [location.pathname, role, activeProjectId, memberships, pendingProjectId, projectLoadState, capabilities, capabilitiesKnown, isOpenDecider, authed, hasDecisions]);
 
   // store -> URL (canonical project-scoped path). ONE-WAY during a transition: while
   // a switch is pending or the target project is loading, the deep link's URL is the

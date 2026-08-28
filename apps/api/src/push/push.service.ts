@@ -68,8 +68,11 @@ export class PushService {
    * an unattributed device, while role-level pushes behave exactly as before.
    */
   async subscribe(projectId: string, sub: BrowserSubscription, role?: string, link?: SubscriptionLink): Promise<void> {
+    // round-1 Codex F4 — the identity-existence answer is orgs-owned: platform code never reads
+    // the `User` table directly (the same boundary this class already respects for the
+    // credential-version comparison at claim time).
     const linked =
-      link && (await this.prisma.user.findUnique({ where: { id: link.userId }, select: { id: true } }))
+      link && (await this.orgs.resolveUserIdentity(this.prisma, link.userId))?.id === link.userId
         ? { linkedUserId: link.userId, linkedCredentialVersion: link.credentialVersion, linkedExpiresAt: link.expiresAt }
         : { linkedUserId: null, linkedCredentialVersion: null, linkedExpiresAt: null };
     await this.prisma.pushSubscription.upsert({
@@ -85,10 +88,16 @@ export class PushService {
    * (role-level pushes continue); only the user attribution is severed, until the next
    * authenticated open re-attributes it. Endpoint-keyed and idempotent — an unknown endpoint is a
    * no-op, so sign-out never fails on a pruned device.
+   *
+   * Round-1 Codex F1 — the unlink is CONDITIONAL on the departing user: only a link that still
+   * belongs to the authenticated caller is cleared. On a shared browser, user A's delayed
+   * sign-out request arriving after user B re-attributed the same endpoint is then a no-op —
+   * it can never strip B's link.
    */
-  async unlink(endpoint: string): Promise<void> {
+  async unlink(endpoint: string, callerUserId: string): Promise<void> {
+    if (!callerUserId) return;
     await this.prisma.pushSubscription.updateMany({
-      where: { endpoint },
+      where: { endpoint, linkedUserId: callerUserId },
       data: { linkedUserId: null, linkedCredentialVersion: null, linkedExpiresAt: null },
     });
   }

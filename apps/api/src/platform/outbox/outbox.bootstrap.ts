@@ -18,6 +18,7 @@ import { SubstitutionsService } from '../../activities/substitutions.service';
 import { DecisionsQueryService } from '../../decisions/decisions.query';
 import { LabourCoverageService } from '../../labour/labour-coverage.service';
 import { CommercialBudgetQuery } from '../../commercial/commercial-budget.query';
+import { OrgsParticipant } from '../../orgs/orgs.participant';
 import { effectCoverageVersion } from '../external-effects';
 
 /**
@@ -49,6 +50,9 @@ export class OutboxBootstrap implements OnModuleInit {
     // Phase 6 task 4b (§A.3) — the decider push family's claim-time predicate routes through the
     // decisions-owned query answer; boot binds it so platform code never reads a decisions table.
     private readonly decisionsQuery: DecisionsQueryService,
+    // round-1 Codex F5 — the role-claim holder resolution routes through the orgs-owned answer;
+    // boot binds it so platform code never reads a membership table.
+    private readonly orgsParticipant: OrgsParticipant,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -56,6 +60,7 @@ export class OutboxBootstrap implements OnModuleInit {
     registerConsumer(
       makePushConsumer(this.push, {
         deciderTarget: (projectId, decisionId) => this.decisionsQuery.deciderPushTarget(projectId, decisionId),
+        roleHolderUserIds: (projectId, role) => this.orgsParticipant.effectiveRoleHolderUserIds(this.prisma, projectId, role),
         // the claim-time drop is recorded on the delivery's own row (the 4a cancellation mark) —
         // a platform-internal write of the platform's own table
         markCancelled: async (deliveryId) => {

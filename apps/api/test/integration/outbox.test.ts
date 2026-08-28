@@ -307,6 +307,29 @@ describe('PR C Task 2 — the outbox consumers are the sole senders (unit)', () 
     }
   });
 
+  it('4b round-1 (Codex F5): a DECIDER-family ROLE claim delivers to the role\'s CURRENT effective holders\' valid links — never a stored-role broadcast', async () => {
+    const notifyProject = vi.fn(async () => {});
+    const notifyTargetedUser = vi.fn(async () => {});
+    const roleHolderUserIds = vi.fn(async (_p: string, role: string) => (role === 'client' ? ['u-client-1', 'u-client-2'] : []));
+    const markCancelled = vi.fn(async () => {});
+    const push = makePushConsumer({ notifyProject, notifyTargetedUser } as never, {
+      deciderTarget: async () => ({ actionable: true, roles: ['client'] }),
+      markCancelled,
+      roleHolderUserIds,
+    });
+    const familyMeta = { ...meta, eventType: 'decision.published', dispatchIntent: { ...meta.dispatchIntent, effectKey: 'decision.published' } };
+    const dispatch = { delivery: { id: 'd', consumer: '', projectId: 'p', streamPosition: 0n, payload: { body: 'b', roles: ['client'], targetUserId: null } }, meta: familyMeta, senderMode: 'outbox' };
+    await push.handle(dispatch as never);
+    // the CURRENT holders got targeted deliveries (valid links only, inside notifyTargetedUser);
+    // the stored-role broadcast path was never taken (a removed member's device gets nothing)
+    expect(roleHolderUserIds).toHaveBeenCalledWith('p', 'client');
+    expect(notifyTargetedUser).toHaveBeenCalledTimes(2);
+    expect(notifyTargetedUser).toHaveBeenCalledWith('p', expect.objectContaining({ body: 'b' }), 'u-client-1');
+    expect(notifyTargetedUser).toHaveBeenCalledWith('p', expect.objectContaining({ body: 'b' }), 'u-client-2');
+    expect(notifyProject).not.toHaveBeenCalled();
+    expect(markCancelled).not.toHaveBeenCalled();
+  });
+
   it('the registered consumers are the socket + push externals (unordered)', () => {
     // registered by the app boot in the live-PG describe above (same process); assert their shape
     const socket = getConsumer(SOCKET_CONSUMER);

@@ -231,6 +231,35 @@ export class OrgsParticipant {
   }
 
   /**
+   * Phase 6 task 4b, round-1 Codex F5 — WHO currently holds a role's effective standing on this
+   * project: the user ids behind {@link effectiveRoleStanding}'s count (active memberships of
+   * the role, plus — for `pmc` — the membership-less org owner/admin arm under the same
+   * explicit-membership precedence). The decider push family's role claims deliver ONLY to
+   * these users' currently-valid links, never to a subscription's stored role — a removed
+   * member's device stops receiving role-held decision titles the moment their standing ends.
+   */
+  async effectiveRoleHolderUserIds(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    role: string,
+  ): Promise<string[]> {
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ userId: string }>>(
+      `SELECT m."userId" FROM "Membership" m
+        WHERE m."projectId" = $1 AND m."status" = 'active' AND m."role" = $2
+       UNION
+       SELECT om."userId" FROM "Project" p
+         JOIN "OrgMembership" om ON om."orgId" = p."orgId" AND om."role" IN ('owner', 'admin')
+        WHERE p."id" = $1 AND $2 = 'pmc'
+          AND NOT EXISTS (
+            SELECT 1 FROM "Membership" m2
+             WHERE m2."projectId" = $1 AND m2."userId" = om."userId" AND m2."status" = 'active'
+          )`,
+      projectId, role,
+    );
+    return rows.map((r) => r.userId);
+  }
+
+  /**
    * Does `userId` have ROLE-QUALIFIED standing on `projectId` — an ACTIVE project membership whose
    * role is one of `roles`, or (when `roles` admits `pmc` AND the user holds NO active membership
    * on this project) owner/admin of the project's org? Same rule, same PRECEDENCE as
