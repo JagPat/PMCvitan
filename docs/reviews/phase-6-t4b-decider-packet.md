@@ -139,9 +139,9 @@ readiness key must deploy as one change or the audit's serialization story is fa
 
 - `pnpm check` EXIT 0 — automation 292/292; web 952/952 (lint+typecheck+build clean); API
   794/794 (typecheck+build clean).
-- Full integration battery on a pristine migrated database (92 migrations): see the PR body
-  for the run's totals — includes the new `phase6-t4b-decider.test.ts` and the repaired
-  fixtures (re-ordered creates, sanctioned option-freeze bypass, covering client
+- Full integration battery on a pristine migrated database (92 migrations): **99 files /
+  1299 tests, exit 0** — includes the new `phase6-t4b-decider.test.ts` (16 probes) and the
+  repaired fixtures (re-ordered creates, sanctioned option-freeze bypass, covering client
   memberships for projects that publish client-held decisions).
 - `scripts/upgrade-proof.sh` PASSED end-to-end, including the new 4b-decider stop (audit
   abort → §P6T4B repair → apply → precision + hostile arms).
