@@ -10,6 +10,20 @@
 -- consumes the new values, and every later in-file comparison uses ::text, so the
 -- unusable-in-same-transaction rule is never tripped.
 
+-- ── the deployment-window serialization — FIRST, while this transaction holds NOTHING ─────────
+-- (§A.1 rounds 14/16–18; round-7 Codex F4.) The four-table SHARE ROW EXCLUSIVE set conflicts
+-- with every concurrent INSERT/UPDATE/DELETE's ROW EXCLUSIVE lock (old instances included) and
+-- with itself (two deploys serialize). It is the migration's FIRST statement because the wait
+-- must happen while we hold no other lock: the later `ALTER TABLE "Decision"` takes ACCESS
+-- EXCLUSIVE, and waiting on `Membership` AFTER holding that would deadlock against an old
+-- membership writer whose holder trigger reads `Decision` (writer: Membership ROW EXCLUSIVE →
+-- Decision ACCESS SHARE; migration: Decision ACCESS EXCLUSIVE → Membership SRE — a cycle).
+-- Acquired first, the wait holds nothing, the writer finishes freely, and once all four locks
+-- are held no NEW row-writer can start on these tables — the later ALTER's lock upgrade waits
+-- only on plain readers, which hold none of the four. The migration takes NO advisory readiness
+-- key (round 18): table locks → key would complete an AB-BA cycle against a rolled 4b writer.
+LOCK TABLE "Decision", "Membership", "OrgMembership", "Project" IN SHARE ROW EXCLUSIVE MODE;
+
 ALTER TYPE "DeciderKind" ADD VALUE IF NOT EXISTS 'none';
 ALTER TYPE "DecisionStatus" ADD VALUE IF NOT EXISTS 'recorded';
 
@@ -38,18 +52,13 @@ CREATE INDEX IF NOT EXISTS "PushSubscription_linkedUserId_idx"
 -- RED at the staged shape baseline; this slice is what turns them green.
 -- ═══════════════════════════════════════════════════════════════════════════════════════════════
 
--- ── the deployment-window serialization + the diagnostic-first backfill audit (§A.1, rounds
--- 14/16–18) ────────────────────────────────────────────────────────────────────────────────────
+-- ── the diagnostic-first backfill audit (§A.1, rounds 14/16–18) ───────────────────────────────
 -- The pre-4b writers this window is about (MembersService.updateRole, OrgsService org-membership
 -- writes, DecisionsService.create(publish=true)) take NO advisory readiness key, so the audit's
--- serialization rests on locks they ALREADY conflict with: the four-table SHARE ROW EXCLUSIVE
--- set below conflicts with every concurrent INSERT/UPDATE/DELETE's ROW EXCLUSIVE lock (old
--- instances included) and with itself (two deploys serialize). `Decision` is IN the list because
--- standing writes are only half the race — an old create path could otherwise birth a published
--- client-held decision AFTER a clean audit. And the migration takes NO advisory readiness key
--- (round 18): holding table locks and then requesting the key an already-rolled 4b writer holds
--- (writer: key → row lock; migration: table lock → key) completes an AB-BA cycle.
-LOCK TABLE "Decision", "Membership", "OrgMembership", "Project" IN SHARE ROW EXCLUSIVE MODE;
+-- serialization rests on the four-table SHARE ROW EXCLUSIVE set acquired as this migration's
+-- FIRST statement (see the head of this file — round-7 Codex F4 moved it there so the wait
+-- holds nothing). `Decision` is IN that set because standing writes are only half the race — an
+-- old create path could otherwise birth a published client-held decision AFTER a clean audit.
 
 -- ── §B.2 — cross-module facts as OWNED SQL primitives (never table reads across modules) ──────
 -- ORGS-owned: is this membership ACTIVE?
@@ -297,6 +306,14 @@ BEGIN
     IF NEW."deciderKind"::text IN ('client', 'pmc')
        AND phase6_effective_role_standing(NEW."projectId", NEW."deciderKind"::text) = 0 THEN
       RAISE EXCEPTION 'phase6-4b: this project has no active % holder — publishing would birth a decision nobody can decide; edit the draft''s holder first (decision %)', NEW."deciderKind"::text, OLD."id";
+    END IF;
+    -- round-7 Codex F2 — publishing a RECORD files the frozen author's name in the permanent
+    -- register at THIS moment (the plan's publish-time authority recheck): the birth/conversion
+    -- arms judged the author when the draft was made, but a draft can outlive its author's
+    -- standing, so the publication boundary re-runs the SAME authority check.
+    IF NEW."status"::text = 'recorded'
+       AND NOT phase6_user_decision_authority(NEW."projectId", NEW."authorId") THEN
+      RAISE EXCEPTION 'phase6-4b: a record must be authored by a user with CURRENT decision authority on its project — the draft''s author no longer holds it (decision %)', OLD."id";
     END IF;
   END IF;
 

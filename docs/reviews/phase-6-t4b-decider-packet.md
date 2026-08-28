@@ -447,3 +447,47 @@ Migration story: `20270810`/`20270826` remain byte-for-byte unchanged; `20271015
 own, unmerged anywhere) gains the OrgMembership truncate seal, re-proven by a full
 test-database rebuild + the extended upgrade-proof. No sanctioned reset truncates
 `OrgMembership` (all row-level deletes), so no reset path needed the new disable pair.
+
+## Round-7 correction (the Codex review of PR #466 head `f92ac84f` — five findings, ONE fix-forward head)
+
+Codex attempt 1/2 on the third replacement's first head returned five findings (two P1). Each
+was reproduced RED at `f92ac84f` first, then fixed forward as one batch. `20270810`/`20270826`
+remain byte-for-byte; `20271015` (this unit's own) changes below, re-proven by a full
+test-database rebuild + the upgrade-proof.
+
+- **R7-F1 (P2, updateDraft route ceiling)** — `decision.updateDraft` was pmc-only at the
+  route, so a draft AUTHOR reassigned off pmc was 403'd by `RolesGuard` before the service's
+  author-or-pmc rule could admit them — able to SEE their private draft but never edit it. The
+  route ceiling now admits every role an author can be reassigned to (the same
+  service-narrows-by-identity shape as `decision.withdrawChange`); the shared policy map, its
+  web pin, and the runtime `RolesFor` guard all move together (the route-policy matrix test
+  derives from the map). Probe: `R7-F1` (the re-roled author edits their own draft; a
+  different engineer passes the ceiling and is refused by the service).
+- **R7-F2 (P1, record publication authority)** — the publication arm re-validated only HOLDER
+  standing, and `publish` never re-checked a record's AUTHOR: a revoked author's record draft
+  could be published by another PMC, filing a permanent register entry attributed to someone
+  with no standing — against the plan's explicit publish-time authority recheck. BOTH layers
+  now re-run the author check at the publication boundary: the service refuses with the
+  deliberate 409 (re-issue it yourself), and the DB arm re-runs
+  `phase6_user_decision_authority` for `recorded` rows. Probe: `R7-F2` (command 409 + hostile
+  direct publication refused + restored standing publishes).
+- **R7-F3 (P2, dev-auth identity)** — the supported `DEV_AUTH` path issued its JWT inside the
+  gateway, leaving `sessionUserId` null, so every audience predicate treated a seeded named
+  decider as a non-decider (obligations hidden, the approval route bounced).
+  `gw.connect(role)` now returns the issued token and the connect path records its identity in
+  the store exactly like a real sign-in. Probe: `tests/dev-auth-identity.test.ts`.
+- **R7-F4 (P1, migration lock ordering)** — the four-table SHARE ROW EXCLUSIVE acquisition sat
+  AFTER `ALTER TABLE "Decision" … DROP NOT NULL`, so the migration waited on `Membership`
+  while holding ACCESS EXCLUSIVE on `Decision`; an old membership writer whose holder trigger
+  reads `Decision` closes a deadlock cycle and PostgreSQL aborts one side — potentially the
+  production deploy, under exactly the old-writer traffic the lock exists to tolerate. The
+  acquisition is now the migration's FIRST statement: the one wait happens while the
+  transaction holds NOTHING (no cycle is constructible), and once all four locks are held no
+  new row-writer can start, so the later ALTER's upgrade waits only on plain readers. Probe:
+  `R7-F4` (a structural order pin — the lock precedes every `ALTER TABLE`, and exactly one
+  acquisition exists; the interleaving itself needs a paused trigger no external harness can
+  hold, stated honestly).
+- **R7-F5 (P2, nav badge)** — the decisions badge counted `deciderPending` alone while the
+  route arm used pending + reapprovals, so a decider whose only obligation was a reopened
+  change saw a zero badge on a screen the route added FOR that obligation. The badge now
+  carries the same combined count. Probe: `R7-F5` (a member-held `change` yields badge 1).

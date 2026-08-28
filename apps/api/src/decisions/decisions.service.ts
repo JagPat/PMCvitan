@@ -217,14 +217,29 @@ export class DecisionsService {
         // draft-edit door means an edit could commit between a plain read and the publication
         // UPDATE, letting the published head carry ANOTHER revision's notice/evidence. Every
         // derived value below comes from this LOCKED head.
-        const locked = await tx.$queryRaw<Array<{ id: string; title: string; deciderKind: string; deciderMembershipId: string | null; publishedAt: Date | null }>>(
-          Prisma.sql`SELECT "id", "title", "deciderKind"::text AS "deciderKind", "deciderMembershipId", "publishedAt"
+        const locked = await tx.$queryRaw<Array<{ id: string; title: string; deciderKind: string; deciderMembershipId: string | null; publishedAt: Date | null; authorId: string | null }>>(
+          Prisma.sql`SELECT "id", "title", "deciderKind"::text AS "deciderKind", "deciderMembershipId", "publishedAt", "authorId"
                        FROM "Decision" WHERE "id" = ${decisionId} AND "projectId" = ${projectId} FOR UPDATE`,
         );
         const d = locked[0];
         if (!d) throw new NotFoundException(`Decision ${decisionId} not found`);
         if (d.publishedAt) throw new ConflictException('Decision is already published');
         const record = d.deciderKind === 'none';
+        // round-7 Codex F2 — publishing a RECORD files the frozen author's name in the
+        // permanent register at THIS moment (the plan's publish-time authority recheck): the
+        // birth/conversion doors judged the author when the draft was made, but a draft can
+        // outlive its author's standing — another PMC must re-issue the record themselves
+        // instead of publishing a revoked author's draft (the DB seal re-judges the same).
+        if (record) {
+          const authorHoldsAuthority = d.authorId
+            ? await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, d.authorId, ['pmc'], { forUpdate: true })
+            : false;
+          if (!authorHoldsAuthority) {
+            throw new ConflictException(
+              'This record\'s author no longer holds decision authority on the project — a record files under its author\'s name, so re-issue the record yourself instead of publishing their draft',
+            );
+          }
+        }
         // 4b (§A.1): the publish transition atomically RE-VALIDATES the holder — the named
         // membership's ACTIVE standing through the owner, a role-held decider through
         // effective-role-standing. A stranded draft refuses with the fix by name (the

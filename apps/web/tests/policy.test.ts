@@ -15,7 +15,9 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   // SERVICE narrows to the decision's actual decider (a same-role non-decider is refused there).
   'decision.approve': ['client', 'pmc', 'contractor', 'engineer', 'consultant'],
   // Phase 6 task 4b — editing an unpublished draft (decider re-point / record conversion).
-  'decision.updateDraft': ['pmc'],
+  // Round-7 Codex F1 — the route ceiling admits every role the AUTHOR can be reassigned to;
+  // the service narrows to the draft's author or a pmc.
+  'decision.updateDraft': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   // Phase 6 task 4a — withdrawing a published decision retires a question the practice asked;

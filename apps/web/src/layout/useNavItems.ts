@@ -42,7 +42,9 @@ export function useNavItems(): NavItem[] {
     let badge = 0;
     if (m.key === 'inbox') badge = actionCount;
     if (m.key === 'drafts') badge = draftCount;
-    if (m.key === 'client-decisions') badge = deciderPending;
+    // round-7 Codex F5 — the badge carries the SAME combined count that opens the route:
+    // a mandatory re-approval is outstanding work even when nothing fresh is pending.
+    if (m.key === 'client-decisions') badge = deciderPending + deciderReapprove;
     if (m.key === 'inspect-review') badge = reviewPending;
     if (m.key === 'materials') badge = shortageCount;
     if (m.key === 'labour') badge = labourShortfallCount;

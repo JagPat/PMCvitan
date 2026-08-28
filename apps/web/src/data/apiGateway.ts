@@ -491,8 +491,11 @@ export class ApiGateway {
     this.projectId = projectId;
   }
 
-  /** Obtain a scoped session token for the given role (passwordless dev auth). */
-  async connect(role: Role): Promise<void> {
+  /** Obtain a scoped session token for the given role (passwordless dev auth). Returns the
+   *  issued token so the caller can record the session IDENTITY it carries (round-7 Codex F3
+   *  — the audience predicates key on the store's `sessionUserId`, which must be populated on
+   *  this path exactly like a real sign-in). */
+  async connect(role: Role): Promise<string | null> {
     const res = await fetch(`${this.base}/auth/session`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -500,6 +503,7 @@ export class ApiGateway {
     });
     if (!res.ok) throw new Error(`auth/session ${res.status}`);
     this.token = (await res.json()).token;
+    return this.token;
   }
 
   /** Adopt an already-issued token (from a real sign-in) for subsequent calls. */

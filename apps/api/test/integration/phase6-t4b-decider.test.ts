@@ -826,4 +826,85 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     expect(rows[0]!.def).toContain(`"deciderKind"::text = 'pmc'`);
     expect(rows[0]!.def).toContain('last effective PMC');
   });
+
+  // ── round-7 Codex corrections (the #466 head f92ac84f) ─────────────────────────────────────
+
+  it('R7-F1: a draft author REASSIGNED off pmc still reaches their own draft — the route ceiling admits them, the service narrows by identity', async () => {
+    // a second pmc authors a draft, then is re-roled to engineer (they are not the last pmc —
+    // users.pmc remains — and no open decision names their membership, so the guards permit it)
+    const tempId = id('r7auth');
+    await t.prisma.user.create({ data: { id: tempId, projectId, role: 'pmc', name: 'Re-roled author', email: `${tempId}@t.local` } });
+    await t.prisma.membership.create({ data: { projectId, userId: tempId, role: 'pmc', status: 'active' } });
+    let tok = t.issueProjectToken(tempId, projectId, 'pmc');
+    const res = await post(tok)(`/projects/${projectId}/decisions`, { title: `R7F1 draft ${run}`, room: 'K', options: twoOptions, publish: false });
+    expect(res.status).toBe(201);
+    const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId, title: `R7F1 draft ${run}` } });
+    await t.prisma.membership.update({ where: { projectId_userId: { projectId, userId: tempId } }, data: { role: 'engineer' } });
+    tok = t.issueProjectToken(tempId, projectId, 'engineer');
+
+    // the AUTHOR edits their own private draft from their new role — the service's identity rule
+    const edit = await patch(tok)(`/projects/${projectId}/decisions/${d.id}/draft`, { title: `R7F1 renamed ${run}` });
+    expect(edit.status, JSON.stringify(edit.body)).toBe(200);
+    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } })).title).toBe(`R7F1 renamed ${run}`);
+    // precision: a DIFFERENT engineer passes the widened ceiling but is refused by the service
+    const other = await patch(engBToken)(`/projects/${projectId}/decisions/${d.id}/draft`, { title: 'not yours' });
+    expect(other.status).toBe(403);
+    // cleanup (an unpublished draft is discardable)
+    await t.prisma.decisionEvent.deleteMany({ where: { decisionId: d.id } });
+    await t.prisma.decisionOption.deleteMany({ where: { decisionId: d.id } });
+    await t.prisma.decision.delete({ where: { id: d.id } });
+    await t.prisma.membership.delete({ where: { projectId_userId: { projectId, userId: tempId } } });
+    await t.prisma.user.delete({ where: { id: tempId } });
+  });
+
+  it('R7-F2: publishing a record whose AUTHOR lost standing is refused — command AND database; restored standing publishes', async () => {
+    const tempId = id('r7rec');
+    await t.prisma.user.create({ data: { id: tempId, projectId, role: 'pmc', name: 'Departed record author', email: `${tempId}@t.local` } });
+    await t.prisma.membership.create({ data: { projectId, userId: tempId, role: 'pmc', status: 'active' } });
+    const tok = t.issueProjectToken(tempId, projectId, 'pmc');
+    const res = await post(tok)(`/projects/${projectId}/decisions`, { title: `R7F2 record ${run}`, room: 'K', options: [], publish: false, deciderKind: 'none' });
+    expect(res.status).toBe(201);
+    const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId, title: `R7F2 record ${run}` } });
+    await t.prisma.membership.update({ where: { projectId_userId: { projectId, userId: tempId } }, data: { status: 'removed' } });
+
+    // command layer: another PMC cannot publish the revoked author's record — the register
+    // entry would be attributed to someone with no standing (re-issue it yourself instead)
+    const pub = await post(pmcToken)(`/projects/${projectId}/decisions/${d.id}/publish`);
+    expect(pub.status, JSON.stringify(pub.body)).toBe(409);
+    expect(JSON.stringify(pub.body.message)).toContain('author');
+    // DB layer: the hostile direct publication is refused by the publication arm's author check
+    await expect(
+      t.prisma.$executeRawUnsafe(`UPDATE "Decision" SET "publishedAt" = now() WHERE "id" = '${d.id}'`),
+    ).rejects.toThrow(/authority/i);
+
+    // precision: restored standing lets the SAME publish land
+    await t.prisma.membership.update({ where: { projectId_userId: { projectId, userId: tempId } }, data: { status: 'active' } });
+    const ok = await post(pmcToken)(`/projects/${projectId}/decisions/${d.id}/publish`);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(201);
+    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } })).publishedAt).not.toBeNull();
+    // the published record is permanent and stays on the register (the suite's sanctioned
+    // afterAll wipe removes it); the temp identity leaves now (`authorId` carries no FK)
+    await t.prisma.membership.delete({ where: { projectId_userId: { projectId, userId: tempId } } });
+    await t.prisma.user.delete({ where: { id: tempId } });
+  });
+
+  it('R7-F4: the migration acquires its four-table lock FIRST — before any statement takes a table lock it would then hold while waiting', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join, dirname } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const sql = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../../prisma/migrations/20271015000000_phase6_t4b_decider/migration.sql'),
+      'utf8',
+    );
+    const lockAt = sql.indexOf('LOCK TABLE "Decision", "Membership", "OrgMembership", "Project" IN SHARE ROW EXCLUSIVE MODE;');
+    const firstAlterAt = sql.search(/^ALTER TABLE /m);
+    expect(lockAt).toBeGreaterThan(-1);
+    expect(firstAlterAt).toBeGreaterThan(-1);
+    // the four-table wait must happen while the transaction holds NOTHING: an ALTER's ACCESS
+    // EXCLUSIVE held while waiting on Membership deadlocks against an old membership writer
+    // whose holder trigger reads Decision
+    expect(lockAt).toBeLessThan(firstAlterAt);
+    // and exactly ONE such acquisition exists (no second, later re-lock to regress the order)
+    expect(sql.indexOf('LOCK TABLE', lockAt + 1)).toBe(-1);
+  });
 });

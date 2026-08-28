@@ -26,9 +26,11 @@ export const ROLE_POLICY = {
   // `client` decider on every existing decision.
   'decision.approve': ['client', 'pmc', 'contractor', 'engineer', 'consultant'],
   // Phase 6 task 4b (§A.1/§A.2 round 8) — editing an UNPUBLISHED draft's decider/kind/options:
-  // the author's own drafting freedom, pmc authority like create (the service further narrows to
-  // the draft's author or a pmc).
-  'decision.updateDraft': ['pmc'],
+  // the author's own drafting freedom (the service narrows to the draft's AUTHOR or a pmc).
+  // Round-7 Codex F1 — the route CEILING admits every role an author can be REASSIGNED to
+  // (a pmc who authored a draft and was later re-roled must still reach their own private
+  // draft); the identity narrowing lives in the service, exactly like `decision.withdrawChange`.
+  'decision.updateDraft': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   // consultants raise change requests to flag a conflict in their discipline (read-mostly otherwise)
   'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   // withdraw an open change request — endpoint allowlist; the SERVICE narrows it to the

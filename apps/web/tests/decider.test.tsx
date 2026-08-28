@@ -444,3 +444,22 @@ describe('round-6 Codex corrections (web arms)', () => {
     expect((r.getByTestId('publish-all') as HTMLButtonElement).disabled).toBe(true);
   });
 });
+
+describe('round-7 Codex corrections (web arms)', () => {
+  it('R7-F5: the decisions nav badge carries pending + reapprovals — a decider with only a reopened change never sees zero', async () => {
+    const { renderHook } = await import('@testing-library/react');
+    const { useNavItems } = await import('@/layout/useNavItems');
+    useStore.setState({
+      role: 'engineer',
+      sessionUserId: 'u-eng-a',
+      decisions: [
+        dec({ id: 'DL-RB', status: 'change', deciderKind: 'member', deciderUserId: 'u-eng-a' }),
+      ],
+    } as never);
+    const { result } = renderHook(() => useNavItems());
+    const item = result.current.find((m) => m.key === 'client-decisions');
+    // the decider route arm added the screen; the badge must carry the SAME combined count
+    expect(item).toBeTruthy();
+    expect(item!.badge).toBe(1);
+  });
+});
