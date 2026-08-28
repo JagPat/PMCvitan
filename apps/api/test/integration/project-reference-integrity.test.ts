@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisions } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, seedPublishedDecision, wipeDecisionsVia } from './fixtures';
 
 const uid = (label: string) => `it-${label}-${randomUUID().slice(0, 8)}`;
 
@@ -24,15 +24,17 @@ describe('project reference integrity (database constraints)', () => {
     activityA = await t.prisma.activity.create({
       data: { id: uid('act'), projectId: f.projectA.id, name: 'Waterproofing', zone: 'Terrace', plannedStart: 1, plannedEnd: 2, order: 1 },
     });
-    decisionA = await t.prisma.decision.create({
-      data: { id: uid('dl'), projectId: f.projectA.id, title: 'Flooring', room: 'Living', status: 'approved', photoSwatch: 'marble', publishedAt: new Date() },
-    });
+    // Phase 6 task 4b — a published choice owes 2-4 options + the re-ordered publish
+    decisionA = await seedPublishedDecision(t.prisma, { id: uid('dl'), projectId: f.projectA.id, title: 'Flooring', room: 'Living', status: 'approved', photoSwatch: 'marble' });
   });
 
   afterAll(async () => {
     await t.prisma.media.deleteMany({ where: { id: { in: created.media } } });
     await t.prisma.drawing.deleteMany({ where: { id: { in: created.drawings } } });
-    await wipeDecisions(t.prisma, { id: decisionA?.id });
+    await wipeDecisionsVia(t.prisma, async (tx) => {
+      await tx.decisionOption.deleteMany({ where: { decisionId: decisionA?.id } });
+      await tx.decision.deleteMany({ where: { id: decisionA?.id } });
+    });
     await t.prisma.activity.deleteMany({ where: { id: activityA?.id } });
     await f?.cleanup();
     await t?.close();

@@ -129,6 +129,49 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     roleUsers.clear();
   }
 
+  /** Phase 6 unit 4b: replaying the rerunnable 4a migration restores the OLDER bodies of the
+   *  three functions 20271015 widened (`phase6_t4a_option_frozen_after_withdraw`,
+   *  `phase6_t4a_no_approval_after_withdraw`, `phase6_t4a_no_approval_event_after_withdraw`).
+   *  In production the ordered migration history re-applies 20271015 right after; the probes
+   *  that replay 4a mid-suite restore the current bodies the same way, so no later probe (or
+   *  later suite in the battery) runs against a degraded seal. */
+  const restore4bWidenedBodies = async (): Promise<void> => {
+    const t4bPath = join(dirname(fileURLToPath(import.meta.url)), '../../prisma/migrations/20271015000000_phase6_t4b_decider/migration.sql');
+    const sql = readFileSync(t4bPath, 'utf8');
+    const names = [
+      'phase6_t4a_option_frozen_after_withdraw',
+      'phase6_t4a_no_approval_after_withdraw',
+      'phase6_t4a_no_approval_event_after_withdraw',
+    ];
+    for (const name of names) {
+      const m = sql.match(new RegExp(`CREATE OR REPLACE FUNCTION ${name}\\(\\)[\\s\\S]*?END \\$fn\\$ LANGUAGE plpgsql;`));
+      if (!m) throw new Error(`4b migration no longer defines ${name} — update restore4bWidenedBodies`);
+      await t.prisma.$executeRawUnsafe(m[0]);
+    }
+  };
+
+  /** Seed one canonical published decision on a SUITE-LOCAL project (re-ordered create — the 4b
+   *  seals refuse a published+optionless insert and option writes on a published parent). */
+  const seedPublishedOn = async (projectId: string, id: string, title: string): Promise<void> => {
+    await t.prisma.$transaction(async (tx) => {
+      await tx.decision.create({
+        data: {
+          id, projectId, title, room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1',
+          authorId: f.memberUser.id, publishedAt: null,
+          options: {
+            createMany: {
+              data: [
+                { label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw1', recommended: true, order: 0 },
+                { label: 'Opt B', optionKey: 'b', material: 'Walnut', delta: 100, swatch: 'sw2', recommended: false, order: 1 },
+              ],
+            },
+          },
+        },
+      });
+      await tx.decision.update({ where: { id }, data: { publishedAt: new Date() } });
+    });
+  };
+
   /** Seed one canonical published-pending decision with two options. */
   const seed = async (over: { status?: 'pending' | 'approved' | 'change'; draft?: boolean; title?: string } = {}): Promise<string> => {
     const id = `DL-t4a-${seq++}`;
@@ -497,9 +540,9 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
   // ── P9 — the pending surfaces drop the decision ──
   it('P9: countPending and the pending snapshot list drop a withdrawn decision', async () => {
     const id = await seed();
-    expect(await query.countPending(f.projectA.id)).toBe(1);
+    expect(await query.countPending(f.projectA.id, { role: 'pmc' })).toBe(1);
     await svc.withdraw(f.projectA.id, id, { reason: 'no longer asked' }, pmc());
-    expect(await query.countPending(f.projectA.id)).toBe(0);
+    expect(await query.countPending(f.projectA.id, { role: 'pmc' })).toBe(0);
   });
 
   // ── P10 — audience: the decision, its notice, and the queued push ──
@@ -1348,11 +1391,10 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         data: { id: projW, orgId: f.orgA.id, name: projW, short: 'W', descriptor: '', stage: 'x', siteCode: 'W', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
       });
       await t.prisma.membership.create({ data: { projectId: projW, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+        // an active client member — the 4b publication arm requires standing for the default client holder
+        await t.prisma.membership.create({ data: { projectId: projW, userId: f.clientUser.id, role: 'client', status: 'active' } });
       const id = 'DL-t4a-r12w';
-      await t.prisma.decision.create({
-        data: { id, projectId: projW, title: 'Wedge probe', room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
-      });
-      await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw1', recommended: true, order: 0 } });
+      await seedPublishedOn(projW, id, 'Wedge probe');
       const drain = async (): Promise<void> => {
         for (let pass = 0; pass < 50; pass++) {
           const ds = await t.prisma.outboxDelivery.findMany({
@@ -1376,6 +1418,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         await t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='Manual PMC', "withdrawReason"='partial apply' WHERE "id"=${id}`;
         // the migration file is rerunnable BY DESIGN — run it as the operator would
         execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe' });
+        await restore4bWidenedBodies();
         const retired = await t.prisma.projectionGeneration.findUniqueOrThrow({ where: { id: before.id } });
         expect(retired.status).toBe('retired');
         const replacement = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
@@ -1390,9 +1433,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         expect((await query.projectionSlice(projW, 'pmc', f.memberUser.id)).decisions.find((d) => d.id === id)?.status).toBe('withdrawn');
         // the WEDGE pin: the next delivery is CONTIGUOUS and APPLIES (at c2d3a1a it waited forever)
         const id2 = 'DL-t4a-r12w-2';
-        await t.prisma.decision.create({
-          data: { id: id2, projectId: projW, title: 'Post-repair decision', room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
-        });
+        await seedPublishedOn(projW, id2, 'Post-repair decision');
         await t.prisma.$transaction(async (tx) => {
           await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id2, payload: {}, effectKey: 'decision.published', dispatch: {} });
         });
@@ -1425,11 +1466,12 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       }
     });
 
-    // R12-F2 — the WITHDRAWING transaction must not rewrite the question first: option writes
-    // are judged at write time, so one transaction could edit the options and then withdraw.
-    // The touch note catches UPDATE, INSERT and DELETE alike; ordinary transactions never
-    // withdraw, so nothing else trips it.
-    it('R12-F2: options modified in the WITHDRAWING transaction refuse the withdrawal — UPDATE, INSERT and DELETE alike; separate transactions are unaffected', async () => {
+    // R12-F2 — the WITHDRAWING transaction must not rewrite the question first. Since phase 6
+    // unit 4b the option freeze is WIDER than the round-12 touch note: options of ANY published
+    // parent admit no write in ANY transaction (only a published pending decision can be
+    // withdrawn, so every withdrawable decision's question is already frozen). The same-tx
+    // attack now dies at the option statement itself — earlier and harder than the note.
+    it('R12-F2: options modified in the WITHDRAWING transaction refuse the withdrawal — UPDATE, INSERT and DELETE alike; the 4b freeze refuses them in any transaction', async () => {
       const id = await seed({ title: 'Same-tx option attack' });
       for (const [label, statement] of [
         ['update', t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Swapped in-flight' WHERE "decisionId"=${id} AND "optionKey"='a'`],
@@ -1442,12 +1484,14 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
             t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='swapped question' WHERE "id"=${id}`,
           ]),
           `verb=${label}`,
-        ).rejects.toThrow(/withdrawing transaction/);
+        ).rejects.toThrow(/frozen question|withdrawing transaction/);
         expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status, `verb=${label}`).toBe('pending');
       }
-      // both statements SEPARATELY are legal: the pending-question edit is client-visible
-      // ordinary tampering (not a withdrawal problem), and a clean later withdrawal succeeds
-      expect(await t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Edited separately' WHERE "decisionId"=${id} AND "optionKey"='a'`).toBe(1);
+      // a SEPARATE-transaction edit of the published question is refused too (the widened 4b
+      // freeze — the question is evidence from publication), and a clean withdrawal succeeds
+      await expect(
+        t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Edited separately' WHERE "decisionId"=${id} AND "optionKey"='a'`,
+      ).rejects.toThrow(/frozen question/);
       await svc.withdraw(f.projectA.id, id, { reason: 'clean withdrawal after' }, pmc());
       expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('withdrawn');
     });
@@ -1546,7 +1590,9 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     // side. Verified by EXECUTION on PostgreSQL 16: both verbs run through the trigger AND
     // record their note (the note table makes the firing itself assertable).
     it('R13-F1 (refuted): plain option INSERT and DELETE run through the touch trigger — OLD/NEW are null records, and both verbs record their note', async () => {
-      const id = await seed({ title: 'Null-record row images' });
+      // a DRAFT parent: since unit 4b a PUBLISHED parent's options admit no write at all, so the
+      // touch trigger's row-image handling is observable only where option writes are still legal
+      const id = await seed({ title: 'Null-record row images', draft: true });
       expect(
         await t.prisma.$executeRaw`INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","recommended","order") VALUES ('r13-f1-opt',${id},'C','c','Marble',5,'sw3',false,2)`,
       ).toBe(1);
@@ -1564,26 +1610,35 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     // sanctioned bypass in this seal network already requires.
     it('R13-F2: the touch note cannot be erased by its own transaction — the temp-drop bypass is gone and the direct erase refuses', async () => {
       const id = await seed({ title: 'Note erase attack' });
-      // the a58e949 bypass, verbatim: DROP the (now nonexistent) temp note between edit and withdraw
+      // the a58e949 bypass, verbatim: DROP the (now nonexistent) temp note between edit and
+      // withdraw. Since unit 4b the option edit itself is refused (published question frozen in
+      // ANY transaction), so the laundered withdrawal dies at statement 1 — refused either way.
       await expect(
         t.prisma.$transaction([
           t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Swapped then hidden' WHERE "decisionId"=${id} AND "optionKey"='a'`,
           t.prisma.$executeRawUnsafe('DROP TABLE IF EXISTS pg_temp."_t4a_options_touched"'),
           t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='hidden swap' WHERE "id"=${id}`,
         ]),
-      ).rejects.toThrow(/withdrawing transaction/);
-      // erasing the REAL note directly is itself refused inside the writing transaction
+      ).rejects.toThrow(/frozen question|withdrawing transaction/);
       await expect(
         t.prisma.$transaction([
           t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Swapped again' WHERE "decisionId"=${id} AND "optionKey"='a'`,
           t.prisma.$executeRaw`DELETE FROM "DecisionOptionTouch" WHERE "decisionId"=${id}`,
           t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='erased note' WHERE "id"=${id}`,
         ]),
-      ).rejects.toThrow(/cannot be erased/);
-      // and re-writing a note (re-pointing it at another decision) is refused too
-      await t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Committed edit' WHERE "decisionId"=${id} AND "optionKey"='a'`;
+      ).rejects.toThrow(/frozen question|cannot be erased/);
+      // the REAL note's own seals, exercised where option writes are still legal (a DRAFT):
+      // the same-tx erase refuses, and re-writing a committed note refuses
+      const draft = await seed({ title: 'Note erase attack (draft arm)', draft: true });
       await expect(
-        t.prisma.$executeRaw`UPDATE "DecisionOptionTouch" SET "txid"=0 WHERE "decisionId"=${id}`,
+        t.prisma.$transaction([
+          t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Swapped on draft' WHERE "decisionId"=${draft} AND "optionKey"='a'`,
+          t.prisma.$executeRaw`DELETE FROM "DecisionOptionTouch" WHERE "decisionId"=${draft}`,
+        ]),
+      ).rejects.toThrow(/cannot be erased/);
+      await t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Committed edit' WHERE "decisionId"=${draft} AND "optionKey"='a'`;
+      await expect(
+        t.prisma.$executeRaw`UPDATE "DecisionOptionTouch" SET "txid"=0 WHERE "decisionId"=${draft}`,
       ).rejects.toThrow(/cannot be updated/);
       expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('pending');
       // notes from COMMITTED transactions are inert history: a clean later withdrawal succeeds
@@ -1626,13 +1681,12 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         data: { id: projW, orgId: f.orgA.id, name: projW, short: 'W', descriptor: '', stage: 'x', siteCode: 'W', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
       });
       await t.prisma.membership.create({ data: { projectId: projW, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+        // an active client member — the 4b publication arm requires standing for the default client holder
+        await t.prisma.membership.create({ data: { projectId: projW, userId: f.clientUser.id, role: 'client', status: 'active' } });
       const idW = 'DL-t4a-r13w';
       const idK = 'DL-t4a-r13k';
       for (const [id, title] of [[idW, 'Never applied'], [idK, 'Healthy sibling']] as const) {
-        await t.prisma.decision.create({
-          data: { id, projectId: projW, title, room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
-        });
-        await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw1', recommended: true, order: 0 } });
+        await seedPublishedOn(projW, id, title);
       }
       const drain = async (): Promise<void> => {
         for (let pass = 0; pass < 50; pass++) {
@@ -1658,6 +1712,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         await t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='Manual PMC', "withdrawReason"='partial apply, no row' WHERE "id"=${idW}`;
         await t.prisma.decisionProjection.deleteMany({ where: { generationId: before.id, decisionId: idW } });
         execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe' });
+        await restore4bWidenedBodies();
         const replacement = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
         expect(replacement.id).not.toBe(before.id);
         expect(replacement.appliedPosition).toBe(before.appliedPosition);
@@ -1666,7 +1721,10 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         // own comparators, and the healthy sibling is untouched
         const stored = await storedDecisionRows(t.prisma, replacement.id);
         const canonical = await computeDecisionRows(t.prisma, projW);
-        expect(stored).toEqual(canonical);
+        // a 4a-migration-seeded dto predates the 4b decider fields; its semantic IS the column
+        // backfill's (`client`), and the read path normalizes it exactly so — compare normalized
+        const normalized = stored.map((r) => ({ ...r, dto: { deciderKind: 'client', ...(r.dto as Record<string, unknown>) } }));
+        expect(normalized).toEqual(canonical);
         expect(stored.map((r) => r.decisionId).sort()).toEqual([idK, idW].sort());
         // the pmc register SERVES the withdrawal from the replacement generation
         expect((await query.projectionSlice(projW, 'pmc', f.memberUser.id)).decisions.find((d) => d.id === idW)?.status).toBe('withdrawn');
@@ -1677,9 +1735,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         }
         // and the consumer continues: the next delivery APPLIES against the copied checkpoint
         const id2 = 'DL-t4a-r13w-2';
-        await t.prisma.decision.create({
-          data: { id: id2, projectId: projW, title: 'Post-repair decision', room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
-        });
+        await seedPublishedOn(projW, id2, 'Post-repair decision');
         await t.prisma.$transaction(async (tx) => {
           await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id2, payload: {}, effectKey: 'decision.published', dispatch: {} });
         });
@@ -1762,6 +1818,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         data: { projectId: f.projectA.id, decisionId: id, text: 'Decision awaiting approval: Rerun survivor', color: '#C08A2D', time: '2d ago' },
       });
       execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe' });
+      await restore4bWidenedBodies();
       const after = await t.prisma.notification.findMany({ where: { decisionId: id } });
       expect(after.map((n) => n.text.split(':')[0])).toEqual(['Decision withdrawn']);
     });
@@ -1813,13 +1870,12 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         data: { id: projW, orgId: f.orgA.id, name: projW, short: 'W', descriptor: '', stage: 'x', siteCode: 'W', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
       });
       await t.prisma.membership.create({ data: { projectId: projW, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+        // an active client member — the 4b publication arm requires standing for the default client holder
+        await t.prisma.membership.create({ data: { projectId: projW, userId: f.clientUser.id, role: 'client', status: 'active' } });
       const idMissing = 'DL-t4a-r15m';
       const idStale = 'DL-t4a-r15s';
       for (const [id, title] of [[idMissing, 'Missing-row arm'], [idStale, 'Stale-row arm']] as const) {
-        await t.prisma.decision.create({
-          data: { id, projectId: projW, title, room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
-        });
-        await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw1', recommended: true, order: 0 } });
+        await seedPublishedOn(projW, id, title);
       }
       const drain = async (): Promise<void> => {
         for (let pass = 0; pass < 50; pass++) {
@@ -1844,10 +1900,14 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         await t.prisma.decisionProjection.deleteMany({ where: { generationId: gen.id, decisionId: idMissing } });
         // the operator's psql session is NOT UTC — the repair must not care
         execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe', env: { ...process.env, PGTZ: 'Asia/Kolkata' } });
+        await restore4bWidenedBodies();
         const replacement = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
         const stored = await storedDecisionRows(t.prisma, replacement.id);
         const canonical = await computeDecisionRows(t.prisma, projW);
-        expect(stored).toEqual(canonical);
+        // a 4a-migration-seeded dto predates the 4b decider fields; its semantic IS the column
+        // backfill's (`client`), and the read path normalizes it exactly so — compare normalized
+        const normalized = stored.map((r) => ({ ...r, dto: { deciderKind: 'client', ...(r.dto as Record<string, unknown>) } }));
+        expect(normalized).toEqual(canonical);
       } finally {
         await t.prisma.$executeRawUnsafe(
           'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "CommandExecution" CASCADE',
@@ -1897,14 +1957,25 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     // truncates pass.
     it('R15-F4: the withdrawing transaction cannot TRUNCATE its own touch notes — and a separate-transaction truncate still passes', async () => {
       const id = await seed({ title: 'Truncate the note' });
+      // the original laundering attack now dies at statement 1: since unit 4b a published
+      // parent's options admit no write in ANY transaction (the widened freeze)
       await expect(
         t.prisma.$transaction([
           t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Swapped under truncate' WHERE "decisionId"=${id} AND "optionKey"='a'`,
           t.prisma.$executeRawUnsafe('TRUNCATE "DecisionOptionTouch"'),
           t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='hidden by truncate' WHERE "id"=${id}`,
         ]),
-      ).rejects.toThrow(/cannot be truncated/);
+      ).rejects.toThrow(/frozen question|cannot be truncated/);
       expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('pending');
+      // the statement guard itself, exercised where option writes are still legal (a DRAFT):
+      // a transaction that wrote notes cannot truncate them
+      const draft = await seed({ title: 'Truncate the note (draft arm)', draft: true });
+      await expect(
+        t.prisma.$transaction([
+          t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Swapped on draft' WHERE "decisionId"=${draft} AND "optionKey"='a'`,
+          t.prisma.$executeRawUnsafe('TRUNCATE "DecisionOptionTouch"'),
+        ]),
+      ).rejects.toThrow(/cannot be truncated/);
       // precision: a SEPARATE transaction (no own notes) may truncate the inert history
       expect(await t.prisma.$executeRawUnsafe('TRUNCATE "DecisionOptionTouch"')).toBeDefined();
       // and a clean later withdrawal still succeeds
@@ -1923,11 +1994,10 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       data: { id: proj13, orgId: f.orgA.id, name: proj13, short: 'O', descriptor: '', stage: 'x', siteCode: 'O', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
     });
     await t.prisma.membership.create({ data: { projectId: proj13, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+      // an active client member — the 4b publication arm requires standing for the default client holder
+      await t.prisma.membership.create({ data: { projectId: proj13, userId: f.clientUser.id, role: 'client', status: 'active' } });
     const id = 'DL-t4a-p13';
-    await t.prisma.decision.create({
-      data: { id, projectId: proj13, title: 'Projected', room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
-    });
-    await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw1', recommended: true, order: 0 } });
+    await seedPublishedOn(proj13, id, 'Projected');
     try {
       const asPmc = { sub: f.memberUser.id, role: 'pmc', projectId: proj13 } as AuthUser;
       await svc.withdraw(proj13, id, { reason: 'projected truth' }, asPmc);

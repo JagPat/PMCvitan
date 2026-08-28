@@ -105,12 +105,12 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER USER'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "ChangeRequest" DISABLE TRIGGER USER'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionApprovalRevision" DISABLE TRIGGER USER'),
-      t.prisma.decisionApprovalRevision.deleteMany({ where: { decision: { projectId } } }),
-      t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } }),
-      t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId } } }),
-      t.prisma.decisionOption.deleteMany({ where: { decision: { projectId } } }),
-      t.prisma.activity.deleteMany({ where: { projectId } }),
-      t.prisma.decision.deleteMany({ where: { projectId } }),
+      t.prisma.decisionApprovalRevision.deleteMany({ where: { decision: { projectId: { in: [projectId, projectBId] } } } }),
+      t.prisma.changeRequest.deleteMany({ where: { decision: { projectId: { in: [projectId, projectBId] } } } }),
+      t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: { in: [projectId, projectBId] } } } }),
+      t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: { in: [projectId, projectBId] } } } }),
+      t.prisma.activity.deleteMany({ where: { projectId: { in: [projectId, projectBId] } } }),
+      t.prisma.decision.deleteMany({ where: { projectId: { in: [projectId, projectBId] } } }),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionApprovalRevision" ENABLE TRIGGER USER'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "ChangeRequest" ENABLE TRIGGER USER'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER USER'),
@@ -275,6 +275,8 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     await expect(
       t.prisma.$executeRawUnsafe(`UPDATE "Decision" SET "deciderKind" = 'client', "deciderMembershipId" = NULL WHERE "id" = '${did}'`),
     ).rejects.toThrow(/holder|frozen|publication/i);
+    // settle the obligation so later audience/count probes start from a clean register
+    expect((await post(engAToken)(`/projects/${projectId}/decisions/${did}/approve`, { optionIndex: 0 })).status).toBe(201);
   });
 
   it('P17: publishing a stranded draft (named member no longer active) refuses and NAMES the draft-edit door', async () => {
@@ -353,7 +355,11 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
   });
 
   it('P39 (org arm): demoting the LAST effective PMC (a membership-less org admin) while a pmc-held decision is open is refused at both layers', async () => {
-    // project B: no explicit memberships at all — users.orgAdmin's admin row is the ONLY pmc standing
+    // the org OWNER's arm is SUPPRESSED on project B by an explicit non-pmc membership (the
+    // precedence rule) — users.orgAdmin's membership-less admin row is then the ONLY effective
+    // pmc standing. Inserted before any decision exists, so the activation-displacement arm of
+    // the guard has nothing to judge.
+    await t.prisma.membership.create({ data: { projectId: projectBId, userId: users.orgOwner, role: 'engineer', status: 'active' } });
     const adminToken = t.issueOrgOwnerToken(users.orgAdmin, projectBId, orgBId);
     const res = await post(adminToken)(`/projects/${projectBId}/decisions`, {
       title: 'PMC-held on B', room: 'K', options: twoOptions, publish: true, deciderKind: 'pmc',
@@ -375,7 +381,7 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
 
     // P39 activation-displacement arm: an explicit NON-pmc membership for the same user would
     // re-classify them by precedence and orphan the pmc holder — refused
-    const addClient = await post(ownerToken)(`/projects/${projectBId}/members`, { name: 'U admin', email: `${users.orgAdmin}@t.local`, role: 'client' });
+    const addClient = await post(adminToken)(`/projects/${projectBId}/members`, { name: 'U admin', email: `${users.orgAdmin}@t.local`, role: 'client' });
     expect(addClient.status).toBe(409);
 
     // approve (as the effective pmc) to release the hold, then the demotion lands
@@ -416,7 +422,10 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     const bellDecider = await snapshot.build(projectId, 'engineer', users.engA);
     const bellOther = await snapshot.build(projectId, 'engineer', users.engB);
     const bellClient = await snapshot.build(projectId, 'client', users.client);
-    const isForThis = (n: { text: string }) => n.text.startsWith('Decision awaiting approval');
+    // THIS decision's notice (by title) — earlier probes' settled decisions keep their notices
+    // as history for the member who decided them, exactly like the legacy client's bell
+    const { title } = await t.prisma.decision.findUniqueOrThrow({ where: { id: did }, select: { title: true } });
+    const isForThis = (n: { text: string }) => n.text.startsWith('Decision awaiting approval') && n.text.includes(title);
     expect(bellDecider.notifications.some(isForThis)).toBe(true);
     expect(bellOther.notifications.some(isForThis)).toBe(false);
     expect(bellClient.notifications.some(isForThis)).toBe(false);

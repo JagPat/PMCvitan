@@ -14,6 +14,11 @@ export interface TwoProjectFixture {
   otherUser: { id: string };
   /** no memberships anywhere */
   strangerUser: { id: string };
+  /** Phase 6 task 4b — active CLIENT membership on projectA: publication re-validates the
+   *  holder's standing at the DB, and most suites publish client-held (default-kind)
+   *  decisions there, so the project must actually HAVE an active client. Invisible to
+   *  drawing distributions (engineer/contractor only) and to every stranger/authz probe. */
+  clientUser: { id: string };
   cleanup: () => Promise<void>;
 }
 
@@ -52,8 +57,10 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
   const ownerUser = await prisma.user.create({ data: { ...user('owner'), projectId: projectA.id } });
   const otherUser = await prisma.user.create({ data: { ...user('other'), projectId: projectB.id } });
   const strangerUser = await prisma.user.create({ data: { ...user('stranger') } });
+  const clientUser = await prisma.user.create({ data: { ...user('client4b'), role: 'client' } });
 
   await prisma.membership.create({ data: { projectId: projectA.id, userId: memberUser.id, role: 'pmc', status: 'active' } });
+  await prisma.membership.create({ data: { projectId: projectA.id, userId: clientUser.id, role: 'client', status: 'active' } });
   await prisma.membership.create({ data: { projectId: projectB.id, userId: otherUser.id, role: 'pmc', status: 'active' } });
   await prisma.orgMembership.create({ data: { orgId: orgA.id, userId: ownerUser.id, role: 'owner' } });
 
@@ -72,8 +79,8 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
       // them before the project/org rows they hang off (their tenant FK is ON DELETE CASCADE,
       // but an explicit delete keeps the disposable test DB tidy for cross-suite reuse).
       prisma.commandExecution.deleteMany({ where: { OR: [{ projectId: { in: [projectA.id, projectB.id] } }, { organizationId: { in: [orgA.id, orgB.id] } }] } }),
-      prisma.securityAuditEvent.deleteMany({ where: { targetUserId: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id] } } }),
-      prisma.passwordCredentialChallenge.deleteMany({ where: { userId: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id] } } }),
+      prisma.securityAuditEvent.deleteMany({ where: { targetUserId: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id, clientUser.id] } } }),
+      prisma.passwordCredentialChallenge.deleteMany({ where: { userId: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id, clientUser.id] } } }),
       prisma.auditLog.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.notification.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.membership.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
@@ -93,7 +100,7 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
       prisma.projectParty.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.vendor.deleteMany({ where: { orgId: { in: [orgA.id, orgB.id] } } }),
       prisma.externalParty.deleteMany({ where: { orgId: { in: [orgA.id, orgB.id] } } }),
-      prisma.user.deleteMany({ where: { id: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id] } } }),
+      prisma.user.deleteMany({ where: { id: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id, clientUser.id] } } }),
       prisma.projectNode.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.project.deleteMany({ where: { id: { in: [projectA.id, projectB.id] } } }),
       prisma.templateModule.deleteMany({ where: { orgId: { in: [orgA.id, orgB.id] } } }),
@@ -102,7 +109,7 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
     ]);
   };
 
-  return { orgA, orgB, projectA, projectB, memberUser, ownerUser, otherUser, strangerUser, cleanup };
+  return { orgA, orgB, projectA, projectB, memberUser, ownerUser, otherUser, strangerUser, clientUser, cleanup };
 }
 
 /** Phase 6 task 4a (round 12) — approval `DecisionEvent` rows are undeletable EVIDENCE
@@ -166,3 +173,27 @@ export async function wipeDecisionsVia(
 }
 
 type TxClient = Parameters<Parameters<PrismaService['$transaction']>[0]>[0];
+
+/** Phase 6 task 4b — seed a PUBLISHED decision the way the seals now demand: the row births
+ *  UNPUBLISHED with its 2-4 option set nested in the same create, and publication is a
+ *  same-transaction UPDATE. (The deferred option floor re-counts a published choice at commit;
+ *  the option freeze refuses option INSERTs into an already-published parent; the publication
+ *  arm re-validates the holder's standing — the project must hold an active member of the
+ *  decision's decider role, `client` by default.) Returns the published row. */
+export async function seedPublishedDecision(
+  prisma: PrismaService,
+  data: { id: string } & Record<string, unknown>,
+  options?: Array<Record<string, unknown>>,
+): Promise<{ id: string }> {
+  const opts = options ?? [
+    { label: 'Option A', optionKey: 'a', material: 'Granite', delta: 0, swatch: 'sw1', recommended: true, order: 0 },
+    { label: 'Option B', optionKey: 'b', material: 'Quartz', delta: 20000, swatch: 'sw2', recommended: false, order: 1 },
+  ];
+  return prisma.$transaction(async (tx) => {
+    await tx.decision.create({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: { ...(data as any), publishedAt: null, options: { createMany: { data: opts as any } } },
+    });
+    return tx.decision.update({ where: { id: data.id }, data: { publishedAt: new Date() } });
+  });
+}

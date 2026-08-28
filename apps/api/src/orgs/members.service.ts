@@ -25,6 +25,21 @@ export interface MemberDto {
 }
 
 /**
+ * Phase 6 task 4b (§A.1/§B.1) — the DB holder seals (`Membership_t4b2_holder_guard`,
+ * `OrgMembership_t4b2_holder_guard`) are immediate AFTER-row triggers, so on the service path
+ * they judge the standing write at the WRITE STATEMENT — before the command's own post-write
+ * participant consultation can run. The seal judges the SAME content the command judges (the
+ * decisions-owned holder predicates over the orgs-owned standing primitives), so its raise on a
+ * command path is exactly the command's deliberate refusal, translated here to the 409 the
+ * caller is owed instead of surfacing as a raw database error. Hostile direct SQL still gets
+ * the raw raise — this translation exists only behind the command doors.
+ */
+export function rethrowHolderSealViolation(e: unknown, message: string): never {
+  if (e instanceof Error && /phase6-4b/.test(e.message)) throw new ConflictException(message);
+  throw e;
+}
+
+/**
  * Project team management (Orgs Slice 2). List/add/change-role/remove members.
  * Adding a member also provisions the account (invited), so with invite-only auth
  * they can then sign in by email-OTP / password / phone-OTP. Gated to the project's
@@ -140,10 +155,16 @@ export class MembersService {
         if (om?.role === 'owner' || om?.role === 'admin') atRisk.add('pmc');
       }
       const m = await tx.membership.upsert({
-        where: { projectId_userId: { projectId, userId: user.id } },
-        update: { role: input.role, discipline, status: 'active' },
-        create: { projectId, userId: user.id, role: input.role, discipline, status: 'active' },
-      });
+          where: { projectId_userId: { projectId, userId: user.id } },
+          update: { role: input.role, discipline, status: 'active' },
+          create: { projectId, userId: user.id, role: input.role, discipline, status: 'active' },
+        })
+        .catch((e: unknown) =>
+          rethrowHolderSealViolation(
+            e,
+            'An open decision is held by a role this activation would displace and the change would leave it without a holder — withdraw and reissue the decision first',
+          ),
+        );
       await this.refuseHolderOrphan(tx, projectId, atRisk);
       await emitEvent(tx, { projectId, actor, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role }, effectKey: 'membership.added', dispatch: {} });
       return m;
@@ -163,9 +184,15 @@ export class MembersService {
       const atRisk = new Set<string>();
       if (existing.status === 'active' && existing.role !== input.role) atRisk.add(existing.role);
       const m = await tx.membership.update({
-        where: { projectId_userId: { projectId, userId } },
-        data: { role: input.role, discipline: this.disciplineFor(input.role, input.discipline) },
-      });
+          where: { projectId_userId: { projectId, userId } },
+          data: { role: input.role, discipline: this.disciplineFor(input.role, input.discipline) },
+        })
+        .catch((e: unknown) =>
+          rethrowHolderSealViolation(
+            e,
+            `An open decision is held by the ${existing.role} role and this change would leave it without a holder — withdraw and reissue the decision first`,
+          ),
+        );
       await this.refuseHolderOrphan(tx, projectId, atRisk);
       await emitEvent(tx, { projectId, actor, eventType: 'membership.role_changed', entityType: 'Membership', entityId: userId, payload: { role: m.role }, effectKey: 'membership.role_changed', dispatch: {} });
       // a consultant's discipline moving is its own fact
@@ -196,7 +223,13 @@ export class MembersService {
           'This member is the named decider on an open decision — withdraw and reissue it first',
         );
       }
-      await tx.membership.update({ where: { projectId_userId: { projectId, userId } }, data: { status: 'removed' } });
+      await tx.membership.update({ where: { projectId_userId: { projectId, userId } }, data: { status: 'removed' } })
+        .catch((e: unknown) =>
+          rethrowHolderSealViolation(
+            e,
+            `An open decision is held by the ${existing.role} role and removing its last active holder would leave it undecidable — withdraw and reissue the decision first`,
+          ),
+        );
       if (existing.status === 'active' && holders.heldRoles.includes(existing.role)) {
         if ((await this.standing.effectiveRoleStanding(tx, projectId, existing.role)) === 0) {
           throw new ConflictException(

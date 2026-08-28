@@ -52,7 +52,14 @@ export class DecisionsQueryService {
     // The serialization + the per-viewer filter are the SAME functions the decisions projection uses
     // (decision-serialize.ts), so the projection-served slice is byte-identical to this live slice.
     const decisions: DecisionDto[] = rows
-      .filter((d) => decisionVisibleToViewer(d, role, userId))
+      .filter((d) =>
+        decisionVisibleToViewer(
+          // the RESOLVED decider user rides the membership join — the predicate compares users
+          { ...d, deciderUserId: d.deciderMembership?.userId ?? null },
+          role,
+          userId,
+        ),
+      )
       .map(serializeDecision);
 
     return { decisions, statuses, drafts };
@@ -144,8 +151,16 @@ export class DecisionsQueryService {
     // so live == projection == rebuild by construction); the read-path filter narrows on it, so
     // a projection read can tell the named decider from a same-role non-decider — no leak, no
     // hidden action item.
+    // A projection row WRITTEN BEFORE 4b stores a dto without the decider fields. Its semantic is
+    // exactly the column backfill's: every legacy decision is `client`-held. Normalize at the read
+    // (the PR-#209 hydration pattern) so a legacy generation neither hides a pending decision from
+    // the client nor serves a dto the web's shared predicate cannot judge; the next applied event
+    // or rebuild re-serializes the row with the fields stored.
     const decisions = rows
-      .map((r) => ({ row: r, dto: r.dto as unknown as DecisionDto }))
+      .map((r) => {
+        const raw = r.dto as unknown as DecisionDto;
+        return { row: r, dto: raw.deciderKind === undefined ? ({ ...raw, deciderKind: 'client' } as DecisionDto) : raw };
+      })
       .filter(({ row, dto }) =>
         decisionVisibleToViewer(
           {

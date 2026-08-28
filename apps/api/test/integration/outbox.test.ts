@@ -91,7 +91,8 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
 
   it('materializes one delivery per registered consumer IN the event transaction; a rolled-back emit writes none', async () => {
     const p = await freshProject();
-    // a published-decision event carries a push whose roles come from the catalog (['client'])
+    // a published-decision event carries a push whose roles come from the catalog — the 4b decider
+    // CEILING (every decider-capable role; the claim-time predicate narrows at delivery)
     const { eventId } = await emit(p, 'D-1', { eventType: 'decision.published', effectKey: 'decision.published', dispatch: { push: { body: 'hello' } } });
     // socket (always), push (notification present) and the ordered projection each got a row
     const socket = await deliveryFor(SOCKET_CONSUMER, eventId);
@@ -100,7 +101,7 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
     expect(socket.status).toBe('pending');
     expect(socket.consumerKind).toBe('unordered');
     expect(proj.consumerKind).toBe('ordered');
-    expect(push.payload).toEqual({ body: 'hello', roles: ['client'] });
+    expect(push.payload).toEqual({ body: 'hello', roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant'], targetUserId: null });
     expect(proj.streamPosition).toBe(0n);
 
     // a rolled-back mutation writes NO event AND NO deliveries — they share the transaction

@@ -9,6 +9,7 @@ import { lockUserCredential } from '../common/credential-lock';
 import { resolveActor, type Actor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import { NodeInitParticipant } from '../nodes/node-init.participant';
+import { rethrowHolderSealViolation } from './members.service';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import { ActivitiesQueryService } from '../activities/activities.query';
@@ -187,7 +188,14 @@ export class OrgsService {
       if (!reduces) return write(tx);
       const projects = await tx.project.findMany({ where: { orgId }, select: { id: true }, orderBy: { id: 'asc' } });
       for (const p of projects) await lockProjectReadiness(tx, p.id);
-      const result = await write(tx);
+      // the DB org-membership seal (AFTER-row) judges this write at the statement — its raise
+      // on the command path is the command's own refusal, translated to the deliberate 409
+      const result = await write(tx).catch((e: unknown) =>
+        rethrowHolderSealViolation(
+          e,
+          'An open decision on a covered project is held by the pmc role and this change would leave it without an effective PMC — withdraw and reissue the decision first',
+        ),
+      );
       for (const p of projects) {
         const explicit = await tx.membership.findFirst({
           where: { projectId: p.id, userId: targetUserId, status: 'active' },

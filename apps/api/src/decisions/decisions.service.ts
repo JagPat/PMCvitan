@@ -619,25 +619,7 @@ export class DecisionsService {
           const member = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, input.deciderMembershipId!);
           if (!member) throw new BadRequestException('The named decider must be an ACTIVE member of this project');
         }
-        // options replacement (drafts are unpublished, so the child freeze permits it); a draft
-        // CONVERTING to a record must shed its options in the same edit (the reverse child seal
-        // refuses an optioned record at commit)
-        if (input.options !== undefined) {
-          await tx.decisionOption.deleteMany({ where: { decisionId } });
-          await tx.decisionOption.createMany({
-            data: input.options.map((o, i) => ({
-              decisionId,
-              label: o.label ?? `Option ${String.fromCharCode(65 + i)}`,
-              optionKey: String.fromCharCode(97 + i),
-              material: o.material,
-              delta: o.delta,
-              swatch: o.swatch,
-              photoUrl: o.photoUrl || null,
-              recommended: o.recommended,
-              order: i,
-            })),
-          });
-        } else if (nextKind === 'none' && d.deciderKind !== 'none') {
+        if (input.options === undefined && nextKind === 'none' && d.deciderKind !== 'none') {
           const remaining = await tx.decisionOption.count({ where: { decisionId } });
           if (remaining > 0) {
             throw new BadRequestException('A record takes no options — remove them in the same edit (send options: [])');
@@ -664,6 +646,26 @@ export class DecisionsService {
           },
         });
         if (count === 0) throw new ConflictException('The draft was published while editing — its content and holder are now frozen');
+        // options replacement AFTER the head update (drafts are unpublished, so the child freeze
+        // permits it — but the recorded-parent INSERT seal means a record converting BACK to a
+        // choice must become `pending` before its options may attach; a draft CONVERTING to a
+        // record sheds its options in the same edit and the reverse child seal re-counts at commit)
+        if (input.options !== undefined) {
+          await tx.decisionOption.deleteMany({ where: { decisionId } });
+          await tx.decisionOption.createMany({
+            data: input.options.map((o, i) => ({
+              decisionId,
+              label: o.label ?? `Option ${String.fromCharCode(65 + i)}`,
+              optionKey: String.fromCharCode(97 + i),
+              material: o.material,
+              delta: o.delta,
+              swatch: o.swatch,
+              photoUrl: o.photoUrl || null,
+              recommended: o.recommended,
+              order: i,
+            })),
+          });
+        }
         await tx.decisionEvent.create({ data: { decisionId, type: 'draft_updated', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole } });
         await recordAudit(tx, { projectId, actor, action: 'decision.updateDraft', entity: 'Decision', entityId: decisionId });
         // a draft edit is weightless: no notice, no push, no invalidation for other viewers
