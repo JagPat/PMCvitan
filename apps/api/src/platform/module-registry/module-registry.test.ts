@@ -178,6 +178,12 @@ describe('Phase 2 Task 7 — module registry', () => {
       // orgs.dependsOn includes decisions, so a decisions → orgs READ would close a cycle —
       // the participant channel does not.
       decisions: ['orgs'],
+      // Phase 6 unit 4b round 6 (Codex F6) — the push spine's TWO orgs-owned questions
+      // (identity existence at subscribe-attribution; credential/session validity at
+      // targeted-claim time) go through OrgsParticipant, so the platform → orgs interaction
+      // is a DECLARED participant edge the graph validation can see. `platform.dependsOn`
+      // stays empty (the kernel owns no domain logic).
+      platform: ['orgs'],
     };
     for (const m of MODULE_MANIFESTS) {
       expect(m.workflowParticipants, `${m.id} workflowParticipants`).toEqual(expectedParticipants[m.id] ?? []);

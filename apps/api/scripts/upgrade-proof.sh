@@ -3867,6 +3867,44 @@ else
   echo "FAILED  4b-decider F5 precision: expected 2 surviving options, found $optcount"
   FAIL=1
 fi
+
+# ---- Phase 6 task 4b (decider) round-6 F3: the OrgMembership TRUNCATE seal -------------------
+# The row-level holder guard never fires for TRUNCATE, and OrgMembership has no inbound
+# decision FK to cascade through an existing seal: truncating it could strip a membership-less
+# org owner who is the ONLY effective PMC cover for a pmc-held published open decision. Same
+# register: a second project whose pmc standing rests SOLELY on the org owner's arm (no
+# explicit pmc membership), one legally published pmc-held decision, then the hostile TRUNCATE.
+$PSQL2 -q >/dev/null <<'SQL' || { echo "FAILED  4b-decider F3(r6): the org-only-covered fixture was refused"; FAIL=1; }
+INSERT INTO "User"("id","projectId","role","name","email") VALUES ('rr-u2','rr-p1','pmc','Org Owner','rr2@vitan.in');
+INSERT INTO "OrgMembership"("id","orgId","userId","role") VALUES ('rr-om1','org-rr','rr-u2','owner');
+INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+VALUES ('rr-p2','org-rr','Org-covered Site','RO','','Finishing','RO-01','01 Jan 2026','31 Dec 2026',0,0,0);
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtextextended('readiness:rr-p2', 0));
+INSERT INTO "Decision"("id","projectId","title","room","status","ageDays","authorId","deciderKind","photoSwatch")
+VALUES ('RR-ORG','rr-p2','Facade fixing','Hall','pending',0,'rr-u2','pmc','sw1');
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","recommended","order")
+VALUES ('RR-OO1','RR-ORG','A','a','Kota',0,'sw1',true,0),
+       ('RR-OO2','RR-ORG','B','b','Granite',100,'sw2',false,1);
+UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='RR-ORG';
+COMMIT;
+SQL
+if out=$($PSQL2 -c 'TRUNCATE "OrgMembership"' 2>&1); then
+  echo "FAILED  4b-decider F3(r6): TRUNCATE stripped the only effective PMC cover of an open pmc-held decision"
+  FAIL=1
+elif ! printf '%s' "$out" | grep -q 'last effective PMC'; then
+  echo "FAILED  4b-decider F3(r6): TRUNCATE refused, but not by the org-membership statement seal — got: $(printf '%s' "$out" | tail -2)"
+  FAIL=1
+else
+  echo "ok      4b-decider F3(r6): an org-only-covered open pmc decision refuses OrgMembership TRUNCATE"
+fi
+omcount=$(psql -X -tAc "SELECT COUNT(*) FROM \"OrgMembership\"" -d "$DB2")
+if [ "$omcount" = "1" ]; then
+  echo "ok      4b-decider F3(r6) precision: the covering owner row survived the refused TRUNCATE"
+else
+  echo "FAILED  4b-decider F3(r6) precision: expected 1 surviving org membership, found $omcount"
+  FAIL=1
+fi
 $PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB2;" >/dev/null 2>&1 || true
 
 # ---- Schedule B1 — the acyclic activity dependency graph -------------------------------------

@@ -786,4 +786,44 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     // and no read in the predicate escapes the transaction back to the pooled client
     expect(body).not.toContain('this.prisma.decision.findFirst');
   });
+
+  // ── round-6 Codex corrections (the #465 head d64ccc5a) ─────────────────────────────────────
+
+  it('R6-F2: re-adding an existing org admin with a LOWER role rides the holder guard — a deliberate 409, never an unhandled trigger error', async () => {
+    // project B: users.orgAdmin's membership-less admin row is again the ONLY effective pmc
+    // (orgOwner's arm stays suppressed by the explicit engineer membership the P39 probe added)
+    const adminToken = t.issueOrgOwnerToken(users.orgAdmin, projectBId, orgBId);
+    const res = await post(adminToken)(`/projects/${projectBId}/decisions`, {
+      title: `R6F2 pmc-held ${run}`, room: 'K', options: twoOptions, publish: true, deciderKind: 'pmc',
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId: projectBId, title: `R6F2 pmc-held ${run}` } });
+
+    const ownerToken = t.issueProjectToken(users.orgOwner, projectBId, 'pmc');
+    // the upsert's UPDATE arm is a demotion — the SAME deliberate refusal as PATCH/DELETE
+    const readd = await post(ownerToken)(`/orgs/${orgBId}/members`, { name: 'U admin', email: `${users.orgAdmin}@t.local`, role: 'member' });
+    expect(readd.status, JSON.stringify(readd.body)).toBe(409);
+    expect(JSON.stringify(readd.body.message)).toContain('effective PMC');
+    // the admin row is untouched
+    expect((await t.prisma.orgMembership.findUniqueOrThrow({ where: { orgId_userId: { orgId: orgBId, userId: users.orgAdmin } } })).role).toBe('admin');
+    // precision: a NON-reducing re-add (same role) still lands while the decision is open
+    const same = await post(ownerToken)(`/orgs/${orgBId}/members`, { name: 'U admin', email: `${users.orgAdmin}@t.local`, role: 'admin' });
+    expect(same.status, JSON.stringify(same.body)).toBe(201);
+    // release the hold and the SAME demoting re-add lands; restore the admin arm
+    expect((await post(adminToken)(`/projects/${projectBId}/decisions/${d.id}/approve`, { optionIndex: 0 })).status).toBe(201);
+    expect((await post(ownerToken)(`/orgs/${orgBId}/members`, { name: 'U admin', email: `${users.orgAdmin}@t.local`, role: 'member' })).status).toBe(201);
+    await t.prisma.orgMembership.update({ where: { orgId_userId: { orgId: orgBId, userId: users.orgAdmin } }, data: { role: 'admin' } });
+  });
+
+  it('R6-F3: the OrgMembership statement-level TRUNCATE seal is deployed (the behavioural cycle runs in upgrade-proof)', async () => {
+    const trig = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT COUNT(*)::bigint AS n FROM pg_trigger WHERE tgname = 'OrgMembership_t4b2_no_truncate' AND tgenabled = 'O'`,
+    );
+    expect(Number(trig[0]!.n)).toBe(1);
+    const rows = await t.prisma.$queryRawUnsafe<Array<{ def: string }>>(
+      `SELECT pg_get_functiondef('phase6_t4b2_org_membership_no_truncate()'::regprocedure) AS def`,
+    );
+    expect(rows[0]!.def).toContain(`"deciderKind"::text = 'pmc'`);
+    expect(rows[0]!.def).toContain('last effective PMC');
+  });
 });

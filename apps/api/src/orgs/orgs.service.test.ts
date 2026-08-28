@@ -458,6 +458,9 @@ describe('OrgsService.addOrgMember', () => {
         }),
       },
       membership: { create: vi.fn() }, // must NOT be called by addOrgMember (no phantom project grant)
+      // round-6 Codex F2 — the upsert now rides guardedOrgStandingWrite, which wraps in a
+      // transaction even when nothing reduces; the mock passes itself through as the tx client
+      $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
     };
     return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants(prisma)), prisma, created, orgMemberships };
   }

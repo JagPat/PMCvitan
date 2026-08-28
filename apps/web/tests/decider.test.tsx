@@ -376,3 +376,71 @@ describe('round-5 Codex corrections (web arms)', () => {
     expect((r.getByTestId('publish-DL-RF') as HTMLButtonElement).disabled).toBe(false);
   });
 });
+
+describe('round-6 Codex corrections (web arms)', () => {
+  it('R6-F1: a DIRECT kind change (choice → record) rides the same publish hold as the conversion Confirm', async () => {
+    const { waitFor } = await import('@testing-library/react');
+    let settle!: (ok: boolean) => void;
+    const inFlight = new Promise<boolean>((res) => { settle = res; });
+    useStore.setState({
+      role: 'pmc',
+      decisions: [dec({ id: 'DL-DK', draft: true, deciderKind: 'client' })],
+      members: [],
+      updateDecisionDraft: (() => inFlight) as never,
+      loadTeam: (() => Promise.resolve()) as never,
+    } as never);
+    const r = render(<DraftsScreen />);
+    expect((r.getByTestId('publish-DL-DK') as HTMLButtonElement).disabled).toBe(false);
+
+    // the choice → record conversion dispatches DIRECTLY (no form) — it must hold Publish
+    fireEvent.change(r.getByTestId('draft-decider-DL-DK'), { target: { value: 'none' } });
+    await waitFor(() => expect((r.getByTestId('publish-DL-DK') as HTMLButtonElement).disabled).toBe(true));
+    // the selector itself is held too, so edits cannot stack while one is in flight
+    expect((r.getByTestId('draft-decider-DL-DK') as HTMLSelectElement).disabled).toBe(true);
+    expect(r.getByText(/publishing is held until the edit lands/)).toBeTruthy();
+
+    settle(true);
+    await waitFor(() => expect((r.getByTestId('publish-DL-DK') as HTMLButtonElement).disabled).toBe(false));
+    expect((r.getByTestId('draft-decider-DL-DK') as HTMLSelectElement).disabled).toBe(false);
+  });
+
+  it('R6-F1: a member RE-POINT on a member-held draft rides the same hold', async () => {
+    const { waitFor } = await import('@testing-library/react');
+    let settle!: (ok: boolean) => void;
+    const inFlight = new Promise<boolean>((res) => { settle = res; });
+    useStore.setState({
+      role: 'pmc',
+      decisions: [dec({ id: 'DL-MR', draft: true, deciderKind: 'member', deciderMembershipId: 'm-eng-a' })],
+      members: [
+        { userId: 'u-eng-a', membershipId: 'm-eng-a', name: 'Ravi', email: null, phone: null, role: 'engineer', status: 'active' },
+        { userId: 'u-eng-b', membershipId: 'm-eng-b', name: 'Asha', email: null, phone: null, role: 'engineer', status: 'active' },
+      ],
+      updateDecisionDraft: (() => inFlight) as never,
+      loadTeam: (() => Promise.resolve()) as never,
+    } as never);
+    const r = render(<DraftsScreen />);
+    fireEvent.change(r.getByTestId('draft-decider-member-DL-MR'), { target: { value: 'm-eng-b' } });
+    await waitFor(() => expect((r.getByTestId('publish-DL-MR') as HTMLButtonElement).disabled).toBe(true));
+    settle(true);
+    await waitFor(() => expect((r.getByTestId('publish-DL-MR') as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it('R6-F5: Publish-all is disabled while ANY decision draft is not ready — no partial batch from a 409 mid-way', () => {
+    useStore.setState({
+      role: 'pmc',
+      decisions: [
+        dec({ id: 'DL-OK', draft: true }),
+        dec({
+          id: 'DL-HALF', draft: true,
+          options: [{ label: 'A', key: 'a', material: 'Granite', delta: 0, swatch: 'tile', recommended: true }],
+        }),
+      ],
+      members: [],
+      loadTeam: (() => Promise.resolve()) as never,
+    } as never);
+    const r = render(<DraftsScreen />);
+    // the per-row button already refuses; the BATCH must refuse the same readiness
+    expect((r.getByTestId('publish-DL-HALF') as HTMLButtonElement).disabled).toBe(true);
+    expect((r.getByTestId('publish-all') as HTMLButtonElement).disabled).toBe(true);
+  });
+});

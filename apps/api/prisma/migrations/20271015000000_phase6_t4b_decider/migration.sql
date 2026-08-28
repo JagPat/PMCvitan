@@ -630,6 +630,35 @@ CREATE TRIGGER "OrgMembership_t4b2_holder_guard"
   AFTER UPDATE OR DELETE ON "OrgMembership"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4b2_org_membership_guard();
 
+-- ── the statement-level TRUNCATE seal on OrgMembership (round-6 Codex F3) ─────────────────────
+-- The row guard above never fires for TRUNCATE, and unlike `Membership` this table has NO
+-- inbound decision FK to force a cascade through an existing decision seal: `TRUNCATE
+-- "OrgMembership"` could remove a membership-less org owner/admin who is the ONLY effective
+-- PMC cover for a pmc-held published open decision — committing the zero-holder state every
+-- other layer refuses. Judged after PostgreSQL takes its ACCESS EXCLUSIVE lock: refused while
+-- any published open `pmc`-held decision's project has NO active explicit pmc membership
+-- (exactly the registers whose standing the org arm alone carries); the sanctioned destructive
+-- resets may disable the NAMED trigger for exactly their wipe.
+CREATE OR REPLACE FUNCTION phase6_t4b2_org_membership_no_truncate() RETURNS trigger AS $fn$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM "Decision" d
+     WHERE d."publishedAt" IS NOT NULL AND d."status"::text IN ('pending', 'change')
+       AND d."deciderKind"::text = 'pmc'
+       AND NOT EXISTS (
+         SELECT 1 FROM "Membership" m
+          WHERE m."projectId" = d."projectId" AND m."status" = 'active' AND m."role" = 'pmc'
+       )
+  ) THEN
+    RAISE EXCEPTION 'phase6-4b: TRUNCATE would strip the last effective PMC holder of an open pmc-held decision — org standing cannot be truncated away';
+  END IF;
+  RETURN NULL;
+END $fn$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS "OrgMembership_t4b2_no_truncate" ON "OrgMembership";
+CREATE TRIGGER "OrgMembership_t4b2_no_truncate"
+  BEFORE TRUNCATE ON "OrgMembership"
+  FOR EACH STATEMENT EXECUTE FUNCTION phase6_t4b2_org_membership_no_truncate();
+
 -- ── `Project.orgId` joins the frozen standing-derivation chain (round 13, the CLASS rule) ─────
 -- The link that selects WHICH org's owner/admin rows provide effective-PMC standing at all.
 -- Re-homing a project is a removal-plus-addition lifecycle no current product path offers.

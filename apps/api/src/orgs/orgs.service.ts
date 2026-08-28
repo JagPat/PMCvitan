@@ -287,11 +287,26 @@ export class OrgsService {
       user = await this.prisma.user.create({ data: { projectId: homeProject.id, role: 'contractor', name: input.name, email, phone } });
     }
 
-    const membership = await this.prisma.orgMembership.upsert({
+    // round-6 Codex F2 — the upsert's UPDATE arm is a ROLE CHANGE exactly like
+    // updateOrgMemberRole's: re-adding an identity already on the org with a lower role
+    // reduces their owner/admin standing, so it rides the SAME holder guard (readiness keys
+    // over covered projects in stable order; the DB seal's raise translated to the deliberate
+    // 409) instead of a bare upsert the trigger would fail as an unhandled error.
+    const existingOm = await this.prisma.orgMembership.findUnique({
       where: { orgId_userId: { orgId, userId: user.id } },
-      update: { role: input.role },
-      create: { orgId, userId: user.id, role: input.role },
+      select: { role: true },
     });
+    const reduces =
+      !!existingOm
+      && (existingOm.role === 'owner' || existingOm.role === 'admin')
+      && input.role !== 'owner' && input.role !== 'admin';
+    const membership = await this.guardedOrgStandingWrite(orgId, user.id, reduces, (tx) =>
+      tx.orgMembership.upsert({
+        where: { orgId_userId: { orgId, userId: user.id } },
+        update: { role: input.role },
+        create: { orgId, userId: user.id, role: input.role },
+      }),
+    );
     return { userId: user.id, name: user.name, email: user.email, phone: user.phone, orgRole: membership.role, credentialState: user.passwordHash ? 'active' : 'not_set' };
   }
 

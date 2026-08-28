@@ -202,4 +202,26 @@ describe('RouteBridge — the decider route survives a loading decision slice (P
     await flush();
     expect(useStore.getState().screen).toBe('inbox'); // judged against the settled slice
   });
+
+  it('R6-F4: a SNAPSHOT-mode load error does not settle the slice — the decider deep link holds until a decision-bearing read succeeds', async () => {
+    useStore.setState({
+      role: 'engineer',
+      sessionToken: 'JWT',
+      sessionUserId: 'u-eng-b',
+      decisions: [],
+      projectLoadState: 'loading',
+    } as never);
+    renderAt('/projects/ambli/client/decisions');
+    await flush();
+    expect(useStore.getState().screen).toBe('client-decisions'); // held while loading
+    // the cold snapshot FAILS: an empty slice nothing ever judged must not settle —
+    // bouncing here would consume the bookmarked approval link on a transient outage
+    act(() => { useStore.setState({ projectLoadState: 'error' } as never); });
+    await flush();
+    expect(useStore.getState().screen).toBe('client-decisions'); // held for Retry
+    // a successful decision-bearing read then settles it — the real non-decider is bounced
+    act(() => { useStore.setState({ projectLoadState: 'ready' } as never); });
+    await flush();
+    expect(useStore.getState().screen).toBe('inbox');
+  });
 });

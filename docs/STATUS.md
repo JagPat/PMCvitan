@@ -16,23 +16,25 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: 2aee1722
-open_pr: 465
+open_pr: 466
 next_task: none
 blocking_directive: none
 updated: 2026-08-28
 ```
 
-**DECISION-WORKFLOW UNIT 4b IS IN PROGRESS on `open_pr` (the SECOND replacement PR #465, branch
-`claude/decision-workflow-4b-r3` from `main` `2aee1722`, `Replaces: #464`). The lineage: PR #463 —
+**DECISION-WORKFLOW UNIT 4b IS IN PROGRESS on `open_pr` (the THIRD replacement PR #466, branch
+`claude/decision-workflow-4b-r4` from `main` `2aee1722`, `Replaces: #465`). The lineage: PR #463 —
 the unit's first PR, briefly racing the duplicate #462 the Board had closed as superseded —
 reached the two-finding-bearing-head limit (round 1: eight Codex findings on `f99634f4`,
 batch-fixed on `35157acc`; round 2: three findings there) and CLOSED UNMERGED; its replacement
-PR #464 (branch `claude/decision-workflow-4b-r2`, `Replaces: #463`) then ALSO reached the limit
-(round 3: four Codex findings on `a13c3454`, batch-fixed on `8e69603b`; round 4: three findings
-there — the stale-read draft-conversion interleaving, the TRUNCATE seal gap over published
-records, and pre-4b-bundle push linkage) and CLOSED UNMERGED per the same protocol. #465 carries
-the whole unit with every finding from all four rounds fixed and no further correction head
-spent on either closed PR — per the owner's 2026-08-28 direction: "Next PR from main 2aee172 is
+PR #464 (`Replaces: #463`) reached the limit (round 3: four findings on `a13c3454`, batch-fixed
+on `8e69603b`; round 4: three findings there) and CLOSED UNMERGED; its replacement PR #465
+(`Replaces: #464`) then ALSO reached the limit (round 5: six findings on `f49a0547`, batch-fixed
+on `d64ccc5a`; round 6: six findings there — the direct draft-edit publish race, the org-member
+upsert holder guard, the OrgMembership truncate seal, the snapshot-error decider route, the
+Publish-all readiness, and the undeclared platform→orgs participant edge) and CLOSED UNMERGED
+per the same protocol. #466 carries the whole unit with every finding from all six rounds fixed
+and no further correction head spent on any closed PR — per the owner's 2026-08-28 direction: "Next PR from main 2aee172 is
 decision-workflow unit 4b implementation only, following
 `docs/superpowers/plans/2026-08-14-decision-workflow-4b.md` (#340). One unit, reproduce-first,
 service-only unless that plan named a schema. Do not start 4c/4d."** The 4b plan DID name a

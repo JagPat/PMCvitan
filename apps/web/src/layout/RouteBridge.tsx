@@ -91,17 +91,21 @@ export function RouteBridge() {
     // arrived, and bouncing `/client/decisions` then would eat a named decider's bookmarked
     // approval link. While the read is in flight ('loading'/'switching' — and the authed
     // pre-fetch instant where 'idle' still holds no data) the route stays reachable, exactly
-    // the capability branch's unknown-state posture; once the slice settles ('ready', a load
-    // 'error', or local data already present) a real non-decider is bounced by this same
-    // effect re-running on the load-state change.
+    // the capability branch's unknown-state posture; once the slice settles ('ready', or local
+    // data already present) a real non-decider is bounced by this same effect re-running on
+    // the load-state change.
     // Replacement round (Codex R2-F2): in module-read mode the decisions request can fail
     // INDEPENDENTLY while the snapshot succeeds (`projectLoadState: 'ready'` with
     // `decisionsLoad: 'error'`), retaining an empty/stale list — that slice is NOT settled, so
     // the decider route holds until Retry resolves the read one way that can be judged.
+    // Round-6 Codex F4 — the SNAPSHOT-mode failure is the same unknown: a cold load ending in
+    // `projectLoadState: 'error'` holds an EMPTY slice nothing judged, so it must not settle
+    // either — the bookmarked approval route survives the transient failure until a
+    // decision-bearing read succeeds (Retry / the next refresh), never consumed by an outage.
     const sliceHealthy = decisionsLoad === 'idle' || decisionsLoad === 'ready';
     const decisionsSettled =
       sliceHealthy
-      && (projectLoadState === 'ready' || projectLoadState === 'error'
+      && (projectLoadState === 'ready'
         || (projectLoadState === 'idle' && (!authed || hasDecisions)));
     const allowed = withDeciderRoute(
       screensFor(role)

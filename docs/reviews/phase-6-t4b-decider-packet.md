@@ -397,3 +397,53 @@ a full test-database rebuild + the extended upgrade-proof.
   Codex named is the same class). The service now refuses ANY nonempty options payload whose
   RESULTING kind is a record — a deliberate 400 from the locked-row derivation. Probe: `R5-F6`
   (record refused + untouched; a choice draft's options-only replace still lands).
+
+## Round-6 correction (the Codex review of PR #465 head `d64ccc5a` — six findings; #465 closed at the two-head limit)
+
+Head `d64ccc5a` was PR #465's SECOND finding-bearing head, so per the review-efficiency protocol
+#465 closes unmerged and this THIRD REPLACEMENT PR (branch `claude/decision-workflow-4b-r4`,
+`Replaces: #465`) carries the whole unit — every decision from all prior rounds preserved — plus
+ONLY these six fixes, each reproduced RED at the carried `d64ccc5a` state first:
+
+- **R6-F1 (P2, direct draft edits vs publish)** — the round-5 hold covered only the conversion
+  Confirm; the DIRECT selector branches (choice→record conversion, kind changes, member
+  re-points) still dispatched `updateDecisionDraft` without pending state, so a publish could
+  win the server lock and permanently publish the OLD kind/holder. EVERY draft edit now rides
+  ONE dispatch door (`dispatchDraftUpdate`: pending → await settle → release) that holds the
+  draft's Publish, Publish-all, and the selectors themselves. Probes: `R6-F1` ×2 (direct
+  conversion; member re-point).
+- **R6-F2 (P2, org-member upsert)** — `addOrgMember`'s upsert UPDATE arm could demote an
+  owner/admin without the holder guard: an orphaning re-add died as an unhandled trigger error,
+  and even a benign one never took the readiness keys first. The upsert now computes `reduces`
+  from the target's existing org role and rides `guardedOrgStandingWrite` exactly like
+  `updateOrgMemberRole`/`removeOrgMember`. Probe: `R6-F2` (covered-admin re-add at a lower role
+  → deliberate 409, row untouched; same-role re-add lands; release → the demotion lands).
+- **R6-F3 (P1, OrgMembership TRUNCATE seal)** — unlike `Membership`, `OrgMembership` has no
+  inbound decision FK to cascade through an existing seal, so `TRUNCATE "OrgMembership"` could
+  strip a membership-less org owner/admin who is the ONLY effective PMC cover for a pmc-held
+  published open decision. `20271015` installs the statement-level
+  `OrgMembership_t4b2_no_truncate` (refuses while any published open pmc-held decision's
+  project has no active explicit pmc membership — exactly the org-only-covered registers).
+  Probes: the deployed trigger+body pin (`R6-F3`) and the upgrade-proof org-only-covered cycle
+  (a second project whose pmc standing rests solely on the org owner's arm; the hostile
+  TRUNCATE refused, the covering row surviving).
+- **R6-F4 (P2, snapshot-mode decider deep link)** — a cold `/client/decisions` load whose
+  snapshot FAILS reached `projectLoadState: 'error'` with an empty slice, which the settle
+  predicate treated as judged — redirecting the bookmarked approval route away before Retry
+  could recover it. A project-level error is now UNSETTLED exactly like the module-read error:
+  the route holds until a decision-bearing read succeeds. Probe: `R6-F4` in
+  `tests/routeBridge.test.tsx` (held through error, judged on ready).
+- **R6-F5 (P2, Publish-all readiness)** — the batch ignored per-decision readiness, so it
+  could 409 mid-way and publish a partial set from an action labelled as publishing
+  everything. The ONE per-draft readiness rule (`decisionReady`) now feeds both the per-row
+  button and the batch. Probe: `R6-F5` (an unready draft disables both).
+- **R6-F6 (P2, undeclared platform→orgs edge)** — `PushService` (platform) calls the
+  orgs-owned `OrgsParticipant` while `platformManifest` declared no edges and the registry
+  pinned that false graph. The platform → orgs workflowParticipants edge is now DECLARED and
+  the registry pin carries it (`dependsOn` stays empty — the kernel owns no domain logic).
+  Probe: the registry pin itself (RED at the carried state with the manifest undeclared).
+
+Migration story: `20270810`/`20270826` remain byte-for-byte unchanged; `20271015` (this unit's
+own, unmerged anywhere) gains the OrgMembership truncate seal, re-proven by a full
+test-database rebuild + the extended upgrade-proof. No sanctioned reset truncates
+`OrgMembership` (all row-level deletes), so no reset path needed the new disable pair.

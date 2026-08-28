@@ -33,7 +33,13 @@ export const platformManifest: ModuleManifest = {
     'outboxCutoverState',
   ],
   dependsOn: [],
-  workflowParticipants: [],
+  // Phase 6 unit 4b, round-6 Codex F6 — the push spine asks TWO orgs-owned questions through
+  // `OrgsParticipant` (identity existence at subscribe-attribution; credential/session validity
+  // at targeted-claim time), so the platform → orgs interaction is DECLARED here exactly like
+  // every other cycle-exempt participant edge: module validation sees the real graph and a
+  // later cycle involving it is detectable. `dependsOn` stays empty — the kernel still owns no
+  // domain logic and the participant channel is the one crossing.
+  workflowParticipants: ['orgs'],
   producesEvents: [],
   consumesEvents: [],
   // Phase 6 task 4b (§A.3 round 13) — `push.unlink` severs a browser subscription's user
