@@ -11,7 +11,7 @@
  * — change them TOGETHER.
  */
 
-import type { DecisionStatus, Gate } from './types';
+import type { DeciderKind, DecisionStatus, Gate } from './types';
 
 export type GateSource = 'derived' | 'stored' | 'override';
 
@@ -70,6 +70,13 @@ export interface ReadinessInput {
    *  (pmc only). Controls the decision-gate REASON wording, never the verdict. */
   withdrawnReasonVisible?: boolean;
   decisionStatus: DecisionStatus | null;
+  /** Replacement round (Codex R2-F3) — WHO holds the linked decision: the gate's waiting text
+   *  names the ACTUAL decider instead of directing every site user at the client. Omitted ⇒
+   *  `client` (every pre-4b row is client-held by backfill). */
+  decisionDeciderKind?: DeciderKind;
+  /** Phase 6 task 4b (§A.2) — whether the linked decision is an UNPUBLISHED draft. Only the
+   *  `recorded` arm consults it (a draft record gates `wait`, a published record `na`). */
+  decisionDraft?: boolean;
   gateMaterial: Gate;
   gateTeam: Gate;
   inspections: ReadinessInspection[];
@@ -153,8 +160,17 @@ export function deriveDrawingGate(activityId: string, drawings: ReadinessDrawing
   return { v: worst.v, source: 'derived', reason: worst.why };
 }
 
-/** The Decision gate — derived live from the linked decision's lock state. */
-export function deriveDecisionReading(decisionStatus: DecisionStatus | null, withdrawnReasonVisible = false): GateReading {
+/** The Decision gate — derived live from the linked decision's lock state.
+ *  Phase 6 task 4b (§A.2): a linked RECORD (`status='recorded'`) demands no approval — the gate
+ *  reads `na` — but ONLY once published: a private draft record would unblock a gate with
+ *  evidence the team cannot see, so the recorded arm consults `decisionDraft` and a draft record
+ *  holds `wait` until its author publishes it. */
+export function deriveDecisionReading(decisionStatus: DecisionStatus | null, withdrawnReasonVisible = false, decisionDraft = false, deciderKind: DeciderKind = 'client'): GateReading {
+  if (decisionStatus === 'recorded') {
+    return decisionDraft
+      ? { v: 'wait', source: 'derived', reason: RECORDED_DRAFT_REASON }
+      : { v: 'na', source: 'derived', reason: RECORDED_PUBLISHED_REASON };
+  }
   const v: Gate = decisionStatus == null ? 'na' : decisionStatus === 'approved' ? 'ok' : 'wait';
   // Phase 6 task 4a: a WITHDRAWN linked decision keeps the gate at `wait` (the question the
   // work depends on is unanswered — withdrawal must not silently unblock it), but the reason
@@ -169,19 +185,31 @@ export function deriveDecisionReading(decisionStatus: DecisionStatus | null, wit
       : decisionStatus === 'approved'
         ? 'Decision approved and locked'
         : decisionStatus === 'change'
-          ? 'Change requested — awaiting the client’s re-approval'
+          ? `Change requested — awaiting ${deciderNoun(deciderKind)}’s re-approval`
           : decisionStatus === 'withdrawn'
             ? withdrawnReasonVisible
               ? WITHDRAWN_REASON_HONEST
               : WITHDRAWN_REASON_REDACTED
-            : 'Awaiting the client’s approval';
+            : `Awaiting ${deciderNoun(deciderKind)}’s approval`;
   return { v, source: 'derived', reason };
+}
+
+/** Replacement round (Codex R2-F3) — the responsibility noun of the decision gate's waiting
+ *  texts: the ACTUAL decider, not a hard-wired client. `client` keeps the legacy text
+ *  byte-identical; `none` never reaches these arms (none ⟺ recorded takes the recorded arm),
+ *  and falls back to the client noun rather than inventing one. */
+export function deciderNoun(kind: DeciderKind): string {
+  return kind === 'pmc' ? 'the PMC' : kind === 'member' ? 'the named decider' : 'the client';
 }
 
 /** The two viewer-dependent texts of the withdrawn decision gate (round 11, Codex): ONE source
  *  so the derivation and the client-side re-redaction can never drift apart. */
 export const WITHDRAWN_REASON_HONEST = 'The linked decision was withdrawn — re-issue or relink';
 export const WITHDRAWN_REASON_REDACTED = 'Awaiting the PMC on the linked decision';
+
+/** Phase 6 task 4b (§A.2) — the two texts of the recorded-decision gate arm (P20). */
+export const RECORDED_PUBLISHED_REASON = 'Record only — no approval required';
+export const RECORDED_DRAFT_REASON = 'The linked record is unpublished — publish it';
 
 /** Round 11 (Codex): a server-baked readiness DTO carries the VIEWER-SPECIFIC withdrawn-gate
  *  text of the snapshot it was baked for. A client store can outlive a persona switch (or hold
@@ -196,7 +224,7 @@ export function redactWithdrawnReadinessForViewer(r: ActivityReadiness, canSeeWi
 /** The five-gate readiness derivation — an unexpired override supersedes ITS gate. */
 export function deriveReadiness(activityId: string, input: ReadinessInput): ActivityReadiness {
   const derived: ActivityReadiness = {
-    decision: deriveDecisionReading(input.decisionStatus, input.withdrawnReasonVisible ?? false),
+    decision: deriveDecisionReading(input.decisionStatus, input.withdrawnReasonVisible ?? false, input.decisionDraft ?? false, input.decisionDeciderKind ?? 'client'),
     material: { v: input.gateMaterial, source: 'stored', reason: 'Stored site flag — material on site' },
     team: { v: input.gateTeam, source: 'stored', reason: 'Stored site flag — team present' },
     inspection: deriveInspectionGate(activityId, input.inspections),

@@ -21,10 +21,12 @@ const base: CSSProperties = {
 };
 
 export function DecisionChip({ status, style }: { status: DecisionStatus; style?: CSSProperties }) {
-  const c = decisionChip[status];
+  // Phase 6 unit 4b (Codex R2-F1's class): a status this bundle does not know renders as the
+  // muted register chip instead of crashing — the NEXT status addition cannot break a cached tab.
+  const c = (decisionChip as Record<string, (typeof decisionChip)[DecisionStatus]>)[status] ?? decisionChip.withdrawn;
   return (
     <span style={{ ...base, background: c.bg, color: c.color, border: `1px solid ${c.border}`, ...style }}>
-      {decisionChipLabel[status]}
+      {(decisionChipLabel as Record<string, string>)[status] ?? String(status).toUpperCase()}
     </span>
   );
 }

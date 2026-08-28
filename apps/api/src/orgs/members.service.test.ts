@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { MembersService } from './members.service';
+import type { DecisionsParticipant } from '../decisions/decisions.participant';
+import type { OrgsParticipant } from './orgs.participant';
 import type { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 
@@ -44,7 +46,13 @@ function make(orgRole: string | null = null) {
     $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
       typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
   };
-  const svc = new MembersService(prisma as unknown as PrismaService);
+  // Phase 6 task 4b (§A.1) — the holder-orphan guard's participant answers, stubbed healthy
+  // (no open decisions held; standing present). The refusals are integration-probed (P39).
+  const svc = new MembersService(
+    prisma as unknown as PrismaService,
+    { holdsOpenDecisions: vi.fn(async () => ({ named: false, heldRoles: [] as string[] })) } as unknown as DecisionsParticipant,
+    { effectiveRoleStanding: vi.fn(async () => 1) } as unknown as OrgsParticipant,
+  );
   return { svc, users, memberships };
 }
 

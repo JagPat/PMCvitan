@@ -38,6 +38,24 @@ export async function subscribeToPush(gw: ApiGateway): Promise<void> {
   }
 }
 
+/**
+ * Phase 6 task 4b (§A.3 round 13) — sign-out UNLINKS this browser's subscription from the
+ * departing user: a shared site tablet must not keep receiving decider-targeted content after
+ * they walk away. Best-effort like every push call (the server also treats a stale credential
+ * version or the token's own expiry as unlinked); role-level pushes continue for the device.
+ */
+export async function unlinkPushOnSignOut(gw: ApiGateway): Promise<void> {
+  try {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub?.endpoint) return;
+    await gw.pushUnlink(sub.endpoint);
+  } catch {
+    /* best-effort — credential-version + expiry checks still sever a stale link server-side */
+  }
+}
+
 /** Request notification permission (call from a user gesture), then subscribe. */
 export async function requestPushPermission(gw: ApiGateway): Promise<boolean> {
   if (!('Notification' in window)) return false;

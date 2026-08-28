@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { ConflictException, BadRequestException } from '@nestjs/common';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisions } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, seedPublishedDecision, wipeDecisionsVia } from './fixtures';
 import { executeCommand, hashRequest, type CommandScope } from '../../src/platform/commands';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import type { Actor } from '../../src/common/actor';
@@ -245,15 +245,11 @@ describe('Phase 2 Task 5 — decision pillar is idempotent end-to-end (live PG)'
 
   /** seed one published, pending decision with two options. */
   const seedDecision = async (id: string): Promise<string> => {
-    await t.prisma.decision.create({
-      data: { id, projectId: f.projectA.id, title: `Counter ${id}`, room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
-    });
-    await t.prisma.decisionOption.createMany({
-      data: [
-        { decisionId: id, label: 'Granite', optionKey: 'a', material: 'Granite', delta: 0, swatch: 'sw1', recommended: true, order: 0 },
-        { decisionId: id, label: 'Quartz', optionKey: 'b', material: 'Quartz', delta: 20000, swatch: 'sw2', recommended: false, order: 1 },
-      ],
-    });
+    // Phase 6 task 4b — the RE-ORDERED publish the seals enforce (options nested, same-tx update)
+    await seedPublishedDecision(t.prisma, { id, projectId: f.projectA.id, title: `Counter ${id}`, room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id }, [
+      { label: 'Granite', optionKey: 'a', material: 'Granite', delta: 0, swatch: 'sw1', recommended: true, order: 0 },
+      { label: 'Quartz', optionKey: 'b', material: 'Quartz', delta: 20000, swatch: 'sw2', recommended: false, order: 1 },
+    ]);
     return id;
   };
   const cleanupDecision = async (id: string) => {
@@ -264,8 +260,10 @@ describe('Phase 2 Task 5 — decision pillar is idempotent end-to-end (live PG)'
     await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision" CASCADE');
     await t.prisma.changeRequest.deleteMany({ where: { decisionId: id } });
     await wipeDecisionEvents(t.prisma, { decisionId: id });
-    await t.prisma.decisionOption.deleteMany({ where: { decisionId: id } });
-    await wipeDecisions(t.prisma, { id });
+    await wipeDecisionsVia(t.prisma, async (tx) => {
+      await tx.decisionOption.deleteMany({ where: { decisionId: id } });
+      await tx.decision.deleteMany({ where: { id } });
+    });
   };
 
   it('approving twice with the SAME key locks the decision exactly once and replays the same result', async () => {

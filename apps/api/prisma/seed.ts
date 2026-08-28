@@ -290,14 +290,23 @@ async function main(): Promise<void> {
   // an author-private DRAFT — the seeded DL-015, authored by the PMC).
   for (const d of SEED_DECISIONS) {
     const { options, draft, ...rest } = d;
-    await prisma.decision.create({
-      data: {
-        ...rest,
-        projectId: PROJECT_ID,
-        publishedAt: draft ? null : publishedAt,
-        authorId: draft ? pmcId : null,
-        options: { create: options },
-      },
+    // Phase 6 unit 4b — the RE-ORDERED create the seals enforce: unpublished birth with the
+    // options nested (the widened option freeze refuses inserts into a published parent),
+    // then publication as a same-transaction UPDATE (the deferred floor re-counts at commit;
+    // the demo project's active client covers the default client-held publication arm).
+    await prisma.$transaction(async (tx) => {
+      await tx.decision.create({
+        data: {
+          ...rest,
+          projectId: PROJECT_ID,
+          publishedAt: null,
+          authorId: draft ? pmcId : null,
+          options: { create: options },
+        },
+      });
+      if (!draft) {
+        await tx.decision.update({ where: { id: d.id }, data: { publishedAt } });
+      }
     });
   }
 

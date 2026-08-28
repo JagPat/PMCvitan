@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisions } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import { MembersService } from '../../src/orgs/members.service';
@@ -77,7 +77,6 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     for (const [model, where] of [
       ['notification', { projectId: { startsWith: 'it-p3-' } }],
       ['changeRequest', { decision: { projectId: { startsWith: 'it-p3-' } } }],
-      ['decisionOption', { decision: { projectId: { startsWith: 'it-p3-' } } }],
       ['decision', { projectId: { startsWith: 'it-p3-' } }],
       ['activity', { projectId: { startsWith: 'it-p3-' } }],
       ['auditLog', { projectId: { startsWith: 'it-p3-' } }],
@@ -95,7 +94,11 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
       // 4a arm and the independent 4b seal each refuse its DELETE, so the decision wipe goes
       // through the sanctioned destructive-reset helper.
       if (model === 'decision') {
-        await wipeDecisions(t.prisma, where as Record<string, unknown>);
+        // options leave WITH their heads (the 4b option freeze covers every published parent)
+        await wipeDecisionsVia(t.prisma, async (tx) => {
+          await tx.decisionOption.deleteMany({ where: { decision: { projectId: { startsWith: 'it-p3-' } } } });
+          await tx.decision.deleteMany({ where: where as Record<string, unknown> });
+        });
         continue;
       }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -109,7 +112,17 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
       data: { id, orgId: f.orgA.id, name: id, short: 'P', descriptor: '', stage: 'x', siteCode: 'P', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0, timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') },
     });
     await t.prisma.membership.create({ data: { projectId: id, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+    // Phase 6 task 4b — publication re-validates the holder's standing at the DB, and these
+    // fixtures publish client-held (default-kind) decisions: the project needs an active client.
+    await t.prisma.membership.create({ data: { projectId: id, userId: f.clientUser.id, role: 'client', status: 'active' } });
     return id;
+  };
+
+  /** Phase 6 task 4b — the RE-ORDERED publish the seals enforce: the row births UNPUBLISHED
+   *  (options nested in the same create), publication is a same-transaction UPDATE, so the
+   *  published-parent option freeze and the deferred 2-4 option floor both judge one shape. */
+  const publishRow = async (decisionId: string): Promise<void> => {
+    await t.prisma.decision.update({ where: { id: decisionId }, data: { publishedAt: new Date() } });
   };
 
   const freshActivity = async (projectId: string): Promise<string> => {
@@ -122,16 +135,19 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
    *  history AND its immutable approval-register head (round 2) — `decisions.approvedRef`
    *  serves provenance from the register row alone. */
   const makeApprovedDecision = async (projectId: string, id: string, approvals: Array<'approved' | 'reapproved'> = ['approved']): Promise<void> => {
-    await t.prisma.decision.create({
-      data: {
-        id, projectId, title: id, room: 'Living', photoSwatch: 'sw', status: 'approved',
-        publishedAt: new Date(), authorId: f.memberUser.id, approvedOption: 'Option A',
-        options: { create: [
-          { label: 'Option A', optionKey: 'opt-a', material: 'Teak', delta: 0, swatch: 'sw-a', order: 1 },
-          { label: 'Option B', optionKey: 'opt-b', material: 'Walnut', delta: 100, swatch: 'sw-b', order: 2 },
-        ] },
-        events: { create: approvals.map((type) => ({ type, actor: 'member' })) },
-      },
+    await t.prisma.$transaction(async (tx) => {
+      await tx.decision.create({
+        data: {
+          id, projectId, title: id, room: 'Living', photoSwatch: 'sw', status: 'approved',
+          publishedAt: null, authorId: f.memberUser.id, approvedOption: 'Option A',
+          options: { create: [
+            { label: 'Option A', optionKey: 'opt-a', material: 'Teak', delta: 0, swatch: 'sw-a', order: 1 },
+            { label: 'Option B', optionKey: 'opt-b', material: 'Walnut', delta: 100, swatch: 'sw-b', order: 2 },
+          ] },
+          events: { create: approvals.map((type) => ({ type, actor: 'member' })) },
+        },
+      });
+      await tx.decision.update({ where: { id }, data: { publishedAt: new Date() } });
     });
     // the register head: version = the recorded approval count, pinning the selected option
     await t.prisma.decisionApprovalRevision.create({
@@ -298,12 +314,18 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     const projectId = await freshProject();
     await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
     const activityId = await freshActivity(projectId);
+    const twoOpts = { create: [
+      { label: 'Option A', optionKey: 'opt-a', material: 'Teak', delta: 0, swatch: 'sw-a', order: 1 },
+      { label: 'Option B', optionKey: 'opt-b', material: 'Walnut', delta: 100, swatch: 'sw-b', order: 2 },
+    ] };
     await t.prisma.decision.create({
-      data: { id: 'IT-P3-PEND', projectId, title: 'x', room: 'x', photoSwatch: 'sw', status: 'pending', publishedAt: new Date(), authorId: f.memberUser.id },
+      data: { id: 'IT-P3-PEND', projectId, title: 'x', room: 'x', photoSwatch: 'sw', status: 'pending', authorId: f.memberUser.id, options: twoOpts },
     });
+    await publishRow('IT-P3-PEND');
     await t.prisma.decision.create({
-      data: { id: 'IT-P3-CHG', projectId, title: 'x', room: 'x', photoSwatch: 'sw', status: 'change', publishedAt: new Date(), authorId: f.memberUser.id, approvedOption: 'Option A' },
+      data: { id: 'IT-P3-CHG', projectId, title: 'x', room: 'x', photoSwatch: 'sw', status: 'change', authorId: f.memberUser.id, approvedOption: 'Option A', options: twoOpts },
     });
+    await publishRow('IT-P3-CHG');
     for (const decisionId of ['IT-P3-PEND', 'IT-P3-CHG']) {
       await expect(
         requirements.create(projectId, { ...CEMENT, activityId, decisionId }, pmc(projectId)), decisionId,
@@ -455,7 +477,7 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     await t.prisma.decision.create({
       data: {
         id: 'IT-P3-LEG2', projectId, title: 'x', room: 'x', photoSwatch: 'sw', status: 'change',
-        publishedAt: new Date(), authorId: f.memberUser.id, approvedOption: 'Option A',
+        authorId: f.memberUser.id, approvedOption: 'Option A',
         options: { create: [
           { label: 'Option A', optionKey: 'opt-a', material: 'Teak', delta: 0, swatch: 'sw-a', order: 1 },
           { label: 'Option B', optionKey: 'opt-b', material: 'Walnut', delta: 100, swatch: 'sw-b', order: 2 },
@@ -463,6 +485,7 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
         events: { create: [{ type: 'approved', actor: 'm' }, { type: 'reapproved', actor: 'm' }] },
       },
     });
+    await publishRow('IT-P3-LEG2');
     await t.prisma.changeRequest.create({ data: { decisionId: 'IT-P3-LEG2', reason: 'again', costImpact: 0, timeImpactDays: 0, status: 'open' } });
     await decisions.approve(projectId, 'IT-P3-LEG2', { optionIndex: 0 }, pmc(projectId));
     const rows2 = await t.prisma.decisionApprovalRevision.findMany({ where: { decisionId: 'IT-P3-LEG2' } });
@@ -479,12 +502,16 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     await t.prisma.decision.create({
       data: {
         id: 'IT-P3-AMB', projectId, title: 'x', room: 'x', photoSwatch: 'sw', status: 'approved',
-        publishedAt: new Date(), authorId: f.memberUser.id, approvedOption: 'A label nobody has',
+        authorId: f.memberUser.id, approvedOption: 'A label nobody has',
+        // Phase 6 task 4b: a published choice owes 2-4 options — the AMBIGUITY here is the
+        // recorded LABEL matching neither, which two options preserve exactly.
         options: { create: [
           { label: 'Option A', optionKey: 'opt-a', material: 'Teak', delta: 0, swatch: 'sw-a', order: 1 },
+          { label: 'Option B', optionKey: 'opt-b', material: 'Walnut', delta: 100, swatch: 'sw-b', order: 2 },
         ] },
       },
     });
+    await publishRow('IT-P3-AMB');
     const attempt = requirements.create(projectId, { ...CEMENT, activityId, decisionId: 'IT-P3-AMB' }, pmc(projectId));
     await expect(attempt).rejects.toMatchObject({ status: 400, message: expect.stringContaining('operator repair') });
   });

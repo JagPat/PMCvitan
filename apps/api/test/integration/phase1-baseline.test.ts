@@ -35,16 +35,23 @@ describe('phase 1 baseline characterization (integration)', () => {
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
       t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId } } }),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+      // Phase 6 unit 4b: a PUBLISHED parent's options are frozen in ANY transaction — the
+      // destructive reset disables the freeze by name, exactly like the seals below.
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
       t.prisma.decisionOption.deleteMany({ where: { decision: { projectId } } }),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
       t.prisma.inspectionItem.deleteMany({ where: { inspection: { projectId } } }),
       t.prisma.inspection.deleteMany({ where: { projectId } }),
       t.prisma.activity.deleteMany({ where: { projectId } }),
       // Phase 6 unit 4b: an APPROVED decision is permanent register evidence — the consolidated
-      // 4a arm and the independent 4b seal each refuse its DELETE. Same sanctioned-bypass
-      // contract as the DecisionEvent disable above, in the same atomic transaction.
+      // 4a arm and the independent 4b seal each refuse its DELETE (and a published RECORD has
+      // its own delete seal). Same sanctioned-bypass contract as the DecisionEvent disable
+      // above, in the same atomic transaction.
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_evidence_no_delete"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b2_record_no_delete"'),
       t.prisma.decision.deleteMany({ where: { projectId } }),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b2_record_no_delete"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_evidence_no_delete"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
       t.prisma.drawingAck.deleteMany({ where: { revision: { drawing: { projectId } } } }),

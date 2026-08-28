@@ -15,18 +15,53 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 7c72044b
-open_pr: none
+reviewed_merge: 2aee1722
+open_pr: 465
 next_task: none
 blocking_directive: none
 updated: 2026-08-28
 ```
 
+**DECISION-WORKFLOW UNIT 4b IS IN PROGRESS on `open_pr` (the SECOND replacement PR #465, branch
+`claude/decision-workflow-4b-r3` from `main` `2aee1722`, `Replaces: #464`). The lineage: PR #463 —
+the unit's first PR, briefly racing the duplicate #462 the Board had closed as superseded —
+reached the two-finding-bearing-head limit (round 1: eight Codex findings on `f99634f4`,
+batch-fixed on `35157acc`; round 2: three findings there) and CLOSED UNMERGED; its replacement
+PR #464 (branch `claude/decision-workflow-4b-r2`, `Replaces: #463`) then ALSO reached the limit
+(round 3: four Codex findings on `a13c3454`, batch-fixed on `8e69603b`; round 4: three findings
+there — the stale-read draft-conversion interleaving, the TRUNCATE seal gap over published
+records, and pre-4b-bundle push linkage) and CLOSED UNMERGED per the same protocol. #465 carries
+the whole unit with every finding from all four rounds fixed and no further correction head
+spent on either closed PR — per the owner's 2026-08-28 direction: "Next PR from main 2aee172 is
+decision-workflow unit 4b implementation only, following
+`docs/superpowers/plans/2026-08-14-decision-workflow-4b.md` (#340). One unit, reproduce-first,
+service-only unless that plan named a schema. Do not start 4c/4d."** The 4b plan DID name a
+schema (§A.1/§A.2/§A.3: the decider columns landed by the cleared #340-family shape migration
+`20270826000000`, plus this unit's `20271015000000_phase6_t4b_decider` — the enum arms, the
+push-subscription linkage, the owned SQL primitives and the seal network), so the unit carries
+that one additive diagnostic-first migration beside the service/web work. The unit delivers:
+the §A.1 decider model (client/pmc/member/none; named-member ACTIVE standing; the holder
+write-once FROM PUBLICATION with `decisions.updateDraft` as the drafting door; approve
+narrowed to the actual decider; the holder-orphan guard at BOTH layers over membership AND
+org-membership writes, activation displacement included); the §A.2 record-only issue
+(`none` ⟺ `recorded`, exactly zero options, born terminal, the recorded gate arm draft-wait /
+published-na); and the §A.3 audience-follows-decider (visibility/bell/countPending/projection
+filter/route all on the ONE shared `viewerIsDecider` predicate, plus the TARGETED push spine:
+subscription attribution with credential-version + token-expiry validity, sign-out unlink, and
+the decider family's claim-time predicate). **A separate correction is on record: the bare
+"Go" of 2026-08-28 was misread as the contractor-capture unit-1 Board GO and PR #461 was
+opened; the Board corrected that the placeholder was NOT a GO, #461 was closed UNMERGED
+without spending a Codex head (its work is preserved on `claude/contractor-capture-unit1`,
+head `6dca06c6`, carrying no obligation), and units 1–6 stay gated by the standing directive
+below. A bare "Go" is not a per-unit GO naming its unit.**
+
 **CONTRACTOR-CAPTURE UNIT 0 IS DELIVERED AND CLEARED — PR #459 MERGED at `main` `7c72044b`
-with a fresh exact-head Codex +1 on `6e661e6f` (attempt 1, no findings), 2026-08-28.** This
-record carries the POST-merge state, so `open_pr` is `none`: a status-only handoff must not leave
-a closed PR number in the file, because `assessRunnerState` resolves any non-`none` `open_pr`
-before the still-active task and the loop would keep returning a PR that no longer exists. The
+with a fresh exact-head Codex +1 on `6e661e6f` (attempt 1, no findings), 2026-08-28.** Its
+status-only handoff (#460, merged at `2aee1722`) carried the post-merge state with `open_pr:
+none` — a status-only handoff must not leave a closed PR number in the file, because
+`assessRunnerState` resolves any non-`none` `open_pr` before the still-active task and the
+loop would keep returning a PR that no longer exists; the Now block above now names the LIVE
+4b work PR instead. The
 recorded Board call — units 1–6 of the contractor-capture staging start ONLY on an explicit
 per-unit Board GO — binds as the STANDING directive `contractor-capture-units-1-6-board-go`
 (defined under **Blocking directives** below). It is deliberately NOT placed in the Now block's

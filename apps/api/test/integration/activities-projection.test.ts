@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisions } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionsVia, seedPublishedDecision } from './fixtures';
 import { emitEvent } from '../../src/platform/events';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
@@ -86,7 +86,11 @@ describe('Phase 2 Task 10 (Module 4) — activities projection == live slices, l
     await t.prisma.dailyLog.deleteMany({ where: { projectId: pids } });
     await t.prisma.activity.deleteMany({ where: { projectId: pids } });
     await t.prisma.phase.deleteMany({ where: { projectId: pids } });
-    await wipeDecisions(t.prisma, { projectId: pids });
+    // one sanctioned bypass: the seeded decisions carry options frozen by the 4b widened seal
+    await wipeDecisionsVia(t.prisma, async (tx) => {
+      await tx.decisionOption.deleteMany({ where: { decision: { projectId: pids } } });
+      await tx.decision.deleteMany({ where: { projectId: pids } });
+    });
     await t.prisma.projectNode.deleteMany({ where: { projectId: pids } });
     await t.prisma.notification.deleteMany({ where: { projectId: pids } });
     await t.prisma.auditLog.deleteMany({ where: { projectId: pids } });
@@ -102,6 +106,8 @@ describe('Phase 2 Task 10 (Module 4) — activities projection == live slices, l
       data: { id, orgId: f.orgA.id, name: id, short: 'O', descriptor: '', stage: 'x', siteCode: 'O', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
     });
     await t.prisma.membership.create({ data: { projectId: id, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+    // Phase 6 task 4b — publication re-validates the client holder's standing at the DB
+    await t.prisma.membership.create({ data: { projectId: id, userId: f.clientUser.id, role: 'client', status: 'active' } });
     const engId = `it-acpj-u-eng-${projSeq}`;
     await t.prisma.user.create({ data: { id: engId, projectId: id, role: 'engineer', name: 'Eng One', email: `${engId}@t.local` } });
     await t.prisma.membership.create({ data: { projectId: id, userId: engId, role: 'engineer', status: 'active' } });
@@ -237,9 +243,7 @@ describe('Phase 2 Task 10 (Module 4) — activities projection == live slices, l
   it('daily-log flagMismatch blocks the linked activity; the caught-up projection shows it; projection == live', async () => {
     const p = await freshProject();
     const decisionId = `DL-acpj-${Date.now() % 1e6}-${projSeq++}`;
-    await t.prisma.decision.create({
-      data: { id: decisionId, projectId: p.id, title: 'Flooring', room: 'Living', status: 'approved', photoSwatch: 'marble', publishedAt: new Date() },
-    });
+    await seedPublishedDecision(t.prisma, { id: decisionId, projectId: p.id, title: 'Flooring', room: 'Living', status: 'approved', photoSwatch: 'marble' });
     const actId = await createActivity(p.id, 'Lay flooring', { decisionId });
     await applyProjection(p.id);
     await expectProjectionCurrentAndEqualsLive(p.id);

@@ -48,7 +48,12 @@ describe('Phase 2 Task 4 — event catalog dual-write (live PG)', () => {
         // refuses while any approval/withdrawal evidence stands — disabled by name for exactly
         // this wipe, in the same atomic transaction.
         t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_no_truncate"'),
+        // 4b round 5 (Codex F5): the CASCADE also reaches "DecisionOption", whose new
+        // statement-level guard refuses while options of PUBLISHED decisions stand — same
+        // sanctioned-bypass contract, disabled by name inside the same atomic transaction.
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b2_no_truncate"'),
         t.prisma.$executeRawUnsafe('TRUNCATE "Decision","Activity","Phase","Inspection","Drawing","DailyLog","SiteMaterial","Media","DomainEvent" CASCADE'),
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b2_no_truncate"'),
         t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_no_truncate"'),
         t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4a_no_truncate"'),
       ]);
