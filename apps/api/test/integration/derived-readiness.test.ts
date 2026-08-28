@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisions } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia } from './fixtures';
 
 /**
  * Phase 1 Task 6 — readiness derived from explicit links, against live
@@ -57,8 +57,11 @@ describe('derived readiness + gate overrides (integration)', () => {
     await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision" CASCADE');
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } });
     await wipeDecisionEvents(t.prisma, { decision: { projectId } });
-    await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId } } });
-    await wipeDecisions(t.prisma, { projectId });
+    // one sanctioned bypass: options of published parents are frozen (4b widened freeze)
+    await wipeDecisionsVia(t.prisma, async (tx) => {
+      await tx.decisionOption.deleteMany({ where: { decision: { projectId } } });
+      await tx.decision.deleteMany({ where: { projectId } });
+    });
     await t.prisma.membership.deleteMany({ where: { projectId, userId: { in: [f.ownerUser.id, f.strangerUser.id] } } });
     await f?.cleanup();
     await t?.close();
