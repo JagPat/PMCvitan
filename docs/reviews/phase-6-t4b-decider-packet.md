@@ -210,6 +210,7 @@ byte-for-byte unchanged.
   `tests/routeBridge.test.tsx`.
 
 Gates re-run at the correction head: `pnpm check` EXIT 0 (automation 292/292; web 956/956;
-api 796/796); full integration battery on a rebuilt pristine DB (totals in the PR thread);
-`upgrade-proof.sh` re-run end-to-end over the EDITED `20271015`; `test:e2e:api:allmodules` +
-`:outbox`.
+api 796/796); full integration battery on a rebuilt pristine DB **99 files / 1302 tests,
+exit 0** (the F5 targeted delivery re-characterized in `phase2-consequences`);
+`upgrade-proof.sh` re-run end-to-end over the EDITED `20271015` (PASSED);
+`test:e2e:api:allmodules` 38/38 + `:outbox` 32/32.
