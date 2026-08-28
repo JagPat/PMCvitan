@@ -214,3 +214,39 @@ api 796/796); full integration battery on a rebuilt pristine DB **99 files / 130
 exit 0** (the F5 targeted delivery re-characterized in `phase2-consequences`);
 `upgrade-proof.sh` re-run end-to-end over the EDITED `20271015` (PASSED);
 `test:e2e:api:allmodules` 38/38 + `:outbox` 32/32.
+
+## Replacement round (the Codex review of head `35157acc` — three findings; #463 closed at the two-head limit)
+
+Head `35157acc` was the SECOND finding-bearing head, so per the review-efficiency protocol #463
+closes unmerged and this REPLACEMENT PR (branch `claude/decision-workflow-4b-r2`, `Replaces:
+#463`) carries the whole unit — every prior decision preserved — plus ONLY these three fixes:
+
+- **R2-F1 (P1, previous-release compatibility)** — a browser tab still running the PRE-4b
+  bundle crashes on a `recorded` row (its four-entry chip map dereferences the unknown status).
+  The server-process side is excluded by the §P6-4a drain-first deploy, but tabs cannot be
+  drained, so the version boundary is a REQUEST CONTRACT: the 4b web bundle declares
+  `X-Vitan-Decisions-Contract: recorded-v1` on every call and receives the full register; a
+  request without the declaration has `recorded` rows stripped from any `decisions` array at
+  the transport layer (`RecordedCompatInterceptor` in `app-setup` — no service or serializer
+  carries the compat branch; a record demands nothing, so a stale bundle loses no actionable
+  state and picks the records up on its next full load). The CURRENT bundle's `DecisionChip`
+  also gains an unknown-status fallback so the NEXT status addition cannot re-open the class.
+  Probe `R2-F1` (aware request receives the record; headerless request never does; every other
+  row byte-identical).
+- **R2-F2 (P2, decider deep link under a failed module read)** — in module-read mode the
+  decisions request can fail independently while the snapshot lands (`projectLoadState:
+  'ready'` + `decisionsLoad: 'error'`), and the settle predicate treated that as a settled
+  slice. It now consults the slice's OWN health (`decisionsLoad` must be `idle`/`ready`), so
+  the bookmarked route holds until Retry resolves the read. Probe in
+  `tests/routeBridge.test.tsx` (error holds; a successful retry proving the decider keeps the
+  route).
+- **R2-F3 (P2, readiness responsibility text)** — the decision gate's waiting texts hard-wired
+  the client; a pmc- or member-held decision directed site users at the wrong party. The
+  decider designation now rides the readiness input end-to-end (`statusAndDraftMap/Of` +
+  `snapshotSlice` carry `deciders`; the activities bake and the in-tx `start` read pass it;
+  the shared `deciderNoun` derives the text). The client-held texts stay BYTE-IDENTICAL (the
+  legacy backfill default). Probes in `src/domain/readiness.test.ts` (per-kind texts; verdicts
+  untouched; the omitted-kind backfill).
+
+No migration change in this round — `20271015` is byte-for-byte the round-1 body; the
+replacement's migration story is unchanged from the packet above.

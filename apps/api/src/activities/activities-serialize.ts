@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { deriveReadiness, type DecisionStatus, type ReadinessDrawing, type ReadinessInspection, type ReadinessOverride } from '../domain/transitions';
+import type { DeciderKind } from '@vitan/shared';
 import { toIsoCivilDate } from '../common/civil-date';
 import { deriveMaterialReading } from './material-readiness';
 import type { RequirementCoverage } from '../inventory/coverage';
@@ -90,6 +91,9 @@ export interface ActivitiesBakeInputs {
   /** Phase 6 task 4b (§A.2) — the UNPUBLISHED-draft decision ids: the recorded gate arm reads
    *  `wait` for a linked DRAFT record and `na` only once it is published. */
   decisionDrafts?: ReadonlySet<string>;
+  /** Replacement round (Codex R2-F3) — WHO holds each linked decision: the gate's waiting text
+   *  names the actual decider (client/pmc/named member) instead of hard-wiring the client. */
+  decisionDeciders?: ReadonlyMap<string, string>;
   /** Phase 6 task 4a round 1 (Codex F5): pmc viewers get the honest withdrawn-decision gate
    *  reason; every other role gets the non-disclosing wording (same verdict). */
   withdrawnReasonVisible?: boolean;
@@ -195,6 +199,7 @@ export function bakeActivities(base: ActivitiesBase, inputs: ActivitiesBakeInput
     const readiness = deriveReadiness(a.id, {
       decisionStatus: a.decisionId ? ((decisionStatuses.get(a.decisionId) as DecisionStatus | undefined) ?? null) : null,
       decisionDraft: a.decisionId ? (inputs.decisionDrafts?.has(a.decisionId) ?? false) : false,
+      decisionDeciderKind: a.decisionId ? ((inputs.decisionDeciders?.get(a.decisionId) as DeciderKind | undefined) ?? 'client') : 'client',
       withdrawnReasonVisible: inputs.withdrawnReasonVisible ?? false,
       gateMaterial: a.gateMaterial as ActivityDto['gm'],
       gateTeam: a.gateTeam as ActivityDto['gt'],

@@ -761,6 +761,10 @@ export class ApiGateway {
       ...init,
       headers: {
         'Content-Type': 'application/json',
+        // Phase 6 unit 4b (Codex R2-F1) — this bundle understands the `recorded` status; the
+        // declaration is the version boundary that lets the server serve records to it while
+        // stripping them for a still-cached PREVIOUS bundle (which never sends the header).
+        'X-Vitan-Decisions-Contract': 'recorded-v1',
         ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
         ...(init?.headers ?? {}),
       },

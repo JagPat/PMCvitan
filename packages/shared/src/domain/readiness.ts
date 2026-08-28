@@ -11,7 +11,7 @@
  * — change them TOGETHER.
  */
 
-import type { DecisionStatus, Gate } from './types';
+import type { DeciderKind, DecisionStatus, Gate } from './types';
 
 export type GateSource = 'derived' | 'stored' | 'override';
 
@@ -70,6 +70,10 @@ export interface ReadinessInput {
    *  (pmc only). Controls the decision-gate REASON wording, never the verdict. */
   withdrawnReasonVisible?: boolean;
   decisionStatus: DecisionStatus | null;
+  /** Replacement round (Codex R2-F3) — WHO holds the linked decision: the gate's waiting text
+   *  names the ACTUAL decider instead of directing every site user at the client. Omitted ⇒
+   *  `client` (every pre-4b row is client-held by backfill). */
+  decisionDeciderKind?: DeciderKind;
   /** Phase 6 task 4b (§A.2) — whether the linked decision is an UNPUBLISHED draft. Only the
    *  `recorded` arm consults it (a draft record gates `wait`, a published record `na`). */
   decisionDraft?: boolean;
@@ -161,7 +165,7 @@ export function deriveDrawingGate(activityId: string, drawings: ReadinessDrawing
  *  reads `na` — but ONLY once published: a private draft record would unblock a gate with
  *  evidence the team cannot see, so the recorded arm consults `decisionDraft` and a draft record
  *  holds `wait` until its author publishes it. */
-export function deriveDecisionReading(decisionStatus: DecisionStatus | null, withdrawnReasonVisible = false, decisionDraft = false): GateReading {
+export function deriveDecisionReading(decisionStatus: DecisionStatus | null, withdrawnReasonVisible = false, decisionDraft = false, deciderKind: DeciderKind = 'client'): GateReading {
   if (decisionStatus === 'recorded') {
     return decisionDraft
       ? { v: 'wait', source: 'derived', reason: RECORDED_DRAFT_REASON }
@@ -181,13 +185,21 @@ export function deriveDecisionReading(decisionStatus: DecisionStatus | null, wit
       : decisionStatus === 'approved'
         ? 'Decision approved and locked'
         : decisionStatus === 'change'
-          ? 'Change requested — awaiting the client’s re-approval'
+          ? `Change requested — awaiting ${deciderNoun(deciderKind)}’s re-approval`
           : decisionStatus === 'withdrawn'
             ? withdrawnReasonVisible
               ? WITHDRAWN_REASON_HONEST
               : WITHDRAWN_REASON_REDACTED
-            : 'Awaiting the client’s approval';
+            : `Awaiting ${deciderNoun(deciderKind)}’s approval`;
   return { v, source: 'derived', reason };
+}
+
+/** Replacement round (Codex R2-F3) — the responsibility noun of the decision gate's waiting
+ *  texts: the ACTUAL decider, not a hard-wired client. `client` keeps the legacy text
+ *  byte-identical; `none` never reaches these arms (none ⟺ recorded takes the recorded arm),
+ *  and falls back to the client noun rather than inventing one. */
+export function deciderNoun(kind: DeciderKind): string {
+  return kind === 'pmc' ? 'the PMC' : kind === 'member' ? 'the named decider' : 'the client';
 }
 
 /** The two viewer-dependent texts of the withdrawn decision gate (round 11, Codex): ONE source
@@ -212,7 +224,7 @@ export function redactWithdrawnReadinessForViewer(r: ActivityReadiness, canSeeWi
 /** The five-gate readiness derivation — an unexpired override supersedes ITS gate. */
 export function deriveReadiness(activityId: string, input: ReadinessInput): ActivityReadiness {
   const derived: ActivityReadiness = {
-    decision: deriveDecisionReading(input.decisionStatus, input.withdrawnReasonVisible ?? false, input.decisionDraft ?? false),
+    decision: deriveDecisionReading(input.decisionStatus, input.withdrawnReasonVisible ?? false, input.decisionDraft ?? false, input.decisionDeciderKind ?? 'client'),
     material: { v: input.gateMaterial, source: 'stored', reason: 'Stored site flag — material on site' },
     team: { v: input.gateTeam, source: 'stored', reason: 'Stored site flag — team present' },
     inspection: deriveInspectionGate(activityId, input.inspections),

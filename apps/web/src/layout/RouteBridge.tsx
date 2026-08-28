@@ -39,6 +39,9 @@ export function RouteBridge() {
   // flight; a signed-out or locally-seeded state is already as settled as it will get.
   const authed = useStore((s) => s.sessionToken !== null);
   const hasDecisions = useStore((s) => s.decisions.length > 0);
+  // Replacement round (Codex R2-F2) — the module-read decision slice reports its OWN health: a
+  // failed or in-flight decisions read is NOT a settled slice even when the snapshot landed.
+  const decisionsLoad = useStore((s) => s.decisionsLoad);
   const setScreen = useStore((s) => s.setScreen);
   const switchProject = useStore((s) => s.switchProject);
   const navigate = useNavigate();
@@ -91,9 +94,15 @@ export function RouteBridge() {
     // the capability branch's unknown-state posture; once the slice settles ('ready', a load
     // 'error', or local data already present) a real non-decider is bounced by this same
     // effect re-running on the load-state change.
+    // Replacement round (Codex R2-F2): in module-read mode the decisions request can fail
+    // INDEPENDENTLY while the snapshot succeeds (`projectLoadState: 'ready'` with
+    // `decisionsLoad: 'error'`), retaining an empty/stale list — that slice is NOT settled, so
+    // the decider route holds until Retry resolves the read one way that can be judged.
+    const sliceHealthy = decisionsLoad === 'idle' || decisionsLoad === 'ready';
     const decisionsSettled =
-      projectLoadState === 'ready' || projectLoadState === 'error'
-      || (projectLoadState === 'idle' && (!authed || hasDecisions));
+      sliceHealthy
+      && (projectLoadState === 'ready' || projectLoadState === 'error'
+        || (projectLoadState === 'idle' && (!authed || hasDecisions)));
     const allowed = withDeciderRoute(
       screensFor(role)
         .filter((m) => {
@@ -109,7 +118,7 @@ export function RouteBridge() {
     }
     if (fromPath !== screen) setScreen(fromPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname, role, activeProjectId, memberships, pendingProjectId, projectLoadState, capabilities, capabilitiesKnown, isOpenDecider, authed, hasDecisions]);
+  }, [location.pathname, role, activeProjectId, memberships, pendingProjectId, projectLoadState, capabilities, capabilitiesKnown, isOpenDecider, authed, hasDecisions, decisionsLoad]);
 
   // store -> URL (canonical project-scoped path). ONE-WAY during a transition: while
   // a switch is pending or the target project is loading, the deep link's URL is the

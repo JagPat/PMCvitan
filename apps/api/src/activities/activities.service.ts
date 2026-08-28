@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { CONTRACTOR_CAPTURE_FAIL_CLOSED, contractorCaptureFailClosed } from '@vitan/shared';
+import { type DeciderKind, CONTRACTOR_CAPTURE_FAIL_CLOSED, contractorCaptureFailClosed } from '@vitan/shared';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
@@ -414,7 +414,7 @@ export class ActivitiesService {
    *  readiness-lock protocol (gate finding 1) — the default reads live data. */
   async loadReadiness(
     projectId: string,
-    activity: { id: string; gateMaterial: GateState; gateTeam: GateState; decision: { status: string; draft?: boolean } | null },
+    activity: { id: string; gateMaterial: GateState; gateTeam: GateState; decision: { status: string; draft?: boolean; deciderKind?: string } | null },
     db: Prisma.TransactionClient = this.prisma,
     // Phase 6 task 4a round 1 (Codex F5): the withdrawn-decision gate REASON is pmc-only —
     // fail-closed, so an unlabelled caller gets the redacted wording (the verdict is identical).
@@ -432,6 +432,8 @@ export class ActivitiesService {
       decisionStatus: activity.decision ? (activity.decision.status as DecisionStatus) : null,
       // Phase 6 task 4b (§A.2) — a linked DRAFT record gates `wait` until published (P20).
       decisionDraft: activity.decision?.draft ?? false,
+      // Replacement round (Codex R2-F3) — the gate's waiting text names the ACTUAL decider.
+      decisionDeciderKind: (activity.decision?.deciderKind as DeciderKind | undefined) ?? 'client',
       withdrawnReasonVisible,
       gateMaterial: activity.gateMaterial,
       gateTeam: activity.gateTeam,

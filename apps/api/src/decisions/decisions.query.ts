@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import type { DecisionStatus } from '../domain/transitions';
+import type { DeciderKind } from '@vitan/shared';
 import type { Role } from '../common/auth';
 import type { DecisionDto } from '../snapshot/types';
 import { serializeDecision, decisionVisibleToViewer } from './decision-serialize';
@@ -36,7 +37,7 @@ export class DecisionsQueryService {
     projectId: string,
     role: Role,
     userId?: string,
-  ): Promise<{ decisions: DecisionDto[]; statuses: Map<string, DecisionStatus>; drafts: Set<string> }> {
+  ): Promise<{ decisions: DecisionDto[]; statuses: Map<string, DecisionStatus>; drafts: Set<string>; deciders: Map<string, DeciderKind> }> {
     const rows = await this.prisma.decision.findMany({
       where: { projectId },
       // the OPEN change request travels with a reopened decision (Phase 1 Task 2)
@@ -48,6 +49,9 @@ export class DecisionsQueryService {
     // Phase 6 task 4b (§A.2) — the UNFILTERED draft-id set beside the status map: the readiness
     // bake's recorded arm gates a DRAFT record `wait` (a private record must not unblock work).
     const drafts = new Set<string>(rows.filter((d) => d.publishedAt === null).map((d) => d.id));
+    // Replacement round (Codex R2-F3) — WHO holds each decision, beside the status map: the
+    // readiness bake names the ACTUAL decider in the gate's waiting text.
+    const deciders = new Map<string, DeciderKind>(rows.map((d) => [d.id, d.deciderKind as DeciderKind]));
 
     // The serialization + the per-viewer filter are the SAME functions the decisions projection uses
     // (decision-serialize.ts), so the projection-served slice is byte-identical to this live slice.
@@ -62,7 +66,7 @@ export class DecisionsQueryService {
       )
       .map(serializeDecision);
 
-    return { decisions, statuses, drafts };
+    return { decisions, statuses, drafts, deciders };
   }
 
   /**
@@ -78,11 +82,12 @@ export class DecisionsQueryService {
 
   /** Phase 6 task 4b (§A.2) — `statusMap` plus the UNFILTERED draft-id set, for readiness bakes
    *  that must gate a linked DRAFT record `wait` (the recorded arm consults the draft flag). */
-  async statusAndDraftMap(projectId: string): Promise<{ statuses: Map<string, DecisionStatus>; drafts: Set<string> }> {
-    const rows = await this.prisma.decision.findMany({ where: { projectId }, select: { id: true, status: true, publishedAt: true } });
+  async statusAndDraftMap(projectId: string): Promise<{ statuses: Map<string, DecisionStatus>; drafts: Set<string>; deciders: Map<string, DeciderKind> }> {
+    const rows = await this.prisma.decision.findMany({ where: { projectId }, select: { id: true, status: true, publishedAt: true, deciderKind: true } });
     return {
       statuses: new Map(rows.map((d) => [d.id, d.status as DecisionStatus])),
       drafts: new Set(rows.filter((d) => d.publishedAt === null).map((d) => d.id)),
+      deciders: new Map(rows.map((d) => [d.id, d.deciderKind as DeciderKind])),
     };
   }
 
@@ -103,9 +108,9 @@ export class DecisionsQueryService {
     projectId: string,
     decisionId: string,
     db: Prisma.TransactionClient = this.prisma,
-  ): Promise<{ status: DecisionStatus; draft: boolean } | null> {
-    const row = await db.decision.findFirst({ where: { id: decisionId, projectId }, select: { status: true, publishedAt: true } });
-    return row ? { status: row.status as DecisionStatus, draft: row.publishedAt === null } : null;
+  ): Promise<{ status: DecisionStatus; draft: boolean; deciderKind: DeciderKind } | null> {
+    const row = await db.decision.findFirst({ where: { id: decisionId, projectId }, select: { status: true, publishedAt: true, deciderKind: true } });
+    return row ? { status: row.status as DecisionStatus, draft: row.publishedAt === null, deciderKind: row.deciderKind as DeciderKind } : null;
   }
 
   /**

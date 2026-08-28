@@ -539,4 +539,22 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     await t.prisma.membership.delete({ where: { projectId_userId: { projectId, userId: tempId } } });
     await t.prisma.user.delete({ where: { id: tempId } });
   });
+  it('R2-F1: a client that has NOT declared the decisions contract never receives a recorded row — the previous bundle cannot crash on it', async () => {
+    const did = await issue({ deciderKind: 'none', options: [] });
+    // a 4b-aware client declares the contract and receives the full register
+    const aware = await http().get(`/projects/${projectId}/snapshot`)
+      .set('Authorization', `Bearer ${pmcToken}`)
+      .set('X-Vitan-Decisions-Contract', 'recorded-v1');
+    expect(aware.status).toBe(200);
+    expect(aware.body.decisions.map((d: { id: string }) => d.id)).toContain(did);
+    // the PREVIOUS bundle (no header) has the record stripped at the transport boundary —
+    // its four-entry chip map is never asked to render a status it does not know
+    const legacy = await http().get(`/projects/${projectId}/snapshot`).set('Authorization', `Bearer ${pmcToken}`);
+    expect(legacy.status).toBe(200);
+    expect(legacy.body.decisions.map((d: { id: string }) => d.id)).not.toContain(did);
+    expect(legacy.body.decisions.some((d: { status: string }) => d.status === 'recorded')).toBe(false);
+    // precision: every other row is untouched by the shim
+    const awareIds = aware.body.decisions.filter((d: { status: string }) => d.status !== 'recorded').map((d: { id: string }) => d.id).sort();
+    expect(legacy.body.decisions.map((d: { id: string }) => d.id).sort()).toEqual(awareIds);
+  });
 });

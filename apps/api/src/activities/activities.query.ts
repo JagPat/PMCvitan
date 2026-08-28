@@ -127,12 +127,13 @@ export class ActivitiesQueryService {
     decisionStatuses?: ReadonlyMap<string, string>,
     withdrawnReasonVisible = false,
     decisionDrafts?: ReadonlySet<string>,
+    decisionDeciders?: ReadonlyMap<string, string>,
   ): Promise<ActivitiesBakeInputs> {
     // Phase 6 task 4b (§A.2) — the draft-id set travels WITH the status map (both from the
     // decisions query): the recorded gate arm needs to tell a draft record from a published one.
     const [decisionInputs, inspections, drawings, activeMembers, materialCoverage, labourCoverage, labourMismatchBlocked] = await Promise.all([
       decisionStatuses
-        ? Promise.resolve({ statuses: decisionStatuses, drafts: decisionDrafts ?? new Set<string>() })
+        ? Promise.resolve({ statuses: decisionStatuses, drafts: decisionDrafts ?? new Set<string>(), deciders: decisionDeciders ?? new Map<string, string>() })
         : this.decisionsQuery.statusAndDraftMap(projectId),
       this.inspectionsQuery.readinessSlice(projectId),
       this.drawingsQuery.readinessSlice(projectId),
@@ -144,6 +145,7 @@ export class ActivitiesQueryService {
     return {
       decisionStatuses: decisionInputs.statuses,
       decisionDrafts: decisionInputs.drafts,
+      decisionDeciders: decisionInputs.deciders,
       withdrawnReasonVisible,
       inspections,
       drawings,
@@ -163,11 +165,11 @@ export class ActivitiesQueryService {
    */
   async snapshotSlice(
     projectId: string,
-    opts: { decisionStatuses?: ReadonlyMap<string, string>; decisionDrafts?: ReadonlySet<string>; withdrawnReasonVisible?: boolean } = {},
+    opts: { decisionStatuses?: ReadonlyMap<string, string>; decisionDrafts?: ReadonlySet<string>; decisionDeciders?: ReadonlyMap<string, string>; withdrawnReasonVisible?: boolean } = {},
   ): Promise<ActivitiesSlices> {
     const [base, inputs] = await Promise.all([
       computeActivitiesBase(this.prisma, projectId),
-      this.bakeInputs(projectId, opts.decisionStatuses, opts.withdrawnReasonVisible ?? false, opts.decisionDrafts),
+      this.bakeInputs(projectId, opts.decisionStatuses, opts.withdrawnReasonVisible ?? false, opts.decisionDrafts, opts.decisionDeciders),
     ]);
     return bakeActivities(base, inputs);
   }

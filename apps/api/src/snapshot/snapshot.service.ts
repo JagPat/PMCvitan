@@ -79,7 +79,7 @@ export class SnapshotService {
       // each activity's five-gate readiness FRESH through the decisions/inspections/drawings query
       // contracts; the snapshot chains its already-fetched id→status decision map in so the decision
       // read never happens twice (identical data — the bake result cannot differ).
-      decisionSlicePromise.then((s) => this.activitiesQuery.snapshotSlice(projectId, { decisionStatuses: s.statuses, decisionDrafts: s.drafts, withdrawnReasonVisible: role === 'pmc' })),
+      decisionSlicePromise.then((s) => this.activitiesQuery.snapshotSlice(projectId, { decisionStatuses: s.statuses, decisionDrafts: s.drafts, decisionDeciders: s.deciders, withdrawnReasonVisible: role === 'pmc' })),
       // Task 10 (Module 3) — the five role-gated inspection slices come from the module's query (the same
       // per-viewer/role serialization moved there verbatim, so byte-identical), never a direct read.
       this.inspectionsQuery.snapshotSlice(projectId, role),
