@@ -1,4 +1,5 @@
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { CONTRACTOR_CAPTURE_FAIL_CLOSED, contractorCaptureFailClosed } from '@vitan/shared';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
@@ -133,6 +134,12 @@ export class ActivitiesService {
       scope, actor, commandType: 'activities.recordOutput', idempotencyKey, requestHash: hashRequest(input),
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
+        // Unit 0 (contractor capture §4 item 0) — FAIL CLOSED for a contractor caller, INSIDE the
+        // transaction where the ownership-enforcement unit will validate the recorder's own
+        // allocation through the participant channel. The `activity.output.record` grant stays
+        // declared; until that relation exists, contractor A could record output on any activity
+        // (the schema carries no worker or party fact here at all) through the open API.
+        if (contractorCaptureFailClosed(user.role)) throw new ForbiddenException(CONTRACTOR_CAPTURE_FAIL_CLOSED);
         const a = await tx.activity.findFirst({ where: { projectId, id: input.activityId }, select: { id: true } });
         if (!a) throw new BadRequestException('activityId does not name an activity in this project');
         // Supporting evidence must be THIS project's photo. A Media read from this service would
