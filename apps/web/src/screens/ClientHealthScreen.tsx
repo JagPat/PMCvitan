@@ -104,7 +104,7 @@ export function ClientHealthScreen() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {approved.map((a) => (
           <div key={a.id} style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 13, padding: '12px 14px', display: 'flex', gap: 12, alignItems: 'center' }}>
-            <Swatch swatch={a.photoSwatch} size={42} radius={9} lock />
+            <Swatch swatch={a.photoSwatch ?? ''} size={42} radius={9} lock />
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 600, fontSize: 13.5 }}>{a.title}</div>
               <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>By {a.approver} · {a.date}</div>

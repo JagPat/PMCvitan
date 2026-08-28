@@ -114,7 +114,7 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     await t.prisma.membership.create({ data: { projectId: id, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
     // Phase 6 task 4b — publication re-validates the holder's standing at the DB, and these
     // fixtures publish client-held (default-kind) decisions: the project needs an active client.
-    await t.prisma.membership.create({ data: { projectId: id, userId: f.strangerUser.id, role: 'client', status: 'active' } });
+    await t.prisma.membership.create({ data: { projectId: id, userId: f.clientUser.id, role: 'client', status: 'active' } });
     return id;
   };
 
