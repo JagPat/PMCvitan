@@ -212,3 +212,24 @@ export function can(action: PolicyAction, role: TokenRole): boolean {
 export function rolesFor(action: PolicyAction): readonly TokenRole[] {
   return ROLE_POLICY[action];
 }
+
+/**
+ * Unit 0 of the contractor-capture staging (docs/ux/CONTRACTOR_CAPTURE_PROPOSAL.md §4 item 0):
+ * the three §C capture writes (`attendance.record`, `labour.work.record`,
+ * `activity.output.record`) FAIL CLOSED for a CONTRACTOR caller. The grants above stay declared —
+ * §C's seals make the recording party untrusted by construction, which is what makes a
+ * contractor-side recorder admissible — but NO ownership relation ties a record to the calling
+ * party yet, so through the open API contractor A could submit contractor B's ids and mint
+ * immutable evidence. The refusal is temporary by construction: the ownership-enforcement unit
+ * lifts it for work/output and the capture-surface unit for attendance; each deletes its use of
+ * this predicate in the same change that lands the check it stands in for.
+ */
+export function contractorCaptureFailClosed(role: TokenRole): boolean {
+  return role === 'contractor';
+}
+
+/** The 403 body for the unit-0 refusal — one string, shared by all three writes. */
+export const CONTRACTOR_CAPTURE_FAIL_CLOSED =
+  'Contractor capture is fail-closed: no ownership relation ties this record to your party yet, ' +
+  'so the write is refused rather than accepting ids that may belong to another party ' +
+  '(contractor-capture proposal §4 unit 0 — temporary, lifted by the ownership-enforcement units)';

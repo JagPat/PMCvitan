@@ -15,11 +15,11 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 0bbd6a2d
-open_pr: 456
+reviewed_merge: 7ba95421
+open_pr: 459
 next_task: none
 blocking_directive: none
-updated: 2026-08-27
+updated: 2026-08-28
 ```
 
 **#440 MERGED at `a714bc3e` — THE PROGRESS-PHOTO CAPTURE STAMP IS DELIVERED AND CLEARED.** This
@@ -100,9 +100,31 @@ Three items remain, each with an executable next unit — none waits on sign-off
    runs on PRs #443-#449: 27.9-28.6), so EVERY early orchestrator wake published a false "Checks
    did not settle: api" — PR #444 hit it on 2026-08-26. Now 40 minutes (same headroom ratio), with
    `auto-merge.yml`'s derived terminal budget raised 90→105 and both comments naming the coupling.
-   **The contractor capture gap is EVALUATED AND PROPOSED** (PR #456, `Replaces: #455`;
-   the chain is #451 → #452 → #453 → #454 → #455 → #456, each predecessor closed at the
-   two-finding-head limit; `docs/ux/CONTRACTOR_CAPTURE_PROPOSAL.md`).
+   **The contractor capture proposal is DELIVERED AND CLEARED — PR #456 MERGED at `main`
+   `7ba95421` with a fresh Codex +1 on the exact head `2819393e`** (the chain was
+   #451 → #452 → #453 → #454 → #455 → #456, each predecessor closed at the
+   two-finding-head limit; `docs/ux/CONTRACTOR_CAPTURE_PROPOSAL.md`). TWO board decisions
+   followed and are on record: **unit 0 is GO** (2026-08-28 07:22 IST, on #458), and
+   **units 1–6 KEEP the per-unit owner gate** (option (b)) — they are NOT scheduled and no
+   review finding removes those gates. The post-merge handoff PRs #457 and #458 each
+   closed at the two-finding-head limit under the recurring remove-the-owner-gate finding;
+   the owner's directive replaced the docs-only handoff with THIS work PR. Their thread
+   also carries the owner-authorized ledger reconciliation of the stale
+   `review-replacement-required` obligations on #451–#455 (reasoning commented on each,
+   labels removed — the #429/#408 precedent shape).
+   **UNIT 0 IS IN PROGRESS ON PR #459 (`Replaces: #458`, discharging its obligation)**:
+   fail closed NOW — service only, no schema. The three §C capture writes
+   (`recordAttendance`/`recordWork`/`recordOutput`) refuse a CONTRACTOR caller outright,
+   INSIDE the same transactions that will later hold the ownership check (the shared
+   `contractorCaptureFailClosed` predicate + one shared 403 body; each later unit deletes
+   its use in the same change that lands the real check). Grants stay DECLARED (not O3 —
+   pinned by a probe); pmc/engineer behaviour is byte-untouched (probed at both heads);
+   the refusal is temporary by construction (lifted by unit 4 for work/output, unit 6 for
+   attendance). Reproduce-first `phase4-unit0-contractor-fail-closed.test.ts`: the three
+   contractor-token probes (work under a pmc-created allocation; a deviceId muster with
+   the worker's BOUND device; output on any activity) all SUCCEEDED at base `7ba95421` —
+   RED 3/5, the §2 exposure demonstrated live — and are 403-refused with nothing appended
+   after; 5/5 GREEN with the fix.
    Measured: the three contractor grants
    (`attendance.record`/`labour.work.record`/`activity.output.record`) are intentional — §C's
    seals make the recording party untrusted by construction — but unreachable: the muster and

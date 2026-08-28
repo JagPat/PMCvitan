@@ -1,7 +1,8 @@
 import { BadRequestException, ConflictException, ForbiddenException, HttpException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
-  ROLE_POLICY, computeLabourSpecFingerprint, isLabourShift,
+  ROLE_POLICY, CONTRACTOR_CAPTURE_FAIL_CLOSED, contractorCaptureFailClosed,
+  computeLabourSpecFingerprint, isLabourShift,
   type LabourCapacityDto, type WorkerAllocationDto, type LabourAttendanceDto,
   type LabourWorkFactDto, type ApprovedSkillSubstitutionDto, type LabourReadinessDto,
   type LabourMismatchDto, type LabourPresenceDto,
@@ -530,6 +531,12 @@ export class LabourCapacityService {
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
+        // Unit 0 (contractor capture §4 item 0) — FAIL CLOSED for a contractor caller, INSIDE the
+        // transaction where the capture-surface unit's device-authenticated ownership check will
+        // run. The `attendance.record` grant stays declared; nothing ties this muster to the
+        // calling party yet, so through the open API contractor A could muster contractor B's
+        // worker. 403 is terminal for the client outbox — a queued op drops instead of retrying.
+        if (contractorCaptureFailClosed(user.role)) throw new ForbiddenException(CONTRACTOR_CAPTURE_FAIL_CLOSED);
         const [worker] = await this.lockWorkersInOrder(tx, projectId, [input.workerId]);
         if (!worker) throw new BadRequestException('workerId does not name a worker in this project');
         if (worker.revokedAt) throw new BadRequestException('Worker is revoked and cannot be mustered');
@@ -618,6 +625,11 @@ export class LabourCapacityService {
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
+        // Unit 0 (contractor capture §4 item 0) — FAIL CLOSED for a contractor caller, INSIDE the
+        // transaction where the ownership-enforcement unit will re-derive "own" from the cited
+        // allocation. The `labour.work.record` grant stays declared; until that relation exists,
+        // contractor A could book effort under contractor B's allocation through the open API.
+        if (contractorCaptureFailClosed(user.role)) throw new ForbiddenException(CONTRACTOR_CAPTURE_FAIL_CLOSED);
         const allocation = await tx.workerAllocation.findFirst({
           where: { projectId, id: input.allocationId },
           select: { id: true, workerId: true, activityId: true, requirementId: true, labourSpecFingerprint: true, civilDate: true, shift: true, status: true },
