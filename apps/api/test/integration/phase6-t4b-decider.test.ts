@@ -100,9 +100,6 @@ describe('Phase 6 unit 4b — the decider takes authority (live PG)', () => {
     relay = t.app.get(OutboxRelay);
     rebuilder = t.app.get(ProjectionRebuilder);
     hostile = new PrismaClient();
-    // the fixture's project-A member is its PMC; a CLIENT must exist for a client-held decision
-    // to be publishable at all (the zero-holder refusal is real, and this suite relies on it).
-    await member('client', 'Asha Shah');
   });
   afterAll(async () => {
     await cleanup();
@@ -173,9 +170,7 @@ describe('Phase 6 unit 4b — the decider takes authority (live PG)', () => {
     it('the client approving a client-held decision keeps the pre-4b announcement and no on-behalf marker', async () => {
       await svc.create(f.projectA.id, input(), pmc());
       const id = await latest();
-      const clientUser = (await t.prisma.membership.findFirstOrThrow({ where: { projectId: f.projectA.id, role: 'client', status: 'active' } })).userId;
-
-      await svc.approve(f.projectA.id, id, { optionIndex: 0 }, as(clientUser, 'client'));
+      await svc.approve(f.projectA.id, id, { optionIndex: 0 }, as(f.clientUser.id, 'client'));
 
       const row = await t.prisma.decision.findUniqueOrThrow({ where: { id } });
       expect(row.status).toBe('approved');
@@ -317,12 +312,21 @@ describe('Phase 6 unit 4b — the decider takes authority (live PG)', () => {
       ).rejects.toThrow();
     });
 
-    it('publishing a ROLE-held decision into a project with nobody in that role is refused', async () => {
-      // project B has a pmc but no client at all — a client-held decision has no holder there
-      const bPmc = (await t.prisma.membership.findFirstOrThrow({ where: { projectId: f.projectB.id, role: 'pmc', status: 'active' } })).userId;
-      await expect(
-        svc.create(f.projectB.id, { ...input(), title: 'Holderless' } as CreateDecisionInput, { sub: bPmc, role: 'pmc', projectId: f.projectB.id } as AuthUser),
-      ).rejects.toThrow(/currently holds the Client role|holds the client role/i);
+    it('publishing a ROLE-held decision into a project with nobody in that role is refused — the draft door stays open', async () => {
+      // remove project A's only client: a decision addressed to "the client" now has no holder,
+      // and publishing it would create a pending question no one can ever answer
+      const clientMembership = await t.prisma.membership.findFirstOrThrow({
+        where: { projectId: f.projectA.id, userId: f.clientUser.id },
+      });
+      await t.prisma.membership.update({ where: { id: clientMembership.id }, data: { status: 'removed' } });
+      try {
+        await expect(svc.create(f.projectA.id, input(), pmc())).rejects.toThrow(/currently holds the Client role/i);
+        // the DRAFT door stays open — an unpublished decision is weightless and its holder is
+        // still editable, so the practice keeps working while the client is onboarded
+        await expect(svc.create(f.projectA.id, input({ publish: false }), pmc())).resolves.toBeTruthy();
+      } finally {
+        await t.prisma.membership.update({ where: { id: clientMembership.id }, data: { status: 'active' } });
+      }
     });
   });
 
