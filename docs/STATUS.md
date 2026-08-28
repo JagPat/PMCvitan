@@ -18,7 +18,7 @@ work_item: none
 reviewed_merge: 7c72044b
 open_pr: none
 next_task: none
-blocking_directive: contractor-capture-units-1-6-board-go
+blocking_directive: none
 updated: 2026-08-28
 ```
 
@@ -27,13 +27,18 @@ with a fresh exact-head Codex +1 on `6e661e6f` (attempt 1, no findings), 2026-08
 record carries the POST-merge state, so `open_pr` is `none`: a status-only handoff must not leave
 a closed PR number in the file, because `assessRunnerState` resolves any non-`none` `open_pr`
 before the still-active task and the loop would keep returning a PR that no longer exists. The
-named `blocking_directive: contractor-capture-units-1-6-board-go` (defined under **Blocking
-directives** below) is the machine-actionable form of the recorded Board call: units 1–6 of the
-contractor-capture staging start ONLY on an explicit per-unit Board GO — the runner resolves the
-directive, never `task: 4`, so no unit-1 work begins from this state. The earlier post-merge
-continuation note reading "task 4 is `in_progress`, so it is still the work item" was STATUS
-drift, not a GO; the recorded Board call wins. Every paragraph BELOW this one records an EARLIER
-unit; where one of them says "the open PR", read it as the open PR of its own day.
+recorded Board call — units 1–6 of the contractor-capture staging start ONLY on an explicit
+per-unit Board GO — binds as the STANDING directive `contractor-capture-units-1-6-board-go`
+(defined under **Blocking directives** below). It is deliberately NOT placed in the Now block's
+`blocking_directive` field: that field SCHEDULES work, so an approval gate there either stalls
+the loop (the resolver would return the unexecutable gate before any executable work) or bricks
+the file (a directive from a state that schedules none fails the Now-block rules). The runner's
+next step therefore stays `task: 4` — whose OWN remaining work is the decision-workflow 4b–4d
+plan unit (`docs/superpowers/plans/2026-08-13-decision-workflow.md` §B) and contains NO
+contractor-capture unit — and no continuation may read that, or any resolver output, as a GO for
+units 1–6; the earlier post-merge note implying otherwise was STATUS drift, and the recorded
+Board call wins. Every paragraph BELOW this one records an EARLIER unit; where one of them says
+"the open PR", read it as the open PR of its own day.
 
 The low-effort data-entry initiative's delivered units are #424 (capture context), #427 (the
 data-entry audit), #428 (progressive disclosure) and #440 (the capture stamp). #440 replaced #439,
@@ -139,10 +144,12 @@ Three items remain, each with an executable next unit — none waits on sign-off
    KEEP the per-unit owner gate** — a review finding asking to lift the next gate is not
    a new decision, and unit 1 (the attribution-shape migration) is NEW product scope
    that is NOT implemented, scheduled, or begun until its own explicit Board GO. The
-   gate is machine-actionable as `blocking_directive:
-   contractor-capture-units-1-6-board-go` in the Now block (defined under **Blocking
-   directives** below), which `assessRunnerState` resolves BEFORE `task: 4` — so the
-   runner never re-derives unit-1 work from the still-open task state.
+   gate binds as the STANDING directive `contractor-capture-units-1-6-board-go`
+   (defined under **Blocking directives** below) rather than a Now-block
+   `blocking_directive` entry — the field schedules work, and an approval gate there
+   would stall the loop or fail the Now-block rules — and NO yaml field names any
+   contractor-capture unit, so no resolver output can start one: `task: 4`'s own
+   remaining work is the decision-workflow 4b–4d plan unit, not unit 1.
    Measured: the three contractor grants
    (`attendance.record`/`labour.work.record`/`activity.output.record`) are intentional — §C's
    seals make the recording party untrusted by construction — but unreachable: the muster and
@@ -1545,13 +1552,18 @@ gate as feature work. Work them top-down, one focused PR per item:
 
 ## Blocking directives
 
-A `blocking_directive` names the one thing that gates new work. It is
-machine-actionable by definition: the runner never idles or polls on a
-directive — it continues the standing duties (shepherd every open PR through
-the exact-head `codex-current-head` gate, answer post-merge review findings
-with focused fix-forward corrections, keep CI and the gate battery green,
-drain the Maintenance queue between work items) and starts the gated work the
-moment the directive clears.
+STANDING scope gates, recorded here so every continuation honors them. A
+standing gate is deliberately NOT placed in the Now block's
+`blocking_directive` field: that field SCHEDULES correction work (the
+Now-block rules admit it only from `correction_required` or `in_progress`,
+where the resolver returns it as the next step), so an approval gate there
+would either hand the runner an unexecutable step ahead of all executable
+work — stalling the loop against AGENTS.md's never-wait rule — or fail the
+Now-block rules outright from any other state. A standing gate instead binds
+regardless of resolver output: the runner continues every already-authorized
+duty (the open-PR shepherding, fix-forward corrections, CI and the gate
+battery, the active task's own remaining units, the Maintenance queue) and
+starts the GATED work only when the gate's recorded clearance arrives.
 
 - `contractor-capture-units-1-6-board-go` — the Board's standing per-unit gate
   on units 1–6 of the contractor-capture staging
