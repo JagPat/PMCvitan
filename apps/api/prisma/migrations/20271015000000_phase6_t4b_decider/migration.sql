@@ -472,6 +472,34 @@ CREATE TRIGGER "Decision_t4b2_record_no_delete"
   BEFORE DELETE ON "Decision"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4b2_record_no_delete();
 
+-- ── the statement-level TRUNCATE seal extends to published records (round-4 Codex F2) ─────────
+-- TRUNCATE fires no row triggers, and the 20270826 `decision_t4b_no_truncate` body predates the
+-- `recorded` status: a register holding published records but no approval evidence passed it,
+-- so `TRUNCATE "Decision" CASCADE` could erase every permanent record. The NAMED seal's body is
+-- WIDENED here (the `Decision_t4b_no_truncate` trigger object is untouched, so the sanctioned
+-- reset paths that disable it by name are unaffected); an UNPUBLISHED draft record stays
+-- weightless and blocks nothing.
+CREATE OR REPLACE FUNCTION decision_t4b_no_truncate() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM "Decision" d
+     WHERE d."status"::text IN ('approved', 'change', 'withdrawn')
+        OR (d."status"::text = 'recorded' AND d."publishedAt" IS NOT NULL)
+        OR d."approvedById" IS NOT NULL
+        OR d."approver" IS NOT NULL
+        OR d."approvedOption" IS NOT NULL
+        OR d."approvedDeciderKind" IS NOT NULL
+  ) OR EXISTS (SELECT 1 FROM "DecisionLegacyApproval")
+    OR EXISTS (SELECT 1 FROM "DecisionApprovalRevision")
+    OR EXISTS (
+      SELECT 1 FROM "DecisionEvent" WHERE "type" IN ('approved', 'reapproved')
+    ) THEN
+    RAISE EXCEPTION 'phase6-4b: TRUNCATE would erase permanent approval/withdrawal evidence or published records.';
+  END IF;
+  RETURN NULL;
+END $$;
+
 -- ── the ORGS-owned membership seal: the holder-orphan refusal at the DATABASE ─────────────────
 -- (§A.1 rounds 2/5/11/19; §B.1.) AFTER ROW, not deferred: the row change is applied in this
 -- transaction, so the effective standing computed here IS the post-write state — including the

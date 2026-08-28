@@ -639,4 +639,94 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
       200,
     );
   });
+
+  // ── round-4 Codex corrections (the replacement head 8e69603b → PR #465 lineage) ────────────
+
+  it('R4-F1: overlapping draft edits derive the conversion from the LOCKED row — the stale-read interleaving is a deliberate 400, never a CHECK abort', async () => {
+    // a choice draft; session A converts it to a RECORD while holding the row, and session B's
+    // PATCH {deciderKind:'client'} does its pre-transaction read against the still-choice state
+    const res = await post(pmcToken)(`/projects/${projectId}/decisions`, { title: `R4F1 draft ${run}`, room: 'K', options: twoOptions, publish: false });
+    expect(res.status).toBe(201);
+    const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId, title: `R4F1 draft ${run}` } });
+
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((r) => { releaseA = r; });
+    let aHolds!: () => void;
+    const aHolding = new Promise<void>((r) => { aHolds = r; });
+    const aTx = t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtextextended('readiness:${projectId}', 0))`);
+      await tx.$executeRawUnsafe(`SELECT 1 FROM "Decision" WHERE "id" = '${d.id}' FOR UPDATE`);
+      aHolds();
+      await gateA; // B has read the CHOICE state and is blocked on our locks
+      await tx.decisionOption.deleteMany({ where: { decisionId: d.id } });
+      await tx.decision.update({ where: { id: d.id }, data: { deciderKind: 'none', status: 'recorded', photoSwatch: null } });
+    });
+    await aHolding;
+
+    // B starts: its pre-transaction read sees the CHOICE draft; its transaction then waits on
+    // the locks A holds and resumes only AFTER A committed the conversion to a record
+    const b = patch(pmcToken)(`/projects/${projectId}/decisions/${d.id}/draft`, { deciderKind: 'client' });
+    const bStarted = b.then((r) => r.status);
+    // condition-based barrier: wait until B's backend is BLOCKED on a lock, not a fixed sleep
+    for (;;) {
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+        `SELECT COUNT(*)::bigint AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND state = 'active' AND pid <> pg_backend_pid()`,
+      );
+      if (Number(rows[0]!.n) > 0) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    releaseA();
+    await aTx;
+
+    // judged against the LOCKED truth (now a record), B's optionless re-point is the same
+    // deliberate refusal the sequential conversion door gives — never an uncaught DB abort
+    const status = await bStarted;
+    const body = (await b).body as { message?: unknown };
+    expect(status, JSON.stringify(body)).toBe(400);
+    expect(JSON.stringify(body.message)).toContain('2–4 options');
+    // and the record itself is untouched by the refused edit
+    const after = await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } });
+    expect(after.status).toBe('recorded');
+    expect(after.deciderKind).toBe('none');
+    expect(after.photoSwatch).toBeNull();
+    // cleanup: the unpublished record draft is discardable (no approval evidence)
+    await t.prisma.decisionEvent.deleteMany({ where: { decisionId: d.id } });
+    await t.prisma.decision.delete({ where: { id: d.id } });
+  });
+
+  it('R4-F2: the statement-level TRUNCATE seal covers published records (the widened 20271015 body is what is deployed)', async () => {
+    // the behavioural proof runs in upgrade-proof.sh over a RECORDS-ONLY scratch register (this
+    // shared database carries approval evidence, which the OLD arms already refuse); here the
+    // DEPLOYED body is pinned to carry the widened recorded arm and its naming message
+    const rows = await t.prisma.$queryRawUnsafe<Array<{ def: string }>>(
+      `SELECT pg_get_functiondef('decision_t4b_no_truncate()'::regprocedure) AS def`,
+    );
+    expect(rows[0]!.def).toContain(`'recorded'`);
+    expect(rows[0]!.def).toContain('"publishedAt" IS NOT NULL');
+    expect(rows[0]!.def).toContain('published records');
+  });
+
+  it('R4-F3: user linkage requires an UNLINK-CAPABLE bundle — an undeclared authenticated subscribe stays unlinked and severs a lingering link', async () => {
+    const endpoint = `https://push.example/r4f3-${run}`;
+    const subscription = { endpoint, keys: { p256dh: 'k1', auth: 'a1' } };
+    // the 4b bundle declares the decisions contract on every request → the endpoint is linked
+    const aware = await http().post(`/projects/${projectId}/push/subscribe`)
+      .set('Authorization', `Bearer ${pmcToken}`)
+      .set('X-Vitan-Decisions-Contract', 'recorded-v1')
+      .send({ subscription });
+    expect(aware.status, JSON.stringify(aware.body)).toBe(201);
+    let row = await t.prisma.pushSubscription.findUniqueOrThrow({ where: { endpoint } });
+    expect(row.linkedUserId).toBe(users.pmc);
+    // a cached PRE-4b bundle has no unlink in its sign-out, so its authenticated subscribe
+    // (no declaration — the header did not exist there) must NOT attribute the device; the
+    // link-less upsert also SEVERS the lingering link the 4b session left on this browser
+    const legacy = await http().post(`/projects/${projectId}/push/subscribe`)
+      .set('Authorization', `Bearer ${pmcToken}`)
+      .send({ subscription });
+    expect(legacy.status, JSON.stringify(legacy.body)).toBe(201);
+    row = await t.prisma.pushSubscription.findUniqueOrThrow({ where: { endpoint } });
+    expect(row.linkedUserId).toBeNull();
+    expect(row.role).toBe('pmc'); // role-level delivery is untouched — only the attribution is withheld
+    await t.prisma.pushSubscription.delete({ where: { endpoint } }); // keep the suite's project teardown clean
+  });
 });

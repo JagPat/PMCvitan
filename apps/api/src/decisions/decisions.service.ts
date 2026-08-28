@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, type $Enums } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
@@ -588,16 +588,15 @@ export class DecisionsService {
       return this.snapshot.build(projectId, user.role, user.sub);
     }
 
+    // fast-fail pre-checks on a plain read (404 / published / authorship — `authorId` is frozen
+    // from birth by the DB seal, so this read cannot go stale for the authorship rule); the
+    // kind/status derivation happens INSIDE the transaction on the LOCKED row (round-4 Codex F1)
     const d = await this.prisma.decision.findUnique({ where: { id: decisionId } });
     if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
     if (d.publishedAt !== null) throw new ConflictException('Only an unpublished draft can be edited — a published decision\'s content and holder are frozen');
     if (user.role !== 'pmc' && d.authorId !== user.sub) {
       throw new ForbiddenException('Only the draft\'s author or the PMC can edit it');
     }
-
-    // the RESULTING kind decides status coherence and option handling
-    const nextKind = input.deciderKind ?? (d.deciderKind as 'client' | 'pmc' | 'member' | 'none');
-    const nextStatus = nextKind === 'none' ? 'recorded' : d.status === 'recorded' ? 'pending' : d.status;
 
     // location handling mirrors create
     let nodeId: string | null | undefined = undefined;
@@ -619,13 +618,29 @@ export class DecisionsService {
       idempotencyKey,
       requestHash,
       run: async (tx) => {
-        // round-3 Codex F4 — ENTERING `recorded` fires the seal's conversion arm (author
-        // authority judged under the readiness key) even on an unpublished draft, so the
-        // conversion path holds the key exactly like the record birth door (§B.1): a
-        // concurrent key holder makes this command WAIT instead of failing spuriously on
-        // the trigger's try-acquire. Taken FIRST — the same lock order every other command
-        // uses (readiness key, then row locks).
-        if (nextKind === 'none' && d.deciderKind !== 'none') await lockProjectReadiness(tx, projectId);
+        // round-3 Codex F4 + round-4 Codex F1 — the readiness key FIRST (the uniform §B.1
+        // order: key, then row locks): whether this edit ENTERS `recorded` (firing the seal's
+        // conversion arm, whose try-acquire expects the key held) is only knowable from the
+        // row's CURRENT kind, which is only knowable under the row lock — and the key must
+        // precede that lock, so it is taken unconditionally. A concurrent key holder makes
+        // this command WAIT, never fail spuriously on the trigger.
+        await lockProjectReadiness(tx, projectId);
+        // round-4 Codex F1 — LOCK the draft and derive every conversion decision from the
+        // locked truth, never the pre-transaction snapshot: two overlapping valid PATCHes
+        // could otherwise interleave (A converts choice → record; B, judged against its stale
+        // choice read, re-points the now-record to a choice kind), skipping the record→choice
+        // option validation and aborting on the DB swatch CHECK instead of a deliberate 400.
+        const lockedRows = await tx.$queryRaw<Array<{ status: $Enums.DecisionStatus; deciderKind: string; publishedAt: Date | null }>>(
+          Prisma.sql`SELECT "status"::text AS "status", "deciderKind"::text AS "deciderKind", "publishedAt"
+                       FROM "Decision" WHERE "id" = ${decisionId} AND "projectId" = ${projectId} FOR UPDATE`,
+        );
+        if (lockedRows.length === 0) throw new NotFoundException(`Decision ${decisionId} not found`);
+        const cur = lockedRows[0]!;
+        if (cur.publishedAt !== null) throw new ConflictException('The draft was published while editing — its content and holder are now frozen');
+        // the RESULTING kind decides status coherence and option handling — from the LOCKED row
+        const curKind = cur.deciderKind as 'client' | 'pmc' | 'member' | 'none';
+        const nextKind = input.deciderKind ?? curKind;
+        const nextStatus = nextKind === 'none' ? 'recorded' : cur.status === 'recorded' ? 'pending' : cur.status;
         if (input.deciderKind === 'member') {
           const member = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, input.deciderMembershipId!);
           if (!member) throw new BadRequestException('The named decider must be an ACTIVE member of this project');
@@ -635,7 +650,7 @@ export class DecisionsService {
         // option payload would reach the DB swatch CHECK as an uncaught transaction abort:
         // refuse it deliberately here — only the service knows the draft's CURRENT kind
         // (the contract cannot see what the draft is converting FROM).
-        if (nextKind !== 'none' && d.deciderKind === 'none' && (input.options?.length ?? 0) < 2) {
+        if (nextKind !== 'none' && curKind === 'none' && (input.options?.length ?? 0) < 2) {
           throw new BadRequestException('Converting a record into a choice needs its 2–4 options in the same edit');
         }
         // round-1 Codex F8 — CONVERTING to a record files the frozen author's name in the
@@ -643,7 +658,7 @@ export class DecisionsService {
         // same check the record birth door runs; the DB seal re-judges it under the readiness
         // key). A colleague cannot convert a departed author's draft into a record attributed
         // to someone with no standing.
-        if (nextKind === 'none' && d.deciderKind !== 'none') {
+        if (nextKind === 'none' && curKind !== 'none') {
           const authorHoldsAuthority = d.authorId
             ? await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, d.authorId, ['pmc'], { forUpdate: true })
             : false;
@@ -653,7 +668,7 @@ export class DecisionsService {
             );
           }
         }
-        if (input.options === undefined && nextKind === 'none' && d.deciderKind !== 'none') {
+        if (input.options === undefined && nextKind === 'none' && curKind !== 'none') {
           const remaining = await tx.decisionOption.count({ where: { decisionId } });
           if (remaining > 0) {
             throw new BadRequestException('A record takes no options — remove them in the same edit (send options: [])');

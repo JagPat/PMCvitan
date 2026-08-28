@@ -3787,6 +3787,54 @@ assert_rejects "4b-decider (identity-freeze CLASS): re-homing a project's org is
   "UPDATE \"Project\" SET \"orgId\"=NULL WHERE \"id\"='p1'" \
   "frozen|org"
 
+# ---- Phase 6 task 4b (decider) round-4 F2: the TRUNCATE seal over a RECORDS-ONLY register ----
+# TRUNCATE fires no row triggers, and the 20270826 statement seal predated `recorded`: a register
+# holding published records but NO approval evidence passed it, so `TRUNCATE "Decision" CASCADE`
+# could erase every permanent record. The widened `decision_t4b_no_truncate` body (20271015) is
+# proven on a SECOND scratch database — row-free and fully migrated, so no approval evidence can
+# trip the OLD arms and mask the gap: one legally-born published record, then the hostile TRUNCATE.
+echo ""
+echo "=== Phase 6 task 4b (decider) F2: TRUNCATE refused over a records-only register ==="
+DB2="${DB}_recreg"
+PSQL2="psql -X -v ON_ERROR_STOP=1 -d $DB2"
+$PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB2;" || exit 1
+$PSQL_ADMIN -c "CREATE DATABASE $DB2;" || exit 1
+for d in $(ls -d "$MIG_DIR"/*/ | sort); do
+  # --single-transaction: the ledger's LOCK TABLE statements require a transaction block (the
+  # same wrapping `prisma migrate deploy` gives every migration)
+  psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB2" -f "$d/migration.sql" >/dev/null 2>&1 \
+    || { echo "FAILED  4b-decider F2: migration $(basename "$d") did not apply to the records-only register"; FAIL=1; }
+done
+$PSQL2 -q >/dev/null <<'SQL' || { echo "FAILED  4b-decider F2: the records-only fixture was refused"; FAIL=1; }
+INSERT INTO "Org" ("id","name","slug") VALUES ('org-rr','Record Org','record-org');
+INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+VALUES ('rr-p1','org-rr','Record Site','RR','','Finishing','RR-01','01 Jan 2026','31 Dec 2026',0,0,0);
+INSERT INTO "User" ("id","projectId","role","name","email") VALUES ('rr-u1','rr-p1','pmc','Record PMC','rr@vitan.in');
+INSERT INTO "Membership" ("id","projectId","userId","role","status") VALUES ('rr-m1','rr-p1','rr-u1','pmc','active');
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtextextended('readiness:rr-p1', 0));
+INSERT INTO "Decision"("id","projectId","title","room","status","ageDays","authorId","deciderKind","publishedAt")
+VALUES ('RR-REC','rr-p1','Site condition noted','Hall','recorded',0,'rr-u1','none',now());
+COMMIT;
+SQL
+if out=$($PSQL2 -c 'TRUNCATE "Decision" CASCADE' 2>&1); then
+  echo "FAILED  4b-decider F2: TRUNCATE CASCADE erased a records-only register (no approval evidence tripped the old arms)"
+  FAIL=1
+elif ! printf '%s' "$out" | grep -q 'published records'; then
+  echo "FAILED  4b-decider F2: TRUNCATE refused, but not by the widened records arm — got: $(printf '%s' "$out" | tail -2)"
+  FAIL=1
+else
+  echo "ok      4b-decider F2: a records-only register refuses TRUNCATE by the widened statement seal"
+fi
+survived=$(psql -X -tAc "SELECT COUNT(*) FROM \"Decision\" WHERE \"id\"='RR-REC'" -d "$DB2")
+if [ "$survived" = "1" ]; then
+  echo "ok      4b-decider F2 precision: the record survived the refused TRUNCATE"
+else
+  echo "FAILED  4b-decider F2 precision: expected the record to survive, found count=$survived"
+  FAIL=1
+fi
+$PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB2;" >/dev/null 2>&1 || true
+
 # ---- Schedule B1 — the acyclic activity dependency graph -------------------------------------
 echo ""
 echo "=== schedule B1: the activity dependency graph over a legacy database ==="

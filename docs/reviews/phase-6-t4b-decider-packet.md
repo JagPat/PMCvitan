@@ -298,3 +298,51 @@ preserved and `20271015` is byte-for-byte unchanged.
 No migration change in this round — `20271015` remains the round-1 body. Gates for this head:
 `pnpm check` EXIT 0; the full integration battery on a pristine migrated DB (the t4b suite is
 now 22 probes); `test:e2e:api:allmodules` and `:outbox` both green (totals in the PR thread).
+
+## Round-4 correction (the Codex review of head `8e69603b` — three findings; #464 closed at the two-head limit)
+
+Head `8e69603b` was PR #464's SECOND finding-bearing head, so per the review-efficiency protocol
+#464 closes unmerged and this SECOND REPLACEMENT PR (branch `claude/decision-workflow-4b-r3`,
+`Replaces: #464`) carries the whole unit — every decision from all prior rounds preserved — plus
+ONLY these three fixes, each reproduced RED at the carried `8e69603b` state first:
+
+- **R4-F1 (P2, stale-read conversion state)** — `updateDraft` derived `nextKind` and the
+  conversion checks from the pre-transaction row while its CAS checked only `publishedAt`, so two
+  overlapping valid PATCHes could interleave: A converts a choice draft to a record
+  (`options: []`); B, judged against its stale choice read, re-points the now-record to a choice
+  kind, skipping the record→choice option validation and aborting on the swatch CHECK as an
+  internal error. The transaction now takes the readiness key unconditionally (whether the edit
+  ENTERS `recorded` is only knowable from the row's current kind, which is only knowable under
+  the row lock — and the key must precede row locks in the §B.1 order), LOCKS the draft row, and
+  derives kind/status and every conversion check from the locked truth. Probe: `R4-F1` — the
+  exact interleaving is orchestrated deterministically (session A holds the row through the
+  conversion while B performs its stale read, condition-based blocked-backend barrier, no fixed
+  sleeps); B now receives the same deliberate 400 as the sequential door, and the record is
+  untouched.
+- **R4-F2 (P1, TRUNCATE seal gap)** — a published record is declared permanent, but TRUNCATE
+  fires no row triggers and the 20270826 statement seal (`decision_t4b_no_truncate`) predates
+  the `recorded` status: on a register holding records but no approval evidence,
+  `TRUNCATE "Decision" CASCADE` passed it and erased every permanent record. The NAMED seal's
+  body is WIDENED in this unit's own `20271015` migration (a `CREATE OR REPLACE` — the frozen
+  `20270826` is untouched byte-for-byte, the trigger object keeps its name so the sanctioned
+  reset paths that disable it by name are unaffected; an unpublished draft record blocks
+  nothing). Probes: the deployed-body pin (`R4-F2` in the decider suite) and the behavioural
+  proof in `upgrade-proof.sh` — a SECOND fully-migrated row-free scratch database holding ONE
+  legally-born published record and no approval evidence (so the old arms cannot mask the gap)
+  refuses `TRUNCATE "Decision" CASCADE` with the widened arm's message, and the record survives.
+- **R4-F3 (P1, pre-4b bundle push linkage)** — a cached pre-4b bundle's authenticated
+  subscribe also carries `user.exp`, so the endpoint was linked to the user even though that
+  bundle has no `/push/unlink` in its sign-out: on a shared browser the departing user's link
+  stayed valid until JWT expiry, exposing named-decider titles to the next person. User linkage
+  is now gated on the SAME version boundary the recorded-compat interceptor reads — the 4b
+  bundle declares `X-Vitan-Decisions-Contract` on every request (the gateway attaches it
+  unconditionally, subscribe included), while an undeclared authenticated subscribe stores the
+  subscription UNLINKED (byte-identical to the pre-4b server) and, because a link-less upsert
+  clears the stored attribution, it also SEVERS any lingering link an earlier 4b session left
+  on that browser. Probe: `R4-F3` (declared subscribe links; undeclared re-subscribe unlinks
+  and keeps role-level delivery).
+
+Migration story: `20270810`/`20270826` remain byte-for-byte unchanged; `20271015` (this unit's
+own, unmerged anywhere) gains the widened truncate-seal body, re-proven by a full test-database
+rebuild + the extended `upgrade-proof.sh` records-only register cycle. The two record-arm
+decision writes remain pinned in the §A lock-coverage enumeration (40).
