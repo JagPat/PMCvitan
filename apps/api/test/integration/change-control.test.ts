@@ -43,7 +43,11 @@ describe('decision change-control (integration)', () => {
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
       t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId } } }),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+      // Phase 6 task 4b — the option freeze now covers EVERY published parent (not only
+      // withdrawn ones), so the reset disables it by name for the same sanctioned bypass.
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
       t.prisma.decisionOption.deleteMany({ where: { decision: { projectId } } }),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
       // Phase 6 unit 4b: an APPROVED decision is permanent register evidence — the consolidated
       // 4a arm and the independent 4b seal each refuse its DELETE. Same sanctioned-bypass
       // contract as the DecisionEvent disable above, in the same atomic transaction.

@@ -310,7 +310,10 @@ CREATE TRIGGER "Decision_t4b2_lifecycle_seal"
 CREATE OR REPLACE FUNCTION phase6_t4b2_option_floor() RETURNS trigger AS $fn$
 DECLARE d RECORD; n BIGINT; did TEXT;
 BEGIN
-  did := CASE WHEN TG_TABLE_NAME = 'Decision' THEN NEW."id" ELSE NEW."decisionId" END;
+  -- an IF, not a CASE expression: PL/pgSQL resolves EVERY field reference in one expression
+  -- against the row type, so `NEW."decisionId"` inside an untaken CASE arm still errors when
+  -- the firing row is a Decision.
+  IF TG_TABLE_NAME = 'Decision' THEN did := NEW."id"; ELSE did := NEW."decisionId"; END IF;
   SELECT "id", "deciderKind"::text AS kind, "publishedAt" INTO d
     FROM "Decision" WHERE "id" = did;
   IF NOT FOUND OR d."publishedAt" IS NULL THEN RETURN NULL; END IF;

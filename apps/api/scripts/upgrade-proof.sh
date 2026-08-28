@@ -83,6 +83,12 @@ PHASE3_R2=20261212000000
 # make those historical fixtures impossible to plant and would no longer prove the old ledger.
 PHASE6_T4B=20270826000000
 PHASE6_T4B_NAME=20270826000000_phase6_t4b_approval_attribution
+# The 4b DECIDER migration (Phase 6 task 4b proper) carries a diagnostic-first holderless AUDIT,
+# so it gets its own stop: this very legacy register (published open client-held decisions with
+# no active client) is the state the audit exists to refuse — REHEARSED to abort, repaired by
+# the sanctioned §P6T4B path, then applied.
+PHASE6_T4B_DECIDER=20271015000000
+PHASE6_T4B_DECIDER_NAME=20271015000000_phase6_t4b_decider
 
 PSQL_ADMIN="psql -X -q -v ON_ERROR_STOP=1 -d postgres"
 PSQL="psql -X -v ON_ERROR_STOP=1 -d $DB"
@@ -96,12 +102,15 @@ baseline=0
 phase1_dirs=()
 phase3_r2_dirs=()
 phase6_t4b_dirs=()
+phase6_t4b_decider_dirs=()
 for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   name="$(basename "$d")"
   stamp="${name%%_*}"
   if [ "$stamp" -lt "$PHASE1_FIRST" ] 2>/dev/null || [ "$name" = "0_init" ]; then
     $PSQL -q -f "$d/migration.sql" >/dev/null || { echo "baseline migration failed: $name"; exit 1; }
     baseline=$((baseline + 1))
+  elif [ "$stamp" -ge "$PHASE6_T4B_DECIDER" ] 2>/dev/null; then
+    phase6_t4b_decider_dirs+=("$d")
   elif [ "$stamp" -ge "$PHASE6_T4B" ] 2>/dev/null; then
     phase6_t4b_dirs+=("$d")
   elif [ "$stamp" -ge "$PHASE3_R2" ] 2>/dev/null; then
@@ -3695,6 +3704,84 @@ assert_rejects "4b round 1 F2: after redeploy the consolidated arm refuses the s
 assert "4b round 1 F2: the replay/redeploy cycle invented no legacy stamp" \
   "SELECT COUNT(*)::text FROM \"DecisionLegacyApproval\" WHERE \"decisionId\" IN ('UP4B-OLD','UP4B-ATTR','UP4B-UNPUB-ATTR','UP4B-UNPUB-OLD');" \
   "0"
+
+# ---- Phase 6 task 4b (decider): the holder model over a legacy register ----------------------
+# This register IS the state the diagnostic-first audit refuses: UP4A-D2/UP4A-D3 are PUBLISHED
+# OPEN decisions, backfilled `client`-held, in a project with NO active client. The migration
+# must ABORT naming §P6T4B, the operator repairs by RESTORING A COVERING MEMBERSHIP (never
+# inventing a holder), and only then do the guards install.
+echo ""
+echo "=== Phase 6 task 4b (decider): the holderless audit must ABORT over this register ==="
+if out=$($PSQL --single-transaction -q -f "$MIG_DIR/$PHASE6_T4B_DECIDER_NAME/migration.sql" 2>&1); then
+  echo "FAILED  4b-decider audit: the migration ACCEPTED a register holding client-held published open decisions with no active client"
+  FAIL=1
+elif ! printf '%s' "$out" | grep -q 'phase6-4b ABORT'; then
+  echo "FAILED  4b-decider audit: aborted, but not by the named diagnostic — got: $(printf '%s' "$out" | tail -3)"
+  FAIL=1
+else
+  echo "ok      4b-decider audit: abort names the holderless published open decisions (§P6T4B)"
+fi
+
+echo "repairing per §P6T4B: restoring a covering ACTIVE client membership on p1 (USER-2)"
+$PSQL -q -c "INSERT INTO \"Membership\"(\"id\",\"projectId\",\"userId\",\"role\",\"status\") VALUES ('UP4BD-MC','p1','USER-2','client','active') ON CONFLICT DO NOTHING;" >/dev/null \
+  || { echo "FAILED  4b-decider repair: covering membership insert"; FAIL=1; }
+$PSQL --single-transaction -q -f "$MIG_DIR/$PHASE6_T4B_DECIDER_NAME/migration.sql" >/dev/null \
+  || { echo "FAILED  4b-decider migration after the sanctioned repair"; FAIL=1; }
+for d in "${phase6_t4b_decider_dirs[@]}"; do
+  name="$(basename "$d")"
+  [ "$name" = "$PHASE6_T4B_DECIDER_NAME" ] && continue
+  echo "applying deferred ledger migration: $name"
+  $PSQL --single-transaction -q -f "$d/migration.sql" >/dev/null \
+    || { echo "FAILED  deferred ledger migration: $name"; exit 1; }
+done
+
+assert "4b-decider: the enum arms exist and every legacy row keeps the client backfill (no holder invented)" \
+  "SELECT (SELECT COUNT(*) FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE (t.typname='DecisionStatus' AND e.enumlabel='recorded') OR (t.typname='DeciderKind' AND e.enumlabel='none'))::text || '|' || (SELECT COUNT(*)::text FROM \"Decision\" WHERE \"deciderKind\"::text <> 'client' AND \"id\" LIKE 'DL-%');" \
+  "2|0"
+assert "4b-decider: the seal network is installed (decision lifecycle/option floor/record delete/change-request seals + BOTH membership guards + the project-org freeze)" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('Decision_t4b2_lifecycle_seal','Decision_t4b2_option_floor','DecisionOption_t4b2_option_floor','Decision_t4b2_record_no_delete','ChangeRequest_t4b2_seal','Membership_t4b2_holder_guard','OrgMembership_t4b2_holder_guard','Project_t4b2_org_frozen');" \
+  "8"
+
+# PRECISION FIRST — a coherent PUBLISHED record by an author who holds decision authority is
+# ACCEPTED (the seals are precise, not merely strict). USER-1 is p1's active PMC.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b-decider precision: a coherent published record was refused"; FAIL=1; }
+INSERT INTO "Decision"("id","projectId","title","room","status","ageDays","authorId","deciderKind","publishedAt")
+VALUES ('UP4BD-REC','p1','Site condition noted','Hall','recorded',0,'USER-1','none',now());
+SQL
+assert "4b-decider precision: the record is on the register — zero options, terminal, team-visible" \
+  "SELECT \"status\"::text || '/' || \"deciderKind\"::text || '/' || (SELECT COUNT(*)::text FROM \"DecisionOption\" WHERE \"decisionId\"='UP4BD-REC') FROM \"Decision\" WHERE \"id\"='UP4BD-REC';" \
+  "recorded/none/0"
+
+assert_rejects "4b-decider: the kind⟺status pair CHECK refuses a half-converted row (none without recorded)" \
+  "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"ageDays\",\"authorId\",\"deciderKind\") VALUES ('UP4BD-H1','p1','Half','Hall','pending',0,'USER-1','none')" \
+  "Decision_t4b2_kind_status_check"
+assert_rejects "4b-decider: a record authored by an identity with NO decision authority is unrepresentable (P18)" \
+  "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"ageDays\",\"authorId\",\"deciderKind\",\"publishedAt\") VALUES ('UP4BD-H2','p1','Forged author','Hall','recorded',0,'no-such-user','none',now())" \
+  "author"
+assert_rejects "4b-decider: a published record with a planted option cannot COMMIT (the deferred exactly-zero floor)" \
+  "BEGIN; INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"ageDays\",\"authorId\",\"deciderKind\",\"publishedAt\") VALUES ('UP4BD-H3','p1','Optioned record','Hall','recorded',0,'USER-1','none',now()); INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UP4BD-H3O','UP4BD-H3','A','a','M',0,'sw'); COMMIT" \
+  "record takes no options|published"
+assert_rejects "4b-decider: a transition OUT of a published record is refused (terminal like withdrawn)" \
+  "UPDATE \"Decision\" SET \"status\"='pending', \"deciderKind\"='client' WHERE \"id\"='UP4BD-REC'" \
+  "record|terminal|frozen"
+assert_rejects "4b-decider: a ChangeRequest cannot attach to a record (nothing about it is contestable)" \
+  "INSERT INTO \"ChangeRequest\"(\"id\",\"decisionId\",\"reason\",\"costImpact\",\"timeImpactDays\",\"status\") VALUES ('UP4BD-CR','UP4BD-REC','contest a record',0,0,'open')" \
+  "record"
+assert_rejects "4b-decider: DELETE of a published record is refused (a filed issue is permanent)" \
+  "DELETE FROM \"Decision\" WHERE \"id\"='UP4BD-REC'" \
+  "record|permanent"
+assert_rejects "4b-decider P39: soft-removing the LAST active client while a client-held published open decision exists is refused at the DATABASE" \
+  "UPDATE \"Membership\" SET \"status\"='removed' WHERE \"id\"='UP4BD-MC'" \
+  "holder|client|open decision"
+assert_rejects "4b-decider P39: re-roling that last client away is refused the same way" \
+  "UPDATE \"Membership\" SET \"role\"='engineer' WHERE \"id\"='UP4BD-MC'" \
+  "holder|client|open decision"
+assert_rejects "4b-decider (identity-freeze CLASS): re-homing a membership's userId is refused — a re-home is a removal plus an addition, never an UPDATE" \
+  "UPDATE \"Membership\" SET \"userId\"='USER-1' WHERE \"id\"='UP4BD-MC'" \
+  "frozen|identity"
+assert_rejects "4b-decider (identity-freeze CLASS): re-homing a project's org is refused for the same reason (the link that selects WHOSE admins hold effective-PMC standing)" \
+  "UPDATE \"Project\" SET \"orgId\"=NULL WHERE \"id\"='p1'" \
+  "frozen|org"
 
 # ---- Schedule B1 — the acyclic activity dependency graph -------------------------------------
 echo ""
