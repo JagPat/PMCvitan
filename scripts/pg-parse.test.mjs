@@ -1,6 +1,6 @@
 // Tests for the parser binding.
 //
-// The claim is small enough to test directly: all 91 migrations parse with PostgreSQL's grammar
+// The claim is small enough to test directly: all 92 migrations parse with PostgreSQL's grammar
 // through this binding, and the binding neither leaks nor truncates on the largest of them. Each
 // probe below corresponds to a measured fact in the binding's header — a decision recorded there
 // without a test to hold it would be a comment, not a property.
@@ -27,10 +27,10 @@ const pg = await loadParser();
 
 test('every migration in the corpus parses with PostgreSQL’s own grammar', () => {
   const names = migrationNames();
-  assert.equal(names.length, 91, 'the corpus size is pinned, so a new migration is a visible diff');
+  assert.equal(names.length, 92, 'the corpus size is pinned, so a new migration is a visible diff');
   for (const name of names) {
     // The file is NAMED here, because parseSql is handed text and cannot name it. A check whose
-    // failure output does not say which of 91 files failed is not a usable check.
+    // failure output does not say which of 92 files failed is not a usable check.
     try {
       const tree = parseSql(sqlOf(name));
       assert.ok(Array.isArray(tree.stmts) && tree.stmts.length > 0, 'a migration has statements');

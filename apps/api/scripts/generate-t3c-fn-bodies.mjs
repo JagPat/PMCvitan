@@ -29,6 +29,8 @@ const LAYERS = [
   '20270215000000_phase4_t3_correction',
   '20270220000000_phase4_t3_correction2',
   '20270225000000_phase4_t3_correction3',
+  // contractor-capture unit 1 — the attendance enumeration extended over workerPartyId
+  '20271010000000_ccu1_party_attribution',
 ];
 
 /** Only the functions bound to SEALED triggers / event triggers are pinned. */

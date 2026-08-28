@@ -488,6 +488,10 @@ export const T3C_FN_LAYERS = {
   correction1: '20270215000000_phase4_t3_correction',
   correction2: '20270220000000_phase4_t3_correction2',
   correction3: '20270225000000_phase4_t3_correction3',
+  // Contractor-capture unit 1 — extends the attendance append-only ENUMERATION over the new
+  // `workerPartyId` evidence snapshot (§4 item 1, seal S1). A later canonical body for the same
+  // sealed function, exactly the shape this registry exists to track.
+  ccu1: '20271010000000_ccu1_party_attribution',
 } as const;
 
 const { ROW, BEFORE, INSERT, DELETE, UPDATE, TRUNCATE } = T3C_TGTYPE;
@@ -544,8 +548,12 @@ export const T3C_CORRECTION2_FN_REQUIREMENTS: readonly T3CFnLayerRequirement[] =
   {
     fn: 'phase4_t3_attendance_append_only',
     layer: T3C_FN_LAYERS.correction2,
-    bodies: [t3cFnBodyAt('phase4_t3_attendance_append_only', T3C_FN_LAYERS.correction2)],
-    what: '20270220 replaced the append-only body to FREEZE manualReason on the revocation update',
+    bodies: [
+      t3cFnBodyAt('phase4_t3_attendance_append_only', T3C_FN_LAYERS.correction2),
+      // contractor-capture unit 1 replaces the body again (workerPartyId joins the enumeration)
+      t3cFnBodyAt('phase4_t3_attendance_append_only', T3C_FN_LAYERS.ccu1),
+    ],
+    what: '20270220 replaced the append-only body to FREEZE manualReason on the revocation update; 20271010 extends the enumeration over workerPartyId',
   },
   {
     fn: 'phase4_t3c_allocation_head_live',
@@ -598,6 +606,8 @@ export const T3C_PREREQUISITE_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
     fnBodies: [
       t3cFnBodyAt('phase4_t3_attendance_append_only', T3C_FN_LAYERS.base),
       t3cFnBodyAt('phase4_t3_attendance_append_only', T3C_FN_LAYERS.correction2),
+      // contractor-capture unit 1 — the enumeration extended over workerPartyId (same seal)
+      t3cFnBodyAt('phase4_t3_attendance_append_only', T3C_FN_LAYERS.ccu1),
     ],
     what: 'a recorded muster is never edited or deleted',
   },

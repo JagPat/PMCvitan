@@ -15,30 +15,25 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 7c72044b
-open_pr: none
+reviewed_merge: 2aee1722
+open_pr: 461
 next_task: none
 blocking_directive: none
 updated: 2026-08-28
 ```
 
-**CONTRACTOR-CAPTURE UNIT 0 IS DELIVERED AND CLEARED — PR #459 MERGED at `main` `7c72044b`
-with a fresh exact-head Codex +1 on `6e661e6f` (attempt 1, no findings), 2026-08-28.** This
-record carries the POST-merge state, so `open_pr` is `none`: a status-only handoff must not leave
-a closed PR number in the file, because `assessRunnerState` resolves any non-`none` `open_pr`
-before the still-active task and the loop would keep returning a PR that no longer exists. The
-recorded Board call — units 1–6 of the contractor-capture staging start ONLY on an explicit
-per-unit Board GO — binds as the STANDING directive `contractor-capture-units-1-6-board-go`
-(defined under **Blocking directives** below). It is deliberately NOT placed in the Now block's
-`blocking_directive` field: that field SCHEDULES work, so an approval gate there either stalls
-the loop (the resolver would return the unexecutable gate before any executable work) or bricks
-the file (a directive from a state that schedules none fails the Now-block rules). The runner's
-next step therefore stays `task: 4` — whose OWN remaining work is the decision-workflow 4b–4d
-plan unit (`docs/superpowers/plans/2026-08-13-decision-workflow.md` §B) and contains NO
-contractor-capture unit — and no continuation may read that, or any resolver output, as a GO for
-units 1–6; the earlier post-merge note implying otherwise was STATUS drift, and the recorded
-Board call wins. Every paragraph BELOW this one records an EARLIER unit; where one of them says
-"the open PR", read it as the open PR of its own day.
+**CONTRACTOR-CAPTURE UNIT 1 (the attribution shape) IS IN PROGRESS ON PR #461, on the Board's
+recorded per-unit GO for unit 1 (2026-08-28, in session, immediately after #460 merged at `main`
+`2aee1722`).** Unit 0 is DELIVERED AND CLEARED (PR #459 at `main` `7c72044b`, exact-head Codex
++1 on `6e661e6f`, attempt 1, no findings). The standing directive
+`contractor-capture-units-1-6-board-go` (defined under **Blocking directives** below) now reads:
+unit 1's gate is CLEARED by that recorded GO; **units 2–6 remain gated**, each on its own
+explicit Board GO, and no review finding, resolver output or continuation note opens one. The
+gate stays out of the Now block's `blocking_directive` field for the recorded reason (an
+approval gate in the scheduling field stalls the loop from `in_progress` and bricks the file
+from any other state — PR #460's cleared round-1 finding). Every paragraph BELOW this one
+records an EARLIER unit; where one of them says "the open PR", read it as the open PR of its
+own day.
 
 The low-effort data-entry initiative's delivered units are #424 (capture context), #427 (the
 data-entry audit), #428 (progressive disclosure) and #440 (the capture stamp). #440 replaced #439,
@@ -147,9 +142,28 @@ Three items remain, each with an executable next unit — none waits on sign-off
    gate binds as the STANDING directive `contractor-capture-units-1-6-board-go`
    (defined under **Blocking directives** below) rather than a Now-block
    `blocking_directive` entry — the field schedules work, and an approval gate there
-   would stall the loop or fail the Now-block rules — and NO yaml field names any
-   contractor-capture unit, so no resolver output can start one: `task: 4`'s own
-   remaining work is the decision-workflow 4b–4d plan unit, not unit 1.
+   would stall the loop or fail the Now-block rules (PR #460's cleared round-1
+   finding).
+   **UNIT 1 (the attribution shape) IS IN PROGRESS ON PR #461, on the Board's
+   recorded per-unit GO (2026-08-28, in session, after #460 merged)** — the additive
+   migration ALONE, no service change, per §4 item 1: the `Worker`/`Crew`/`Membership`
+   party bindings, the orgs-owned `ProjectPartyLabourSource` justification source, the
+   two reliance registers (`WorkerPartyReliance` labour-owned,
+   `MembershipPartyReliance` orgs-owned), the DB-derived at-insert evidence snapshots
+   on `LabourAttendance`/`LabourWorkFact` (`FOR SHARE` against rebind; writer-supplied
+   values overwritten; NULL = pre-attribution truth), and the denormalized
+   `CapacityCommitment.supplierPartyId` (population staged to unit 2) — with the six
+   §4 seals in the ONE migration `20271010000000_ccu1_party_attribution`: the extended
+   attendance append-only enumeration (a new t3c canonical layer), the derivation
+   triggers, the deferred null-strict ACTIVE-edge crew-party equality, the one-way
+   binding lifecycle + evidence/allocation/register freeze, the two-way labour-source
+   coverage (criterion 13), the `phase6_project_party_sourced` extension + labour
+   source association trigger (criterion 11), and the commitment supplier-party
+   one-way freeze (criteria 8/14). §4.1 criteria 2, 5, 7, 8, 11, 13 and 14 are proven
+   by `phase4-unit1-attribution-shape.test.ts` (16 live-PG probes, including the
+   two-session FOR SHARE serialization in BOTH orderings); criteria 1, 9 and 10 are
+   unit 2's (its commands' own barrier probes), criteria 3, 4 and 12 units 3–4's.
+   Units 2–6 remain Board-gated.
    Measured: the three contractor grants
    (`attendance.record`/`labour.work.record`/`activity.output.record`) are intentional — §C's
    seals make the recording party untrusted by construction — but unreachable: the muster and
@@ -1569,8 +1583,12 @@ starts the GATED work only when the gate's recorded clearance arrives.
   on units 1–6 of the contractor-capture staging
   (`docs/ux/CONTRACTOR_CAPTURE_PROPOSAL.md` §4; Board call recorded
   2026-08-28, on #458's thread and re-affirmed after #459 merged). Unit 0 is
-  delivered and cleared; each of units 1–6 starts ONLY on its own explicit
-  Board GO, exactly as unit 0 did. This is a **scope-authorization** gate,
+  delivered and cleared. **Unit 1's gate is CLEARED** by the Board's recorded
+  per-unit GO (2026-08-28, in session, immediately after #460 merged — the
+  next unit in the ordered staging, exactly the clearance this directive
+  names); unit 1 rides PR #461. **Units 2–6 remain gated**: each starts ONLY
+  on its own explicit Board GO, exactly as units 0 and 1 did. This is a
+  **scope-authorization** gate,
   not a review gate: no open PR waits on it, and it never substitutes for —
   or adds to — the exact-head review evidence. Unit 1 (the attribution-shape
   migration) is NEW product scope and is not begun under any other authority.

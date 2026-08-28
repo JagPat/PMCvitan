@@ -14,7 +14,11 @@ export const orgsManifest: ModuleManifest = {
   // Phase 6 unit 6.1a (§A) — the canonical external party, the per-project association the
   // collaborator resolver reads, and the two per-origin source tables that justify it. Orgs-owned
   // so the access path never has to read procurement.
-  ownsModels: ['org', 'orgMembership', 'membership', 'project', 'projectCompany', 'projectTemplate', 'templateModule', 'user', 'workerDevice', 'externalParty', 'projectParty', 'projectPartyCompanySource', 'projectPartyVendorSource'],
+  // Contractor-capture unit 1 adds `projectPartyLabourSource` (the labour justification source —
+  // the same association-source family as the company/vendor sources) and
+  // `membershipPartyReliance` (the orgs-owned register the Membership party-binding freeze
+  // trigger reads; evidence modules register through OrgsParticipant, never by reading orgs).
+  ownsModels: ['org', 'orgMembership', 'membership', 'project', 'projectCompany', 'projectTemplate', 'templateModule', 'user', 'workerDevice', 'externalParty', 'projectParty', 'projectPartyCompanySource', 'projectPartyVendorSource', 'projectPartyLabourSource', 'membershipPartyReliance'],
   // Task 8 reads decisions; Task 10 reads the existing inspection ids at init via the inspections query
   // (InspectionsQueryService.allIds) — both through their query contracts.
   // Phase 4 Task 3 — the WorkerDevice bind command reads the trusted-worker lifecycle through

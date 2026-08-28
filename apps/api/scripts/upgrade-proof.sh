@@ -4110,6 +4110,89 @@ assert "A1-i precision: neither the option nor the retirement landed" \
   "SELECT (SELECT COUNT(*) FROM \"DecisionOption\" WHERE \"id\"='UPA1-SAMETX')::text || '|' || (SELECT \"active\"::text FROM \"DecisionOptionKind\" WHERE \"code\"='up-samefx');" \
   "0|true"
 
+# ---- Contractor-capture unit 1 — the attribution shape over a legacy database -----------------
+echo ""
+echo "=== contractor-capture unit 1: the attribution shape over a legacy database ==="
+
+# ADDITIVE and row-free: a legacy database upgrades with the three new tables EMPTY and every new
+# attribution column entirely NULL — the migration invents no attribution (its own closing
+# diagnostic aborts otherwise; asserted here against the really-migrated fixture as well).
+assert "ccu1: the three unit-1 tables upgrade ROW-FREE over the legacy fixture" \
+  "SELECT ((SELECT COUNT(*) FROM \"ProjectPartyLabourSource\") + (SELECT COUNT(*) FROM \"WorkerPartyReliance\") + (SELECT COUNT(*) FROM \"MembershipPartyReliance\"))::text;" \
+  "0"
+assert "ccu1: every unit-1 attribution column is entirely NULL on legacy rows" \
+  "SELECT ((SELECT COUNT(*) FROM \"Worker\" WHERE \"partyId\" IS NOT NULL) + (SELECT COUNT(*) FROM \"Crew\" WHERE \"partyId\" IS NOT NULL) + (SELECT COUNT(*) FROM \"Membership\" WHERE \"partyId\" IS NOT NULL) + (SELECT COUNT(*) FROM \"LabourAttendance\" WHERE \"workerPartyId\" IS NOT NULL) + (SELECT COUNT(*) FROM \"LabourWorkFact\" WHERE \"workerPartyId\" IS NOT NULL) + (SELECT COUNT(*) FROM \"CapacityCommitment\" WHERE \"supplierPartyId\" IS NOT NULL))::text;" \
+  "0"
+# the six seals are INSTALLED and bound (catalog), and the three extended function bodies really
+# carry their extensions — `CREATE OR REPLACE` preserves identity, so the NAME alone proves nothing
+assert "ccu1: the derivation, guard and deferred-equality/source triggers are installed and enabled" \
+  "SELECT COUNT(*)::text FROM pg_trigger WHERE NOT tgisinternal AND tgenabled='O' AND tgname IN ('LabourAttendance_party_snapshot','LabourWorkFact_party_snapshot','Worker_party_binding_guard','Crew_party_binding_guard','Membership_party_binding_guard','CrewMembership_party_equality','Crew_party_equality','Worker_party_equality','Worker_labour_source_covered','Crew_labour_source_covered','Membership_labour_source_covered','ProjectPartyLabourSource_binding_covered','ProjectPartyLabourSource_association_sourced');" \
+  "13"
+assert "ccu1: the attendance append-only ENUMERATION extends over workerPartyId" \
+  "SELECT (prosrc LIKE '%workerPartyId%')::text FROM pg_proc WHERE proname='phase4_t3_attendance_append_only';" \
+  "true"
+assert "ccu1 (criterion 11): phase6_project_party_sourced counts the labour source" \
+  "SELECT (prosrc LIKE '%ProjectPartyLabourSource%')::text FROM pg_proc WHERE proname='phase6_project_party_sourced';" \
+  "true"
+assert "ccu1 (criterion 8): the commitment lifecycle freeze covers supplierPartyId" \
+  "SELECT (prosrc LIKE '%supplierPartyId%')::text FROM pg_proc WHERE proname='phase4_lp_commitment_lifecycle_only';" \
+  "true"
+
+# A COHERENT attribution chain is ACCEPTED over the migrated legacy database — so the rejections
+# below prove precise seals, not a wall: a labour-only association (the criterion-11 shape the old
+# function could never admit), a bound worker and crew, and a muster whose snapshot the DATABASE
+# derives — the insert below deliberately forges 'ccu1-forged-party' and the stored row must carry
+# the real binding instead (the DB is the ONLY snapshot writer, for every writer).
+$PSQL --single-transaction -q >/dev/null <<'SQL' || { echo "FAILED  ccu1: the coherent attribution chain was refused"; FAIL=1; }
+INSERT INTO "ExternalParty" ("id","orgId","name")
+  SELECT 'CCU1-EP', "orgId", 'ccu1 upgrade-proof party' FROM "Project" ORDER BY "id" LIMIT 1;
+INSERT INTO "ProjectParty" ("id","orgId","projectId","partyId")
+  SELECT 'CCU1-PP', p."orgId", p."id", 'CCU1-EP' FROM "Project" p ORDER BY p."id" LIMIT 1;
+INSERT INTO "ProjectPartyLabourSource" ("id","orgId","projectId","partyId")
+  SELECT 'CCU1-LS', p."orgId", p."id", 'CCU1-EP' FROM "Project" p ORDER BY p."id" LIMIT 1;
+INSERT INTO "LabourTrade" ("projectId","code","name","createdById")
+  SELECT p."id", 'ccu1-mason', 'Mason', (SELECT "id" FROM "User" ORDER BY "id" LIMIT 1) FROM "Project" p ORDER BY p."id" LIMIT 1;
+INSERT INTO "Worker" ("id","projectId","name","tradeCode","activeFrom","createdById")
+  SELECT 'CCU1-W-BOUND', p."id", 'ccu1 bound worker', 'ccu1-mason', DATE '2020-01-01', (SELECT "id" FROM "User" ORDER BY "id" LIMIT 1) FROM "Project" p ORDER BY p."id" LIMIT 1;
+INSERT INTO "Worker" ("id","projectId","name","tradeCode","activeFrom","createdById")
+  SELECT 'CCU1-W-FREE', p."id", 'ccu1 free worker', 'ccu1-mason', DATE '2020-01-01', (SELECT "id" FROM "User" ORDER BY "id" LIMIT 1) FROM "Project" p ORDER BY p."id" LIMIT 1;
+UPDATE "Worker" SET "partyId" = 'CCU1-EP' WHERE "id" = 'CCU1-W-BOUND';
+INSERT INTO "Crew" ("id","projectId","name","activeFrom","createdById","partyId")
+  SELECT 'CCU1-CREW', p."id", 'ccu1 crew', DATE '2020-01-01', (SELECT "id" FROM "User" ORDER BY "id" LIMIT 1), 'CCU1-EP' FROM "Project" p ORDER BY p."id" LIMIT 1;
+INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+  SELECT 'CCU1-CMD', 'project', p."orgId", p."id", (SELECT "id" FROM "User" ORDER BY "id" LIMIT 1), 'ccu1.upgrade-proof', 'ccu1-upgrade-proof', 'h', 'reserved' FROM "Project" p ORDER BY p."id" LIMIT 1;
+UPDATE "CommandExecution" SET "status" = 'succeeded', "resultRef" = 'ccu1-proof', "completedAt" = now() WHERE "id" = 'CCU1-CMD';
+INSERT INTO "LabourAttendance" ("id","projectId","workerId","civilDate","shift","manualReason","recordedById","sourceCommandId","workerPartyId")
+  SELECT 'CCU1-ATT', p."id", 'CCU1-W-BOUND', DATE '2026-01-05', 'day', 'upgrade-proof roll call', (SELECT "id" FROM "User" ORDER BY "id" LIMIT 1), 'CCU1-CMD', 'ccu1-forged-party' FROM "Project" p ORDER BY p."id" LIMIT 1;
+SQL
+assert "ccu1 precision: the DATABASE derived the snapshot — the writer-supplied forgery was overwritten" \
+  "SELECT \"workerPartyId\" FROM \"LabourAttendance\" WHERE \"id\"='CCU1-ATT';" \
+  "CCU1-EP"
+
+assert_rejects "ccu1 hostile: rewriting the frozen evidence snapshot" \
+  "UPDATE \"LabourAttendance\" SET \"workerPartyId\" = NULL WHERE \"id\"='CCU1-ATT'" \
+  "APPEND-ONLY observation"
+assert_rejects "ccu1 hostile: a direct party→party rebind in one statement (the one-way lifecycle)" \
+  "UPDATE \"Worker\" SET \"partyId\" = 'CCU1-OTHER' WHERE \"id\"='CCU1-W-BOUND'" \
+  "one-way"
+assert_rejects "ccu1 hostile: releasing a binding that party-stamped evidence relies on (the freeze)" \
+  "UPDATE \"Worker\" SET \"partyId\" = NULL WHERE \"id\"='CCU1-W-BOUND'" \
+  "FROZEN"
+assert_rejects "ccu1 hostile: binding a worker to a party with NO labour-source row (criterion 13)" \
+  "UPDATE \"Worker\" SET \"partyId\" = 'CCU1-NOSOURCE' WHERE \"id\"='CCU1-W-FREE'" \
+  "owes its labour-source row"
+assert_rejects "ccu1 hostile: an active membership joining an unbound worker to a bound crew (null-strict equality)" \
+  "INSERT INTO \"CrewMembership\" (\"id\",\"projectId\",\"crewId\",\"workerId\",\"addedById\") SELECT 'CCU1-CM', p.\"id\", 'CCU1-CREW', 'CCU1-W-FREE', (SELECT \"id\" FROM \"User\" ORDER BY \"id\" LIMIT 1) FROM \"Project\" p ORDER BY p.\"id\" LIMIT 1" \
+  "different parties"
+# TWO seals refuse this delete, and whichever fires first is correct: the association here is
+# justified ONLY by the labour source, so `phase6_project_party_sourced` refuses the orphaned
+# association at commit — and the binding-coverage trigger refuses the orphaned bindings. (The
+# focused suite proves the binding-coverage arm in isolation, with a company source keeping the
+# association justified.)
+assert_rejects "ccu1 hostile: deleting the labour source while its binding origin remains (criterion 13, inverse)" \
+  "DELETE FROM \"ProjectPartyLabourSource\" WHERE \"id\"='CCU1-LS'" \
+  "owes its labour-source row|has no source justifying it"
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller

@@ -138,6 +138,9 @@ const MODEL_OWNER: Record<string, string> = {
   // Procurement writes them through `OrgsParticipant`, the declared participant edge.
   externalParty: 'orgs', projectParty: 'orgs',
   projectPartyCompanySource: 'orgs', projectPartyVendorSource: 'orgs',
+  // Contractor-capture unit 1 — the labour justification source + the two reliance registers.
+  projectPartyLabourSource: 'orgs', membershipPartyReliance: 'orgs',
+  workerPartyReliance: 'labour',
   projectTemplate: 'orgs', templateModule: 'orgs', user: 'orgs', workerDevice: 'orgs',
   // shared infrastructure every module appends to — NOT a cross-module edge
   auditLog: 'SHARED', notification: 'SHARED', pushSubscription: 'SHARED',

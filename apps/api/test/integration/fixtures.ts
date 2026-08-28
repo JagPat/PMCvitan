@@ -76,6 +76,12 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
       prisma.passwordCredentialChallenge.deleteMany({ where: { userId: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id] } } }),
       prisma.auditLog.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.notification.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
+      // Contractor-capture unit 1 — the reliance registers FK Membership/Worker with NO ACTION
+      // and the labour source FKs ProjectParty with RESTRICT, so all three clear before the rows
+      // they justify or freeze. A suite that bound no party deletes nothing here.
+      prisma.membershipPartyReliance.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
+      prisma.workerPartyReliance.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
+      prisma.projectPartyLabourSource.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.membership.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.orgMembership.deleteMany({ where: { orgId: { in: [orgA.id, orgB.id] } } }),
       // Phase 6 unit 6.1a — the canonical party is ORG-scoped and records WHO created it, with a

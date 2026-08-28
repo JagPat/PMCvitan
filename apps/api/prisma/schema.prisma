@@ -701,6 +701,7 @@ model ProjectParty {
 
   companySources ProjectPartyCompanySource[]
   vendorSources  ProjectPartyVendorSource[]
+  labourSources  ProjectPartyLabourSource[]
 
   // One association per (project, party) — so a merge cannot leave two rows on one project
   // with independently editable identities.
@@ -738,6 +739,29 @@ model ProjectPartyCompanySource {
 
   @@unique([projectCompanyId])
   @@index([projectId, partyId])
+}
+
+// Contractor-capture unit 1 (§4 item 1) — the LABOUR justification source, mirroring the two
+// sources above: a `ProjectParty` association is justified by labour while any Worker/Crew/
+// Membership party BINDING names that party. Unlike the company/vendor sources the ORIGIN is a
+// nullable COLUMN on three tables rather than a row, so no source→origin FK is representable;
+// the two directions of criterion 13 are instead the same deferred-constraint-trigger shape the
+// deployed `phase6_project_party_sourced` pattern uses (raw SQL in the unit-1 migration):
+// every binding owes this row at commit, and deleting this row while a binding remains is
+// refused at commit. `phase6_project_party_sourced()` itself is extended to COUNT this table
+// (criterion 11), so removing the last company/vendor source while labour justifies the
+// association no longer aborts. One row per association (unique below) — all bindings of one
+// party on one project share it. Restrict on the association, matching the other sources.
+model ProjectPartyLabourSource {
+  id         String   @id @default(cuid())
+  orgId      String
+  projectId  String
+  partyId    String
+  projectParty ProjectParty @relation(fields: [projectId, partyId], references: [projectId, partyId], onDelete: Restrict)
+  createdAt  DateTime @default(now())
+
+  @@unique([projectId, partyId])
+  @@index([orgId, partyId])
 }
 
 model ProjectPartyVendorSource {
@@ -853,6 +877,14 @@ model Membership {
   /// everything, because "may not approve" is a thing a practice may want to say about a role.
   approvalLimit Decimal? @db.Decimal(18, 2)
 
+  // Contractor-capture unit 1 — which external party this member acts FOR (how a contractor
+  // token maps to a party; unit 4 derives ownership from it). NULL for every existing member.
+  // Same no-FK/one-way transition rules as Worker.partyId (the labour-source trigger validates
+  // the party at commit); FROZEN while a row in the orgs-owned MembershipPartyReliance register
+  // exists — the freeze trigger reads ONLY that register, never a foreign module's tables.
+  partyId        String?
+  partyReliances MembershipPartyReliance[]
+
   // drawing distributions frozen against this membership (Phase 1 Task 3)
   drawingRecipients DrawingRecipient[]
   // corrective/reinspection work assigned to this membership (Phase 1 Task 4)
@@ -873,6 +905,24 @@ model Membership {
   // FK-backed and project-scoped, never a bare global user id
   scheduleDependenciesCreated ActivityDependency[] @relation("ScheduleDependencyAuthor")
   scheduleDependenciesRevoked ActivityDependency[] @relation("ScheduleDependencyRevoker")
+}
+
+// Contractor-capture unit 1 — the ORGS-owned reliance register for the Membership party-binding
+// freeze. `Membership` is orgs-owned, so its freeze trigger may not read Labour or Activities
+// tables; the module writing party-stamped evidence against a membership registers that reliance
+// here through `OrgsParticipant` in the same transaction as the evidence row (unit 4 writes it),
+// and the freeze trigger reads only this register.
+model MembershipPartyReliance {
+  id           String     @id @default(cuid())
+  projectId    String
+  membership   Membership @relation(fields: [projectId, membershipId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  membershipId String
+  partyId      String
+  source       String
+  refId        String
+  createdAt    DateTime   @default(now())
+
+  @@index([projectId, membershipId, partyId])
 }
 
 // A browser Web Push subscription (Phase 8). Endpoint is unique per device;
@@ -2679,6 +2729,15 @@ model Worker {
   createdAt   DateTime  @default(now())
   createdBy   User      @relation("workersOnboarded", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   createdById String
+  // Contractor-capture unit 1 — the AUTHORITATIVE party binding (§4: the worker's party is the
+  // one ownership authority; the crew's is a derived convenience). NULL = in-house/unbound.
+  // Deliberately NOT an FK: the deferred `phase4_u1_labour_source_covered` trigger requires the
+  // orgs-owned ProjectPartyLabourSource row (which FKs ProjectParty) for every binding at commit,
+  // so a bogus or cross-project party is refused there — an FK from here to the party tables
+  // would put labour rows inside every orgs truncation set. Transitions are DB-sealed one-way
+  // (NULL→party, party→NULL; never party→party in one statement) and FROZEN while party-stamped
+  // evidence, an ACTIVE allocation (criterion 2), or a registered reliance exists.
+  partyId     String?
 
   devices         WorkerDevice[]
   crewMemberships CrewMembership[]
@@ -2689,6 +2748,7 @@ model Worker {
   attendance      LabourAttendance[]
   workFacts       LabourWorkFact[]
   mismatches      LabourMismatch[]
+  partyReliances  WorkerPartyReliance[]
 
   // composite identity for same-project (projectId, workerId) FKs (WorkerDevice, Crew, membership)
   @@unique([projectId, id])
@@ -2711,6 +2771,25 @@ model WorkerSkill {
   @@index([projectId, skillCode])
 }
 
+// Contractor-capture unit 1 — the LABOUR-owned reliance register for the worker/crew binding
+// freeze. AGENTS.md's no-synchronous-cross-module-read rule binds triggers too: the labour-owned
+// freeze triggers may check the labour-owned attendance/work-fact/allocation tables directly, but
+// reliance arising from the Activities-owned output fact is registered HERE, through the labour
+// participant, in the same transaction as the evidence row (units 3–4 write it) — and the freeze
+// trigger reads only this module-local register. Rows are facts of reliance, not evidence.
+model WorkerPartyReliance {
+  id        String   @id @default(cuid())
+  projectId String
+  worker    Worker   @relation(fields: [projectId, workerId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  workerId  String
+  partyId   String
+  source    String // e.g. 'activity_output' — which foreign evidence family relies on the binding
+  refId     String
+  createdAt DateTime @default(now())
+
+  @@index([projectId, workerId, partyId])
+}
+
 // A named set of workers under an in-charge (mistri) — ORGANIZATIONAL only, NOT an atomic
 // capacity source (round-2 finding 1; the atomic source is the Worker).
 model Crew {
@@ -2729,6 +2808,11 @@ model Crew {
   createdAt        DateTime  @default(now())
   createdBy        User      @relation("crewsFormed", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   createdById      String
+  // Contractor-capture unit 1 — the crew's party binding, a DERIVED convenience the deferred
+  // null-strict equality seal keeps consistent with every ACTIVE member's and the in-charge's
+  // worker binding (the worker is the one authority). Same no-FK/one-way/freeze rules as
+  // Worker.partyId; validity comes from the labour-source trigger at commit.
+  partyId          String?
 
   members CrewMembership[]
 
@@ -3088,6 +3172,14 @@ model CapacityCommitment {
   createdAt             DateTime @default(now())
   createdById           String
   defaultedAt           DateTime?
+  // Contractor-capture unit 1 — the commitment's supplier PARTY, denormalized onto the
+  // labour-owned commercial chain so the later supplier-backed-allocation equality check is
+  // labour-module-local (§4). Population is STAGED (criterion 14): unit 1 adds the nullable
+  // column and seals it one-way in `phase4_lp_commitment_lifecycle_only` (criterion 8 — exactly
+  // one NULL→value transition, the unit-2 dual-write/backfill; a set value never changes);
+  // unit 2 dual-writes and backfills; equality ENFORCEMENT enables only after that, as an
+  // explicit tested step. NULL is neither a match nor a mismatch while the window is open.
+  supplierPartyId       String?
 
   promises CapacityPromise[]
   // Phase 4 Task 3 — the named-worker allocations that draw this forecast capacity down (§F bound 3)
@@ -3221,6 +3313,14 @@ model LabourAttendance {
   revokedById  String?
   revokeReason String?
   sourceCommandId String
+  // Contractor-capture unit 1 — the party the worker was bound to AT THE MOMENT OF INSERT, or
+  // NULL for pre-attribution history (never retroactively rewritten). The DATABASE is the only
+  // writer: a BEFORE INSERT trigger derives it from Worker.partyId under FOR SHARE (so the
+  // derivation serializes against rebind for EVERY writer, old release included — a writer-
+  // supplied value is overwritten), and the enumerated append-only trigger freezes it. A
+  // historical snapshot, deliberately not an FK — the party association may be released long
+  // after the evidence was recorded.
+  workerPartyId String?
 
   @@unique([projectId, id])
   @@index([projectId, workerId, civilDate, shift])
@@ -3252,6 +3352,11 @@ model LabourWorkFact {
   recordedBy   User     @relation("labourWorkRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   recordedById String
   sourceCommandId String
+  // Contractor-capture unit 1 — same DB-derived at-insert party snapshot as LabourAttendance
+  // (BEFORE INSERT trigger, Worker row FOR SHARE, writer-supplied values overwritten). The
+  // generic full-row `phase3_immutable_row()` append-only trigger already covers this added
+  // column and is RETAINED unchanged (§4: never replaced with an enumeration).
+  workerPartyId String?
 
   @@unique([projectId, id])
   @@index([projectId, workerId, civilDate, shift])

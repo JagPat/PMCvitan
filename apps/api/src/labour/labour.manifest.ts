@@ -41,6 +41,10 @@ export const labourManifest: ModuleManifest = {
     // Phase 4 Task 5 — §E: the mismatch observation + its append-only resolution register.
     'labourMismatch',
     'labourMismatchResolution',
+    // Contractor-capture unit 1 — the labour-owned reliance register for the worker/crew party-
+    // binding freeze (foreign evidence modules register through the labour participant; the DB
+    // freeze trigger reads only this module-local table).
+    'workerPartyReliance',
   ],
   readEncapsulated: [
     'labourTrade', 'labourSkill', 'worker', 'workerSkill', 'crew', 'crewMembership',
@@ -53,6 +57,7 @@ export const labourManifest: ModuleManifest = {
     'labourReadinessProjection',
     'labourMismatch',
     'labourMismatchResolution',
+    'workerPartyReliance',
   ],
   // A LEAF (round-3): NO synchronous read edge to any module. The Activities requirement command
   // writes the labour detail INTO this module through LabourRequirementParticipant (a workflow edge

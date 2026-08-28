@@ -46,7 +46,10 @@ describe('Phase 2 Task 7 — module registry', () => {
       'labourReadinessProjection', 'labourRequirementSpec', 'labourRequisition',
       'labourRequisitionLine',
       'labourRfq', 'labourSkill', 'labourTrade', 'labourWorkFact', 'supplierLabourQuote',
-      'supplierLabourQuoteLine', 'vendorLabourProfile', 'worker', 'workerAllocation', 'workerSkill',
+      'supplierLabourQuoteLine', 'vendorLabourProfile', 'worker', 'workerAllocation',
+      // Contractor-capture unit 1 — the labour-owned party-binding reliance register.
+      'workerPartyReliance',
+      'workerSkill',
     ];
     expect([...(labour!.readEncapsulated ?? [])].sort()).toEqual(expected);
     expect(labour!.readEncapsulated).toContain('workerSkill');
