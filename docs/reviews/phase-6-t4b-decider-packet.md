@@ -145,6 +145,11 @@ readiness key must deploy as one change or the audit's serialization story is fa
   memberships for projects that publish client-held decisions).
 - `scripts/upgrade-proof.sh` PASSED end-to-end, including the new 4b-decider stop (audit
   abort → §P6T4B repair → apply → precision + hostile arms).
+- `test:e2e:api:allmodules` **38/38** and `test:e2e:api:outbox` **32/32** over the reseeded
+  demo register (the seed itself now follows the RE-ORDERED create, and the reopened DL-003
+  carries the two-option frozen question a published choice must hold; one earlier run
+  flaked on the documented `daily-log-lost-response`/`daily-log-module-query` timing steps —
+  clean on re-run, no 4b surface).
 - Route-policy, module-registry, boundary, cross-module-graph tripwires GREEN at the new
   pins.
 
