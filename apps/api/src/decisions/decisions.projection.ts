@@ -33,6 +33,9 @@ function deliveryFor(meta: EmittedEventMeta): DeliveryPlan {
 const DECISION_INCLUDE = {
   options: { orderBy: { order: 'asc' } },
   changeRequests: { where: { status: 'open' }, take: 1 },
+  // Phase 6 task 4b — the named holder's USER, resolved into the stored DTO by the ONE fold so
+  // live == projection == rebuild carry the same decider designation (§A.3 round 3).
+  deciderMembership: { select: { userId: true } },
 } satisfies Prisma.DecisionInclude;
 
 /** Upsert one decision's generation-scoped projection row from its canonical record. */

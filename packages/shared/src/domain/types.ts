@@ -102,7 +102,11 @@ export type Lang = 'en' | 'hi' | 'gu';
 
 /** `withdrawn` = a published, never-approved decision the PMC took back (Phase 6 task 4a)
  *  — TERMINAL, pmc-only visible, and every reader keyed by this type must answer for it. */
-export type DecisionStatus = 'pending' | 'approved' | 'change' | 'withdrawn';
+export type DecisionStatus = 'pending' | 'approved' | 'change' | 'withdrawn' | 'recorded';
+
+/** Phase 6 task 4b — WHO decides a decision. `none` is the record-only issue (born terminal
+ *  `recorded`, approvable by nobody); `member` names an active project membership. */
+export type DeciderKind = 'client' | 'pmc' | 'member' | 'none';
 /** `awaiting-signoff` = a completion CLAIM parked until the PMC approves the
  *  linked closing inspection (Phase 1 Task 5) — counted as NOT done everywhere. */
 export type ActivityStatus = 'not-started' | 'in-progress' | 'awaiting-signoff' | 'done' | 'blocked';
@@ -147,7 +151,15 @@ export interface Decision {
   /** a private, unpublished DRAFT — only its author sees it, and the app ignores it until published */
   draft?: boolean;
   ageDays?: number;
-  photoSwatch: SwatchKey;
+  /** absent for a RECORD (`deciderKind: 'none'`) — the zero-option form has no option-sourced swatch */
+  photoSwatch?: SwatchKey;
+  /** Phase 6 task 4b — WHO decides this decision (default 'client'; every legacy row is client-held) */
+  deciderKind: DeciderKind;
+  /** the named holder's membership id when `deciderKind='member'` */
+  deciderMembershipId?: string;
+  /** the named holder's USER id, resolved server-side so every viewer/decider predicate —
+   *  server, store selectors, projection filter — asks the same question of the same value */
+  deciderUserId?: string;
   options: DecisionOption[];
   approvedOption?: string;
   material?: string;

@@ -40,7 +40,7 @@ export class DecisionsQueryService {
     const rows = await this.prisma.decision.findMany({
       where: { projectId },
       // the OPEN change request travels with a reopened decision (Phase 1 Task 2)
-      include: { options: { orderBy: { order: 'asc' } }, changeRequests: { where: { status: 'open' }, take: 1 } },
+      include: { options: { orderBy: { order: 'asc' } }, changeRequests: { where: { status: 'open' }, take: 1 }, deciderMembership: { select: { userId: true } } },
       orderBy: { id: 'desc' },
     });
 

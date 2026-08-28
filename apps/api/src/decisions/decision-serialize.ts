@@ -16,7 +16,7 @@ import type { DecisionDto } from '../snapshot/types';
 /** The canonical row shape the serializer needs: a `Decision` with its ordered options and, when
  *  reopened, its single OPEN change request (Phase 1 Task 2). */
 export type DecisionRow = Prisma.DecisionGetPayload<{
-  include: { options: true; changeRequests: true };
+  include: { options: true; changeRequests: true; deciderMembership: { select: { userId: true } } };
 }>;
 
 /** Serialize one canonical decision row into its snapshot `DecisionDto` (unfiltered). */
@@ -29,7 +29,13 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
     status: d.status,
     draft: d.publishedAt === null,
     ageDays: d.ageDays ?? undefined,
-    photoSwatch: d.photoSwatch,
+    photoSwatch: d.photoSwatch ?? undefined,
+    // Phase 6 task 4b — the holder designation, with the named member's USER resolved here so
+    // every viewer/decider predicate (server slice, store selectors, projection filter) asks the
+    // same question of the same value.
+    deciderKind: d.deciderKind,
+    deciderMembershipId: d.deciderMembershipId ?? undefined,
+    deciderUserId: d.deciderMembership?.userId ?? undefined,
     approvedOption: d.approvedOption ?? undefined,
     material: d.material ?? undefined,
     approver: d.approver ?? undefined,
