@@ -11,7 +11,12 @@ const ALL_ROLES: TokenRole[] = ['pmc', 'client', 'engineer', 'contractor', 'work
 const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'decision.create': ['pmc'],
   'decision.publish': ['pmc'],
-  'decision.approve': ['client', 'pmc'],
+  // Phase 6 unit 4b — the approve allowlist is the CEILING, not the authority: a decision now
+  // names WHO decides it, a named member may hold any active project role, and the SERVICE
+  // narrows to the actual decider (a same-role non-decider is refused there, never here).
+  'decision.approve': ['client', 'pmc', 'engineer', 'contractor', 'consultant'],
+  // Phase 6 unit 4b — re-point an unpublished draft's decider; issuing decisions is pmc authority.
+  'decision.updateDraft': ['pmc'],
   'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   // Phase 6 task 4a — withdrawing a published decision retires a question the practice asked;

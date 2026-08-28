@@ -79,7 +79,14 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
  *   - everything else is visible to the project.
  */
 export function decisionVisibleToViewer(
-  d: { publishedAt: Date | null; authorId: string | null; status: string },
+  d: {
+    publishedAt: Date | null;
+    authorId: string | null;
+    status: string;
+    /** Phase 6 unit 4b (staged shape) — the holder designation the audience rule will read. */
+    deciderKind?: string | null;
+    deciderUserId?: string | null;
+  },
   role: string,
   userId?: string,
 ): boolean {

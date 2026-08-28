@@ -146,7 +146,11 @@ describe('an open create flow does not survive the project leaving ready', () =>
     const { useStore, CreateControl } = await mount();
     const issueDecision = vi.fn();
     const createDecision = vi.fn().mockResolvedValue({ id: 'd1' });
-    useStore.getState()._setGateway({ createDecision } as never);
+    // Phase 6 unit 4b — the decision form now offers a DECIDER picker, whose candidates are the
+    // project's active members, so opening it loads the roster. The stub answers with an empty
+    // team: this probe is about the project-switch window, not about the picker.
+    const listMembers = vi.fn().mockResolvedValue([]);
+    useStore.getState()._setGateway({ createDecision, listMembers } as never);
     useStore.setState({ issueDecision } as never);
 
     const r = render(<CreateControl />);

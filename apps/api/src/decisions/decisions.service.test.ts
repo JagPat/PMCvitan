@@ -21,7 +21,31 @@ type Intent = { effectKey: string; invalidate: boolean; push?: { body: string; r
 const dispatchedIntents = (d: DispatcherMock): Intent[] =>
   ((d.dispatchCommitted.mock.calls.at(-1)?.[0] ?? []) as Array<{ dispatchIntent: Intent }>).map((e) => e.dispatchIntent);
 
-interface DecisionRow { id: string; projectId: string; title: string; publishedAt: Date | null; authorId: string | null }
+interface DecisionRow {
+  id: string; projectId: string; title: string; publishedAt: Date | null; authorId: string | null;
+  // Phase 6 unit 4b — the holder columns every decision now carries. The stand-in defaults them
+  // to the historical `client` holder so the pre-4b probes below assert BYTE-IDENTICAL behaviour
+  // over a decider-bearing shape (plan probe P15), not over a different code path.
+  deciderKind?: string; deciderMembershipId?: string | null; approvedDeciderKind?: string | null;
+}
+
+/**
+ * Phase 6 unit 4b — the ORGS participant stand-in. `Membership` is orgs-owned, so the decisions
+ * service asks its owner whether a named holder is active, whether a role is held at all, and who
+ * a membership denotes. The default answers describe an ordinary project: the roles are held and
+ * `m-contractor` is an active contractor membership belonging to `u-contractor`.
+ */
+function makeOrgs(overrides: Record<string, unknown> = {}) {
+  return {
+    roleStandingExists: vi.fn(async () => true),
+    lockActiveMembershipById: vi.fn(async (_tx: unknown, _p: string, id: string) =>
+      id === 'm-contractor' ? { membershipId: id, userId: 'u-contractor', role: 'contractor', name: 'Bhavesh Patel' } : null),
+    describeMembership: vi.fn(async (_tx: unknown, _p: string, id: string) =>
+      id === 'm-contractor' ? { membershipId: id, userId: 'u-contractor', role: 'contractor', status: 'active', name: 'Bhavesh Patel' } : null),
+    membershipUsers: vi.fn(async () => new Map<string, string>()),
+    ...overrides,
+  };
+}
 
 /** Real display names behind the test users — attribution must surface THESE, not role labels. */
 const NAMES: Record<string, string> = { 'u-client': 'Asha Shah', 'u-arch': 'Ar. Meghna', 'u-eng': 'Ravi Iyer' };
@@ -42,7 +66,9 @@ function make() {
     decision: {
       findMany: vi.fn(async () => decisions.map((d) => ({ id: d.id }))),
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => decisions.find((d) => d.id === where.id) ?? null),
-      create: vi.fn((args: { data: DecisionRow }) => { decisions.push({ ...args.data }); return Promise.resolve(args.data); }),
+      create: vi.fn((args: { data: DecisionRow }) => { decisions.push({ deciderKind: 'client', deciderMembershipId: null, approvedDeciderKind: null, ...args.data }); return Promise.resolve(args.data); }),
+      findFirst: vi.fn(async ({ where }: { where: { id?: string; projectId?: string } }) =>
+        decisions.find((d) => (where.id === undefined || d.id === where.id) && (where.projectId === undefined || d.projectId === where.projectId)) ?? null),
       update: vi.fn((args: { where: { id: string }; data: Partial<DecisionRow> }) => {
         const d = decisions.find((x) => x.id === args.where.id)!;
         Object.assign(d, args.data);
@@ -71,6 +97,8 @@ function make() {
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
     // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
     $executeRaw: vi.fn(async () => 1),
+    // the `FOR UPDATE` head lock publish/updateDraft take (Phase 6 unit 4b) — a no-op in-memory
+    $queryRawUnsafe: vi.fn(async () => [{ ok: 1 }]),
     $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) => {
       if (typeof arg !== 'function') return Promise.all(arg);
       const tx = { ...prisma, notification: { create: txNotificationCreate } } as unknown as PrismaService;
@@ -96,7 +124,7 @@ describe('DecisionsService — draft → publish lifecycle', () => {
   it('creates a private DRAFT by default: no publishedAt, no client notice, no realtime push', async () => {
     const { prisma, decisions, notifications, events } = make();
     const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-    const svc = new DecisionsService(prisma, snapshot, dispatcher);
+    const svc = new DecisionsService(prisma, snapshot, dispatcher, makeOrgs() as never);
 
     await svc.create('proj-1', baseInput(false), user);
 
@@ -113,7 +141,7 @@ describe('DecisionsService — draft → publish lifecycle', () => {
   it('create with publish:true issues in one step — publishedAt set, client notified', async () => {
     const { prisma, decisions, notifications } = make();
     const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-    const svc = new DecisionsService(prisma, snapshot, dispatcher);
+    const svc = new DecisionsService(prisma, snapshot, dispatcher, makeOrgs() as never);
 
     await svc.create('proj-1', baseInput(true), user);
 
@@ -126,7 +154,7 @@ describe('DecisionsService — draft → publish lifecycle', () => {
   it('create with publish:true writes exactly one canonical notification inside the command transaction; drafts write none', async () => {
     const { prisma, notifications, txNotificationCreate } = make();
     const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-    const svc = new DecisionsService(prisma, snapshot, dispatcher);
+    const svc = new DecisionsService(prisma, snapshot, dispatcher, makeOrgs() as never);
 
     await svc.create('proj-1', baseInput(true), user);
 
@@ -143,7 +171,7 @@ describe('DecisionsService — draft → publish lifecycle', () => {
     }]);
 
     const draft = make();
-    const draftSvc = new DecisionsService(draft.prisma, snapshot, dispatcher);
+    const draftSvc = new DecisionsService(draft.prisma, snapshot, dispatcher, makeOrgs() as never);
     await draftSvc.create('proj-1', baseInput(false), user);
     expect(draft.prisma.notification.create).not.toHaveBeenCalled();
     expect(draft.txNotificationCreate).not.toHaveBeenCalled();
@@ -152,7 +180,7 @@ describe('DecisionsService — draft → publish lifecycle', () => {
   it('publish() flips a draft live and fires the client notice; re-publishing conflicts', async () => {
     const { prisma, decisions, notifications } = make();
     const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-    const svc = new DecisionsService(prisma, snapshot, dispatcher);
+    const svc = new DecisionsService(prisma, snapshot, dispatcher, makeOrgs() as never);
 
     await svc.create('proj-1', baseInput(false), user);
     const id = decisions[0].id;
@@ -178,14 +206,22 @@ describe('DecisionsService — draft → publish lifecycle', () => {
 interface LifecycleRow {
   id: string; projectId: string; title: string; status: string;
   approver?: string; approvedById?: string | null; onBehalfOf?: string | null;
+  // Phase 6 unit 4b — the holder columns and the approval act's frozen tuple.
+  deciderKind?: string; deciderMembershipId?: string | null;
+  approvedDeciderKind?: string | null; approvedDeciderMembershipId?: string | null; approvedDeciderLabel?: string | null;
 }
 interface CrRow {
   id: string; decisionId: string; status: string; reason?: string;
   requestedById?: string | null; resolvedById?: string | null; resolvedAt?: Date | null; resolution?: string | null;
 }
 
-function makeLifecycle(status: string) {
-  const row: LifecycleRow = { id: 'DL-1', projectId: 'proj-1', title: 'Kitchen counter top', status };
+function makeLifecycle(status: string, holder: { deciderKind?: string; deciderMembershipId?: string | null } = {}) {
+  // Phase 6 unit 4b — DEFAULT to the historical `client` holder, so every probe written before
+  // this unit exercises the byte-identical path (P15) rather than a differently-shaped one.
+  const row: LifecycleRow = {
+    id: 'DL-1', projectId: 'proj-1', title: 'Kitchen counter top', status,
+    deciderKind: 'client', deciderMembershipId: null, approvedDeciderKind: null, ...holder,
+  };
   const options = [{ label: 'Option A', optionKey: 'a', material: 'Granite', delta: 0, swatch: 'sw1', order: 0 }];
   const changeRequests: CrRow[] = [];
   const events: Array<{ type: string; actor: string; actorId?: string; actorName?: string; actorRole?: string; payload?: Record<string, unknown> }> = [];
@@ -262,7 +298,7 @@ function makeLifecycle(status: string) {
     }),
   } as unknown as PrismaService;
   const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-  const svc = new DecisionsService(prisma, snapshot, dispatcher);
+  const svc = new DecisionsService(prisma, snapshot, dispatcher, makeOrgs() as never);
   return { svc, prisma, row, changeRequests, events, audits, notices, dispatcher };
 }
 

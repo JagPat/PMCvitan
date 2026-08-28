@@ -23,7 +23,13 @@ describe('drawingDisciplineFor — consultant discipline → drawing register bu
 describe('consultant permissions', () => {
   it('can raise a change request but cannot approve decisions or issue drawings', () => {
     expect(can('decision.change', 'consultant')).toBe(true);
-    expect(can('decision.approve', 'consultant')).toBe(false);
+    // Phase 6 unit 4b — `decision.approve` is now the route CEILING, not the authority: a
+    // decision names WHO decides it and a named member may hold any active role, so the endpoint
+    // admits the union and `DecisionsService.approve` narrows to the actual decider. A consultant
+    // therefore reaches the endpoint, and is refused there unless this decision names THEM — which
+    // is the distinction a role allowlist cannot draw and the reason the narrowing moved. The
+    // service-side refusal is probed in the API suites (P16).
+    expect(can('decision.approve', 'consultant')).toBe(true);
     expect(can('drawing.issue', 'consultant')).toBe(false);
   });
 });

@@ -8,6 +8,9 @@ import { emitEvent } from '../platform/events';
 
 export interface MemberDto {
   userId: string;
+  /** Phase 6 unit 4b — the project-scoped membership id a decision's `member` decider names.
+   *  Absent on the write responses (`add`/`updateRole`), which return the caller's own input. */
+  membershipId?: string;
   name: string;
   email: string | null;
   phone: string | null;
@@ -52,6 +55,10 @@ export class MembersService {
     });
     return rows.map((m) => ({
       userId: m.userId,
+      // Phase 6 unit 4b — the PROJECT-SCOPED identity. A decision's `member` decider designation
+      // names a membership (that is what `Decision.deciderMembershipId` FK-binds to), so the
+      // decider picker must be able to send one rather than re-deriving it from the user id.
+      membershipId: m.id,
       name: m.user.name,
       email: m.user.email,
       phone: m.user.phone,

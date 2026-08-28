@@ -12,7 +12,7 @@
  * The query RESPONSE is the shared {@link Decision} view (re-exported here as `DecisionView`), so the
  * snapshot's decision slice and any future module-owned decision query share one response shape.
  */
-import type { Decision, DecisionStatus } from '../domain/types';
+import type { Decision, DeciderKind, DecisionStatus } from '../domain/types';
 
 /** The decisions module's state-changing commands (must equal the manifest `commands`). */
 export const DECISION_COMMANDS = [
@@ -23,6 +23,10 @@ export const DECISION_COMMANDS = [
   'decisions.withdrawChange',
   // Phase 6 task 4a — take back a published, never-approved decision (pmc authority, terminal).
   'decisions.withdraw',
+  // Phase 6 unit 4b — re-point an UNPUBLISHED draft's decider. The holder freezes WITH
+  // publication (plan §A.1), so this is the product path that fixes a draft whose named member
+  // has since left: the publish refusal names it, and the recovery is never a database operation.
+  'decisions.updateDraft',
 ] as const;
 export type DecisionCommand = (typeof DECISION_COMMANDS)[number];
 
@@ -67,6 +71,25 @@ export interface CreateDecisionInput {
   readonly room: string;
   readonly options: readonly DecisionOptionInput[];
   readonly publish: boolean;
+  /**
+   * WHO decides this (Phase 6 unit 4b, plan §A.1). Absent means `client` — the historical
+   * holder — so every existing caller's payload and behaviour are byte-identical (P15).
+   */
+  readonly deciderKind?: DeciderKind;
+  /** Required iff `deciderKind === 'member'`: the ACTIVE membership named as holder. */
+  readonly deciderMembershipId?: string;
+}
+
+/**
+ * `decisions.updateDraft` — re-point an UNPUBLISHED draft's decider (Phase 6 unit 4b).
+ *
+ * Deliberately narrow: this unit ships the HOLDER field alone, because the holder is what the
+ * publish-time standing refusal strands and therefore what the recovery must reach. Title,
+ * location and options travel with the wider draft-edit surface in a later unit.
+ */
+export interface UpdateDecisionDraftInput {
+  readonly deciderKind: DeciderKind;
+  readonly deciderMembershipId?: string;
 }
 
 /** `decisions.approve` — the client chooses an option (locks the decision). */

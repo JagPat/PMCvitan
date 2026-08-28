@@ -4,7 +4,7 @@ import { DecisionsQueryService } from './decisions.query';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
-import { approveSchema, changeSchema, createDecisionSchema, withdrawDecisionSchema, type ApproveInput, type ChangeInput, type CreateDecisionInput, type WithdrawDecisionInput } from '../contracts';
+import { approveSchema, changeSchema, createDecisionSchema, updateDecisionDraftSchema, withdrawDecisionSchema, type ApproveInput, type ChangeInput, type CreateDecisionInput, type UpdateDecisionDraftInput, type WithdrawDecisionInput } from '../contracts';
 
 @Controller('projects/:projectId/decisions')
 @UseGuards(JwtGuard, RolesGuard)
@@ -48,6 +48,21 @@ export class DecisionsController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.decisions.publish(projectId, decisionId, user, idempotencyKey);
+  }
+
+  /** Phase 6 unit 4b — re-point an UNPUBLISHED draft's decider. The publish transition refuses a
+   *  draft whose named member has left and names THIS door as the fix, so the recovery stays a
+   *  product path. A published decision is refused (409): its holder froze with publication. */
+  @Post(':decisionId/draft')
+  @RolesFor('decision.updateDraft')
+  updateDraft(
+    @Param('projectId') projectId: string,
+    @Param('decisionId') decisionId: string,
+    @Body(new ZodPipe(updateDecisionDraftSchema)) body: UpdateDecisionDraftInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.decisions.updateDraft(projectId, decisionId, body, user, idempotencyKey);
   }
 
   /** Approve/lock a decision — the client's choice, or the PMC/architect on their behalf. A

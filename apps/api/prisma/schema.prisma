@@ -402,6 +402,14 @@ model DecisionProjection {
   status       String // 'pending' | 'approved' | 'change' — the readiness map + the pending filter
   publishedAt  DateTime? // NULL = a private DRAFT (author-only visibility)
   authorId     String? // the draft author (author-private visibility)
+  // Phase 6 unit 4b (plan §A.3) — the holder designation the per-viewer filter needs, carried on
+  // the projection row so the projected slice can tell a NAMED decider from a same-role
+  // non-decider. Without it a projection read either leaks the pending decision to every peer or
+  // hides the decider's own action item. `deciderUserId` is the USER a named membership resolves
+  // to (the same user-level resolution the live path performs through the orgs participant), so
+  // one filter serves both paths and live == projection == rebuild by construction.
+  deciderKind    String  @default("client")
+  deciderUserId  String?
   dto          Json // the serialized DecisionDto (options + open changeRequest inlined), unfiltered
   updatedAt    DateTime  @updatedAt
 

@@ -10,7 +10,7 @@ import { lockProjectReadiness } from '../common/readiness-lock';
 import { nextSeqId } from '../domain/ids';
 import { pendingDecisionNotice, withdrawnDecisionNotice } from '../domain/notifications';
 import { cancelQueuedPushBySubject } from '../platform/outbox/cancellation';
-import type { ApproveInput, ChangeInput, CreateDecisionInput, WithdrawDecisionInput } from '../contracts';
+import type { ApproveInput, ChangeInput, CreateDecisionInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
@@ -177,6 +177,18 @@ export class DecisionsService {
 
     // now it's live — surface it on the client's side, exactly like a one-step issue (fresh only)
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /**
+   * Phase 6 unit 4b — re-point an UNPUBLISHED draft's decider.
+   *
+   * STAGED SHAPE ONLY (plan §D discipline): the command, its contract, its route and its policy
+   * exist so the unit's probes fail on BEHAVIOUR rather than on a missing symbol. The behaviour
+   * lands in this unit's implementation commit.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async updateDraft(projectId: string, decisionId: string, _input: UpdateDecisionDraftInput, user: AuthUser, _idempotencyKey?: string): Promise<SnapshotDto> {
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 

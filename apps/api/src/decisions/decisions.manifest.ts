@@ -32,11 +32,12 @@ export const decisionsManifest: ModuleManifest = {
     'decision.withdrawn',
   ],
   consumesEvents: [],
-  commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange', 'decisions.withdraw'],
+  commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange', 'decisions.withdraw', 'decisions.updateDraft'],
   queries: ['decisions.snapshotSlice', 'decisions.projectionSlice', 'decisions.existsInProject', 'decisions.linkableInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending', 'decisions.approvedRef'],
   routes: [
     'POST /projects/:projectId/decisions',
     'POST /projects/:projectId/decisions/:decisionId/publish',
+    'POST /projects/:projectId/decisions/:decisionId/draft',
     'POST /projects/:projectId/decisions/:decisionId/approve',
     'POST /projects/:projectId/decisions/:decisionId/change',
     'POST /projects/:projectId/decisions/:decisionId/change/withdraw',

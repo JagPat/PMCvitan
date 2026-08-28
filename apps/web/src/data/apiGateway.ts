@@ -18,6 +18,7 @@ import type {
   Checklist,
   DailyLog,
   Decision,
+  DeciderKind,
   Drawing,
   MembershipSummary,
   OrgMember,
@@ -212,6 +213,16 @@ export interface NewDecisionInput {
   options: { material: string; delta: number; swatch: string; photoUrl?: string; recommended?: boolean }[];
   /** default false → saved as a private draft; true → issued to the client in one step */
   publish?: boolean;
+  /** Phase 6 unit 4b — WHO decides this. Omitted means `client`, the historical holder. */
+  deciderKind?: DeciderKind;
+  /** required iff `deciderKind === 'member'`: the ACTIVE membership named as the decider */
+  deciderMembershipId?: string;
+}
+
+/** Phase 6 unit 4b — re-point an UNPUBLISHED draft's decider (the publish refusal's named fix). */
+export interface DecisionDeciderInput {
+  deciderKind: DeciderKind;
+  deciderMembershipId?: string;
 }
 
 /** Create a location-tree node (PMC). */
@@ -664,6 +675,10 @@ export class ApiGateway {
   /** Publish a private draft decision (PMC) → issue it to the client. */
   publishDecision(decisionId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.p(`/decisions/${decisionId}/publish`, {}, idempotencyKey);
+  }
+  /** Change WHO decides an unpublished draft decision (PMC) — Phase 6 unit 4b. */
+  updateDecisionDecider(decisionId: string, input: DecisionDeciderInput, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p(`/decisions/${decisionId}/draft`, input, idempotencyKey);
   }
   /** Create a location node (zone/room/element) — PMC. Returns a node-carrying snapshot. */
   createNode(input: NewNodeInput): Promise<ApiSnapshot> {

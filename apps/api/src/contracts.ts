@@ -470,6 +470,27 @@ const decisionOptionInput = z.object({
   photoUrl: z.string().trim().optional(),
   recommended: z.boolean().default(false),
 });
+/**
+ * Phase 6 unit 4b (plan §A.1) — WHO decides. `member` names ONE membership and the pair is
+ * coherent in BOTH directions: a `member` without an id, or an id under any other kind, is a 400
+ * here and unrepresentable at PostgreSQL (`Decision_t4b_decider_pair_check`). `'architect'` is
+ * deliberately absent until unit 4d ships the role with it.
+ */
+export const DECIDER_KINDS = ['client', 'pmc', 'member'] as const;
+const deciderFields = {
+  deciderKind: z.enum(DECIDER_KINDS).default('client'),
+  deciderMembershipId: z.string().trim().min(1).optional(),
+};
+const deciderPairIsCoherent = (v: { deciderKind: string; deciderMembershipId?: string }) =>
+  (v.deciderKind === 'member') === (v.deciderMembershipId !== undefined);
+const DECIDER_PAIR_MESSAGE = 'A member decider needs the membership it names, and only a member decider may name one';
+
+/** Phase 6 unit 4b — re-point an UNPUBLISHED draft's decider (the publish refusal's named fix). */
+export const updateDecisionDraftSchema = z
+  .object({ ...deciderFields })
+  .refine(deciderPairIsCoherent, { message: DECIDER_PAIR_MESSAGE, path: ['deciderMembershipId'] });
+export type UpdateDecisionDraftInput = z.infer<typeof updateDecisionDraftSchema>;
+
 export const createDecisionSchema = z.object({
   title: z.string().trim().min(1),
   // Location: either a tree node (authoritative) or the legacy free-text room. At least
@@ -481,7 +502,10 @@ export const createDecisionSchema = z.object({
   // Draft → Publish lifecycle: default is to save a PRIVATE DRAFT (author-only, no client
   // notice). Pass `publish: true` to create it already-published (the one-step "issue now").
   publish: z.boolean().default(false),
-});
+  // Phase 6 unit 4b — absent means `client`, so every pre-4b payload validates to the exact same
+  // shape and behaviour it did before (P15's byte-identity guarantee starts at the contract).
+  ...deciderFields,
+}).refine(deciderPairIsCoherent, { message: DECIDER_PAIR_MESSAGE, path: ['deciderMembershipId'] });
 export type CreateDecisionInput = z.infer<typeof createDecisionSchema>;
 
 // ── Location tree (zones → rooms → elements) ─────────────────────────────────

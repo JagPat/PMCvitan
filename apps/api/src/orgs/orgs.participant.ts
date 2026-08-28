@@ -167,6 +167,135 @@ export class OrgsParticipant {
   }
 
   /**
+   * Phase 6 unit 4b (plan §A.1/§B.2) — the NAMED-HOLDER standing primitive: is `membershipId` an
+   * ACTIVE membership of `projectId`, and who is it?
+   *
+   * `lockActiveMembership` answers the same question keyed by USER, which is the wrong key here: a
+   * decision's `member` decider designation IS a membership id (the FK target), and existence in a
+   * project is not standing — a removed membership still satisfies the foreign key. The plan states
+   * the rule (§A.1, round 4 of the joint review): the holder seal validates the named membership is
+   * ACTIVE, and it does so through the OWNER of `Membership`, never a raw read from the decisions
+   * module. `FOR UPDATE` is the point, exactly as in `lockActiveMembership`: a concurrent removal
+   * serializes on the row, so the standing the caller publishes on is the standing that was true
+   * when its transaction committed.
+   *
+   * Returns the identity too, because the caller that validates a holder is the same caller that
+   * must FREEZE its display identity on the approval act (plan §A.1, round 3) — one question, one
+   * round trip, one snapshot.
+   */
+  async lockActiveMembershipById(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    membershipId: string,
+  ): Promise<{ membershipId: string; userId: string; role: string; name: string } | null> {
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<
+      Array<{ id: string; userId: string; role: string; status: string; name: string }>
+    >(
+      `SELECT m."id", m."userId", m."role", m."status", u."name"
+         FROM "Membership" m
+         JOIN "User" u ON u."id" = m."userId"
+        WHERE m."projectId" = $1 AND m."id" = $2
+          FOR UPDATE OF m`,
+      projectId, membershipId,
+    );
+    const row = rows[0];
+    if (!row || row.status !== 'active') return null;
+    return { membershipId: row.id, userId: row.userId, role: row.role, name: row.name };
+  }
+
+  /**
+   * Phase 6 unit 4b — the membership's IDENTITY, whatever its standing.
+   *
+   * Deliberately separate from {@link lockActiveMembershipById}, which answers an AUTHORITY
+   * question and therefore refuses a removed row. This answers a HISTORY question: an approval act
+   * freezes the display identity of the holder it was exercised for, and that identity must still
+   * be recordable when the PMC approves on behalf of a member who has since left the project.
+   * Refusing here would strand the decision rather than record the truth about it.
+   */
+  async describeMembership(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    membershipId: string,
+  ): Promise<{ membershipId: string; userId: string; role: string; status: string; name: string } | null> {
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<
+      Array<{ id: string; userId: string; role: string; status: string; name: string }>
+    >(
+      `SELECT m."id", m."userId", m."role", m."status", u."name"
+         FROM "Membership" m
+         JOIN "User" u ON u."id" = m."userId"
+        WHERE m."projectId" = $1 AND m."id" = $2`,
+      projectId, membershipId,
+    );
+    const row = rows[0];
+    return row ? { membershipId: row.id, userId: row.userId, role: row.role, status: row.status, name: row.name } : null;
+  }
+
+  /**
+   * Phase 6 unit 4b (plan §B.2) — EFFECTIVE-ROLE-STANDING: does anyone currently hold `role` on
+   * `projectId`?
+   *
+   * Named for what it models rather than for how it counts (the plan renamed it from
+   * active-member-count in round 8 for exactly that reason): a bare membership count does not
+   * state the authority rule. It is the two arms of `hasProjectRoleStanding` asked about a ROLE
+   * instead of a person — an ACTIVE membership in the role, or, for `pmc` alone, owner/admin of
+   * the project's org where that user holds no active membership here. So removing the last `pmc`
+   * MEMBERSHIP while an org owner still covers the project does NOT orphan a pmc-held decision,
+   * because that owner still decides it.
+   *
+   * Used by the publish transition: publishing a role-held decision into a project with nobody in
+   * that role would birth the zero-holder state (plan §A.1, round 10), so publication refuses.
+   */
+  async roleStandingExists(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    role: string,
+  ): Promise<boolean> {
+    const orgArm = role === 'pmc'
+      ? `OR EXISTS (
+           SELECT 1 FROM "Project" p
+             JOIN "OrgMembership" om ON om."orgId" = p."orgId" AND om."role" IN ('owner', 'admin')
+            WHERE p."id" = $1
+              AND NOT EXISTS (
+                SELECT 1 FROM "Membership" m2
+                 WHERE m2."projectId" = $1 AND m2."userId" = om."userId" AND m2."status" = 'active'
+              )
+         )`
+      : '';
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ held: boolean }>>(
+      `SELECT EXISTS (
+                SELECT 1 FROM "Membership" m
+                 WHERE m."projectId" = $1 AND m."status" = 'active' AND m."role" = $2
+              )
+           ${orgArm} AS held`,
+      projectId, role,
+    );
+    return rows[0]?.held === true;
+  }
+
+  /**
+   * Phase 6 unit 4b (plan §A.3, the projection thread) — resolve project memberships to the USERS
+   * they denote.
+   *
+   * A decision's holder is stored as a membership; the per-viewer visibility rule compares against
+   * the viewer's USER id (an org owner/admin operating as pmc has no membership row at all, which
+   * is why the plan makes the dispatch/visibility target a user rather than a membership). The
+   * decisions module must not join `Membership` itself to bridge the two, so the owner answers.
+   */
+  async membershipUsers(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    membershipIds: readonly string[],
+  ): Promise<Map<string, string>> {
+    if (membershipIds.length === 0) return new Map();
+    const placeholders = membershipIds.map((_, i) => `$${i + 2}`).join(', ');
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ id: string; userId: string }>>(
+      `SELECT "id", "userId" FROM "Membership" WHERE "projectId" = $1 AND "id" IN (${placeholders})`,
+      projectId, ...membershipIds,
+    );
+    return new Map(rows.map((r) => [r.id, r.userId]));
+  }
+
+  /**
    * Does `userId` have ROLE-QUALIFIED standing on `projectId` — an ACTIVE project membership whose
    * role is one of `roles`, or (when `roles` admits `pmc` AND the user holds NO active membership
    * on this project) owner/admin of the project's org? Same rule, same PRECEDENCE as

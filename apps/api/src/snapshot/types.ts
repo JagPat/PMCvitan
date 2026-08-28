@@ -59,6 +59,11 @@ export interface DecisionDto {
   cost?: number;
   /** 'client' when someone other than the client locked the decision on their behalf (Phase 1 Task 2) */
   onBehalfOf?: string;
+  /** Phase 6 unit 4b — WHO decides. Absent = the client (the historical holder), so a
+   *  client-held decision's serialized shape is byte-identical to its pre-4b one. */
+  deciderKind?: 'client' | 'pmc' | 'member';
+  /** present iff `deciderKind === 'member'` */
+  deciderMembershipId?: string;
   /** the OPEN change request while status='change' — why the lock is being revisited (Phase 1 Task 2) */
   changeRequest?: { reason: string; costImpact: number; timeImpactDays: number; requestedById?: string };
   /** a private, unpublished DRAFT — only ever present in its own author's snapshot */

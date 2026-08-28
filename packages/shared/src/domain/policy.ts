@@ -20,7 +20,17 @@ export const ROLE_POLICY = {
   'decision.create': ['pmc'],
   // publish a private draft decision → issue it to the client (the architect's authority)
   'decision.publish': ['pmc'],
-  'decision.approve': ['client', 'pmc'],
+  // Phase 6 unit 4b (plan §A.1, round 2) — the approve allowlist is a CEILING, not the authority.
+  // A decision now names WHO decides it (`Decision.deciderKind`/`deciderMembershipId`), and a
+  // named member may hold any active project role — so a contractor-decider would meet a 403 at
+  // the route before the service ever looked at the designation. The route therefore admits the
+  // UNION of roles a decider can hold and `DecisionsService.approve` narrows to the ACTUAL
+  // decider (or the PMC acting on their behalf): the same ceiling-then-narrow shape the push
+  // catalog uses. A same-role NON-decider is refused by the service, never by this list.
+  'decision.approve': ['client', 'pmc', 'engineer', 'contractor', 'consultant'],
+  // Phase 6 unit 4b — re-point an unpublished draft's decider; the draft is the author's private
+  // workspace and issuing decisions is pmc authority, so the edit door matches `decision.create`.
+  'decision.updateDraft': ['pmc'],
   // consultants raise change requests to flag a conflict in their discipline (read-mostly otherwise)
   'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   // withdraw an open change request — endpoint allowlist; the SERVICE narrows it to the

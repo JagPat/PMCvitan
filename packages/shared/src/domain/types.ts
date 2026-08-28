@@ -137,6 +137,17 @@ export interface ProjectNode {
   draft?: boolean;
 }
 
+/**
+ * WHO decides a decision (Phase 6 unit 4b, plan §A.1). `client` is the historical and default
+ * holder — every decision issued before this unit is one, and a create that names no decider
+ * still is. `pmc` hands the choice to the practice itself; `member` names ONE active project
+ * membership (the contractor whose sequencing question it really is, the consultant whose
+ * discipline it sits in). `'architect'` deliberately does NOT appear here: it joins the enum in
+ * unit 4d WITH the role, because a 4b-only deployment accepting an architect-decider would
+ * create decisions no one can authenticate to see or approve (plan §A.1, round 1).
+ */
+export type DeciderKind = 'client' | 'pmc' | 'member';
+
 export interface Decision {
   id: string;
   title: string;
@@ -156,6 +167,14 @@ export interface Decision {
   cost?: number;
   /** 'client' when someone other than the client locked the decision on their behalf (Phase 1 Task 2) */
   onBehalfOf?: string;
+  /**
+   * WHO decides this (Phase 6 unit 4b). ABSENT means the client — the historical holder every
+   * decision issued before this unit has — so a client-held decision serializes byte-for-byte as
+   * it did before, and only a decision that actually names someone else carries the fields.
+   */
+  deciderKind?: DeciderKind;
+  /** present iff `deciderKind === 'member'`: the membership named as holder */
+  deciderMembershipId?: string;
   /** the OPEN change request while status='change' — why the lock is being revisited (Phase 1 Task 2) */
   changeRequest?: { reason: string; costImpact: number; timeImpactDays: number; requestedById?: string };
   /** withdrawal evidence while status='withdrawn' (Phase 6 task 4a) — pmc audience only:
@@ -332,6 +351,13 @@ export interface MembershipSummary {
 
 export interface ProjectMember {
   userId: string;
+  /**
+   * The MEMBERSHIP row's id — the project-scoped identity a decision's `member` decider
+   * designation names (Phase 6 unit 4b). `userId` is a global person; a decider is a person
+   * ON THIS PROJECT, which is what `Decision.deciderMembershipId` FK-binds to, so the picker
+   * must offer the membership rather than re-deriving it from the user.
+   */
+  membershipId?: string;
   name: string;
   email: string | null;
   phone: string | null;

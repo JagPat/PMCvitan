@@ -169,7 +169,8 @@ const MODEL_OWNER: Record<string, string> = {
 // mirrors the pre-PR-C `changed`-emission count (one per emitting command); the total is
 // unchanged at 30.
 const SERVICES: Record<string, { domain: string; foreign: Record<string, number>; dispatch: number }> = {
-  'decisions/decisions.service.ts': { domain: 'decisions', foreign: {}, dispatch: 6 },
+  // Phase 6 unit 4b — +1: `decisions.updateDraft` (re-point an unpublished draft's decider).
+  'decisions/decisions.service.ts': { domain: 'decisions', foreign: {}, dispatch: 7 },
   // edge 1 (closing inspection) → inspection.participant; edge 5 (drawing unlink) → FK SET NULL
   'activities/activities.service.ts': { domain: 'activities', foreign: {}, dispatch: 8 },
   // edge 6 (phase→activity detach) → FK SET NULL (phaseId)
@@ -389,7 +390,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('projects/:projectId/drawings/rev/:revId/ack')", "Patch('projects/:projectId/drawings/:drawingId/node')", "Delete('drawings/:id')",
   ],
   'nodes/nodes.controller.ts': ['Post()', "Patch(':nodeId')", "Post(':nodeId/move')", "Post(':nodeId/publish')", "Delete(':nodeId')"],
-  'decisions/decisions.controller.ts': ['Post()', "Post(':decisionId/publish')", "Post(':decisionId/approve')", "Post(':decisionId/change')", "Post(':decisionId/withdraw')", "Post(':decisionId/change/withdraw')"],
+  'decisions/decisions.controller.ts': ['Post()', "Post(':decisionId/publish')", "Post(':decisionId/draft')", "Post(':decisionId/approve')", "Post(':decisionId/change')", "Post(':decisionId/withdraw')", "Post(':decisionId/change/withdraw')"],
   'daily-log/daily-log.controller.ts': ["Post('start')", "Post('materials')", "Post('flag-mismatch')", "Post('resolve-mismatch')", "Post('submit')"],
   'orgs/members.controller.ts': ['Post()', "Patch(':userId')", "Delete(':userId')"],
   'orgs/companies.controller.ts': ['Post()', "Patch(':companyId')", "Delete(':companyId')"],
@@ -585,9 +586,9 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
       });
     }
 
-    it('81 external-effect dispatch sites total across the pillar services (80 + Phase-6 task-4a decisions.withdraw)', () => {
+    it('82 external-effect dispatch sites total across the pillar services (81 + Phase-6 unit-4b decisions.updateDraft)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(81);
+      expect(total).toBe(82);
     });
   });
 
@@ -598,12 +599,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('168 mutating routes total (§4 command inventory; +1 Phase-6 task-4a decisions.withdraw)', () => {
+    it('169 mutating routes total (§4 command inventory; +1 Phase-6 unit-4b decisions.updateDraft)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(168);
+      expect(total).toBe(169);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(168);
+      expect(live).toBe(169);
     });
   });
 
