@@ -70,6 +70,9 @@ export interface ReadinessInput {
    *  (pmc only). Controls the decision-gate REASON wording, never the verdict. */
   withdrawnReasonVisible?: boolean;
   decisionStatus: DecisionStatus | null;
+  /** Phase 6 task 4b (§A.2) — whether the linked decision is an UNPUBLISHED draft. Only the
+   *  `recorded` arm consults it (a draft record gates `wait`, a published record `na`). */
+  decisionDraft?: boolean;
   gateMaterial: Gate;
   gateTeam: Gate;
   inspections: ReadinessInspection[];
@@ -153,8 +156,17 @@ export function deriveDrawingGate(activityId: string, drawings: ReadinessDrawing
   return { v: worst.v, source: 'derived', reason: worst.why };
 }
 
-/** The Decision gate — derived live from the linked decision's lock state. */
-export function deriveDecisionReading(decisionStatus: DecisionStatus | null, withdrawnReasonVisible = false): GateReading {
+/** The Decision gate — derived live from the linked decision's lock state.
+ *  Phase 6 task 4b (§A.2): a linked RECORD (`status='recorded'`) demands no approval — the gate
+ *  reads `na` — but ONLY once published: a private draft record would unblock a gate with
+ *  evidence the team cannot see, so the recorded arm consults `decisionDraft` and a draft record
+ *  holds `wait` until its author publishes it. */
+export function deriveDecisionReading(decisionStatus: DecisionStatus | null, withdrawnReasonVisible = false, decisionDraft = false): GateReading {
+  if (decisionStatus === 'recorded') {
+    return decisionDraft
+      ? { v: 'wait', source: 'derived', reason: RECORDED_DRAFT_REASON }
+      : { v: 'na', source: 'derived', reason: RECORDED_PUBLISHED_REASON };
+  }
   const v: Gate = decisionStatus == null ? 'na' : decisionStatus === 'approved' ? 'ok' : 'wait';
   // Phase 6 task 4a: a WITHDRAWN linked decision keeps the gate at `wait` (the question the
   // work depends on is unanswered — withdrawal must not silently unblock it), but the reason
@@ -183,6 +195,10 @@ export function deriveDecisionReading(decisionStatus: DecisionStatus | null, wit
 export const WITHDRAWN_REASON_HONEST = 'The linked decision was withdrawn — re-issue or relink';
 export const WITHDRAWN_REASON_REDACTED = 'Awaiting the PMC on the linked decision';
 
+/** Phase 6 task 4b (§A.2) — the two texts of the recorded-decision gate arm (P20). */
+export const RECORDED_PUBLISHED_REASON = 'Record only — no approval required';
+export const RECORDED_DRAFT_REASON = 'The linked record is unpublished — publish it';
+
 /** Round 11 (Codex): a server-baked readiness DTO carries the VIEWER-SPECIFIC withdrawn-gate
  *  text of the snapshot it was baked for. A client store can outlive a persona switch (or hold
  *  a stale DTO while a refetch is pending), so a viewer who cannot see withdrawn decisions must
@@ -196,7 +212,7 @@ export function redactWithdrawnReadinessForViewer(r: ActivityReadiness, canSeeWi
 /** The five-gate readiness derivation — an unexpired override supersedes ITS gate. */
 export function deriveReadiness(activityId: string, input: ReadinessInput): ActivityReadiness {
   const derived: ActivityReadiness = {
-    decision: deriveDecisionReading(input.decisionStatus, input.withdrawnReasonVisible ?? false),
+    decision: deriveDecisionReading(input.decisionStatus, input.withdrawnReasonVisible ?? false, input.decisionDraft ?? false),
     material: { v: input.gateMaterial, source: 'stored', reason: 'Stored site flag — material on site' },
     team: { v: input.gateTeam, source: 'stored', reason: 'Stored site flag — team present' },
     inspection: deriveInspectionGate(activityId, input.inspections),

@@ -1,6 +1,20 @@
 import type { RealtimeGateway } from '../../realtime/realtime.gateway';
 import type { PushService } from '../../push/push.service';
 import type { OutboxConsumer } from './registry';
+import { EXTERNAL_EFFECTS, type ExternalEffectDef, type ExternalEffectKey } from '../external-effects';
+
+/**
+ * Phase 6 task 4b (§A.3) — the per-EVENT-FAMILY claim-time dependencies the push consumer
+ * re-judges a targeted delivery against, bound at bootstrap (the owning module answers; platform
+ * code never reads a foreign table). `decider` is the first family: "the target is still the
+ * holder AND the status still demands their decision" — including the target's current standing.
+ * `markCancelled` records a claim-time drop on the delivery's own row (the 4a cancellation mark),
+ * so a dropped demand is evidence, never a silent skip.
+ */
+export interface PushClaimDeps {
+  deciderTarget(projectId: string, decisionId: string): Promise<{ actionable: false } | { actionable: true; roles?: string[]; targetUserId?: string }>;
+  markCancelled(deliveryId: string): Promise<void>;
+}
 
 /**
  * Phase 2 Task 6 / PR C Task 2 — the two external outbox consumers. Both are `unordered` +
@@ -33,7 +47,7 @@ export function makeSocketConsumer(realtime: RealtimeGateway): OutboxConsumer {
 }
 
 /** Web Push: only events carrying a push intent (the body + persisted roles) get a delivery. */
-export function makePushConsumer(push: PushService): OutboxConsumer {
+export function makePushConsumer(push: PushService, claims?: PushClaimDeps): OutboxConsumer {
   return {
     name: PUSH_CONSUMER,
     kind: 'unordered',
@@ -47,13 +61,40 @@ export function makePushConsumer(push: PushService): OutboxConsumer {
       // `subject` = the emitting module's entityId (Phase 6 task 4a): the domain that later
       // learns this announcement went stale cancels by this key — never by reading the queue.
       return push?.body
-        ? { action: 'dispatch', payload: { body: push.body, roles: push.roles ?? null }, subject: meta.entityId }
+        ? { action: 'dispatch', payload: { body: push.body, roles: push.roles ?? null, targetUserId: push.targetUserId ?? null }, subject: meta.entityId }
         : { action: 'noop' };
     },
     handle: async (ctx) => {
-      const p = (ctx.delivery.payload ?? null) as { body?: string; roles?: string[] | null } | null;
+      const p = (ctx.delivery.payload ?? null) as { body?: string; roles?: string[] | null; targetUserId?: string | null } | null;
       if (!p?.body) return;
-      await push.notifyProject(ctx.meta.projectId, { title: 'Vitan PMC', body: p.body }, p.roles ?? undefined);
+      const payload = { title: 'Vitan PMC', body: p.body };
+      // Phase 6 task 4b (§A.3) — a catalog entry carrying a pushFamily is re-judged AT CLAIM
+      // through the owning module's bound predicate: the delivery goes to the CURRENT target
+      // (a holder change between enqueue and claim re-targets), or is dropped with the
+      // cancellation mark when the demand is no longer actionable. Only the decider family
+      // exists in 4b, and its subject is the decision id the 4a `subject` key already carries.
+      const effectKey = ctx.meta.dispatchIntent?.effectKey as ExternalEffectKey | undefined;
+      const family = effectKey ? (EXTERNAL_EFFECTS[effectKey] as ExternalEffectDef | undefined)?.pushFamily : undefined;
+      if (family === 'decider' && claims) {
+        const target = await claims.deciderTarget(ctx.meta.projectId, ctx.meta.entityId);
+        if (!target.actionable) {
+          await claims.markCancelled(ctx.delivery.id);
+          return;
+        }
+        if (target.targetUserId) {
+          await push.notifyTargetedUser(ctx.meta.projectId, payload, target.targetUserId);
+          return;
+        }
+        await push.notifyProject(ctx.meta.projectId, payload, target.roles);
+        return;
+      }
+      // A TARGETED intent outside any family still delivers only to the target's valid links
+      // (round 10 — never a role-ceiling fallback for targeted content).
+      if (p.targetUserId) {
+        await push.notifyTargetedUser(ctx.meta.projectId, payload, p.targetUserId);
+        return;
+      }
+      await push.notifyProject(ctx.meta.projectId, payload, p.roles ?? undefined);
     },
   };
 }

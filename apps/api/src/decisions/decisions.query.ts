@@ -36,7 +36,7 @@ export class DecisionsQueryService {
     projectId: string,
     role: Role,
     userId?: string,
-  ): Promise<{ decisions: DecisionDto[]; statuses: Map<string, DecisionStatus> }> {
+  ): Promise<{ decisions: DecisionDto[]; statuses: Map<string, DecisionStatus>; drafts: Set<string> }> {
     const rows = await this.prisma.decision.findMany({
       where: { projectId },
       // the OPEN change request travels with a reopened decision (Phase 1 Task 2)
@@ -45,6 +45,9 @@ export class DecisionsQueryService {
     });
 
     const statuses = new Map<string, DecisionStatus>(rows.map((d) => [d.id, d.status as DecisionStatus]));
+    // Phase 6 task 4b (§A.2) — the UNFILTERED draft-id set beside the status map: the readiness
+    // bake's recorded arm gates a DRAFT record `wait` (a private record must not unblock work).
+    const drafts = new Set<string>(rows.filter((d) => d.publishedAt === null).map((d) => d.id));
 
     // The serialization + the per-viewer filter are the SAME functions the decisions projection uses
     // (decision-serialize.ts), so the projection-served slice is byte-identical to this live slice.
@@ -52,7 +55,7 @@ export class DecisionsQueryService {
       .filter((d) => decisionVisibleToViewer(d, role, userId))
       .map(serializeDecision);
 
-    return { decisions, statuses };
+    return { decisions, statuses, drafts };
   }
 
   /**
@@ -66,6 +69,16 @@ export class DecisionsQueryService {
     return new Map(rows.map((d) => [d.id, d.status as DecisionStatus]));
   }
 
+  /** Phase 6 task 4b (§A.2) — `statusMap` plus the UNFILTERED draft-id set, for readiness bakes
+   *  that must gate a linked DRAFT record `wait` (the recorded arm consults the draft flag). */
+  async statusAndDraftMap(projectId: string): Promise<{ statuses: Map<string, DecisionStatus>; drafts: Set<string> }> {
+    const rows = await this.prisma.decision.findMany({ where: { projectId }, select: { id: true, status: true, publishedAt: true } });
+    return {
+      statuses: new Map(rows.map((d) => [d.id, d.status as DecisionStatus])),
+      drafts: new Set(rows.filter((d) => d.publishedAt === null).map((d) => d.id)),
+    };
+  }
+
   /**
    * Phase 4 Task 1 (correction F1) — the status of ONE linked decision, read on the GIVEN client so
    * the activity `start` command can consult it INSIDE its readiness-locked transaction (a concurrent
@@ -75,6 +88,17 @@ export class DecisionsQueryService {
   async statusOf(projectId: string, decisionId: string, db: Prisma.TransactionClient = this.prisma): Promise<DecisionStatus | null> {
     const row = await db.decision.findFirst({ where: { id: decisionId, projectId }, select: { status: true } });
     return row ? (row.status as DecisionStatus) : null;
+  }
+
+  /** Phase 6 task 4b (§A.2) — `statusOf` plus the DRAFT flag, for the in-tx `activities.start`
+   *  gate: a linked draft RECORD must refuse the start (`wait`) until its author publishes it. */
+  async statusAndDraftOf(
+    projectId: string,
+    decisionId: string,
+    db: Prisma.TransactionClient = this.prisma,
+  ): Promise<{ status: DecisionStatus; draft: boolean } | null> {
+    const row = await db.decision.findFirst({ where: { id: decisionId, projectId }, select: { status: true, publishedAt: true } });
+    return row ? { status: row.status as DecisionStatus, draft: row.publishedAt === null } : null;
   }
 
   /**
@@ -115,9 +139,27 @@ export class DecisionsQueryService {
     }
     // the readiness map is UNFILTERED (every decision's true status), exactly like snapshotSlice
     const statuses = new Map<string, DecisionStatus>(rows.map((r) => [r.decisionId, r.status as DecisionStatus]));
+    // Phase 6 task 4b (§A.3) — the projection ROW carries the decider designation inside its
+    // stored dto (kind + the resolved decider USER, derived by the ONE fold `serializeDecision`
+    // so live == projection == rebuild by construction); the read-path filter narrows on it, so
+    // a projection read can tell the named decider from a same-role non-decider — no leak, no
+    // hidden action item.
     const decisions = rows
-      .filter((r) => decisionVisibleToViewer({ publishedAt: r.publishedAt, authorId: r.authorId, status: r.status }, role, userId))
-      .map((r) => r.dto as unknown as DecisionDto);
+      .map((r) => ({ row: r, dto: r.dto as unknown as DecisionDto }))
+      .filter(({ row, dto }) =>
+        decisionVisibleToViewer(
+          {
+            publishedAt: row.publishedAt,
+            authorId: row.authorId,
+            status: row.status,
+            deciderKind: dto.deciderKind,
+            deciderUserId: dto.deciderUserId ?? null,
+          },
+          role,
+          userId,
+        ),
+      )
+      .map(({ dto }) => dto);
     return { decisions, statuses, generation: gen.generation };
   }
 
@@ -137,6 +179,38 @@ export class DecisionsQueryService {
     if (proj.generation !== null) return { decisions: proj.decisions, source: 'projection', generation: proj.generation };
     const live = await this.snapshotSlice(projectId, role, userId);
     return { decisions: live.decisions, source: 'live', generation: null };
+  }
+
+  /**
+   * Phase 6 task 4b (§A.3, class round-5 obligations) — the DECIDER push family's claim-time
+   * predicate: is a queued "decide this" push STILL ACTIONABLE, and for whom? Re-judged at claim
+   * from the decision's CURRENT row, so a change committed between enqueue and claim re-targets
+   * the delivery to the current holder or drops it:
+   *   - the decision must still exist, be published, and its status still DEMAND a decision
+   *     (`pending`/`change`) — an approved/withdrawn/recorded subject drops;
+   *   - a role-held decision targets its role;
+   *   - a member-held decision targets the named member's USER — and the STANDING arm: a
+   *     membership no longer active drops the push (never a "decide this" demand to a revoked
+   *     target).
+   */
+  async deciderPushTarget(
+    projectId: string,
+    decisionId: string,
+  ): Promise<{ actionable: false } | { actionable: true; roles?: string[]; targetUserId?: string }> {
+    const d = await this.prisma.decision.findFirst({
+      where: { id: decisionId, projectId },
+      select: { status: true, publishedAt: true, deciderKind: true, deciderMembership: { select: { userId: true, status: true } } },
+    });
+    if (!d || d.publishedAt === null) return { actionable: false };
+    if (d.status !== 'pending' && d.status !== 'change') return { actionable: false };
+    if (d.deciderKind === 'client') return { actionable: true, roles: ['client'] };
+    if (d.deciderKind === 'pmc') return { actionable: true, roles: ['pmc'] };
+    if (d.deciderKind === 'member') {
+      const m = d.deciderMembership;
+      if (!m || m.status !== 'active') return { actionable: false };
+      return { actionable: true, targetUserId: m.userId };
+    }
+    return { actionable: false };
   }
 
   /** Does decision `decisionId` exist in project `projectId`? The tenant-ownership check a consumer
@@ -190,13 +264,22 @@ export class DecisionsQueryService {
     return this.prisma.decision.count({ where: { nodeId: { in: nodeIds } } });
   }
 
-  /** How many of a project's decisions are still pending — the portfolio tile count (the caller gates
-   *  this on the viewer's role: only PMC/client may see it). Task 10 finalization: a DRAFT
-   *  (`publishedAt` null) is weightless — it is not awaiting the client, and counting it here leaked
-   *  an author-private draft into every PMC/client member's portfolio rollup while the shell,
-   *  dashboard and inbox surfaces all excluded it (cross-surface disagreement + a privacy leak). */
-  countPending(projectId: string): Promise<number> {
-    return this.prisma.decision.count({ where: { projectId, status: 'pending', publishedAt: { not: null } } });
+  /** How many of a project's PUBLISHED pending decisions await THIS VIEWER — the portfolio tile
+   *  count. Task 10 finalization: a DRAFT (`publishedAt` null) is weightless — it is not awaiting
+   *  anyone, and counting it here leaked an author-private draft into portfolio rollups.
+   *  Phase 6 task 4b (§A.3) — the count FOLLOWS the decider: pmc sees every pending decision
+   *  (they manage the register); every other viewer counts only the decisions THEY decide — the
+   *  `client`-held rows for a client, the rows NAMING them for a member-decider — so a named
+   *  engineer-decider's portfolio card reports their obligation and a same-role non-decider's
+   *  reports zero. */
+  countPending(projectId: string, viewer: { role: Role; userId?: string }): Promise<number> {
+    const base: Prisma.DecisionWhereInput = { projectId, status: 'pending', publishedAt: { not: null } };
+    if (viewer.role === 'pmc') return this.prisma.decision.count({ where: base });
+    const decides: Prisma.DecisionWhereInput[] = [];
+    if (viewer.role === 'client') decides.push({ deciderKind: 'client' });
+    if (viewer.userId) decides.push({ deciderKind: 'member', deciderMembership: { userId: viewer.userId } });
+    if (decides.length === 0) return Promise.resolve(0);
+    return this.prisma.decision.count({ where: { ...base, OR: decides } });
   }
   /**
    * Phase 3 Task 1 correction round 2 (finding 2) — the AUTHORITATIVE, immutable decision

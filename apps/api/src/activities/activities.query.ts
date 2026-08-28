@@ -122,9 +122,18 @@ export class ActivitiesQueryService {
   /** Fetch the FOREIGN readiness inputs fresh — through the owning modules' query contracts. The
    *  snapshot passes its already-fetched decision status map to avoid a duplicate read; the module GET
    *  fetches its own. */
-  private async bakeInputs(projectId: string, decisionStatuses?: ReadonlyMap<string, string>, withdrawnReasonVisible = false): Promise<ActivitiesBakeInputs> {
-    const [statuses, inspections, drawings, activeMembers, materialCoverage, labourCoverage, labourMismatchBlocked] = await Promise.all([
-      decisionStatuses ?? this.decisionsQuery.statusMap(projectId),
+  private async bakeInputs(
+    projectId: string,
+    decisionStatuses?: ReadonlyMap<string, string>,
+    withdrawnReasonVisible = false,
+    decisionDrafts?: ReadonlySet<string>,
+  ): Promise<ActivitiesBakeInputs> {
+    // Phase 6 task 4b (§A.2) — the draft-id set travels WITH the status map (both from the
+    // decisions query): the recorded gate arm needs to tell a draft record from a published one.
+    const [decisionInputs, inspections, drawings, activeMembers, materialCoverage, labourCoverage, labourMismatchBlocked] = await Promise.all([
+      decisionStatuses
+        ? Promise.resolve({ statuses: decisionStatuses, drafts: decisionDrafts ?? new Set<string>() })
+        : this.decisionsQuery.statusAndDraftMap(projectId),
       this.inspectionsQuery.readinessSlice(projectId),
       this.drawingsQuery.readinessSlice(projectId),
       this.prisma.membership.findMany({ where: { projectId, status: 'active' }, select: { userId: true } }),
@@ -133,7 +142,8 @@ export class ActivitiesQueryService {
       this.labourMismatchBlockedSet(projectId),
     ]);
     return {
-      decisionStatuses: statuses,
+      decisionStatuses: decisionInputs.statuses,
+      decisionDrafts: decisionInputs.drafts,
       withdrawnReasonVisible,
       inspections,
       drawings,
@@ -151,10 +161,13 @@ export class ActivitiesQueryService {
    * reuse the id→status map it already fetched from the decisions query (identical data — the bake result
    * cannot differ).
    */
-  async snapshotSlice(projectId: string, opts: { decisionStatuses?: ReadonlyMap<string, string>; withdrawnReasonVisible?: boolean } = {}): Promise<ActivitiesSlices> {
+  async snapshotSlice(
+    projectId: string,
+    opts: { decisionStatuses?: ReadonlyMap<string, string>; decisionDrafts?: ReadonlySet<string>; withdrawnReasonVisible?: boolean } = {},
+  ): Promise<ActivitiesSlices> {
     const [base, inputs] = await Promise.all([
       computeActivitiesBase(this.prisma, projectId),
-      this.bakeInputs(projectId, opts.decisionStatuses, opts.withdrawnReasonVisible ?? false),
+      this.bakeInputs(projectId, opts.decisionStatuses, opts.withdrawnReasonVisible ?? false, opts.decisionDrafts),
     ]);
     return bakeActivities(base, inputs);
   }

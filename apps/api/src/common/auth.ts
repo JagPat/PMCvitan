@@ -30,6 +30,10 @@ export interface AuthUser {
   orgId?: string;
   credentialVersion?: number;
   worker?: boolean;
+  /** the JWT's own expiry (seconds since epoch), populated by verification — Phase 6 task 4b
+   *  (§A.3 round 15) records it on a push-subscription link so an abandoned shared browser's
+   *  link lapses with the session even when the credential version never changes */
+  exp?: number;
 }
 
 /**

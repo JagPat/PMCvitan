@@ -15,6 +15,7 @@ import { makeLabourReadinessProjectionConsumer, bindLabourReadinessDeps } from '
 import { makeCashForecastProjectionConsumer, bindCashForecastDeps } from '../../commercial/cash-forecast.projection';
 import { InventoryService } from '../../inventory/inventory.service';
 import { SubstitutionsService } from '../../activities/substitutions.service';
+import { DecisionsQueryService } from '../../decisions/decisions.query';
 import { LabourCoverageService } from '../../labour/labour-coverage.service';
 import { CommercialBudgetQuery } from '../../commercial/commercial-budget.query';
 import { effectCoverageVersion } from '../external-effects';
@@ -45,11 +46,26 @@ export class OutboxBootstrap implements OnModuleInit {
     // query (which is where every §J bucket is already defined); boot binds it once for the
     // consumer and the operator rebuild diagnostic.
     private readonly commercialBudget: CommercialBudgetQuery,
+    // Phase 6 task 4b (§A.3) — the decider push family's claim-time predicate routes through the
+    // decisions-owned query answer; boot binds it so platform code never reads a decisions table.
+    private readonly decisionsQuery: DecisionsQueryService,
   ) {}
 
   async onModuleInit(): Promise<void> {
     registerConsumer(makeSocketConsumer(this.realtime));
-    registerConsumer(makePushConsumer(this.push));
+    registerConsumer(
+      makePushConsumer(this.push, {
+        deciderTarget: (projectId, decisionId) => this.decisionsQuery.deciderPushTarget(projectId, decisionId),
+        // the claim-time drop is recorded on the delivery's own row (the 4a cancellation mark) —
+        // a platform-internal write of the platform's own table
+        markCancelled: async (deliveryId) => {
+          await this.prisma.outboxDelivery.update({
+            where: { id: deliveryId },
+            data: { cancelledAt: new Date(), deliveryAction: 'noop' },
+          });
+        },
+      }),
+    );
     // Task 9 — the first module's rebuildable read path: the decisions projection consumer maintains
     // the DecisionProjection read model from `decision.*` events (ordered, effectively-once). Every
     // event materializes its ordered delivery (dispatch for a decision event, noop otherwise), so the

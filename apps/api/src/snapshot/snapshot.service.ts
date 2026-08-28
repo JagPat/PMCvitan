@@ -78,7 +78,7 @@ export class SnapshotService {
       // each activity's five-gate readiness FRESH through the decisions/inspections/drawings query
       // contracts; the snapshot chains its already-fetched id→status decision map in so the decision
       // read never happens twice (identical data — the bake result cannot differ).
-      decisionSlicePromise.then((s) => this.activitiesQuery.snapshotSlice(projectId, { decisionStatuses: s.statuses, withdrawnReasonVisible: role === 'pmc' })),
+      decisionSlicePromise.then((s) => this.activitiesQuery.snapshotSlice(projectId, { decisionStatuses: s.statuses, decisionDrafts: s.drafts, withdrawnReasonVisible: role === 'pmc' })),
       // Task 10 (Module 3) — the five role-gated inspection slices come from the module's query (the same
       // per-viewer/role serialization moved there verbatim, so byte-identical), never a direct read.
       this.inspectionsQuery.snapshotSlice(projectId, role),
@@ -123,9 +123,19 @@ export class SnapshotService {
     // Task 8 — the role-filtered decision DTOs come from the decisions query (the serialization moved
     // there verbatim, so this slice is byte-identical).
     const decisionDtos = decisionSlice.decisions;
-    // pmc/client see pending decisions; every other role has them hidden — the same predicate also
-    // drops the pending-decision notice from the bell for those roles (AUTH-02, below).
+    // Phase 6 task 4b (§A.3) — the pending-notice audience FOLLOWS the decider: a notice linked to
+    // a decision (4a stamps `decisionId`) is kept exactly when the decision itself is in this
+    // viewer's visible slice — the visibility rule already admits pmc + THE DECIDER for a pending
+    // row, so an engineer-decider sees their notice and the client no longer receives a demand for
+    // a decision they do not decide. A LEGACY unlinked notice (decisionId null, pre-4a) keeps the
+    // pre-4b pmc/client audience — every pre-4b decision is a `client`-held one.
+    const visibleDecisionIds = new Set(decisionDtos.map((d) => d.id));
     const hidePending = role !== 'pmc' && role !== 'client';
+    const stripPendingNotice = (n: { text: string; decisionId: string | null }): boolean => {
+      if (!isPendingDecisionNotice(n.text)) return false;
+      if (n.decisionId) return !visibleDecisionIds.has(n.decisionId);
+      return hidePending;
+    };
 
     // Task 10 (Module 4) — the activity spine (`activities` + `phases`, `activitySlices` above) is served
     // by the activities module's query, which bakes the SAME serialization the inline shaping used to:
@@ -178,7 +188,7 @@ export class SnapshotService {
       // pmc/client-only — drop it from the feed for roles that have pending decisions
       // hidden, so a decision's title can't leak through the bell.
       notifications: notifications
-        .filter((n) => !(hidePending && isPendingDecisionNotice(n.text)))
+        .filter((n) => !stripPendingNotice(n))
         // Phase 6 task 4a — a withdrawal notice (title + reason) is PMC-ONLY: a withdrawn
         // decision is invisible to every other role INCLUDING the client (§A.3), so its
         // explanation must not leak through the bell either.

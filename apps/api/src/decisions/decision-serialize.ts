@@ -76,16 +76,41 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
   };
 }
 
+/** The decider-designation slice of a decision every audience predicate consumes. */
+export interface DeciderSlice {
+  deciderKind: string;
+  /** the NAMED member's resolved user — the value the targeted dispatch and every filter compare */
+  deciderUserId?: string | null;
+}
+
+/**
+ * Phase 6 task 4b (§A.3) — is this viewer THE DECIDER of the decision? `client`/`pmc` designate
+ * the ROLE (any member of it decides); `member` designates ONE user, so a same-role non-decider
+ * is NOT the decider; `none` is a record — nobody decides it. The ONE predicate shared by the
+ * server visibility rule, the store selectors, and the projection read-path filter.
+ */
+export function viewerIsDecider(d: DeciderSlice, role: string, userId?: string): boolean {
+  if (d.deciderKind === 'client') return role === 'client';
+  if (d.deciderKind === 'pmc') return role === 'pmc';
+  if (d.deciderKind === 'member') return !!userId && d.deciderUserId === userId;
+  return false;
+}
+
 /**
  * The per-viewer visibility rule, applied identically by the live snapshot slice and the projection
  * query so a projection is NEVER an RBAC bypass:
  *   - a DRAFT (publishedAt null) is author-private — visible only to its creator;
- *   - a published-but-`pending` decision is visible only to pmc/client (AUTH-02);
+ *   - a published-but-`pending` decision is visible only to pmc and THE DECIDER (Phase 6 task 4b
+ *     §A.3 — the pending audience FOLLOWS the decider: a named engineer-decider sees their
+ *     obligation, a same-role non-decider does not, and the client no longer sees a demand for a
+ *     decision they do not decide; a `client`-held decision keeps the pre-4b pmc/client audience
+ *     byte-identically);
  *   - a WITHDRAWN decision is pmc-only (Phase 6 task 4a — withdrawal never widens an audience);
- *   - everything else is visible to the project.
+ *   - everything else — `recorded` rows included (a record is a team-visible fact, §A.2) — is
+ *     visible to the project.
  */
 export function decisionVisibleToViewer(
-  d: { publishedAt: Date | null; authorId: string | null; status: string },
+  d: { publishedAt: Date | null; authorId: string | null; status: string } & DeciderSlice,
   role: string,
   userId?: string,
 ): boolean {
@@ -94,6 +119,6 @@ export function decisionVisibleToViewer(
   // pending, contractor/engineer/consultant NEVER saw it, and withdrawal must not widen an
   // audience — including to the client, for whom nothing is awaited any more.
   if (d.status === 'withdrawn') return role === 'pmc';
-  const hidePending = role !== 'pmc' && role !== 'client';
-  return !(hidePending && d.status === 'pending');
+  if (d.status === 'pending') return role === 'pmc' || viewerIsDecider(d, role, userId);
+  return true;
 }

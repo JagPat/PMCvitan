@@ -210,6 +210,13 @@ export const pushSubscribeSchema = z.object({
 });
 export type PushSubscribeInput = z.infer<typeof pushSubscribeSchema>;
 
+// Phase 6 task 4b (§A.3 round 13) — sign-out unlinks THIS browser's subscription (by endpoint)
+// so a shared device stops receiving the departing user's targeted content.
+export const pushUnlinkSchema = z.object({
+  endpoint: z.string().url().refine(isSafeExternalHttpsUrl, 'endpoint must be an https URL to a public host'),
+});
+export type PushUnlinkInput = z.infer<typeof pushUnlinkSchema>;
+
 // ── Drawings register (Slice 1) ──────────────────────────────────────────────
 // Issue a drawing. If `number` already exists in the project a new revision is
 // added and the prior ones are superseded; otherwise a new register entry is
