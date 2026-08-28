@@ -34,6 +34,13 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
     material: d.material ?? undefined,
     approver: d.approver ?? undefined,
     onBehalfOf: d.onBehalfOf ?? undefined,
+    // Phase 6 unit 4b — the holder, present ONLY when it is not the historical default. A
+    // client-held decision therefore serializes exactly the keys it always did (P15's
+    // byte-identity reaches the wire, not just the columns), and the register/Drafts surfaces can
+    // show and correct a named holder without a second read.
+    ...(d.deciderKind !== 'client'
+      ? { deciderKind: d.deciderKind, ...(d.deciderMembershipId ? { deciderMembershipId: d.deciderMembershipId } : {}) }
+      : {}),
     date: d.date ?? undefined,
     cost: d.cost ?? undefined,
     // a reopened decision carries its open request so every surface can show WHY it awaits
@@ -83,7 +90,7 @@ export function decisionVisibleToViewer(
     publishedAt: Date | null;
     authorId: string | null;
     status: string;
-    /** Phase 6 unit 4b (staged shape) — the holder designation the audience rule will read. */
+    /** Phase 6 unit 4b — the holder designation, and the USER a named membership resolves to. */
     deciderKind?: string | null;
     deciderUserId?: string | null;
   },
@@ -96,5 +103,17 @@ export function decisionVisibleToViewer(
   // audience — including to the client, for whom nothing is awaited any more.
   if (d.status === 'withdrawn') return role === 'pmc';
   const hidePending = role !== 'pmc' && role !== 'client';
-  return !(hidePending && d.status === 'pending');
+  // Phase 6 unit 4b (plan §A.3) — AUTH-02's pending narrowing was written when "pending" meant
+  // "awaiting the client", so it hides every pending decision from every other role. A decision
+  // now names WHO decides it, and a named member may be the contractor or the site engineer: the
+  // audience follows the DECIDER. Without this the register would authorise them to approve
+  // (the service's decider check) while never showing them the question — an action item pointing
+  // at a row they cannot see. The widening is exactly one person: the decider's own user id, so a
+  // SAME-ROLE non-decider is still refused. `deciderUserId` is resolved by the READ (through the
+  // orgs participant on the live path, from the stored column on the projection path), so both
+  // paths apply the identical rule and a projection read is never an RBAC bypass.
+  if (hidePending && d.status === 'pending') {
+    return !!userId && !!d.deciderUserId && d.deciderUserId === userId;
+  }
+  return true;
 }

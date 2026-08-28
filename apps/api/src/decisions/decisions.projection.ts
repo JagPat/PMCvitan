@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import type { DeliveryPlan, EmittedEventMeta, OutboxConsumer } from '../platform/outbox/registry';
 import { serializeDecision, type DecisionRow } from './decision-serialize';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 
 /**
  * Phase 2 Task 9 — the DECISIONS read-model projection consumer (`decisions.inbox`).
@@ -35,15 +36,60 @@ const DECISION_INCLUDE = {
   changeRequests: { where: { status: 'open' }, take: 1 },
 } satisfies Prisma.DecisionInclude;
 
+/**
+ * Phase 6 unit 4b — `Membership` is orgs-owned, and the projection needs the USER a named holder
+ * membership denotes so its stored row can carry the same designation the live read resolves. The
+ * question goes to the owner through the declared `decisions → orgs` participant channel, inside
+ * the projection's own transaction. Constructed directly rather than injected: the consumer is a
+ * plain factory, and `OrgsParticipant` has no constructor dependencies precisely so non-DI callers
+ * can hold one (its own header states that contract).
+ */
+const orgsParticipant = new OrgsParticipant();
+
+/** The holder designation a projection row stores: the kind, plus the resolved decider USER. */
+async function deciderColumns(
+  tx: Prisma.TransactionClient,
+  projectId: string,
+  rows: readonly DecisionRow[],
+): Promise<Map<string, { deciderKind: string; deciderUserId: string | null }>> {
+  const membershipIds = [...new Set(rows.map((d) => d.deciderMembershipId).filter((v): v is string => !!v))];
+  const users = await orgsParticipant.membershipUsers(tx, projectId, membershipIds);
+  return new Map(
+    rows.map((d) => [
+      d.id,
+      {
+        deciderKind: d.deciderKind,
+        deciderUserId: d.deciderMembershipId ? users.get(d.deciderMembershipId) ?? null : null,
+      },
+    ]),
+  );
+}
+
 /** Upsert one decision's generation-scoped projection row from its canonical record. */
-async function upsertRow(tx: Prisma.TransactionClient, generationId: string, d: DecisionRow): Promise<void> {
+async function upsertRow(
+  tx: Prisma.TransactionClient,
+  generationId: string,
+  d: DecisionRow,
+  decider: { deciderKind: string; deciderUserId: string | null },
+): Promise<void> {
   const dto = serializeDecision(d) as unknown as Prisma.InputJsonValue;
-  const keys = { status: d.status, publishedAt: d.publishedAt, authorId: d.authorId, dto };
+  const keys = { status: d.status, publishedAt: d.publishedAt, authorId: d.authorId, ...decider, dto };
   await tx.decisionProjection.upsert({
     where: { generationId_decisionId: { generationId, decisionId: d.id } },
     create: { generationId, projectId: d.projectId, decisionId: d.id, ...keys },
     update: keys,
   });
+}
+
+/** Refresh the WHOLE project's row set — the one place both the seed and the handler go through. */
+async function refreshRows(
+  tx: Prisma.TransactionClient,
+  generationId: string,
+  projectId: string,
+  rows: readonly DecisionRow[],
+): Promise<void> {
+  const decider = await deciderColumns(tx, projectId, rows);
+  for (const d of rows) await upsertRow(tx, generationId, d, decider.get(d.id)!);
 }
 
 /**
@@ -65,6 +111,10 @@ export interface DecisionComparableRow {
   /** ISO-8601 or null — never a `Date` (normalized identically on the stored and canonical sides). */
   publishedAt: string | null;
   authorId: string | null;
+  /** Phase 6 unit 4b — the holder designation the per-viewer filter reads; a generation whose
+   *  holder columns drifted from canonical would serve the wrong audience while looking healthy. */
+  deciderKind: string;
+  deciderUserId: string | null;
   dto: unknown;
 }
 
@@ -74,6 +124,8 @@ function toDecisionComparable(r: {
   status: string;
   publishedAt: Date | null;
   authorId: string | null;
+  deciderKind: string;
+  deciderUserId: string | null;
   dto: unknown;
 }): DecisionComparableRow {
   return {
@@ -81,6 +133,8 @@ function toDecisionComparable(r: {
     status: r.status,
     publishedAt: r.publishedAt ? r.publishedAt.toISOString() : null,
     authorId: r.authorId,
+    deciderKind: r.deciderKind,
+    deciderUserId: r.deciderUserId,
     dto: r.dto,
   };
 }
@@ -89,8 +143,9 @@ function toDecisionComparable(r: {
  *  ordered by `decisionId` — what a correct, caught-up generation must store, in full. */
 export async function computeDecisionRows(tx: Prisma.TransactionClient, projectId: string): Promise<DecisionComparableRow[]> {
   const rows = await tx.decision.findMany({ where: { projectId }, include: DECISION_INCLUDE, orderBy: { id: 'asc' } });
+  const decider = await deciderColumns(tx, projectId, rows);
   return rows.map((d) =>
-    toDecisionComparable({ decisionId: d.id, status: d.status, publishedAt: d.publishedAt, authorId: d.authorId, dto: serializeDecision(d) }),
+    toDecisionComparable({ decisionId: d.id, status: d.status, publishedAt: d.publishedAt, authorId: d.authorId, ...decider.get(d.id)!, dto: serializeDecision(d) }),
   );
 }
 
@@ -99,7 +154,7 @@ export async function computeDecisionRows(tx: Prisma.TransactionClient, projectI
 export async function storedDecisionRows(tx: Prisma.TransactionClient, generationId: string): Promise<DecisionComparableRow[]> {
   const rows = await tx.decisionProjection.findMany({ where: { generationId }, orderBy: { decisionId: 'asc' } });
   return rows.map((r) =>
-    toDecisionComparable({ decisionId: r.decisionId, status: r.status, publishedAt: r.publishedAt, authorId: r.authorId, dto: r.dto }),
+    toDecisionComparable({ decisionId: r.decisionId, status: r.status, publishedAt: r.publishedAt, authorId: r.authorId, deciderKind: r.deciderKind, deciderUserId: r.deciderUserId, dto: r.dto }),
   );
 }
 
@@ -120,7 +175,7 @@ export function makeDecisionsProjectionConsumer(): OutboxConsumer {
         const max = await tx.domainEvent.aggregate({ where: { projectId: target.projectId }, _max: { streamPosition: true } });
         const seededThrough = max._max.streamPosition ?? null;
         const rows = await tx.decision.findMany({ where: { projectId: target.projectId }, include: DECISION_INCLUDE });
-        for (const d of rows) await upsertRow(tx, target.generationId, d);
+        await refreshRows(tx, target.generationId, target.projectId, rows);
         return seededThrough;
       },
       dropGeneration: async (tx, target) => {
@@ -139,7 +194,7 @@ export function makeDecisionsProjectionConsumer(): OutboxConsumer {
       // applied event makes any caught-up generation complete by construction; rows for decisions
       // that no longer exist are dropped.
       const rows = await ctx.tx.decision.findMany({ where: { projectId: ctx.meta.projectId }, include: DECISION_INCLUDE });
-      for (const d of rows) await upsertRow(ctx.tx, ctx.projection.generationId, d);
+      await refreshRows(ctx.tx, ctx.projection.generationId, ctx.meta.projectId, rows);
       await ctx.tx.decisionProjection.deleteMany({
         where: { generationId: ctx.projection.generationId, decisionId: { notIn: rows.map((r) => r.id) } },
       });

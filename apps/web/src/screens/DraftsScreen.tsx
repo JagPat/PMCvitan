@@ -1,4 +1,4 @@
-import { type CSSProperties } from 'react';
+import { useEffect, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, drawingMutationsBlocked } from '@/store/store';
 import { selectDraftDecisions, selectDraftDrawings } from '@/store/selectors';
@@ -19,6 +19,15 @@ export function DraftsScreen() {
   const decisions = useStore(useShallow(selectDraftDecisions));
   const drawings = useStore(useShallow(selectDraftDrawings));
   const publishDecision = useStore((s) => s.publishDecision);
+  // Phase 6 unit 4b — publishing REFUSES a draft whose named decider has left the project, and
+  // names this control as the fix. The recovery has to be a product path: `withdraw` covers only
+  // published decisions, and the holder is write-once from publication, so the draft is the only
+  // place it can still be corrected.
+  const setDecisionDecider = useStore((s) => s.setDecisionDecider);
+  const members = useStore(useShallow((s) => s.members));
+  const loadTeam = useStore((s) => s.loadTeam);
+  useEffect(() => { void loadTeam(); }, [loadTeam]);
+  const deciderCandidates = members.filter((m) => m.status === 'active' && m.membershipId);
   const publishDrawing = useStore((s) => s.publishDrawing);
   const publishAllDrafts = useStore((s) => s.publishAllDrafts);
   const total = decisions.length + drawings.length;
@@ -77,6 +86,32 @@ export function DraftsScreen() {
                           {o.recommended && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, fontWeight: 700, color: 'var(--accent)' }}>REC</span>}
                         </div>
                       ))}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                      <label htmlFor={`decider-${d.id}`} style={{ fontSize: 12, color: 'var(--muted)' }}>Who decides</label>
+                      <select
+                        id={`decider-${d.id}`}
+                        data-testid={`draft-decider-${d.id}`}
+                        value={d.deciderKind === 'member' && d.deciderMembershipId ? `member:${d.deciderMembershipId}` : d.deciderKind ?? 'client'}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          const membershipId = v.startsWith('member:') ? v.slice('member:'.length) : undefined;
+                          setDecisionDecider(d.id, membershipId ? { deciderKind: 'member', deciderMembershipId: membershipId } : { deciderKind: v as 'client' | 'pmc' });
+                        }}
+                        style={{ height: 34, padding: '0 10px', borderRadius: 9, border: '1px solid var(--hairline)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink)' }}
+                      >
+                        <option value="client">The client</option>
+                        <option value="pmc">The PMC (this practice)</option>
+                        {/* A holder who has since left is NOT in this list, so the select would
+                            silently drop it. Keep it as an explicit, self-describing option: the
+                            author must see what the draft currently names in order to change it. */}
+                        {d.deciderKind === 'member' && d.deciderMembershipId && !deciderCandidates.some((m) => m.membershipId === d.deciderMembershipId) && (
+                          <option value={`member:${d.deciderMembershipId}`}>A member who has left the project — pick someone else</option>
+                        )}
+                        {deciderCandidates.map((m) => (
+                          <option key={m.membershipId} value={`member:${m.membershipId}`}>{m.name} — {m.role}</option>
+                        ))}
+                      </select>
                     </div>
                     <Foot
                       ready={ready}

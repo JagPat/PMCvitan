@@ -7,6 +7,7 @@ import type { DecisionDto } from '../snapshot/types';
 import { serializeDecision, decisionVisibleToViewer } from './decision-serialize';
 import { DECISIONS_PROJECTION } from './decisions.projection';
 import { readServableGeneration } from '../platform/projections/generation';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 
 /**
  * Phase 2 Task 8 — the decisions module's PUBLIC READ boundary (its query contract).
@@ -25,7 +26,20 @@ import { readServableGeneration } from '../platform/projections/generation';
  */
 @Injectable()
 export class DecisionsQueryService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // Phase 6 unit 4b — a `member` holder is stored as a MEMBERSHIP and the per-viewer rule
+    // compares against the viewer's USER. `Membership` is orgs-owned, so the bridge is asked of
+    // its owner through the declared `decisions → orgs` participant channel (the same edge the
+    // withdraw attribution already uses), never joined here.
+    private readonly orgsParticipant: OrgsParticipant,
+  ) {}
+
+  /** Resolve each row's `member` holder to the USER the visibility rule compares against. */
+  private async deciderUsers(projectId: string, rows: readonly { deciderMembershipId: string | null }[]): Promise<Map<string, string>> {
+    const ids = [...new Set(rows.map((r) => r.deciderMembershipId).filter((v): v is string => !!v))];
+    return this.orgsParticipant.membershipUsers(this.prisma, projectId, ids);
+  }
 
   /**
    * The decisions slice of the project snapshot: the role-filtered `DecisionDto[]` the store hydrates,
@@ -48,8 +62,15 @@ export class DecisionsQueryService {
 
     // The serialization + the per-viewer filter are the SAME functions the decisions projection uses
     // (decision-serialize.ts), so the projection-served slice is byte-identical to this live slice.
+    const deciderUsers = await this.deciderUsers(projectId, rows);
     const decisions: DecisionDto[] = rows
-      .filter((d) => decisionVisibleToViewer(d, role, userId))
+      .filter((d) =>
+        decisionVisibleToViewer(
+          { ...d, deciderUserId: d.deciderMembershipId ? deciderUsers.get(d.deciderMembershipId) ?? null : null },
+          role,
+          userId,
+        ),
+      )
       .map(serializeDecision);
 
     return { decisions, statuses };
@@ -116,7 +137,13 @@ export class DecisionsQueryService {
     // the readiness map is UNFILTERED (every decision's true status), exactly like snapshotSlice
     const statuses = new Map<string, DecisionStatus>(rows.map((r) => [r.decisionId, r.status as DecisionStatus]));
     const decisions = rows
-      .filter((r) => decisionVisibleToViewer({ publishedAt: r.publishedAt, authorId: r.authorId, status: r.status }, role, userId))
+      .filter((r) =>
+        decisionVisibleToViewer(
+          { publishedAt: r.publishedAt, authorId: r.authorId, status: r.status, deciderKind: r.deciderKind, deciderUserId: r.deciderUserId },
+          role,
+          userId,
+        ),
+      )
       .map((r) => r.dto as unknown as DecisionDto);
     return { decisions, statuses, generation: gen.generation };
   }

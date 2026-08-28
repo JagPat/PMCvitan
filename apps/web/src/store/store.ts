@@ -68,7 +68,7 @@ import type { LabourView } from './labour';
 import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
-import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, DecisionDeciderInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
@@ -546,6 +546,10 @@ export interface AppActions {
   removeCompany: (companyId: string) => void;
   // authoring: decisions + planning/scheduling (PMC)
   issueDecision: (input: IssueDecisionPayload) => void;
+  /** Phase 6 unit 4b — change WHO decides an UNPUBLISHED draft decision. This is the exit the
+   *  publish refusal names when a draft's named member has left the project: the holder freezes
+   *  with publication, so the draft is the only place it can still be corrected. */
+  setDecisionDecider: (decisionId: string, decider: DecisionDeciderInput) => void;
   /** Publish a private draft decision → issue it to the client (works offline in the demo). */
   publishDecision: (decisionId: string) => void;
   /** Publish EVERY draft (decisions + drawings) in one action — the Drafts workspace "Publish all". */
@@ -3562,7 +3566,18 @@ export const useStore = create<Store>()(
             }),
           );
           const lease = beginSnapshotLease(scope); // gate round 11: before the create request
-          const snap = await gw.createDecision({ title: input.title, nodeId: input.nodeId, room: input.room, options, publish: input.publish }, newIdempotencyKey());
+          const snap = await gw.createDecision(
+            {
+              title: input.title, nodeId: input.nodeId, room: input.room, options, publish: input.publish,
+              // Phase 6 unit 4b — WHO decides. Omitted (the default picker state) sends nothing,
+              // so a decision issued the way every decision was issued before this unit produces
+              // a byte-identical request.
+              ...(input.deciderKind && input.deciderKind !== 'client'
+                ? { deciderKind: input.deciderKind, ...(input.deciderMembershipId ? { deciderMembershipId: input.deciderMembershipId } : {}) }
+                : {}),
+            },
+            newIdempotencyKey(),
+          );
           consumeSnapshotResult(
             acceptSnapshot(snap, lease),
             input.publish
@@ -3576,6 +3591,18 @@ export const useStore = create<Store>()(
           if (scopeStillCurrent(scope)) get().flash(input.publish ? 'Could not issue the decision — check your access and try again.' : 'Could not save the draft — check your access and try again.');
         }
       })();
+    },
+    setDecisionDecider: (decisionId, decider) => {
+      const d = get().decisions.find((x) => x.id === decisionId);
+      if (!d) return;
+      if (!gateway) {
+        get().flash('Changing who decides needs the server.');
+        return;
+      }
+      runRemote(
+        () => gateway!.updateDecisionDecider(decisionId, decider, newIdempotencyKey()),
+        `Updated who decides ${d.title}.`,
+      );
     },
     publishDecision: (decisionId) => {
       const d = get().decisions.find((x) => x.id === decisionId);

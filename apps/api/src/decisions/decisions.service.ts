@@ -11,6 +11,7 @@ import { nextSeqId } from '../domain/ids';
 import { pendingDecisionNotice, withdrawnDecisionNotice } from '../domain/notifications';
 import { cancelQueuedPushBySubject } from '../platform/outbox/cancellation';
 import type { ApproveInput, ChangeInput, CreateDecisionInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
+import type { DeciderKind } from '@vitan/shared';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
@@ -33,6 +34,66 @@ export class DecisionsService {
     private readonly orgsParticipant: OrgsParticipant,
   ) {}
 
+  /**
+   * Phase 6 unit 4b (plan §A.1) — the holder a request NAMES, normalised. Absent is `client`: the
+   * historical holder, so a pre-4b payload produces byte-identical state (P15).
+   */
+  private holderOf(input: { deciderKind?: DeciderKind; deciderMembershipId?: string }): { kind: DeciderKind; membershipId: string | null } {
+    return { kind: input.deciderKind ?? 'client', membershipId: input.deciderMembershipId ?? null };
+  }
+
+  /**
+   * Does the named holder ACTUALLY hold this project right now — and what identity do we freeze
+   * for them?
+   *
+   * The plan's rule (§A.1): a decision may not be PUBLISHED into the zero-holder state. A named
+   * member must hold an ACTIVE membership (the FK proves the row exists in this project, which is
+   * not standing — a removed membership still satisfies it), and a ROLE-held decision needs
+   * someone with effective standing in that role, or publishing it would birth exactly the
+   * holderless state the removal guard exists to prevent (round 10).
+   *
+   * Both questions are orgs-owned facts and both are asked of the owner through the declared
+   * `decisions → orgs` participant channel inside the CALLER'S transaction, so the answer is the
+   * one that will still be true at commit: `lockActiveMembershipById` locks the membership row, so
+   * a concurrent removal serializes behind this publication instead of racing it.
+   *
+   * Returns the display identity the approval act freezes (§A.1, round 3): a designation alone is
+   * not attributable once the holder can later change, so the act keeps its own history.
+   */
+  private async resolveHolderStanding(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    holder: { kind: DeciderKind; membershipId: string | null },
+    context: 'publish' | 'reopen' = 'publish',
+  ): Promise<{ label: string; userId: string | null }> {
+    if (holder.kind === 'member') {
+      const m = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, holder.membershipId!);
+      if (!m) {
+        // The two refusals differ because the two exits differ. An unpublished draft is the
+        // author's private workspace and its holder is still editable, so the fix is the edit
+        // door. A PUBLISHED, approved decision cannot be re-homed in 4b at all: its approved
+        // outcome STANDS and a changed need is a NEW decision (the register's append-only
+        // answer). Re-homing an approved decision for reopening is the 4d forward's job, and this
+        // message says so rather than implying an exit that does not exist yet.
+        throw new ConflictException(
+          context === 'reopen'
+            ? 'The member who decided this is no longer active on the project — the approved outcome stands; raise the changed need as a new decision.'
+            : 'The member named to decide this is no longer active on the project — change who decides it (Drafts → who decides) and publish again.',
+        );
+      }
+      return { label: `${m.name} (${ROLE_LABEL[m.role as keyof typeof ROLE_LABEL] ?? m.role})`, userId: m.userId };
+    }
+    const held = await this.orgsParticipant.roleStandingExists(tx, projectId, holder.kind);
+    if (!held) {
+      throw new ConflictException(
+        context === 'reopen'
+          ? `No one on this project currently holds the ${ROLE_LABEL[holder.kind] ?? holder.kind} role — the approved outcome stands; raise the changed need as a new decision.`
+          : `No one on this project currently holds the ${ROLE_LABEL[holder.kind] ?? holder.kind} role — a published decision must have someone who can decide it.`,
+      );
+    }
+    return { label: ROLE_LABEL[holder.kind] ?? holder.kind, userId: null };
+  }
+
   /** PMC issues a new decision (title/room + 2–4 options) → shows as pending on the
    *  client's Decisions Waiting screen. Labels/keys derive from order when omitted.
    *
@@ -48,6 +109,12 @@ export class DecisionsService {
       room: input.room ?? null,
       options: input.options.map((o) => ({ label: o.label ?? null, material: o.material, delta: o.delta, swatch: o.swatch, photoUrl: o.photoUrl ?? null, recommended: o.recommended })),
       publish: !!input.publish,
+      // Phase 6 unit 4b (plan §A.1, round 13) — the preimage covers the DECIDER TUPLE. Without it,
+      // reusing a key after changing the intended holder REPLAYS the first decision instead of
+      // conflicting, silently preserving the wrong authority. A pre-4b payload hashes the same
+      // `('client', null)` pair its state already carries, so no existing key changes meaning.
+      deciderKind: input.deciderKind ?? 'client',
+      deciderMembershipId: input.deciderMembershipId ?? null,
     });
     if (await peekReplay(this.prisma, scope, actor.actorId, 'decisions.create', idempotencyKey, requestHash)) {
       return this.snapshot.build(projectId, user.role, user.sub);
@@ -78,6 +145,7 @@ export class DecisionsService {
     // publishes. `publish: true` is the one-step "issue now" — created already live.
     const publishedAt = input.publish ? new Date() : null;
     const notice = pendingDecisionNotice(input.title);
+    const holder = this.holderOf(input);
 
     const outcome = await executeCommand(this.prisma, {
       scope,
@@ -86,8 +154,21 @@ export class DecisionsService {
       idempotencyKey,
       requestHash,
       run: async (tx) => {
+        // Phase 6 unit 4b — a ONE-STEP publish is a publication, and a publication may not create
+        // the zero-holder state. It therefore takes the same readiness lock and the same holder
+        // standing check `publish()` does, so the two doors into a live decision cannot disagree.
+        // A DRAFT takes neither: it is author-private and weightless, and its holder stays
+        // editable until it publishes.
+        if (input.publish) {
+          await lockProjectReadiness(tx, projectId);
+          await this.resolveHolderStanding(tx, projectId, holder);
+        }
         await tx.decision.create({
-          data: { id, projectId, title: input.title, room, nodeId, status: 'pending', ageDays: 0, photoSwatch: lead.swatch, authorId: user.sub, publishedAt },
+          data: {
+            id, projectId, title: input.title, room, nodeId, status: 'pending', ageDays: 0,
+            photoSwatch: lead.swatch, authorId: user.sub, publishedAt,
+            deciderKind: holder.kind, deciderMembershipId: holder.membershipId,
+          },
         });
         await tx.decisionOption.createMany({
           data: input.options.map((o, i) => ({
@@ -143,7 +224,6 @@ export class DecisionsService {
     const d = await this.prisma.decision.findUnique({ where: { id: decisionId } });
     if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
     if (d.publishedAt) throw new ConflictException('Decision is already published');
-    const notice = pendingDecisionNotice(d.title);
 
     const outcome = await executeCommand(this.prisma, {
       scope,
@@ -152,6 +232,24 @@ export class DecisionsService {
       idempotencyKey,
       requestHash,
       run: async (tx) => {
+        // Phase 6 unit 4b — publication is the act that gives the holder columns weight (the DB
+        // freezes them from here), so it is also the act that must prove the holder is real.
+        // Order matters twice over: the readiness lock first (every decisions writer's first
+        // statement), then the decision ROW lock, and only then the holder read.
+        await lockProjectReadiness(tx, projectId);
+        // Round 16 — publish used to derive its notice and event from the PRE-transaction read,
+        // so an edit committing in between would let the published head carry another revision's
+        // evidence (a stale title in the client's bell). It now locks the row and derives
+        // everything from the LOCKED head; `updateDraft` takes the same lock, so the edit and the
+        // publication serialize instead of interleaving.
+        await tx.$queryRawUnsafe('SELECT 1 FROM "Decision" WHERE "id" = $1 AND "projectId" = $2 FOR UPDATE', decisionId, projectId);
+        const head = await tx.decision.findFirst({ where: { id: decisionId, projectId } });
+        if (!head) throw new NotFoundException(`Decision ${decisionId} not found`);
+        if (head.publishedAt) throw new ConflictException('Decision is already published');
+        // The holder must HOLD, right now, under this lock. A draft naming a member who has since
+        // left is refused here and the refusal names the fix — the draft-edit door, a product
+        // path, never a database operation (plan §A.1, round 8).
+        await this.resolveHolderStanding(tx, projectId, { kind: head.deciderKind, membershipId: head.deciderMembershipId });
         // Phase 6 task 4a — publish joins the CAS lifecycle it was the one exception to: the
         // pre-read above is advisory, and THIS guard (`publishedAt: null`) is the transition,
         // so two concurrent publishes admit exactly one (the loser gets the same 409 the
@@ -161,15 +259,15 @@ export class DecisionsService {
           data: { publishedAt: new Date() },
         });
         if (count === 0) throw new ConflictException('Decision is already published');
-        await tx.decisionEvent.create({ data: { decisionId, type: 'issued', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: d.title } } });
-        await tx.notification.create({ data: { projectId, text: notice, color: '#C08A2D', time: 'just now', decisionId } });
+        await tx.decisionEvent.create({ data: { decisionId, type: 'issued', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: head.title } } });
+        await tx.notification.create({ data: { projectId, text: pendingDecisionNotice(head.title), color: '#C08A2D', time: 'just now', decisionId } });
         await recordAudit(tx, { projectId, actor, action: 'decision.publish', entity: 'Decision', entityId: decisionId });
         const ev = await emitEvent(tx, {
-          projectId, actor, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: d.title },
+          projectId, actor, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: head.title },
           effectKey: 'decision.published',
           // client-facing push body (the Notification row keeps `notice`), preserved from the
           // pre-PR-C in-request push so the pinned behaviour is unchanged.
-          dispatch: { push: { body: `New decision awaiting your approval: ${d.title}` } },
+          dispatch: { push: { body: `New decision awaiting your approval: ${head.title}` } },
         });
         return { resultRef: decisionId, events: [ev] };
       },
@@ -181,14 +279,66 @@ export class DecisionsService {
   }
 
   /**
-   * Phase 6 unit 4b — re-point an UNPUBLISHED draft's decider.
+   * Phase 6 unit 4b (plan §A.1, round 8) — re-point an UNPUBLISHED draft's decider.
    *
-   * STAGED SHAPE ONLY (plan §D discipline): the command, its contract, its route and its policy
-   * exist so the unit's probes fail on BEHAVIOUR rather than on a missing symbol. The behaviour
-   * lands in this unit's implementation commit.
+   * This exists because publication REFUSES a draft whose named holder has since left, and a
+   * refusal that names no exit is a trap. The plan is explicit that the recovery must be a product
+   * path and not a database operation: `withdraw` covers only PUBLISHED rows, and the holder
+   * columns are write-once FROM PUBLICATION precisely so an unpublished draft — the author's
+   * private, weightless workspace — stays editable. Forcing such a draft to publish just to
+   * withdraw it would publish private content to escape a validation error.
+   *
+   * Legal only while `publishedAt IS NULL`, and the CAS says so: the guard is the transition, so a
+   * publication committing in between makes this a deterministic 409 rather than an edit that
+   * silently lands on a live decision. It takes the SAME decision row lock `publish()` takes, so
+   * the edit and the publication serialize in one order or the other and a published head can
+   * never carry another revision's evidence (round 16).
+   *
+   * Deliberately narrow: the HOLDER only. That is what the publish refusal strands, and widening a
+   * newly-opened write door beyond the case that justifies it is how doors stop being reviewable.
    */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async updateDraft(projectId: string, decisionId: string, _input: UpdateDecisionDraftInput, user: AuthUser, _idempotencyKey?: string): Promise<SnapshotDto> {
+  async updateDraft(projectId: string, decisionId: string, input: UpdateDecisionDraftInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const holder = this.holderOf(input);
+    const requestHash = hashRequest({ decisionId, deciderKind: holder.kind, deciderMembershipId: holder.membershipId });
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'decisions.updateDraft', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
+
+    const d = await this.prisma.decision.findUnique({ where: { id: decisionId } });
+    if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
+    if (d.publishedAt !== null) {
+      throw new ConflictException('A published decision keeps the holder it was issued under — this edit is only for drafts.');
+    }
+
+    const outcome = await executeCommand(this.prisma, {
+      scope,
+      actor,
+      commandType: 'decisions.updateDraft',
+      idempotencyKey,
+      requestHash,
+      run: async (tx) => {
+        await lockProjectReadiness(tx, projectId);
+        await tx.$queryRawUnsafe('SELECT 1 FROM "Decision" WHERE "id" = $1 AND "projectId" = $2 FOR UPDATE', decisionId, projectId);
+        // The NEW holder must be real NOW. Storing a holder already known to be unpublishable
+        // would just move the refusal to publish time and teach the picker nothing.
+        await this.resolveHolderStanding(tx, projectId, holder);
+        const { count } = await tx.decision.updateMany({
+          where: { id: decisionId, projectId, publishedAt: null },
+          data: { deciderKind: holder.kind, deciderMembershipId: holder.membershipId },
+        });
+        if (count === 0) throw new ConflictException('The decision was published while you were editing it — reload and retry');
+        // A draft edit is author-private and weightless: it appends no register event, raises no
+        // notice and emits no domain event (the same rule that makes drafting itself silent). The
+        // AUDIT log still records who changed the holder, because authority state is never
+        // changed anonymously.
+        await recordAudit(tx, { projectId, actor, action: 'decision.updateDraft', entity: 'Decision', entityId: decisionId });
+        return { resultRef: decisionId, events: [] };
+      },
+    });
+
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -226,12 +376,38 @@ export class DecisionsService {
 
     const prior = d.status; // 'pending' (first approval) or 'change' (re-approval)
     const today = ddMmmYyyy(new Date());
-    // a PMC approving records the client's consent ON BEHALF — the fact is never disguised
-    const onBehalfOf = user.role === 'client' ? null : 'client';
+    const holder = { kind: d.deciderKind, membershipId: d.deciderMembershipId };
+
+    // Phase 6 unit 4b (plan §A.1) — the AUTHORITY is the decision's own decider, not the route's
+    // allowlist. `ROLE_POLICY['decision.approve']` is now the CEILING (the union of roles a
+    // decider can hold, so a contractor-decider reaches the service at all); this is the narrowing
+    // that makes the designation mean something. A same-role NON-decider is refused HERE — with a
+    // 403 and no side effects — which is exactly the distinction a route allowlist cannot draw.
+    const holderUserId = holder.kind === 'member'
+      ? (await this.orgsParticipant.lockActiveMembershipById(this.prisma, projectId, holder.membershipId!))?.userId ?? null
+      : null;
+    const actorIsDecider =
+      holder.kind === 'member' ? holderUserId !== null && holderUserId === actor.actorId : user.role === holder.kind;
+    // The PMC may always approve ON BEHALF of the decider — the practice answering for a client
+    // on the phone is the case this product was built around — and the record never disguises it.
+    if (!actorIsDecider && user.role !== 'pmc') {
+      throw new ForbiddenException('This decision is not yours to decide — only the party it names (or the PMC on their behalf) can approve it.');
+    }
+    // `onBehalfOf` generalises from the hard-coded 'client' to the DECIDER'S DESIGNATION; the
+    // exact holder (kind + named membership + display identity) is frozen on the act itself,
+    // because a designation alone stops being attributable once the holder can later change.
+    const onBehalfOf = actorIsDecider ? null : holder.kind;
+    const holderNoun = holder.kind === 'client' ? 'the client' : holder.kind === 'pmc' ? 'the PMC' : 'the named decider';
     // ...and the ANNOUNCEMENT says so too (gate finding 7): who exercised the authority
+    // A client-held decision keeps its exact pre-4b wording in BOTH arms (`the client` is the
+    // `holderNoun` for that kind), so P15's byte-identity covers the bell text and the push body,
+    // not just the stored columns. Only a decision that actually names someone else reads
+    // differently — and then it must, or the announcement would misattribute the authority.
     const announce = onBehalfOf
-      ? `${actor.actorName} (${ROLE_LABEL[actor.actorRole] ?? actor.actorRole}) approved ${d.title} on behalf of the client — ${o.material}`
-      : `Client approved ${d.title} — ${o.material}`;
+      ? `${actor.actorName} (${ROLE_LABEL[actor.actorRole] ?? actor.actorRole}) approved ${d.title} on behalf of ${holderNoun} — ${o.material}`
+      : holder.kind === 'client'
+        ? `Client approved ${d.title} — ${o.material}`
+        : `${actor.actorName} approved ${d.title} — ${o.material}`;
 
     const outcome = await executeCommand(this.prisma, {
       scope,
@@ -242,6 +418,23 @@ export class DecisionsService {
       run: async (tx) => {
         // a lock-state transition moves the decision gate (gate finding 1)
         await lockProjectReadiness(tx, projectId);
+        // Phase 6 unit 4b (plan §A.1, round 3) — the act freezes the EXACT holder it was
+        // exercised for: the kind, the named membership, and the display identity as the register
+        // renders it. A designation alone stops being attributable the moment the holder can
+        // change (4d's forward), so the head columns are current STATE and this tuple is history.
+        // It is written by the FIRST approval only: the database seals it immutable from there,
+        // and a re-approval after a change request must still name the holder that first consented
+        // (probed: PMC-on-behalf-of-A → requestChange → re-approve; the first act still names A).
+        // The identity read tolerates a REMOVED membership — the PMC may legitimately approve on
+        // behalf of a member who has since left, and recording the truth about that beats
+        // stranding the decision.
+        const named = holder.kind === 'member' ? await this.orgsParticipant.describeMembership(tx, projectId, holder.membershipId!) : null;
+        const holderLabel = named
+          ? `${named.name} (${ROLE_LABEL[named.role] ?? named.role})`
+          : (ROLE_LABEL[holder.kind] ?? holder.kind);
+        const freezeTuple = d.approvedDeciderKind === null
+          ? { approvedDeciderKind: holder.kind, approvedDeciderMembershipId: holder.membershipId, approvedDeciderLabel: holderLabel }
+          : {};
         // CAS: commit only if the decision is STILL in the state we read — a concurrent
         // transition makes count 0 and this caller loses with a deterministic 409
         const { count } = await tx.decision.updateMany({
@@ -256,6 +449,7 @@ export class DecisionsService {
             onBehalfOf,
             date: today,
             photoSwatch: o.swatch,
+            ...freezeTuple,
           },
         });
         if (count === 0) throw new ConflictException('The decision changed while approving — reload and retry');
@@ -350,6 +544,12 @@ export class DecisionsService {
         try {
           // reopening reverts readiness — a readiness write (gate finding 1)
           await lockProjectReadiness(tx, projectId);
+          // Phase 6 unit 4b (plan §A.1, round 8) — reopening is the ONE transition that can birth
+          // a holderless OPEN decision. The removal guard cannot see an `approved` decision, so
+          // its member holder may legally leave while it is closed; `approved → change` puts the
+          // approval obligation back and therefore re-asks whether anyone still carries it,
+          // atomically under this lock. A reopened decision can never be born holderless.
+          await this.resolveHolderStanding(tx, projectId, { kind: d.deciderKind, membershipId: d.deciderMembershipId }, 'reopen');
           const { count } = await tx.decision.updateMany({
             where: { id: decisionId, projectId, status: 'approved' },
             data: { status: 'change' },

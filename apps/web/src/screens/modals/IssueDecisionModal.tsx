@@ -1,8 +1,8 @@
-import { useState, type CSSProperties } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { useStore, type IssueDecisionPayload } from '@/store/store';
 import { Button, Modal, InheritedContext, MoreDetails } from '@/components';
 import { X } from '@/lib/icons';
-import { swatch as swatchGradient, SW, type SwatchKey } from '@vitan/shared';
+import { swatch as swatchGradient, SW, type DeciderKind, type SwatchKey } from '@vitan/shared';
 import { inheritsLocation, type CaptureContext } from '@/lib/captureContext';
 
 /**
@@ -20,9 +20,19 @@ import { inheritsLocation, type CaptureContext } from '@/lib/captureContext';
  */
 export function IssueDecisionModal({ context, onClose }: { context?: CaptureContext; onClose: () => void }) {
   const issueDecision = useStore((s) => s.issueDecision);
+  // Phase 6 unit 4b — the decider picker offers the project's ACTIVE members. The roster is the
+  // orgs module's own read, loaded on demand so opening this modal from any surface can offer a
+  // named member without depending on the Team screen having been visited first.
+  const members = useStore((s) => s.members);
+  const loadTeam = useStore((s) => s.loadTeam);
   const inherited = inheritsLocation(context);
   const [title, setTitle] = useState('');
   const [nodeId, setNodeId] = useState<string | null>(context?.nodeId ?? null);
+  // `client` is the default and is what every decision issued before this unit is: leaving the
+  // picker alone sends no decider at all, so the request is byte-identical to the old one.
+  const [decider, setDecider] = useState<string>('client');
+  useEffect(() => { void loadTeam(); }, [loadTeam]);
+  const candidates = members.filter((m) => m.status === 'active' && m.membershipId);
   // lazy, so the two starting options are built once rather than on every render
   const [options, setOptions] = useState<OptionDraft[]>(() => [blankOption(), blankOption()]);
 
@@ -41,13 +51,19 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
     reader.readAsDataURL(file);
   };
 
-  const ready = Boolean(title.trim() && nodeId && options.every((o) => o.material.trim()));
+  // A `member:` selection is only ready once it still names a candidate the roster confirms —
+  // otherwise the form would offer a Publish the server refuses.
+  const namedMembershipId = decider.startsWith('member:') ? decider.slice('member:'.length) : null;
+  const deciderReady = !namedMembershipId || candidates.some((m) => m.membershipId === namedMembershipId);
+  const ready = Boolean(title.trim() && nodeId && deciderReady && options.every((o) => o.material.trim()));
   const save = (publish: boolean) => {
     if (!ready) return;
     const payload: IssueDecisionPayload = {
       title: title.trim(),
       nodeId: nodeId ?? undefined,
       publish,
+      deciderKind: (namedMembershipId ? 'member' : decider) as DeciderKind,
+      ...(namedMembershipId ? { deciderMembershipId: namedMembershipId } : {}),
       options: options.map((o) => ({
         material: o.material.trim(),
         delta: parseInt(o.delta.replace(/[^\d-]/g, ''), 10) || 0,
@@ -73,6 +89,27 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
 
         <div style={{ marginTop: 12 }}>
           <InheritedContext value={nodeId} onChange={setNodeId} inherited={inherited} idPrefix="dec-loc" testId="dec-place" />
+        </div>
+
+        {/* Phase 6 unit 4b — WHO decides. A contract field no screen can set is not a product
+            path: the server enforces the designation, so the practice must be able to state it
+            here rather than through a direct API call. The default is the client, which is what
+            every decision has always been. */}
+        <div style={{ marginTop: 12 }}>
+          <label htmlFor="dec-decider" style={{ display: 'block', fontSize: 12, color: 'var(--muted)', marginBottom: 5 }}>Who decides</label>
+          <select
+            id="dec-decider"
+            value={decider}
+            onChange={(e) => setDecider(e.target.value)}
+            style={{ ...fldD, width: '100%' }}
+            data-testid="dec-decider"
+          >
+            <option value="client">The client</option>
+            <option value="pmc">The PMC (this practice)</option>
+            {candidates.map((m) => (
+              <option key={m.membershipId} value={`member:${m.membershipId}`}>{m.name} — {m.role}</option>
+            ))}
+          </select>
         </div>
 
         {options.map((o, i) => (
