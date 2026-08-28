@@ -32,8 +32,12 @@ export const decisionsManifest: ModuleManifest = {
     'decision.withdrawn',
   ],
   consumesEvents: [],
-  commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange', 'decisions.withdraw'],
-  queries: ['decisions.snapshotSlice', 'decisions.projectionSlice', 'decisions.existsInProject', 'decisions.linkableInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending', 'decisions.approvedRef'],
+  // Phase 6 task 4b (§A.1/§A.2) — `decisions.updateDraft` re-points an UNPUBLISHED draft's
+  // decider/kind/options as one coherent pair (the write-once holder freeze starts at publication).
+  commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange', 'decisions.withdraw', 'decisions.updateDraft'],
+  // 4b adds: `statusAndDraftMap`/`statusAndDraftOf` (the recorded gate arm's draft flag),
+  // `deciderPushTarget` (the decider push family's claim-time predicate, bound at bootstrap).
+  queries: ['decisions.snapshotSlice', 'decisions.projectionSlice', 'decisions.existsInProject', 'decisions.linkableInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending', 'decisions.approvedRef', 'decisions.statusAndDraftMap', 'decisions.statusAndDraftOf', 'decisions.deciderPushTarget'],
   routes: [
     'POST /projects/:projectId/decisions',
     'POST /projects/:projectId/decisions/:decisionId/publish',
@@ -41,6 +45,7 @@ export const decisionsManifest: ModuleManifest = {
     'POST /projects/:projectId/decisions/:decisionId/change',
     'POST /projects/:projectId/decisions/:decisionId/change/withdraw',
     'POST /projects/:projectId/decisions/:decisionId/withdraw',
+    'PATCH /projects/:projectId/decisions/:decisionId/draft',
   ],
   permissions: ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
 };

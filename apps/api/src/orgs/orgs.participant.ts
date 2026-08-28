@@ -167,6 +167,99 @@ export class OrgsParticipant {
   }
 
   /**
+   * Phase 6 task 4b (§A.1) — the NAMED-DECIDER binding read: resolve a membership ID to its
+   * ACTIVE row, LOCKED in the caller's transaction, returning the user identity a holder
+   * designation displays and dispatches to. `Membership` is orgs-owned; the decisions service
+   * asks the owner through this declared participant edge (the `lockActiveMembership` sibling),
+   * never with a raw `tx.membership` read. Returns null when the id names nobody here or the
+   * row is not active — the caller refuses with its own answer.
+   */
+  async lockActiveMembershipById(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    membershipId: string,
+  ): Promise<{ userId: string; name: string; role: string } | null> {
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<
+      Array<{ userId: string; name: string; role: string; status: string }>
+    >(
+      `SELECT m."userId" AS "userId", u."name" AS "name", m."role" AS "role", m."status" AS "status"
+         FROM "Membership" m JOIN "User" u ON u."id" = m."userId"
+        WHERE m."projectId" = $1 AND m."id" = $2
+          FOR UPDATE OF m`,
+      projectId, membershipId,
+    );
+    const row = rows[0];
+    return row && row.status === 'active' ? { userId: row.userId, name: row.name, role: row.role } : null;
+  }
+
+  /**
+   * Phase 6 task 4b (§B.2) — EFFECTIVE role standing for a `(projectId, role)`: active
+   * memberships in the role plus, for `pmc`, membership-less owner/admin standing on the
+   * project's org (the same precedence as authorization). The DB primitive
+   * `phase6_effective_role_standing` states the same rule for the seal layer; this is the
+   * service-path reading of it through the owner.
+   */
+  /**
+   * Phase 6 task 4b (§A.3 rounds 14–16) — is a push-subscription LINK's recorded credential
+   * version still the user's CURRENT one? `User.credentialVersion` is orgs-owned; the platform
+   * push claim reads it through this declared participant edge, never the table. A missing user
+   * or a bumped version (password reset, server-side session kill) makes the link STALE — the
+   * claim treats it as unlinked until the next authenticated open re-attributes it.
+   */
+  async sessionStillValid(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    userId: string,
+    recordedVersion: number,
+  ): Promise<boolean> {
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ v: number }>>(
+      `SELECT "credentialVersion" AS v FROM "User" WHERE "id" = $1`,
+      userId,
+    );
+    return rows.length > 0 && Number(rows[0]!.v) === recordedVersion;
+  }
+
+  async effectiveRoleStanding(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    role: string,
+  ): Promise<number> {
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ n: bigint | number }>>(
+      `SELECT phase6_effective_role_standing($1, $2) AS n`,
+      projectId, role,
+    );
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  /**
+   * Phase 6 task 4b, round-1 Codex F5 — WHO currently holds a role's effective standing on this
+   * project: the user ids behind {@link effectiveRoleStanding}'s count (active memberships of
+   * the role, plus — for `pmc` — the membership-less org owner/admin arm under the same
+   * explicit-membership precedence). The decider push family's role claims deliver ONLY to
+   * these users' currently-valid links, never to a subscription's stored role — a removed
+   * member's device stops receiving role-held decision titles the moment their standing ends.
+   */
+  async effectiveRoleHolderUserIds(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    role: string,
+  ): Promise<string[]> {
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ userId: string }>>(
+      `SELECT m."userId" FROM "Membership" m
+        WHERE m."projectId" = $1 AND m."status" = 'active' AND m."role" = $2
+       UNION
+       SELECT om."userId" FROM "Project" p
+         JOIN "OrgMembership" om ON om."orgId" = p."orgId" AND om."role" IN ('owner', 'admin')
+        WHERE p."id" = $1 AND $2 = 'pmc'
+          AND NOT EXISTS (
+            SELECT 1 FROM "Membership" m2
+             WHERE m2."projectId" = $1 AND m2."userId" = om."userId" AND m2."status" = 'active'
+          )`,
+      projectId, role,
+    );
+    return rows.map((r) => r.userId);
+  }
+
+  /**
    * Does `userId` have ROLE-QUALIFIED standing on `projectId` — an ACTIVE project membership whose
    * role is one of `roles`, or (when `roles` admits `pmc` AND the user holds NO active membership
    * on this project) owner/admin of the project's org? Same rule, same PRECEDENCE as

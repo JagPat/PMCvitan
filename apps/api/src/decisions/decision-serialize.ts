@@ -1,4 +1,5 @@
 import type { Prisma } from '@prisma/client';
+import { viewerIsDecider, type DeciderSlice } from '@vitan/shared';
 import type { DecisionDto } from '../snapshot/types';
 
 /**
@@ -16,7 +17,7 @@ import type { DecisionDto } from '../snapshot/types';
 /** The canonical row shape the serializer needs: a `Decision` with its ordered options and, when
  *  reopened, its single OPEN change request (Phase 1 Task 2). */
 export type DecisionRow = Prisma.DecisionGetPayload<{
-  include: { options: true; changeRequests: true };
+  include: { options: true; changeRequests: true; deciderMembership: { select: { userId: true } } };
 }>;
 
 /** Serialize one canonical decision row into its snapshot `DecisionDto` (unfiltered). */
@@ -29,7 +30,13 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
     status: d.status,
     draft: d.publishedAt === null,
     ageDays: d.ageDays ?? undefined,
-    photoSwatch: d.photoSwatch,
+    photoSwatch: d.photoSwatch ?? undefined,
+    // Phase 6 task 4b — the holder designation, with the named member's USER resolved here so
+    // every viewer/decider predicate (server slice, store selectors, projection filter) asks the
+    // same question of the same value.
+    deciderKind: d.deciderKind,
+    deciderMembershipId: d.deciderMembershipId ?? undefined,
+    deciderUserId: d.deciderMembership?.userId ?? undefined,
     approvedOption: d.approvedOption ?? undefined,
     material: d.material ?? undefined,
     approver: d.approver ?? undefined,
@@ -74,12 +81,17 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
  * The per-viewer visibility rule, applied identically by the live snapshot slice and the projection
  * query so a projection is NEVER an RBAC bypass:
  *   - a DRAFT (publishedAt null) is author-private — visible only to its creator;
- *   - a published-but-`pending` decision is visible only to pmc/client (AUTH-02);
+ *   - a published-but-`pending` decision is visible only to pmc and THE DECIDER (Phase 6 task 4b
+ *     §A.3 — the pending audience FOLLOWS the decider: a named engineer-decider sees their
+ *     obligation, a same-role non-decider does not, and the client no longer sees a demand for a
+ *     decision they do not decide; a `client`-held decision keeps the pre-4b pmc/client audience
+ *     byte-identically);
  *   - a WITHDRAWN decision is pmc-only (Phase 6 task 4a — withdrawal never widens an audience);
- *   - everything else is visible to the project.
+ *   - everything else — `recorded` rows included (a record is a team-visible fact, §A.2) — is
+ *     visible to the project.
  */
 export function decisionVisibleToViewer(
-  d: { publishedAt: Date | null; authorId: string | null; status: string },
+  d: { publishedAt: Date | null; authorId: string | null; status: string } & DeciderSlice,
   role: string,
   userId?: string,
 ): boolean {
@@ -88,6 +100,6 @@ export function decisionVisibleToViewer(
   // pending, contractor/engineer/consultant NEVER saw it, and withdrawal must not widen an
   // audience — including to the client, for whom nothing is awaited any more.
   if (d.status === 'withdrawn') return role === 'pmc';
-  const hidePending = role !== 'pmc' && role !== 'client';
-  return !(hidePending && d.status === 'pending');
+  if (d.status === 'pending') return role === 'pmc' || viewerIsDecider(d, role, userId);
+  return true;
 }

@@ -30,6 +30,12 @@ export interface ExternalEffectDef {
    *  The producer supplies only the body; the roles are taken from here, so a caller can never widen
    *  or narrow the audience of a key. */
   readonly push: readonly PushRole[] | null;
+  /** Phase 6 task 4b (§A.3) — the event FAMILY's claim-time "still actionable for THIS target"
+   *  predicate, declared beside the catalog entry (the class mechanism; each family names its
+   *  own). `'decider'`: the target must still be the decision's holder AND the status must still
+   *  demand their decision — re-judged at claim through the decisions-owned answer, re-targeting
+   *  a changed holder or dropping with the cancellation mark. Absent = no claim-time predicate. */
+  readonly pushFamily?: 'decider';
 }
 
 /**
@@ -40,7 +46,9 @@ export interface ExternalEffectDef {
 export const EXTERNAL_EFFECTS = {
   // ── decisions ──────────────────────────────────────────────────────────────────────────────
   'decision.drafted': { eventType: 'decision.drafted', invalidate: false, push: null },
-  'decision.published': { eventType: 'decision.published', invalidate: true, push: ['client'] },
+  // Phase 6 task 4b (§A.3) — the CEILING widens to the union of possible decider roles; the
+  // dispatch site narrows to the ACTUAL decider (a named member's user target, or the role).
+  'decision.published': { eventType: 'decision.published', invalidate: true, push: ['client', 'pmc', 'contractor', 'engineer', 'consultant'], pushFamily: 'decider' },
   'decision.approved': { eventType: 'decision.approved', invalidate: true, push: ['pmc', 'contractor', 'engineer'] },
   'decision.reapproved': { eventType: 'decision.reapproved', invalidate: true, push: ['pmc', 'contractor', 'engineer'] },
   'decision.change_requested': { eventType: 'decision.change_requested', invalidate: true, push: null },
@@ -236,13 +244,16 @@ export interface DispatchIntent {
   readonly effectKey: ExternalEffectKey;
   readonly coverageVersion: string;
   readonly invalidate: boolean;
-  readonly push?: { body: string; roles: readonly PushRole[] };
+  readonly push?: { body: string; roles: readonly PushRole[]; targetUserId?: string };
 }
 
-/** The command-supplied part of an emit's dispatch: only the push BODY (roles come from the catalog).
- *  A key whose catalog `push` is `null` must not carry a push body. */
+/** The command-supplied part of an emit's dispatch: the push BODY plus, for a TARGETED push
+ *  (Phase 6 task 4b §A.3), the resolved target USER — a membership designation resolves to its
+ *  user at the emit site; an org-admin actor already is one. The catalog stays the role CEILING
+ *  (a target only ever NARROWS the audience: delivery goes solely to currently-valid links of
+ *  that user); a key whose catalog `push` is `null` must not carry a push at all. */
 export interface DispatchInput {
-  push?: { body: string };
+  push?: { body: string; targetUserId?: string; roles?: readonly PushRole[] };
 }
 
 /** A canonical, order-independent serialization of the whole catalog — the coverage-version preimage. */
@@ -250,8 +261,8 @@ function canonicalCatalog(): string {
   const keys = Object.keys(EXTERNAL_EFFECTS).sort();
   return JSON.stringify(
     keys.map((k) => {
-      const d = EXTERNAL_EFFECTS[k as ExternalEffectKey];
-      return [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort()];
+      const d = EXTERNAL_EFFECTS[k as ExternalEffectKey] as ExternalEffectDef;
+      return [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(), d.pushFamily ?? null];
     }),
   );
 }
@@ -281,10 +292,22 @@ export function buildDispatchIntent(effectKey: ExternalEffectKey, eventType: Dom
   if (dispatch.push && def.push === null) {
     throw new Error(`effect key '${effectKey}' may not push (catalog push is null), but a push body was supplied`);
   }
+  // Phase 6 task 4b (§A.3) — a dispatch may NARROW the audience to the actual decider; the
+  // catalog is the CEILING, so a role outside it is a forged audience and refuses the emit.
+  if (dispatch.push?.roles) {
+    const ceiling: readonly PushRole[] = def.push ?? [];
+    for (const r of dispatch.push.roles) {
+      if (!ceiling.includes(r)) {
+        throw new Error(`effect key '${effectKey}' ceiling does not admit push role '${r}'`);
+      }
+    }
+  }
   return {
     effectKey,
     coverageVersion: effectCoverageVersion(),
     invalidate: def.invalidate,
-    ...(dispatch.push ? { push: { body: dispatch.push.body, roles: def.push ?? [] } } : {}),
+    ...(dispatch.push
+      ? { push: { body: dispatch.push.body, roles: dispatch.push.roles ?? def.push ?? [], ...(dispatch.push.targetUserId ? { targetUserId: dispatch.push.targetUserId } : {}) } }
+      : {}),
   };
 }

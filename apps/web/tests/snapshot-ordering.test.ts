@@ -43,7 +43,7 @@ function makeSnapshot(partial?: Partial<ApiSnapshot>): ApiSnapshot {
 }
 
 /** a minimal Decision row used as a distinctive marker of which snapshot won. */
-const decisionRow = (id: string) => ({ id, title: id, room: '', status: 'pending' as const, photoSwatch: 'marble' as const, options: [] });
+const decisionRow = (id: string) => ({ id, title: id, room: '', status: 'pending' as const, photoSwatch: 'marble' as const, options: [], deciderKind: 'client' as const });
 const decisionIds = () => s().decisions.map((d) => d.id);
 
 /** two already-passed checklist items — submittable without evidence. */

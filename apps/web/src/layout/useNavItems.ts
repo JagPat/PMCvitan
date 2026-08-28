@@ -1,6 +1,6 @@
 import { useStore } from '@/store/store';
-import { selectActionItems, selectDraftDecisions, selectDraftDrawings, selectReviewPending } from '@/store/selectors';
-import { enabledScreensFor, type ScreenMeta } from '@/lib/screens';
+import { selectActionItems, selectDeciderPending, selectDeciderReapproval, selectDraftDecisions, selectDraftDrawings, selectReviewPending } from '@/store/selectors';
+import { enabledScreensFor, SCREEN_META, type ScreenMeta } from '@/lib/screens';
 
 export interface NavItem extends ScreenMeta {
   badge: number;
@@ -11,8 +11,10 @@ export interface NavItem extends ScreenMeta {
 export function useNavItems(): NavItem[] {
   const role = useStore((s) => s.role);
   const screen = useStore((s) => s.screen);
-  // exclude drafts: they aren't awaiting the client, so they don't belong on the pending badge
-  const pending = useStore((s) => s.decisions.filter((d) => d.status === 'pending' && !d.draft).length);
+  // Phase 6 task 4b (§A.3) — the decisions badge counts the decisions THIS VIEWER decides
+  // (the shared viewer/decider predicate; drafts excluded — they aren't awaiting anyone).
+  const deciderPending = useStore((s) => selectDeciderPending(s).length);
+  const deciderReapprove = useStore((s) => selectDeciderReapproval(s).length);
   const reviewPending = useStore(selectReviewPending);
   const actionCount = useStore((s) => selectActionItems(s).length);
   const draftCount = useStore((s) => selectDraftDecisions(s).length + selectDraftDrawings(s).length);
@@ -27,11 +29,20 @@ export function useNavItems(): NavItem[] {
   const labourShortfallCount = useStore((s) =>
     s.labourView ? Object.values(s.labourView.readiness.forecast).filter((f) => f.verdict !== 'ready').length : 0);
 
-  return enabledScreensFor(role, enabledModules, capabilities).map((m) => {
+  const screens = enabledScreensFor(role, enabledModules, capabilities);
+  // Phase 6 task 4b (§A.3 round 4) — the approval surface follows the DECIDER: a viewer holding
+  // at least one open decision gets the screen in their nav even when their role's static list
+  // omits it (the same predicate RouteBridge uses to keep the route open).
+  const withDecider =
+    deciderPending + deciderReapprove > 0 && !screens.some((m) => m.key === 'client-decisions')
+      ? [...screens, SCREEN_META['client-decisions']]
+      : screens;
+
+  return withDecider.map((m) => {
     let badge = 0;
     if (m.key === 'inbox') badge = actionCount;
     if (m.key === 'drafts') badge = draftCount;
-    if (m.key === 'client-decisions') badge = pending;
+    if (m.key === 'client-decisions') badge = deciderPending;
     if (m.key === 'inspect-review') badge = reviewPending;
     if (m.key === 'materials') badge = shortageCount;
     if (m.key === 'labour') badge = labourShortfallCount;

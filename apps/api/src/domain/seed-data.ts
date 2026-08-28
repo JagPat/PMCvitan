@@ -91,7 +91,12 @@ export const SEED_DECISIONS: SeedDecision[] = [
   {
     id: 'DL-003', title: 'Kitchen Counter Top', room: 'Ground Floor · Kitchen', nodeId: 'r-kitchen', status: 'change', photoSwatch: 'quartz',
     approvedOption: 'Option A', material: 'Quartz (Statuario)', approver: 'Mr. Shah', date: '28 May 2026', cost: 118000,
-    options: [],
+    // Phase 6 unit 4b — a PUBLISHED choice carries its frozen question (2–4 options, the
+    // deferred option floor): the reopened decision keeps the two options it was issued with.
+    options: [
+      { label: 'Option A', optionKey: 'A', material: 'Quartz (Statuario)', delta: 0, swatch: 'quartz', recommended: true, order: 0 },
+      { label: 'Option B', optionKey: 'B', material: 'Granite (Steel Grey)', delta: -14000, swatch: 'granite', recommended: false, order: 1 },
+    ],
   },
 ];
 

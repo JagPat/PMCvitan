@@ -1,6 +1,6 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectPending, selectReapproval } from '@/store/selectors';
+import { selectDeciderPending, selectDeciderReapproval } from '@/store/selectors';
 import { Eyebrow, Swatch, Button, LocationContext } from '@/components';
 import { Check } from '@/lib/icons';
 import { signed, type Decision } from '@vitan/shared';
@@ -8,8 +8,10 @@ import { groupDecisions } from '@/lib/locationTree';
 import styles from './responsive.module.css';
 
 export function ClientDecisionsScreen() {
-  const pending = useStore(useShallow(selectPending));
-  const reapprovals = useStore(useShallow(selectReapproval));
+  // Phase 6 task 4b (§A.3) — the approval surface shows the decisions THIS VIEWER decides
+  // (client-held for the client; the named rows for a member-decider; none for a non-decider).
+  const pending = useStore(useShallow(selectDeciderPending));
+  const reapprovals = useStore(useShallow(selectDeciderReapproval));
   const nodes = useStore(useShallow((s) => s.nodes));
   const openApprove = useStore((s) => s.openApprove);
   const short = useStore((s) => s.short); // live project identity, not the seed

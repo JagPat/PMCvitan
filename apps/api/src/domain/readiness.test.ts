@@ -4,6 +4,7 @@ import * as shared from '@vitan/shared';
 import {
   deriveInspectionGate,
   deriveDrawingGate,
+  deriveDecisionReading,
   deriveReadiness,
   readinessReady,
   type ReadinessInspection,
@@ -283,5 +284,29 @@ describe('readinessReady — the start guard over five gates, overrides consider
     expect(readinessReady(deriveReadiness(A, lifted))).toBe(true);
     const lapsed = { ...lifted, now: new Date('2026-07-21T00:00:00Z') };
     expect(readinessReady(deriveReadiness(A, lapsed))).toBe(false);
+  });
+});
+
+describe('replacement round (Codex R2-F3) — the decision gate names the ACTUAL decider', () => {
+  it('a client-held decision keeps the legacy texts byte-identically (the default kind)', () => {
+    expect(deriveDecisionReading('pending').reason).toBe('Awaiting the client’s approval');
+    expect(deriveDecisionReading('change').reason).toBe('Change requested — awaiting the client’s re-approval');
+    expect(deriveDecisionReading('pending', false, false, 'client').reason).toBe('Awaiting the client’s approval');
+  });
+
+  it('a pmc-held or member-held decision directs the site at ITS decider, never the client', () => {
+    expect(deriveDecisionReading('pending', false, false, 'pmc').reason).toBe('Awaiting the PMC’s approval');
+    expect(deriveDecisionReading('change', false, false, 'pmc').reason).toBe('Change requested — awaiting the PMC’s re-approval');
+    expect(deriveDecisionReading('pending', false, false, 'member').reason).toBe('Awaiting the named decider’s approval');
+    expect(deriveDecisionReading('change', false, false, 'member').reason).toBe('Change requested — awaiting the named decider’s re-approval');
+    // verdicts are untouched — only the responsibility text moves
+    expect(deriveDecisionReading('pending', false, false, 'pmc').v).toBe('wait');
+  });
+
+  it('deriveReadiness threads the designation from its input (omitted ⇒ the client backfill)', () => {
+    const withKind = deriveReadiness(A, { ...baseInput({ decisionStatus: 'pending' }), decisionDeciderKind: 'pmc' });
+    expect(withKind.decision.reason).toBe('Awaiting the PMC’s approval');
+    const omitted = deriveReadiness(A, baseInput({ decisionStatus: 'pending' }));
+    expect(omitted.decision.reason).toBe('Awaiting the client’s approval');
   });
 });

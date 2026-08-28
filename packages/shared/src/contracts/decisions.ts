@@ -23,6 +23,10 @@ export const DECISION_COMMANDS = [
   'decisions.withdrawChange',
   // Phase 6 task 4a — take back a published, never-approved decision (pmc authority, terminal).
   'decisions.withdraw',
+  // Phase 6 task 4b (§A.1/§A.2 round 8) — edit an UNPUBLISHED draft: re-point its decider
+  // (kind / named membership), convert to/from a record (`none` ⟺ `recorded` as one coherent
+  // pair), or replace its options. Publication freezes the holder; this is the drafting door.
+  'decisions.updateDraft',
 ] as const;
 export type DecisionCommand = (typeof DECISION_COMMANDS)[number];
 
@@ -43,6 +47,13 @@ export const DECISION_QUERIES = [
   // spec pins: server-resolved approved/reapproved version + the selected option; pending or
   // reopened decisions refuse (caller-authored provenance is never accepted).
   'decisions.approvedRef',
+  // Phase 6 task 4b (§A.2) — statusMap/statusOf plus the DRAFT flag: the gate reader's recorded
+  // arm gates a linked DRAFT record `wait` and a published one `na`, so readiness bakes need both.
+  'decisions.statusAndDraftMap',
+  'decisions.statusAndDraftOf',
+  // Phase 6 task 4b (§A.3) — the decider push family's claim-time predicate (bound at bootstrap):
+  // is a queued "decide this" push still actionable, and for whom?
+  'decisions.deciderPushTarget',
 ] as const;
 export type DecisionQuery = (typeof DECISION_QUERIES)[number];
 

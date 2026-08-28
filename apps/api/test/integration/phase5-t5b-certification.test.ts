@@ -1772,13 +1772,18 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
       const granting = grantOverride(projectId, billId, approver, f.memberUser.id)
         .then(() => 'granted' as const, () => 'refused' as const);
 
-      // it must WAIT on the membership row rather than read it unlocked — condition-based, so the
-      // probe fails if the lock is removed instead of passing on a lucky interleaving
+      // it must WAIT rather than read standing unlocked — condition-based, so the probe fails if
+      // the serialization is removed instead of passing on a lucky interleaving. Two legal wait
+      // homes: the membership row lock (`FOR UPDATE`), or — since phase 6 unit 4b, whose
+      // `Membership_t4b2_holder_guard` takes the project readiness key for the downgrade's own
+      // transaction — the blocking `lockProjectReadiness` advisory acquisition the grant opens with.
       const blocked = await (async () => {
         for (let i = 0; i < 60; i++) {
           const rows = await t.prisma.$queryRaw<Array<{ n: bigint }>>(Prisma.sql`
             SELECT COUNT(*) AS n FROM pg_stat_activity
-             WHERE wait_event_type = 'Lock' AND state = 'active' AND query ILIKE '%Membership%FOR UPDATE%'`);
+             WHERE wait_event_type = 'Lock' AND state = 'active'
+               AND (query ILIKE '%Membership%FOR UPDATE%'
+                    OR (wait_event = 'advisory' AND query ILIKE '%pg_advisory_xact_lock%'))`);
           if (Number(rows[0]!.n) > 0) return true;
           if ((await Promise.race([granting, Promise.resolve('pending' as const)])) !== 'pending') return false;
           await new Promise((r) => setTimeout(r, 100));

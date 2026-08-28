@@ -11,7 +11,11 @@ const ALL_ROLES: TokenRole[] = ['pmc', 'client', 'engineer', 'contractor', 'work
 const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'decision.create': ['pmc'],
   'decision.publish': ['pmc'],
-  'decision.approve': ['client', 'pmc'],
+  // Phase 6 task 4b (§A.1) — the ROUTE ceiling is the union of decider-capable roles; the
+  // SERVICE narrows to the decision's actual decider (a same-role non-decider is refused there).
+  'decision.approve': ['client', 'pmc', 'contractor', 'engineer', 'consultant'],
+  // Phase 6 task 4b — editing an unpublished draft (decider re-point / record conversion).
+  'decision.updateDraft': ['pmc'],
   'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   // Phase 6 task 4a — withdrawing a published decision retires a question the practice asked;

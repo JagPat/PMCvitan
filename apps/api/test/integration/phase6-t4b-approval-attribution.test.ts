@@ -69,12 +69,19 @@ describe('Phase 6 unit 4b — approval attribution expansion (live PG)', () => {
       data: { projectId, userId, role: 'client', status: 'active' },
     });
     membershipId = membership.id;
+    // an active pmc member — the 4b publication arm requires standing for a pmc-held publication
+    await db.user.create({
+      data: { id: `${userId}-pmc`, projectId, role: 'pmc', name: 'PMC holder', email: `pmc-${run}@t4b.test` },
+    });
+    await db.membership.create({
+      data: { projectId, userId: `${userId}-pmc`, role: 'pmc', status: 'active' },
+    });
   });
 
   afterAll(async () => {
     await cleanupDecisions();
     await db?.membership.deleteMany({ where: { projectId } });
-    await db?.user.deleteMany({ where: { id: userId } });
+    await db?.user.deleteMany({ where: { id: { in: [userId, `${userId}-pmc`] } } });
     await db?.project.deleteMany({ where: { id: projectId } });
     await db?.org.deleteMany({ where: { id: orgId } });
     await Promise.all([db?.$disconnect(), writer?.$disconnect(), eraser?.$disconnect()]);
@@ -98,10 +105,23 @@ describe('Phase 6 unit 4b — approval attribution expansion (live PG)', () => {
         IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN
           ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval";
         END IF;
+        IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4b2_record_no_delete') THEN
+          ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b2_record_no_delete";
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionOption_t4a_frozen') THEN
+          ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen";
+        END IF;
       END $do$`),
       db.decisionEvent.deleteMany({ where: { decision: { projectId } } }),
+      db.decisionOption.deleteMany({ where: { decision: { projectId } } }),
       db.decision.deleteMany({ where: { projectId } }),
       db.$executeRawUnsafe(`DO $do$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionOption_t4a_frozen') THEN
+          ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen";
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4b2_record_no_delete') THEN
+          ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b2_record_no_delete";
+        END IF;
         IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN
           ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval";
         END IF;
@@ -133,26 +153,42 @@ describe('Phase 6 unit 4b — approval attribution expansion (live PG)', () => {
     }> = {},
   ): Promise<string> => {
     const id = nextId('decision');
-    await db.decision.create({
-      data: {
-        id,
-        projectId,
-        title: `Approval attribution ${id}`,
-        room: 'Office',
-        status: over.status ?? 'pending',
-        ageDays: 0,
-        photoSwatch: 'blue',
-        authorId: userId,
-        approvedById: over.approvedById ?? null,
-        approver: over.approver ?? null,
-        approvedOption: over.approvedOption ?? null,
-        publishedAt: over.publishedAt === undefined ? new Date() : over.publishedAt,
-        deciderKind: over.deciderKind ?? 'client',
-        deciderMembershipId: over.deciderMembershipId ?? null,
-        approvedDeciderKind: over.approvedDeciderKind ?? null,
-        approvedDeciderMembershipId: over.approvedDeciderMembershipId ?? null,
-        approvedDeciderLabel: over.approvedDeciderLabel ?? null,
-      },
+    const publishedAt = over.publishedAt === undefined ? new Date() : over.publishedAt;
+    // re-ordered seed (4b): unpublished birth with 2 options, published in the same transaction —
+    // the deferred option floor and the widened option freeze refuse a published+optionless insert
+    await db.$transaction(async (tx) => {
+      await tx.decision.create({
+        data: {
+          id,
+          projectId,
+          title: `Approval attribution ${id}`,
+          room: 'Office',
+          status: over.status ?? 'pending',
+          ageDays: 0,
+          photoSwatch: 'blue',
+          authorId: userId,
+          approvedById: over.approvedById ?? null,
+          approver: over.approver ?? null,
+          approvedOption: over.approvedOption ?? null,
+          publishedAt: null,
+          deciderKind: over.deciderKind ?? 'client',
+          deciderMembershipId: over.deciderMembershipId ?? null,
+          approvedDeciderKind: over.approvedDeciderKind ?? null,
+          approvedDeciderMembershipId: over.approvedDeciderMembershipId ?? null,
+          approvedDeciderLabel: over.approvedDeciderLabel ?? null,
+          options: {
+            createMany: {
+              data: [
+                { label: 'Option A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw-a', order: 0 },
+                { label: 'Option B', optionKey: 'b', material: 'Walnut', delta: 100, swatch: 'sw-b', order: 1 },
+              ],
+            },
+          },
+        },
+      });
+      if (publishedAt !== null) {
+        await tx.decision.update({ where: { id }, data: { publishedAt } });
+      }
     });
     return id;
   };
@@ -518,6 +554,8 @@ describe('Phase 6 unit 4b — approval attribution expansion (live PG)', () => {
           ).rejects.toThrow(/approval attribution\/evidence is permanent/);
         }
         // precision: a decision carrying no approval signal at all is still deletable
+        // (its options go first — an UNPUBLISHED parent's options are not frozen)
+        await db.decisionOption.deleteMany({ where: { decisionId: plainDraft } });
         expect(await db.$executeRawUnsafe(`DELETE FROM "Decision" WHERE "id" = $1`, plainDraft)).toBe(1);
       } finally {
         await db.$executeRawUnsafe(withdrawnNoDeleteBody(T4B_MIGRATION));

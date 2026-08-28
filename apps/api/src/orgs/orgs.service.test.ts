@@ -1,6 +1,8 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { OrgsService } from './orgs.service';
+import type { DecisionsParticipant } from '../decisions/decisions.participant';
+import { OrgsParticipant } from './orgs.participant';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import { ActivitiesQueryService } from '../activities/activities.query';
@@ -29,9 +31,14 @@ const initParticipants = (prisma: unknown) => [
   new NodeInitParticipant(),
   new ActivityParticipant(undefined as never, { assertWorkEvidenceRevisable: async () => {} } as never),
   new InspectionParticipant(),
-  new DecisionsQueryService(prisma as unknown as PrismaService),
+  new DecisionsQueryService(prisma as unknown as PrismaService, new OrgsParticipant()),
   new InspectionsQueryService(prisma as unknown as PrismaService, signedStub),
   new ActivitiesQueryService(prisma as unknown as PrismaService, undefined as never, undefined as never, undefined as never),
+  // Phase 6 task 4b (§A.1) — the holder-orphan guard's two participant answers, stubbed
+  // healthy for these unit suites (no open decisions held; standing present). The refusal
+  // behaviour is integration-probed (P39).
+  { holdsOpenDecisions: vi.fn(async () => ({ named: false, heldRoles: [] as string[] })) } as unknown as DecisionsParticipant,
+  { effectiveRoleStanding: vi.fn(async () => 1) } as unknown as OrgsParticipant,
 ] as const;
 
 function makeAtomicProjectInit(throwFromInspection = false) {
@@ -165,7 +172,7 @@ function makeAtomicProjectInit(throwFromInspection = false) {
     nodeInit as unknown as NodeInitParticipant,
     activityInit as unknown as ActivityParticipant,
     inspectionInit as unknown as InspectionParticipant,
-    new DecisionsQueryService(prisma as unknown as PrismaService),
+    new DecisionsQueryService(prisma as unknown as PrismaService, new OrgsParticipant()),
     new InspectionsQueryService(prisma as unknown as PrismaService, signedStub),
     new ActivitiesQueryService(prisma as unknown as PrismaService, undefined as never, undefined as never, undefined as never),
   );
@@ -518,6 +525,13 @@ describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
           return {};
         }),
       },
+      // Phase 6 task 4b (§A.1 round 11) — the guarded org-standing write runs in ONE transaction
+      // over every covered project (none in this fixture, so the guard finds nothing to judge).
+      project: { findMany: vi.fn(async () => []) },
+      membership: { findFirst: vi.fn(async () => null) },
+      $executeRaw: vi.fn(async () => 0),
+      $transaction: vi.fn(async (arg: unknown) =>
+        typeof arg === 'function' ? (arg as (tx: unknown) => Promise<unknown>)(prisma) : Promise.all(arg as Promise<unknown>[])),
     };
     return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants(prisma)), prisma, state };
   }
@@ -677,7 +691,10 @@ describe('OrgsService.portfolio', () => {
       project: { findMany: vi.fn(async () => orgProjects) },
       activity: { findMany: vi.fn(async () => activityStatuses.map((status) => ({ status }))) },
       inspection: { count: vi.fn(async () => 1) },
-      decision: { count: vi.fn(async () => 3) },
+      // Phase 6 task 4b (§A.3) — countPending is viewer-scoped: a pmc counts everything (no
+      // OR narrowing); every other viewer counts only what THEY decide, and this fixture holds
+      // no member-held or client-held rows for them.
+      decision: { count: vi.fn(async ({ where }: { where?: { OR?: unknown[] } } = {}) => (where?.OR ? 0 : 3)) },
       phase: { count: vi.fn(async () => 3) },
     };
     return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants(prisma)), prisma };
@@ -694,11 +711,15 @@ describe('OrgsService.portfolio', () => {
     });
   });
 
-  it('hides pending-decision counts from a contractor (RBAC)', async () => {
+  it('hides pending-decision counts from a contractor who decides nothing (Phase 6 task 4b — viewer-scoped count)', async () => {
     const { svc, prisma } = makePortfolio('contractor', ['done']);
     const rows = await svc.portfolio('u2');
     expect(rows[0].pendingDecisions).toBe(0);
-    expect(prisma.decision.count).not.toHaveBeenCalled();
+    // 4b: the count IS asked for every decider-capable viewer, narrowed to the decisions THEY
+    // decide (a contractor can be a NAMED member-decider) — here the OR names only their rows.
+    expect(prisma.decision.count).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ OR: [{ deciderKind: 'member', deciderMembership: { userId: 'u2' } }] }) }),
+    );
   });
 
   it('an org owner sees org projects they are not a member of (super-admin reach, as PMC)', async () => {
@@ -722,7 +743,10 @@ describe('OrgsService.portfolio', () => {
       project: { findMany: vi.fn(async () => []) },
       activity: { findMany: vi.fn(async () => []) },
       inspection: { count: vi.fn(async () => 0) },
-      decision: { count: vi.fn(async () => 3) },
+      // Phase 6 task 4b (§A.3) — countPending is viewer-scoped: a pmc counts everything (no
+      // OR narrowing); every other viewer counts only what THEY decide, and this fixture holds
+      // no member-held or client-held rows for them.
+      decision: { count: vi.fn(async ({ where }: { where?: { OR?: unknown[] } } = {}) => (where?.OR ? 0 : 3)) },
       phase: { count: vi.fn(async () => 0) },
     };
     const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants(prisma));

@@ -38,3 +38,19 @@ export function withdrawnDecisionNotice(title: string, reason: string): string {
 export function isWithdrawnDecisionNotice(text: string): boolean {
   return text.startsWith(WITHDRAWN_DECISION_PREFIX);
 }
+
+/**
+ * Phase 6 task 4b (§A.2) — the record-only issue's announcement. ORDINARY published-decision
+ * audience (a team record, not a pending approval), and DELIBERATELY not matching any pending
+ * stripping shape: `isPendingDecisionNotice` must never hide it and no surface may read it as
+ * an approval demand.
+ */
+const RECORDED_DECISION_PREFIX = 'Issue recorded';
+
+export function recordedDecisionNotice(title: string): string {
+  return `${RECORDED_DECISION_PREFIX}: ${title}`;
+}
+
+export function isRecordedDecisionNotice(text: string): boolean {
+  return text.startsWith(RECORDED_DECISION_PREFIX);
+}

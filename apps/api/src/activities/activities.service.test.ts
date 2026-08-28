@@ -2,6 +2,7 @@ import { describe, it, expect, vi, type Mock } from 'vitest';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { ActivitiesService } from './activities.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 import { DrawingsQueryService } from '../drawings/drawings.query';
 import type { SignedUrlService } from '../media/signed-url.service';
 import type { PrismaService } from '../prisma.service';
@@ -135,7 +136,7 @@ function make(activity: ActRow, opts: MakeOpts = {}) {
   const inventory = { coverageFor: vi.fn(async () => []) } as unknown as import('../inventory/inventory.service').InventoryService;
   const substitutions = { activeTargets: vi.fn(async () => new Map()) } as unknown as import('./substitutions.service').SubstitutionsService;
   const capabilities = { isEnabled: vi.fn(async () => false) } as unknown as import('../platform/capabilities.service').CapabilitiesService;
-  const svc = new ActivitiesService(prisma, snapshot, new DecisionsQueryService(prisma as unknown as PrismaService), drawingsQuery, dispatcher, { today: () => '2026-07-05' }, new InspectionParticipant(), inspectionsQuery, drawingParticipant, inventory, substitutions, capabilities);
+  const svc = new ActivitiesService(prisma, snapshot, new DecisionsQueryService(prisma as unknown as PrismaService, new OrgsParticipant()), drawingsQuery, dispatcher, { today: () => '2026-07-05' }, new InspectionParticipant(), inspectionsQuery, drawingParticipant, inventory, substitutions, capabilities);
   const user = { sub: 'u-eng', role: 'engineer' } as AuthUser;
   return { svc, prisma, user, inspectionCreates, activityUpdates, audits, activity };
 }

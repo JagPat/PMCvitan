@@ -148,6 +148,19 @@ export function screensFor(role: Role): ScreenMeta[] {
   return keys[role].map((k) => SCREEN_META[k]);
 }
 
+/**
+ * Phase 6 task 4b (§A.3 round 4) — the decision-approval ROUTE follows the decider: a viewer who
+ * is the DECIDER of at least one open (pending/change, published) decision may reach the
+ * approval surface (`client-decisions`) even when their role's static list omits it — the Inbox
+ * CTA lands and STAYS there — while a same-role non-decider still has no route. The caller
+ * (RouteBridge) computes `isOpenDecider` from the store with the shared `viewerIsDecider`
+ * predicate; this helper just applies it to the allowed-screen set.
+ */
+export function withDeciderRoute(allowed: ScreenKey[], isOpenDecider: boolean): ScreenKey[] {
+  if (!isOpenDecider || allowed.includes('client-decisions')) return allowed;
+  return [...allowed, 'client-decisions'];
+}
+
 /** The full, project-scoped URL for a screen: `/projects/:projectId/<screen>`.
  *  The project id is part of the URL so a refresh, bookmark or shared link restores
  *  which project you were in (the URL is the source of truth for the active project). */
