@@ -354,7 +354,30 @@ INSERT SEAL both require the decision's CURRENT cycle to still equal that
 frozen value, so an approval permanently closes every consultation from the
 cycle it ended, and a reopen begins a cycle the old thread can never re-enter;
 asking again in the new cycle means a NEW consultation, which is the same
-shape as the register's own "a changed need is a NEW decision" rule. The
+shape as the register's own "a changed need is a NEW decision" rule.
+
+**Counting that register is only as trustworthy as the register's own INSERT
+seal, and 4c must close that gap rather than inherit it** (review round 27).
+The delivered `DecisionApprovalRevision_no_withdrawn` trigger
+(`20270810000000_phase6_t4a_withdraw`) takes the decision row lock and refuses
+a revision against a WITHDRAWN decision — and that is ALL it asserts. It does
+not require an approval transition, a matching approval event, or any
+correspondence to a status change. So a direct writer can insert a
+syntactically valid revision against a live `pending` decision, increment the
+count without approving anything, and thereby move the decision's current
+cycle past every open consultation's frozen `openCycle` — after which those
+responses 409 permanently and their `consultation_requested` deliveries cancel
+themselves at the claim predicate. That is a DENIAL of a fact the workflow
+promises to keep answerable, reached without touching a consultation table.
+4c therefore does not treat a bare revision count as authenticated evidence.
+The revision INSERT is SEALED as a product of the approval transition: the
+trigger additionally requires the decision's status to be the one an approval
+produces AND the transition to be recorded in the same transaction (the same
+`xmin = txid_current()` correspondence the delivered command-receipt seal uses
+for reserve-and-complete), so a revision that no approval produced is
+unrepresentable rather than merely unusual. The hostile arm joins §C: a direct
+revision INSERT against a live `pending` decision with an open consultation is
+REFUSED, and the consultation stays answerable. The
 `consultation_requested` claim predicate (§B.3) checks the frozen cycle too,
 so a reopen cannot resurrect a delivery the approval already cancelled. **And
 the INITIAL value is sealed at the request INSERT, not merely compared later**
@@ -1054,6 +1077,28 @@ external-effect catalogs.
     trusted not to claim. The probe that IS added asserts the fence itself — a
     process compiled with the previous `catalogVersion` fails startup against a
     4c-ii-migrated database, with the drift error naming the consumer.
+
+    **The fence must also cover the STANDALONE REBUILD ENTRYPOINT, which today
+    it does not** (review round 27). `projection-rebuild.cli.ts` is a sanctioned
+    operator path that constructs `ProjectionRebuilder` and registers every
+    projection consumer directly — and it never calls `syncConsumerCatalog`, so
+    none of the reasoning above reaches it. The fence as described protects
+    processes that TAKE UP SERVICE; a rebuild run is not one, and it is
+    precisely the operation that ACTIVATES a generation. After consultation is
+    enabled, an operator running the PREVIOUS release's CLI against the
+    migrated database would rebuild `decisions.inbox` with the v1 serializer
+    and swap that generation in — a register without the consultation thread or
+    the widened audience, activated by a supported command, with the persisted
+    catalog already at v2 and nothing consulting it. That is worse than the
+    old-worker hazard the fence closes, because the rebuild is the documented
+    repair for a lagging generation, so it is what an operator reaches for
+    exactly when something already looks wrong. 4c-ii therefore makes the CLI
+    VERIFY the catalog contract before any rebuild begins — the same assertion
+    `syncConsumerCatalog` performs at startup, failing closed with the same
+    drift error naming the consumer, before a generation is built or swapped.
+    The probe runs the PREVIOUS-version CLI against a 4c-ii-migrated database
+    and asserts it refuses BEFORE building, with the serving generation
+    untouched.
 
     **Arming it takes an explicit CATALOG-DATA MIGRATION, and 4c-ii carries
     one** (review round 18, correcting round 17's own fix): `syncConsumerCatalog`
