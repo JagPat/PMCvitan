@@ -1871,7 +1871,12 @@ export const useStore = create<Store>()(
       const pushCapable =
         typeof navigator !== 'undefined' && 'serviceWorker' in navigator
         && typeof window !== 'undefined' && 'PushManager' in window;
-      if (gateway && get().sessionToken && pushCapable) {
+      // round-10 Codex F3 — the unlink decision keys on the SESSION IDENTITY, never the adopted
+      // token alone: a gateway-backed dev-auth session holds its JWT inside the gateway
+      // (`sessionToken` stays null; round-7 F3 records the identity as `sessionUserId`), and
+      // skipping the unlink there left the departing persona's targeted link live on a shared
+      // demo device until the JWT expired. The gateway authenticates the request itself.
+      if (gateway && (get().sessionToken !== null || get().sessionUserId !== null) && pushCapable) {
         const gw = gateway;
         void Promise.race([
           unlinkPushOnSignOut(gw),

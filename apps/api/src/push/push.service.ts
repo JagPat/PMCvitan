@@ -93,11 +93,17 @@ export class PushService {
    * belongs to the authenticated caller is cleared. On a shared browser, user A's delayed
    * sign-out request arriving after user B re-attributed the same endpoint is then a no-op —
    * it can never strip B's link.
+   *
+   * Round-10 Codex F1 — the unlink is also SCOPED to the routed project: the subscribe upsert
+   * re-homes the endpoint's `projectId` when the same user moves the browser to another
+   * project, so a delayed sign-out authorized against project A must not clear a link the
+   * endpoint now carries under project B (nor may an A-scoped request mutate B-owned
+   * subscription state at all — the same tenancy rule every other project route obeys).
    */
-  async unlink(endpoint: string, callerUserId: string): Promise<void> {
+  async unlink(projectId: string, endpoint: string, callerUserId: string): Promise<void> {
     if (!callerUserId) return;
     await this.prisma.pushSubscription.updateMany({
-      where: { endpoint, linkedUserId: callerUserId },
+      where: { projectId, endpoint, linkedUserId: callerUserId },
       data: { linkedUserId: null, linkedCredentialVersion: null, linkedExpiresAt: null },
     });
   }

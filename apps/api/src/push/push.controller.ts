@@ -50,8 +50,10 @@ export class PushController {
 
   /** Phase 6 task 4b (§A.3 round 13) — sign-out unlinks THIS browser's subscription: the device
    *  keeps role-level pushes but receives no targeted content until re-attributed by the next
-   *  authenticated open. Endpoint-keyed, idempotent, and CONDITIONAL on the departing caller
-   *  (round-1 Codex F1): a delayed request cannot strip the NEXT user's re-attributed link. */
+   *  authenticated open. Endpoint-keyed, idempotent, CONDITIONAL on the departing caller
+   *  (round-1 Codex F1): a delayed request cannot strip the NEXT user's re-attributed link —
+   *  and SCOPED to the routed project (round-10 Codex F1): a delayed project-A request cannot
+   *  clear a link the endpoint now carries under project B. */
   @Post('projects/:projectId/push/unlink')
   @UseGuards(JwtGuard)
   @AllowAnyRole('a member unlinks their own browser/device at sign-out; no role gate')
@@ -60,7 +62,7 @@ export class PushController {
     @Body(new ZodPipe(pushUnlinkSchema)) body: PushUnlinkInput,
     @CurrentUser() user: AuthUser,
   ): Promise<{ ok: boolean }> {
-    await this.push.unlink(body.endpoint, user.sub);
+    await this.push.unlink(projectId, body.endpoint, user.sub);
     return { ok: true };
   }
 }

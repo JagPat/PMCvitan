@@ -16,14 +16,14 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: 2aee1722
-open_pr: 467
+open_pr: 468
 next_task: none
 blocking_directive: none
 updated: 2026-08-29
 ```
 
-**DECISION-WORKFLOW UNIT 4b IS IN PROGRESS on `open_pr` (the FOURTH replacement PR #467, branch
-`claude/decision-workflow-4b-r5` from `main` `2aee1722`, `Replaces: #466`). The lineage: PR #463 —
+**DECISION-WORKFLOW UNIT 4b IS IN PROGRESS on `open_pr` (the FIFTH replacement PR #468, branch
+`claude/decision-workflow-4b-r6` from `main` `2aee1722`, `Replaces: #467`). The lineage: PR #463 —
 the unit's first PR, briefly racing the duplicate #462 the Board had closed as superseded —
 reached the two-finding-bearing-head limit (round 1: eight Codex findings on `f99634f4`,
 batch-fixed on `35157acc`; round 2: three findings there) and CLOSED UNMERGED; its replacement
@@ -33,14 +33,20 @@ on `8e69603b`; round 4: three findings there) and CLOSED UNMERGED; its replaceme
 on `d64ccc5a`; round 6: six findings there — the direct draft-edit publish race, the org-member
 upsert holder guard, the OrgMembership truncate seal, the snapshot-error decider route, the
 Publish-all readiness, and the undeclared platform→orgs participant edge) and CLOSED UNMERGED;
-and its replacement PR #466 (`Replaces: #465`) then ALSO reached the limit (round 7: five
+its replacement PR #466 (`Replaces: #465`) reached the limit (round 7: five
 findings on `f92ac84f` — the updateDraft route ceiling, the record-publication author recheck,
 dev-auth identity, the migration's lock-before-ALTER ordering, the nav badge — batch-fixed on
 `999b9344`; round 8: three P1 findings there — the comma-separated LOCK TABLE's one-by-one
 partial acquisition, the org-membership guard consulting decision existence BEFORE the readiness
 key, and the P3005 baseline path resolving `20271015` as applied over a db-push database that
-lacks its raw seals) and CLOSED UNMERGED per the same protocol. #467 carries the whole unit with
-every finding from all eight rounds fixed
+lacks its raw seals) and CLOSED UNMERGED; and its replacement PR #467 (`Replaces: #466`) then
+ALSO reached the limit (round 9: one P2 finding on `9b172471` — the deferred option floor's
+unpublished early-return admitting a head-only optioned-record conversion — batch-fixed on
+`f462e4bf`; round 10: four P2 findings there — the project-unscoped push unlink, the shared
+contract missing `UpdateDecisionDraftInput` + the narrow `CreateDecisionInput` with the
+never-gated conformance pins, and the two `sessionToken`-only dev-auth reads that skipped the
+sign-out unlink and consumed the decider deep link) and CLOSED UNMERGED per the same protocol.
+#468 carries the whole unit with every finding from all ten rounds fixed
 and no further correction head spent on any closed PR — per the owner's 2026-08-28 direction: "Next PR from main 2aee172 is
 decision-workflow unit 4b implementation only, following
 `docs/superpowers/plans/2026-08-14-decision-workflow-4b.md` (#340). One unit, reproduce-first,

@@ -76,17 +76,21 @@ describe('PushService — configured (VAPID present)', () => {
 describe('PushService — Phase 6 4b round-1 corrections (Codex F1/F4)', () => {
   const linked = { userId: 'u-a', credentialVersion: 3, expiresAt: new Date('2027-01-01T00:00:00Z') };
 
-  it('F1: unlink clears ONLY a link still belonging to the calling user — a late request cannot strip the next user\'s re-attributed link', async () => {
+  it('F1 + R10-F1: unlink clears ONLY a link still belonging to the calling user AND still homed on the routed project', async () => {
     const prisma = { pushSubscription: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) } };
     const svc = new PushService(prisma as unknown as PrismaService, {} as never);
-    await svc.unlink('https://push.example/shared', 'u-a');
+    await svc.unlink('ambli', 'https://push.example/shared', 'u-a');
+    // round-10 Codex F1 — the predicate is PROJECT-SCOPED: the subscribe upsert re-homes the
+    // endpoint's projectId when the user moves the browser to project B, so a delayed
+    // project-A sign-out (authorized against A) matches nothing and cannot clear B's link —
+    // nor mutate B-owned subscription state at all
     expect(prisma.pushSubscription.updateMany).toHaveBeenCalledWith({
-      where: { endpoint: 'https://push.example/shared', linkedUserId: 'u-a' },
+      where: { projectId: 'ambli', endpoint: 'https://push.example/shared', linkedUserId: 'u-a' },
       data: { linkedUserId: null, linkedCredentialVersion: null, linkedExpiresAt: null },
     });
     // no authenticated caller → no write at all (never an unconditional clear)
     prisma.pushSubscription.updateMany.mockClear();
-    await svc.unlink('https://push.example/shared', '');
+    await svc.unlink('ambli', 'https://push.example/shared', '');
     expect(prisma.pushSubscription.updateMany).not.toHaveBeenCalled();
   });
 

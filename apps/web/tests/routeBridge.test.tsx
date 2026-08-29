@@ -203,6 +203,49 @@ describe('RouteBridge — the decider route survives a loading decision slice (P
     expect(useStore.getState().screen).toBe('inbox'); // judged against the settled slice
   });
 
+  it('R10-F4: a dev-auth cold load (identity not yet issued) does NOT settle the slice — the decider deep link survives until the recorded identity can judge it', async () => {
+    // DEV_AUTH is on in this environment (no VITE_API_URL) — the gateway will connect and
+    // record `sessionUserId`; until then BOTH the token and the identity are null while the
+    // store may hold seeded or previous-persona decisions. The old `sessionToken`-only authed
+    // read judged that window as a settled signed-out slice and consumed the bookmarked
+    // approval link before the server response could prove the obligation.
+    useStore.setState({
+      role: 'engineer',
+      sessionToken: null,
+      sessionUserId: null,
+      projectLoadState: 'idle',
+      decisions: [
+        { id: 'DL-prev', title: 'T', room: 'K', status: 'pending', photoSwatch: 'tile', options: [], deciderKind: 'member', deciderUserId: 'u-eng-a' },
+      ],
+    } as never);
+    renderAt('/projects/ambli/client/decisions');
+    await flush();
+    expect(useStore.getState().screen).toBe('client-decisions'); // held: identity pending
+    // the dev-auth connect lands, records the identity, and the real slice follows — the
+    // proven named decider keeps their route
+    act(() => { useStore.setState({ sessionUserId: 'u-eng-a', projectLoadState: 'ready' } as never); });
+    await flush();
+    expect(useStore.getState().screen).toBe('client-decisions');
+  });
+
+  it('R10-F4: once the dev-auth identity lands and proves a NON-decider, the same deep link is bounced', async () => {
+    useStore.setState({
+      role: 'engineer',
+      sessionToken: null,
+      sessionUserId: null,
+      projectLoadState: 'idle',
+      decisions: [
+        { id: 'DL-prev2', title: 'T', room: 'K', status: 'pending', photoSwatch: 'tile', options: [], deciderKind: 'member', deciderUserId: 'u-eng-a' },
+      ],
+    } as never);
+    renderAt('/projects/ambli/client/decisions');
+    await flush();
+    expect(useStore.getState().screen).toBe('client-decisions'); // held while the identity is pending
+    act(() => { useStore.setState({ sessionUserId: 'u-eng-b', projectLoadState: 'ready' } as never); });
+    await flush();
+    expect(useStore.getState().screen).toBe('inbox'); // judged against the settled, identified slice
+  });
+
   it('R6-F4: a SNAPSHOT-mode load error does not settle the slice — the decider deep link holds until a decision-bearing read succeeds', async () => {
     useStore.setState({
       role: 'engineer',

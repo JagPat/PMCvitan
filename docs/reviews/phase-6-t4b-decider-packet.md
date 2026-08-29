@@ -570,3 +570,54 @@ below, re-proven by a full test-database rebuild + the upgrade-proof.
   refused at commit with the draft untouched, and the LEGAL `updateDraft` conversion
   (`deciderKind:'none', options: []`) still lands with zero options at commit. Suite
   36/36, three consecutive runs.
+
+## Round-10 correction (the Codex review of PR #467 head `f462e4bf` — four findings; #467 closed at the two-head limit)
+
+Codex's review of the round-9 head returned FOUR P2 findings — #467's SECOND finding-bearing
+head, so #467 closes without another correction head and THIS PR (`Replaces: #467`) is the
+fifth replacement, carrying the unit tree-identically (diff vs `f462e4bf` = 0 lines) plus
+ONLY the round-10 batch. Each finding was reproduced RED at the carried state first (fixes
+stashed: the unlink predicate carried no project scope, the two dev-auth probes bounced/skipped,
+and the contract typecheck failed on the missing export + the completeness pin), then fixed
+forward as one batch. NO migration change: `20271015` is byte-for-byte the reviewed
+`f462e4bf` version (as are `20270810`/`20270826`), so this round needs no database rebuild
+and leaves the upgrade-proof untouched.
+
+- **R10-F1 (P2, project-scoped unlink)** — the subscribe upsert re-homes an endpoint's
+  `projectId` when the same user moves the browser to another project, but `unlink` matched
+  on `(endpoint, linkedUserId)` alone: a delayed sign-out request authorized against project
+  A could clear the link the endpoint now carries under project B — a project-A request
+  mutating B-owned subscription state. `unlink(projectId, endpoint, callerUserId)` now
+  includes the routed project in the update predicate (the controller passes its route
+  param). Probe: the `F1 + R10-F1` unit pin asserts the full three-column predicate.
+- **R10-F2 (P2, public command contract)** — the shared catalog advertises
+  `decisions.updateDraft`, but `@vitan/shared` exported no `UpdateDecisionDraftInput` and its
+  `CreateDecisionInput` lacked the decider fields — consumers typed against the public
+  package could not construct either operation without casts. The shared contract now carries
+  the widened `CreateDecisionInput` (+`deciderKind`/`deciderMembershipId`) and the new
+  `UpdateDecisionDraftInput`. ENFORCEMENT was the deeper gap: the api's tsconfig excludes
+  `src/**/*.test.ts`, so the "compile-time conformance" pins were never typechecked by ANY
+  gate — the new `tsconfig.contracts.json` typechecks the five module contract tests as the
+  second half of `pnpm --filter api typecheck`, and the decisions pin gains a KEY-COMPLETENESS
+  check (`Exclude<keyof ApiInput, keyof SharedInput> extends never`) that fails naming the
+  missing key when the shared side is narrower — exactly the shape forward assignability
+  cannot catch. Gating the file also exposed that the old `DecisionDto → DecisionView`
+  full-assignability pin never compiled (the dto's persisted `photoSwatch` string vs the
+  shared display union — a variance predating this unit); it is restated as the true,
+  checkable bidirectional key pin with the variance documented in place.
+- **R10-F3 (P2, dev-auth sign-out unlink)** — the sign-out unlink ran only when
+  `sessionToken` was set, but a gateway-backed dev-auth session holds its JWT inside the
+  gateway (round-7 F3 records the identity as `sessionUserId`; the token stays null), so the
+  departing persona's targeted link stayed live on a shared demo device until the JWT expiry.
+  The unlink decision now keys on the session identity (token OR recorded `sessionUserId`).
+  Probes: `tests/signout-unlink.test.ts` — the dev-auth session unlinks, the token session
+  unlinks as before, a browser with no identity makes no request.
+- **R10-F4 (P2, dev-auth decider route)** — RouteBridge's `authed` read `sessionToken` alone,
+  so a dev-auth session was classed as signed out: while the connect had not yet recorded the
+  identity, `decisionsSettled` could become true against the seeded or previous-persona slice
+  and consume a decider's bookmarked `/client/decisions` link unrecoverably. `authed` now
+  derives from the session identity (token OR `sessionUserId`, OR `DEV_AUTH` — that mode
+  always authenticates), and a dev-auth connect still in flight (`identityPending`) is
+  explicitly NOT a judgeable slice. Probes: `R10-F4` ×2 in `routeBridge.test.tsx` — the cold
+  dev-auth deep link holds, the proven decider keeps the route, the proven non-decider is
+  bounced only after the identity lands.

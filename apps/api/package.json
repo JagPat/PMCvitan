@@ -13,7 +13,7 @@
     "prisma:migrate:dev": "prisma migrate dev",
     "seed": "tsx prisma/seed.ts",
     "ensure-accounts": "tsx prisma/ensure-accounts.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.contracts.json --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "outbox:status": "tsx src/platform/outbox/outbox.cli.ts status",
