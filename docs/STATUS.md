@@ -13,17 +13,30 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
-task_state: in_progress
+task_state: merged
 work_item: none
-reviewed_merge: 2aee1722
-open_pr: 468
-next_task: none
+reviewed_merge: fe9df58d
+open_pr: none
+next_task: phase-6-task-4c
 blocking_directive: none
 updated: 2026-08-29
 ```
 
-**DECISION-WORKFLOW UNIT 4b IS IN PROGRESS on `open_pr` (the FIFTH replacement PR #468, branch
-`claude/decision-workflow-4b-r6` from `main` `2aee1722`, `Replaces: #467`). The lineage: PR #463 —
+**DECISION-WORKFLOW UNIT 4b IS DELIVERED AND CLEARED — PR #468 (the fifth replacement, branch
+`claude/decision-workflow-4b-r6`, `Replaces: #467`) MERGED at `main` `fe9df58d` on 2026-08-29
+with a fresh exact-head Codex +1 on `6c8030f6` (the round-11 head; `review_clean`, no
+findings).** The Now block is the DOCUMENTED TERMINAL HANDOFF SHAPE (`task_state: merged`,
+`open_pr: none`, `work_item: none`, a NAMED `next_task`) so `isHandoffShape` recognizes this
+status-only PR and the hourly drift shepherd suppresses the transient default-branch drift
+instead of instructing the loop to point `open_pr` at this PR itself (the #303 failure).
+`next_task: phase-6-task-4c` (the machine-parseable stop id) routes the continuation through
+the 4b plan's OWN §E staging order (`docs/superpowers/plans/2026-08-14-decision-workflow-4b.md`
+§E), and THAT order is binding on how 4c starts: the FIRST 4c review unit is the DOCS-ONLY
+**4c plan unit** — its own exact-head review to a fresh clean +1, STARTING MATERIAL the §B
+consultation design at PR #340 head `6a53aae` plus §D obligations 1–3 — and 4c IMPLEMENTATION
+begins only after that plan unit merges and clears, exactly as the 4b plan unit preceded the
+4b implementation. Nothing here re-authorizes skipping that stop; "4c–4d are authorized plan
+scope" means authorized THROUGH their §E order, plan unit first. The full 4b record follows. **The lineage: PR #463 —
 the unit's first PR, briefly racing the duplicate #462 the Board had closed as superseded —
 reached the two-finding-bearing-head limit (round 1: eight Codex findings on `f99634f4`,
 batch-fixed on `35157acc`; round 2: three findings there) and CLOSED UNMERGED; its replacement
@@ -46,8 +59,12 @@ unpublished early-return admitting a head-only optioned-record conversion — ba
 contract missing `UpdateDecisionDraftInput` + the narrow `CreateDecisionInput` with the
 never-gated conformance pins, and the two `sessionToken`-only dev-auth reads that skipped the
 sign-out unlink and consumed the decider deep link) and CLOSED UNMERGED per the same protocol.
-#468 carries the whole unit with every finding from all ten rounds fixed
-and no further correction head spent on any closed PR — per the owner's 2026-08-28 direction: "Next PR from main 2aee172 is
+#468 carried the whole unit; its first head `220a5038` drew round 11 (three findings, one P1 —
+the stale-JWT-role approval revalidated live in-tx via `hasProjectRoleStanding` under the
+membership-row lock, the change-request messaging derived from `deciderNoun`, and the
+persona-switch unlink riding the sign-out handoff), batch-fixed on `6c8030f6`, and Codex's
+attempt on THAT exact head returned `review_clean` — every finding from all eleven rounds
+fixed and no further correction head spent on any closed PR — per the owner's 2026-08-28 direction: "Next PR from main 2aee172 is
 decision-workflow unit 4b implementation only, following
 `docs/superpowers/plans/2026-08-14-decision-workflow-4b.md` (#340). One unit, reproduce-first,
 service-only unless that plan named a schema. Do not start 4c/4d."** The 4b plan DID name a
