@@ -16,34 +16,41 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: fe9df58d
-open_pr: 473
+open_pr: 476
 next_task: phase-6-task-4c
 blocking_directive: none
 updated: 2026-08-29
 ```
 
-**THE DOCS-ONLY 4c PLAN UNIT IS OPEN AS PR #473** (branch
-`claude/decision-workflow-4c-plan-r3`, `Replaces: #471` — the second replacement) — the first review unit of
+**THE DOCS-ONLY 4c PLAN UNIT IS PR #476** (branch `claude/decision-workflow-4c-plan-r5`,
+`Replaces: #474` — the fourth replacement) — the first review unit of
 `next_task: phase-6-task-4c`, exactly as the binding §E order below requires (plan unit first;
-4c implementation only after it merges AND clears). Its predecessors each closed at the
-two-finding-bearing-head limit: #470 (round 1: seven Codex findings on `567f1789`; round 2:
-five on `fcc725fd`) and #471 (`Replaces: #470`; round 3: six findings on `c991674d` — the
-realizable `(decisionId, id)` option key, the `consulteeUserId` snapshot against membership
-re-keys, the statement-level TRUNCATE seals, P25c through the response, the archive-vs-request
-P41 arm, the cross-project FK hostile probes; round 4: five findings on `bcc2e8a3` — NOT NULL
-evidence columns, the snapshot-keyed projection fold, the mismatched-snapshot seal arm, the
-seals' project-row lock with the direct-insert-vs-archive barrier, and the removed-consultee
-hostile insert). #473 carries the plan tree-identical from #471's final head with round 4
-folded on `03581d8e`; all 23 findings from four rounds are folded in place. A second
-finding-bearing head on #473 forces the next replacement (`Replaces: #473`). The Now
-block names #473 with `task_state: in_progress` (NOT the PR-bearing `in_review`: the
-survives-merge pin simulates the named PR's merge clearing `open_pr`, and `in_review` with no
-PR is a stranded record, while `in_progress` falls back to `task: 4` — the resolver still
-returns `pr:471` first while it is open) per the drift shepherd's
-2026-08-29 notice; STATUS travels in its own PR because the §E rule keeps plan documents
-purely docs-only. LEDGER: closing #470 released its `Replaces: #465` claim, so exhausted
-#465's obligation is discharged by THIS status PR's own merge (`Replaces: #465` declared on
-it) — the same closing-record shape the merged #469 used for #466.
+4c implementation only after it merges AND clears). **This STATUS record travels IN THAT PR,
+not beside it** (2026-08-29): the two-step convention the 4b plan's §E used for plan units
+produced exactly the failure the rule below the Now block forbids — "Update this file in the
+same PR as the work it describes, so state and code never disagree on `main`". The evidence is
+on the record: the separate pointer PR #472 merged naming `open_pr: 473`, #473 was then
+replaced at its round limit, and `main` was left pointing `assessRunnerState` at a CLOSED PR.
+The separate pointer PR #475 is therefore CLOSED UNMERGED and its content folded here.
+
+`open_pr` NAMES THIS PR (review round 8, correcting the previous record): an earlier draft left
+it `none` on the theory that naming the PR would go stale on that PR's own merge. That was
+wrong, and the code says so — `assessPostMergeRunnerState` simulates the merge by clearing a
+SELF-REFERENTIAL `open_pr` before resolving (`namesThisPullRequest ? { ...state, open_pr: NONE }
+: state`), so `open_pr: 476` survives its own merge (falling back to `task: 4`) AND keeps
+`detectStatusDrift` quiet while #476 is open. Leaving it `none` bought nothing and cost a
+drift-shepherd cycle.
+
+LINEAGE vs LEDGER — two different things, both true (review round 8). The WORK lineage is
+#470 → #471 → #473 → #474 → #476: each closed at the two-finding-bearing-head limit and the
+next carries the same unit forward. The LEDGER claim is a separate, executable fact: the scope
+gate holds an obligation only while its PR carries the `review-replacement-required` label.
+#474 IS labelled, so #476 declares `Replaces: #474` — its immediate exhausted predecessor,
+lineage and ledger agreeing. The one exception on record: #473 closed at its limit WITHOUT the
+label, so `Replaces: #473` was refused on #474's `2249ba3d` and #474 claimed the oldest pending
+obligation (#470) instead. That is why the chain's declarations are not uniformly
+"the immediate predecessor" — not a choice, a gate verdict. Still pending and labelled: #471,
+for the next unit in the lineage (the 4c-i implementation PR). The exhausted #465 obligation was discharged by the merged #472.
 
 **DECISION-WORKFLOW UNIT 4b IS DELIVERED AND CLEARED — PR #468 (the fifth replacement, branch
 `claude/decision-workflow-4b-r6`, `Replaces: #467`) MERGED at `main` `fe9df58d` on 2026-08-29
