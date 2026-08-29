@@ -13,14 +13,34 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
-task_state: merged
+task_state: in_progress
 work_item: none
 reviewed_merge: fe9df58d
-open_pr: none
+open_pr: 471
 next_task: phase-6-task-4c
 blocking_directive: none
 updated: 2026-08-29
 ```
+
+**THE DOCS-ONLY 4c PLAN UNIT IS OPEN AS PR #471** (branch
+`claude/decision-workflow-4c-plan-r2`, `Replaces: #470`) — the first review unit of
+`next_task: phase-6-task-4c`, exactly as the binding §E order below requires (plan unit first;
+4c implementation only after it merges AND clears). Its predecessor #470 closed at the
+two-finding-bearing-head limit (round 1: seven Codex findings on `567f1789`, folded on
+`fcc725fd`; round 2: five findings there, folded on the replacement); #471 carried the plan
+tree-identical, folded round 2, and its own first review (round 3: six findings on `c991674d`
+— the realizable `(decisionId, id)` option key, the `consulteeUserId` snapshot against
+membership re-keys, the statement-level TRUNCATE seals, P25c through the response, the
+archive-vs-request P41 arm, and the cross-project FK hostile probes) is folded on `bcc2e8a3`.
+A second finding-bearing head on #471 forces the next replacement (`Replaces: #471`). The Now
+block names #471 with `task_state: in_progress` (NOT the PR-bearing `in_review`: the
+survives-merge pin simulates the named PR's merge clearing `open_pr`, and `in_review` with no
+PR is a stranded record, while `in_progress` falls back to `task: 4` — the resolver still
+returns `pr:471` first while it is open) per the drift shepherd's
+2026-08-29 notice; STATUS travels in its own PR because the §E rule keeps plan documents
+purely docs-only. LEDGER: closing #470 released its `Replaces: #465` claim, so exhausted
+#465's obligation is discharged by THIS status PR's own merge (`Replaces: #465` declared on
+it) — the same closing-record shape the merged #469 used for #466.
 
 **DECISION-WORKFLOW UNIT 4b IS DELIVERED AND CLEARED — PR #468 (the fifth replacement, branch
 `claude/decision-workflow-4b-r6`, `Replaces: #467`) MERGED at `main` `fe9df58d` on 2026-08-29
