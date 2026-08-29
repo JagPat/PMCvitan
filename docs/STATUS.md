@@ -55,8 +55,14 @@ unsupported `supplier` role in the consultee ceiling, and the old-API-reader gat
 carries the plan tree-identical from #473's final head with round 6 folded on `783d0099`; all
 findings from six rounds are folded in place. A second finding-bearing head on #474 forces the
 next replacement (`Replaces: #474`), which carries this STATUS record forward with it.
-LEDGER: the exhausted #465 obligation was discharged by the merged #472; #470's claim was
-released when #475 closed unmerged, so it is carried by the next fresh-work PR after this one.
+LEDGER, as the scope gate actually reads it (2026-08-29): an obligation exists only while its
+PR carries the `review-replacement-required` label, and the pending set is #470 and #471 — both
+closed AND labelled. #473 closed at its round limit but was never labelled, so it carries NO
+ledger obligation and cannot be named by a `Replaces:` line (the gate refused
+`Replaces: #473` on this PR's `2249ba3d`). #474 therefore declares `Replaces: #470` — the
+oldest pending obligation, and the first PR to carry this same plan unit — discharging it on
+this PR's own merge; #471 stays pending for the next unit in the lineage (the 4c-i
+implementation PR). The exhausted #465 obligation was discharged by the merged #472.
 
 **DECISION-WORKFLOW UNIT 4b IS DELIVERED AND CLEARED — PR #468 (the fifth replacement, branch
 `claude/decision-workflow-4b-r6`, `Replaces: #467`) MERGED at `main` `fe9df58d` on 2026-08-29
