@@ -547,3 +547,26 @@ Round-8 gates at this head: `pnpm check` EXIT 0 (automation 292/292, web 968/968
 (`phase6-t4b-decider.test.ts` 35/35, three consecutive runs); `scripts/upgrade-proof.sh`
 PASSED end-to-end (706 ok — the three records-register TRUNCATE cycles plus the new R8-F3
 replay cycle); `test:e2e:api:allmodules` **38/38** and `:outbox` **32/32**.
+
+## Round-9 correction (the Codex review of PR #467 head `9b172471` — one finding, ONE fix-forward head)
+
+Codex attempt 1/2 on the fourth replacement's first head returned ONE P2 finding, reproduced
+RED at `9b172471` first (fix stashed, test DB rebuilt at the pre-fix migration: the hostile
+statement COMMITTED — 1 failed / 35 passed), then fixed forward. This is #467's FIRST
+finding-bearing head; a second would close #467 for a fifth replacement.
+`20270810`/`20270826` remain byte-for-byte; `20271015` (this unit's own, unmerged) changes
+below, re-proven by a full test-database rebuild + the upgrade-proof.
+
+- **R9-F1 (P2, unpublished optioned record)** — the deferred option floor early-returned for
+  UNPUBLISHED rows, and a head-only `UPDATE … SET "status"='recorded',
+  "deciderKind"='none', "photoSwatch"=NULL` on an optioned choice draft touches no
+  `DecisionOption` row, so the child door never fired: an alternate writer could commit an
+  OPTIONED unpublished record — a category error the snapshot would then serialize with
+  approvable alternatives (the service door deletes the options in the same edit per the
+  R5-F6 contract; the DB door did not require it). The floor now separates its two scopes:
+  the record zero-option rule is a KIND invariant judged on EVERY head write, published or
+  not, while the 2–4 choice floor stays a PUBLICATION invariant (a draft legitimately
+  accumulates options across edits). Probe: `R9-F1` — the hostile head-only conversion is
+  refused at commit with the draft untouched, and the LEGAL `updateDraft` conversion
+  (`deciderKind:'none', options: []`) still lands with zero options at commit. Suite
+  36/36, three consecutive runs.

@@ -1009,4 +1009,41 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     // …and the baseline loop consults that set to leave its members pending for the deploy
     expect(sh).toContain('printf \'%s\\n\' "$ALWAYS_EXECUTE" | grep -qx "$name"');
   });
+
+  // ── round-9 Codex correction (the #467 head 9b172471) ──────────────────────────────────────
+
+  it('R9-F1: a head-only conversion of an optioned choice draft to a record is refused at commit — the zero-option record rule is a KIND invariant, not a publication invariant', async () => {
+    // Codex round 9: the deferred option floor early-returned for unpublished rows, and a
+    // head-only UPDATE touches no DecisionOption row, so the child door never fired — an
+    // alternate writer could commit an optioned unpublished RECORD (the service door deletes
+    // the options in the same transaction; the DB door did not require it).
+    const res = await post(pmcToken)(`/projects/${projectId}/decisions`, {
+      title: `R9F1 draft ${run}`, room: 'K', options: twoOptions, publish: false,
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId, title: `R9F1 draft ${run}` } });
+    expect(await t.prisma.decisionOption.count({ where: { decisionId: d.id } })).toBe(2);
+
+    // the hostile head-only conversion: kind/status/swatch only — no DecisionOption write
+    await expect(
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "Decision" SET "deciderKind" = 'none', "status" = 'recorded', "photoSwatch" = NULL WHERE "id" = '${d.id}'`,
+      ),
+    ).rejects.toThrow(/record takes no options/i);
+    // the draft is untouched — still an optioned choice draft
+    const after = await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } });
+    expect(after.deciderKind).toBe('client');
+    expect(after.status).not.toBe('recorded');
+    expect(after.publishedAt).toBeNull();
+    expect(await t.prisma.decisionOption.count({ where: { decisionId: d.id } })).toBe(2);
+
+    // precision: the LEGAL conversion through the drafting door still lands — the caller
+    // removes the options in the SAME edit (the R5-F6 contract), so the one transaction
+    // deletes them and the same deferred judge sees zero at commit
+    const conv = await patch(pmcToken)(`/projects/${projectId}/decisions/${d.id}/draft`, { deciderKind: 'none', options: [] });
+    expect(conv.status, JSON.stringify(conv.body)).toBe(200);
+    const converted = await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } });
+    expect(converted.status).toBe('recorded');
+    expect(await t.prisma.decisionOption.count({ where: { decisionId: d.id } })).toBe(0);
+  });
 });

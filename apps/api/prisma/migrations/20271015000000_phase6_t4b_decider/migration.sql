@@ -363,17 +363,23 @@ CREATE TRIGGER "Decision_t4b2_lifecycle_seal"
   BEFORE INSERT OR UPDATE ON "Decision"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4b2_decision_seal();
 
--- ── the OPTION floor at the publication boundary — BOTH doors, judged AT COMMIT ───────────────
--- (§A.2 rounds 13/17/18/19.) A BEFORE trigger on Decision cannot count children that are
--- inserted after the head row, so the floor is a DEFERRABLE INITIALLY DEFERRED constraint
--- trigger judged when the transaction commits: a PUBLISHED choice-kind decision must hold 2–4
--- options and a PUBLISHED record exactly zero, whether publication arrived by the guarded UPDATE
--- or by an INSERT born published. The re-ordered create (head births unpublished → options →
--- publication UPDATE, one transaction) and every legal nested-create fixture pass; the hostile
--- direct-SQL publication of a zero-option draft, the hostile published INSERT, and the
--- zero-option converted draft reaching the publish door are all refused alike. Fired from BOTH
--- tables: the Decision transition and any DecisionOption write on a published parent re-judge
--- the same aggregate (the Phase-4 demand-seal shape).
+-- ── the OPTION floor — BOTH doors, judged AT COMMIT ───────────────────────────────────────────
+-- (§A.2 rounds 13/17/18/19; round-9 Codex.) A BEFORE trigger on Decision cannot count children
+-- that are inserted after the head row, so the floor is a DEFERRABLE INITIALLY DEFERRED
+-- constraint trigger judged when the transaction commits. TWO invariants with DIFFERENT scopes:
+-- the record zero-option rule is a KIND invariant judged on EVERY head write, published or not —
+-- round-9 Codex: a head-only UPDATE converting an optioned choice draft to a record touches no
+-- DecisionOption row, so the child door never fires, and an unpublished early return here let
+-- the transaction commit an optioned record (the service door deletes the options in the same
+-- transaction; the DB door did not require it). The 2–4 choice floor stays a PUBLICATION
+-- invariant: a choice draft legitimately accumulates its options across edits and is judged
+-- when it publishes, whether publication arrived by the guarded UPDATE or by an INSERT born
+-- published. The re-ordered create (head births unpublished → options → publication UPDATE, one
+-- transaction) and every legal nested-create fixture pass; the hostile direct-SQL publication
+-- of a zero-option draft, the hostile published INSERT, the zero-option converted draft
+-- reaching the publish door, and the head-only optioned-record conversion are all refused
+-- alike. Fired from BOTH tables: the Decision transition and any DecisionOption write on a
+-- published parent re-judge the same aggregate (the Phase-4 demand-seal shape).
 CREATE OR REPLACE FUNCTION phase6_t4b2_option_floor() RETURNS trigger AS $fn$
 DECLARE d RECORD; n BIGINT; did TEXT;
 BEGIN
@@ -383,11 +389,14 @@ BEGIN
   IF TG_TABLE_NAME = 'Decision' THEN did := NEW."id"; ELSE did := NEW."decisionId"; END IF;
   SELECT "id", "deciderKind"::text AS kind, "publishedAt" INTO d
     FROM "Decision" WHERE "id" = did;
-  IF NOT FOUND OR d."publishedAt" IS NULL THEN RETURN NULL; END IF;
+  IF NOT FOUND THEN RETURN NULL; END IF;
   SELECT count(*) INTO n FROM "DecisionOption" o WHERE o."decisionId" = d."id";
+  -- the KIND invariant: a record carries zero options from birth, draft or published
   IF d.kind = 'none' AND n <> 0 THEN
     RAISE EXCEPTION 'phase6-4b: a record takes no options — % carries % (an optioned record is a category error)', d."id", n;
   END IF;
+  -- the PUBLICATION invariant: a choice draft is judged when it publishes
+  IF d."publishedAt" IS NULL THEN RETURN NULL; END IF;
   IF d.kind <> 'none' AND (n < 2 OR n > 4) THEN
     RAISE EXCEPTION 'phase6-4b: a published choice needs 2-4 approvable options — % has % (a decision nobody can approve must not publish)', d."id", n;
   END IF;
