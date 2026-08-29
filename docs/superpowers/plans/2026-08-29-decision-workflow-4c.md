@@ -254,6 +254,18 @@ actually offers:
   exists to prevent. Probed on both tables with a receipt whose `actorId` names
   someone other than the row's recorded actor.
 
+**And both commands REQUIRE an `Idempotency-Key`, refusing without one with a
+deliberate 400** (review round 19): when `COMMAND_KEY_ENFORCED` is unset or
+false and a caller omits the header, the delivered kernel takes its LEGACY
+unkeyed branch, which reserves NO ledger row and runs with
+`{ commandId: null }` (`apps/api/src/platform/commands.ts`). Both new tables
+require a non-null `sourceCommandId` naming the currently reserved receipt, so
+that branch cannot serve them: without the refusal the write reaches PostgreSQL
+and surfaces as an internal constraint failure — a 500 where the honest answer
+is that this command needs a key. The refusal sits at the contract, before any
+work, and P23 gains the MISSING-KEY probe rather than testing only keyed
+round-trips.
+
 Probed (P25/P25d) as: reuse of an already-SPENT receipt; a `succeeded`
 unrelated receipt; a wrong-TYPE receipt; and a row whose command commits with a
 `resultRef` naming something else. Stated honestly, the residual is a writer
@@ -854,7 +866,23 @@ external-effect catalogs.
     `ProjectCapability.capability`.** The pre-existing-row abort stays, because
     it is effective for THIS unit and breaks no writer. Any future narrowing of
     that vocabulary is its own compatibility-staged unit with its own writer
-    change — not a rider on a dark migration. And
+    change — not a rider on a dark migration.
+
+    **The reservation covers the WHOLE dark window, not just migration time**
+    (review round 19): the abort runs ONCE, during 4c-i, while the previous
+    release's `capability:enable` keeps accepting any name for as long as the
+    window is open — so a `consultation` row inserted BETWEEN 4c-i and 4c-ii
+    would leave the first upgraded instance seeing the gate already OPEN while
+    old workers still serve, making the gate-off arm non-exhaustive. 4c-i
+    therefore also installs a narrow RESERVATION trigger on `ProjectCapability`
+    rejecting an INSERT of `capability = 'consultation'` for the duration of
+    the window, which 4c-ii DROPS as part of arming the gate. This does not
+    reopen the Board decision above: there is still no CHECK constraining the
+    column's vocabulary, every SHIPPED capability still enables through the
+    unchanged generic writer, and the only rejected value is the one no
+    legitimate caller can yet have reason to write. The abort and the
+    reservation are one guarantee over one window — the first for rows that
+    already exist, the second for rows attempted while it is open. And
     **the MIXED-VERSION proof is split by those two gate
     states, because they are the only reachable ones** (review round 10,
     correcting a draft that demanded an old-shaped worker beside the new one
