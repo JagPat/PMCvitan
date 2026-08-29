@@ -641,7 +641,13 @@ the same insert is REJECTED. Both runs happen at the base commit, both are
 recorded in the packet with their SQL and their outcomes, and the pairing
 proves the seal is what rejects rather than some incidental constraint — which
 is what red-then-green is for. This is the discipline `upgrade-proof.sh`
-already uses to prove delivered seals precise rather than merely strict. Red sites name where today's behavior lives.
+already uses to prove delivered seals precise rather than merely strict.
+**BOARD DECISION, not re-litigable** (2026-08-29, on PR #480): the
+seal-stripped run IS the accepted formulation, and no fourth one is to be
+invented. A constraint on a table the same migration creates has no base
+behaviour to be red against — probing the base schema errors on a missing
+relation — so "red at base" for this class means exactly what is written
+here. Red sites name where today's behavior lives.
 
 | probe | proves | red site / staging |
 |---|---|---|
@@ -794,27 +800,25 @@ external-effect catalogs.
     FREE-TEXT `capability` column with NO whitelist, and `capability:enable`
     accepts any string — so a `consultation` row could already exist before
     4c-ii deploys, and the first upgraded instance would emit while old workers
-    still ran, exactly what the gate exists to prevent. 4c-i therefore (a)
-    ABORTS, diagnostic-first, if ANY `capability = 'consultation'` row exists,
-    since the unit is dark and nothing legitimate can have created one, and (b)
-    adds a CHECK restricting `capability` to the KNOWN set — **every value
-    already SHIPPED, plus the new one** (review round 14): `materials`,
-    `labour`, `commercial`, `consultation`. `CapabilitiesService` declares all
-    three existing ones (`MATERIALS_CAPABILITY`, `LABOUR_CAPABILITY`,
-    `COMMERCIAL_CAPABILITY` — the Phase-5 §L commercial pilot), and an earlier
-    draft's set omitted `commercial`, which would have ABORTED 4c-i on any
-    commercial pilot project or made every later
-    `capability:enable --capability commercial` fail. The general rule, stated
-    so the next unit adding a value does not repeat it: a whitelist introduced
-    over an EXISTING free-text column enumerates what production already
-    contains, and the migration's diagnostic aborts on an unrecognized value
-    rather than silently narrowing the vocabulary. The CHECK is itself
-    diagnostic-first — aborting on an unrecognized existing value rather than
-    failing opaquely — so no stray string can ever mint a gate again. After that the row appears only through
-    the deliberate operator step. The residual is stated rather than hidden: an
-    operator running the enable step early, after 4c-i but before the fleet has
-    drained, is performing the action the RUNBOOK order forbids — now a
-    deliberate act against a whitelisted capability, not an accident. And
+    still ran, exactly what the gate exists to prevent. 4c-i therefore ABORTS,
+    diagnostic-first, if ANY `capability = 'consultation'` row exists: the unit
+    is dark, so nothing legitimate can have created one, and the abort is
+    precise about which project holds it.
+
+    **And that is ALL 4c-i does to the capability vocabulary — BOARD DECISION,
+    not re-litigable** (2026-08-29, on PR #480). Review round 13 required a
+    CHECK restricting `capability` to a known set and round 14 required
+    `commercial` added to it; round 16 then rejected that same CHECK on two
+    counts at once — that it does not actually prevent pre-enablement (true: an
+    operator can still enable `consultation` between 4c-i and 4c-ii, which is
+    what the RUNBOOK order and §D's staging govern), and that restricting an
+    existing free-text column breaks the previous release's generic
+    `capability:enable` writer during the dark window. Both cannot be satisfied
+    by one constraint, and the Board resolved it: **no CHECK on
+    `ProjectCapability.capability`.** The pre-existing-row abort stays, because
+    it is effective for THIS unit and breaks no writer. Any future narrowing of
+    that vocabulary is its own compatibility-staged unit with its own writer
+    change — not a rider on a dark migration. And
     **the MIXED-VERSION proof is split by those two gate
     states, because they are the only reachable ones** (review round 10,
     correcting a draft that demanded an old-shaped worker beside the new one
@@ -925,7 +929,12 @@ external-effect catalogs.
     the bundle-version signal the NEW bundle honours, so this is the LAST
     release in which an open tab can be stale about consultation at all; that
     signal cannot help clients predating it, which is why the sender-side
-    refusal exists. **And the gate RETIRES — it is a rollout
+    refusal exists. **BOARD DECISION, not re-litigable** (2026-08-29, on PR
+    #480): this disclosed bound is the accepted answer. Consultation is NOT
+    deferred until the pre-4c bundle leaves support — that would be a
+    scheduling and scope change rather than a fix to this unit — and the sender
+    is not gated on the recipient's client version, which would make anyone who
+    has not opened the app since the upgrade permanently un-consultable. **And the gate RETIRES — it is a rollout
     latch, not a permanent pilot** (review round 11): `materials` and `labour`
     are genuine per-project product pilots, but consultation is a CORE
     decision workflow, so leaving it opt-in would strand every project created
@@ -1011,7 +1020,13 @@ external-effect catalogs.
     drained — the same shape every other blocking directive in this loop uses.
     Without it the runner would either strand silently or advance past the
     rollout ordering; with it, stranding is impossible and skipping is
-    impossible.
+    impossible. **BOARD DECISION, not re-litigable** (2026-08-29, on PR #480):
+    this stays as an operator-declared directive and NO automated drain or
+    backfill actor is invented for it. Review round 9 already established that
+    no code in this repository can observe "every serving process has
+    drained" — `OutboxConsumerCatalog` cannot enumerate processes or releases —
+    and round 16's call to automate it asks for the very signal round 9
+    correctly rejected as unimplementable.
 - 4d (architect, forwarding, countersign) is NOT this unit: its plan unit
   follows 4c implementation — ALL THREE PRs, 4c-iii included — per the merged
   §E order, carrying §D obligations 4–6.
