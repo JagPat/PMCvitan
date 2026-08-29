@@ -16,7 +16,7 @@ const s = () => useStore.getState();
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 const dec = (id: string, status: Decision['status'] = 'pending'): Decision =>
-  ({ id, title: id, room: 'GF', status, photoSwatch: 'marble', options: [] }) as Decision;
+  ({ id, title: id, room: 'GF', status, photoSwatch: 'marble', options: [], deciderKind: 'client' }) as Decision;
 
 function makeSnapshot(decisions: Decision[]): ApiSnapshot {
   return {

@@ -48,9 +48,16 @@ export interface DecisionDto {
   room: string;
   /** the location-tree node this decision attaches to (null/absent = ungrouped, legacy `room`) */
   nodeId?: string;
-  status: 'pending' | 'approved' | 'change' | 'withdrawn';
+  status: 'pending' | 'approved' | 'change' | 'withdrawn' | 'recorded';
   ageDays?: number;
-  photoSwatch: string;
+  /** absent for a RECORD (`deciderKind: 'none'`) — the zero-option form has no option swatch */
+  photoSwatch?: string;
+  /** Phase 6 task 4b — WHO decides this decision ('client' on every legacy row) */
+  deciderKind: 'client' | 'pmc' | 'member' | 'none';
+  /** the named holder's membership id when `deciderKind='member'` */
+  deciderMembershipId?: string;
+  /** the named holder's USER id, resolved server-side (one predicate for every surface) */
+  deciderUserId?: string;
   options: OptionDto[];
   approvedOption?: string;
   material?: string;

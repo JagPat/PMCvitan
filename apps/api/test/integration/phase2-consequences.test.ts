@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import request from 'supertest';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisions } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, seedPublishedDecision } from './fixtures';
 import { RealtimeGateway } from '../../src/realtime/realtime.gateway';
 import { PushService } from '../../src/push/push.service';
 import { pendingDecisionNotice } from '../../src/domain/notifications';
@@ -36,6 +36,7 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
   let sk: (label: string) => string;
   let emits: Emit[];
   let pushSpy: ReturnType<typeof vi.spyOn>;
+  let targetedSpy: ReturnType<typeof vi.spyOn>;
 
   const post = (path: string, body?: unknown) =>
     request(t.app.getHttpServer()).post(path).set('Authorization', `Bearer ${token}`).send(body ?? {});
@@ -64,7 +65,22 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
     expect(pushCalls()[0][1].body, `push body should match ${bodyRe}`).toMatch(bodyRe);
     expect(pushCalls()[0][2]).toEqual(roles);
   };
-  const expectNoPush = () => expect(pushCalls(), 'no push expected').toHaveLength(0);
+  const expectNoPush = () => {
+    expect(pushCalls(), 'no push expected').toHaveLength(0);
+    expect(targetedSpy.mock.calls, 'no targeted push expected').toHaveLength(0);
+  };
+  /** Phase 6 4b round-1 (Codex F5): the decider family delivers TARGETED — the role claim
+   *  resolves the role's CURRENT effective holders and pushes each holder's valid links; the
+   *  stored-role broadcast path is never taken for the family. */
+  const expectDeciderPush = (body: string, userIds: string[]) => {
+    expect(pushCalls(), 'a decider-family push never broadcasts by stored role').toHaveLength(0);
+    const calls = targetedSpy.mock.calls as unknown as Array<[string, { title: string; body: string }, string]>;
+    expect(calls.map((c) => c[2]).sort()).toEqual([...userIds].sort());
+    for (const c of calls) {
+      expect(c[0]).toBe(pid);
+      expect(c[1]).toEqual({ title: 'Vitan PMC', body });
+    }
+  };
 
   const lastAudit = (action: string) =>
     t.prisma.auditLog.findFirst({ where: { projectId: pid, action }, orderBy: { at: 'desc' } });
@@ -94,12 +110,14 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
       to: (room: string) => ({ emit: (event: string, payload: unknown) => { emits.push({ room, event, payload }); return true; } }),
     };
     pushSpy = vi.spyOn(t.app.get(PushService), 'notifyProject').mockResolvedValue(undefined as never);
+    targetedSpy = vi.spyOn(t.app.get(PushService), 'notifyTargetedUser').mockResolvedValue(undefined as never);
   });
 
-  beforeEach(() => { emits = []; pushSpy.mockClear(); });
+  beforeEach(() => { emits = []; pushSpy.mockClear(); targetedSpy.mockClear(); });
 
   afterAll(async () => {
     pushSpy.mockRestore();
+    targetedSpy.mockRestore();
     const insp = await t.prisma.inspection.findMany({ where: { projectId: pid }, select: { id: true } });
     await t.prisma.media.deleteMany({ where: { projectId: pid } });
     await t.prisma.inspectionItem.deleteMany({ where: { inspectionId: { in: insp.map((i) => i.id) } } });
@@ -114,10 +132,13 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
     await t.prisma.gateOverride.deleteMany({ where: { projectId: pid } });
     await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision" CASCADE');
     await wipeDecisionEvents(t.prisma, { decision: { projectId: pid } });
-    await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: pid } } });
-    await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId: pid } } });
     await t.prisma.activity.deleteMany({ where: { projectId: pid } });
-    await wipeDecisions(t.prisma, { projectId: pid });
+    // one sanctioned bypass: options of published parents are frozen (4b widened freeze)
+    await wipeDecisionsVia(t.prisma, async (tx) => {
+      await tx.decisionOption.deleteMany({ where: { decision: { projectId: pid } } });
+      await tx.changeRequest.deleteMany({ where: { decision: { projectId: pid } } });
+      await tx.decision.deleteMany({ where: { projectId: pid } });
+    });
     await t.prisma.phase.deleteMany({ where: { projectId: pid } });
     await t.prisma.projectNode.deleteMany({ where: { projectId: pid } });
     await t.prisma.membership.deleteMany({ where: { projectId: pid, userId: engId } });
@@ -136,7 +157,7 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
       expect((await lastAudit('decision.create'))?.actorId).toBe(uid);
       expect(await t.prisma.decisionEvent.findFirst({ where: { decisionId: created.id, type: 'issued' } })).toBeTruthy();
       expect(await notifCount()).toBe(before + 1);
-      expectPush('New decision awaiting your approval: Flooring', ['client']);
+      expectDeciderPush('New decision awaiting your approval: Flooring', [f.clientUser.id]);
       expectSignal();
     });
 
@@ -154,14 +175,16 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
 
     it('publish: decision.publish(actorId) + issued event + 1 notification(title) + push[client] + signal', async () => {
       const d = await t.prisma.decision.create({ data: { id: sk('p2c-dec-pub'), projectId: pid, title: 'Sanitary', room: 'Bath', photoSwatch: 'marble', status: 'pending', publishedAt: null, authorId: uid } });
+      // two options: the 4b deferred option floor requires 2–4 approvable options at publish commit
       await t.prisma.decisionOption.create({ data: { decisionId: d.id, label: 'A', optionKey: 'a', material: 'A', delta: 0, swatch: 'marble', order: 0 } });
+      await t.prisma.decisionOption.create({ data: { decisionId: d.id, label: 'B', optionKey: 'b', material: 'B', delta: 100, swatch: 'teak', order: 1 } });
       const before = await notifCount();
       const res = await post(`/projects/${pid}/decisions/${d.id}/publish`);
       expect(res.status).toBeLessThan(300);
       expect((await lastAudit('decision.publish'))?.actorId).toBe(uid);
       expect(await t.prisma.decisionEvent.findFirst({ where: { decisionId: d.id, type: 'issued' } }), 'publish records an issued event').toBeTruthy();
       expect(await notifCount(), 'publish adds exactly one notification').toBe(before + 1);
-      expectPush('New decision awaiting your approval: Sanitary', ['client']);
+      expectDeciderPush('New decision awaiting your approval: Sanitary', [f.clientUser.id]);
       expectSignal();
     });
 
@@ -532,7 +555,8 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
     });
 
     it('flagMismatch: material.mismatch(attributed — Task 3) + 1 notif + CROSS-MODULE activity gate/block + push[pmc,contractor]', async () => {
-      const dec = await t.prisma.decision.create({ data: { id: sk('p2c-dec-mm'), projectId: pid, title: 'Tile', room: 'GF', photoSwatch: 'marble', status: 'approved', publishedAt: new Date(), authorId: uid } });
+      // re-ordered seed: the 4b option floor + option freeze refuse a direct published+optionless insert
+      const dec = await seedPublishedDecision(t.prisma, { id: sk('p2c-dec-mm'), projectId: pid, title: 'Tile', room: 'GF', photoSwatch: 'marble', status: 'approved', authorId: uid });
       await t.prisma.activity.create({ data: { id: sk('p2c-act-mm'), projectId: pid, name: 'Tiling', zone: 'GF', status: 'in_progress', plannedStart: 0, plannedEnd: 3, decisionId: dec.id } });
       const log = await t.prisma.dailyLog.findFirstOrThrow({ where: { projectId: pid } });
       await t.prisma.siteMaterial.create({ data: { id: sk('p2c-mat-mm'), projectId: pid, dailyLogId: log.id, name: 'Tile', qty: '5', zone: 'GF', decisionId: dec.id, swatch: 'tile', matched: true } });

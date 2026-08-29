@@ -3,6 +3,7 @@ import { io, type Socket } from 'socket.io-client';
 import { useStore } from '@/store/store';
 import { API_BASE, DEV_AUTH, ApiGateway } from './apiGateway';
 import { subscribeToPush } from './push';
+import { jwtSub } from '@/lib/jwt';
 
 /**
  * When `VITE_API_URL` is configured: authenticate for the active session, inject
@@ -102,7 +103,15 @@ export function useApiSync(): void {
 
     (async () => {
       if (token) gw.setToken(token);
-      else if (DEV_AUTH) await gw.connect(role);
+      else if (DEV_AUTH) {
+        const issued = await gw.connect(role);
+        // round-7 Codex F3 — dev-auth issues its JWT inside the gateway, but every audience
+        // predicate (the decider queue, visibility mirrors, the approval route) keys on the
+        // store's `sessionUserId`. Record the issued identity exactly like a real sign-in's
+        // `applyAuthResult` does, so a seeded named decider selected through dev auth sees
+        // their own obligations instead of being treated as a non-decider.
+        if (issued && !cancelled) useStore.setState({ sessionUserId: jwtSub(issued) });
+      }
       // else: secure default — inject the gateway unauthenticated so the sign-in
       // flow reaches the public /auth/* endpoints; snapshot() will 401 until sign-in.
       if (cancelled) return;

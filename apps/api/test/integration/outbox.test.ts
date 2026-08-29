@@ -91,7 +91,8 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
 
   it('materializes one delivery per registered consumer IN the event transaction; a rolled-back emit writes none', async () => {
     const p = await freshProject();
-    // a published-decision event carries a push whose roles come from the catalog (['client'])
+    // a published-decision event carries a push whose roles come from the catalog — the 4b decider
+    // CEILING (every decider-capable role; the claim-time predicate narrows at delivery)
     const { eventId } = await emit(p, 'D-1', { eventType: 'decision.published', effectKey: 'decision.published', dispatch: { push: { body: 'hello' } } });
     // socket (always), push (notification present) and the ordered projection each got a row
     const socket = await deliveryFor(SOCKET_CONSUMER, eventId);
@@ -100,7 +101,7 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
     expect(socket.status).toBe('pending');
     expect(socket.consumerKind).toBe('unordered');
     expect(proj.consumerKind).toBe('ordered');
-    expect(push.payload).toEqual({ body: 'hello', roles: ['client'] });
+    expect(push.payload).toEqual({ body: 'hello', roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant'], targetUserId: null });
     expect(proj.streamPosition).toBe(0n);
 
     // a rolled-back mutation writes NO event AND NO deliveries — they share the transaction
@@ -304,6 +305,29 @@ describe('PR C Task 2 — the outbox consumers are the sole senders (unit)', () 
     } finally {
       delete process.env.OUTBOX_SENDER_MODE;
     }
+  });
+
+  it('4b round-1 (Codex F5): a DECIDER-family ROLE claim delivers to the role\'s CURRENT effective holders\' valid links — never a stored-role broadcast', async () => {
+    const notifyProject = vi.fn(async () => {});
+    const notifyTargetedUser = vi.fn(async () => {});
+    const roleHolderUserIds = vi.fn(async (_p: string, role: string) => (role === 'client' ? ['u-client-1', 'u-client-2'] : []));
+    const markCancelled = vi.fn(async () => {});
+    const push = makePushConsumer({ notifyProject, notifyTargetedUser } as never, {
+      deciderTarget: async () => ({ actionable: true, roles: ['client'] }),
+      markCancelled,
+      roleHolderUserIds,
+    });
+    const familyMeta = { ...meta, eventType: 'decision.published', dispatchIntent: { ...meta.dispatchIntent, effectKey: 'decision.published' } };
+    const dispatch = { delivery: { id: 'd', consumer: '', projectId: 'p', streamPosition: 0n, payload: { body: 'b', roles: ['client'], targetUserId: null } }, meta: familyMeta, senderMode: 'outbox' };
+    await push.handle(dispatch as never);
+    // the CURRENT holders got targeted deliveries (valid links only, inside notifyTargetedUser);
+    // the stored-role broadcast path was never taken (a removed member's device gets nothing)
+    expect(roleHolderUserIds).toHaveBeenCalledWith('p', 'client');
+    expect(notifyTargetedUser).toHaveBeenCalledTimes(2);
+    expect(notifyTargetedUser).toHaveBeenCalledWith('p', expect.objectContaining({ body: 'b' }), 'u-client-1');
+    expect(notifyTargetedUser).toHaveBeenCalledWith('p', expect.objectContaining({ body: 'b' }), 'u-client-2');
+    expect(notifyProject).not.toHaveBeenCalled();
+    expect(markCancelled).not.toHaveBeenCalled();
   });
 
   it('the registered consumers are the socket + push externals (unordered)', () => {

@@ -18,6 +18,7 @@ import { SnapshotService } from './snapshot/snapshot.service';
 import { ProjectController } from './snapshot/project.controller';
 import { DecisionsService } from './decisions/decisions.service';
 import { DecisionsQueryService } from './decisions/decisions.query';
+import { DecisionsParticipant } from './decisions/decisions.participant';
 import { DecisionsController } from './decisions/decisions.controller';
 import { ActivitiesService } from './activities/activities.service';
 import { ActivitiesQueryService } from './activities/activities.query';
@@ -242,6 +243,9 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     // serialized into module projections (drawings.inbox, daily-log.inbox).
     DrawingParticipant,
     DailyLogParticipant,
+    // Phase 6 task 4b (§A.1) — the decisions-owned open-holder answer the orgs membership
+    // commands consult before a standing write (orgs ⇄ decisions participant channel).
+    DecisionsParticipant,
   ],
 })
 export class AppModule {}

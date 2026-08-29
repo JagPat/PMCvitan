@@ -98,10 +98,10 @@ export interface DecisionGroup {
   key: string;
   label: string;
   rows: DecisionRow[];
-  counts: { total: number; pending: number; approved: number; change: number; withdrawn: number };
+  counts: { total: number; pending: number; approved: number; change: number; withdrawn: number; recorded: number };
 }
 
-const STATUS_LABEL: Record<string, string> = { pending: 'Pending', approved: 'Approved', change: 'Change requested', withdrawn: 'Withdrawn' };
+const STATUS_LABEL: Record<string, string> = { pending: 'Pending', approved: 'Approved', change: 'Change requested', withdrawn: 'Withdrawn', recorded: 'Recorded' };
 
 /** Group + sort decisions for the register display by the chosen lens. Single-level
  *  sections (collapsible in the UI), with the finer location shown as a per-row caption. */
@@ -170,7 +170,7 @@ export function groupDecisions(decisions: Decision[], nodes: ProjectNode[], mode
   }
 
   const groups: DecisionGroup[] = [...map.entries()].map(([key, rows]) => {
-    const counts = { total: rows.length, pending: 0, approved: 0, change: 0, withdrawn: 0 };
+    const counts = { total: rows.length, pending: 0, approved: 0, change: 0, withdrawn: 0, recorded: 0 };
     for (const r of rows) counts[r.decision.status] += 1;
     // rows sorted by their finer location, then id
     rows.sort((a, b) => a.subLabel.localeCompare(b.subLabel) || a.decision.id.localeCompare(b.decision.id));
@@ -179,7 +179,7 @@ export function groupDecisions(decisions: Decision[], nodes: ProjectNode[], mode
 
   // section order: status uses a fixed priority; otherwise alphabetical by label
   if (mode === 'status') {
-    const rank: Record<string, number> = { pending: 0, change: 1, approved: 2, withdrawn: 3 };
+    const rank: Record<string, number> = { pending: 0, change: 1, approved: 2, recorded: 3, withdrawn: 4 };
     groups.sort((a, b) => (rank[a.key] ?? 9) - (rank[b.key] ?? 9));
   } else {
     groups.sort((a, b) => a.label.localeCompare(b.label));

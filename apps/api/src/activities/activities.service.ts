@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { CONTRACTOR_CAPTURE_FAIL_CLOSED, contractorCaptureFailClosed } from '@vitan/shared';
+import { type DeciderKind, CONTRACTOR_CAPTURE_FAIL_CLOSED, contractorCaptureFailClosed } from '@vitan/shared';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
@@ -414,7 +414,7 @@ export class ActivitiesService {
    *  readiness-lock protocol (gate finding 1) — the default reads live data. */
   async loadReadiness(
     projectId: string,
-    activity: { id: string; gateMaterial: GateState; gateTeam: GateState; decision: { status: string } | null },
+    activity: { id: string; gateMaterial: GateState; gateTeam: GateState; decision: { status: string; draft?: boolean; deciderKind?: string } | null },
     db: Prisma.TransactionClient = this.prisma,
     // Phase 6 task 4a round 1 (Codex F5): the withdrawn-decision gate REASON is pmc-only —
     // fail-closed, so an unlabelled caller gets the redacted wording (the verdict is identical).
@@ -430,6 +430,10 @@ export class ActivitiesService {
     ]);
     return deriveReadiness(activity.id, {
       decisionStatus: activity.decision ? (activity.decision.status as DecisionStatus) : null,
+      // Phase 6 task 4b (§A.2) — a linked DRAFT record gates `wait` until published (P20).
+      decisionDraft: activity.decision?.draft ?? false,
+      // Replacement round (Codex R2-F3) — the gate's waiting text names the ACTUAL decider.
+      decisionDeciderKind: (activity.decision?.deciderKind as DeciderKind | undefined) ?? 'client',
       withdrawnReasonVisible,
       gateMaterial: activity.gateMaterial,
       gateTeam: activity.gateTeam,
@@ -475,9 +479,9 @@ export class ActivitiesService {
         const a = await tx.activity.findUnique({ where: { id: activityId } });
         if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
         if (a.status !== 'not_started') throw new ConflictException('Activity is not in a startable state');
-        const decisionStatus = a.decisionId ? await this.decisions.statusOf(projectId, a.decisionId, tx) : null;
+        const linkedDecision = a.decisionId ? await this.decisions.statusAndDraftOf(projectId, a.decisionId, tx) : null;
 
-        const readiness = await this.loadReadiness(projectId, { ...a, decision: decisionStatus ? { status: decisionStatus } : null }, tx, user.role === 'pmc');
+        const readiness = await this.loadReadiness(projectId, { ...a, decision: linkedDecision }, tx, user.role === 'pmc');
         // Phase 3 Task 6 (§A): on a PILOT project, the material gate is CANONICAL coverage — never
         // the stored flag or a projection. Evaluated on THIS transaction under the readiness lock,
         // so a concurrent reservation/issue/adjustment/requirement-revision/substitution-revocation

@@ -135,7 +135,11 @@ describe('Phase 2 Task 7 — module registry', () => {
       // filed drawings AND staged site materials — each through its owning module's participant,
       // appending inspection.unfiled / activity.unfiled / drawing.unfiled / material.unfiled
       nodes: ['inspections', 'activities', 'drawings', 'daily-log'],
-      orgs: ['nodes', 'activities', 'inspections'], // project-init instantiates each owning module
+      // Phase 6 task 4b (§A.1) adds `decisions`: the membership/org-membership standing writes
+      // consult the decisions-owned open-holder answer (DecisionsParticipant.holdsOpenDecisions)
+      // inside their own transaction — the orgs → decisions half of the bidirectional
+      // orgs ⇄ decisions channel (cycle-exempt; decisions already declares `orgs`).
+      orgs: ['nodes', 'activities', 'inspections', 'decisions'], // project-init instantiates each owning module
       inspections: ['activities'], // the closing-inspection decide writes the activity sign-off
       // Phase 4 Task 2 — the labour commercial chain validates the reused procurement Vendor/
       // ProjectVendor binding through ProcurementParticipant.assertVendorBound (+ resolveOrgVendor):
@@ -174,6 +178,12 @@ describe('Phase 2 Task 7 — module registry', () => {
       // orgs.dependsOn includes decisions, so a decisions → orgs READ would close a cycle —
       // the participant channel does not.
       decisions: ['orgs'],
+      // Phase 6 unit 4b round 6 (Codex F6) — the push spine's TWO orgs-owned questions
+      // (identity existence at subscribe-attribution; credential/session validity at
+      // targeted-claim time) go through OrgsParticipant, so the platform → orgs interaction
+      // is a DECLARED participant edge the graph validation can see. `platform.dependsOn`
+      // stays empty (the kernel owns no domain logic).
+      platform: ['orgs'],
     };
     for (const m of MODULE_MANIFESTS) {
       expect(m.workflowParticipants, `${m.id} workflowParticipants`).toEqual(expectedParticipants[m.id] ?? []);

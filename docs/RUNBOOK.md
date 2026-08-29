@@ -1083,6 +1083,45 @@ post-4a application processes side by side. If a multi-instance rolling strategy
 introduced, the exposure is bounded to pushes leased by old senders during the one rollout that
 ships 4a — after that, every sender carries the pre-send re-check.
 
+## §P6T4B. Phase 6 task 4b — the decider migration aborts: a published open decision has no holder
+
+`20271015000000_phase6_t4b_decider` installs the holder-orphan guards (no membership write may
+strand a published open decision's decider), so it first AUDITS the register: every PUBLISHED
+decision still awaiting a decision (`pending`/`change`) must have a CURRENT effective holder —
+an ACTIVE client for the `client` backfill every legacy row receives, judged by the same
+`phase6_effective_role_standing` rule the guards consume (active memberships in the role plus,
+for `pmc`, membership-less org owner/admin standing). The guard did not exist before 4b, so a
+production register CAN already hold an orphaned row; certifying it silently would start the new
+system in exactly the zero-holder state every newly published decision is refused for.
+
+On a violation the deploy ABORTS before any guard installs, with a bounded sample:
+
+    phase6-4b ABORT: N published open decision(s) have NO current effective holder
+    (sample: <projectId>/<decisionId>, …) — … Operator repair (docs/RUNBOOK.md §P6T4B)
+
+The migration wrote nothing that needs rolling back at that point (the audit runs inside the one
+transaction), but Prisma records the migration as failed — after repairing, run
+`prisma migrate resolve --rolled-back 20271015000000_phase6_t4b_decider`, then redeploy.
+
+**Repair — two sanctioned paths, per sampled decision. Never invent a holder.**
+
+1. **Withdraw and reissue** (the register's own answer): on the still-running OLD build, the PMC
+   withdraws the orphaned published decision (`decisions.withdraw`, reason recorded) and, if the
+   question still needs asking, reissues it once a holder exists. This is the 4a verb and needs
+   no SQL.
+2. **Restore a covering membership**: re-activate (or add) an ACTIVE member of the holding role
+   on that project through the ordinary team commands — for the default `client` backfill, an
+   active client membership. The audit re-runs on the next deploy and passes once standing
+   exists.
+
+Do NOT edit `Decision` rows directly, and do not backfill a different `deciderKind` by hand: the
+holder columns become write-once at publication under the new seals, and the audit exists
+precisely so no orphan is papered over. The audit is serialized against live pre-4b writers by
+`LOCK TABLE "Decision", "Membership", "OrgMembership", "Project" IN SHARE ROW EXCLUSIVE MODE`
+inside its transaction — a concurrent old-build role change or decision birth either commits
+before the audit observes the register or blocks until the guards exist to judge it, so run the
+deploy with the drain-first discipline of §P6-4a and no special quiescing is needed beyond it.
+
 ## §B1. Schedule B1 — `prisma migrate deploy` aborts on `ActivityDependency`
 
 `20270930000000_schedule_dependency_graph` COMPLETES ITS OWN INSTALL of `ActivityDependency` and

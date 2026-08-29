@@ -34,6 +34,9 @@ const dec = (over: Partial<Decision> & { id: string }): Decision =>
     title: over.title ?? `Title ${over.id}`,
     room: 'Kitchen',
     status: 'pending',
+    // Phase 6 task 4b — every legacy decision is client-held (the migration backfill), and the
+    // client-side audience mirror now judges the DECIDER, so the fixture says so explicitly.
+    deciderKind: 'client',
     photoSwatch: 'tile',
     options: [
       { label: 'A', key: 'a', material: 'Granite', delta: 0, swatch: 'tile', recommended: true },

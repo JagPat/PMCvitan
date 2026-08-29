@@ -73,7 +73,7 @@ describe('multi-project + team (Orgs Slice 2)', () => {
     // pretend we've switched to p2 and are awaiting its snapshot
     useStore.setState((st) => { st.activeProjectId = 'p2'; st.projectLoadState = 'loading'; st.decisions = []; });
     // a late snapshot from the OLD project (ambli) arrives — it must be dropped
-    s().applySnapshot(makeSnapshot({ decisions: [{ id: 'DL-OLD', title: 'stale', room: '', status: 'pending', photoSwatch: 'marble', options: [] }] }));
+    s().applySnapshot(makeSnapshot({ decisions: [{ id: 'DL-OLD', title: 'stale', room: '', status: 'pending', photoSwatch: 'marble', options: [], deciderKind: 'client' }] }));
     expect(s().decisions).toEqual([]); // not applied
     expect(s().projectLoadState).toBe('loading'); // still waiting for p2
 
@@ -314,7 +314,7 @@ describe('multi-project + team (Orgs Slice 2)', () => {
 describe('Phase 7b write-cutover — API mode routes mutations through the gateway', () => {
   it('confirmApprove calls the gateway and reconciles from the returned snapshot', async () => {
     const snap = makeSnapshot({
-      decisions: [{ id: 'DL-014', title: 'Living Room Flooring', room: 'Ground Floor · Living', status: 'approved', photoSwatch: 'marble', options: [], approver: 'Mr. Shah', material: 'Italian Marble (Botticino)', date: '03 Jul 2026', cost: 140000 }],
+      decisions: [{ id: 'DL-014', title: 'Living Room Flooring', room: 'Ground Floor · Living', status: 'approved', photoSwatch: 'marble', options: [], deciderKind: 'client', approver: 'Mr. Shah', material: 'Italian Marble (Botticino)', date: '03 Jul 2026', cost: 140000 }],
     });
     const gw = { approveDecision: vi.fn().mockResolvedValue(snap) };
     s()._setGateway(gw as unknown as ApiGateway);

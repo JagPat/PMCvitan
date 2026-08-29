@@ -225,7 +225,9 @@ describe("the field checklist says where it is, and why it is read-only", () => 
 // ── Client decisions ───────────────────────────────────────────────────────────────────
 
 const decision = (over: Partial<Decision> = {}): Decision => ({
-  id: 'DL-1', title: 'Floor tile', room: 'legacy room', nodeId: 'zoneA', status: 'pending',
+  // Phase 6 task 4b — the client-held designation (the migration backfill) so the viewer-scoped
+  // approval surface still shows the row to the client.
+  id: 'DL-1', title: 'Floor tile', room: 'legacy room', nodeId: 'zoneA', status: 'pending', deciderKind: 'client',
   options: [
     { key: 'a', material: 'Kota', delta: 0, swatch: 'tile', recommended: true },
     { key: 'b', material: 'Marble', delta: 40000, swatch: 'tile', recommended: false },

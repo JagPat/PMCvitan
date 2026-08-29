@@ -9,12 +9,16 @@ import { lockUserCredential } from '../common/credential-lock';
 import { resolveActor, type Actor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import { NodeInitParticipant } from '../nodes/node-init.participant';
+import { rethrowHolderSealViolation } from './members.service';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import { ActivitiesQueryService } from '../activities/activities.query';
 import { DecisionsQueryService } from '../decisions/decisions.query';
+import { DecisionsParticipant } from '../decisions/decisions.participant';
+import { OrgsParticipant } from './orgs.participant';
+import { lockProjectReadiness } from '../common/readiness-lock';
 import { InspectionsQueryService } from '../inspections/inspections.query';
-import type { AuthUser } from '../common/auth';
+import type { AuthUser, Role } from '../common/auth';
 import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
@@ -159,7 +163,56 @@ export class OrgsService {
     // activity-status rollup all route through the activities query (activity/phase/gateOverride are
     // read-encapsulated).
     private readonly activitiesQuery: ActivitiesQueryService,
+    // Phase 6 task 4b (§A.1 round 11) — the org-membership writes that flip membership-less
+    // effective-PMC standing consult the decisions-owned open-holder answer per covered project.
+    private readonly decisionHolders: DecisionsParticipant,
+    private readonly orgsParticipant: OrgsParticipant,
   ) {}
+
+  /**
+   * Phase 6 task 4b (§A.1 round 11) — guard an org-membership write that REDUCES the target's
+   * owner/admin standing (removal, or demotion below admin): over every project the org covers,
+   * in STABLE ASCENDING project-id order (round 13 — two concurrent org writes locking projects
+   * in opposite orders would deadlock), take the readiness key, run `write`, then refuse if any
+   * project's published open `pmc`-held decision would lose its LAST effective PMC. Projects
+   * where the target holds an ACTIVE explicit membership are skipped — precedence already
+   * suppresses their org arm there, so this write reduces nothing on them.
+   */
+  private async guardedOrgStandingWrite<T>(
+    orgId: string,
+    targetUserId: string,
+    reduces: boolean,
+    write: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return this.prisma.$transaction(async (tx) => {
+      if (!reduces) return write(tx);
+      const projects = await tx.project.findMany({ where: { orgId }, select: { id: true }, orderBy: { id: 'asc' } });
+      for (const p of projects) await lockProjectReadiness(tx, p.id);
+      // the DB org-membership seal (AFTER-row) judges this write at the statement — its raise
+      // on the command path is the command's own refusal, translated to the deliberate 409
+      const result = await write(tx).catch((e: unknown) =>
+        rethrowHolderSealViolation(
+          e,
+          'An open decision on a covered project is held by the pmc role and this change would leave it without an effective PMC — withdraw and reissue the decision first',
+        ),
+      );
+      for (const p of projects) {
+        const explicit = await tx.membership.findFirst({
+          where: { projectId: p.id, userId: targetUserId, status: 'active' },
+          select: { id: true },
+        });
+        if (explicit) continue;
+        const { heldRoles } = await this.decisionHolders.holdsOpenDecisions(tx, { projectId: p.id });
+        if (!heldRoles.includes('pmc')) continue;
+        if ((await this.orgsParticipant.effectiveRoleStanding(tx, p.id, 'pmc')) === 0) {
+          throw new ConflictException(
+            'An open decision on a covered project is held by the pmc role and this change would leave it without an effective PMC — withdraw and reissue the decision first',
+          );
+        }
+      }
+      return result;
+    });
+  }
 
   /** Org role of a user, or null if not a member. */
   private async orgRole(orgId: string, userId: string): Promise<string | null> {
@@ -234,11 +287,26 @@ export class OrgsService {
       user = await this.prisma.user.create({ data: { projectId: homeProject.id, role: 'contractor', name: input.name, email, phone } });
     }
 
-    const membership = await this.prisma.orgMembership.upsert({
+    // round-6 Codex F2 — the upsert's UPDATE arm is a ROLE CHANGE exactly like
+    // updateOrgMemberRole's: re-adding an identity already on the org with a lower role
+    // reduces their owner/admin standing, so it rides the SAME holder guard (readiness keys
+    // over covered projects in stable order; the DB seal's raise translated to the deliberate
+    // 409) instead of a bare upsert the trigger would fail as an unhandled error.
+    const existingOm = await this.prisma.orgMembership.findUnique({
       where: { orgId_userId: { orgId, userId: user.id } },
-      update: { role: input.role },
-      create: { orgId, userId: user.id, role: input.role },
+      select: { role: true },
     });
+    const reduces =
+      !!existingOm
+      && (existingOm.role === 'owner' || existingOm.role === 'admin')
+      && input.role !== 'owner' && input.role !== 'admin';
+    const membership = await this.guardedOrgStandingWrite(orgId, user.id, reduces, (tx) =>
+      tx.orgMembership.upsert({
+        where: { orgId_userId: { orgId, userId: user.id } },
+        update: { role: input.role },
+        create: { orgId, userId: user.id, role: input.role },
+      }),
+    );
     return { userId: user.id, name: user.name, email: user.email, phone: user.phone, orgRole: membership.role, credentialState: user.passwordHash ? 'active' : 'not_set' };
   }
 
@@ -253,7 +321,13 @@ export class OrgsService {
     if (existing.role === 'owner' && input.role !== 'owner' && (await this.ownerCount(orgId)) <= 1) {
       throw new BadRequestException('The org must keep at least one owner');
     }
-    const membership = await this.prisma.orgMembership.update({ where: { orgId_userId: { orgId, userId } }, data: { role: input.role } });
+    // Phase 6 task 4b (§A.1 round 11) — demoting an owner/admin below admin can strand a
+    // covered project's pmc-held open decision; judged per project under its readiness key.
+    const reduces =
+      (existing.role === 'owner' || existing.role === 'admin') && input.role !== 'owner' && input.role !== 'admin';
+    const membership = await this.guardedOrgStandingWrite(orgId, userId, reduces, (tx) =>
+      tx.orgMembership.update({ where: { orgId_userId: { orgId, userId } }, data: { role: input.role } }),
+    );
     return { userId, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, orgRole: membership.role, credentialState: existing.user.passwordHash ? 'active' : 'not_set' };
   }
 
@@ -331,7 +405,12 @@ export class OrgsService {
     if (existing.role === 'owner' && (await this.ownerCount(orgId)) <= 1) {
       throw new BadRequestException('The org must keep at least one owner');
     }
-    await this.prisma.orgMembership.delete({ where: { orgId_userId: { orgId, userId } } });
+    // Phase 6 task 4b (§A.1 round 11) — removing an owner/admin can strand a covered project's
+    // pmc-held open decision; judged per project under its readiness key.
+    const reduces = existing.role === 'owner' || existing.role === 'admin';
+    await this.guardedOrgStandingWrite(orgId, userId, reduces, (tx) =>
+      tx.orgMembership.delete({ where: { orgId_userId: { orgId, userId } } }),
+    );
     return { ok: true };
   }
 
@@ -1134,13 +1213,15 @@ export class OrgsService {
 
     return Promise.all(
       scoped.map(async ({ project, role }) => {
-        const canSeePending = role === 'pmc' || role === 'client';
         // Task 10 (Module 4) — the activity-status rollup + phase count come from the activities query,
         // never a direct `prisma.activity.findMany`/`prisma.phase.count` read.
+        // Phase 6 task 4b (§A.3, caller round 11) — the pending count is VIEWER-scoped and asked for
+        // EVERY decider-capable role: a named engineer-decider's card reports their obligation
+        // (countPending itself returns 0 for a viewer who decides nothing).
         const [statusCounts, openReviews, pendingDecisions] = await Promise.all([
           this.activitiesQuery.statusCounts(project.id),
           this.inspections.openInspectionCount(project.id),
-          canSeePending ? this.decisions.countPending(project.id) : Promise.resolve(0),
+          this.decisions.countPending(project.id, { role: role as Role, userId }),
         ]);
         const { total: activityTotal, done, inProgress, blocked, notStarted, phaseCount } = statusCounts;
         return {

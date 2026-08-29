@@ -210,6 +210,13 @@ export const pushSubscribeSchema = z.object({
 });
 export type PushSubscribeInput = z.infer<typeof pushSubscribeSchema>;
 
+// Phase 6 task 4b (§A.3 round 13) — sign-out unlinks THIS browser's subscription (by endpoint)
+// so a shared device stops receiving the departing user's targeted content.
+export const pushUnlinkSchema = z.object({
+  endpoint: z.string().url().refine(isSafeExternalHttpsUrl, 'endpoint must be an https URL to a public host'),
+});
+export type PushUnlinkInput = z.infer<typeof pushUnlinkSchema>;
+
 // ── Drawings register (Slice 1) ──────────────────────────────────────────────
 // Issue a drawing. If `number` already exists in the project a new revision is
 // added and the prior ones are superseded; otherwise a new register entry is
@@ -470,6 +477,18 @@ const decisionOptionInput = z.object({
   photoUrl: z.string().trim().optional(),
   recommended: z.boolean().default(false),
 });
+// Phase 6 task 4b (§A.1) — WHO decides. Default 'client' keeps every existing caller
+// byte-identical (P15). 'member' requires the named ACTIVE membership; 'none' is the
+// record-only issue whose contract requires EXACTLY ZERO options (§A.2 round 15: options are
+// the approvable alternatives of a CHOICE — an optioned record is a category error), while
+// every choice kind keeps the 2–4 floor. 'architect' joins IN UNIT 4d with the role.
+const DECIDER_KINDS = ['client', 'pmc', 'member', 'none'] as const;
+const deciderFields = {
+  deciderKind: z.enum(DECIDER_KINDS).default('client'),
+  deciderMembershipId: z.string().trim().min(1).optional(),
+} as const;
+const deciderPairCoherent = (v: { deciderKind: string; deciderMembershipId?: string }) =>
+  (v.deciderKind === 'member') === (v.deciderMembershipId !== undefined);
 export const createDecisionSchema = z.object({
   title: z.string().trim().min(1),
   // Location: either a tree node (authoritative) or the legacy free-text room. At least
@@ -477,12 +496,52 @@ export const createDecisionSchema = z.object({
   // is set. `room` stays for back-compat and for decisions authored without the tree.
   nodeId: z.string().trim().min(1).optional(),
   room: z.string().trim().default(''),
-  options: z.array(decisionOptionInput).min(2).max(4),
+  options: z.array(decisionOptionInput).max(4).default([]),
   // Draft → Publish lifecycle: default is to save a PRIVATE DRAFT (author-only, no client
   // notice). Pass `publish: true` to create it already-published (the one-step "issue now").
   publish: z.boolean().default(false),
-});
+  ...deciderFields,
+})
+  .refine(deciderPairCoherent, { message: 'deciderMembershipId is required exactly when deciderKind is member' })
+  .refine((v) => (v.deciderKind === 'none' ? v.options.length === 0 : v.options.length >= 2), {
+    message: 'a record (deciderKind none) takes no options; every other kind needs 2–4',
+  });
 export type CreateDecisionInput = z.infer<typeof createDecisionSchema>;
+
+// Phase 6 task 4b (§A.1 round 8) — edit a PRIVATE DRAFT: the recovery path for a stranded
+// draft holder and the record⟺choice conversion door. Legal only while `publishedAt IS NULL`;
+// the service refuses a published decision. A kind change to/from 'none' carries its status
+// with it server-side (the coherent pair). Fields omitted are left untouched.
+export const updateDecisionDraftSchema = z
+  .object({
+    title: z.string().trim().min(1).optional(),
+    nodeId: z.string().trim().min(1).nullish(),
+    room: z.string().trim().optional(),
+    options: z.array(decisionOptionInput).max(4).optional(),
+    // no default here — an omitted deciderKind leaves the draft's holder untouched
+    deciderKind: z.enum(DECIDER_KINDS).optional(),
+    deciderMembershipId: z.string().trim().min(1).optional(),
+  })
+  .refine((v) => v.deciderKind !== undefined || v.deciderMembershipId === undefined, {
+    message: 'deciderMembershipId needs its deciderKind',
+  })
+  .refine((v) => v.deciderKind === undefined || (v.deciderKind === 'member') === (v.deciderMembershipId !== undefined), {
+    message: 'deciderMembershipId is required exactly when deciderKind is member',
+  })
+  // round-3 Codex F3 — the CONTRACT half of conversion coherence (what it can see without the
+  // draft's current kind): a record edit never carries options, and a choice kind edited
+  // TOGETHER with an options payload carries the full 2–4 (an explicitly empty or one-option
+  // payload beside a choice kind is a category error whatever the draft was before). The
+  // current-kind-dependent half — converting `none` to a choice with options OMITTED — is the
+  // service's deliberate 400 (it knows the draft).
+  .refine((v) => v.deciderKind !== 'none' || v.options === undefined || v.options.length === 0, {
+    message: 'a record (deciderKind none) takes no options',
+  })
+  .refine((v) => v.deciderKind === undefined || v.deciderKind === 'none' || v.options === undefined || v.options.length >= 2, {
+    message: 'a choice deciderKind edited together with options needs the full 2–4',
+  })
+  .refine((v) => Object.values(v).some((x) => x !== undefined), { message: 'Provide at least one field to update' });
+export type UpdateDecisionDraftInput = z.infer<typeof updateDecisionDraftSchema>;
 
 // ── Location tree (zones → rooms → elements) ─────────────────────────────────
 export const NODE_KINDS = ['zone', 'room', 'element'] as const;

@@ -11,7 +11,7 @@ const nodes: ProjectNode[] = [
 ];
 
 const dec = (id: string, status: Decision['status'], nodeId?: string, room = ''): Decision =>
-  ({ id, title: id, room, nodeId, status, photoSwatch: 'tile', options: [] }) as Decision;
+  ({ id, title: id, room, nodeId, status, photoSwatch: 'tile', options: [], deciderKind: 'client' }) as Decision;
 
 describe('pathOf / locationSegments', () => {
   it('builds a root→node breadcrumb', () => {

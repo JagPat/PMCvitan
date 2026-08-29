@@ -83,6 +83,12 @@ PHASE3_R2=20261212000000
 # make those historical fixtures impossible to plant and would no longer prove the old ledger.
 PHASE6_T4B=20270826000000
 PHASE6_T4B_NAME=20270826000000_phase6_t4b_approval_attribution
+# The 4b DECIDER migration (Phase 6 task 4b proper) carries a diagnostic-first holderless AUDIT,
+# so it gets its own stop: this very legacy register (published open client-held decisions with
+# no active client) is the state the audit exists to refuse — REHEARSED to abort, repaired by
+# the sanctioned §P6T4B path, then applied.
+PHASE6_T4B_DECIDER=20271015000000
+PHASE6_T4B_DECIDER_NAME=20271015000000_phase6_t4b_decider
 
 PSQL_ADMIN="psql -X -q -v ON_ERROR_STOP=1 -d postgres"
 PSQL="psql -X -v ON_ERROR_STOP=1 -d $DB"
@@ -96,12 +102,15 @@ baseline=0
 phase1_dirs=()
 phase3_r2_dirs=()
 phase6_t4b_dirs=()
+phase6_t4b_decider_dirs=()
 for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   name="$(basename "$d")"
   stamp="${name%%_*}"
   if [ "$stamp" -lt "$PHASE1_FIRST" ] 2>/dev/null || [ "$name" = "0_init" ]; then
     $PSQL -q -f "$d/migration.sql" >/dev/null || { echo "baseline migration failed: $name"; exit 1; }
     baseline=$((baseline + 1))
+  elif [ "$stamp" -ge "$PHASE6_T4B_DECIDER" ] 2>/dev/null; then
+    phase6_t4b_decider_dirs+=("$d")
   elif [ "$stamp" -ge "$PHASE6_T4B" ] 2>/dev/null; then
     phase6_t4b_dirs+=("$d")
   elif [ "$stamp" -ge "$PHASE3_R2" ] 2>/dev/null; then
@@ -3696,6 +3705,208 @@ assert "4b round 1 F2: the replay/redeploy cycle invented no legacy stamp" \
   "SELECT COUNT(*)::text FROM \"DecisionLegacyApproval\" WHERE \"decisionId\" IN ('UP4B-OLD','UP4B-ATTR','UP4B-UNPUB-ATTR','UP4B-UNPUB-OLD');" \
   "0"
 
+# ---- Phase 6 task 4b (decider): the holder model over a legacy register ----------------------
+# This register IS the state the diagnostic-first audit refuses: UP4A-D2/UP4A-D3 are PUBLISHED
+# OPEN decisions, backfilled `client`-held, in a project with NO active client. The migration
+# must ABORT naming §P6T4B, the operator repairs by RESTORING A COVERING MEMBERSHIP (never
+# inventing a holder), and only then do the guards install.
+echo ""
+echo "=== Phase 6 task 4b (decider): the holderless audit must ABORT over this register ==="
+if out=$($PSQL --single-transaction -q -f "$MIG_DIR/$PHASE6_T4B_DECIDER_NAME/migration.sql" 2>&1); then
+  echo "FAILED  4b-decider audit: the migration ACCEPTED a register holding client-held published open decisions with no active client"
+  FAIL=1
+elif ! printf '%s' "$out" | grep -q 'phase6-4b ABORT'; then
+  echo "FAILED  4b-decider audit: aborted, but not by the named diagnostic — got: $(printf '%s' "$out" | tail -3)"
+  FAIL=1
+else
+  echo "ok      4b-decider audit: abort names the holderless published open decisions (§P6T4B)"
+fi
+
+echo "repairing per §P6T4B: restoring a covering ACTIVE client membership on p1 (USER-2's removed row re-activated as client)"
+# USER-2's membership UP4A-M2 exists REMOVED (a 4a fixture), so the (projectId,userId) unique
+# makes a fresh insert a no-op — the sanctioned repair here is the ordinary team command's
+# effect: re-activate that member in the covering role. The guards are not yet installed, so
+# this pre-migration write is exactly what the old build's MembersService.add would commit.
+$PSQL -q -c "UPDATE \"Membership\" SET \"role\"='client', \"status\"='active' WHERE \"id\"='UP4A-M2';" >/dev/null \
+  || { echo "FAILED  4b-decider repair: covering membership activation"; FAIL=1; }
+$PSQL --single-transaction -q -f "$MIG_DIR/$PHASE6_T4B_DECIDER_NAME/migration.sql" >/dev/null \
+  || { echo "FAILED  4b-decider migration after the sanctioned repair"; FAIL=1; }
+for d in "${phase6_t4b_decider_dirs[@]}"; do
+  name="$(basename "$d")"
+  [ "$name" = "$PHASE6_T4B_DECIDER_NAME" ] && continue
+  echo "applying deferred ledger migration: $name"
+  $PSQL --single-transaction -q -f "$d/migration.sql" >/dev/null \
+    || { echo "FAILED  deferred ledger migration: $name"; exit 1; }
+done
+
+assert "4b-decider: the enum arms exist and every legacy row keeps the client backfill (no holder invented)" \
+  "SELECT (SELECT COUNT(*) FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE (t.typname='DecisionStatus' AND e.enumlabel='recorded') OR (t.typname='DeciderKind' AND e.enumlabel='none'))::text || '|' || (SELECT COUNT(*)::text FROM \"Decision\" WHERE \"deciderKind\"::text <> 'client' AND \"id\" LIKE 'DL-%');" \
+  "2|0"
+assert "4b-decider: the seal network is installed (decision lifecycle/option floor/record delete/change-request seals + BOTH membership guards + the project-org freeze)" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('Decision_t4b2_lifecycle_seal','Decision_t4b2_option_floor','DecisionOption_t4b2_option_floor','Decision_t4b2_record_no_delete','ChangeRequest_t4b2_seal','Membership_t4b2_holder_guard','OrgMembership_t4b2_holder_guard','Project_t4b2_org_frozen');" \
+  "8"
+
+# PRECISION FIRST — a coherent PUBLISHED record by an author who holds decision authority is
+# ACCEPTED (the seals are precise, not merely strict). USER-1 is p1's active PMC.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b-decider precision: a coherent published record was refused"; FAIL=1; }
+INSERT INTO "Decision"("id","projectId","title","room","status","ageDays","authorId","deciderKind","publishedAt")
+VALUES ('UP4BD-REC','p1','Site condition noted','Hall','recorded',0,'USER-1','none',now());
+SQL
+assert "4b-decider precision: the record is on the register — zero options, terminal, team-visible" \
+  "SELECT \"status\"::text || '/' || \"deciderKind\"::text || '/' || (SELECT COUNT(*)::text FROM \"DecisionOption\" WHERE \"decisionId\"='UP4BD-REC') FROM \"Decision\" WHERE \"id\"='UP4BD-REC';" \
+  "recorded/none/0"
+
+assert_rejects "4b-decider: the kind⟺status pair CHECK refuses a half-converted row (none without recorded)" \
+  "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"ageDays\",\"authorId\",\"deciderKind\") VALUES ('UP4BD-H1','p1','Half','Hall','pending',0,'USER-1','none')" \
+  "Decision_t4b2_kind_status_check"
+assert_rejects "4b-decider: a record authored by an identity with NO decision authority is unrepresentable (P18)" \
+  "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"ageDays\",\"authorId\",\"deciderKind\",\"publishedAt\") VALUES ('UP4BD-H2','p1','Forged author','Hall','recorded',0,'no-such-user','none',now())" \
+  "author"
+assert_rejects "4b-decider: a published record with a planted option cannot COMMIT (the deferred exactly-zero floor)" \
+  "BEGIN; INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"ageDays\",\"authorId\",\"deciderKind\",\"publishedAt\") VALUES ('UP4BD-H3','p1','Optioned record','Hall','recorded',0,'USER-1','none',now()); INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UP4BD-H3O','UP4BD-H3','A','a','M',0,'sw'); COMMIT" \
+  "record takes no options|published"
+assert_rejects "4b-decider: a transition OUT of a published record is refused (terminal like withdrawn)" \
+  "UPDATE \"Decision\" SET \"status\"='pending', \"deciderKind\"='client' WHERE \"id\"='UP4BD-REC'" \
+  "record|terminal|frozen"
+assert_rejects "4b-decider: a ChangeRequest cannot attach to a record (nothing about it is contestable)" \
+  "INSERT INTO \"ChangeRequest\"(\"id\",\"decisionId\",\"reason\",\"costImpact\",\"timeImpactDays\",\"status\") VALUES ('UP4BD-CR','UP4BD-REC','contest a record',0,0,'open')" \
+  "record"
+assert_rejects "4b-decider: DELETE of a published record is refused (a filed issue is permanent)" \
+  "DELETE FROM \"Decision\" WHERE \"id\"='UP4BD-REC'" \
+  "record|permanent"
+assert_rejects "4b-decider P39: soft-removing the LAST active client while a client-held published open decision exists is refused at the DATABASE" \
+  "UPDATE \"Membership\" SET \"status\"='removed' WHERE \"id\"='UP4A-M2'" \
+  "holder|client|open decision"
+assert_rejects "4b-decider P39: re-roling that last client away is refused the same way" \
+  "UPDATE \"Membership\" SET \"role\"='engineer' WHERE \"id\"='UP4A-M2'" \
+  "holder|client|open decision"
+assert_rejects "4b-decider (identity-freeze CLASS): re-homing a membership's userId is refused — a re-home is a removal plus an addition, never an UPDATE" \
+  "UPDATE \"Membership\" SET \"userId\"='USER-1' WHERE \"id\"='UP4A-M2'" \
+  "frozen|identity"
+assert_rejects "4b-decider (identity-freeze CLASS): re-homing a project's org is refused for the same reason (the link that selects WHOSE admins hold effective-PMC standing)" \
+  "UPDATE \"Project\" SET \"orgId\"=NULL WHERE \"id\"='p1'" \
+  "frozen|org"
+
+# ---- Phase 6 task 4b (decider) round-4 F2: the TRUNCATE seal over a RECORDS-ONLY register ----
+# TRUNCATE fires no row triggers, and the 20270826 statement seal predated `recorded`: a register
+# holding published records but NO approval evidence passed it, so `TRUNCATE "Decision" CASCADE`
+# could erase every permanent record. The widened `decision_t4b_no_truncate` body (20271015) is
+# proven on a SECOND scratch database — row-free and fully migrated, so no approval evidence can
+# trip the OLD arms and mask the gap: one legally-born published record, then the hostile TRUNCATE.
+echo ""
+echo "=== Phase 6 task 4b (decider) F2: TRUNCATE refused over a records-only register ==="
+DB2="${DB}_recreg"
+PSQL2="psql -X -v ON_ERROR_STOP=1 -d $DB2"
+$PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB2;" || exit 1
+$PSQL_ADMIN -c "CREATE DATABASE $DB2;" || exit 1
+for d in $(ls -d "$MIG_DIR"/*/ | sort); do
+  # --single-transaction: the ledger's LOCK TABLE statements require a transaction block (the
+  # same wrapping `prisma migrate deploy` gives every migration)
+  psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB2" -f "$d/migration.sql" >/dev/null 2>&1 \
+    || { echo "FAILED  4b-decider F2: migration $(basename "$d") did not apply to the records-only register"; FAIL=1; }
+done
+$PSQL2 -q >/dev/null <<'SQL' || { echo "FAILED  4b-decider F2: the records-only fixture was refused"; FAIL=1; }
+INSERT INTO "Org" ("id","name","slug") VALUES ('org-rr','Record Org','record-org');
+INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+VALUES ('rr-p1','org-rr','Record Site','RR','','Finishing','RR-01','01 Jan 2026','31 Dec 2026',0,0,0);
+INSERT INTO "User" ("id","projectId","role","name","email") VALUES ('rr-u1','rr-p1','pmc','Record PMC','rr@vitan.in');
+INSERT INTO "Membership" ("id","projectId","userId","role","status") VALUES ('rr-m1','rr-p1','rr-u1','pmc','active');
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtextextended('readiness:rr-p1', 0));
+INSERT INTO "Decision"("id","projectId","title","room","status","ageDays","authorId","deciderKind","publishedAt")
+VALUES ('RR-REC','rr-p1','Site condition noted','Hall','recorded',0,'rr-u1','none',now());
+COMMIT;
+SQL
+if out=$($PSQL2 -c 'TRUNCATE "Decision" CASCADE' 2>&1); then
+  echo "FAILED  4b-decider F2: TRUNCATE CASCADE erased a records-only register (no approval evidence tripped the old arms)"
+  FAIL=1
+elif ! printf '%s' "$out" | grep -q 'published records'; then
+  echo "FAILED  4b-decider F2: TRUNCATE refused, but not by the widened records arm — got: $(printf '%s' "$out" | tail -2)"
+  FAIL=1
+else
+  echo "ok      4b-decider F2: a records-only register refuses TRUNCATE by the widened statement seal"
+fi
+survived=$(psql -X -tAc "SELECT COUNT(*) FROM \"Decision\" WHERE \"id\"='RR-REC'" -d "$DB2")
+if [ "$survived" = "1" ]; then
+  echo "ok      4b-decider F2 precision: the record survived the refused TRUNCATE"
+else
+  echo "FAILED  4b-decider F2 precision: expected the record to survive, found count=$survived"
+  FAIL=1
+fi
+
+# ---- Phase 6 task 4b (decider) round-5 F5: the DecisionOption TRUNCATE seal ------------------
+# The row-level option freeze never fires for TRUNCATE, so `TRUNCATE "DecisionOption" CASCADE`
+# could erase every option while the published Decision rows stood. Same register: one legally
+# published CHOICE decision (re-ordered create under the readiness key; the deferred floor sees
+# its 2 options at commit), then the hostile TRUNCATE — refused by the NEW statement seal (the
+# 4a touch seal only guards same-transaction touches and this register has none).
+$PSQL2 -q >/dev/null <<'SQL' || { echo "FAILED  4b-decider F5: the published choice fixture was refused"; FAIL=1; }
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtextextended('readiness:rr-p1', 0));
+INSERT INTO "Decision"("id","projectId","title","room","status","ageDays","authorId","deciderKind","photoSwatch")
+VALUES ('RR-CHOICE','rr-p1','Tile choice','Hall','pending',0,'rr-u1','pmc','sw1');
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","recommended","order")
+VALUES ('RR-CO1','RR-CHOICE','A','a','Kota',0,'sw1',true,0),
+       ('RR-CO2','RR-CHOICE','B','b','Granite',100,'sw2',false,1);
+UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='RR-CHOICE';
+COMMIT;
+SQL
+if out=$($PSQL2 -c 'TRUNCATE "DecisionOption" CASCADE' 2>&1); then
+  echo "FAILED  4b-decider F5: TRUNCATE CASCADE erased the published question's options"
+  FAIL=1
+elif ! printf '%s' "$out" | grep -q 'published options'; then
+  echo "FAILED  4b-decider F5: TRUNCATE refused, but not by the option statement seal — got: $(printf '%s' "$out" | tail -2)"
+  FAIL=1
+else
+  echo "ok      4b-decider F5: a published question's options refuse TRUNCATE by the statement seal"
+fi
+optcount=$(psql -X -tAc "SELECT COUNT(*) FROM \"DecisionOption\" WHERE \"decisionId\"='RR-CHOICE'" -d "$DB2")
+if [ "$optcount" = "2" ]; then
+  echo "ok      4b-decider F5 precision: both options survived the refused TRUNCATE"
+else
+  echo "FAILED  4b-decider F5 precision: expected 2 surviving options, found $optcount"
+  FAIL=1
+fi
+
+# ---- Phase 6 task 4b (decider) round-6 F3: the OrgMembership TRUNCATE seal -------------------
+# The row-level holder guard never fires for TRUNCATE, and OrgMembership has no inbound
+# decision FK to cascade through an existing seal: truncating it could strip a membership-less
+# org owner who is the ONLY effective PMC cover for a pmc-held published open decision. Same
+# register: a second project whose pmc standing rests SOLELY on the org owner's arm (no
+# explicit pmc membership), one legally published pmc-held decision, then the hostile TRUNCATE.
+$PSQL2 -q >/dev/null <<'SQL' || { echo "FAILED  4b-decider F3(r6): the org-only-covered fixture was refused"; FAIL=1; }
+INSERT INTO "User"("id","projectId","role","name","email") VALUES ('rr-u2','rr-p1','pmc','Org Owner','rr2@vitan.in');
+INSERT INTO "OrgMembership"("id","orgId","userId","role") VALUES ('rr-om1','org-rr','rr-u2','owner');
+INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+VALUES ('rr-p2','org-rr','Org-covered Site','RO','','Finishing','RO-01','01 Jan 2026','31 Dec 2026',0,0,0);
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtextextended('readiness:rr-p2', 0));
+INSERT INTO "Decision"("id","projectId","title","room","status","ageDays","authorId","deciderKind","photoSwatch")
+VALUES ('RR-ORG','rr-p2','Facade fixing','Hall','pending',0,'rr-u2','pmc','sw1');
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","recommended","order")
+VALUES ('RR-OO1','RR-ORG','A','a','Kota',0,'sw1',true,0),
+       ('RR-OO2','RR-ORG','B','b','Granite',100,'sw2',false,1);
+UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='RR-ORG';
+COMMIT;
+SQL
+if out=$($PSQL2 -c 'TRUNCATE "OrgMembership"' 2>&1); then
+  echo "FAILED  4b-decider F3(r6): TRUNCATE stripped the only effective PMC cover of an open pmc-held decision"
+  FAIL=1
+elif ! printf '%s' "$out" | grep -q 'last effective PMC'; then
+  echo "FAILED  4b-decider F3(r6): TRUNCATE refused, but not by the org-membership statement seal — got: $(printf '%s' "$out" | tail -2)"
+  FAIL=1
+else
+  echo "ok      4b-decider F3(r6): an org-only-covered open pmc decision refuses OrgMembership TRUNCATE"
+fi
+omcount=$(psql -X -tAc "SELECT COUNT(*) FROM \"OrgMembership\"" -d "$DB2")
+if [ "$omcount" = "1" ]; then
+  echo "ok      4b-decider F3(r6) precision: the covering owner row survived the refused TRUNCATE"
+else
+  echo "FAILED  4b-decider F3(r6) precision: expected 1 surviving org membership, found $omcount"
+  FAIL=1
+fi
+$PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB2;" >/dev/null 2>&1 || true
+
 # ---- Schedule B1 — the acyclic activity dependency graph -------------------------------------
 echo ""
 echo "=== schedule B1: the activity dependency graph over a legacy database ==="
@@ -3941,27 +4152,40 @@ assert "A1-i: both task-4a option seals are untouched and armed" \
   "SELECT (COUNT(*) FILTER (WHERE tgenabled = 'O'))::text FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='\"DecisionOption\"'::regclass AND tgname IN ('DecisionOption_t4a_frozen','DecisionOption_t4a_touch');" \
   "2"
 
+# Phase 6 task 4b moved the goalposts these probes stand on, DELIBERATELY: option writes to a
+# PUBLISHED parent are now frozen (the §A.2 published-parent option freeze), so every option
+# subject below lives on the UNPUBLISHED `UPA1-DRAFT` — the one shape an option write is still
+# legal against, which is also the only shape the drain-first deploy (§P6-4a/§P6T4B) lets an
+# old release write after the 4b migration runs (the re-ordered create births unpublished).
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i: the unapproved fixture was refused"; FAIL=1; }
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch")
+VALUES ('UPA1-DRAFT','p1','Formwork approach','Hall','pending','grey');
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UPA1-DRAFTOK','UPA1-DRAFT','Panel system','a','Aluminium panel',0,'grey'),
+       ('UPA1-DRAFTMOVE','UPA1-DRAFT','Timber shutter','b','Birch ply',1750,'tan');
+SQL
+
 # ROLLOUT. The release still serving writes only the legacy columns and never mentions `kindCode`.
 # Its inserts must keep meaning the same thing on both sides of the deployment — this is the exact
-# path that release takes.
+# path that release takes (against the unpublished shape 4b leaves it).
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i rollout: a legacy-shaped option insert was refused"; FAIL=1; }
 INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
-VALUES ('UPA1-OLDREL','DL-3','Written by the old release','zz','Birch ply',1750,'tan');
+VALUES ('UPA1-OLDREL','UPA1-DRAFT','Written by the old release','zz','Birch ply',1750,'tan');
 SQL
 assert "A1-i rollout: an insert from the RUNNING RELEASE is classified and keeps its cost verbatim" \
   "SELECT \"kindCode\" || '|' || \"delta\"::text FROM \"DecisionOption\" WHERE \"id\"='UPA1-OLDREL';" \
   "material|1750"
 
 assert_rejects "A1-i: an option classified by a kind that does not exist" \
-  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X3','DL-3','O','x3','Teak',0,'brown','no-such-kind')" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X3','UPA1-DRAFT','O','x3','Teak',0,'brown','no-such-kind')" \
   "kindCode_fkey"
 assert_rejects "A1-i: an option that names neither a material nor a description, and so says nothing" \
-  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UPA1-X4','DL-3','O','x4','   ',0,'brown')" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UPA1-X4','UPA1-DRAFT','O','x4','   ',0,'brown')" \
   "says_what_it_is_check"
 # A description that is PRESENT must say something, independently of the material — otherwise a
 # nullable column ends up with two ways to mean absent, and readers only ever test for one of them.
 assert_rejects "A1-i: a whitespace-only description riding along on an option whose material is fine" \
-  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"description\") VALUES ('UPA1-X7','DL-3','O','x7','Teak',0,'brown','   ')" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"description\") VALUES ('UPA1-X7','UPA1-DRAFT','O','x7','Teak',0,'brown','   ')" \
   "says_what_it_is_check"
 assert_rejects "A1-i: a menu row that does not say which label to look up" \
   "INSERT INTO \"DecisionOptionKind\"(\"code\",\"baseKind\",\"labelKey\") VALUES ('up-blank','other','  ')" \
@@ -3976,7 +4200,7 @@ $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i precision: a described, non-
 INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey","displayOrder")
 VALUES ('up-sequencing','solution','option.kind.upSequencing',50);
 INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","description","kindCode")
-VALUES ('UPA1-DESC','DL-3','Pour in place',    'seq1',' ',0,'grey','A poured-in-place alternative to the panel system','up-sequencing');
+VALUES ('UPA1-DESC','UPA1-DRAFT','Pour in place',    'seq1',' ',0,'grey','A poured-in-place alternative to the panel system','up-sequencing');
 SQL
 assert "A1-i precision: that option is stored as what it says it is" \
   "SELECT \"kindCode\" || '|' || (SELECT \"baseKind\"::text FROM \"DecisionOptionKind\" WHERE \"code\"='up-sequencing') FROM \"DecisionOption\" WHERE \"id\"='UPA1-DESC';" \
@@ -3992,23 +4216,17 @@ assert_rejects "A1-i: re-keying a kind that options are already classified by" \
   "UPDATE \"DecisionOptionKind\" SET \"code\"='up-seq' WHERE \"code\"='up-sequencing'" \
   "kindCode_fkey"
 
-# An option's kind is part of what an approval APPROVED. `UPA1-OLDREL` hangs off DL-3, which the
-# legacy fixture publishes as approved, so re-classifying it must be refused — and the kind used
-# here is still ACTIVE precisely so the freeze is the only rule that can answer.
+# An option's kind is part of what an approval APPROVED. Phase 6 task 4b froze EVERY option of
+# a PUBLISHED parent, so DL-3 would now answer with the broader publication freeze; the subject
+# that isolates the APPROVAL-evidence rule is an option of the APPROVED, UNPUBLISHED
+# `UP4B-UNPUB-ATTR` — the kind used is still ACTIVE precisely so this freeze is the only rule
+# that can answer.
+$PSQL -q -c "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UPA1-APPR-OPT','UP4B-UNPUB-ATTR','Approved option','ap1','Teak',0,'brown');" >/dev/null \
+  || { echo "FAILED  A1-i: the approved-unpublished option fixture was refused"; FAIL=1; }
 assert_rejects "A1-i: RE-CLASSIFYING an option on a decision that carries approval evidence, whose kind is part of that evidence" \
-  "UPDATE \"DecisionOption\" SET \"kindCode\"='up-sequencing' WHERE \"id\"='UPA1-OLDREL'" \
+  "UPDATE \"DecisionOption\" SET \"kindCode\"='up-sequencing' WHERE \"id\"='UPA1-APPR-OPT'" \
   "cannot be edited"
 
-# Subjects for the retirement rules, on a decision NOBODY has approved. The freeze above is a
-# BEFORE UPDATE row trigger, so on an approved decision it answers ahead of every deferred rule —
-# an assertion about retirement written against DL-3 would silently be testing the freeze instead.
-$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i: the unapproved fixture was refused"; FAIL=1; }
-INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch")
-VALUES ('UPA1-DRAFT','p1','Formwork approach','Hall','pending','grey');
-INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
-VALUES ('UPA1-DRAFTOK','UPA1-DRAFT','Panel system','a','Aluminium panel',0,'grey'),
-       ('UPA1-DRAFTMOVE','UPA1-DRAFT','Timber shutter','b','Birch ply',1750,'tan');
-SQL
 # PRECISION — the freeze is about APPROVAL, not about classification being immutable. An option
 # on an unapproved decision may still be re-classified onto a kind the menu offers.
 $PSQL -q -c "UPDATE \"DecisionOption\" SET \"kindCode\"='up-sequencing' WHERE \"id\"='UPA1-DRAFTOK';" >/dev/null \
@@ -4023,7 +4241,7 @@ $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i: a kind could not be retired
 UPDATE "DecisionOptionKind" SET "active" = false WHERE "code" = 'up-sequencing';
 SQL
 assert_rejects "A1-i: classifying a NEW option with a kind the menu has retired" \
-  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X8','DL-3','O','x8','Teak',0,'brown','up-sequencing')" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X8','UPA1-DRAFT','O','x8','Teak',0,'brown','up-sequencing')" \
   "has been retired"
 assert_rejects "A1-i: MOVING an existing option onto a retired kind, which is the same act by another route" \
   "UPDATE \"DecisionOption\" SET \"kindCode\"='up-sequencing' WHERE \"id\"='UPA1-DRAFTMOVE'" \
@@ -4046,7 +4264,7 @@ INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey","active")
 VALUES ('up-born-closed','other','option.kind.upBornClosed',false);
 SQL
 assert_rejects "A1-i: classifying an option with a kind that was created already CLOSED" \
-  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X9','DL-3','O','x9','Teak',0,'brown','up-born-closed')" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X9','UPA1-DRAFT','O','x9','Teak',0,'brown','up-born-closed')" \
   "has been retired"
 # PRECISION — retiring is not deleting: the option classified before retirement keeps its kind.
 assert "A1-i precision: an option classified before retirement still carries that classification" \
@@ -4073,7 +4291,7 @@ SQL
 if out=$($PSQL -q -v ON_ERROR_STOP=1 2>&1 <<'SQL'
 BEGIN;
 INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","kindCode")
-VALUES ('UPA1-SAMETX','DL-3','O','stx','Teak',0,'brown','up-samefx');
+VALUES ('UPA1-SAMETX','UPA1-DRAFT','O','stx','Teak',0,'brown','up-samefx');
 SET CONSTRAINTS "DecisionOption_kind_selectable_ins" IMMEDIATE;
 UPDATE "DecisionOptionKind" SET "active" = false WHERE "code" = 'up-samefx';
 COMMIT;
