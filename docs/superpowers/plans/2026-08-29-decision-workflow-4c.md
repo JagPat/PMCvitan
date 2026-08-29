@@ -622,7 +622,7 @@ packet so the review can see it introduces no behavior the red probes then
 
 | probe | proves | red site / staging |
 |---|---|---|
-| P23 | consultation round-trip THROUGH THE SHIPPED PRODUCT PATH (in BOTH gate states, and — per the round-11 retirement — a project CREATED AFTER the enable step reaching the routes with no further operator action, so the gate is a rollout latch and not a permanent pilot): request → respond over the guarded HTTP routes with the shared `ROLE_POLICY` actions, the respond ceiling admitting every consultee-eligible role in the EXISTING vocabulary (a NON-pmc consultee — contractor/engineer/consultant/client — completes the round-trip in the RENDERED flow, not only the HTTP response; the service narrows to the named consultee; 4c adds NO role), append-only (UPDATE/DELETE sealed at the row AND `TRUNCATE` sealed at the statement — both tables carry named no-truncate seals, each hostile-probed, since row triggers never fire for TRUNCATE), non-blank evidence refused at zod AND the CHECK AND a NULL direct insert refused (`NOT NULL` on both evidence columns — a CHECK over NULL passes as UNKNOWN); ONE response per consultation — a second respond is a deterministic 409 under a different idempotency key, and the direct duplicate insert is refused by the UNIQUE | the two new tables' migration + contracts + the response UNIQUE + `ROLE_POLICY`/route registration (`RolesGuard` today rejects roles absent from a route's ceiling before any service check) |
+| P23 | consultation round-trip THROUGH THE SHIPPED PRODUCT PATH, asserted GATE-ON (review round 14: an earlier row said "in BOTH gate states", which no implementation can satisfy — the rollout specification requires the gate-OFF write surface to REFUSE and emit nothing, so a gate-off round-trip either fails or is only reachable by enabling the gate, which would invalidate the mixed-version safety proof. The gate-OFF arm therefore asserts REFUSAL with no row, no event and no push; the round-trip below is gate-ON), plus — per the 4c-iii retirement — a project CREATED AFTER that deployment reaching the routes with no further operator action, so the gate is a rollout latch and not a permanent pilot: request → respond over the guarded HTTP routes with the shared `ROLE_POLICY` actions, the respond ceiling admitting every consultee-eligible role in the EXISTING vocabulary (a NON-pmc consultee — contractor/engineer/consultant/client — completes the round-trip in the RENDERED flow, not only the HTTP response; the service narrows to the named consultee; 4c adds NO role), append-only (UPDATE/DELETE sealed at the row AND `TRUNCATE` sealed at the statement — both tables carry named no-truncate seals, each hostile-probed, since row triggers never fire for TRUNCATE), non-blank evidence refused at zod AND the CHECK AND a NULL direct insert refused (`NOT NULL` on both evidence columns — a CHECK over NULL passes as UNKNOWN); ONE response per consultation — a second respond is a deterministic 409 under a different idempotency key, and the direct duplicate insert is refused by the UNIQUE | the two new tables' migration + contracts + the response UNIQUE + `ROLE_POLICY`/route registration (`RolesGuard` today rejects roles absent from a route's ceiling before any service check) |
 | P24 | consultation moves NO status and NO gate verdict — the EXPLICIT `(status, gate verdicts)` projection byte-equal before/after, with a SEPARATE assertion that the consultation DTO/audience DID change (full-snapshot equality is unsatisfiable and would force the probe to omit the served consultation data) | `DecisionsService` status CAS surface; the gate reader |
 | P25 | visibility widening bounded by eligibility: published-only + open-status at request AND response; the withdrawn-leak refusal (no title/reason reachable); request → withdraw → late-response refused 409; the DB INSERT seal refusing a direct consultation row against a withdrawn AND a draft decision (visibility never widened by a forged row) AND a row whose `requestedById` lacks requesting authority (an inactive or unauthorized requester never fabricates a standing request) AND a row naming a REMOVED consultee membership (the request seal's `phase6_membership_is_active` arm probed directly — a raw writer must not mint a request a later membership reactivation would make visible and answerable) AND the WRONG-AUDIENCE row whose canonical `consulteeUserId` is NOT the user `phase6_membership_active_user(projectId, consulteeMembershipId)` resolves (review round 10: that column is the projection's rebuildable audience, so an unchecked one would mint a projected slice and a widened view for a stranger — a reachable forgery, unlike the re-key the delivered identity freeze makes unrepresentable) AND the PROVENANCE arms — a `sourceCommandId` that is absent, names another project's command, is fabricated, is an ALREADY-SPENT receipt, is a `succeeded` or wrong-TYPE receipt rather than the `reserved` command currently executing, or whose command commits with a `resultRef` naming something else (review round 11 identified the eventless alternate write the `decisions.inbox` consumer would never see; review round 12 bound the receipt to the command's RESULT so a COPIED valid id no longer satisfies it) — AND the INITIAL-CYCLE arms, a request row whose `openCycle` is the decision's current approval count minus one or plus one, both refused under the locked decision row (review round 12: an unsealed initial value lets a legitimate command bug mint a consultation that becomes answerable in the WRONG cycle after one approve-and-reopen) AND the DIRECT-request-insert-vs-archive BARRIER, asserted as the TWO reachable outcomes rather than a uniform refusal (review round 9: the seal locks `Project` before reading operability, so insert-first WINS the lock, reads the project operable and commits — the archive then waits and commits after, leaving valid historical evidence; only archive-first makes the insert wait and then reject. The same two-outcome shape P41 already states for the command path); and the IDENTITY-FREEZE premise probe — a hostile `UPDATE "Membership" SET "userId" = …` is REJECTED by the delivered `Membership_t4b_identity_frozen`, which is why `consulteeMembershipId` is a lifetime identity, why the canonical `consulteeUserId` beside it can never DRIFT (its seal arm guards forgery, not drift), and why no re-key probe appears anywhere in this plan | `decisionVisibleToViewer`; the request/response guards + the consultation INSERT seal |
 | P25c | the PROJECTED path THROUGH BOTH EVENTS: after the request, the consultee's `decisions.inbox` slice admits exactly the consulted decision and a same-role non-consultee's does not; after the RESPONSE, the projected slice carries the ANSWERED thread (a fold that consumes `consultation_requested` but drops `consultation_responded` fails here); and a rebuild preserves BOTH states (live == projection == rebuild after the request AND after the response). The audience is the DECISIONS-OWNED CANONICAL `DecisionConsultation.consulteeUserId` reached through the widened `DECISION_INCLUDE` — never a payload-only field and never re-resolved from `Membership` at fold time, which would be a cross-module read from a projection (review round 10): `rebuildSeed` seeds from `tx.decision.findMany({ include: DECISION_INCLUDE })` and replays no historical payloads, so ONLY a canonical column lets the three converge. Two arms hold it: the DELIVERED-FOLD arm — the probe PROCESSES the ordered delivery and then requires `moduleDecisions` to answer `source: 'projection'` with the consultee's slice, NOT merely to return it immediately (review round 13: until the relay applies the delivery, `readServableGeneration` rejects the lagging generation and `moduleDecisions` falls back to `source: 'live'`, so an immediate read passes even with a broken fold; the live fallback already guarantees immediacy) — and the provenance arm, since the eventless alternate write that would leave a stale generation looking caught up is refused by the `sourceCommandId` FK (review round 11, replacing an arm that asserted an accepted eventless insert) | the `decisions.inbox` projection row schema/fold/filter and `DECISION_INCLUDE` (decider-only today) |
@@ -774,10 +774,20 @@ external-effect catalogs.
     still ran, exactly what the gate exists to prevent. 4c-i therefore (a)
     ABORTS, diagnostic-first, if ANY `capability = 'consultation'` row exists,
     since the unit is dark and nothing legitimate can have created one, and (b)
-    adds a CHECK restricting `capability` to the KNOWN set (`materials`,
-    `labour`, `consultation`) — itself diagnostic-first, aborting on an
-    unrecognized existing value rather than failing opaquely — so no stray
-    string can ever mint a gate again. After that the row appears only through
+    adds a CHECK restricting `capability` to the KNOWN set — **every value
+    already SHIPPED, plus the new one** (review round 14): `materials`,
+    `labour`, `commercial`, `consultation`. `CapabilitiesService` declares all
+    three existing ones (`MATERIALS_CAPABILITY`, `LABOUR_CAPABILITY`,
+    `COMMERCIAL_CAPABILITY` — the Phase-5 §L commercial pilot), and an earlier
+    draft's set omitted `commercial`, which would have ABORTED 4c-i on any
+    commercial pilot project or made every later
+    `capability:enable --capability commercial` fail. The general rule, stated
+    so the next unit adding a value does not repeat it: a whitelist introduced
+    over an EXISTING free-text column enumerates what production already
+    contains, and the migration's diagnostic aborts on an unrecognized value
+    rather than silently narrowing the vocabulary. The CHECK is itself
+    diagnostic-first — aborting on an unrecognized existing value rather than
+    failing opaquely — so no stray string can ever mint a gate again. After that the row appears only through
     the deliberate operator step. The residual is stated rather than hidden: an
     operator running the enable step early, after 4c-i but before the fleet has
     drained, is performing the action the RUNBOOK order forbids — now a
@@ -903,11 +913,24 @@ external-effect catalogs.
     scheduled to close the window). It lands AFTER the operator backfill and
     after the fleet is confirmed drained, and it carries exactly: enablement at
     `projects.create`, the backfill of any project created since step 2, and
-    the REMOVAL of the gate reads from the write surface, the emitter, and the
-    client-contract refusal — each additive and separately revertible. Its
-    probes: a project created after this deployment reaches the consultation
-    routes with no operator action; an existing project is unaffected; and no
-    capability row is required anywhere once the reads are gone. **4c is not
+    the REMOVAL of the capability-gate reads from the write surface and the
+    emitter — each additive and separately revertible. **It does NOT remove the
+    CLIENT-CONTRACT refusal** (review round 14): the two mechanisms answer to
+    different clocks, and an earlier draft retired them together. The
+    capability gate is a ROLLOUT latch, discharged once the SERVER fleet has
+    drained — which 4c-iii is the deployment that confirms. Contract
+    negotiation answers to CLIENT versions, and browser tabs cannot be drained
+    at all (`RecordedCompatInterceptor` says so in as many words): dropping the
+    refusal at 4c-iii would let a stale tab advertising only the old contract
+    originate a consultation again, for a consultee whose own stale tab hides
+    the decision and the respond affordance — reopening precisely the hole
+    round 13 closed. The refusal therefore lives on the same clock as
+    `recorded-v1` itself, retired only when the old browser contract is no
+    longer supported, which is its own unit and not 4c's. Its probes: a project
+    created after this deployment reaches the consultation routes with no
+    operator action; an existing project is unaffected; no capability row is
+    required anywhere once the gate reads are gone; AND an old-contract client
+    is STILL refused after retirement. **4c is not
     complete until 4c-iii merges**, and the §E handoff to 4d is gated on it —
     the runner may not treat 4c-ii's merge as the end of the unit.
 - 4d (architect, forwarding, countersign) is NOT this unit: its plan unit
