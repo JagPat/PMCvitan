@@ -1212,7 +1212,21 @@ external-effect catalogs.
     deferred until the pre-4c bundle leaves support — that would be a
     scheduling and scope change rather than a fix to this unit — and the sender
     is not gated on the recipient's client version, which would make anyone who
-    has not opened the app since the upgrade permanently un-consultable. **And the gate RETIRES — it is a rollout
+    has not opened the app since the upgrade permanently un-consultable. **Pin 4
+    also covers the CAPABILITY-GATED stale reader, by an explicit Board call**
+    (2026-08-29, on PR #480, ruling on the P2 this plan raised at review round
+    27 rather than folding): once 4c-ii gives the UI affordances their own
+    capability read, a still-open 4c-ii tab becomes a capability reader too,
+    and browser tabs cannot be drained — so after 4c-v retires the preservation
+    seal, an alternate writer could remove the row and leave that tab rendering
+    FEWER affordances than the servers accept. The Board's ruling is that this
+    is pin 4 reached by another route, not a new defect: post-4c-iv no server
+    reads the gate, so no two servers disagree; a consultation INFORMS and
+    never GATES, so nothing is blocked, stranded or lost; and the state
+    resolves on any reload. **The seal is therefore NOT made permanent, no
+    unobservable drain condition is invented for 4c-v, and no further arm is
+    added.** The residual stands disclosed, exactly as the stale-tab bound
+    does. **And the gate RETIRES — it is a rollout
     latch, not a permanent pilot** (review round 11): `materials` and `labour`
     are genuine per-project product pilots, but consultation is a CORE
     decision workflow, so leaving it opt-in would strand every project created
