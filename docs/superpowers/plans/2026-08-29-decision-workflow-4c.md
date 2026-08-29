@@ -881,7 +881,22 @@ external-effect catalogs.
     new tables.
   - **4c-ii, the behaviour unit**: contracts, commands, `ROLE_POLICY`/routes,
     the visibility widening, the P25c projection thread, the push families,
-    and the UI affordances — with the remaining probes, red-anchored per §C
+    and the UI affordances — **which consult the capability exactly as the
+    write surface and the emitter do** (review round 26). The gate was
+    specified on the commands and the emitter only, which left the upgraded
+    bundle free to RENDER request/respond controls during the whole window in
+    which every project is still gate-off — between 4c-ii and 4c-iii, and for
+    as long as the drain directive is outstanding. Controls whose every request
+    returns a deterministic 404 are not a byte-identical gate-off state; they
+    are a visibly broken one, and the §D inertness claim would have been false
+    for the client even while true for the server. So the client reads the same
+    per-project capability the server does (the delivered `capabilities:
+    string[]` shell contract that gates the `materials` and `labour` screens),
+    and that client read is REMOVED IN 4c-iv together with the server-side
+    ones — the gate retires in one place, not two. The gate-OFF arm of P23
+    accordingly asserts the RENDERED state as well as the refused request: no
+    request affordance on the decision, and no respond affordance in the
+    consultee's view — with the remaining probes, red-anchored per §C
     against ITS base (which already carries 4c-i). **Its two new event
     families are ROLLOUT-SEQUENCED against previous-release workers**
     (review round 5, the delivered unit-6 rollout precedent — the outbox
@@ -1236,17 +1251,32 @@ external-effect catalogs.
     4c-iv instance, which no longer reads the gate, accepts a consultation
     write for that project while a still-serving 4c-ii/4c-iii instance refuses
     the same project because its gate read finds no row. So 4c-iii installs, in
-    the same transaction that removes the reservation, a trigger rejecting a
-    DELETE of a `consultation` row and an UPDATE that moves an existing row's
-    key OFF `consultation` — the mirror of the reservation's own two arms, and
-    it is not a vocabulary whitelist (the Board pin stands: no CHECK on
-    `capability`, and every other capability value is untouched by both
-    triggers). **The seal outlives 4c-iv and retires in 4c-v** (review round 25):
+    the same transaction that removes the reservation, a seal rejecting EVERY way
+    PostgreSQL offers to remove that row: a row-level `DELETE`, a row-level
+    `UPDATE` moving an existing row's key OFF `consultation`, and a
+    STATEMENT-level `BEFORE TRUNCATE` on `ProjectCapability`. It is not a
+    vocabulary whitelist (the Board pin stands: no CHECK on `capability`, and
+    every other capability value is untouched).
+
+    **The third arm is stated by ENUMERATION over the mechanism, not because
+    review found it** (review round 26, which found it — and that is the point).
+    Row triggers do not fire for `TRUNCATE`; this plan already relies on that
+    fact TWICE, giving both consultation evidence tables named statement-level
+    no-truncate seals for exactly this reason, so specifying a row-only seal
+    here was my own inconsistency rather than a subtlety. The completeness rule
+    is therefore written down once: a seal that must keep a row PRESENT is
+    complete only when it covers row `DELETE`, row `UPDATE` of the sealed key,
+    and statement `TRUNCATE` — and any future seal in this plan asserting
+    presence is read against that list rather than against what a reviewer
+    happened to try. **The seal outlives 4c-iv and retires in 4c-v** (review round 25):
     while ANY reader can still consult the row, the row must exist, and 4c-iv
     is itself a rolling deployment, so its own instances are the last readers.
-    The probe is the alternate-writer path in both arms — a direct `DELETE` and a direct key `UPDATE` off `consultation` are
-    each REFUSED between 4c-iii and 4c-iv, and both are permitted once 4c-iv
-    has removed the seal with the last reader. Backfilling first
+    The probe is the alternate-writer path in ALL THREE arms — a direct
+    `DELETE`, a direct key `UPDATE` off `consultation`, and a `TRUNCATE
+    "ProjectCapability"` are each REFUSED between 4c-iii and 4c-v, and all
+    three are permitted once 4c-v has retired the seal.
+
+    Backfilling first
     leaves a hole: a concurrent `Project` INSERT can commit after the backfill's
     statement snapshot but before `CREATE TRIGGER` takes its table lock, so that
     project appears in neither — absent from the backfill, never seen by the
@@ -1282,12 +1312,23 @@ external-effect catalogs.
     preservation trigger, landing after the 4c-iv rollout is confirmed complete
     — attested exactly as 4c-ii's cutover is, through the delivered
     `blocking_directive` (no new mechanism, and no automated drain actor: the
-    Board pin holds). **It does NOT gate the handoff to 4d.** Everything the
-    consultation workflow needs is delivered at 4c-iv, and the cost of 4c-v
-    landing late — or never — is a trigger that forbids deleting one capability
-    value that nothing reads any more. That is inert rather than dangerous,
-    which is the honest reason it can trail; making 4d wait on an operational
-    attestation for pure hygiene would be a worse trade. The probe is the
+    Board pin holds). **It DOES gate the handoff to 4d** (review round 26,
+    correcting round 25, which asserted the opposite). That correction is not a
+    change of preference — round 25's preference was not EXPRESSIBLE in the
+    delivered control plane, and I should have checked before claiming it.
+    `assessRunnerState` resolves any non-`none` `blocking_directive` from
+    `in_progress`/`correction_required` as `directive:<name>` ahead of every
+    other work source ("a validated defect outranks every other work source"),
+    and it explicitly REFUSES a directive set from any other state as one that
+    "blocks progression without scheduling any work". So the two options the
+    mechanism actually offers are: set the directive, and 4d waits; or do not
+    set it, and nothing ever schedules 4c-v. There is no third state, and
+    inventing a parallel non-blocking work source to obtain one would be a new
+    control-plane mechanism for a hygiene task — a worse trade than the wait.
+    **4c-v is therefore the last gate of 4c**, and the §E handoff to 4d follows
+    its merge. The cost is stated plainly: 4d waits on one operator attestation
+    that the 4c-iv rollout completed, which is the same attestation shape 4c-ii
+    already requires. The probe is the
     mirror of 4c-iii's: the alternate-writer DELETE and key-UPDATE, refused
     before 4c-v and permitted after. It is safe precisely
     because 4c-iii already guarantees the row exists for every project, past
@@ -1319,11 +1360,11 @@ external-effect catalogs.
     operator action; an existing project is unaffected; no capability row is
     required anywhere once the gate reads are gone; AND an old-contract client
     is STILL refused after retirement. **4c is not
-    complete until 4c-iv merges**, and the §E handoff to 4d is gated on it —
-    the runner may not treat 4c-ii's or 4c-iii's merge as the end of the unit.
-    (4c-v, the trailing seal retirement, is the deliberate exception stated in
-    its own staging entry: it is inert hygiene, so it does not extend this
-    boundary — the six PRs of §D are not six gates.) **The
+    complete until 4c-v merges** (review round 26, extending this boundary from
+    4c-iv: the trailing seal retirement gates 4d because the delivered control
+    plane offers no non-blocking way to schedule it — see 4c-v's own entry),
+    and the §E handoff to 4d is gated on it — the runner may not treat 4c-ii's,
+    4c-iii's or 4c-iv's merge as the end of the unit. **The
     prerequisite is FAIL-CLOSED through the delivered control plane, not an
     awaited human** (review round 15): 4c-ii's own STATUS fold SETS
     `blocking_directive` naming the rollout prerequisite — **the DRAIN
@@ -1353,10 +1394,9 @@ external-effect catalogs.
     and round 16's call to automate it asks for the very signal round 9
     correctly rejected as unimplementable.
 - 4d (architect, forwarding, countersign) is NOT this unit: its plan unit
-  follows 4c implementation — 4c-0 through 4c-iv — per the merged §E order,
-  carrying §D obligations 4–6. The trailing 4c-v seal retirement is the one
-  piece that does NOT gate that handoff, for the reason given in its own
-  staging entry (review round 25).
+  follows 4c implementation — ALL SIX PRs, 4c-0 through 4c-v — per the merged
+  §E order, carrying §D obligations 4–6 (review round 26: 4c-v gates this
+  handoff, for the control-plane reason given in its own staging entry).
 
 ## What carries forward
 
