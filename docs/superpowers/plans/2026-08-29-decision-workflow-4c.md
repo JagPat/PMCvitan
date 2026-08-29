@@ -807,9 +807,10 @@ external-effect catalogs.
   the plan-review round cap this unit's heads owe
   `Review-Deferred-To-Probes: phase-6-task-4c` — the probes above are exactly
   the executable deferral targets that trailer names.
-- **4c implementation follows as FIVE PRs — the prerequisite reset sweep 4c-0,
-  then 4c-i, 4c-ii, the enablement transition 4c-iii and the gate-read removal
-  4c-iv — each honouring the mandatory migration seam** (review round 1: the additive schema is deployable before
+- **4c implementation follows as SIX PRs — the prerequisite reset sweep 4c-0,
+  then 4c-i, 4c-ii, the enablement transition 4c-iii, the gate-read removal
+  4c-iv, and the trailing seal retirement 4c-v (review round 25) — each
+  honouring the mandatory migration seam** (review round 1: the additive schema is deployable before
   any caller uses it — that viable seam makes a single migration+service+UI
   PR a violation of the repository's migration review-unit rule, and this
   plan takes the seam rather than claiming an inseparable unit):
@@ -973,8 +974,8 @@ external-effect catalogs.
     ATOMICALLY with the controlled enablement (review round 20, correcting
     round 19's own placement), where it is REPLACED rather than simply removed
     (review round 24 — see 4c-iii below: the reservation that forbids the row
-    becomes a PRESERVATION seal that forbids removing it, and only 4c-iv,
-    which takes the last gate reader out, drops that). Dropping it during 4c-ii would reopen the hole
+    becomes a PRESERVATION seal that forbids removing it, and that seal
+    outlives 4c-iv's rollout, retiring only in the trailing 4c-v). Dropping it during 4c-ii would reopen the hole
     mid-transition: 4c-ii DRAINS the old fleet first (§A's cutover sequence — the
     external-effect reseal requires zero old instances), but the drain is an
     OPERATIONAL step, and the standalone previous-release `capability:enable`
@@ -1240,10 +1241,10 @@ external-effect catalogs.
     key OFF `consultation` — the mirror of the reservation's own two arms, and
     it is not a vocabulary whitelist (the Board pin stands: no CHECK on
     `capability`, and every other capability value is untouched by both
-    triggers). **4c-iv drops the preservation seal** together with the gate
-    reads it protects, and not before: while ANY reader can still consult the
-    row, the row must exist. The probe is the alternate-writer path in both
-    arms — a direct `DELETE` and a direct key `UPDATE` off `consultation` are
+    triggers). **The seal outlives 4c-iv and retires in 4c-v** (review round 25):
+    while ANY reader can still consult the row, the row must exist, and 4c-iv
+    is itself a rolling deployment, so its own instances are the last readers.
+    The probe is the alternate-writer path in both arms — a direct `DELETE` and a direct key `UPDATE` off `consultation` are
     each REFUSED between 4c-iii and 4c-iv, and both are permitted once 4c-iv
     has removed the seal with the last reader. Backfilling first
     leaves a hole: a concurrent `Project` INSERT can commit after the backfill's
@@ -1264,13 +1265,31 @@ external-effect catalogs.
     change, which is why this unit is separately revertible.
 
     **4c-iv — the gate-read REMOVAL**, and nothing else: the capability-gate
-    reads come out of the write surface and the emitter, and — in the same unit,
-    because it is the same fact — the 4c-iii PRESERVATION seal comes out with
-    them (review round 24). The seal exists only to keep the row present for
-    readers that consult it; removing the last reader is precisely what makes
-    the row's continued existence no longer load-bearing, and leaving a
-    permanent trigger over one capability value after nothing reads it would be
-    a seal protecting nothing. It is safe precisely
+    reads come out of the write surface and the emitter. **It carries NO
+    migration at all** (review round 25, correcting round 24, which put the
+    preservation seal's drop in this unit). That was wrong for the reason the
+    seal exists: 4c-iv is itself a ROLLING deployment, so while it rolls, its
+    own predecessor instances are still gate readers. A migration that dropped
+    the seal at the start of that rollout would reopen precisely the window the
+    seal closes — an alternate writer deletes or re-keys a `consultation` row,
+    the already-upgraded instances accept consultation writes for that project,
+    and the not-yet-upgraded ones refuse them. "Removing the last reader" is
+    not an event this unit's migration can be ordered against, because the
+    migration runs BEFORE the readers are gone. So 4c-iv becomes a pure
+    service-change unit, which the seam rule prefers anyway.
+
+    **4c-v — the SEAL RETIREMENT**, a migration-only unit that drops the
+    preservation trigger, landing after the 4c-iv rollout is confirmed complete
+    — attested exactly as 4c-ii's cutover is, through the delivered
+    `blocking_directive` (no new mechanism, and no automated drain actor: the
+    Board pin holds). **It does NOT gate the handoff to 4d.** Everything the
+    consultation workflow needs is delivered at 4c-iv, and the cost of 4c-v
+    landing late — or never — is a trigger that forbids deleting one capability
+    value that nothing reads any more. That is inert rather than dangerous,
+    which is the honest reason it can trail; making 4d wait on an operational
+    attestation for pure hygiene would be a worse trade. The probe is the
+    mirror of 4c-iii's: the alternate-writer DELETE and key-UPDATE, refused
+    before 4c-v and permitted after. It is safe precisely
     because 4c-iii already guarantees the row exists for every project, past
     and future, whichever release created it. An earlier draft combined
     creation-time enablement with the read removal in one unit (review round
@@ -1301,7 +1320,10 @@ external-effect catalogs.
     required anywhere once the gate reads are gone; AND an old-contract client
     is STILL refused after retirement. **4c is not
     complete until 4c-iv merges**, and the §E handoff to 4d is gated on it —
-    the runner may not treat 4c-ii's or 4c-iii's merge as the end of the unit. **The
+    the runner may not treat 4c-ii's or 4c-iii's merge as the end of the unit.
+    (4c-v, the trailing seal retirement, is the deliberate exception stated in
+    its own staging entry: it is inert hygiene, so it does not extend this
+    boundary — the six PRs of §D are not six gates.) **The
     prerequisite is FAIL-CLOSED through the delivered control plane, not an
     awaited human** (review round 15): 4c-ii's own STATUS fold SETS
     `blocking_directive` naming the rollout prerequisite — **the DRAIN
@@ -1331,8 +1353,10 @@ external-effect catalogs.
     and round 16's call to automate it asks for the very signal round 9
     correctly rejected as unimplementable.
 - 4d (architect, forwarding, countersign) is NOT this unit: its plan unit
-  follows 4c implementation — ALL FIVE PRs, 4c-0 through 4c-iv — per the
-  merged §E order, carrying §D obligations 4–6.
+  follows 4c implementation — 4c-0 through 4c-iv — per the merged §E order,
+  carrying §D obligations 4–6. The trailing 4c-v seal retirement is the one
+  piece that does NOT gate that handoff, for the reason given in its own
+  staging entry (review round 25).
 
 ## What carries forward
 
