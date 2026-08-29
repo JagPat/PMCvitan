@@ -372,8 +372,18 @@ as a migration-only change would break every repeated seed and e2e run against
 a previously seeded database — the new trigger raises before the reset can
 clear the rows. 4c-i therefore carries the guarded disable/enable of the new
 trigger inside that same transactional reset, exactly as the delivered seals
-before it did. A seal whose only artifact is its migration is not finished:
-the repository's own reset contract is part of installing it.
+before it did. **And `seed.ts` is not the only reset** (review round 20): 49 integration
+files reference this register and truncate it directly in their own
+setup/teardown (`start-readiness-race.test.ts`, `phase1-baseline.test.ts`, and
+47 more). A `BEFORE TRUNCATE` trigger fires even on an EMPTY table, so every
+one of them would fail the moment 4c-i installs the seal — the required
+integration battery would stop being runnable, which is a worse outcome than
+the forgery the seal prevents. 4c-i therefore CENTRALIZES the sanctioned
+reset: one shared helper performs the guarded disable/truncate/re-enable, and
+the suites call it instead of issuing raw `TRUNCATE` — so the next seal added
+to a reset-covered table changes one place, not fifty. A seal whose only
+artifact is its migration is not finished: the repository's own reset contract
+is part of installing it, and "the reset" means every sanctioned one.
 
 **And the eligibility is sealed at the ROW, not only the command** (round 4):
 the append-only `DecisionConsultation` row is the durable fact that widens
@@ -876,7 +886,17 @@ external-effect catalogs.
     old workers still serve, making the gate-off arm non-exhaustive. 4c-i
     therefore also installs a narrow RESERVATION trigger on `ProjectCapability`
     rejecting an INSERT of `capability = 'consultation'` for the duration of
-    the window, which 4c-ii DROPS as part of arming the gate. This does not
+    the window — and it stays armed THROUGH 4c-ii, dropping only at 4c-iii,
+    ATOMICALLY with the controlled enablement (review round 20, correcting
+    round 19's own placement). Dropping it during 4c-ii would reopen the hole
+    mid-rollout: 4c-ii is a ROLLING deployment, so previous-release workers are
+    still running while its migration lands, and the standalone previous-release
+    `capability:enable` CLI does not run `syncConsumerCatalog` — the consumer
+    fence never sees it. It could therefore insert `consultation` in that
+    window, an upgraded API could emit, and an old worker could claim the sole
+    delivery. The reservation and the enablement are two halves of one
+    transition and must move together, after the drain, in the one unit that
+    owns both. This does not
     reopen the Board decision above: there is still no CHECK constraining the
     column's vocabulary, every SHIPPED capability still enables through the
     unchanged generic writer, and the only rejected value is the one no
@@ -1084,32 +1104,46 @@ external-effect catalogs.
   candidate key — both DELIVERED. The review-efficiency budget (20 files /
   1,500 lines) is expected to HOLD for 4c; the PR argues its own case in its
   packet, never by reference to this sentence.
-  - **4c-iii, the RETIREMENT BACKFILL, and 4c-iv, the retirement behaviour**
+  - **4c-iii, the ENABLEMENT TRANSITION, and 4c-iv, the gate-read REMOVAL**
     (review round 18: an earlier draft put the all-project data backfill,
     `projects.create`, and the gate-read removal in ONE unit, which is the same
     migration/service coupling this plan's own seam rule forbids — and the seam
-    is viable, since after the fleet has drained the backfill can land while
-    the existing gate is still authoritative, and the behaviour follows. So
-    they split, and neither claims an inseparable unit). **4c-iii** carries the
-    data only: every existing project gets its capability row, the gate stays
-    authoritative and unchanged, nothing else moves — separately revertible,
-    and safe precisely because it changes no behaviour. **4c-iv** then carries
-    the behaviour: enablement at `projects.create`, a backfill of any project
-    created since 4c-iii, and the REMOVAL of the capability-gate reads from the
-    write surface and the emitter. The rest of what follows describes 4c-iv. (review round 13: the step-3
-    deployment above is MANDATORY, so it gets an executable review-unit slot
-    rather than a prose promise — without one the autonomous runner would
-    advance to 4d after 4c-ii, leaving every project created after step 2
-    without a capability row and its consultation routes 404 with nothing
-    scheduled to close the window). It lands AFTER the operator backfill and
-    after the fleet is confirmed drained, and it carries exactly: enablement at
-    `projects.create`, the backfill of any project created since step 2, and
-    the REMOVAL of the capability-gate reads from the write surface and the
-    emitter — each additive and separately revertible. **It does NOT remove the
-    CLIENT-CONTRACT refusal** (review round 14): the two mechanisms answer to
+    is viable, since after the fleet has drained the transition can land while
+    the existing gate is still authoritative, and the removal follows. So they
+    split, and neither claims an inseparable unit).
+
+    **4c-iii — the ENABLEMENT TRANSITION**, landing after the drain is
+    confirmed, performing in ONE transaction the three things that must not be
+    separable (review round 20): it DROPS the reservation trigger, BACKFILLS
+    the capability row for every existing project, and installs an
+    `AFTER INSERT` trigger on `Project` that creates the row for every project
+    created from then on. That last piece is what makes the transition safe
+    against a rolling deployment: `projects.create` cannot be changed in a
+    release that is still serving, but a DB-level default is produced by EVERY
+    create path — the previous release's and the new one's alike — so no
+    project can be created without a row while any release is in service. The
+    gate READS stay in place and authoritative throughout; behaviour does not
+    change, which is why this unit is separately revertible.
+
+    **4c-iv — the gate-read REMOVAL**, and nothing else: the capability-gate
+    reads come out of the write surface and the emitter. It is safe precisely
+    because 4c-iii already guarantees the row exists for every project, past
+    and future, whichever release created it. An earlier draft combined
+    creation-time enablement with the read removal in one unit (review round
+    20): after its backfill, a still-serving previous-release instance could
+    create a project with no row, and then a new instance would accept
+    consultation writes for it while an old instance still returned the
+    gate-off refusal for the same project — a split brain the backfill could
+    not repair, because it cannot cover rows created after it ran.
+
+    Both units are MANDATORY and hold executable review-unit slots rather than
+    a prose promise (review round 13): without them the runner would advance to
+    4d after 4c-ii, leaving projects without a capability row and their
+    consultation routes 404 with nothing scheduled to close the window.
+    **Neither removes the CLIENT-CONTRACT refusal** (review round 14): the two mechanisms answer to
     different clocks, and an earlier draft retired them together. The
     capability gate is a ROLLOUT latch, discharged once the SERVER fleet has
-    drained — which 4c-iii is the deployment that follows. Contract
+    drained — which 4c-iii is the transition that follows it. Contract
     negotiation answers to CLIENT versions, and browser tabs cannot be drained
     at all (`RecordedCompatInterceptor` says so in as many words): dropping the
     refusal at 4c-iv would let a stale tab advertising only the old contract
@@ -1126,8 +1160,16 @@ external-effect catalogs.
     the runner may not treat 4c-ii's or 4c-iii's merge as the end of the unit. **The
     prerequisite is FAIL-CLOSED through the delivered control plane, not an
     awaited human** (review round 15): 4c-ii's own STATUS fold SETS
-    `blocking_directive` naming the rollout prerequisite (drain confirmed, the
-    all-project backfill executed), with `task_state: correction_required`.
+    `blocking_directive` naming the rollout prerequisite — **the DRAIN
+    CONFIRMATION ONLY** (review round 20, correcting an earlier draft that also
+    demanded "the all-project backfill executed"): once 4c-iii IS the backfill,
+    requiring the backfill before 4c-iii may start is circular — the loop would
+    either wait forever or an operator would have to mutate production outside
+    the reviewed unit, which is exactly what putting the backfill in a reviewed
+    unit was meant to prevent. The directive therefore attests one fact a human
+    can attest and code cannot observe: the previous release has drained.
+    Everything mechanical belongs to 4c-iii — with
+    `task_state: correction_required`.
     `assessRunnerState` then resolves to `directive:<name>` rather than
     advancing — it cannot start 4c-iii or 4c-iv, nor hand off to 4d, while the directive
     stands, and it flags the incoherent shape if a directive is set beside a
