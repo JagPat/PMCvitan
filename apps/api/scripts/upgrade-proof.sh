@@ -3905,6 +3905,27 @@ else
   echo "FAILED  4b-decider F3(r6) precision: expected 1 surviving org membership, found $omcount"
   FAIL=1
 fi
+
+# ---- Phase 6 task 4b (decider) round-8 F3: the ALWAYS_EXECUTE replay ------------------------
+# migrate.sh's P3005 baseline path EXECUTES 20271015 rather than resolving it as applied (a
+# db-push database has its enum/columns but none of the raw seals). That is only safe if EVERY
+# statement in the file is re-runnable — proven literally: a second full application over this
+# POPULATED, fully-migrated register (published records, a published open pmc-held choice, an
+# org-arm-covered decision — all with current holders, so the audit certifies) must succeed and
+# leave the seal network standing.
+if psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB2" -f "$MIG_DIR/$PHASE6_T4B_DECIDER_NAME/migration.sql" >/tmp/4b-decider-replay.log 2>&1; then
+  echo "ok      4b-decider R8-F3: the decider migration REPLAYS cleanly over a populated fully-migrated register"
+else
+  echo "FAILED  4b-decider R8-F3: the decider migration is in ALWAYS_EXECUTE but did not replay — $(tail -3 /tmp/4b-decider-replay.log)"
+  FAIL=1
+fi
+replaytrig=$(psql -X -tAc "SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled='O' AND tgname IN ('Decision_t4b2_lifecycle_seal','Decision_t4b2_option_floor','DecisionOption_t4b2_option_floor','DecisionOption_t4b2_no_truncate','ChangeRequest_t4b2_seal','Decision_t4b2_record_no_delete','Membership_t4b2_holder_guard','OrgMembership_t4b2_holder_guard','OrgMembership_t4b2_no_truncate','Project_t4b2_org_frozen')" -d "$DB2")
+if [ "$replaytrig" = "10" ]; then
+  echo "ok      4b-decider R8-F3 precision: all 10 decider seals survive the replay armed"
+else
+  echo "FAILED  4b-decider R8-F3 precision: expected 10 armed decider seals after the replay, found $replaytrig"
+  FAIL=1
+fi
 $PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB2;" >/dev/null 2>&1 || true
 
 # ---- Schedule B1 — the acyclic activity dependency graph -------------------------------------

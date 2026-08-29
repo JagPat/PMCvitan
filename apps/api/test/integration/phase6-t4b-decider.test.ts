@@ -888,7 +888,78 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     await t.prisma.user.delete({ where: { id: tempId } });
   });
 
-  it('R7-F4: the migration acquires its four-table lock FIRST — before any statement takes a table lock it would then hold while waiting', async () => {
+  // ── round-8 Codex corrections (the #466 head 999b9344) ─────────────────────────────────────
+
+  it('R8-F2: the org-membership guard serializes on the readiness key BEFORE consulting decision existence — a concurrent pmc-held publish cannot slip past it', async () => {
+    // Codex race at 999b9344: T1 publishes a pmc-held decision on project B holding the
+    // readiness key; T2 deletes the org-admin row whose arm is the ONLY effective pmc there.
+    // The old guard PREFILTERED its loop on `phase6_decisions_hold_role`, and T1's decision is
+    // uncommitted — invisible to T2 — so the loop was EMPTY, never touched the key, and BOTH
+    // committed: a holderless published decision. The key must be taken per covered project
+    // FIRST, so T2 either refuses as contended (T1 holds the key) or, retried after T1's
+    // commit, sees the decision and refuses as holderless. Deterministic: T1 is a held-open
+    // transaction, so every interleaving step is externally sequenced.
+    const did = id('r8f2');
+    let release!: () => void;
+    const released = new Promise<void>((r) => { release = r; });
+    let holderReady!: () => void;
+    const holderHolds = new Promise<void>((r) => { holderReady = r; });
+    const t1 = t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtextextended('readiness:${projectBId}', 0))`);
+      // the direct publish path the service takes, under the SAME key it holds
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "Decision"("id","projectId","title","room","status","ageDays","authorId","deciderKind","photoSwatch")
+         VALUES ('${did}','${projectBId}','R8F2 pmc-held ${run}','Hall','pending',0,'${users.orgAdmin}','pmc','sw1')`,
+      );
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","recommended","order")
+         VALUES ('${did}-a','${did}','A','a','Kota',0,'sw1',true,0), ('${did}-b','${did}','B','b','Granite',100,'sw2',false,1)`,
+      );
+      await tx.$executeRawUnsafe(`UPDATE "Decision" SET "publishedAt" = now() WHERE "id" = '${did}'`);
+      holderReady();
+      await released; // T2 runs its hostile delete HERE, against our uncommitted decision
+    });
+    await holderHolds;
+
+    // T2 — the org-membership DELETE while T1 holds the key and its decision is uncommitted:
+    // the covered project's key is taken FIRST, so this refuses as CONTENDED (the old guard
+    // committed here, orphaning the decision the moment T1 landed)
+    await expect(
+      t.prisma.$executeRawUnsafe(`DELETE FROM "OrgMembership" WHERE "orgId" = '${orgBId}' AND "userId" = '${users.orgAdmin}'`),
+    ).rejects.toThrow(/contended/i);
+
+    release();
+    await t1;
+
+    // committed-truth barrier: the second arm's claim is about a delete against COMMITTED
+    // pmc-held demand, so pin that the publish IS pooled-visible committed truth first
+    const [{ holds }] = await t.prisma.$queryRawUnsafe<Array<{ holds: boolean }>>(
+      `SELECT phase6_decisions_hold_role('${projectBId}','pmc') AS holds`,
+    );
+    expect(holds).toBe(true);
+
+    // T1 has committed: the SAME delete now takes the key freely, SEES the published pmc-held
+    // decision, and refuses as holderless — never a silent success on either side of the race
+    await expect(
+      t.prisma.$executeRawUnsafe(`DELETE FROM "OrgMembership" WHERE "orgId" = '${orgBId}' AND "userId" = '${users.orgAdmin}'`),
+    ).rejects.toThrow(/NO effective pmc/i);
+    expect((await t.prisma.orgMembership.findUniqueOrThrow({ where: { orgId_userId: { orgId: orgBId, userId: users.orgAdmin } } })).role).toBe('admin');
+
+    // drift pin: the deployed guard's CODE takes the key BEFORE it consults decision existence
+    // (compare call sites with the SQL comments stripped — the rationale comment names both)
+    const def = (await t.prisma.$queryRawUnsafe<Array<{ def: string }>>(
+      `SELECT pg_get_functiondef('phase6_t4b2_org_membership_guard()'::regprocedure) AS def`,
+    ))[0]!.def;
+    const code = def.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n');
+    expect(code.indexOf('phase6_try_readiness')).toBeGreaterThan(-1);
+    expect(code.indexOf('phase6_decisions_hold_role')).toBeGreaterThan(code.indexOf('phase6_try_readiness'));
+
+    // release the hold (the effective pmc approves) so the register closes for the suite wipe
+    const adminToken = t.issueOrgOwnerToken(users.orgAdmin, projectBId, orgBId);
+    expect((await post(adminToken)(`/projects/${projectBId}/decisions/${did}/approve`, { optionIndex: 0 })).status).toBe(201);
+  });
+
+  it('R7-F4/R8-F1: the migration acquires its four-table lock FIRST and ALL-OR-NOTHING — NOWAIT in a retried subtransaction, before any table ALTER', async () => {
     const { readFileSync } = await import('node:fs');
     const { join, dirname } = await import('node:path');
     const { fileURLToPath } = await import('node:url');
@@ -896,15 +967,46 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
       join(dirname(fileURLToPath(import.meta.url)), '../../prisma/migrations/20271015000000_phase6_t4b_decider/migration.sql'),
       'utf8',
     );
-    const lockAt = sql.indexOf('LOCK TABLE "Decision", "Membership", "OrgMembership", "Project" IN SHARE ROW EXCLUSIVE MODE;');
+    const lockAt = sql.indexOf('LOCK TABLE "Decision", "Membership", "OrgMembership", "Project"');
     const firstAlterAt = sql.search(/^ALTER TABLE /m);
     expect(lockAt).toBeGreaterThan(-1);
     expect(firstAlterAt).toBeGreaterThan(-1);
-    // the four-table wait must happen while the transaction holds NOTHING: an ALTER's ACCESS
-    // EXCLUSIVE held while waiting on Membership deadlocks against an old membership writer
-    // whose holder trigger reads Decision
+    // R7-F4 — the four-table wait must happen while the transaction holds NOTHING: an ALTER's
+    // ACCESS EXCLUSIVE held while waiting on Membership deadlocks against an old membership
+    // writer whose holder trigger reads Decision
     expect(lockAt).toBeLessThan(firstAlterAt);
     // and exactly ONE such acquisition exists (no second, later re-lock to regress the order)
     expect(sql.indexOf('LOCK TABLE', lockAt + 1)).toBe(-1);
+    // R8-F1 — a comma-separated LOCK TABLE acquires its relations ONE BY ONE, so "first
+    // statement" alone still holds Decision while waiting on Membership (the same cycle
+    // against an old writer that holds Membership and then inserts a Decision). The
+    // acquisition must be ALL-OR-NOTHING: NOWAIT inside a subtransaction whose
+    // lock_not_available rollback RELEASES any partial set before the retry.
+    const stmt = sql.slice(lockAt, sql.indexOf(';', lockAt) + 1);
+    expect(stmt).toContain('NOWAIT');
+    expect(stmt).toContain('SHARE ROW EXCLUSIVE');
+    // the NOWAIT failure is caught (subtransaction rollback → partial set released) and retried
+    // with a bounded cap that FAILS CLOSED rather than waiting forever holding a partial set
+    const block = sql.slice(Math.max(0, lockAt - 400), lockAt + 800);
+    expect(block).toContain('EXCEPTION WHEN lock_not_available');
+    expect(block).toMatch(/pg_sleep/);
+    expect(block).toMatch(/RAISE EXCEPTION/);
+  });
+
+  it('R8-F3: the P3005 baseline path EXECUTES 20271015 rather than resolving it as applied (a db-push database has the schema but none of the raw seals)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join, dirname } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const sh = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../../scripts/migrate.sh'),
+      'utf8',
+    );
+    // the migration is in the ALWAYS_EXECUTE set…
+    const m = sh.match(/ALWAYS_EXECUTE="([^"]+)"/);
+    expect(m, 'migrate.sh must declare ALWAYS_EXECUTE').not.toBeNull();
+    const entries = m![1].split('\n').map((s) => s.trim());
+    expect(entries).toContain('20271015000000_phase6_t4b_decider');
+    // …and the baseline loop consults that set to leave its members pending for the deploy
+    expect(sh).toContain('printf \'%s\\n\' "$ALWAYS_EXECUTE" | grep -qx "$name"');
   });
 });

@@ -22,7 +22,30 @@
 -- are held no NEW row-writer can start on these tables — the later ALTER's lock upgrade waits
 -- only on plain readers, which hold none of the four. The migration takes NO advisory readiness
 -- key (round 18): table locks → key would complete an AB-BA cycle against a rolled 4b writer.
-LOCK TABLE "Decision", "Membership", "OrgMembership", "Project" IN SHARE ROW EXCLUSIVE MODE;
+--
+-- Round-8 Codex F1 — a comma-separated LOCK TABLE still acquires the relations ONE BY ONE, so
+-- "first statement" alone is not atomic: holding `Decision` while waiting on `Membership`
+-- recreates the cycle against an old writer that holds `Membership` and then inserts a
+-- `Decision`. The acquisition is therefore ALL-OR-NOTHING: `NOWAIT` inside a subtransaction —
+-- a partial set is RELEASED by the exception rollback — retried with a short sleep, and after
+-- the cap the migration FAILS CLOSED (clean, re-runnable; never a deadlock abort mid-DDL).
+DO $$
+DECLARE attempts INT := 0;
+BEGIN
+  LOOP
+    BEGIN
+      LOCK TABLE "Decision", "Membership", "OrgMembership", "Project"
+        IN SHARE ROW EXCLUSIVE MODE NOWAIT;
+      EXIT;
+    EXCEPTION WHEN lock_not_available THEN
+      attempts := attempts + 1;
+      IF attempts >= 600 THEN
+        RAISE EXCEPTION 'phase6-4b migration: could not obtain the four-table deployment window after % attempts — retry the deploy when writer traffic quiets', attempts;
+      END IF;
+      PERFORM pg_sleep(0.2);
+    END;
+  END LOOP;
+END $$;
 
 ALTER TYPE "DeciderKind" ADD VALUE IF NOT EXISTS 'none';
 ALTER TYPE "DecisionStatus" ADD VALUE IF NOT EXISTS 'recorded';
@@ -620,10 +643,16 @@ BEGIN
   END IF;
   -- only writes that can LOSE effective-PMC standing are judged (adding standing orphans nothing)
   IF TG_OP = 'DELETE' OR (TG_OP = 'UPDATE' AND OLD."role" IN ('owner', 'admin') AND NEW."role" NOT IN ('owner', 'admin')) THEN
+    -- KEY BEFORE JUDGEMENT (round-8 Codex F2): every COVERED project — one this org arm could
+    -- be carrying — takes its readiness key BEFORE decision existence is consulted. Filtering
+    -- on `phase6_decisions_hold_role` first raced a concurrent published pmc-held INSERT: the
+    -- publisher holds the key and sees the admin, but its uncommitted decision is invisible
+    -- here, so a prefiltered loop was EMPTY, never touched the key, and both commits landed —
+    -- a holderless published decision. Serializing on the key first means whichever side runs
+    -- second observes the first's committed row (or refuses as contended) — never both.
     FOR proj IN
       SELECT p."id" FROM "Project" p
        WHERE p."orgId" = OLD."orgId"
-         AND phase6_decisions_hold_role(p."id", 'pmc')
          -- this user's org arm is SUPPRESSED wherever they hold an active explicit membership
          -- (the precedence rule), so this write cannot have reduced that project's standing
          AND NOT EXISTS (
@@ -635,7 +664,8 @@ BEGIN
       IF NOT phase6_try_readiness(proj."id") THEN
         RAISE EXCEPTION 'phase6-4b: the readiness key for project % is contended — retry this org-membership change', proj."id";
       END IF;
-      IF phase6_effective_role_standing(proj."id", 'pmc') = 0 THEN
+      IF phase6_decisions_hold_role(proj."id", 'pmc')
+         AND phase6_effective_role_standing(proj."id", 'pmc') = 0 THEN
         RAISE EXCEPTION 'phase6-4b: this change leaves project % with NO effective pmc while a published open decision is pmc-held — cover the decision first', proj."id";
       END IF;
     END LOOP;

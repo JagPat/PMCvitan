@@ -227,8 +227,21 @@ if echo "$out" | grep -q "P3005"; then
   # The entry is still right. `schema.prisma` can describe neither a CHECK nor a trigger, so
   # baselining that migration WITHOUT running it would record guards that never existed —
   # indistinguishable from success. Left pending so the deploy really executes it.
+  #
+  # `20271015000000_phase6_t4b_decider` (phase-6 4b, round-8 Codex F3) is the same shape: its
+  # enum values, columns and FK a db-push database already has, but its substance is RAW SQL —
+  # the §B.2 standing primitives, the 4b seal-trigger network (lifecycle, option floor, holder
+  # guards, TRUNCATE seals, frozen chains) and the diagnostic zero-holder audit — none of which
+  # `schema.prisma` can describe. Resolving it as applied on this path would enable 4b service
+  # writes against a database WITHOUT the seals every service invariant assumes. Every statement
+  # in that file is re-runnable (ADD VALUE IF NOT EXISTS, ADD COLUMN IF NOT EXISTS,
+  # duplicate_object-guarded constraints, CREATE OR REPLACE FUNCTION, DROP TRIGGER IF EXISTS +
+  # CREATE, and a DROP NOT NULL that no-ops), so leaving it pending costs nothing when it has
+  # somehow already run; its audit DO block aborts only over a register already in the
+  # zero-holder state — exactly the diagnostic-first refusal this path must keep.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
-20270920000000_decision_option_kinds"
+20270920000000_decision_option_kinds
+20271015000000_phase6_t4b_decider"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

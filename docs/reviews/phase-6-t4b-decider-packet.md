@@ -491,3 +491,59 @@ test-database rebuild + the upgrade-proof.
   route arm used pending + reapprovals, so a decider whose only obligation was a reopened
   change saw a zero badge on a screen the route added FOR that obligation. The badge now
   carries the same combined count. Probe: `R7-F5` (a member-held `change` yields badge 1).
+
+## Round-8 correction (the Codex review of PR #466 head `999b9344` — three P1 findings; #466 closed at the two-head limit)
+
+The orchestrator's `replacement_required` directive on #466's second finding-bearing head:
+close without another correction head, replace from current `main` with only the unresolved
+scope. This PR (`Replaces: #466`) carries the unit tree-identically (diff vs the #466 head =
+0 lines) plus ONLY the round-8 batch. Each finding was reproduced RED at the carried
+`999b9344` state first (fixes stashed, test DB rebuilt at the pre-fix migration: 3 failed /
+32 passed — the R8-F2 hostile delete COMMITTED beside the uncommitted publish, the lock pin
+found no `NOWAIT`, `migrate.sh` lacked the entry), then fixed forward as one batch and
+re-proven GREEN (35/35, three consecutive runs) after a full rebuild. `20270810`/`20270826`
+remain byte-for-byte; `20271015` (this unit's own, unmerged) changes below.
+
+- **R8-F1 (P1, partial lock acquisition)** — round-7 moved the four-table SHARE ROW
+  EXCLUSIVE `LOCK TABLE` to the migration's first statement, but a comma-separated `LOCK
+  TABLE` still acquires its relations ONE BY ONE: holding `Decision` while waiting on
+  `Membership` recreates the same deadlock cycle against an old writer that holds
+  `Membership` and then inserts a `Decision`. The acquisition is now ALL-OR-NOTHING: `NOWAIT`
+  inside a subtransaction whose `lock_not_available` rollback RELEASES any partial set,
+  retried with a 0.2 s sleep, failing CLOSED (clean, re-runnable) after a bounded cap —
+  never a mid-DDL deadlock abort. Probe: `R7-F4/R8-F1` (the statement carries `NOWAIT`, the
+  handler names `lock_not_available` with retry + bounded RAISE, still before every `ALTER
+  TABLE`, still exactly one acquisition; the partial-hold interleaving itself is internal to
+  a single statement's lock manager calls and cannot be paused externally — stated honestly).
+- **R8-F2 (P1, org-guard key-after-judgement race)** — `phase6_t4b2_org_membership_guard`
+  PREFILTERED its project loop on `phase6_decisions_hold_role` and took `phase6_try_readiness`
+  only inside the loop: a concurrent publisher (T1) holds the readiness key and sees the
+  admin, but its uncommitted pmc-held decision is INVISIBLE to the org-membership writer
+  (T2), whose prefiltered loop is then EMPTY — T2 never touches the key, both commit, and the
+  published decision is holderless. The loop now iterates every covered org project (the
+  user's arm unsuppressed — the precedence rule kept) and takes the readiness key FIRST;
+  decision existence and standing are judged only under the key. Probe: `R8-F2` — the
+  deterministic held-open-transaction sequence: T1 publishes a pmc-held decision on project B
+  under the key (uncommitted); T2's `OrgMembership` DELETE is refused CONTENDED (RED at
+  `999b9344`: it committed); after T1 commits, the same delete (behind a committed-truth
+  barrier) is refused HOLDERLESS with the admin row intact; plus a comment-stripped drift pin
+  that the deployed body calls `phase6_try_readiness` before `phase6_decisions_hold_role`.
+- **R8-F3 (P1, baseline path skips the seals)** — `migrate.sh`'s P3005 baseline path resolved
+  `20271015` as applied: a `prisma db push`-shaped database has the enum values, columns and
+  FK, but NONE of the raw substance (`§B.2` standing primitives, the 4b seal-trigger network,
+  the zero-holder audit) — the ledger would permanently claim guards that never ran.
+  `20271015000000_phase6_t4b_decider` joins `ALWAYS_EXECUTE` (the same shape as
+  `20270920`/`20270930`), which is only safe because every statement in the file is
+  re-runnable (`ADD VALUE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`,
+  `duplicate_object`-guarded constraints, `CREATE OR REPLACE FUNCTION`, `DROP TRIGGER IF
+  EXISTS` + `CREATE`, a no-op `DROP NOT NULL`; the audit aborts only over a genuinely
+  holderless register). Probes: `R8-F3` (the entry is in the set AND the baseline loop
+  consults it), and the upgrade-proof `R8-F3` cycle — a SECOND full application of `20271015`
+  over the populated, fully-migrated records register succeeds with all 10 decider seals
+  still armed.
+
+Round-8 gates at this head: `pnpm check` EXIT 0 (automation 292/292, web 968/968, api
+801/801); full integration battery on a pristine migrated DB **99 files / 1319 tests**
+(`phase6-t4b-decider.test.ts` 35/35, three consecutive runs); `scripts/upgrade-proof.sh`
+PASSED end-to-end (706 ok — the three records-register TRUNCATE cycles plus the new R8-F3
+replay cycle); `test:e2e:api:allmodules` **38/38** and `:outbox` **32/32**.
