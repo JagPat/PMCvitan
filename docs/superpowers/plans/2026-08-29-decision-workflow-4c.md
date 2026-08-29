@@ -40,19 +40,23 @@ actually merged (not the pre-delivery sketch):
   seals ask cross-module questions through these, never raw joins invented
   per-seal. **4c's seals need two facts the delivered inventory cannot
   express, so 4c-i REGISTERS TWO NEW owned primitives in the same discipline**
-  (review round 6: `phase6_membership_is_active` returns only a boolean, so
-  it can neither lock the membership row nor return its `userId` for the
-  snapshot comparison, and nothing exposes a lockable project-operability
-  check — following the old inventory would force the decisions-owned
-  triggers to read `Membership`/`Project` directly, the exact cross-module
-  raw read the primitives exist to prevent, or to drop the re-key and
-  archival predicates and admit the P25/P25d hostile inserts):
+  (review round 6, restated in round 9: `phase6_membership_is_active` returns
+  only a boolean, so it can neither lock the membership row nor return the
+  `userId` the response seal must compare, and nothing exposes a lockable
+  project-operability check — following the old inventory would force the
+  decisions-owned triggers to read `Membership`/`Project` directly, the exact
+  cross-module raw read the primitives exist to prevent, or to drop the
+  active-standing and archival predicates and admit the P25/P25d hostile
+  inserts):
   - an ORGS-owned `phase6_membership_active_user(projectId, membershipId)` —
-    takes the membership row's lock, returns its CURRENT `userId` when the
-    membership is active and NULL otherwise, so a seal compares the locked
-    identity against `consulteeUserId` in one owned call (the active check
-    and the identity read cannot be two calls: between them the row can
-    change);
+    takes the membership row's lock, returns its `userId` when the
+    membership is ACTIVE and NULL otherwise, so a seal establishes standing
+    and reads the identity in ONE owned call. Identity itself is frozen by
+    the delivered `Membership_t4b_identity_frozen`, so this is not a
+    re-key defence (review round 9); what it serializes against is the
+    ACTIVE→removed transition, which is a live state change, and splitting
+    it into a boolean check plus a separate read would leave a window
+    between them;
   - an ORGS-owned `phase6_project_operable(projectId)` — takes the
     `Project` row's lock BEFORE reading `archivedAt`, returning operability,
     so the seals' lock-before-read ordering (§A) is the primitive's own
@@ -81,20 +85,25 @@ actually merged (not the pre-delivery sketch):
 
 Two labour-adjacent append-only facts, owned by decisions:
 `DecisionConsultation` (**`projectId`**, decisionId, requestedById,
-consulteeMembershipId, **`consulteeUserId`** — the consultee's USER
-identity SNAPSHOT at request time under the lock, review round 3: the
-membership row's `userId` is mutable in place (the delivered
-`Membership_t4b2_holder_guard` ignores a `userId` re-key when role and
-status are unchanged), so a consultation recording only the membership id
-would let an alternate writer re-key that membership to a different user
-who then inherits the consultation's visibility and response authority
-while every FK stays valid; the visibility widening and the response
-authority are judged against this SNAPSHOT, so a post-request re-key
-STRANDS the consultation (nobody inherits it — the pmc re-requests)
-rather than silently transferring it, hostile-probed by
-request → re-key membership → the re-keyed user gains NO visibility and
-their response insert is refused (P25/P25d) — question, requestedAt) —
-the child carries its OWN
+consulteeMembershipId, question, requestedAt). **A membership id denotes
+one person for its lifetime, and the DATABASE already guarantees it**
+(review round 9, correcting rounds 3–5): rounds 3–5 added a
+`consulteeUserId` SNAPSHOT to defend against an alternate writer re-keying
+`Membership.userId`, reasoning from the delivered
+`Membership_t4b2_holder_guard` — which does ignore a `userId` change when
+role and status are unchanged. That was the wrong trigger to reason from.
+The EARLIER `Membership_t4b_identity_frozen`
+(`20270826000000_phase6_t4b_approval_attribution`, `BEFORE UPDATE OF
+"userId", "projectId"`) RAISES on any change to either column, so the
+re-key is unrepresentable and every probe premised on performing one would
+fail at setup. The snapshot column is therefore REMOVED, with it the
+mismatched-snapshot forgery class it created: `consulteeMembershipId` is
+the single identity, and the response seal resolves the consultee's user
+through `phase6_membership_active_user` — which still earns its place,
+because ACTIVE standing (removal, revocation) is a live state change even
+though identity is frozen. What the plan now probes is the PREMISE: a
+hostile `UPDATE "Membership" SET "userId" = …` is rejected by the
+delivered freeze (P25). The child carries its OWN
 `projectId` (round 2: a composite FK cannot bind columns the child does not
 have), and BOTH references are project-scoped through it: the composite FK
 onto the `(projectId, id)` candidate key 4b added to `Membership`, and a
@@ -109,10 +118,12 @@ RECORDED responder, review round 1: without a recorded actor on the response
 row the P25d non-consultee seal has nothing to compare against the named
 consultee, and a raw writer could forge advice presented forever as the
 member's own; the command populates it from the authenticated caller, the
-response-side INSERT seal compares it with the consultation's SNAPSHOT
-`consulteeUserId` (review round 3 — never the membership's CURRENT
-`userId`, which a re-key can change) AND requires the named membership to
-still be active and still resolve to that snapshot user, and it sits
+response-side INSERT seal compares it with the consultee's user resolved
+through `phase6_membership_active_user(projectId, consulteeMembershipId)`
+— which is BOTH the current and the original user, since
+`Membership_t4b_identity_frozen` makes the identity immutable (review
+round 9) — and that one locked call also establishes the membership is
+still ACTIVE, and it sits
 inside the immutable evidence set the append-only
 seal covers — response text, an OPTIONAL recommended option, respondedAt;
 append-only, sealed — and ONE per consultation, PR #340 round 5: a UNIQUE
@@ -221,13 +232,13 @@ path would grant standing visibility onto an ineligible decision — a
 withdrawn row's pmc-only title leaking to a fabricated consultee. A DB INSERT
 seal re-judges the command's own predicate (status `pending`/`change` —
 `awaiting_countersign` joins in 4d — AND `publishedAt IS NOT NULL`, AND the
-consultee membership ACTIVE via `phase6_membership_is_active`, AND the
-SNAPSHOT `consulteeUserId` EQUAL to that membership's locked `userId` at
-insert — review round 4: without this arm a direct insert can name Alice's
-active membership but snapshot Bob, and the snapshot-judged visibility then
-exposes the decision to Bob as a purported consultee while every FK and
-listed predicate passes; the hostile mismatched-snapshot insert is probed
-(P25) — AND
+consultee membership ACTIVE via `phase6_membership_active_user`, which
+returns the consultee's user under the row lock and NULL once the membership
+is inactive (review round 9: an earlier draft also compared a
+`consulteeUserId` snapshot column here; that column is gone, because
+`Membership_t4b_identity_frozen` makes the identity immutable and the
+mismatched-snapshot forgery it guarded against cannot arise without a
+snapshot to mismatch) — AND
 `requestedById` holding ACTIVE requesting authority — pmc via
 `phase6_user_decision_authority`, joined by architect in 4d: the contract's
 actor-standing obligation applied to this fact's RECORDED actor, round 5)
@@ -317,12 +328,12 @@ each carried question to its probe. The full rows:
    projection carries the resolved CONSULTATION audience beside the decider
    designation, threaded through the SAME row/fold/rebuild/filter path P22
    delivered for the decider: the projection row records the decision's
-   standing consultations keyed by the SNAPSHOT `consulteeUserId` — NEVER
-   by re-resolving the membership (review round 4: a fold that derives the
-   audience as membership → current user re-admits the re-keyed user on
-   every REBUILD even though the live snapshot rule excludes them; the
-   snapshot travels in the event payload and the projection stores and
-   filters by it) — the
+   standing consultations keyed by the user carried in the EVENT PAYLOAD,
+   resolved once at emit and never re-resolved from `Membership` at fold
+   time (review round 9: a projection re-reading an orgs-owned table would
+   be the cross-module read the module rules forbid; payload and live agree
+   across a rebuild because `Membership_t4b_identity_frozen` makes the
+   identity immutable) — the
    read-path filter admits the snapshot user's slice exactly as the live
    `decisionVisibleToViewer` widening does, and a REBUILD preserves the
    slice, INCLUDING after a membership re-key (live == projection == rebuild
@@ -341,10 +352,10 @@ each carried question to its probe. The full rows:
    rule mirrored at the row, review round 2), OR its RECORDED
    `respondedById` (§A — the
    response row's own actor column, without which this seal has no actor to
-   judge) is not the consultation's SNAPSHOT `consulteeUserId` (review
-   round 3: judged against the snapshot, never the membership's mutable
-   current `userId`), OR the named membership no longer RESOLVES to that
-   snapshot user (a re-key strands the consultation — §A),
+   judge) is not the consultee's user as resolved by
+   `phase6_membership_active_user(projectId, consulteeMembershipId)` — one
+   locked call that is both the current and the original identity, since
+   `Membership_t4b_identity_frozen` freezes it (review round 9),
    OR the named consultee membership is NO LONGER ACTIVE
    via `phase6_membership_is_active` (review round 2: without this arm, a
    consultee removed AFTER the request still resolves — the decision is open
@@ -373,14 +384,13 @@ each carried question to its probe. The full rows:
    claim path), probed by archive-between-enqueue-and-claim. Then: the
    consultee predicate re-checks the consultation still
    stands, the decision is still consultee-visible (not withdrawn), the
-   consultee membership is still active, AND the membership still RESOLVES
-   to the snapshot `consulteeUserId` (review round 5: the targeted intent
-   names the snapshot user, and after a post-enqueue membership re-key
-   every other check still passes — the membership is active under its NEW
-   user — so `notifyTargetedUser` would send decision content to the
-   ORIGINAL user's still-linked subscription after they lost standing; the
-   same membership-resolves-to-snapshot arm the response seal already
-   holds, applied at the claim); AND, for the `consultation_requested`
+   consultee membership is still ACTIVE at claim time, re-resolved through
+   `phase6_membership_active_user` (review round 5, restated in round 9: the
+   targeted intent names a user, and a membership REMOVED between enqueue and
+   claim would otherwise still deliver decision content to that user's
+   still-linked subscription after they lost standing — the same locked
+   resolve the response seal performs, applied at the claim; identity itself
+   cannot drift, being frozen); AND, for the `consultation_requested`
    family specifically, NO response exists yet (review round 5: a consultee
    who saw the in-app thread and answered before the queued delivery was
    claimed must not receive a request-to-respond push for a question they
@@ -389,7 +399,7 @@ each carried question to its probe. The full rows:
    the requester still holds requesting standing (pmc — or, per the
    delivered claim-time shape, the push re-targets to the CURRENT holder set
    where the family defines one, else drops with the recorded cancellation
-   mark). PROVES: a consultee removed — or RE-KEYED away — or a requester
+   mark). PROVES: a consultee removed — or a requester
    demoted — or a
    project ARCHIVED — between
    enqueue and claim never receives decision content (re-targeted or dropped,
@@ -422,12 +432,12 @@ packet so the review can see it introduces no behavior the red probes then
 |---|---|---|
 | P23 | consultation round-trip THROUGH THE SHIPPED PRODUCT PATH: request → respond over the guarded HTTP routes with the shared `ROLE_POLICY` actions, the respond ceiling admitting every consultee-eligible role in the EXISTING vocabulary (a NON-pmc consultee — contractor/engineer/consultant/client — completes the round-trip in the RENDERED flow, not only the HTTP response; the service narrows to the named consultee; 4c adds NO role), append-only (UPDATE/DELETE sealed at the row AND `TRUNCATE` sealed at the statement — both tables carry named no-truncate seals, each hostile-probed, since row triggers never fire for TRUNCATE), non-blank evidence refused at zod AND the CHECK AND a NULL direct insert refused (`NOT NULL` on both evidence columns — a CHECK over NULL passes as UNKNOWN); ONE response per consultation — a second respond is a deterministic 409 under a different idempotency key, and the direct duplicate insert is refused by the UNIQUE | the two new tables' migration + contracts + the response UNIQUE + `ROLE_POLICY`/route registration (`RolesGuard` today rejects roles absent from a route's ceiling before any service check) |
 | P24 | consultation moves NO status and NO gate verdict — the EXPLICIT `(status, gate verdicts)` projection byte-equal before/after, with a SEPARATE assertion that the consultation DTO/audience DID change (full-snapshot equality is unsatisfiable and would force the probe to omit the served consultation data) | `DecisionsService` status CAS surface; the gate reader |
-| P25 | visibility widening bounded by eligibility: published-only + open-status at request AND response; the withdrawn-leak refusal (no title/reason reachable); request → withdraw → late-response refused 409; the DB INSERT seal refusing a direct consultation row against a withdrawn AND a draft decision (visibility never widened by a forged row) AND a row whose `requestedById` lacks requesting authority (an inactive or unauthorized requester never fabricates a standing request) AND a row naming a REMOVED consultee membership (the request seal's `phase6_membership_is_active` arm probed directly — a raw writer must not mint a request a later membership reactivation would make visible and answerable) AND a row whose SNAPSHOT `consulteeUserId` is not the named membership's locked `userId` (the mismatched-snapshot forgery) AND the DIRECT-request-insert-vs-archive BARRIER (both orderings — the request seal too locks the `Project` row before its operability read, so a direct `DecisionConsultation` insert racing a committing archive blocks and is refused, exactly as P25d probes the response side); the membership RE-KEY probe — request → re-key the consultee membership's `userId` → the re-keyed user gains NO visibility (widening judged on the SNAPSHOT `consulteeUserId`) and their respond is refused: a consultation strands, never transfers | `decisionVisibleToViewer`; the request/response guards + the consultation INSERT seal |
-| P25c | the PROJECTED path THROUGH BOTH EVENTS, keyed by the SNAPSHOT: after the request, the SNAPSHOT `consulteeUserId`'s `decisions.inbox` slice admits exactly the consulted decision and a same-role non-consultee's does not; after the RESPONSE, the projected slice carries the ANSWERED thread (a fold that consumes `consultation_requested` but drops `consultation_responded` fails here); a rebuild preserves BOTH states (live == projection == rebuild after the request AND after the response); and after a membership RE-KEY, live, projection, AND rebuild all EXCLUDE the re-keyed user (a fold that re-resolves membership → current user re-admits them on rebuild and fails here — the projection stores and filters the snapshot from the event payload) | the `decisions.inbox` projection row schema/fold/filter (decider-only today) |
-| P25d | the response-side DB seal: a direct `DecisionConsultationResponse` INSERT against an ineligible decision; one whose recorded `respondedById` is not the consultation's SNAPSHOT `consulteeUserId`; one naming a REMOVED consultee's own user (removed-then-hostile-insert — active membership re-judged via `phase6_membership_is_active`); one after a membership RE-KEY (the membership no longer resolves to the snapshot user — refused in BOTH directions: the old user and the new); one into a non-operable project; AND the DIRECT-insert-vs-archive BARRIER (both orderings — the seal takes the `Project` row lock BEFORE its operability read, so an insert racing a committing archive blocks and is refused, never committed into the archived project; a static already-archived probe alone would miss this interleaving) — each refused at the database | the response table's migration seals + the `respondedById`/`consulteeUserId` columns they judge |
+| P25 | visibility widening bounded by eligibility: published-only + open-status at request AND response; the withdrawn-leak refusal (no title/reason reachable); request → withdraw → late-response refused 409; the DB INSERT seal refusing a direct consultation row against a withdrawn AND a draft decision (visibility never widened by a forged row) AND a row whose `requestedById` lacks requesting authority (an inactive or unauthorized requester never fabricates a standing request) AND a row naming a REMOVED consultee membership (the request seal's `phase6_membership_is_active` arm probed directly — a raw writer must not mint a request a later membership reactivation would make visible and answerable) AND the DIRECT-request-insert-vs-archive BARRIER, asserted as the TWO reachable outcomes rather than a uniform refusal (review round 9: the seal locks `Project` before reading operability, so insert-first WINS the lock, reads the project operable and commits — the archive then waits and commits after, leaving valid historical evidence; only archive-first makes the insert wait and then reject. The same two-outcome shape P41 already states for the command path); and the IDENTITY-FREEZE premise probe — a hostile `UPDATE "Membership" SET "userId" = …` is REJECTED by the delivered `Membership_t4b_identity_frozen`, which is why `consulteeMembershipId` alone is a lifetime identity and no snapshot column exists | `decisionVisibleToViewer`; the request/response guards + the consultation INSERT seal |
+| P25c | the PROJECTED path THROUGH BOTH EVENTS: after the request, the consultee's `decisions.inbox` slice admits exactly the consulted decision and a same-role non-consultee's does not; after the RESPONSE, the projected slice carries the ANSWERED thread (a fold that consumes `consultation_requested` but drops `consultation_responded` fails here); and a rebuild preserves BOTH states (live == projection == rebuild after the request AND after the response). The audience travels in the EVENT PAYLOAD, resolved once at emit — not re-resolved from `Membership` at fold time, which would be a cross-module read from a projection (review round 9); it is stable across a rebuild because `Membership_t4b_identity_frozen` makes the identity immutable, so payload and live agree by construction rather than by snapshot bookkeeping | the `decisions.inbox` projection row schema/fold/filter (decider-only today) |
+| P25d | the response-side DB seal: a direct `DecisionConsultationResponse` INSERT against an ineligible decision; one whose recorded `respondedById` is not the consultee's user as resolved by `phase6_membership_active_user(projectId, consulteeMembershipId)`; one naming a REMOVED consultee's own user (removed-then-hostile-insert — the same locked call returns NULL once the membership is inactive); one into an already-archived project — each refused at the database; AND the DIRECT-insert-vs-archive BARRIER asserted as its TWO reachable outcomes (review round 9: insert-first takes the `Project` lock, reads operable and COMMITS, the archive committing after it — historical evidence against a then-operable project; archive-first makes the insert wait and REJECT. A uniform "refused in both orderings" was unreachable and contradicted this plan's own P41 row) | the response table's migration seals + the `respondedById` column they judge |
 | P26 | consultation pushes exact: consultee push on request, requester push on response — including the org-admin requester with no membership row | the user-target dispatch delivered by 4b (P21) |
 | P27 | EVERY project-scoped consultation FK proven by hostile insert, not just claimed: a consultation pairing project A with project B's DECISION; one pairing project A with project B's consultee MEMBERSHIP; a response whose `projectId` disagrees with its consultation's; and the option arms — an out-of-range index refused at the contract, a foreign decision's option id refused by the `(decisionId, id)` composite FK (a 4c-i that accidentally created scalar FKs fails these before the migration becomes immutable history) | the consultation-row and response-row composite FKs and candidate keys |
-| P38c/P40c | the consultation push families' pre-send AND claim-time standing, PROJECT OPERABILITY FIRST: a project archived — or a consultee removed, or RE-KEYED away (the claim requires the membership to still RESOLVE to the snapshot `consulteeUserId`, the response seal's own arm applied at send time), or a requester demoted — between enqueue and claim never receives decision content (the transactional `isProjectOperable` lock-and-check; re-targeted or dropped with the recorded mark); an ALREADY-ANSWERED `consultation_requested` delivery is cancelled with the recorded mark (no request-to-respond push after the response exists); a still-standing consultee push survives; and the MIXED-VERSION arms for ALL THREE consumer classes — an old-release projection worker never folds a consultation event with its old serializer, an old-release push worker never sends past the family predicates, and while an old-release API READER is still serving, the consultation WRITE surface refuses (nothing commits that a reader cannot show; once the gate opens the consultee's read is correct on every instance) — each probed with an old-shaped consumer beside the new | the per-family predicate registration (decider-only today) + the pre-send guard + the ordered-consumer rollout seam + the reader-contract gate |
+| P38c/P40c | the consultation push families' pre-send AND claim-time standing, PROJECT OPERABILITY FIRST: a project archived — or a consultee removed (the claim re-resolves the membership through `phase6_membership_active_user`, which returns NULL once it is inactive — the response seal's own arm applied at send time), or a requester demoted — between enqueue and claim never receives decision content (the transactional `isProjectOperable` lock-and-check; re-targeted or dropped with the recorded mark); an ALREADY-ANSWERED `consultation_requested` delivery is cancelled with the recorded mark (no request-to-respond push after the response exists); a still-standing consultee push survives; and the MIXED-VERSION arms for ALL THREE consumer classes — an old-release projection worker never folds a consultation event with its old serializer, an old-release push worker never sends past the family predicates, and while an old-release API READER is still serving, the consultation WRITE surface refuses (nothing commits that a reader cannot show; once the gate opens the consultee's read is correct on every instance) — each probed with an old-shaped consumer beside the new | the per-family predicate registration (decider-only today) + the pre-send guard + the ordered-consumer rollout seam + the reader-contract gate |
 | P41 | eligibility is checked UNDER the decision row lock on BOTH write paths, barrier-controlled in both orderings each: request-vs-withdraw (request-first → withdraw sees the widening it must revoke nothing for; withdraw-first → request 409); response-vs-withdraw (response-first → the advice and its push stand against a then-eligible decision; withdraw-first → respond 409, NO response row and NO `consultation_responded` effect exists — the final-state invariant asserted directly); archive-vs-response (respond-first → the advice stands against a then-operable project; archive-first → respond 409 with no row and no effect — the in-tx `isProjectOperable` lock-and-check serializing the two); AND archive-vs-REQUEST (request-first → the consultation and its push stand; archive-first → request 409, NO consultation row and NO `consultation_requested` effect exists — review round 3: §A binds BOTH write commands to the in-tx operability lock, and without this arm an implementation could lock the response path only, letting a request that passed the outer access check append into a concurrently-archived project while every listed ordering passed) | the consultation command's AND the response command's lock acquisition |
 
 Two delivered-4b disciplines apply to every row above without needing their
@@ -447,10 +457,15 @@ external-effect catalogs.
   disagree on `main`", and the two-step produced exactly the failure that rule
   forbids — pointer PR #472 merged naming `open_pr: 473`, #473 was then
   replaced at its round limit, and `main` was left resolving
-  `assessRunnerState` to a CLOSED PR. A folded record names `open_pr: none`
-  (it lands with its own PR's merge, at which moment that PR is closed, so
-  naming it would be stale on arrival) and leans on `task_state: in_progress`
-  + `task: 4` → `task:4`, actionable and ordering-immune. The deferral gate's
+  `assessRunnerState` to a CLOSED PR. A folded record NAMES ITS OWN PR in `open_pr`
+  (review round 9, correcting an earlier draft of this very paragraph that
+  said `none`): `assessPostMergeRunnerState` simulates the merge by clearing
+  a SELF-REFERENTIAL `open_pr` before resolving, so naming it survives its
+  own merge — falling back to `task: 4` — while ALSO keeping
+  `detectStatusDrift` quiet for the whole time the PR is open. Recording
+  `none` beside a live autonomous PR is the drift the shepherd exists to
+  report, and every future unit folding its STATUS follows the self-naming
+  convention. The deferral gate's
   "land the STATUS change on its own" branch does NOT conflict: it fires only
   for a docs-only head at three or more finding-bearing heads, which the
   two-finding-head replacement reset makes unreachable within one PR. Past
@@ -463,8 +478,8 @@ external-effect catalogs.
   PR a violation of the repository's migration review-unit rule, and this
   plan takes the seam rather than claiming an inseparable unit):
   - **4c-i, the migration unit**: ONE additive migration only — the two
-    tables (with their own `projectId`, the `consulteeUserId` snapshot,
-    and `respondedById`), the composite
+    tables (with their own `projectId` and the response's `respondedById`),
+    the composite
     FKs and candidate keys (including the additive vacuously-satisfiable
     `(decisionId, id)` UNIQUE index on the existing `DecisionOption`), the
     CHECKs, the response UNIQUE, the row-level append-only seals PLUS the
@@ -519,11 +534,28 @@ external-effect catalogs.
     PUSH worker claiming a consultation delivery recognizes no family and
     falls through to the unguarded targeted send, bypassing every claim
     predicate §B.3 requires. 4c-ii therefore carries ONE mandated
-    compatibility mechanism, the EMISSION GATE: the new families are not
-    EMITTED until every serving consumer recognizes them (the server enables
-    emission on the advertised consumer contract, the same
-    never-in-one-mixed-version-step rule the cleared contractor-capture unit
-    6 records). **The alternative an earlier draft allowed — "or an
+    compatibility mechanism, the EMISSION GATE — and its predicate is an
+    EXPLICIT OPERATOR ENABLEMENT, not an inferred fleet state (review round
+    9). There is no repo-wide signal that could answer "is every serving
+    process upgraded": `OutboxConsumerCatalog.catalogVersion` is a per-consumer
+    CONTRACT version and `syncConsumerCatalog` upserts one global row per
+    consumer name, asserting compiled-vs-persisted and THROWING on drift
+    (`platform/outbox/registry.ts`) — it cannot enumerate processes or their
+    releases, and no equivalent advertisement exists for API readers at all.
+    Opening a gate from that state would be opening it blind; waiting on it
+    would disable consultation writes forever. So the seam is the one this
+    repository already uses for staged capability: 4c-ii ships the consumers
+    and readers that UNDERSTAND the families while emission stays OFF, and a
+    pmc/operator step turns it on per project through the delivered
+    `ProjectCapability` mechanism (`capability:enable`, the same per-project
+    row `materials` and `labour` ride) AFTER the rollout is confirmed
+    complete. The deploy-then-enable order is a RUNBOOK step, the capability
+    row is the machine-checkable predicate the write surface and the emitter
+    both read, and 4c-ii's probes assert BOTH states: capability off → the
+    consultation commands 404/refuse and NOTHING is emitted (byte-identical
+    to today for every other project); capability on → the full flow, with
+    the mixed-version arms run against an old-shaped consumer to prove what
+    the gate was protecting. **The alternative an earlier draft allowed — "or an
     old-version claim structurally refuses the unrecognized family" — is
     STRUCK as impossible** (review round 8): a change shipped IN 4c-ii
     cannot alter the behaviour of a process that is ALREADY RUNNING, and the
