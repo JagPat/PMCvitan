@@ -400,15 +400,40 @@ revision — status check passes, same-transaction check passes, and the forged
 revision is exactly what downstream provenance would trust. The correspondence
 must therefore be to the TRANSITION, which only the approval command performs.
 The revision carries a `sourceCommandId` FK to `CommandExecution`, and the
-trigger requires that receipt to be reserved in THIS transaction with the
-approval command's `commandType`. That reuses a cleared mechanism rather than
-inventing one: the delivered receipt protocol already refuses a receipt minted
-terminal, freezes `commandType` and `actorId`, and requires reserve and
-complete to share one transaction — so forging a revision now requires forging
-a command receipt, which is the residual §B already documents and bounds
-(`docs/RUNBOOK.md §CMDR`), not a new hole. The hostile arm is stated against
-the case that defeats the weaker test: an ALREADY-approved decision, a no-op
-`UPDATE`, and a revision INSERT carrying no approval receipt — REFUSED. The hostile arm joins §C: a direct
+check is at DEFERRED COMMIT TIME, requiring that receipt to have SUCCEEDED and
+its `resultRef` to identify THIS decision (review round 29). A reserved-only
+test is not enough, and the gap is in the delivered protocol's own shape: the
+receipt seal permits a `reserved` INSERT and validates completion only if an
+UPDATE occurs, so an alternate writer could insert a reserved
+`decisions.approve` receipt and a revision citing it in ONE transaction and
+commit — never approving the decision, never completing the receipt — and the
+revision count would advance, invalidating every open consultation cycle. A
+deferred constraint trigger closes it because the completion must exist AT
+COMMIT, which is precisely when `executeCommand`'s own succeeded receipt is
+written; binding the `resultRef` to this decision stops a receipt for some
+other command being borrowed. That reuses a cleared mechanism rather than
+inventing one: the receipt seal already refuses a receipt minted terminal,
+freezes `commandType` and `actorId`, and requires reserve and complete to
+share one transaction — so forging a revision now requires forging a COMPLETED
+command receipt naming this decision, which is the residual §B documents and
+bounds (`docs/RUNBOOK.md §CMDR`), not a new hole. Two hostile arms: an
+ALREADY-approved decision with a no-op `UPDATE` and a revision carrying no
+approval receipt — REFUSED; and a revision citing a receipt left `reserved` at
+commit — REFUSED at commit.
+
+**And the requirement is STAGED, because 4c-i cannot enforce it** (review
+round 29). The delivered `DecisionsService.approve` writes its
+`DecisionApprovalRevision` with no `sourceCommandId`
+(`apps/api/src/decisions/decisions.service.ts`), and 4c-i is explicitly the
+DARK unit the previous release must keep running against. Installing the
+requirement there would reject every approval performed by a still-serving 4b
+instance — a live workflow broken by a migration whose whole premise is that
+consultation stays dark and nothing else changes. So 4c-i adds the column
+NULLABLE and enforces nothing; 4c-ii's writer populates it; and the trigger
+lands in 4c-ii's own migration, which runs AFTER the drain-first cutover, at
+the one moment the plan already guarantees zero old instances. 4c-i's
+old-release compatibility probe gains the arm that proves it: a PREVIOUS-release
+approval against the 4c-i-migrated schema SUCCEEDS. The hostile arm joins §C: a direct
 revision INSERT against a live `pending` decision with an open consultation is
 REFUSED, and the consultation stays answerable. The
 `consultation_requested` claim predicate (§B.3) checks the frozen cycle too,
@@ -475,6 +500,27 @@ half-converted. 4c-i then installs the seal against an already-centralized
 reset and stays inside the budget. A seal whose only artifact is its migration
 is not finished: the repository's own reset contract is part of installing it,
 and "the reset" means every sanctioned one — cascades included.
+
+**And the sweep covers `ProjectCapability`, not only the approval register**
+(review round 29). 4c-0 was scoped to the tables the consultation seals name,
+which was correct when 4c-iii's preservation seal had row-level arms only —
+row triggers never fire for `TRUNCATE`, so a truncating suite was unaffected.
+Round 26 added the statement-level `BEFORE TRUNCATE` arm and, in doing so,
+brought a table the sweep does not cover into the sealed set: a dozen-plus
+sanctioned suites truncate `ProjectCapability` directly or through a cascade
+list (`phase3-procurement`, `phase3-t23-correction`, the phase-4 t1/t2/t4
+suites, the phase-5 budget/certification/payment suites, and the phase-6 t1a
+pair the review names). Once 4c-iii installs that arm, every one of them fails
+IN SETUP — even against an empty table, because `TRUNCATE` fires the statement
+trigger regardless of row count — and 4c-iii is declared migration-only with
+no reset change scheduled. So the round-26 completeness fix silently created a
+round-29 obligation, which is exactly the coupling the sweep exists to make
+visible: 4c-0's conversion extends to EVERY direct and cascade
+`ProjectCapability` reset, and its probe runs a converted suite with the
+preservation seal installed rather than merely asserting the helper compiles.
+The general rule, stated once so the next seal does not repeat this: adding an
+arm to a seal extends the set of tables whose resets 4c-0 must own, and the two
+are reviewed together.
 
 **And the eligibility is sealed at the ROW, not only the command** (round 4):
 the append-only `DecisionConsultation` row is the durable fact that widens
@@ -1134,9 +1180,21 @@ external-effect catalogs.
     persisted version either. Round 27 specified a probe its own fix could
     never pass). The old rebuild is instead made STRUCTURALLY incompatible at
     the one boundary every binary must traverse: 4c-ii's catalog-data migration
-    adds a NOT NULL, no-default `catalogVersion` column to the projection
+    adds a `catalogVersion` column to the projection
     generation row, which the new code supplies and the previous release — which
-    does not know the column exists — cannot. Its INSERT is rejected by
+    does not know the column exists — cannot. **In THREE steps, not one**
+    (review round 29): `ADD COLUMN ... NOT NULL` with no default fails
+    immediately on any deployment that already holds a `ProjectionGeneration`
+    row, because every existing row would take NULL — so round 28's one-step
+    form was undeployable anywhere real, and would have failed the catalog
+    migration and blocked the whole 4c-ii deploy. The column is therefore added
+    NULLABLE, existing generations are backfilled to an explicit version, and
+    only THEN is `SET NOT NULL` applied — still with NO DEFAULT, which is what
+    preserves the fence: a future INSERT that names no version, as the previous
+    release's does, is rejected exactly as before. The backfill value is the
+    catalog version those generations were actually built at, which is the
+    pre-4c-ii one; it is written explicitly rather than defaulted, so no row
+    silently acquires a version it was not built with. Its INSERT is rejected by
     PostgreSQL before any generation is built or swapped. This lands exactly
     where the startup fence has no reach: an old WORKER is already stopped by
     `syncConsumerCatalog` at boot, and the rebuild CLI is the path that skips
