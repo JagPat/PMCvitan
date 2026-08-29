@@ -53,13 +53,24 @@ actually merged (not the pre-delivery sketch):
     identity against `consulteeUserId` in one owned call (the active check
     and the identity read cannot be two calls: between them the row can
     change);
-  - a PROJECTS-owned `phase6_project_operable(projectId)` — takes the
+  - an ORGS-owned `phase6_project_operable(projectId)` — takes the
     `Project` row's lock BEFORE reading `archivedAt`, returning operability,
     so the seals' lock-before-read ordering (§A) is the primitive's own
-    contract rather than each trigger's private SQL.
-  Both are registered exactly as the delivered three are (owned by the
-  module that owns the fact, granted to the decisions seals, named in the
-  module registry), and 4c-i installs them beside the seals that call them;
+    contract rather than each trigger's private SQL. **Orgs, not a
+    "projects" module** (review round 7): there is no `projects` module in
+    the registry — `orgs` owns `project` (`orgsManifest.ownsModels`) and the
+    existing lock-bearing `isProjectOperable` is already an `OrgsParticipant`
+    method, which the delivered decider claim path calls
+    (`decisions.query.ts`). Naming a fictitious owner would have required
+    either registering an impossible participant or letting a
+    decisions-owned primitive read another module's table; the SQL primitive
+    is the DB-side twin of that existing participant method, on the same
+    decisions → orgs boundary.
+  Both are therefore ORGS-owned and registered exactly as the delivered three
+  are (owned by the module that owns the fact, granted to the decisions
+  seals, named in the module registry), reaching the decisions seals through
+  the ALREADY-DECLARED decisions → orgs edge — no new module dependency —
+  and 4c-i installs them beside the seals that call them;
 - the round-11 LIVE-STANDING rule: an act's authorizing role is re-validated
   inside the transaction via `OrgsParticipant.hasProjectRoleStanding` with
   `forUpdate` — a guard-passed JWT role is never trusted at write time;
@@ -458,8 +469,10 @@ external-effect catalogs.
     `(decisionId, id)` UNIQUE index on the existing `DecisionOption`), the
     CHECKs, the response UNIQUE, the row-level append-only seals PLUS the
     two named statement-level no-TRUNCATE seals, the TWO NEW owned
-    primitives the seals call (`phase6_membership_active_user`,
-    `phase6_project_operable` — §"what carries forward" above), and the two
+    ORGS-owned primitives the seals call (`phase6_membership_active_user`,
+    `phase6_project_operable` — §"what carries forward" above; both owned by
+    `orgs`, which owns `membership` and `project`, reached over the
+    already-declared decisions → orgs edge), and the two
     INSERT
     eligibility seals — deployed dark (no caller, no contract, no route).
     Every statement is RETRY-SAFE (review round 2): `IF NOT EXISTS`/
