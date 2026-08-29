@@ -12,7 +12,7 @@
  * The query RESPONSE is the shared {@link Decision} view (re-exported here as `DecisionView`), so the
  * snapshot's decision slice and any future module-owned decision query share one response shape.
  */
-import type { Decision, DecisionStatus } from '../domain/types';
+import type { Decision, DecisionStatus, DeciderKind } from '../domain/types';
 
 /** The decisions module's state-changing commands (must equal the manifest `commands`). */
 export const DECISION_COMMANDS = [
@@ -23,6 +23,10 @@ export const DECISION_COMMANDS = [
   'decisions.withdrawChange',
   // Phase 6 task 4a — take back a published, never-approved decision (pmc authority, terminal).
   'decisions.withdraw',
+  // Phase 6 task 4b (§A.1/§A.2 round 8) — edit an UNPUBLISHED draft: re-point its decider
+  // (kind / named membership), convert to/from a record (`none` ⟺ `recorded` as one coherent
+  // pair), or replace its options. Publication freezes the holder; this is the drafting door.
+  'decisions.updateDraft',
 ] as const;
 export type DecisionCommand = (typeof DECISION_COMMANDS)[number];
 
@@ -43,6 +47,13 @@ export const DECISION_QUERIES = [
   // spec pins: server-resolved approved/reapproved version + the selected option; pending or
   // reopened decisions refuse (caller-authored provenance is never accepted).
   'decisions.approvedRef',
+  // Phase 6 task 4b (§A.2) — statusMap/statusOf plus the DRAFT flag: the gate reader's recorded
+  // arm gates a linked DRAFT record `wait` and a published one `na`, so readiness bakes need both.
+  'decisions.statusAndDraftMap',
+  'decisions.statusAndDraftOf',
+  // Phase 6 task 4b (§A.3) — the decider push family's claim-time predicate (bound at bootstrap):
+  // is a queued "decide this" push still actionable, and for whom?
+  'decisions.deciderPushTarget',
 ] as const;
 export type DecisionQuery = (typeof DECISION_QUERIES)[number];
 
@@ -60,13 +71,36 @@ export interface DecisionOptionInput {
   readonly recommended: boolean;
 }
 
-/** `decisions.create` — issue a decision (as a draft, or published in one step). */
+/** `decisions.create` — issue a decision (as a draft, or published in one step).
+ *  Phase 6 task 4b (§A.1; round-10 Codex F2) — the decider designation is part of the PUBLIC
+ *  command contract, not an API-private widening: consumers typed against this package must be
+ *  able to construct a pmc/member/record issue without casts. Post-validation shape: the
+ *  `deciderKind` default ('client') is applied, so it is REQUIRED here. */
 export interface CreateDecisionInput {
   readonly title: string;
   readonly nodeId?: string;
   readonly room: string;
   readonly options: readonly DecisionOptionInput[];
   readonly publish: boolean;
+  /** WHO decides — 'client' (the legacy default), 'pmc', a named 'member', or 'none' (a record). */
+  readonly deciderKind: DeciderKind;
+  /** the named holder's ACTIVE membership id — required exactly when `deciderKind='member'`. */
+  readonly deciderMembershipId?: string;
+}
+
+/** `decisions.updateDraft` — edit an UNPUBLISHED draft (Phase 6 task 4b §A.1 round 8; the
+ *  contract joined the shared surface in round-10 Codex F2): re-point the decider (kind / named
+ *  membership), convert to/from a record (`none` ⟺ `recorded` as one coherent pair — a
+ *  conversion off a record carries its 2–4 options in the SAME edit, and a conversion TO a
+ *  record removes them in the same edit), or replace title/location/options. Omitted fields are
+ *  left untouched; `nodeId: null` explicitly clears the tree link. */
+export interface UpdateDecisionDraftInput {
+  readonly title?: string;
+  readonly nodeId?: string | null;
+  readonly room?: string;
+  readonly options?: readonly DecisionOptionInput[];
+  readonly deciderKind?: DeciderKind;
+  readonly deciderMembershipId?: string;
 }
 
 /** `decisions.approve` — the client chooses an option (locks the decision). */

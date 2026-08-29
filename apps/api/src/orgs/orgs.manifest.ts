@@ -21,7 +21,11 @@ export const orgsManifest: ModuleManifest = {
   // Labour's query contract (`Worker` is Labour-owned + read-encapsulated). Labour is a LEAF, so
   // this edge closes no cycle.
   dependsOn: ['decisions', 'inspections', 'labour'],
-  workflowParticipants: ['nodes', 'activities', 'inspections'],
+  // Phase 6 task 4b (§A.1) — the membership/org-membership standing writes consult the
+  // DECISIONS-owned open-holder answer (`DecisionsParticipant.holdsOpenDecisions`) inside their
+  // own transaction before committing — the orgs → decisions half of the bidirectional
+  // orgs ⇄ decisions participant channel (decisions already declares `orgs`).
+  workflowParticipants: ['nodes', 'activities', 'inspections', 'decisions'],
   producesEvents: [
     'project.created',
     'project.updated',

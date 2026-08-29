@@ -2,7 +2,9 @@ import { useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { parseLocation, pathForScreen, screensFor, SCREEN_CAPABILITY } from '@/lib/screens';
+import { DEV_AUTH } from '@/data/apiGateway';
+import { viewerIsDecider } from '@vitan/shared';
+import { parseLocation, pathForScreen, screensFor, withDeciderRoute, SCREEN_CAPABILITY } from '@/lib/screens';
 
 /**
  * Keeps the URL, the active project, and the active screen in sync — the URL is
@@ -26,6 +28,31 @@ export function RouteBridge() {
   const memberships = useStore(useShallow((s) => s.memberships));
   const capabilities = useStore(useShallow((s) => s.capabilities));
   const capabilitiesKnown = useStore((s) => s.capabilitiesKnown);
+  // Phase 6 task 4b (§A.3 round 4) — the approval route follows the DECIDER: a viewer holding at
+  // least one open decision keeps `client-decisions` reachable (the Inbox CTA lands and stays);
+  // a same-role non-decider is still bounced.
+  const isOpenDecider = useStore((s) =>
+    s.decisions.some(
+      (d) => !d.draft && (d.status === 'pending' || d.status === 'change') && viewerIsDecider(d, s.role, s.sessionUserId),
+    ),
+  );
+  // Round-1 Codex F7 — the settled-slice inputs: an authed viewer with no data yet is a read in
+  // flight; a signed-out or locally-seeded state is already as settled as it will get.
+  // Round-10 Codex F4 — "authed" is the SESSION IDENTITY, never the adopted token alone: a
+  // dev-auth session holds its JWT inside the gateway (`sessionToken` stays null) and records
+  // its identity as `sessionUserId` only after `connect` resolves. Judging the slice as a
+  // signed-out settled state in that window would consume a PMC/member decider's bookmarked
+  // `/client/decisions` link against the seeded or previous slice — so under DEV_AUTH the
+  // viewer counts as authed from the start, and while the connect has not yet recorded the
+  // identity the slice is explicitly NOT judgeable (`identityPending` below).
+  const tokenPresent = useStore((s) => s.sessionToken !== null);
+  const sessionUserId = useStore((s) => s.sessionUserId);
+  const authed = tokenPresent || sessionUserId !== null || DEV_AUTH;
+  const identityPending = DEV_AUTH && !tokenPresent && sessionUserId === null;
+  const hasDecisions = useStore((s) => s.decisions.length > 0);
+  // Replacement round (Codex R2-F2) — the module-read decision slice reports its OWN health: a
+  // failed or in-flight decisions read is NOT a settled slice even when the snapshot landed.
+  const decisionsLoad = useStore((s) => s.decisionsLoad);
   const setScreen = useStore((s) => s.setScreen);
   const switchProject = useStore((s) => s.switchProject);
   const navigate = useNavigate();
@@ -70,19 +97,47 @@ export function RouteBridge() {
     // like any forbidden screen. While capabilities are still UNKNOWN (cold load, shell in
     // flight or failed) nothing is bounced — a pilot deep link must survive the shell latency.
     const caps = new Set(capabilities);
-    const allowed = screensFor(role)
-      .filter((m) => {
-        const cap = SCREEN_CAPABILITY[m.key];
-        return cap === undefined || !capabilitiesKnown || caps.has(cap);
-      })
-      .map((m) => m.key);
+    // Round-1 Codex F7 — the decider route is judged only against a SETTLED decision slice: on a
+    // cold load `isOpenDecider` is false merely because the viewer-scoped decisions have not
+    // arrived, and bouncing `/client/decisions` then would eat a named decider's bookmarked
+    // approval link. While the read is in flight ('loading'/'switching' — and the authed
+    // pre-fetch instant where 'idle' still holds no data) the route stays reachable, exactly
+    // the capability branch's unknown-state posture; once the slice settles ('ready', or local
+    // data already present) a real non-decider is bounced by this same effect re-running on
+    // the load-state change.
+    // Replacement round (Codex R2-F2): in module-read mode the decisions request can fail
+    // INDEPENDENTLY while the snapshot succeeds (`projectLoadState: 'ready'` with
+    // `decisionsLoad: 'error'`), retaining an empty/stale list — that slice is NOT settled, so
+    // the decider route holds until Retry resolves the read one way that can be judged.
+    // Round-6 Codex F4 — the SNAPSHOT-mode failure is the same unknown: a cold load ending in
+    // `projectLoadState: 'error'` holds an EMPTY slice nothing judged, so it must not settle
+    // either — the bookmarked approval route survives the transient failure until a
+    // decision-bearing read succeeds (Retry / the next refresh), never consumed by an outage.
+    // Round-10 Codex F4 — a dev-auth connect still in flight is an UNKNOWN identity: whatever
+    // decisions the store holds belong to the seed or the previous persona, so the slice is
+    // not judgeable until the issued identity lands (then the normal settle rules apply).
+    const sliceHealthy = decisionsLoad === 'idle' || decisionsLoad === 'ready';
+    const decisionsSettled =
+      sliceHealthy
+      && !identityPending
+      && (projectLoadState === 'ready'
+        || (projectLoadState === 'idle' && (!authed || hasDecisions)));
+    const allowed = withDeciderRoute(
+      screensFor(role)
+        .filter((m) => {
+          const cap = SCREEN_CAPABILITY[m.key];
+          return cap === undefined || !capabilitiesKnown || caps.has(cap);
+        })
+        .map((m) => m.key),
+      isOpenDecider || !decisionsSettled,
+    );
     if (!fromPath || !allowed.includes(fromPath)) {
       if (screen !== allowed[0]) setScreen(allowed[0]);
       return;
     }
     if (fromPath !== screen) setScreen(fromPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname, role, activeProjectId, memberships, pendingProjectId, projectLoadState, capabilities, capabilitiesKnown]);
+  }, [location.pathname, role, activeProjectId, memberships, pendingProjectId, projectLoadState, capabilities, capabilitiesKnown, isOpenDecider, authed, identityPending, hasDecisions, decisionsLoad]);
 
   // store -> URL (canonical project-scoped path). ONE-WAY during a transition: while
   // a switch is pending or the target project is loading, the deep link's URL is the

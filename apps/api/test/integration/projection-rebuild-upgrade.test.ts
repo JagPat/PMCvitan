@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, seedPublishedDecision } from './fixtures';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
 import { ProjectionRebuildOperations, REBUILDABLE_PROJECTIONS } from '../../src/platform/projections/rebuild-operations';
@@ -95,9 +95,12 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
     // approval DecisionEvents are undeletable evidence (round 12) — the sanctioned
     // destructive-reset helper wipes them with the named seal disabled
     await wipeDecisionEvents(t.prisma, { decision: { projectId: { startsWith: 'it-upg-' } } });
+    // options of a published parent are frozen (4b widened freeze) — same sanctioned bypass
+    await wipeDecisionsVia(t.prisma, async (tx) => {
+      await tx.decisionOption.deleteMany({ where: { decision: { projectId: { startsWith: 'it-upg-' } } } });
+      await tx.decision.deleteMany({ where: { projectId: { startsWith: 'it-upg-' } } });
+    });
     for (const [model, where] of [
-      ['decisionOption', { decision: { projectId: { startsWith: 'it-upg-' } } }],
-      ['decision', { projectId: { startsWith: 'it-upg-' } }],
       ['drawingRecipient', { projectId: { startsWith: 'it-upg-' } }],
       ['drawingRevision', { projectId: { startsWith: 'it-upg-' } }],
       ['drawing', { projectId: { startsWith: 'it-upg-' } }],
@@ -120,30 +123,27 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
       data: { id, orgId: f.orgA.id, name: id, short: 'P', descriptor: '', stage: 'x', siteCode: 'P', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0, timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') },
     });
     await t.prisma.membership.create({ data: { projectId: id, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+    // an active client member — the 4b publication arm requires standing for the default client holder
+    await t.prisma.membership.create({ data: { projectId: id, userId: f.clientUser.id, role: 'client', status: 'active' } });
     return id;
   };
 
   /** A canonical PUBLISHED decision created DIRECTLY (predates the event stream — the seeded /
    *  imported register the legacy consumer lazily bootstrapped over; no decision event exists). */
   const makeDecision = async (projectId: string, id: string): Promise<void> => {
-    await t.prisma.decision.create({
-      data: {
-        id,
-        projectId,
-        title: `Upgrade probe ${id}`,
-        room: 'Living',
-        photoSwatch: 'sw-probe',
-        status: 'pending',
-        publishedAt: new Date('2026-07-01T00:00:00.000Z'),
-        authorId: f.memberUser.id,
-        options: {
-          create: [
-            { label: 'Option A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw-a', order: 1, recommended: true },
-            { label: 'Option B', optionKey: 'b', material: 'Walnut', delta: 25000, swatch: 'sw-b', order: 2 },
-          ],
-        },
-      },
-    });
+    // re-ordered seed (4b): unpublished birth with its options, published in the same transaction
+    await seedPublishedDecision(t.prisma, {
+      id,
+      projectId,
+      title: `Upgrade probe ${id}`,
+      room: 'Living',
+      photoSwatch: 'sw-probe',
+      status: 'pending',
+      authorId: f.memberUser.id,
+    }, [
+      { label: 'Option A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw-a', order: 1, recommended: true },
+      { label: 'Option B', optionKey: 'b', material: 'Walnut', delta: 25000, swatch: 'sw-b', order: 2 },
+    ]);
   };
 
   /** A FOREIGN (non-decision) event — establishes the committed stream head without ever firing

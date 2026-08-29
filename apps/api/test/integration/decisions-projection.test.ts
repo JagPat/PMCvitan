@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisions } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisions, wipeDecisionsVia } from './fixtures';
 import { emitEvent } from '../../src/platform/events';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
@@ -39,6 +39,9 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
     query = t.app.get(DecisionsQueryService);
     human.actorId = f.memberUser.id;
     authorId = f.memberUser.id;
+    // Phase 6 task 4b — projectA publishes client-held decisions in the HTTP probe below, and
+    // publication re-validates client standing at the DB: give the project an active client.
+    await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: f.strangerUser.id, role: 'client', status: 'active' } });
   });
   afterAll(async () => {
     await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection" CASCADE');
@@ -47,9 +50,13 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
   });
   afterEach(async () => {
     await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection" CASCADE');
-    await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: { startsWith: 'it-dpj-' } } } });
-    await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId: { startsWith: 'it-dpj-' } } } });
-    await wipeDecisions(t.prisma, { projectId: { startsWith: 'it-dpj-' } });
+    // Phase 6 task 4b — options of published parents leave WITH their heads through the ONE
+    // sanctioned bypass (the option freeze now covers every published parent).
+    await wipeDecisionsVia(t.prisma, async (tx) => {
+      await tx.decisionOption.deleteMany({ where: { decision: { projectId: { startsWith: 'it-dpj-' } } } });
+      await tx.changeRequest.deleteMany({ where: { decision: { projectId: { startsWith: 'it-dpj-' } } } });
+      await tx.decision.deleteMany({ where: { projectId: { startsWith: 'it-dpj-' } } });
+    });
     await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-dpj-' } } });
   });
 
@@ -58,6 +65,10 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
     await t.prisma.project.create({
       data: { id, orgId: f.orgA.id, name: id, short: 'O', descriptor: '', stage: 'x', siteCode: 'O', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
     });
+    // Phase 6 task 4b — publication re-validates the holder's standing at the DB: a project
+    // publishing client-held decisions must actually HAVE an active client (the zero-holder
+    // birth the guard exists to prevent).
+    await t.prisma.membership.create({ data: { projectId: id, userId: f.strangerUser.id, role: 'client', status: 'active' } });
     return id;
   };
 
@@ -70,10 +81,26 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
   ): Promise<void> => {
     const status = opts.status ?? 'pending';
     const publishedAt = opts.draft ? null : new Date();
-    await t.prisma.decision.create({
-      data: { id, projectId, title: `Title ${id}`, room: 'GF · Living', status, ageDays: 2, photoSwatch: 'marble', publishedAt, authorId },
+    // Phase 6 task 4b — a fixture mirrors the RE-ORDERED create the seals enforce: the head
+    // births UNPUBLISHED with its 2-option set, and publication is a same-transaction UPDATE
+    // (the option freeze refuses option INSERTs into a published parent, and the deferred
+    // option floor re-counts the published aggregate at commit).
+    await t.prisma.$transaction(async (tx) => {
+      await tx.decision.create({
+        data: {
+          id, projectId, title: `Title ${id}`, room: 'GF · Living', status, ageDays: 2, photoSwatch: 'marble', publishedAt: null, authorId,
+          options: {
+            createMany: {
+              data: [
+                { label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 1000, swatch: 'teak', recommended: true, order: 0 },
+                { label: 'Opt B', optionKey: 'b', material: 'Oak', delta: 0, swatch: 'oak', recommended: false, order: 1 },
+              ],
+            },
+          },
+        },
+      });
+      if (publishedAt) await tx.decision.update({ where: { id }, data: { publishedAt } });
     });
-    await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 1000, swatch: 'teak', recommended: true, order: 0 } });
     if (opts.withChangeRequest) {
       await t.prisma.changeRequest.create({ data: { decisionId: id, reason: 'reopen', costImpact: 500, timeImpactDays: 3, status: 'open', requestedById: authorId } });
     }
@@ -182,8 +209,24 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
     // projectA carries an active pmc membership for memberUser (the fixture) — hit the real routes.
     const pid = f.projectA.id;
     const token = t.issueProjectToken(f.memberUser.id, pid, 'pmc');
-    await t.prisma.decision.create({ data: { id: 'DL-HTTP', projectId: pid, title: 'Wired', room: 'GF', status: 'pending', ageDays: 1, photoSwatch: 'marble', publishedAt: new Date(), authorId: f.memberUser.id } });
-    await t.prisma.decisionOption.create({ data: { decisionId: 'DL-HTTP', label: 'A', optionKey: 'a', material: 'A', delta: 0, swatch: 'marble', order: 0 } });
+    // Phase 6 task 4b — the RE-ORDERED create the seals enforce (see makeDecision): unpublished
+    // birth + options, publication as a same-transaction UPDATE.
+    await t.prisma.$transaction(async (tx) => {
+      await tx.decision.create({
+        data: {
+          id: 'DL-HTTP', projectId: pid, title: 'Wired', room: 'GF', status: 'pending', ageDays: 1, photoSwatch: 'marble', publishedAt: null, authorId: f.memberUser.id,
+          options: {
+            createMany: {
+              data: [
+                { label: 'A', optionKey: 'a', material: 'A', delta: 0, swatch: 'marble', order: 0 },
+                { label: 'B', optionKey: 'b', material: 'B', delta: 0, swatch: 'stone', order: 1 },
+              ],
+            },
+          },
+        },
+      });
+      await tx.decision.update({ where: { id: 'DL-HTTP' }, data: { publishedAt: new Date() } });
+    });
     try {
       const shell = await request(t.app.getHttpServer()).get(`/projects/${pid}/shell`).set('Authorization', `Bearer ${token}`).expect(200);
       expect(shell.body.id).toBe(pid);
@@ -196,8 +239,12 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
       expect(dec.body.source).toBe('live');
       expect(dec.body.decisions.map((d: { id: string }) => d.id)).toContain('DL-HTTP');
     } finally {
-      await t.prisma.decisionOption.deleteMany({ where: { decisionId: 'DL-HTTP' } });
-      await wipeDecisions(t.prisma, { id: 'DL-HTTP' });
+      // options + head through the ONE sanctioned bypass (the 4b option freeze covers every
+      // published parent, so a bare option delete would refuse)
+      await wipeDecisionsVia(t.prisma, async (tx) => {
+        await tx.decisionOption.deleteMany({ where: { decisionId: 'DL-HTTP' } });
+        await tx.decision.deleteMany({ where: { id: 'DL-HTTP' } });
+      });
     }
   });
 });

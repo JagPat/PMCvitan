@@ -204,7 +204,10 @@ export interface ArchivedProject {
 }
 
 /** Issue-decision payload (PMC): 2–4 options; photoUrl comes from a prior media upload.
- *  Location is either a tree node (`nodeId`, authoritative) or the free-text `room`. */
+ *  Location is either a tree node (`nodeId`, authoritative) or the free-text `room`.
+ *  Phase 6 task 4b — `deciderKind` says WHO decides (server default 'client', byte-identical
+ *  legacy behaviour when omitted); `member` requires the named membership id; `none` files a
+ *  RECORD (exactly zero options, born terminal `recorded`). */
 export interface NewDecisionInput {
   title: string;
   nodeId?: string;
@@ -212,6 +215,16 @@ export interface NewDecisionInput {
   options: { material: string; delta: number; swatch: string; photoUrl?: string; recommended?: boolean }[];
   /** default false → saved as a private draft; true → issued to the client in one step */
   publish?: boolean;
+  deciderKind?: 'client' | 'pmc' | 'member' | 'none';
+  deciderMembershipId?: string;
+}
+
+/** Phase 6 task 4b (§A.1/§A.2) — edit an UNPUBLISHED draft: re-point its decider, convert
+ *  to/from a record (kind + status + options move as one coherent pair), or replace options. */
+export interface UpdateDecisionDraftInput {
+  deciderKind?: 'client' | 'pmc' | 'member' | 'none';
+  deciderMembershipId?: string;
+  options?: { material: string; delta: number; swatch: string; photoUrl?: string; recommended?: boolean }[];
 }
 
 /** Create a location-tree node (PMC). */
@@ -478,8 +491,11 @@ export class ApiGateway {
     this.projectId = projectId;
   }
 
-  /** Obtain a scoped session token for the given role (passwordless dev auth). */
-  async connect(role: Role): Promise<void> {
+  /** Obtain a scoped session token for the given role (passwordless dev auth). Returns the
+   *  issued token so the caller can record the session IDENTITY it carries (round-7 Codex F3
+   *  — the audience predicates key on the store's `sessionUserId`, which must be populated on
+   *  this path exactly like a real sign-in). */
+  async connect(role: Role): Promise<string | null> {
     const res = await fetch(`${this.base}/auth/session`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -487,6 +503,7 @@ export class ApiGateway {
     });
     if (!res.ok) throw new Error(`auth/session ${res.status}`);
     this.token = (await res.json()).token;
+    return this.token;
   }
 
   /** Adopt an already-issued token (from a real sign-in) for subsequent calls. */
@@ -661,9 +678,13 @@ export class ApiGateway {
   createDecision(input: NewDecisionInput, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.p('/decisions', input, idempotencyKey);
   }
-  /** Publish a private draft decision (PMC) → issue it to the client. */
+  /** Publish a private draft decision (PMC) → issue it to the decider. */
   publishDecision(decisionId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.p(`/decisions/${decisionId}/publish`, {}, idempotencyKey);
+  }
+  /** Phase 6 task 4b — edit an UNPUBLISHED draft (decider re-point / record conversion / options). */
+  updateDecisionDraft(decisionId: string, input: UpdateDecisionDraftInput, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.req(`/projects/${this.projectId}/decisions/${decisionId}/draft`, { method: 'PATCH', body: JSON.stringify(input), headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined });
   }
   /** Create a location node (zone/room/element) — PMC. Returns a node-carrying snapshot. */
   createNode(input: NewNodeInput): Promise<ApiSnapshot> {
@@ -744,6 +765,10 @@ export class ApiGateway {
       ...init,
       headers: {
         'Content-Type': 'application/json',
+        // Phase 6 unit 4b (Codex R2-F1) — this bundle understands the `recorded` status; the
+        // declaration is the version boundary that lets the server serve records to it while
+        // stripping them for a still-cached PREVIOUS bundle (which never sends the header).
+        'X-Vitan-Decisions-Contract': 'recorded-v1',
         ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
         ...(init?.headers ?? {}),
       },
@@ -1262,6 +1287,13 @@ export class ApiGateway {
     return this.req<{ ok: boolean }>(`/projects/${this.projectId}/push/subscribe`, {
       method: 'POST',
       body: JSON.stringify({ subscription }),
+    });
+  }
+  /** Phase 6 task 4b (§A.3 round 13) — unlink this browser's subscription at sign-out. */
+  pushUnlink(endpoint: string): Promise<{ ok: boolean }> {
+    return this.req<{ ok: boolean }>(`/projects/${this.projectId}/push/unlink`, {
+      method: 'POST',
+      body: JSON.stringify({ endpoint }),
     });
   }
 }

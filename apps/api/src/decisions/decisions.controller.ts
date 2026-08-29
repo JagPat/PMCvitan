@@ -1,10 +1,10 @@
-import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { DecisionsService } from './decisions.service';
 import { DecisionsQueryService } from './decisions.query';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
-import { approveSchema, changeSchema, createDecisionSchema, withdrawDecisionSchema, type ApproveInput, type ChangeInput, type CreateDecisionInput, type WithdrawDecisionInput } from '../contracts';
+import { approveSchema, changeSchema, createDecisionSchema, updateDecisionDraftSchema, withdrawDecisionSchema, type ApproveInput, type ChangeInput, type CreateDecisionInput, type UpdateDecisionDraftInput, type WithdrawDecisionInput } from '../contracts';
 
 @Controller('projects/:projectId/decisions')
 @UseGuards(JwtGuard, RolesGuard)
@@ -48,6 +48,22 @@ export class DecisionsController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.decisions.publish(projectId, decisionId, user, idempotencyKey);
+  }
+
+  /** Phase 6 task 4b (§A.1/§A.2) — edit an UNPUBLISHED draft: re-point its decider (kind /
+   *  named membership), convert to or from a record (`none` ⟺ `recorded`, options replaced as
+   *  one coherent pair), or replace its options. The service narrows authority to the draft's
+   *  AUTHOR or a pmc; a published decision is refused (409) — publication freezes the holder. */
+  @Patch(':decisionId/draft')
+  @RolesFor('decision.updateDraft')
+  updateDraft(
+    @Param('projectId') projectId: string,
+    @Param('decisionId') decisionId: string,
+    @Body(new ZodPipe(updateDecisionDraftSchema)) body: UpdateDecisionDraftInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.decisions.updateDraft(projectId, decisionId, body, user, idempotencyKey);
   }
 
   /** Approve/lock a decision — the client's choice, or the PMC/architect on their behalf. A

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisions } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionsVia, seedPublishedDecision } from './fixtures';
 import { ActivitiesService } from '../../src/activities/activities.service';
 import { ActivitiesQueryService } from '../../src/activities/activities.query';
 import { RequirementsService } from '../../src/activities/requirements.service';
@@ -102,7 +102,10 @@ describe('Phase 4 Task 5 — §E labour reconciliation + §I productivity (live 
       // 4a arm and the independent 4b seal each refuse its DELETE, so the decision wipe goes
       // through the sanctioned destructive-reset helper.
       if (model === 'decision') {
-        await wipeDecisions(t.prisma, where as Record<string, unknown>);
+        await wipeDecisionsVia(t.prisma, async (tx) => {
+          await tx.decisionOption.deleteMany({ where: { decision: where as Record<string, unknown> } });
+          await tx.decision.deleteMany({ where: where as Record<string, unknown> });
+        });
         continue;
       }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -118,6 +121,8 @@ describe('Phase 4 Task 5 — §E labour reconciliation + §I productivity (live 
       data: { id, orgId: f.orgA.id, name: id, short: 'P', descriptor: '', stage: 'x', siteCode: 'P', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0, timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') },
     });
     await t.prisma.membership.create({ data: { projectId: id, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+    // an active client member — the 4b publication arm requires standing for the default client holder
+    await t.prisma.membership.create({ data: { projectId: id, userId: f.clientUser.id, role: 'client', status: 'active' } });
     const engId = `it-p4t5-u-eng-${seq}`;
     await t.prisma.user.create({ data: { id: engId, projectId: id, role: 'engineer', name: 'Eng One', email: `${engId}@t.local` } });
     await t.prisma.membership.create({ data: { projectId: id, userId: engId, role: 'engineer', status: 'active' } });
@@ -372,7 +377,8 @@ describe('Phase 4 Task 5 — §E labour reconciliation + §I productivity (live 
     await capabilities.enable(p.id, MATERIALS_CAPABILITY, f.memberUser.id);
     await enableLabour(p.id);
     const decisionId = `DL-p4t5-${seq++}`;
-    await t.prisma.decision.create({ data: { id: decisionId, projectId: p.id, title: 'Flooring', room: 'Living', status: 'approved', photoSwatch: 'marble', publishedAt: new Date() } });
+    // re-ordered seed (4b): the deferred option floor requires 2–4 options on a published choice
+    await seedPublishedDecision(t.prisma, { id: decisionId, projectId: p.id, title: 'Flooring', room: 'Living', status: 'approved', photoSwatch: 'marble' });
     const act = await freshActivity(p.id, { decisionId });
     await labourRequirement(p.id, act, [{ civilDate: today, personShiftQty: 1 }]);
 

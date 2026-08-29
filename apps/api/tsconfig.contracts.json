@@ -1,0 +1,18 @@
+{
+  // Phase 6 unit 4b, round-10 Codex F2 — the module contract-conformance tests carry
+  // COMPILE-TIME pins ("these only type-check if the shapes line up"), but the main tsconfig
+  // excludes `src/**/*.test.ts`, so no gate ever ran them: a shared contract NARROWER than the
+  // API's request DTO passed everything. This config typechecks exactly the five
+  // `*.contract.test.ts` files (plus the src graph they import) and runs as the second half of
+  // `pnpm --filter api typecheck`, so a contract pin that stops compiling now fails `pnpm check`.
+  "extends": "./tsconfig.json",
+  "include": ["src"],
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts"],
+  "files": [
+    "src/decisions/decisions.contract.test.ts",
+    "src/inspections/inspections.contract.test.ts",
+    "src/drawings/drawings.contract.test.ts",
+    "src/daily-log/daily-log.contract.test.ts",
+    "src/activities/activities.contract.test.ts"
+  ]
+}

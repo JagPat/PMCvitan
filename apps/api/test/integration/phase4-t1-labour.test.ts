@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisions } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, seedPublishedDecision } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { LabourService } from '../../src/labour/labour.service';
 import { CapabilitiesService, MATERIALS_CAPABILITY, LABOUR_CAPABILITY } from '../../src/platform/capabilities.service';
@@ -60,7 +60,6 @@ describe('Phase 4 Task 1 — labour capability + type-routed demand + workforce 
       ['auditLog', { projectId: { startsWith: 'it-p4-' } }],
       ['activity', { projectId: { startsWith: 'it-p4-' } }],
       ['membership', { projectId: { startsWith: 'it-p4-' } }],
-      ['decisionOption', { decision: { projectId: { startsWith: 'it-p4-' } } }],
       ['decision', { projectId: { startsWith: 'it-p4-' } }],
       ['project', { id: { startsWith: 'it-p4-' } }],
     ] as const) {
@@ -68,7 +67,11 @@ describe('Phase 4 Task 1 — labour capability + type-routed demand + workforce 
       // 4a arm and the independent 4b seal each refuse its DELETE, so the decision wipe goes
       // through the sanctioned destructive-reset helper.
       if (model === 'decision') {
-        await wipeDecisions(t.prisma, where as Record<string, unknown>);
+        // options of a published parent are frozen (4b widened freeze) — same sanctioned bypass
+        await wipeDecisionsVia(t.prisma, async (tx) => {
+          await tx.decisionOption.deleteMany({ where: { decision: where as Record<string, unknown> } });
+          await tx.decision.deleteMany({ where: where as Record<string, unknown> });
+        });
         continue;
       }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -82,6 +85,8 @@ describe('Phase 4 Task 1 — labour capability + type-routed demand + workforce 
       data: { id, orgId: f.orgA.id, name: id, short: 'P', descriptor: '', stage: 'x', siteCode: 'P', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0, timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') },
     });
     await t.prisma.membership.create({ data: { projectId: id, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+    // an active client member — the 4b publication arm requires standing for the default client holder
+    await t.prisma.membership.create({ data: { projectId: id, userId: f.clientUser.id, role: 'client', status: 'active' } });
     return id;
   };
   const freshActivity = async (projectId: string): Promise<string> => {
@@ -90,14 +95,15 @@ describe('Phase 4 Task 1 — labour capability + type-routed demand + workforce 
     return id;
   };
   const makeApprovedDecision = async (projectId: string, id: string): Promise<void> => {
-    await t.prisma.decision.create({
-      data: {
-        id, projectId, title: id, room: 'Living', photoSwatch: 'sw', status: 'approved',
-        publishedAt: new Date(), authorId: f.memberUser.id, approvedOption: 'Option A',
-        options: { create: [{ label: 'Option A', optionKey: 'opt-a', material: 'Skilled', delta: 0, swatch: 'sw-a', order: 1 }] },
-        events: { create: [{ type: 'approved', actor: 'member' }] },
-      },
-    });
+    // re-ordered seed (4b): unpublished birth with 2 options, published in the same transaction
+    await seedPublishedDecision(t.prisma, {
+      id, projectId, title: id, room: 'Living', photoSwatch: 'sw', status: 'approved',
+      authorId: f.memberUser.id, approvedOption: 'Option A',
+      events: { create: [{ type: 'approved', actor: 'member' }] },
+    }, [
+      { label: 'Option A', optionKey: 'opt-a', material: 'Skilled', delta: 0, swatch: 'sw-a', order: 1 },
+      { label: 'Option B', optionKey: 'opt-b', material: 'Unskilled', delta: 100, swatch: 'sw-b', order: 2 },
+    ]);
     await t.prisma.decisionApprovalRevision.create({
       data: { id: `dar-${id}-v1`, projectId, decisionId: id, version: 1, optionKey: 'opt-a', approvedAt: new Date(), approvedById: f.memberUser.id },
     });

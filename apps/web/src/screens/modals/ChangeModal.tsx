@@ -1,5 +1,6 @@
 import { Modal, Button } from '@/components';
 import { useStore } from '@/store/store';
+import { deciderNoun } from '@vitan/shared';
 
 const inputStyle: React.CSSProperties = {
   width: '100%',
@@ -26,6 +27,9 @@ export function ChangeModal() {
   const setChangeText = useStore((s) => s.setChangeText);
   const setChangeCost = useStore((s) => s.setChangeCost);
   const setChangeTime = useStore((s) => s.setChangeTime);
+  // round-11 Codex F2 — the re-approval instruction names the ACTUAL decider (the client-held
+  // text stays byte-identical: deciderNoun('client') === 'the client')
+  const kind = useStore((s) => s.decisions.find((x) => x.id === s.modal.decId)?.deciderKind ?? 'client');
 
   return (
     <Modal onClose={closeModal} labelledBy="change-title">
@@ -37,7 +41,7 @@ export function ChangeModal() {
           {modal.title}
         </div>
         <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 5 }}>
-          This decision is locked. A change must be re-approved by the client with cost &amp; time impact.
+          This decision is locked. A change must be re-approved by {deciderNoun(kind)} with cost &amp; time impact.
         </div>
         <div style={{ marginTop: 16 }}>
           <div style={fieldLabel}>REASON FOR CHANGE</div>

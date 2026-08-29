@@ -25,14 +25,21 @@ enum DecisionStatus {
   // on legacy data). Riding the enum — not an orthogonal flag — is deliberate: every reader
   // keyed by DecisionStatus fails to compile until it answers for the new value.
   withdrawn
+  // Phase 6 task 4b (§A.2) — the record-only issue: filed, team-visible, approvable by NOBODY.
+  // TERMINAL for a published row (one unpublished draft door: the coherent kind+status
+  // conversion), paired bidirectionally with `deciderKind='none'` by CHECK, its published
+  // evidence frozen like the withdrawn seal network's. Riding the enum for the same reason.
+  recorded
 }
 
 // Phase 6 task 4b expansion — the current holder and frozen approval tuple share this
-// designation. `none` and the record-only workflow remain outside this database-only unit.
+// designation. Task 4b (§A.2) adds `none`: the record-only issue, born terminal `recorded`,
+// approvable by nobody (the kind⟺status CHECK binds the pair in both directions).
 enum DeciderKind {
   client
   pmc
   member
+  none
 }
 
 enum ActivityStatus {
@@ -887,6 +894,17 @@ model PushSubscription {
   auth      String
   role      String?
   createdAt DateTime @default(now())
+  // Phase 6 task 4b (§A.3, rounds 9/13/14/15) — the OPTIONAL user linkage for TARGETED delivery,
+  // attributed opportunistically on an authenticated app open and severed by sign-out (unlink),
+  // credential invalidation (the recorded version no longer matches), or the linking token's own
+  // natural expiry. A targeted push is delivered ONLY to a currently-valid link of the target
+  // user; an unlinked or stale-linked device receives NO targeted content (never a role-ceiling
+  // fallback). Non-targeted pushes are unaffected. SetNull: a deleted user leaves the device
+  // unlinked, exactly like a sign-out.
+  linkedUser               User?     @relation("pushSubscriptionsLinked", fields: [linkedUserId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  linkedUserId             String?
+  linkedCredentialVersion  Int?
+  linkedExpiresAt          DateTime?
 }
 
 // An uploaded site photo (geo + timestamp, zoomable on the client). Phase
@@ -1073,6 +1091,8 @@ model DrawingAck {
 // dev auth (the "Viewing as" persona switch) is separate and gated by
 // ALLOW_DEV_AUTH. Phase 7c-auth.
 model User {
+  // Phase 6 task 4b (§A.3) — push subscriptions currently linked to this user for targeted delivery
+  pushSubscriptionsLinked   PushSubscription[] @relation("pushSubscriptionsLinked")
   billVerificationsVerified BillVerification[] @relation("billVerificationsVerified")
   billCertificatesCertified BillCertificate[]  @relation("billCertificatesCertified")
   sodExceptionsActor        SodException[]     @relation("sodExceptionsActor")
@@ -1995,7 +2015,9 @@ model Decision {
   nodeId         String?
   status         DecisionStatus   @default(pending)
   ageDays        Int?
-  photoSwatch    String
+  // Task 4b (§A.2): nullable for a RECORD (`deciderKind='none'`), whose zero-option form has no
+  // option-sourced presentation; a CHECK keeps it required for every choice kind.
+  photoSwatch    String?
   approvedOption String?
   material       String?
   approver       String? // human-readable approver line (the caller's REAL name since Phase 1 Task 2)

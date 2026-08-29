@@ -58,8 +58,10 @@ describe('PR C — external-effect catalog', () => {
           .slice()
           .sort()
           .map((k) => {
-            const d = EXTERNAL_EFFECTS[k];
-            return [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort()];
+            // Phase 6 task 4b — the family declaration joins the sealed preimage: a family
+            // change alters claim-time delivery semantics, so it must move the version.
+            const d = EXTERNAL_EFFECTS[k] as (typeof EXTERNAL_EFFECTS)[ExternalEffectKey] & { pushFamily?: string };
+            return [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(), d.pushFamily ?? null];
           }),
       );
     const reversed = createHash('sha256').update(preimage([...keys].reverse())).digest('hex');
@@ -68,13 +70,25 @@ describe('PR C — external-effect catalog', () => {
 
   describe('buildDispatchIntent', () => {
     it('derives invalidate + roles from the catalog and stamps the coverage version', () => {
+      // Phase 6 task 4b — with no caller narrowing, the persisted roles are the catalog CEILING
+      // (the decider dispatch site narrows to the actual decider; the claim re-judges at send).
       const intent = buildDispatchIntent('decision.published', 'decision.published', { push: { body: 'hi' } });
       expect(intent).toEqual({
         effectKey: 'decision.published',
         coverageVersion: effectCoverageVersion(),
         invalidate: true,
-        push: { body: 'hi', roles: ['client'] },
+        push: { body: 'hi', roles: ['client', 'pmc', 'contractor', 'engineer', 'consultant'] },
       });
+    });
+
+    it('Phase 6 task 4b — a dispatch may NARROW the audience to the decider; a role outside the ceiling refuses', () => {
+      const narrowed = buildDispatchIntent('decision.published', 'decision.published', {
+        push: { body: 'hi', roles: ['engineer'], targetUserId: 'U1' },
+      });
+      expect(narrowed.push).toEqual({ body: 'hi', roles: ['engineer'], targetUserId: 'U1' });
+      expect(() =>
+        buildDispatchIntent('decision.approved', 'decision.approved', { push: { body: 'hi', roles: ['client'] } }),
+      ).toThrow(/ceiling does not admit push role/);
     });
 
     it('a no-push key with no push body yields an intent with no push', () => {

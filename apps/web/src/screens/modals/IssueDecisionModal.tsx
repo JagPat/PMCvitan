@@ -1,4 +1,5 @@
-import { useState, type CSSProperties } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore, type IssueDecisionPayload } from '@/store/store';
 import { Button, Modal, InheritedContext, MoreDetails } from '@/components';
 import { X } from '@/lib/icons';
@@ -25,6 +26,20 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
   const [nodeId, setNodeId] = useState<string | null>(context?.nodeId ?? null);
   // lazy, so the two starting options are built once rather than on every render
   const [options, setOptions] = useState<OptionDraft[]>(() => [blankOption(), blankOption()]);
+  // Phase 6 task 4b (§A.1/§A.2) — WHO decides: the client (default, byte-identical legacy
+  // behaviour), the practice itself (pmc), a NAMED project member, or nobody (`none` — a
+  // record-only issue with exactly zero options, born terminal `recorded`).
+  const [deciderKind, setDeciderKind] = useState<'client' | 'pmc' | 'member' | 'none'>('client');
+  const [deciderMembershipId, setDeciderMembershipId] = useState('');
+  const members = useStore(useShallow((s) => s.members));
+  const loadTeam = useStore((s) => s.loadTeam);
+  useEffect(() => {
+    // candidates for the named-member picker (the roster read the Team screen already uses)
+    if (!members.length) void loadTeam();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const memberCandidates = members.filter((m) => m.status === 'active' && m.membershipId);
+  const record = deciderKind === 'none';
 
   const setOpt = (i: number, patch: Partial<OptionDraft>) =>
     setOptions((prev) => prev.map((o, j) => (j === i ? { ...o, ...patch } : patch.recommended ? { ...o, recommended: false } : o)));
@@ -41,20 +56,31 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
     reader.readAsDataURL(file);
   };
 
-  const ready = Boolean(title.trim() && nodeId && options.every((o) => o.material.trim()));
+  // A RECORD (`none`) carries exactly ZERO options (an optioned record is a category error);
+  // every deciding kind keeps the 2–4 option contract. A named member decider needs its member.
+  const ready = Boolean(
+    title.trim() &&
+      nodeId &&
+      (record || options.every((o) => o.material.trim())) &&
+      (deciderKind !== 'member' || deciderMembershipId),
+  );
   const save = (publish: boolean) => {
     if (!ready) return;
     const payload: IssueDecisionPayload = {
       title: title.trim(),
       nodeId: nodeId ?? undefined,
       publish,
-      options: options.map((o) => ({
-        material: o.material.trim(),
-        delta: parseInt(o.delta.replace(/[^\d-]/g, ''), 10) || 0,
-        swatch: o.swatch,
-        recommended: o.recommended,
-        ...(o.photo ? { photo: { mime: o.photo.mime, data: o.photo.data } } : {}),
-      })),
+      options: record
+        ? []
+        : options.map((o) => ({
+            material: o.material.trim(),
+            delta: parseInt(o.delta.replace(/[^\d-]/g, ''), 10) || 0,
+            swatch: o.swatch,
+            recommended: o.recommended,
+            ...(o.photo ? { photo: { mime: o.photo.mime, data: o.photo.data } } : {}),
+          })),
+      ...(deciderKind !== 'client' ? { deciderKind } : {}),
+      ...(deciderKind === 'member' ? { deciderMembershipId } : {}),
     };
     issueDecision(payload);
     onClose();
@@ -75,7 +101,30 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
           <InheritedContext value={nodeId} onChange={setNodeId} inherited={inherited} idPrefix="dec-loc" testId="dec-place" />
         </div>
 
-        {options.map((o, i) => (
+        <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)' }}>WHO DECIDES</span>
+          <select value={deciderKind} onChange={(e) => setDeciderKind(e.target.value as typeof deciderKind)} style={{ ...fldD, flex: '0 0 180px' }} aria-label="Who decides" data-testid="dec-decider-kind">
+            <option value="client">The client</option>
+            <option value="pmc">The practice (PMC)</option>
+            <option value="member">A named member</option>
+            <option value="none">Nobody — record only</option>
+          </select>
+          {deciderKind === 'member' && (
+            <select value={deciderMembershipId} onChange={(e) => setDeciderMembershipId(e.target.value)} style={{ ...fldD, flex: '1 1 160px' }} aria-label="Named decider" data-testid="dec-decider-member">
+              <option value="">Choose a member…</option>
+              {memberCandidates.map((m) => (
+                <option key={m.membershipId} value={m.membershipId}>{m.name} · {m.role}</option>
+              ))}
+            </select>
+          )}
+        </div>
+        {record && (
+          <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--muted)' }} data-testid="dec-record-note">
+            A record files the issue for the team — no options, and nobody is asked to approve it.
+          </div>
+        )}
+
+        {!record && options.map((o, i) => (
           // keyed by the option's OWN id, never its slot: `MoreDetails` holds its open
           // state locally, so an index key would hand a removed option's disclosure to
           // whichever option slid into the slot — collapsing the one the user opened and
@@ -110,7 +159,7 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
           </div>
         ))}
 
-        {options.length < 4 && (
+        {!record && options.length < 4 && (
           <button onClick={() => setOptions((prev) => [...prev, blankOption()])} style={{ marginTop: 12, background: 'transparent', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 10, padding: '9px 14px', fontSize: 12.5, cursor: 'pointer', color: 'var(--muted)', width: '100%' }}>
             + Add another option
           </button>
@@ -119,7 +168,7 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           <Button variant="outline" onClick={onClose} style={{ flex: '0 0 auto', padding: '12px 16px' }}>Cancel</Button>
           <Button variant="light" onClick={() => save(false)} disabled={!ready} data-testid="save-draft" style={{ flex: 1, padding: 12 }}>Save as draft</Button>
-          <Button variant="ink" onClick={() => save(true)} disabled={!ready} data-testid="save-decision" style={{ flex: 1, padding: 12 }}>Publish to client</Button>
+          <Button variant="ink" onClick={() => save(true)} disabled={!ready} data-testid="save-decision" style={{ flex: 1, padding: 12 }}>{record ? 'Publish record' : deciderKind === 'client' ? 'Publish to client' : 'Publish to decider'}</Button>
         </div>
       </div>
     </Modal>

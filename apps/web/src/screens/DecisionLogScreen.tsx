@@ -5,7 +5,7 @@ import { selectLogDecisions } from '@/store/selectors';
 import { Eyebrow, DecisionChip, Button, Modal, LocationContext, EditState } from '@/components';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { Lock, Plus, ChevronRight, Pencil, Trash2, BookmarkPlus } from '@/lib/icons';
-import { signed, swatch as swatchGradient, decisionRail, can, type Decision } from '@vitan/shared';
+import { deciderNoun, signed, swatch as swatchGradient, decisionRail, can, type Decision } from '@vitan/shared';
 import { childrenOf, groupDecisions, locationSegments, type GroupBy } from '@/lib/locationTree';
 import styles from './responsive.module.css';
 
@@ -155,6 +155,7 @@ export function DecisionLogScreen() {
                     {g.counts.change > 0 && <RollupChip n={g.counts.change} color="var(--red-solid)" label="change" />}
                     {g.counts.approved > 0 && <RollupChip n={g.counts.approved} color="var(--green-solid)" label="approved" />}
                     {g.counts.withdrawn > 0 && <RollupChip n={g.counts.withdrawn} color="var(--muted)" label="withdrawn" />}
+                    {g.counts.recorded > 0 && <RollupChip n={g.counts.recorded} color="var(--muted)" label="recorded" />}
                   </span>
                 </button>
               )}
@@ -192,18 +193,30 @@ function RollupChip({ n, color, label }: { n: number; color: string; label: stri
 /** One decision card — the register row, with its finer location shown as a caption. */
 function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision }: { d: Decision; subLabel: string; onChange: () => void; onWithdraw?: () => void; onWithdrawDecision?: () => void }) {
   const locked = d.status === 'approved';
+  // Phase 6 task 4b (round-1 Codex F2) — a RECORD is a filed fact: no approver, no options, no
+  // approval demand, no cost. It renders its own branch instead of borrowing the approved shape.
+  const recorded = d.status === 'recorded';
   // Phase 6 task 4a — a withdrawn decision was never approved: it renders its options (never a
   // fabricated approval line), and its attribution names the withdrawer, not an approver.
   const neverLocked = d.status === 'pending' || d.status === 'withdrawn';
-  const attribution =
-    d.status === 'withdrawn'
+  // round-5 Codex F2 — the open-row attribution names the ACTUAL decider (the shared
+  // `deciderNoun`): a pmc- or member-held row must not direct its own decider at the client.
+  // The client-held text stays byte-identical (the legacy default).
+  const kind = d.deciderKind ?? 'client';
+  const attribution = recorded
+    ? 'Issue recorded — no approval required'
+    : d.status === 'withdrawn'
       ? `Withdrawn by ${d.withdrawnBy ?? 'the PMC'}${d.withdrawnAt ? ` · ${new Date(d.withdrawnAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}` : ''}`
       : d.approver
         ? `Approved by ${d.approver}${d.onBehalfOf ? ` (on behalf of the ${d.onBehalfOf})` : ''} · ${d.date}`
-        : `Ageing ${d.ageDays} days · awaiting client`;
-  const approvedLine = neverLocked ? `${d.options.length} options presented` : `${d.approvedOption} — ${d.material}`;
-  const costStr = neverLocked ? 'up to ' + signed(Math.max(...d.options.map((o) => o.delta))) : signed(d.cost ?? 0);
-  const photoLabel = neverLocked ? 'OPTIONS' : 'APPROVED';
+        : `Ageing ${d.ageDays} days · ${kind === 'client' ? 'awaiting client' : `awaiting ${deciderNoun(kind)}`}`;
+  const approvedLine = recorded
+    ? 'Filed on the register — nothing approvable'
+    : neverLocked ? `${d.options.length} options presented` : `${d.approvedOption} — ${d.material}`;
+  const costStr = recorded
+    ? '—'
+    : neverLocked ? 'up to ' + signed(Math.max(...d.options.map((o) => o.delta))) : signed(d.cost ?? 0);
+  const photoLabel = recorded ? 'RECORDED' : neverLocked ? 'OPTIONS' : 'APPROVED';
 
   return (
     <div
@@ -211,7 +224,7 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
       style={{ background: 'var(--panel)', border: '1px solid var(--hairline)', borderLeft: `4px solid ${decisionRail[d.status]}`, borderRadius: 12, overflow: 'hidden', animation: 'vpop .3s' }}
     >
       <div className={styles.logRow}>
-        <div className={styles.logPhoto} style={{ background: swatchGradient(d.photoSwatch), position: 'relative', flex: 'none' }}>
+        <div className={styles.logPhoto} style={{ background: swatchGradient(d.photoSwatch ?? ''), position: 'relative', flex: 'none' }}>
           <span style={{ position: 'absolute', left: 8, bottom: 8, fontFamily: 'var(--font-mono)', fontSize: 8, color: 'rgba(255,255,255,.9)', background: 'rgba(0,0,0,.4)', padding: '1px 6px', borderRadius: 3 }}>{photoLabel}</span>
         </div>
         <div style={{ flex: 1, padding: '16px 20px' }}>
@@ -243,7 +256,7 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
                 {d.changeRequest.costImpact === 0 ? 'No cost change' : signed(d.changeRequest.costImpact)}
                 {' · '}
                 {d.changeRequest.timeImpactDays === 0 ? 'no schedule impact' : `${d.changeRequest.timeImpactDays} day${d.changeRequest.timeImpactDays === 1 ? '' : 's'}`}
-                {' · awaiting the client’s re-approval'}
+                {` · awaiting ${deciderNoun(kind)}’s re-approval`}
               </div>
             </div>
           )}
@@ -262,7 +275,10 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
             </div>
           </div>
           {/* Can I edit this? If not, why — and what may I do instead? The verdict is the domain's
-              (approved ⇒ locked; a change request is with the client), never a bare disabled control. */}
+              (approved ⇒ locked; a change request is with the DECIDER — round-11 Codex F2:
+              every message on this workflow derives from `deciderNoun(kind)`, so a pmc- or
+              member-held reopening never directs anyone at the client; the client-held text is
+              byte-identical since deciderNoun('client') === 'the client'). */}
           {locked && (
             <div style={{ marginTop: 10 }}>
               <EditState
@@ -277,7 +293,7 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
             <div style={{ marginTop: 10 }}>
               <EditState
                 state="workflow"
-                reason="A change request is with the client — the decision reopens when they answer."
+                reason={`A change request is with ${deciderNoun(kind)} — the decision reopens when they answer.`}
                 action={onWithdraw ? { label: 'Withdraw request', onClick: onWithdraw, testId: `withdraw-${d.id}` } : undefined}
                 testId={`edit-state-${d.id}`}
               />
