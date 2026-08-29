@@ -16,14 +16,14 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: fe9df58d
-open_pr: 477
+open_pr: 478
 next_task: phase-6-task-4c
 blocking_directive: none
 updated: 2026-08-29
 ```
 
-**THE DOCS-ONLY 4c PLAN UNIT IS PR #477** (branch `claude/decision-workflow-4c-plan-r6`,
-`Replaces: #476` — the fifth replacement) — the first review unit of
+**THE DOCS-ONLY 4c PLAN UNIT IS PR #478** (branch `claude/decision-workflow-4c-plan-r7`,
+`Replaces: #477` — the sixth replacement) — the first review unit of
 `next_task: phase-6-task-4c`, exactly as the binding §E order below requires (plan unit first;
 4c implementation only after it merges AND clears). **This STATUS record travels IN THAT PR,
 not beside it** (2026-08-29): the two-step convention the 4b plan's §E used for plan units
@@ -37,15 +37,15 @@ The separate pointer PR #475 is therefore CLOSED UNMERGED and its content folded
 it `none` on the theory that naming the PR would go stale on that PR's own merge. That was
 wrong, and the code says so — `assessPostMergeRunnerState` simulates the merge by clearing a
 SELF-REFERENTIAL `open_pr` before resolving (`namesThisPullRequest ? { ...state, open_pr: NONE }
-: state`), so `open_pr: 477` survives its own merge (falling back to `task: 4`) AND keeps
-`detectStatusDrift` quiet while #477 is open. Leaving it `none` bought nothing and cost a
+: state`), so `open_pr: 478` survives its own merge (falling back to `task: 4`) AND keeps
+`detectStatusDrift` quiet while #478 is open. Leaving it `none` bought nothing and cost a
 drift-shepherd cycle.
 
 LINEAGE vs LEDGER — two different things, both true (review round 8). The WORK lineage is
-#470 → #471 → #473 → #474 → #476 → #477: each closed at the two-finding-bearing-head limit and
-the next carries the same unit forward. The LEDGER claim is a separate, executable fact: the
+#470 → #471 → #473 → #474 → #476 → #477 → #478: each closed at the two-finding-bearing-head limit
+and the next carries the same unit forward. The LEDGER claim is a separate, executable fact: the
 scope gate holds an obligation only while its PR carries the `review-replacement-required`
-label. #476 IS labelled, so #477 declares `Replaces: #476` — its immediate exhausted
+label. #477 IS labelled, so #478 declares `Replaces: #477` — its immediate exhausted
 predecessor, lineage and ledger agreeing. The one exception on record: #473 closed at its limit WITHOUT the
 label, so `Replaces: #473` was refused on #474's `2249ba3d` and #474 claimed the oldest pending
 obligation (#470) instead. That is why the chain's declarations are not uniformly
