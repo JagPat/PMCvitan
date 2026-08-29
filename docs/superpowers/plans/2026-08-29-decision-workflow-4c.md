@@ -326,7 +326,20 @@ seal already takes, with hostile current-minus-one and current-plus-one probes
 (P25).
 Probed as request → approve → reopen → late response: refused 409 at the
 service AND refused at the database (P25d), with no response row and no
-`consultation_responded` effect.
+`consultation_responded` effect. **And because this design makes the revision
+COUNT trusted cycle evidence, 4c-i seals `DecisionApprovalRevision` against
+TRUNCATE too** (review round 15): the register's delivered append-only trigger
+is ROW-level, and PostgreSQL row triggers never fire for `TRUNCATE`, so
+`TRUNCATE "DecisionApprovalRevision" CASCADE` would return the count to 0 and
+make the response command AND the INSERT seal accept a stale cycle-0
+consultation in the reopened cycle — the exact revival `openCycle` exists to
+prevent, reached by erasing the evidence instead of forging it. 4c-i adds the
+NAMED statement-level no-truncate seal (the same delivered pattern
+`Decision`/`DecisionOption`/`OrgMembership` already carry, and the same one
+this unit applies to its own two tables) with its own hostile probe. This is
+the general rule the unit now follows: sealing a fact append-only is
+incomplete until the tables its predicates COUNT are sealed at the statement
+level as well.
 
 **And the eligibility is sealed at the ROW, not only the command** (round 4):
 the append-only `DecisionConsultation` row is the durable fact that widens
@@ -614,11 +627,21 @@ base-migrated schema — executed and RECORDED against the real base SHA in
 the packet before any contract, column, or enum is added, demonstrating the
 absent behavior on the base itself (no consultation route, no widening, no
 family predicate). Arms whose subject is a NEW table or symbol (the seals,
-FKs, UNIQUEs, and zod refusals of P23/P25d/P27) stage red at a MINIMAL shape
-commit that adds the bare tables/contracts with every seal and guard
-deliberately absent — and that shape commit's own diff is quoted in the
-packet so the review can see it introduces no behavior the red probes then
-"discover". Red sites name where today's behavior lives.
+FKs, UNIQUEs, and zod refusals of P23/P25d/P27) are ALSO executed from the
+implementation base, by a SEAL-STRIPPED MIGRATION RUN rather than a shape
+commit (review round 15, replacing a draft that staged red at a minimal shape
+commit and quoted its diff): a defect class in a table that does not yet exist
+cannot be demonstrated by running a probe against the base schema — it errors
+on a missing relation, which is evidence of nothing — and a quoted diff is an
+assertion, not a run. So the probe harness, checked out AT the implementation
+base, applies 4c-i's migration TWICE to scratch databases: once with the
+specific seal statement omitted (the omission performed BY THE TEST, one named
+object at a time), where the hostile insert is ACCEPTED, and once whole, where
+the same insert is REJECTED. Both runs happen at the base commit, both are
+recorded in the packet with their SQL and their outcomes, and the pairing
+proves the seal is what rejects rather than some incidental constraint — which
+is what red-then-green is for. This is the discipline `upgrade-proof.sh`
+already uses to prove delivered seals precise rather than merely strict. Red sites name where today's behavior lives.
 
 | probe | proves | red site / staging |
 |---|---|---|
@@ -860,7 +883,32 @@ external-effect catalogs.
     reads it makes continue to receive the shape it understands. The
     MIXED-VERSION probe therefore covers the CLIENT axis too: an old-bundle
     request to `consultations.request` is refused with the upgrade-your-tab
-    error, and the same request from an advertising bundle succeeds. **And the gate RETIRES — it is a rollout
+    error, and the same request from an advertising bundle succeeds.
+
+    **What that refusal can and cannot reach — stated plainly** (review round
+    15). It gates the ORIGINATOR, which the server observes on the very
+    request it is judging. It does NOT gate the named CONSULTEE's client, and
+    deliberately so: the server cannot know what bundle a consultee's tab is
+    running — they may have no tab open at all — and the only way to guess is
+    a last-seen contract per user, which would make anyone who has not opened
+    the app since the upgrade PERMANENTLY un-consultable. That trades a
+    transient display gap for a durable authorization gap, and is worse.
+    Nor can any server response repair it: the pre-4c bundle's
+    `selectVisibleDecisions` filters CLIENT-SIDE
+    (`status !== 'pending' || viewerIsDecider(...)`,
+    `apps/web/src/store/selectors.ts`), so no DTO shape makes an old tab render
+    the row — and the one shape that would, claiming the consultee is the
+    decider, is a lie that corrupts the register's attribution. So the residual
+    is REAL and is disclosed rather than designed around: a consultee whose tab
+    was already open on the pre-4c bundle sees nothing IN THAT TAB until it
+    reloads. What carries them is the channel that does not run in the tab —
+    the `consultation_requested` PUSH is delivered regardless of bundle
+    version, and following it loads the document afresh, which serves the
+    current bundle, where the thread and the respond affordance are present.
+    4c-ii additionally ships the bundle-version signal the NEW bundle honours,
+    so this is the LAST release in which an open tab can be stale about
+    consultation at all; that signal cannot help clients that predate it, which
+    is exactly why the sender-side refusal and the push path both exist here. **And the gate RETIRES — it is a rollout
     latch, not a permanent pilot** (review round 11): `materials` and `labour`
     are genuine per-project product pilots, but consultation is a CORE
     decision workflow, so leaving it opt-in would strand every project created
@@ -932,7 +980,21 @@ external-effect catalogs.
     required anywhere once the gate reads are gone; AND an old-contract client
     is STILL refused after retirement. **4c is not
     complete until 4c-iii merges**, and the §E handoff to 4d is gated on it —
-    the runner may not treat 4c-ii's merge as the end of the unit.
+    the runner may not treat 4c-ii's merge as the end of the unit. **The
+    prerequisite is FAIL-CLOSED through the delivered control plane, not an
+    awaited human** (review round 15): 4c-ii's own STATUS fold SETS
+    `blocking_directive` naming the rollout prerequisite (drain confirmed, the
+    all-project backfill executed), with `task_state: correction_required`.
+    `assessRunnerState` then resolves to `directive:<name>` rather than
+    advancing — it cannot start 4c-iii or hand off to 4d while the directive
+    stands, and it flags the incoherent shape if a directive is set beside a
+    non-directive state (`scripts/autonomous-status-state.mjs`). Clearing the
+    directive is a STATUS commit, so the prerequisite has a machine-observed
+    state AND an attributable, reviewable record of who declared the fleet
+    drained — the same shape every other blocking directive in this loop uses.
+    Without it the runner would either strand silently or advance past the
+    rollout ordering; with it, stranding is impossible and skipping is
+    impossible.
 - 4d (architect, forwarding, countersign) is NOT this unit: its plan unit
   follows 4c implementation — ALL THREE PRs, 4c-iii included — per the merged
   §E order, carrying §D obligations 4–6.
