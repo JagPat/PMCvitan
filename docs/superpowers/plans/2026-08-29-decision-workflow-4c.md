@@ -428,13 +428,24 @@ external-effect catalogs.
 
 ## §D — Staging, review unit, and order
 
-- **This plan document is the review unit** — one file, docs-only, its own
-  exact-head Codex review to a fresh clean +1. STATUS bookkeeping travels in
-  its OWN pull request (the PR #335 two-step, made up front: the deferral
-  trailer is refused from a STATUS-touching diff). Past the plan-review round
-  cap this unit's heads owe `Review-Deferred-To-Probes: phase-6-task-4c` —
-  the probes above are exactly the executable deferral targets that trailer
-  names.
+- **This plan document is the review unit**, and its STATUS record travels
+  WITH IT — docs-only, its own exact-head Codex review to a fresh clean +1.
+  The plan-unit two-step (STATUS in a separate pointer PR, from the 4b plan's
+  §E) is SUPERSEDED by review round 7: `docs/STATUS.md`'s own rule is "Update
+  this file in the same PR as the work it describes, so state and code never
+  disagree on `main`", and the two-step produced exactly the failure that rule
+  forbids — pointer PR #472 merged naming `open_pr: 473`, #473 was then
+  replaced at its round limit, and `main` was left resolving
+  `assessRunnerState` to a CLOSED PR. A folded record names `open_pr: none`
+  (it lands with its own PR's merge, at which moment that PR is closed, so
+  naming it would be stale on arrival) and leans on `task_state: in_progress`
+  + `task: 4` → `task:4`, actionable and ordering-immune. The deferral gate's
+  "land the STATUS change on its own" branch does NOT conflict: it fires only
+  for a docs-only head at three or more finding-bearing heads, which the
+  two-finding-head replacement reset makes unreachable within one PR. Past
+  the plan-review round cap this unit's heads owe
+  `Review-Deferred-To-Probes: phase-6-task-4c` — the probes above are exactly
+  the executable deferral targets that trailer names.
 - **4c implementation follows as TWO PRs honouring the mandatory
   migration seam** (review round 1: the additive schema is deployable before
   any caller uses it — that viable seam makes a single migration+service+UI
