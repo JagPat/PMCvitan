@@ -16,24 +16,27 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: fe9df58d
-open_pr: 471
+open_pr: 473
 next_task: phase-6-task-4c
 blocking_directive: none
 updated: 2026-08-29
 ```
 
-**THE DOCS-ONLY 4c PLAN UNIT IS OPEN AS PR #471** (branch
-`claude/decision-workflow-4c-plan-r2`, `Replaces: #470`) — the first review unit of
+**THE DOCS-ONLY 4c PLAN UNIT IS OPEN AS PR #473** (branch
+`claude/decision-workflow-4c-plan-r3`, `Replaces: #471` — the second replacement) — the first review unit of
 `next_task: phase-6-task-4c`, exactly as the binding §E order below requires (plan unit first;
-4c implementation only after it merges AND clears). Its predecessor #470 closed at the
-two-finding-bearing-head limit (round 1: seven Codex findings on `567f1789`, folded on
-`fcc725fd`; round 2: five findings there, folded on the replacement); #471 carried the plan
-tree-identical, folded round 2, and its own first review (round 3: six findings on `c991674d`
-— the realizable `(decisionId, id)` option key, the `consulteeUserId` snapshot against
-membership re-keys, the statement-level TRUNCATE seals, P25c through the response, the
-archive-vs-request P41 arm, and the cross-project FK hostile probes) is folded on `bcc2e8a3`.
-A second finding-bearing head on #471 forces the next replacement (`Replaces: #471`). The Now
-block names #471 with `task_state: in_progress` (NOT the PR-bearing `in_review`: the
+4c implementation only after it merges AND clears). Its predecessors each closed at the
+two-finding-bearing-head limit: #470 (round 1: seven Codex findings on `567f1789`; round 2:
+five on `fcc725fd`) and #471 (`Replaces: #470`; round 3: six findings on `c991674d` — the
+realizable `(decisionId, id)` option key, the `consulteeUserId` snapshot against membership
+re-keys, the statement-level TRUNCATE seals, P25c through the response, the archive-vs-request
+P41 arm, the cross-project FK hostile probes; round 4: five findings on `bcc2e8a3` — NOT NULL
+evidence columns, the snapshot-keyed projection fold, the mismatched-snapshot seal arm, the
+seals' project-row lock with the direct-insert-vs-archive barrier, and the removed-consultee
+hostile insert). #473 carries the plan tree-identical from #471's final head with round 4
+folded on `03581d8e`; all 23 findings from four rounds are folded in place. A second
+finding-bearing head on #473 forces the next replacement (`Replaces: #473`). The Now
+block names #473 with `task_state: in_progress` (NOT the PR-bearing `in_review`: the
 survives-merge pin simulates the named PR's merge clearing `open_pr`, and `in_review` with no
 PR is a stranded record, while `in_progress` falls back to `task: 4` — the resolver still
 returns `pr:471` first while it is open) per the drift shepherd's
