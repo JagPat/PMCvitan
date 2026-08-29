@@ -15,15 +15,22 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 2aee1722
-open_pr: 468
+reviewed_merge: fe9df58d
+open_pr: none
 next_task: none
 blocking_directive: none
 updated: 2026-08-29
 ```
 
-**DECISION-WORKFLOW UNIT 4b IS IN PROGRESS on `open_pr` (the FIFTH replacement PR #468, branch
-`claude/decision-workflow-4b-r6` from `main` `2aee1722`, `Replaces: #467`). The lineage: PR #463 —
+**DECISION-WORKFLOW UNIT 4b IS DELIVERED AND CLEARED — PR #468 (the fifth replacement, branch
+`claude/decision-workflow-4b-r6`, `Replaces: #467`) MERGED at `main` `fe9df58d` on 2026-08-29
+with a fresh exact-head Codex +1 on `6c8030f6` (the round-11 head; `review_clean`, no
+findings).** Task 4's REMAINING work is units 4c–4d of the active decision-workflow plan —
+already-authorized plan scope per the merged #460 record ("the decision-workflow 4b–4d plan
+unit — already-authorized, executable"), which is why `task_state` stays `in_progress` with
+`open_pr: none`: the resolver's next step is `task:4` and the next continuation opens the 4c
+unit from current `main`, one unit, reproduce-first, per the same protocol that delivered 4b.
+The full 4b record follows. **The lineage: PR #463 —
 the unit's first PR, briefly racing the duplicate #462 the Board had closed as superseded —
 reached the two-finding-bearing-head limit (round 1: eight Codex findings on `f99634f4`,
 batch-fixed on `35157acc`; round 2: three findings there) and CLOSED UNMERGED; its replacement
@@ -46,8 +53,12 @@ unpublished early-return admitting a head-only optioned-record conversion — ba
 contract missing `UpdateDecisionDraftInput` + the narrow `CreateDecisionInput` with the
 never-gated conformance pins, and the two `sessionToken`-only dev-auth reads that skipped the
 sign-out unlink and consumed the decider deep link) and CLOSED UNMERGED per the same protocol.
-#468 carries the whole unit with every finding from all ten rounds fixed
-and no further correction head spent on any closed PR — per the owner's 2026-08-28 direction: "Next PR from main 2aee172 is
+#468 carried the whole unit; its first head `220a5038` drew round 11 (three findings, one P1 —
+the stale-JWT-role approval revalidated live in-tx via `hasProjectRoleStanding` under the
+membership-row lock, the change-request messaging derived from `deciderNoun`, and the
+persona-switch unlink riding the sign-out handoff), batch-fixed on `6c8030f6`, and Codex's
+attempt on THAT exact head returned `review_clean` — every finding from all eleven rounds
+fixed and no further correction head spent on any closed PR — per the owner's 2026-08-28 direction: "Next PR from main 2aee172 is
 decision-workflow unit 4b implementation only, following
 `docs/superpowers/plans/2026-08-14-decision-workflow-4b.md` (#340). One unit, reproduce-first,
 service-only unless that plan named a schema. Do not start 4c/4d."** The 4b plan DID name a
