@@ -3,6 +3,7 @@ import { BadRequestException, ConflictException, NotFoundException } from '@nest
 import { Prisma } from '@prisma/client';
 import { DrawingsService } from './drawings.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 import type { PrismaService } from '../prisma.service';
 import type { StorageService } from './../media/storage.service';
 import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
@@ -186,7 +187,7 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: 
   };
   const dispatcher = { dispatchCommitted: vi.fn() };
   const snapshot = { build: vi.fn(async () => ({ ok: true })) };
-  const svc = new DrawingsService(prisma as unknown as PrismaService, storage as unknown as StorageService, dispatcher as unknown as ExternalEffectDispatcher, snapshot as unknown as SnapshotService, new DecisionsQueryService(prisma as unknown as PrismaService));
+  const svc = new DrawingsService(prisma as unknown as PrismaService, storage as unknown as StorageService, dispatcher as unknown as ExternalEffectDispatcher, snapshot as unknown as SnapshotService, new DecisionsQueryService(prisma as unknown as PrismaService, new OrgsParticipant()));
   return { svc, prisma, storage, dispatcher, snapshot, draws, acks, recipients, audits };
 }
 

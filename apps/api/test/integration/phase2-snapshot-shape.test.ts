@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisions } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionsVia } from './fixtures';
 import { SnapshotService } from '../../src/snapshot/snapshot.service';
 import type { Role } from '../../src/common/auth';
 
@@ -113,8 +113,11 @@ const EXPECT: Record<string, Spec> = {
     // Phase 6 task 4a — the withdrawal evidence travels through the CONTRACT (pmc-audience only;
     // the visibility rule removes the whole row for every other viewer): withdrawnAt, the
     // withdrawer's frozen display identity, and the reason.
-    keys: ['id', 'title', 'room', 'nodeId', 'status', 'ageDays', 'photoSwatch', 'options', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(),
-    optional: ['nodeId', 'ageDays', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(), nullable: [],
+    // Phase 6 task 4b — the DECIDER designation travels through the contract too: the kind, the
+    // named membership, and the RESOLVED decider user every viewer/decider predicate compares.
+    // `photoSwatch` becomes optional (a record-only issue has no option-sourced swatch).
+    keys: ['id', 'title', 'room', 'nodeId', 'status', 'ageDays', 'photoSwatch', 'deciderKind', 'deciderMembershipId', 'deciderUserId', 'options', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(),
+    optional: ['nodeId', 'ageDays', 'photoSwatch', 'deciderMembershipId', 'deciderUserId', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(), nullable: [],
   },
   OptionDto: { keys: ['label', 'key', 'material', 'delta', 'swatch', 'photoUrl', 'recommended'].sort(), optional: ['photoUrl'], nullable: [] },
   ActivityDto: {
@@ -194,9 +197,23 @@ describe('Phase 2 Task 1 — snapshot shape, gating, drafts & exact nested DTOs 
     INSP_ID = s('p2-insp'); ACT_ID = s('p2-act'); DWG_ID = s('p2-dwg'); REV_ID = s('p2-rev');
     DRAFT_DEC = s('p2-draft-dec'); DRAFT_DWG = s('p2-draft-dwg'); DRAFT_NODE = s('p2-draft-node');
 
-    await t.prisma.decision.create({ data: { id: PENDING_ID, projectId: pid, title: 'Flooring', room: 'Living', photoSwatch: 'marble', status: 'pending', publishedAt: new Date(), authorId: uid } });
-    await t.prisma.decision.create({ data: { id: APPROVED_ID, projectId: pid, title: 'Veneer', room: 'Study', photoSwatch: 'teak', status: 'approved', publishedAt: new Date(), authorId: uid, approvedOption: 'Teak', material: 'Teak', approver: 'Client', date: '2026-06-01', cost: 0 } });
-    await t.prisma.decisionOption.create({ data: { decisionId: APPROVED_ID, label: 'Teak', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'teak', order: 0, photoUrl: 'x' } });
+    // Phase 6 task 4b — the RE-ORDERED create the seals enforce: unpublished birth with the
+    // 2-4 option set nested, publication as a same-transaction UPDATE (the deferred option
+    // floor re-counts a published choice at commit; the option freeze covers published parents).
+    await t.prisma.$transaction(async (tx) => {
+      await tx.decision.create({ data: { id: PENDING_ID, projectId: pid, title: 'Flooring', room: 'Living', photoSwatch: 'marble', status: 'pending', authorId: uid, options: { createMany: { data: [
+        { label: 'Marble', optionKey: 'a', material: 'Marble', delta: 0, swatch: 'marble', recommended: true, order: 0 },
+        { label: 'Granite', optionKey: 'b', material: 'Granite', delta: 500, swatch: 'stone', order: 1 },
+      ] } } } });
+      await tx.decision.update({ where: { id: PENDING_ID }, data: { publishedAt: new Date() } });
+    });
+    await t.prisma.$transaction(async (tx) => {
+      await tx.decision.create({ data: { id: APPROVED_ID, projectId: pid, title: 'Veneer', room: 'Study', photoSwatch: 'teak', status: 'approved', authorId: uid, approvedOption: 'Teak', material: 'Teak', approver: 'Client', date: '2026-06-01', cost: 0, options: { createMany: { data: [
+        { label: 'Teak', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'teak', order: 0, photoUrl: 'x' },
+        { label: 'Walnut', optionKey: 'b', material: 'Walnut', delta: 800, swatch: 'walnut', order: 1 },
+      ] } } } });
+      await tx.decision.update({ where: { id: APPROVED_ID }, data: { publishedAt: new Date() } });
+    });
 
     await t.prisma.projectNode.create({ data: { id: NODE_ID, projectId: pid, name: 'Ground Floor', kind: 'zone', order: 0, publishedAt: new Date() } });
     // a placed, submitted-but-undecided REVIEW → a pmc review + a pmc/engineer placed inspection
@@ -272,8 +289,10 @@ describe('Phase 2 Task 1 — snapshot shape, gating, drafts & exact nested DTOs 
     await t.prisma.inspection.deleteMany({ where: { projectId: pid } });
     await t.prisma.phase.deleteMany({ where: { projectId: pid } });
     await t.prisma.activity.deleteMany({ where: { projectId: pid } });
-    await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: pid } } });
-    await wipeDecisions(t.prisma, { projectId: pid });
+    await wipeDecisionsVia(t.prisma, async (tx) => {
+      await tx.decisionOption.deleteMany({ where: { decision: { projectId: pid } } });
+      await tx.decision.deleteMany({ where: { projectId: pid } });
+    });
     await t.prisma.projectNode.deleteMany({ where: { projectId: pid } });
     await f.cleanup();
     await t.close();

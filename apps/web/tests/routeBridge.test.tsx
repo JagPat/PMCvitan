@@ -130,3 +130,98 @@ describe('RouteBridge — capability-gated deep links (Phase 4 Task 6, Codex F-d
     expect(currentPath).toBe('/projects/ambli/for-you');
   });
 });
+
+describe('RouteBridge — the decider route survives a loading decision slice (Phase 6 4b round-1, Codex F7)', () => {
+  it('an authed decider deep link to /client/decisions is NOT bounced while the slice is in flight — and holds once the slice proves them the decider', async () => {
+    useStore.setState({
+      role: 'engineer',
+      sessionToken: 'JWT',
+      sessionUserId: 'u-eng-a',
+      decisions: [],
+      projectLoadState: 'loading',
+    } as never);
+    renderAt('/projects/ambli/client/decisions');
+    await flush();
+    // in flight: the bookmarked approval link is preserved, not judged against the empty slice
+    expect(useStore.getState().screen).toBe('client-decisions');
+    // the slice lands and PROVES them the named decider → the route stays
+    act(() => {
+      useStore.setState({
+        projectLoadState: 'ready',
+        decisions: [
+          { id: 'DL-1', title: 'T', room: 'K', status: 'pending', photoSwatch: 'tile', options: [], deciderKind: 'member', deciderUserId: 'u-eng-a' },
+        ],
+      } as never);
+    });
+    await flush();
+    expect(useStore.getState().screen).toBe('client-decisions');
+  });
+
+
+  it('R2-F2: a snapshot that lands while the MODULE decisions read fails does not settle the slice — the deep link holds until Retry resolves it', async () => {
+    useStore.setState({
+      role: 'engineer',
+      sessionToken: 'JWT',
+      sessionUserId: 'u-eng-a',
+      decisions: [],
+      projectLoadState: 'loading',
+      decisionsLoad: 'loading',
+    } as never);
+    renderAt('/projects/ambli/client/decisions');
+    await flush();
+    expect(useStore.getState().screen).toBe('client-decisions');
+    // the snapshot lands but the independent decisions read FAILED — the empty list is not truth
+    act(() => { useStore.setState({ projectLoadState: 'ready', decisionsLoad: 'error' } as never); });
+    await flush();
+    expect(useStore.getState().screen).toBe('client-decisions'); // held: not settled
+    // Retry succeeds and proves the obligation — the decider keeps their route
+    act(() => {
+      useStore.setState({
+        decisionsLoad: 'ready',
+        decisions: [
+          { id: 'DL-9', title: 'T', room: 'K', status: 'pending', photoSwatch: 'tile', options: [], deciderKind: 'member', deciderUserId: 'u-eng-a' },
+        ],
+      } as never);
+    });
+    await flush();
+    expect(useStore.getState().screen).toBe('client-decisions');
+  });
+
+  it('once the slice settles WITHOUT a decider obligation, the same deep link is bounced to the role home', async () => {
+    useStore.setState({
+      role: 'engineer',
+      sessionToken: 'JWT',
+      sessionUserId: 'u-eng-b',
+      decisions: [],
+      projectLoadState: 'loading',
+    } as never);
+    renderAt('/projects/ambli/client/decisions');
+    await flush();
+    expect(useStore.getState().screen).toBe('client-decisions'); // held while loading
+    act(() => { useStore.setState({ projectLoadState: 'ready' } as never); });
+    await flush();
+    expect(useStore.getState().screen).toBe('inbox'); // judged against the settled slice
+  });
+
+  it('R6-F4: a SNAPSHOT-mode load error does not settle the slice — the decider deep link holds until a decision-bearing read succeeds', async () => {
+    useStore.setState({
+      role: 'engineer',
+      sessionToken: 'JWT',
+      sessionUserId: 'u-eng-b',
+      decisions: [],
+      projectLoadState: 'loading',
+    } as never);
+    renderAt('/projects/ambli/client/decisions');
+    await flush();
+    expect(useStore.getState().screen).toBe('client-decisions'); // held while loading
+    // the cold snapshot FAILS: an empty slice nothing ever judged must not settle —
+    // bouncing here would consume the bookmarked approval link on a transient outage
+    act(() => { useStore.setState({ projectLoadState: 'error' } as never); });
+    await flush();
+    expect(useStore.getState().screen).toBe('client-decisions'); // held for Retry
+    // a successful decision-bearing read then settles it — the real non-decider is bounced
+    act(() => { useStore.setState({ projectLoadState: 'ready' } as never); });
+    await flush();
+    expect(useStore.getState().screen).toBe('inbox');
+  });
+});

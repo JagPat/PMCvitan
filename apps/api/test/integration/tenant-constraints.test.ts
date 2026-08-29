@@ -33,8 +33,10 @@ describe('tenant constraints for node/phase/material references (integration)', 
   it('PostgreSQL rejects cross-project node, phase, parent and material-decision links (raw SQL)', async () => {
     const nodeA = await t.prisma.projectNode.create({ data: { id: 'it-tc-node-a', projectId: f.projectA.id, name: 'Zone A', kind: 'zone', publishedAt: new Date() } });
     const nodeB = await t.prisma.projectNode.create({ data: { id: 'it-tc-node-b', projectId: f.projectB.id, name: 'Zone B', kind: 'zone', publishedAt: new Date() } });
-    const decA = await t.prisma.decision.create({ data: { id: 'IT-TC-DL-1', projectId: f.projectA.id, title: 'A decision', room: 'Living', status: 'pending', photoSwatch: 'tile', publishedAt: new Date() } });
-    const decB = await t.prisma.decision.create({ data: { id: 'IT-TC-DL-2', projectId: f.projectB.id, title: 'B decision', room: 'Living', status: 'pending', photoSwatch: 'tile', publishedAt: new Date() } });
+    // Phase 6 task 4b — a PUBLISHED pending decision now owes 2-4 options (the deferred floor)
+    // and a live holder; the cross-project FK probes need neither, so the fixtures stay DRAFTS.
+    const decA = await t.prisma.decision.create({ data: { id: 'IT-TC-DL-1', projectId: f.projectA.id, title: 'A decision', room: 'Living', status: 'pending', photoSwatch: 'tile' } });
+    const decB = await t.prisma.decision.create({ data: { id: 'IT-TC-DL-2', projectId: f.projectB.id, title: 'B decision', room: 'Living', status: 'pending', photoSwatch: 'tile' } });
     const phaseB = await t.prisma.phase.create({ data: { id: 'it-tc-phase-b', projectId: f.projectB.id, name: 'B phase' } });
     const actA = await t.prisma.activity.create({ data: { id: 'IT-TC-ACT-1', projectId: f.projectA.id, name: 'A activity', zone: 'GF', plannedStart: 0, plannedEnd: 1, order: 1, gateMaterial: 'na', gateTeam: 'na', gateInspection: 'na' } });
     const logA = await t.prisma.dailyLog.create({ data: { id: 'it-tc-log-a', projectId: f.projectA.id, date: '01 Jul 2026' } });

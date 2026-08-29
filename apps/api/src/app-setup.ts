@@ -1,5 +1,6 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { resolveCorsOrigins } from './config';
+import { RecordedCompatInterceptor } from './common/recorded-compat.interceptor';
 
 /**
  * The app configuration shared by the production bootstrap (src/main.ts) and the
@@ -18,4 +19,8 @@ export function configureApp(app: NestExpressApplication): void {
   // (see common/zod.pipe.ts); no global ValidationPipe.
   app.useBodyParser('json', { limit: '12mb' });
   app.useBodyParser('urlencoded', { limit: '12mb', extended: true });
+  // Phase 6 unit 4b (Codex R2-F1) — the previous-release version boundary for the new
+  // `recorded` status: a client that has not declared the decisions contract has recorded rows
+  // stripped at the transport layer (see the interceptor's rationale).
+  app.useGlobalInterceptors(new RecordedCompatInterceptor());
 }

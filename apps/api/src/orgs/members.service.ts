@@ -1,13 +1,19 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import type { AddMemberInput, UpdateMemberInput } from '../contracts';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
+import { DecisionsParticipant } from '../decisions/decisions.participant';
+import { OrgsParticipant } from './orgs.participant';
 
 export interface MemberDto {
   userId: string;
+  /** Phase 6 task 4b (§A.1) — the Membership row's own id: the value a NAMED member-decider
+   *  designation stores (`Decision.deciderMembershipId`), surfaced so the web picker can offer it. */
+  membershipId: string;
   name: string;
   email: string | null;
   phone: string | null;
@@ -19,6 +25,21 @@ export interface MemberDto {
 }
 
 /**
+ * Phase 6 task 4b (§A.1/§B.1) — the DB holder seals (`Membership_t4b2_holder_guard`,
+ * `OrgMembership_t4b2_holder_guard`) are immediate AFTER-row triggers, so on the service path
+ * they judge the standing write at the WRITE STATEMENT — before the command's own post-write
+ * participant consultation can run. The seal judges the SAME content the command judges (the
+ * decisions-owned holder predicates over the orgs-owned standing primitives), so its raise on a
+ * command path is exactly the command's deliberate refusal, translated here to the 409 the
+ * caller is owed instead of surfacing as a raw database error. Hostile direct SQL still gets
+ * the raw raise — this translation exists only behind the command doors.
+ */
+export function rethrowHolderSealViolation(e: unknown, message: string): never {
+  if (e instanceof Error && /phase6-4b/.test(e.message)) throw new ConflictException(message);
+  throw e;
+}
+
+/**
  * Project team management (Orgs Slice 2). List/add/change-role/remove members.
  * Adding a member also provisions the account (invited), so with invite-only auth
  * they can then sign in by email-OTP / password / phone-OTP. Gated to the project's
@@ -26,7 +47,39 @@ export interface MemberDto {
  */
 @Injectable()
 export class MembersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // Phase 6 task 4b (§A.1) — the holder-orphan guard: before a standing write commits, the
+    // decisions-owned participant answers which published open decisions this project's roles
+    // and named members currently HOLD, and the orgs-owned standing primitive judges whether
+    // the write would leave one holderless. Both edges are the declared orgs ⇄ decisions
+    // participant channels.
+    private readonly decisionHolders: DecisionsParticipant,
+    private readonly standing: OrgsParticipant,
+  ) {}
+
+  /**
+   * Phase 6 task 4b (§A.1) — refuse a standing write that would strand a published open
+   * decision's ROLE holder. Called AFTER the membership write inside the same transaction
+   * (the standing primitive sees the uncommitted write), judging ONLY the roles this write
+   * could have reduced — never an unrelated pre-existing state.
+   */
+  private async refuseHolderOrphan(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    atRisk: ReadonlySet<string>,
+  ): Promise<void> {
+    if (atRisk.size === 0) return;
+    const { heldRoles } = await this.decisionHolders.holdsOpenDecisions(tx, { projectId });
+    for (const role of heldRoles) {
+      if (!atRisk.has(role)) continue;
+      if ((await this.standing.effectiveRoleStanding(tx, projectId, role)) === 0) {
+        throw new ConflictException(
+          `An open decision is held by the ${role} role and this change would leave it without a holder — withdraw and reissue the decision first`,
+        );
+      }
+    }
+  }
 
   /** True if the requester may manage this project's team (project PMC or org owner/admin). */
   private async canManage(projectId: string, user: AuthUser): Promise<boolean> {
@@ -52,6 +105,7 @@ export class MembersService {
     });
     return rows.map((m) => ({
       userId: m.userId,
+      membershipId: m.id,
       name: m.user.name,
       email: m.user.email,
       phone: m.user.phone,
@@ -87,15 +141,35 @@ export class MembersService {
     // a readiness write (gate finding 1), serialized against start()
     const membership = await this.prisma.$transaction(async (tx) => {
       await lockProjectReadiness(tx, projectId);
+      // §A.1 round 19 (activation DISPLACEMENT): the roles this activation could reduce — the
+      // OLD explicit role a role-change deactivates, and the membership-less effective-PMC arm
+      // that an explicit non-pmc membership suppresses by precedence.
+      const prior = await tx.membership.findUnique({ where: { projectId_userId: { projectId, userId: user.id } } });
+      const atRisk = new Set<string>();
+      if (prior?.status === 'active' && prior.role !== input.role) atRisk.add(prior.role);
+      if (input.role !== 'pmc' && prior?.status !== 'active') {
+        const project = await tx.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
+        const om = project?.orgId
+          ? await tx.orgMembership.findUnique({ where: { orgId_userId: { orgId: project.orgId, userId: user.id } } })
+          : null;
+        if (om?.role === 'owner' || om?.role === 'admin') atRisk.add('pmc');
+      }
       const m = await tx.membership.upsert({
-        where: { projectId_userId: { projectId, userId: user.id } },
-        update: { role: input.role, discipline, status: 'active' },
-        create: { projectId, userId: user.id, role: input.role, discipline, status: 'active' },
-      });
+          where: { projectId_userId: { projectId, userId: user.id } },
+          update: { role: input.role, discipline, status: 'active' },
+          create: { projectId, userId: user.id, role: input.role, discipline, status: 'active' },
+        })
+        .catch((e: unknown) =>
+          rethrowHolderSealViolation(
+            e,
+            'An open decision is held by a role this activation would displace and the change would leave it without a holder — withdraw and reissue the decision first',
+          ),
+        );
+      await this.refuseHolderOrphan(tx, projectId, atRisk);
       await emitEvent(tx, { projectId, actor, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role }, effectKey: 'membership.added', dispatch: {} });
       return m;
     });
-    return { userId: user.id, name: user.name, email: user.email, phone: user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status, credentialState: user.passwordHash ? 'active' : 'not_set' };
+    return { userId: user.id, membershipId: membership.id, name: user.name, email: user.email, phone: user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status, credentialState: user.passwordHash ? 'active' : 'not_set' };
   }
 
   async updateRole(projectId: string, requester: AuthUser, userId: string, input: UpdateMemberInput): Promise<MemberDto> {
@@ -104,10 +178,22 @@ export class MembersService {
     if (!existing) throw new NotFoundException('Member not found on this project');
     const actor = await resolveActor(this.prisma, requester);
     const membership = await this.prisma.$transaction(async (tx) => {
+      // Phase 6 task 4b (§A.1/§B.1) — a role change is a standing write behind the decider
+      // gate: serialized on the readiness key so the seal's try-acquire sees one writer.
+      await lockProjectReadiness(tx, projectId);
+      const atRisk = new Set<string>();
+      if (existing.status === 'active' && existing.role !== input.role) atRisk.add(existing.role);
       const m = await tx.membership.update({
-        where: { projectId_userId: { projectId, userId } },
-        data: { role: input.role, discipline: this.disciplineFor(input.role, input.discipline) },
-      });
+          where: { projectId_userId: { projectId, userId } },
+          data: { role: input.role, discipline: this.disciplineFor(input.role, input.discipline) },
+        })
+        .catch((e: unknown) =>
+          rethrowHolderSealViolation(
+            e,
+            `An open decision is held by the ${existing.role} role and this change would leave it without a holder — withdraw and reissue the decision first`,
+          ),
+        );
+      await this.refuseHolderOrphan(tx, projectId, atRisk);
       await emitEvent(tx, { projectId, actor, eventType: 'membership.role_changed', entityType: 'Membership', entityId: userId, payload: { role: m.role }, effectKey: 'membership.role_changed', dispatch: {} });
       // a consultant's discipline moving is its own fact
       if ((existing.discipline ?? null) !== (m.discipline ?? null)) {
@@ -115,7 +201,7 @@ export class MembersService {
       }
       return m;
     });
-    return { userId, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status, credentialState: existing.user.passwordHash ? 'active' : 'not_set' };
+    return { userId, membershipId: membership.id, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status, credentialState: existing.user.passwordHash ? 'active' : 'not_set' };
   }
 
   async remove(projectId: string, requester: AuthUser, userId: string): Promise<{ ok: boolean }> {
@@ -128,7 +214,29 @@ export class MembersService {
     // (gate finding 1), serialized against start()
     await this.prisma.$transaction(async (tx) => {
       await lockProjectReadiness(tx, projectId);
-      await tx.membership.update({ where: { projectId_userId: { projectId, userId } }, data: { status: 'removed' } });
+      // Phase 6 task 4b (§A.1) — BOTH holder designations: a published open decision that NAMES
+      // this membership refuses the removal outright; a ROLE-held decision refuses it only when
+      // this member was the last effective holder of that role. A private draft blocks nothing.
+      const holders = await this.decisionHolders.holdsOpenDecisions(tx, { projectId, membershipId: existing.id });
+      if (holders.named) {
+        throw new ConflictException(
+          'This member is the named decider on an open decision — withdraw and reissue it first',
+        );
+      }
+      await tx.membership.update({ where: { projectId_userId: { projectId, userId } }, data: { status: 'removed' } })
+        .catch((e: unknown) =>
+          rethrowHolderSealViolation(
+            e,
+            `An open decision is held by the ${existing.role} role and removing its last active holder would leave it undecidable — withdraw and reissue the decision first`,
+          ),
+        );
+      if (existing.status === 'active' && holders.heldRoles.includes(existing.role)) {
+        if ((await this.standing.effectiveRoleStanding(tx, projectId, existing.role)) === 0) {
+          throw new ConflictException(
+            `An open decision is held by the ${existing.role} role and removing its last active holder would leave it undecidable — withdraw and reissue the decision first`,
+          );
+        }
+      }
       await emitEvent(tx, { projectId, actor, eventType: 'membership.removed', entityType: 'Membership', entityId: userId, effectKey: 'membership.removed', dispatch: {} });
     });
     return { ok: true };

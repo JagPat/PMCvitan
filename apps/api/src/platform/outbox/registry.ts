@@ -39,8 +39,10 @@ export interface DispatchIntent {
   coverageVersion: string;
   /** The socket-invalidation intent — today every event invalidates (compat), PR C narrows it. */
   invalidate: boolean;
-  /** The Web Push intent — present only when the command attached a notification. */
-  push?: { body: string; roles?: string[] | null };
+  /** The Web Push intent — present only when the command attached a notification. Phase 6 task 4b
+   *  (§A.3): `targetUserId` marks a TARGETED push — delivered only to currently-valid links of
+   *  that user, with the family predicate re-judged at claim. */
+  push?: { body: string; roles?: string[] | null; targetUserId?: string | null };
 }
 
 /** The event facts a consumer needs at materialize + dispatch time. */

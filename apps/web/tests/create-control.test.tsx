@@ -146,7 +146,9 @@ describe('an open create flow does not survive the project leaving ready', () =>
     const { useStore, CreateControl } = await mount();
     const issueDecision = vi.fn();
     const createDecision = vi.fn().mockResolvedValue({ id: 'd1' });
-    useStore.getState()._setGateway({ createDecision } as never);
+    // Phase 6 task 4b — the issue modal now loads the roster for its decider picker on mount
+    const listMembers = vi.fn().mockResolvedValue([]);
+    useStore.getState()._setGateway({ createDecision, listMembers } as never);
     useStore.setState({ issueDecision } as never);
 
     const r = render(<CreateControl />);

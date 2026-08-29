@@ -169,7 +169,9 @@ const MODEL_OWNER: Record<string, string> = {
 // mirrors the pre-PR-C `changed`-emission count (one per emitting command); the total is
 // unchanged at 30.
 const SERVICES: Record<string, { domain: string; foreign: Record<string, number>; dispatch: number }> = {
-  'decisions/decisions.service.ts': { domain: 'decisions', foreign: {}, dispatch: 6 },
+  // Phase 6 task 4b — +1: `decisions.updateDraft` (the draft-edit command dispatches its
+  // weightless committed effect like every other emitting command).
+  'decisions/decisions.service.ts': { domain: 'decisions', foreign: {}, dispatch: 7 },
   // edge 1 (closing inspection) → inspection.participant; edge 5 (drawing unlink) → FK SET NULL
   'activities/activities.service.ts': { domain: 'activities', foreign: {}, dispatch: 8 },
   // edge 6 (phase→activity detach) → FK SET NULL (phaseId)
@@ -389,7 +391,9 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('projects/:projectId/drawings/rev/:revId/ack')", "Patch('projects/:projectId/drawings/:drawingId/node')", "Delete('drawings/:id')",
   ],
   'nodes/nodes.controller.ts': ['Post()', "Patch(':nodeId')", "Post(':nodeId/move')", "Post(':nodeId/publish')", "Delete(':nodeId')"],
-  'decisions/decisions.controller.ts': ['Post()', "Post(':decisionId/publish')", "Post(':decisionId/approve')", "Post(':decisionId/change')", "Post(':decisionId/withdraw')", "Post(':decisionId/change/withdraw')"],
+  // Phase 6 task 4b — Patch(':decisionId/draft') edits an UNPUBLISHED draft (decider re-point /
+  // record conversion / options) under the new `decision.updateDraft` policy.
+  'decisions/decisions.controller.ts': ['Post()', "Post(':decisionId/publish')", "Patch(':decisionId/draft')", "Post(':decisionId/approve')", "Post(':decisionId/change')", "Post(':decisionId/withdraw')", "Post(':decisionId/change/withdraw')"],
   'daily-log/daily-log.controller.ts': ["Post('start')", "Post('materials')", "Post('flag-mismatch')", "Post('resolve-mismatch')", "Post('submit')"],
   'orgs/members.controller.ts': ['Post()', "Patch(':userId')", "Delete(':userId')"],
   'orgs/companies.controller.ts': ['Post()', "Patch(':companyId')", "Delete(':companyId')"],
@@ -520,7 +524,8 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('labour/skill-substitutions')", "Post('labour/skill-substitutions/:substitutionId/revoke')",
     "Post('labour/mismatches')", "Post('labour/mismatches/:mismatchId/resolve')",
   ],
-  'push/push.controller.ts': ["Post('projects/:projectId/push/subscribe')"],
+  // Phase 6 task 4b (§A.3 round 13) — sign-out unlinks the browser subscription's user attribution.
+  'push/push.controller.ts': ["Post('projects/:projectId/push/subscribe')", "Post('projects/:projectId/push/unlink')"],
 };
 
 // Controllers with NO mutating route (read-only surfaces).
@@ -585,9 +590,9 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
       });
     }
 
-    it('81 external-effect dispatch sites total across the pillar services (80 + Phase-6 task-4a decisions.withdraw)', () => {
+    it('82 external-effect dispatch sites total across the pillar services (81 + Phase-6 task-4b decisions.updateDraft)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(81);
+      expect(total).toBe(82);
     });
   });
 
@@ -598,12 +603,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('168 mutating routes total (§4 command inventory; +1 Phase-6 task-4a decisions.withdraw)', () => {
+    it('170 mutating routes total (§4 command inventory; +2 Phase-6 task-4b decisions.updateDraft + push.unlink)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(168);
+      expect(total).toBe(170);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(168);
+      expect(live).toBe(170);
     });
   });
 

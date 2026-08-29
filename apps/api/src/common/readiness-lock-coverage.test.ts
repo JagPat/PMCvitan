@@ -177,6 +177,12 @@ const SECTION_A_COMMANDS: Array<{ label: string; file: string; method: string }>
   // mutates a fact the readiness read consumes), even though `pending` and `withdrawn` both read
   // `wait` today.
   { label: 'decisions.withdraw', file: 'decisions/decisions.service.ts', method: 'withdraw' },
+  // Phase 6 task 4b round 3 (Codex F4) — the RECORD arms: a record is BORN under the readiness
+  // key whether or not it publishes (the lifecycle seal's recorded-birth arm), and a draft
+  // ENTERING `recorded` converts under the same key (the seal's conversion arm) — both §B.1
+  // sites are pinned here so a future create/convert path without the lock fails mechanically.
+  { label: 'decisions.create', file: 'decisions/decisions.service.ts', method: 'create' },
+  { label: 'decisions.updateDraft', file: 'decisions/decisions.service.ts', method: 'updateDraft' },
 ];
 
 /** The body of `async <method>(` up to the next same-indent `async ` (or end of file). */
@@ -207,6 +213,7 @@ describe('readiness-lock §A COMMAND-LEVEL coverage (Phase 3 Task 6)', () => {
     // Phase 4 Task 4 added the three capacity-commitment lifecycle commands — forecast cover).
     // Adding a §A command without listing it here is a visible, reviewed change.
     // Phase 5 Task 1 adds the two commercial write paths (activation + re-attribution).
-    expect(SECTION_A_COMMANDS).toHaveLength(38);
+    // Phase 6 task 4b round 3 adds the two record-arm decision writes (create + updateDraft).
+    expect(SECTION_A_COMMANDS).toHaveLength(40);
   });
 });

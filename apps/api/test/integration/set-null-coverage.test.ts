@@ -66,6 +66,14 @@ const COVERAGE: Record<string, Classification> = {
       'log (auth module), not project-scoped and never serialized into any module projection — it is ' +
       'read live, so an anonymized actor can never be served stale',
   },
+  // ── account lifecycle: the push subscription↔user link (phase 6 unit 4b) ────────────────────
+  'PushSubscription.linkedUserId': {
+    exempt:
+      'nulled when a User account is deleted; the link is transport plumbing, never serialized ' +
+      'into any module projection — every targeted delivery re-judges the link AT CLAIM TIME ' +
+      '(current linkedUserId + credential version + expiry), so a nulled link only makes the ' +
+      'subscription untargeted going forward and can never be served stale',
+  },
   // ── phases.remove (same module as the projected column) ─────────────────────────────────────
   'Activity.phaseId': {
     exempt:

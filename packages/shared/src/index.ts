@@ -10,6 +10,8 @@ export * from './domain/seed';
 export * from './domain/readiness';
 // Authorization policy (single source of truth for role → action)
 export * from './domain/policy';
+// Phase 6 task 4b (§A.3) — the ONE viewer/decider audience predicate (server + store + projection)
+export * from './domain/decider';
 export * from './domain/material-spec';
 export * from './domain/money';
 // Phase 4 Task 1 — the deterministic labour-specification identity (trade/skill/shift)
