@@ -310,6 +310,25 @@ the consultation data), and WIDENS visibility exactly one way — a consultee se
 decision (and its thread) while their consultation stands, an exception added
 beside AUTH-02 in `decisionVisibleToViewer`, not a rewrite of it.
 
+**"While their consultation stands" is a CYCLE test, not a status test**
+(review round 28). `openCycle` was applied to the response command, the
+response INSERT seal and the push claim predicate, and NOT to the audience
+arm — which is the one that governs who can READ the decision. The gap is
+reached by the ordinary lifecycle, not a hostile writer: consult A in cycle 0,
+approve, then `decisions.requestChange` returns the decision to the open
+`change` status while A's append-only consultation row remains by design. An
+audience arm keyed on "open status AND a consultation naming A" then exposes
+the REOPENED cycle to A — a question nobody consulted them on — and the
+existing probes would not catch it, because they assert only that A's late
+RESPONSE is refused. Refusing the write while granting the read is the wrong
+half: the confidentiality decision is the read. The audience arm therefore
+requires the consultation's frozen `openCycle` to EQUAL the decision's current
+revision count, in the LIVE predicate and in the PROJECTED filter alike (the
+shared predicate makes that one change, not two), so an expired cycle grants
+nothing. The probe is A's READ after approve-and-reopen: the decision and its
+thread are visible to A in cycle 0, and absent for A in cycle 1 unless A is
+consulted again there.
+
 **The widening has an ELIGIBILITY carve-out** (rounds 2–4): a consultation may
 be requested only on a decision whose question is still OPEN — in 4c that set
 is `pending` or `change` (the `awaiting_countersign` arm is ADDED BY 4d with
@@ -370,12 +389,26 @@ responses 409 permanently and their `consultation_requested` deliveries cancel
 themselves at the claim predicate. That is a DENIAL of a fact the workflow
 promises to keep answerable, reached without touching a consultation table.
 4c therefore does not treat a bare revision count as authenticated evidence.
-The revision INSERT is SEALED as a product of the approval transition: the
-trigger additionally requires the decision's status to be the one an approval
-produces AND the transition to be recorded in the same transaction (the same
-`xmin = txid_current()` correspondence the delivered command-receipt seal uses
-for reserve-and-complete), so a revision that no approval produced is
-unrepresentable rather than merely unusual. The hostile arm joins §C: a direct
+The revision INSERT is SEALED as a product of the approval transition — and
+that seal is bound to the approval COMMAND, not to the fact that the decision
+row was written (review round 28, correcting round 27's own remedy). An
+`xmin = txid_current()` test on the `Decision` tuple proves only that the row
+was UPDATED in this transaction, which is not the same claim: against an
+ALREADY-approved decision a direct writer can issue a NO-OP `UPDATE`, giving
+the tuple the current transaction's `xmin`, and then insert an arbitrary
+revision — status check passes, same-transaction check passes, and the forged
+revision is exactly what downstream provenance would trust. The correspondence
+must therefore be to the TRANSITION, which only the approval command performs.
+The revision carries a `sourceCommandId` FK to `CommandExecution`, and the
+trigger requires that receipt to be reserved in THIS transaction with the
+approval command's `commandType`. That reuses a cleared mechanism rather than
+inventing one: the delivered receipt protocol already refuses a receipt minted
+terminal, freezes `commandType` and `actorId`, and requires reserve and
+complete to share one transaction — so forging a revision now requires forging
+a command receipt, which is the residual §B already documents and bounds
+(`docs/RUNBOOK.md §CMDR`), not a new hole. The hostile arm is stated against
+the case that defeats the weaker test: an ALREADY-approved decision, a no-op
+`UPDATE`, and a revision INSERT carrying no approval receipt — REFUSED. The hostile arm joins §C: a direct
 revision INSERT against a live `pending` decision with an open consultation is
 REFUSED, and the consultation stays answerable. The
 `consultation_requested` claim predicate (§B.3) checks the frozen cycle too,
@@ -1092,13 +1125,26 @@ external-effect catalogs.
     catalog already at v2 and nothing consulting it. That is worse than the
     old-worker hazard the fence closes, because the rebuild is the documented
     repair for a lagging generation, so it is what an operator reaches for
-    exactly when something already looks wrong. 4c-ii therefore makes the CLI
-    VERIFY the catalog contract before any rebuild begins — the same assertion
-    `syncConsumerCatalog` performs at startup, failing closed with the same
-    drift error naming the consumer, before a generation is built or swapped.
-    The probe runs the PREVIOUS-version CLI against a 4c-ii-migrated database
-    and asserts it refuses BEFORE building, with the serving generation
-    untouched.
+    exactly when something already looks wrong. **The fence therefore goes at the
+    DATABASE boundary, not in the new CLI** (review round 28, correcting
+    round 27's own remedy — which was unsound, and its own stated probe proves
+    it: a check added to the NEW CLI cannot make the PREVIOUS-version binary
+    refuse, because that binary contains neither the new check nor any
+    `syncConsumerCatalog` call, and `ProjectionRebuilder` does not consult the
+    persisted version either. Round 27 specified a probe its own fix could
+    never pass). The old rebuild is instead made STRUCTURALLY incompatible at
+    the one boundary every binary must traverse: 4c-ii's catalog-data migration
+    adds a NOT NULL, no-default `catalogVersion` column to the projection
+    generation row, which the new code supplies and the previous release — which
+    does not know the column exists — cannot. Its INSERT is rejected by
+    PostgreSQL before any generation is built or swapped. This lands exactly
+    where the startup fence has no reach: an old WORKER is already stopped by
+    `syncConsumerCatalog` at boot, and the rebuild CLI is the path that skips
+    boot, so the column catches precisely the case the consumer fence misses,
+    and 4c-ii's own writes carry the version by construction. The probe is now
+    satisfiable and runs the PREVIOUS-version CLI against a 4c-ii-migrated
+    database: its rebuild fails at the database, no generation is built or
+    activated, and the serving generation is byte-identical afterwards.
 
     **Arming it takes an explicit CATALOG-DATA MIGRATION, and 4c-ii carries
     one** (review round 18, correcting round 17's own fix): `syncConsumerCatalog`
