@@ -270,8 +270,26 @@ Probed (P25/P25d) as: reuse of an already-SPENT receipt; a `succeeded`
 unrelated receipt; a wrong-TYPE receipt; and a row whose command commits with a
 `resultRef` naming something else. Stated honestly, the residual is a writer
 who forges a whole ledger row — which is forging a COMMAND, and is the command
-ledger's own append-only and idempotency discipline, not something these two
-tables can or should re-litigate. The probes then follow the states that
+ledger's own discipline, not something these two tables can or should
+re-litigate. **That discipline is a DELIVERED database seal, named here so the
+claim is checkable** (review round 24, after a review searched for it and
+concluded no such seal existed): migration
+`20270425000000_platform_command_receipt_seal` installs
+`CommandExecution_receipt_protocol` `BEFORE INSERT OR UPDATE`, which refuses a
+receipt minted already terminal, FREEZES receipt identity (`actorId`,
+`commandType`, `idempotencyKey`, `requestHash`, `createdAt`, `id` and the scope
+columns), makes a completed receipt immutable in outcome, result and
+completion time, and requires the completing UPDATE to come from the SAME
+transaction that inserted the row (`xmin = txid_current()`). So the specific
+attacks are already refused: an unused receipt cannot be re-pointed at a chosen
+actor or command type, a receipt reserved in an earlier transaction cannot be
+adopted and completed later, and an existing fact's provenance cannot be
+rewritten afterwards. What the seal's own header documents as remaining — and
+4c neither widens nor re-litigates — is a deliberate multi-statement forgery
+performed inside ONE transaction by a role holding INSERT/UPDATE on the ledger,
+whose answer is a privilege grant (`docs/RUNBOOK.md §CMDR`) rather than another
+trigger, since no trigger can distinguish "the application ran" from "SQL that
+reproduced what the application would have written". The probes then follow the states that
 actually exist — the ORDINARY projected read is asserted IMMEDIATELY after the
 request (not only after a rebuild). This makes no seal redundant: a
 command-path row must still satisfy every eligibility predicate. It removes the
@@ -902,6 +920,28 @@ external-effect catalogs.
     is dark, so nothing legitimate can have created one, and the abort is
     precise about which project holds it.
 
+    **The reservation trigger is installed BEFORE that audit reads, in the same
+    transaction** (review round 24) — the same ordering rule, for the same
+    reason, that round 21 established for 4c-iii's trigger-before-backfill.
+    "Diagnostic-first" orders the abort before the SCHEMA CHANGE, and that is
+    not sufficient here: an audit that reads first can observe no
+    `consultation` row, a concurrent generic `capability:enable` INSERT (or a
+    key UPDATE into `consultation`) can commit against the previous release,
+    and only THEN does `CREATE TRIGGER` take its lock. The trigger is not
+    retroactive, so 4c-i would commit having passed its own diagnostic with the
+    gate already enabled — the precise state the audit exists to refuse.
+    Creating the trigger first takes `ACCESS EXCLUSIVE` on `ProjectCapability`
+    inside the transaction, so any concurrent writer blocks until commit and
+    the audit then reads a snapshot no other session can extend; a writer that
+    was already in flight either committed before the lock (and the audit sees
+    its row, and aborts) or resumes after commit (and the reservation rejects
+    it). Ordering it this way needs no new mechanism and no table-level `LOCK`
+    statement, since `CREATE TRIGGER` takes that lock itself. The probe is a
+    barrier-controlled interleaving with a TERMINAL assertion in both
+    orderings: the concurrent enable either lands before the migration (4c-i
+    ABORTS, naming the project) or is REJECTED by the reservation — and 4c-i
+    never commits with a `consultation` row present.
+
     **And that is ALL 4c-i does to the capability vocabulary — BOARD DECISION,
     not re-litigable** (2026-08-29, on PR #480). Review round 13 required a
     CHECK restricting `capability` to a known set and round 14 required
@@ -929,9 +969,12 @@ external-effect catalogs.
     21: `capability` is a mutable key with no freeze trigger, so an INSERT-only
     guard leaves `UPDATE "ProjectCapability" SET "capability" = 'consultation'`
     on an existing row wide open — the same gate-open state by another route;
-    the alternate-writer probe covers the UPDATE arm explicitly) — and it stays armed THROUGH 4c-ii, dropping only at 4c-iii,
+    the alternate-writer probe covers the UPDATE arm explicitly) — and it stays armed THROUGH 4c-ii, giving way only at 4c-iii,
     ATOMICALLY with the controlled enablement (review round 20, correcting
-    round 19's own placement). Dropping it during 4c-ii would reopen the hole
+    round 19's own placement), where it is REPLACED rather than simply removed
+    (review round 24 — see 4c-iii below: the reservation that forbids the row
+    becomes a PRESERVATION seal that forbids removing it, and only 4c-iv,
+    which takes the last gate reader out, drops that). Dropping it during 4c-ii would reopen the hole
     mid-transition: 4c-ii DRAINS the old fleet first (§A's cutover sequence — the
     external-effect reseal requires zero old instances), but the drain is an
     OPERATIONAL step, and the standalone previous-release `capability:enable`
@@ -1175,10 +1218,34 @@ external-effect catalogs.
 
     **4c-iii — the ENABLEMENT TRANSITION**, landing after the drain is
     confirmed, performing in ONE transaction the three things that must not be
-    separable (review round 20): it DROPS the reservation trigger, installs an
+    separable (review round 20): it REPLACES the reservation trigger with a
+    PRESERVATION seal (review round 24), installs an
     `AFTER INSERT` trigger on `Project` that creates the row for every project
     created from then on, and THEN backfills the capability row for every
-    existing project — **in that order** (review round 21). Backfilling first
+    existing project — **in that order** (review round 21).
+
+    **Replaced, not merely dropped, because the row's ABSENCE is as dangerous
+    as its premature presence** (review round 24). 4c-iii establishes rows at
+    creation time and by backfill, but between 4c-iii and 4c-iv the gate reads
+    are still authoritative and the free-text `capability` column is still
+    mutable by the generic writer — so once the reservation is gone, nothing
+    stops an alternate writer DELETING a `consultation` row or UPDATING its key
+    away from `consultation`. During the 4c-iv rollout that reproduces exactly
+    the split brain this staging exists to prevent, from the other direction: a
+    4c-iv instance, which no longer reads the gate, accepts a consultation
+    write for that project while a still-serving 4c-ii/4c-iii instance refuses
+    the same project because its gate read finds no row. So 4c-iii installs, in
+    the same transaction that removes the reservation, a trigger rejecting a
+    DELETE of a `consultation` row and an UPDATE that moves an existing row's
+    key OFF `consultation` — the mirror of the reservation's own two arms, and
+    it is not a vocabulary whitelist (the Board pin stands: no CHECK on
+    `capability`, and every other capability value is untouched by both
+    triggers). **4c-iv drops the preservation seal** together with the gate
+    reads it protects, and not before: while ANY reader can still consult the
+    row, the row must exist. The probe is the alternate-writer path in both
+    arms — a direct `DELETE` and a direct key `UPDATE` off `consultation` are
+    each REFUSED between 4c-iii and 4c-iv, and both are permitted once 4c-iv
+    has removed the seal with the last reader. Backfilling first
     leaves a hole: a concurrent `Project` INSERT can commit after the backfill's
     statement snapshot but before `CREATE TRIGGER` takes its table lock, so that
     project appears in neither — absent from the backfill, never seen by the
@@ -1197,7 +1264,13 @@ external-effect catalogs.
     change, which is why this unit is separately revertible.
 
     **4c-iv — the gate-read REMOVAL**, and nothing else: the capability-gate
-    reads come out of the write surface and the emitter. It is safe precisely
+    reads come out of the write surface and the emitter, and — in the same unit,
+    because it is the same fact — the 4c-iii PRESERVATION seal comes out with
+    them (review round 24). The seal exists only to keep the row present for
+    readers that consult it; removing the last reader is precisely what makes
+    the row's continued existence no longer load-bearing, and leaving a
+    permanent trigger over one capability value after nothing reads it would be
+    a seal protecting nothing. It is safe precisely
     because 4c-iii already guarantees the row exists for every project, past
     and future, whichever release created it. An earlier draft combined
     creation-time enablement with the read removal in one unit (review round
