@@ -1113,34 +1113,46 @@ external-effect catalogs.
     are genuine per-project product pilots, but consultation is a CORE
     decision workflow, so leaving it opt-in would strand every project created
     after the enable step with request/respond routes that 404 forever, with
-    no path out. The retirement is three named steps: (1) deploy
-    4c-ii with emission OFF; (2) once the rollout is confirmed drained, ONE
-    OPERATOR step backfills the capability row for every EXISTING project —
-    data only, no behaviour change, which is what the RUNBOOK's
-    deploy-then-enable order names; (3) a LATER DEPLOYMENT, its own
-    compatibility-staged unit landing after the fleet is fully upgraded, makes
-    `projects.create` enable the capability for new projects, backfills any
-    project created since step 2, and only THEN deletes the gate reads from
-    the write surface and the emitter. **Automatic enablement belongs to step
-    3's deployment, not to step 2's operator moment** (review round 12,
-    correcting an earlier draft that said `projects.create` "begins" enabling
-    at step 2): deployed code cannot start behaving differently because an
-    operator acted, so that wording could only mean the create path enables
-    from its own DEPLOY time — and a project created through an upgraded API
-    while old workers and readers were still draining would be immediately
-    gate-on, its consultation event claimable by the old projection worker or
-    sendable by the old unguarded push path, which is exactly what the gate
-    exists to prevent. The `ProjectCapability` mechanism holds per-project rows
-    only, so no later operator action can reach back into already-deployed
-    create code. Staging enablement into step 3 needs no new mechanism; the
-    alternative — a separate rollout-complete LATCH that `projects.create`
-    reads — was considered and rejected for adding a second gate to reason
-    about when the deployment boundary already provides the ordering. The cost
-    is stated plainly: a project created BETWEEN steps 2 and 3 carries no row
-    and its consultation routes 404 until step 3, a bounded and
-    operator-visible window that step 3's own backfill closes. The probe is
-    step 3's: a project created after that deployment reaches the consultation
-    routes with no further operator action.
+    no path out. The retirement is the two named units §D stages, and they are
+    named here in the same terms so the two sections cannot drift: (1) deploy
+    4c-ii gated, then complete the drain-first cutover the RUNBOOK specifies,
+    which the `blocking_directive` attests; (2) **4c-iii, the ENABLEMENT
+    TRANSITION** — ONE transaction that drops the reservation trigger, installs
+    the `AFTER INSERT` trigger on `Project`, and THEN backfills the capability
+    row for every existing project, in that order; (3) **4c-iv**, which removes
+    the gate reads from the write surface and the emitter, and nothing else.
+    **There is NO operator backfill step** (review round 23, correcting a
+    narrative this section carried from before the round-18/20/21 restaging):
+    an earlier draft here told an operator to backfill the capability row
+    between 4c-ii and the final unit, and then combined creation enablement,
+    a second backfill and the gate-read removal into that final unit. Both
+    halves are now wrong, and not merely stale wording. The first would FAIL:
+    the 4c-i reservation stays armed through 4c-ii and drops only inside
+    4c-iii's transaction, so an operator insert of the `consultation`
+    capability is rejected — and bypassing the reservation to force it through
+    would perform the data transition outside the reviewed migration, which is
+    the one thing the dark-migration staging exists to prevent. The second
+    would restore exactly the migration/service coupling the 4c-iii/4c-iv
+    split was made to remove.
+
+    What survives from the earlier rounds is the REASONING, re-pointed at the
+    delivered mechanism. Round 12 established that automatic enablement cannot
+    ride an operator moment, because deployed code cannot start behaving
+    differently because an operator acted; a create path that enabled from its
+    own deploy time would make a project created while old workers and readers
+    were still draining immediately gate-on, its consultation event claimable
+    by the old projection worker or sendable by the old unguarded push path.
+    That objection is answered STRUCTURALLY rather than by scheduling: 4c-iii
+    enables at the DATABASE, through a trigger every create path produces —
+    the previous release's and the new one's alike — so there is no build to
+    upgrade before coverage is complete, and correspondingly **no window in
+    which a created project carries no row**. The earlier draft's disclosed
+    cost, a project created between the operator backfill and the final
+    deployment whose routes 404 until that deployment lands, does not exist
+    under this staging and is withdrawn rather than restated. The probes are
+    4c-iii's barrier-controlled concurrent create (the project has its row,
+    whichever side won) and 4c-iv's: a project created after that deployment
+    reaches the consultation routes with no further operator action.
   Each PR keeps the full delivered discipline: the folded-STATUS convention
   (each updates `open_pr` in the same change), the vision-alignment
   statement, six-row invariant matrix, and review packet; reproduce-first
