@@ -55,7 +55,11 @@ have), and BOTH references are project-scoped through it: the composite FK
 onto the `(projectId, id)` candidate key 4b added to `Membership`, and a
 composite FK onto `Decision(projectId, id)`, so a project-A consultation can
 never name a project-B consultee or decision — and
-`DecisionConsultationResponse` (consultationId, **`respondedById`** — the
+`DecisionConsultationResponse` (**`projectId`** — the response carries its
+OWN project key exactly as the consultation does, review round 2: the carried
+uniform seal contract binds EVERY fact reference through the child's own
+project column, and a response without one would leave its FK tuples
+project-unbound — consultationId, **`respondedById`** — the
 RECORDED responder, review round 1: without a recorded actor on the response
 row the P25d non-consultee seal has nothing to compare against the named
 consultee, and a raw writer could forge advice presented forever as the
@@ -76,11 +80,16 @@ two-option decision is immutable nonsense, and an index survives option
 reordering pointing somewhere else. The response stores the server-resolved
 `DecisionOption` id under composite FKs constrained to the SAME decision —
 and the response row carries the CHILD KEYS those FKs need (round 3): its own
-`decisionId`, bound TWICE — `(consultationId, decisionId)` referencing a
-`(id, decisionId)` candidate key on `DecisionConsultation`, and
-`(decisionId, recommendedOptionId)` referencing a `(decisionId, id)`
+`decisionId`, bound TWICE — and BOTH tuples carry the response's own
+`projectId` (review round 2: every composite FK and every candidate key it
+references is PROJECT-BOUND through the child's own project column, the
+carried uniform seal contract) — `(projectId, consultationId, decisionId)`
+referencing a `(projectId, id, decisionId)` candidate key on
+`DecisionConsultation`, and `(projectId, decisionId, recommendedOptionId)`
+referencing a `(projectId, decisionId, id)`
 candidate key on `DecisionOption` — so a response naming a foreign decision's
-option is unrepresentable, hostile-probed with an out-of-range index AND a
+option — or ANY cross-project tuple — is unrepresentable, hostile-probed
+with an out-of-range index AND a
 foreign option id (P27). A consultation on a RECORD cannot arise (records are
 ineligible below), so the option reference is always against a choice's 2–4
 frozen-after-publication options.
@@ -158,7 +167,19 @@ ACTIVE — through `OrgsParticipant.lockActiveMembershipById` (the same in-tx
 re-lock the 4b approve path uses for a named decider) — so a consultee
 removed after their JWT was minted cannot append immutable advice. The
 REQUEST command re-validates the requester's pmc standing the same way
-(`hasProjectRoleStanding` with `forUpdate`).
+(`hasProjectRoleStanding` with `forUpdate`). **And BOTH write commands
+serialize with project archival** (review round 2): passing
+`ProjectAccessService` at the door is a read of a then-live project — an
+archive can commit between the guard and the write, and the eligibility
+predicates alone (decision open, membership active, actor matching) would
+all still pass, appending immutable advice plus its push into an archived
+project. `consultations.request` and `consultations.respond` therefore
+lock-and-check `isProjectOperable` INSIDE the transaction BEFORE reading
+the decision — the exact transactional shape the delivered decider push
+claim performs — the DB INSERT seals mirror the same operability predicate,
+and P41 gains an archive-vs-response barrier arm (both orderings:
+archive-first → respond 409 with no row and no effect; respond-first → the
+advice stands, recorded against a then-operable project).
 
 **Consultation ships as a PRODUCT surface, not a service function** (review
 round 1): the unit adds the shared `ROLE_POLICY` actions
@@ -209,13 +230,21 @@ each carried question to its probe. The full rows:
    §A's INSERT seal on `DecisionConsultation` has a response-side twin: a
    `DecisionConsultationResponse` INSERT is refused at the DATABASE when its
    parent decision is no longer response-eligible (withdrawn/approved/
-   recorded, or unpublished) OR when its RECORDED `respondedById` (§A — the
+   recorded, or unpublished), OR the project is not operable (§A's archival
+   rule mirrored at the row, review round 2), OR its RECORDED
+   `respondedById` (§A — the
    response row's own actor column, without which this seal has no actor to
    judge) is not the consultation's named consultee's resolved user (the
    recorded actor rule applied to
-   the response fact). PROVES: the direct hostile INSERT against an
-   ineligible decision, and one attributed to a non-consultee responder, are
-   both refused at the DB — the append-only advice register cannot be forged
+   the response fact), OR the named consultee membership is NO LONGER ACTIVE
+   via `phase6_membership_is_active` (review round 2: without this arm, a
+   consultee removed AFTER the request still resolves — the decision is open
+   and `respondedById` matches — so a direct insert forges advice §A says a
+   removed consultee can never append). PROVES: the direct hostile INSERT
+   against an
+   ineligible decision, one attributed to a non-consultee responder, and one
+   naming a REMOVED consultee's own user (removed-then-hostile-insert), are
+   all refused at the DB — the append-only advice register cannot be forged
    past the locked command. RED SITE: the response table's migration seals
    (the service guard alone, without this, is the exact service-only gap the
    4b correction rounds repeatedly closed). Same seal disciplines as §A's
@@ -272,11 +301,11 @@ packet so the review can see it introduces no behavior the red probes then
 | P24 | consultation moves NO status and NO gate verdict — the EXPLICIT `(status, gate verdicts)` projection byte-equal before/after, with a SEPARATE assertion that the consultation DTO/audience DID change (full-snapshot equality is unsatisfiable and would force the probe to omit the served consultation data) | `DecisionsService` status CAS surface; the gate reader |
 | P25 | visibility widening bounded by eligibility: published-only + open-status at request AND response; the withdrawn-leak refusal (no title/reason reachable); request → withdraw → late-response refused 409; the DB INSERT seal refusing a direct consultation row against a withdrawn AND a draft decision (visibility never widened by a forged row) AND a row whose `requestedById` lacks requesting authority (an inactive or unauthorized requester never fabricates a standing request) | `decisionVisibleToViewer`; the request/response guards + the consultation INSERT seal |
 | P25c | the PROJECTED path: the consultee's `decisions.inbox` slice admits exactly the consulted decision, a same-role non-consultee's does not, and a rebuild preserves the slice (live == projection == rebuild) | the `decisions.inbox` projection row schema/fold/filter (decider-only today) |
-| P25d | the response-side DB seal: a direct `DecisionConsultationResponse` INSERT against an ineligible decision, and one whose recorded `respondedById` is not the named consultee's user, both refused at the database | the response table's migration seals + the `respondedById` column they judge |
+| P25d | the response-side DB seal: a direct `DecisionConsultationResponse` INSERT against an ineligible decision; one whose recorded `respondedById` is not the named consultee's user; one naming a REMOVED consultee's own user (removed-then-hostile-insert — active membership re-judged via `phase6_membership_is_active`); and one into a non-operable project — each refused at the database | the response table's migration seals + the `respondedById` column they judge |
 | P26 | consultation pushes exact: consultee push on request, requester push on response — including the org-admin requester with no membership row | the user-target dispatch delivered by 4b (P21) |
 | P27 | the response's child keys make a foreign decision's option unrepresentable: out-of-range index refused at the contract; a foreign option id refused by the composite FK | the response-row candidate keys |
 | P38c/P40c | the consultation push families' pre-send AND claim-time standing, PROJECT OPERABILITY FIRST: a project archived — or a consultee removed, or a requester demoted — between enqueue and claim never receives decision content (the same transactional `isProjectOperable` lock-and-check the delivered decider family runs before reading the decision; re-targeted or dropped with the recorded mark); a still-standing consultee push survives | the per-family predicate registration (decider-only today) + the pre-send guard |
-| P41 | eligibility is checked UNDER the decision row lock on BOTH write paths, barrier-controlled in both orderings each: request-vs-withdraw (request-first → withdraw sees the widening it must revoke nothing for; withdraw-first → request 409) AND response-vs-withdraw (response-first → the advice and its push stand against a then-eligible decision; withdraw-first → respond 409, NO response row and NO `consultation_responded` effect exists — the final-state invariant asserted directly) | the consultation command's AND the response command's lock acquisition |
+| P41 | eligibility is checked UNDER the decision row lock on BOTH write paths, barrier-controlled in both orderings each: request-vs-withdraw (request-first → withdraw sees the widening it must revoke nothing for; withdraw-first → request 409); response-vs-withdraw (response-first → the advice and its push stand against a then-eligible decision; withdraw-first → respond 409, NO response row and NO `consultation_responded` effect exists — the final-state invariant asserted directly); AND archive-vs-response (respond-first → the advice stands against a then-operable project; archive-first → respond 409 with no row and no effect — the in-tx `isProjectOperable` lock-and-check serializing the two) | the consultation command's AND the response command's lock acquisition |
 
 Two delivered-4b disciplines apply to every row above without needing their
 own probes, because the tripwires that pin them are already merged and will
@@ -300,12 +329,26 @@ external-effect catalogs.
   PR a violation of the repository's migration review-unit rule, and this
   plan takes the seam rather than claiming an inseparable unit):
   - **4c-i, the migration unit**: ONE additive migration only — the two
-    tables (with `respondedById`), the composite FKs and candidate keys, the
+    tables (with their own `projectId` and `respondedById`), the composite
+    FKs and candidate keys, the
     CHECKs, the response UNIQUE, the append-only seals, and the two INSERT
     eligibility seals — deployed dark (no caller, no contract, no route).
-    It carries the DB-level probe arms it makes provable (P25d, P27's FK
-    arm, the P25 insert-seal arms, append-only), the upgrade-proof
-    extension, and its compatibility statement: the old release runs
+    Every statement is RETRY-SAFE (review round 2): `IF NOT EXISTS`/
+    `IF EXISTS` or duplicate-object guards on each `CREATE`/`ADD
+    CONSTRAINT`/trigger wherever PostgreSQL supports them (the 20271015
+    discipline), because a deploy that fails after creating an early object
+    must complete — not stop at the existing object — on retry; the
+    upgrade proof EXERCISES that partial-apply retry (kill after the first
+    objects, re-run, assert every seal armed). And it carries EVERY
+    DATABASE probe arm the schema makes provable — P25d, P27's FK arm, the
+    P25 insert-seal arms, append-only, AND P23's DB arms: the two non-blank
+    `btrim` CHECKs (whitespace-only hostile insert) and the one-response
+    UNIQUE (direct duplicate insert) — review round 2: a DB invariant whose
+    first probe waits for 4c-ii could merge wrong and become immutable
+    history before anything detects it; no invariant this migration
+    installs is probed later than the PR that installs it. Plus the
+    upgrade-proof
+    extension and its compatibility statement: the old release runs
     unchanged over the migrated schema because nothing reads or writes the
     new tables.
   - **4c-ii, the behaviour unit**: contracts, commands, `ROLE_POLICY`/routes,
