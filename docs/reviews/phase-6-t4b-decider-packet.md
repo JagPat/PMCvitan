@@ -621,3 +621,44 @@ and leaves the upgrade-proof untouched.
   explicitly NOT a judgeable slice. Probes: `R10-F4` ×2 in `routeBridge.test.tsx` — the cold
   dev-auth deep link holds, the proven decider keeps the route, the proven non-decider is
   bounced only after the identity lands.
+
+## Round-11 correction (the Codex review of PR #468 head `220a5038` — three findings, ONE fix-forward head)
+
+Codex attempt 1/2 on the fifth replacement's first head returned three findings (one P1).
+Each was reproduced RED at `220a5038` first (fixes stashed: the stale-role approval COMMITTED,
+the persona switch made no unlink request, the pmc-held reopening said "with the client"),
+then fixed forward as one batch. This is #468's FIRST finding-bearing head; a second would
+close #468 for a sixth replacement. NO migration change (`20271015` byte-for-byte, as are
+`20270810`/`20270826`) — no database rebuild, no upgrade-proof delta.
+
+- **R11-F1 (P1, live role standing at approval)** — for a role-held decision `isRoleDecider`
+  trusted `user.role` from JwtGuard, established BEFORE the transaction. With two active
+  holders the removal/re-role of ONE is permitted (another remains), so a request that passed
+  the guard while still a member could acquire the readiness lock AFTER its removal committed
+  and write an immutable approval — the same hole for a removed PMC approving on another
+  decider's behalf. The transaction now re-validates the AUTHORIZING role's live standing
+  through `OrgsParticipant.hasProjectRoleStanding` with `forUpdate` (the same primitive the
+  record publication's author recheck uses), covering the role-decider arms AND the PMC
+  on-behalf arm; the named-decider arm was already covered by the in-tx member re-lock.
+  Probe: `R11-F1` — the direct-service calls ARE the in-flight guard-passed shape (the
+  AuthUser is the pre-removal context, the membership already gone when the transaction
+  runs): the removed second client's role-decider attempt and the removed second pmc's
+  on-behalf attempt are both refused with no approval recorded, and the REMAINING holder
+  approves exactly as before.
+- **R11-F2 (P2, decider-aligned change messaging)** — the reopened-decision detail named the
+  actual decider, but the `EditState` beneath it and `ChangeModal` still said "the client",
+  giving one workflow contradictory instructions for a pmc- or member-held decision. All
+  three surfaces (plus the submit confirmation toast, the same class) now derive from
+  `deciderNoun(kind)`; the client-held strings are byte-identical since
+  `deciderNoun('client') === 'the client'`. Probe: `R11-F2` (pmc-held EditState says "with
+  the PMC", member-held ChangeModal says "by the named decider", client-held both keep the
+  exact legacy sentences).
+- **R11-F3 (P2, persona-switch unlink)** — `setRole` (the dev-auth persona switch) cleared
+  the departing identity locally WITHOUT the unlink handoff `signOut` runs, so the endpoint
+  stayed linked to persona A until persona B's connect re-subscribed — and indefinitely if
+  that connect failed: A's targeted decision pushes could reach the browser B now holds.
+  `setRole` now runs the SAME bounded unlink race before completing the switch, under the
+  same session-identity condition (the request rides the departing persona's gateway
+  authority; the switch — which re-runs the connect effect — waits for the handoff). Probes:
+  `setRole` arms in `tests/signout-unlink.test.ts` (the switch unlinks and still lands; a
+  first pick with no identity stays synchronous with no request).

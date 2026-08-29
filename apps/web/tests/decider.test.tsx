@@ -463,3 +463,41 @@ describe('round-7 Codex corrections (web arms)', () => {
     expect(item!.badge).toBe(1);
   });
 });
+
+describe('round-11 Codex corrections (web arms)', () => {
+  it('R11-F2: EVERY change-request instruction names the ACTUAL decider — EditState and ChangeModal, with the client-held text byte-identical', async () => {
+    const { DecisionLogScreen } = await import('@/screens/DecisionLogScreen');
+    useStore.setState({
+      role: 'pmc',
+      decisions: [
+        dec({ id: 'DL-PCH', title: 'Facade fixing', deciderKind: 'pmc', status: 'change', changeRequest: { reason: 'Lot rejected', costImpact: 0, timeImpactDays: 0 } }),
+        dec({ id: 'DL-CCH', title: 'Kitchen top', deciderKind: 'client', status: 'change', changeRequest: { reason: 'Tone', costImpact: 0, timeImpactDays: 0 } }),
+      ],
+    } as never);
+    const r = render(<DecisionLogScreen />);
+    // a pmc-held reopening directs its own decider at the PMC, never at the client
+    expect(r.getByTestId('edit-state-DL-PCH').textContent).toContain('A change request is with the PMC');
+    expect(r.getByTestId('edit-state-DL-PCH').textContent).not.toContain('with the client');
+    // the client-held text stays byte-identical to the legacy string
+    expect(r.getByTestId('edit-state-DL-CCH').textContent).toContain('A change request is with the client — the decision reopens when they answer.');
+    r.unmount();
+
+    // ChangeModal reads the decider of the decision the modal is FOR
+    const { ChangeModal } = await import('@/screens/modals/ChangeModal');
+    useStore.setState({
+      decisions: [dec({ id: 'DL-MLK', title: 'Rebar detail', deciderKind: 'member', deciderUserId: 'u-eng-a', status: 'approved' })],
+      modal: { type: 'change', decId: 'DL-MLK', title: 'Rebar detail', changeText: '', changeCost: '', changeTime: '' },
+    } as never);
+    const m = render(<ChangeModal />);
+    expect(m.container.textContent).toContain('re-approved by the named decider');
+    expect(m.container.textContent).not.toContain('re-approved by the client');
+    m.unmount();
+    // …and for a client-held decision the modal keeps the byte-identical legacy sentence
+    useStore.setState({
+      decisions: [dec({ id: 'DL-CLK', title: 'Kitchen top', deciderKind: 'client', status: 'approved' })],
+      modal: { type: 'change', decId: 'DL-CLK', title: 'Kitchen top', changeText: '', changeCost: '', changeTime: '' },
+    } as never);
+    const c = render(<ChangeModal />);
+    expect(c.container.textContent).toContain('re-approved by the client');
+  });
+});

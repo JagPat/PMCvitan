@@ -364,6 +364,23 @@ export class DecisionsService {
       run: async (tx) => {
         // a lock-state transition moves the decision gate (gate finding 1)
         await lockProjectReadiness(tx, projectId);
+        // round-11 Codex F1 — the ROLE that granted authority is re-validated LIVE inside the
+        // transaction, under the membership-row lock: `user.role` was established by JwtGuard
+        // BEFORE this transaction, and with two active holders a concurrent removal/re-role of
+        // THIS caller is permitted (another holder remains) — the stale token role must not
+        // record an immutable approval. Applies to the role-decider arms (client-held +
+        // client, pmc-held + pmc) AND the PMC on-behalf arm alike; the named-decider arm is
+        // covered by the member re-lock below. `hasProjectRoleStanding` with `forUpdate`
+        // serializes against the concurrent standing write (the same primitive the record
+        // publication's author recheck uses).
+        if (!isNamedDecider) {
+          const live = await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, user.sub, [user.role], { forUpdate: true });
+          if (!live) {
+            throw new ForbiddenException(
+              'Your project standing changed while approving — the role that authorized this approval is no longer yours',
+            );
+          }
+        }
         // CAS: commit only if the decision is STILL in the state we read — a concurrent
         // transition makes count 0 and this caller loses with a deterministic 409
         // 4b: a NAMED decider's membership is re-locked and its display identity resolved by

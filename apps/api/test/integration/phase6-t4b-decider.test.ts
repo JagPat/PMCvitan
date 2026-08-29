@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
+import { DecisionsService } from '../../src/decisions/decisions.service';
 import { SnapshotService } from '../../src/snapshot/snapshot.service';
 
 /**
@@ -957,6 +958,46 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     // release the hold (the effective pmc approves) so the register closes for the suite wipe
     const adminToken = t.issueOrgOwnerToken(users.orgAdmin, projectBId, orgBId);
     expect((await post(adminToken)(`/projects/${projectBId}/decisions/${did}/approve`, { optionIndex: 0 })).status).toBe(201);
+  });
+
+  // ── round-11 Codex correction (the #468 head 220a5038) ─────────────────────────────────────
+
+  it('R11-F1: approval authority from a ROLE is re-validated LIVE inside the transaction — a stale guard-passed role cannot record an approval after standing was lost', async () => {
+    // Codex round 11 (P1): `isRoleDecider` trusted `user.role` from JwtGuard, established
+    // BEFORE the transaction. With two active holders the removal of ONE is permitted (another
+    // remains), so a request that passed the guard while still a member could acquire the
+    // readiness lock AFTER its removal committed and write an immutable approval. The
+    // direct-service calls below ARE that in-flight shape: the AuthUser is the guard-passed
+    // context, the membership is already gone when the transaction runs.
+    const svc = t.app.get(DecisionsService);
+    const tempClient = id('r11c');
+    const tempPmc = id('r11p');
+    await t.prisma.user.create({ data: { id: tempClient, projectId, role: 'client', name: 'Second client', email: `${tempClient}@t.local` } });
+    await t.prisma.membership.create({ data: { projectId, userId: tempClient, role: 'client', status: 'active' } });
+    await t.prisma.user.create({ data: { id: tempPmc, projectId, role: 'pmc', name: 'Second pmc', email: `${tempPmc}@t.local` } });
+    await t.prisma.membership.create({ data: { projectId, userId: tempPmc, role: 'pmc', status: 'active' } });
+    const did = await issue({}); // client-held, published pending
+
+    // both removals are LEGAL — another holder of each role remains (the P39 guard permits)
+    expect((await http().delete(`/projects/${projectId}/members/${tempClient}`).set('Authorization', `Bearer ${pmcToken}`)).status).toBe(200);
+    expect((await http().delete(`/projects/${projectId}/members/${tempPmc}`).set('Authorization', `Bearer ${pmcToken}`)).status).toBe(200);
+
+    // the removed client's guard-passed context tries the ROLE-DECIDER arm → refused in-tx
+    await expect(
+      svc.approve(projectId, did, { optionIndex: 0 }, { sub: tempClient, role: 'client', projectId } as never),
+    ).rejects.toThrow(/standing changed/i);
+    // the removed pmc's guard-passed context tries the ON-BEHALF arm → refused in-tx
+    await expect(
+      svc.approve(projectId, did, { optionIndex: 0 }, { sub: tempPmc, role: 'pmc', projectId } as never),
+    ).rejects.toThrow(/standing changed/i);
+    // no approval was recorded by either refusal
+    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: did } })).status).toBe('pending');
+
+    // precision: the REMAINING holder's live standing approves exactly as before
+    expect((await post(clientToken)(`/projects/${projectId}/decisions/${did}/approve`, { optionIndex: 0 })).status).toBe(201);
+    // cleanup the temp identities (memberships are 'removed' rows — deletable now the register is closed)
+    await t.prisma.membership.deleteMany({ where: { projectId, userId: { in: [tempClient, tempPmc] } } });
+    await t.prisma.user.deleteMany({ where: { id: { in: [tempClient, tempPmc] } } });
   });
 
   it('R7-F4/R8-F1: the migration acquires its four-table lock FIRST and ALL-OR-NOTHING — NOWAIT in a retried subtransaction, before any table ALTER', async () => {

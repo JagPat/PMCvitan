@@ -75,3 +75,39 @@ describe('signOut push unlink — keyed on the session identity, not the adopted
     expect(gw.pushUnlink).not.toHaveBeenCalled();
   });
 });
+
+describe('setRole persona switch — the same unlink handoff as sign-out (4b round-11, Codex F3)', () => {
+  it('switching personas on a push-capable browser unlinks the DEPARTING identity before the switch completes', async () => {
+    // round-11 Codex F3: setRole cleared the departing persona locally without the unlink
+    // handoff signOut runs, so the endpoint stayed linked to persona A until persona B's
+    // connect re-subscribed — and indefinitely if that connect failed. On a shared demo
+    // browser A's targeted decision pushes could reach whoever holds the browser as B.
+    stubPushCapable('https://push.example/persona');
+    const gw = { pushUnlink: vi.fn().mockResolvedValue({ ok: true }) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState({ role: 'engineer', sessionToken: null, sessionUserId: 'u-dev-eng' } as never);
+
+    s().setRole('pmc');
+    await flush(); await flush();
+
+    // the unlink went out under the DEPARTING persona's gateway authority…
+    expect(gw.pushUnlink).toHaveBeenCalledWith('https://push.example/persona');
+    // …and the switch still landed (role changed, the old identity cleared)
+    expect(s().role).toBe('pmc');
+    expect(s().sessionUserId).toBeNull();
+    expect(s().sessionToken).toBeNull();
+  });
+
+  it('a first persona pick with NO session identity switches synchronously without an unlink request', async () => {
+    stubPushCapable('https://push.example/first');
+    const gw = { pushUnlink: vi.fn() };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState({ role: 'client', sessionToken: null, sessionUserId: null } as never);
+
+    s().setRole('engineer');
+    await flush();
+
+    expect(gw.pushUnlink).not.toHaveBeenCalled();
+    expect(s().role).toBe('engineer');
+  });
+});

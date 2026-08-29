@@ -275,7 +275,10 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
             </div>
           </div>
           {/* Can I edit this? If not, why — and what may I do instead? The verdict is the domain's
-              (approved ⇒ locked; a change request is with the client), never a bare disabled control. */}
+              (approved ⇒ locked; a change request is with the DECIDER — round-11 Codex F2:
+              every message on this workflow derives from `deciderNoun(kind)`, so a pmc- or
+              member-held reopening never directs anyone at the client; the client-held text is
+              byte-identical since deciderNoun('client') === 'the client'). */}
           {locked && (
             <div style={{ marginTop: 10 }}>
               <EditState
@@ -290,7 +293,7 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
             <div style={{ marginTop: 10 }}>
               <EditState
                 state="workflow"
-                reason="A change request is with the client — the decision reopens when they answer."
+                reason={`A change request is with ${deciderNoun(kind)} — the decision reopens when they answer.`}
                 action={onWithdraw ? { label: 'Withdraw request', onClick: onWithdraw, testId: `withdraw-${d.id}` } : undefined}
                 testId={`edit-state-${d.id}`}
               />

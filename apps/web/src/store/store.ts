@@ -60,6 +60,7 @@ import {
   type Worker,
   type MeasurementRegisterDto,
   ROLE_POLICY,
+  deciderNoun,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, projectScopeOf, type ProjectLoadState, type ProjectScope } from './projectScope';
@@ -1841,7 +1842,7 @@ export const useStore = create<Store>()(
     // ---- shell ----
     setRole: (role) => {
       const first = screensFor(role)[0].key;
-      set((s) => {
+      const applySwitch = () => set((s) => {
         s.role = role;
         s.screen = first;
         s.notifOpen = false;
@@ -1854,6 +1855,26 @@ export const useStore = create<Store>()(
         s.userName = null;
         s.sessionUserId = null;
       });
+      // round-11 Codex F3 — on a push-capable browser a persona switch is a DEPARTURE exactly
+      // like sign-out: the departing identity's subscription link is severed BEFORE the switch
+      // completes (the same bounded handoff signOut runs, the same session-identity condition —
+      // dev-auth holds its JWT in the gateway and the request authenticates there). Without it
+      // the endpoint stayed linked to persona A until persona B's connect re-subscribed — and
+      // indefinitely if that connect failed — so A's targeted decision pushes could reach the
+      // browser B now holds. The switch itself (which re-runs the connect effect and issues the
+      // NEW persona's token) waits for the bounded handoff, so the unlink rides A's authority.
+      const pushCapable =
+        typeof navigator !== 'undefined' && 'serviceWorker' in navigator
+        && typeof window !== 'undefined' && 'PushManager' in window;
+      if (gateway && (get().sessionToken !== null || get().sessionUserId !== null) && pushCapable) {
+        const gw = gateway;
+        void Promise.race([
+          unlinkPushOnSignOut(gw),
+          new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+        ]).finally(applySwitch);
+        return;
+      }
+      applySwitch();
     },
     /**
      * End the real session and return to the sign-in screen. Clears the token,
@@ -2002,9 +2023,15 @@ export const useStore = create<Store>()(
       const reason = changeText?.trim() || 'Change requested';
       const costImpact = parseInt(String(changeCost ?? '').replace(/[^\d-]/g, ''), 10) || 0;
       const timeImpactDays = parseInt(String(changeTime ?? '').replace(/[^\d-]/g, ''), 10) || 0;
+      // round-11 Codex F2 — the confirmation names the ACTUAL decider whose re-approval the
+      // request now awaits; the client-held text stays byte-identical (the legacy default)
+      const changeKind = get().decisions.find((x) => x.id === decId)?.deciderKind ?? 'client';
+      const changeToast = changeKind === 'client'
+        ? 'Change Request submitted for client re-approval.'
+        : `Change Request submitted for ${deciderNoun(changeKind)}’s re-approval.`;
       set((s) => { s.modal = { type: null }; });
       const changeKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'change', decisionId: decId, reason, costImpact, timeImpactDays, idempotencyKey: changeKey }, 'Change ' + decId, () => gateway!.requestChange(decId, reason, costImpact, timeImpactDays, changeKey), 'Change Request submitted for client re-approval.')) return;
+      if (runRemoteOrQueue({ t: 'change', decisionId: decId, reason, costImpact, timeImpactDays, idempotencyKey: changeKey }, 'Change ' + decId, () => gateway!.requestChange(decId, reason, costImpact, timeImpactDays, changeKey), changeToast)) return;
       set((s) => {
         const d = s.decisions.find((x) => x.id === decId);
         if (d) {

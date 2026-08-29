@@ -97,6 +97,9 @@ const orgsStub = {
   lockActiveMembership: vi.fn(async () => true),
   lockActiveMembershipById: vi.fn(async () => ({ userId: 'u-client', name: 'Mr. Shah', role: 'client' })),
   effectiveRoleStanding: vi.fn(async () => 1),
+  // round-11 Codex F1 — approve re-validates the caller's LIVE role standing in-tx; healthy here
+  // (the stale-standing refusals are integration-probed, R11-F1)
+  hasProjectRoleStanding: vi.fn(async () => true),
 } as unknown as OrgsParticipant;
 const user: AuthUser = { sub: 'u-arch', role: 'pmc' } as AuthUser;
 const baseInput = (publish: boolean): CreateDecisionInput => ({
