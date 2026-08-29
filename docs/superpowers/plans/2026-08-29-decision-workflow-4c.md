@@ -518,15 +518,24 @@ external-effect catalogs.
     consultation thread and audience from the projected DTO; (b) an old
     PUSH worker claiming a consultation delivery recognizes no family and
     falls through to the unguarded targeted send, bypassing every claim
-    predicate §B.3 requires. 4c-ii therefore carries an explicit
-    compatibility mechanism — the new families are not EMITTED until every
-    serving consumer recognizes them (the server enables emission on the
-    advertised consumer contract, the same never-in-one-mixed-version-step
-    rule the cleared contractor-capture unit 6 records), OR an
-    old-version claim structurally REFUSES (releases, does not consume)
-    an unrecognized family — the plan mandates the MECHANISM CLASS and the
-    implementation argues its choice in the packet, with a MIXED-VERSION
-    probe for each consumer class (an old-shaped worker beside the new one:
+    predicate §B.3 requires. 4c-ii therefore carries ONE mandated
+    compatibility mechanism, the EMISSION GATE: the new families are not
+    EMITTED until every serving consumer recognizes them (the server enables
+    emission on the advertised consumer contract, the same
+    never-in-one-mixed-version-step rule the cleared contractor-capture unit
+    6 records). **The alternative an earlier draft allowed — "or an
+    old-version claim structurally refuses the unrecognized family" — is
+    STRUCK as impossible** (review round 8): a change shipped IN 4c-ii
+    cannot alter the behaviour of a process that is ALREADY RUNNING, and the
+    old behaviour is not a gap but the live code —
+    `decisions.projection.ts` dispatches on `eventType.startsWith('decision.')`
+    (so a consultation event IS claimed and refreshed through the old
+    serializer) and `platform/outbox/consumers.ts` guards only
+    `family === 'decider'` (so any other family falls through to the ordinary
+    targeted send). Refusal could only come from a compatibility release
+    landed BEFORE the emitting one; the emission gate achieves the same
+    protection within this unit, so it is what the plan requires — with a
+    MIXED-VERSION probe for each consumer class (an old-shaped worker beside the new one:
     the consultation event is never folded by the old serializer and never
     sent by the old push path; the projection DTO retains its thread; the
     claim predicates are never bypassed). **The same gate covers serving
