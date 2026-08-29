@@ -901,14 +901,31 @@ external-effect catalogs.
     decider, is a lie that corrupts the register's attribution. So the residual
     is REAL and is disclosed rather than designed around: a consultee whose tab
     was already open on the pre-4c bundle sees nothing IN THAT TAB until it
-    reloads. What carries them is the channel that does not run in the tab —
-    the `consultation_requested` PUSH is delivered regardless of bundle
-    version, and following it loads the document afresh, which serves the
-    current bundle, where the thread and the respond affordance are present.
-    4c-ii additionally ships the bundle-version signal the NEW bundle honours,
-    so this is the LAST release in which an open tab can be stale about
-    consultation at all; that signal cannot help clients that predate it, which
-    is exactly why the sender-side refusal and the push path both exist here. **And the gate RETIRES — it is a rollout
+    reloads. The push is NOT a guarantee and this plan does not claim it as one
+    (review round 16, correcting round 15's own wording): `subscribeToPush`
+    no-ops without service-worker support, without granted notification
+    permission, or without server VAPID, and its catch comment says outright
+    that "push is best-effort — the app works without it"
+    (`apps/web/src/data/push.ts`). Where a subscription DOES exist the push
+    carries the consultee, and following it loads the document afresh onto the
+    current bundle; where one does not, nothing reaches that tab until it
+    reloads on its own.
+
+    What BOUNDS that residual is what a consultation is: it INFORMS and never
+    GATES. §A's first invariant is that a consultation moves no status and no
+    gate verdict (P24), so an unseen request cannot block a decision, strand an
+    approval, or lose a fact — the thread is durable, and it appears complete
+    the moment that tab reloads for any reason. The failure mode is a PMC
+    waiting on an answer that has not been seen yet, which is why 4c-ii shows
+    the REQUESTER their outstanding requests with their age, so an unanswered
+    consultation is visible to the person who can follow it up by other means
+    rather than silently pending. That is the recipient-safe property actually
+    available here: not a delivery guarantee, but a state in which nothing is
+    lost and the gap is visible to someone who can act on it. 4c-ii also ships
+    the bundle-version signal the NEW bundle honours, so this is the LAST
+    release in which an open tab can be stale about consultation at all; that
+    signal cannot help clients predating it, which is why the sender-side
+    refusal exists. **And the gate RETIRES — it is a rollout
     latch, not a permanent pilot** (review round 11): `materials` and `labour`
     are genuine per-project product pilots, but consultation is a CORE
     decision workflow, so leaving it opt-in would strand every project created
