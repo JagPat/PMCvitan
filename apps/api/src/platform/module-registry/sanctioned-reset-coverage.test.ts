@@ -116,6 +116,12 @@ describe('Phase 6 unit 4c-0 — sanctioned resets route through the shared helpe
       // The repair register's seal must REFUSE the truncate — routing it through the helper, which
       // disables seals, would invert the probe.
       'phase4-t3-correction3.test.ts': 1,
+      // 4c-i. Three HOSTILE arms — the consultation register, recorded advice, and the approval
+      // register whose COUNT is the cycle evidence — each asserting its statement-level seal
+      // refuses. Plus ONE PRECISION arm proving the seals are conditional on CONTENT: an empty
+      // table truncates WITHOUT the bypass. Routing any of the four through the helper would
+      // disable the very trigger under test.
+      'phase6-t4c-consultation.test.ts': 4,
     };
 
     const offenders: string[] = [];

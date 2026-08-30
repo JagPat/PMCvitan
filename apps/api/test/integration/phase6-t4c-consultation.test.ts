@@ -607,6 +607,48 @@ describe('Phase 6 unit 4c-i — consultation, deployed dark (live PG)', () => {
     ).rejects.toThrow(/23503|is not present in table/i);
   });
 
+  it('P27: every containment key is a COMPOSITE foreign key with exactly the columns claimed', async () => {
+    // The refusals above prove that SOMETHING rejected each hostile row; this proves it was the
+    // key it was supposed to be. A migration that accidentally created SCALAR foreign keys —
+    // `decisionId` alone, `sourceCommandId` alone — still rejects a nonexistent id and still
+    // reports 23503, so every arm above would pass while cross-project pairing stayed
+    // representable. Read from `pg_constraint`, in declaration order, against the live database.
+    const rows = await db.$queryRawUnsafe<{ conname: string; def: string }[]>(`
+      SELECT c.conname, pg_get_constraintdef(c.oid) AS def
+        FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+       WHERE c.contype = 'f'
+         AND t.relname IN ('DecisionConsultation', 'DecisionConsultationResponse')
+       ORDER BY t.relname, c.conname`);
+    // quotes stripped: PostgreSQL quotes an identifier only when it must, so `id` prints bare
+    // while `"projectId"` does not — normalizing keeps the assertion about COLUMNS, not quoting.
+    const byName = Object.fromEntries(
+      rows.map((r) => [r.conname, r.def.replace(/\s+/gu, ' ').replace(/"/gu, '')]),
+    );
+
+    expect(byName).toEqual({
+      DecisionConsultation_projectId_decisionId_fkey:
+        'FOREIGN KEY (projectId, decisionId) REFERENCES Decision(projectId, id)',
+      DecisionConsultation_projectId_requestedById_fkey:
+        'FOREIGN KEY (projectId, requestedById) REFERENCES Membership(projectId, userId)',
+      DecisionConsultation_projectId_consulteeMembershipId_fkey:
+        'FOREIGN KEY (projectId, consulteeMembershipId) REFERENCES Membership(projectId, id)',
+      DecisionConsultation_consulteeUserId_fkey:
+        'FOREIGN KEY (consulteeUserId) REFERENCES User(id)',
+      DecisionConsultation_projectId_sourceCommandId_fkey:
+        'FOREIGN KEY (projectId, sourceCommandId) REFERENCES CommandExecution(projectId, id)',
+      // the THREE-column parent key: project, consultation AND decision
+      DecisionConsultationResponse_projectId_consultationId_deci_fkey:
+        'FOREIGN KEY (projectId, consultationId, decisionId) REFERENCES DecisionConsultation(projectId, id, decisionId)',
+      DecisionConsultationResponse_projectId_respondedById_fkey:
+        'FOREIGN KEY (projectId, respondedById) REFERENCES Membership(projectId, userId)',
+      DecisionConsultationResponse_decisionId_recommendedOptionI_fkey:
+        'FOREIGN KEY (decisionId, recommendedOptionId) REFERENCES DecisionOption(decisionId, id)',
+      DecisionConsultationResponse_projectId_sourceCommandId_fkey:
+        'FOREIGN KEY (projectId, sourceCommandId) REFERENCES CommandExecution(projectId, id)',
+    });
+  });
+
   // ═══ §C rule-ii — command provenance, on BOTH tables ═════════════════════════════════════════
 
   it.each([
@@ -852,6 +894,159 @@ describe('Phase 6 unit 4c-i — consultation, deployed dark (live PG)', () => {
           throw sentinel;
         }),
       ).rejects.toBe(sentinel);
+    },
+  );
+
+  // ═══ P41 — THE ARCHIVE BARRIER, both orderings, on BOTH tables ═══════════════════════════════
+  // A plain eligibility READ would pass here and still be wrong: it could see an operable project,
+  // lose the race to a committing archive, and append permanent evidence against a project that no
+  // longer accepts work. The seals read `archivedAt` THROUGH `phase6_project_operable`, which takes
+  // the `Project` row lock FIRST — so the two sessions genuinely serialize, and these probes prove
+  // it by OBSERVING the loser waiting in `pg_stat_activity` rather than by sleeping.
+
+  /** Wait until a session tagged `marker` is actually WAITING on a lock. Condition-based: a fixed
+   *  sleep would pass just as happily against a seal that never serialized at all. */
+  const blocksWithin = async (marker: string, ms = 5000): Promise<boolean> => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      const rows = await db.$queryRawUnsafe<{ n: bigint }[]>(
+        `SELECT COUNT(*)::bigint AS n FROM pg_stat_activity
+          WHERE query LIKE $1 AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`,
+        `%${marker}%`,
+      );
+      if (Number(rows[0]?.n ?? 0) > 0) return true;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return false;
+  };
+
+  /** Dispatch an archive of `projectId` on the SECOND connection, tagged for the observer. A
+   *  Prisma raw promise is lazy, so this both starts it and captures its outcome. */
+  const archiveOnOther = (marker: string, hold?: { release: Promise<void> }) => {
+    let settled: 'pending' | 'ok' | 'error' = 'pending';
+    const promise = other.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        `UPDATE "Project" SET "archivedAt" = now() WHERE "id" = $1 /* ${marker} */`, projectId,
+      );
+      if (hold) await hold.release;
+    }, { timeout: 20000 }).then(() => { settled = 'ok'; }, () => { settled = 'error'; });
+    return { promise, state: () => settled };
+  };
+
+  /** The two raw inserts, with a comment MARKER carried in the SQL TEXT. The marker cannot ride in
+   *  a bind parameter: `pg_stat_activity.query` shows the parameterized statement, so a marker
+   *  inside `$3` is invisible to the observer and the probe would silently degrade into a sleep. */
+  const insertRaw = async (
+    tx: Prisma.TransactionClient,
+    path: 'request' | 'response',
+    args: { rowId: string; decisionId: string; consultationId: string; commandId: string; marker: string },
+  ): Promise<void> => {
+    if (path === 'request') {
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "DecisionConsultation"
+           ("id","projectId","decisionId","requestedById","consulteeMembershipId",
+            "consulteeUserId","openCycle","question","requestedAt","sourceCommandId")
+         VALUES ($1,$2,$3,$4,$5,$6,0,'Asked under the barrier',now(),$7) /* ${args.marker} */`,
+        args.rowId, projectId, args.decisionId, pmcUserId, consulteeMembershipId, consulteeUserId, args.commandId,
+      );
+    } else {
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "DecisionConsultationResponse"
+           ("id","projectId","consultationId","decisionId","respondedById","response",
+            "recommendedOptionId","respondedAt","sourceCommandId")
+         VALUES ($1,$2,$3,$4,$5,'Answered under the barrier',NULL,now(),$6) /* ${args.marker} */`,
+        args.rowId, projectId, args.consultationId, args.decisionId, consulteeUserId, args.commandId,
+      );
+    }
+  };
+
+  const writeUnderBarrier = (
+    path: 'request' | 'response',
+    args: { rowId: string; decisionId: string; consultationId: string; marker: string; hold?: Promise<void> },
+  ) => {
+    let settled: 'pending' | 'ok' | 'error' = 'pending';
+    const promise = commandPath(
+      {
+        commandType: path === 'request' ? 'consultations.request' : 'consultations.respond',
+        actorId: path === 'request' ? pmcUserId : consulteeUserId,
+        resultRef: args.rowId,
+      },
+      async (tx, commandId) => {
+        await insertRaw(tx, path, { ...args, commandId });
+        if (args.hold) await args.hold;
+      },
+    ).then(() => { settled = 'ok'; }, () => { settled = 'error'; });
+    return { promise, state: () => settled };
+  };
+
+  it.each(['request', 'response'] as const)(
+    'P41 (%s vs archive, ARCHIVE FIRST): the write waits on the project row and is then REFUSED',
+    async (path) => {
+      const decision = await seedDecision();
+      const consultationId = path === 'response' ? await requestConsultation(decision) : '';
+      const rowId = nextId(path);
+
+      // the archiver takes the Project row lock and HOLDS it, uncommitted
+      let release!: () => void;
+      const held = new Promise<void>((r) => { release = r; });
+      const archiver = archiveOnOther(`t4c-archive-${path}`, { release: held });
+      await new Promise((r) => setTimeout(r, 100));
+
+      // the consultation write is dispatched and must BLOCK — not read a stale `archivedAt`
+      const marker = `t4c-writer-${path}-${rowId}`;
+      const writer = writeUnderBarrier(path, { rowId, decisionId: decision.id, consultationId, marker });
+
+      expect(await blocksWithin(marker), 'the write must WAIT on the project row, not read past it').toBe(true);
+      expect(writer.state()).toBe('pending');
+
+      release();
+      await archiver.promise;
+      await writer.promise;
+
+      expect(archiver.state()).toBe('ok');
+      expect(writer.state()).toBe('error');
+      // TERMINAL: the archive stands, and nothing was appended against it
+      expect((await db.project.findUnique({ where: { id: projectId } }))?.archivedAt).not.toBeNull();
+      expect(
+        path === 'request'
+          ? await db.decisionConsultation.count({ where: { id: rowId } })
+          : await db.decisionConsultationResponse.count({ where: { id: rowId } }),
+      ).toBe(0);
+    },
+  );
+
+  it.each(['request', 'response'] as const)(
+    'P41 (%s vs archive, WRITE FIRST): the archive waits, and the legitimate write stands',
+    async (path) => {
+      const decision = await seedDecision();
+      const consultationId = path === 'response' ? await requestConsultation(decision) : '';
+      const rowId = nextId(path === 'request' ? 'consultation' : 'response');
+
+      // the writer holds the project row (taken by phase6_project_operable inside its seal)
+      let release!: () => void;
+      const held = new Promise<void>((r) => { release = r; });
+      const writer = writeUnderBarrier(path, {
+        rowId, decisionId: decision.id, consultationId, marker: `t4c-first-${rowId}`, hold: held,
+      });
+
+      await new Promise((r) => setTimeout(r, 200));
+      const marker = `t4c-archive-second-${path}`;
+      const archiver = archiveOnOther(marker);
+      expect(await blocksWithin(marker), 'the archive must WAIT on the row the seal locked').toBe(true);
+
+      release();
+      await writer.promise;
+      await archiver.promise;
+
+      expect(writer.state()).toBe('ok');
+      expect(archiver.state()).toBe('ok');
+      // TERMINAL: the write was legitimate AT ITS MOMENT and stands; the archive follows it
+      expect(
+        path === 'request'
+          ? await db.decisionConsultation.findUnique({ where: { id: rowId } })
+          : await db.decisionConsultationResponse.findUnique({ where: { id: rowId } }),
+      ).not.toBeNull();
+      expect((await db.project.findUnique({ where: { id: projectId } }))?.archivedAt).not.toBeNull();
     },
   );
 

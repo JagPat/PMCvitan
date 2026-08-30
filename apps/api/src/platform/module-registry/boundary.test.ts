@@ -205,7 +205,10 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
     // `decisionOptionKindSelection` is its per-transaction selection note, written only by DB
     // trigger and read by no module — listed here so a model added to `ownsModels` and forgotten
     // in `readEncapsulated` fails this pin rather than silently losing its boundary.
-    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionKindSelection', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection']);
+    // 4c-i adds the two consultation facts. They are OWNED and READ-ENCAPSULATED from birth: the
+    // unit is dark, so there is no window in which another module could have grown a direct read
+    // of them, and the analyzer's nested-read detection covers `include`/`select` too.
+    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionKindSelection', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'decisionConsultation', 'decisionConsultationResponse', 'changeRequest', 'decisionProjection']);
     // it declares the queries other modules reach it through, and depends on nothing
     expect(decisions?.queries.length).toBeGreaterThan(0);
     // and every module that reads decisions now declares the dependency
