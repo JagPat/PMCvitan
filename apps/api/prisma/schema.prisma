@@ -1116,6 +1116,8 @@ model User {
   orgMemberships OrgMembership[]
   memberships    Membership[]
   passwordChallenges PasswordCredentialChallenge[]
+  activationTokens   AccountActivationToken[]
+  activationTokensIssued AccountActivationToken[] @relation("ActivationIssuer")
   securityEvents     SecurityAuditEvent[]          @relation("SecurityEventTarget")
   securityActorEvents SecurityAuditEvent[]         @relation("SecurityEventActor")
   requirementRootsCreated ActivityRequirementRoot[]  @relation("requirementRootsCreated")
@@ -1192,6 +1194,36 @@ model PasswordCredentialChallenge {
   createdAt           DateTime  @default(now())
 
   @@index([userId, purpose, consumedAt])
+  @@index([expiresAt])
+}
+
+// Admin-issued account activation. A project admin creates the account
+// (`MembersService.add` already writes the User with its project role), then issues ONE
+// single-use link and hands it over out of band — WhatsApp, in person, however the site
+// actually works. Redeeming it sets the password.
+//
+// Deliberately NOT a `PasswordCredentialChallenge` row with a new purpose, though that
+// table already carries this lifecycle and reuse was the cheap path: its `complete()`
+// stamps `emailVerifiedAt`, which is true of a code delivered to the address and FALSE
+// of a link carried by hand, where the address is unproven and may be absent. Reusing it
+// would record a verification that never happened. See the migration for the full note.
+model AccountActivationToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Only the hash is stored, like every other credential secret here: a leaked row
+  // cannot be redeemed.
+  tokenHash  String    @unique
+  // WHO handed this out — activation is an authority transfer, so it is attributable
+  // and the issuer is not deletable while their issuance stands (RESTRICT).
+  issuedById String
+  issuedBy   User      @relation("ActivationIssuer", fields: [issuedById], references: [id], onDelete: Restrict)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, consumedAt])
   @@index([expiresAt])
 }
 
