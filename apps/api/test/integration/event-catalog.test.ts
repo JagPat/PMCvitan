@@ -5,6 +5,7 @@ import { DOMAIN_EVENT_TYPES } from '@vitan/shared';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 Task 4 Step 4 — the catalog is DUAL-WRITTEN. Driving a representative mutation from
  * each pillar through the real HTTP stack, this proves every one ALSO appends its DomainEvent
@@ -37,26 +38,18 @@ describe('Phase 2 Task 4 — event catalog dual-write (live PG)', () => {
     // clear the domain rows this suite created (append-only DomainEvent + the pillar entities)
     // so the fixture can delete the project; TRUNCATE fires no row trigger and CASCADE handles
     // child rows (options/items/revisions/…). The suite runs serially against a disposable DB.
-    // Phase 6 4a (round 15): the CASCADE reaches "DecisionEvent", whose statement-level
-    // truncate guard refuses while approval evidence exists — this destructive reset disables
-    // the named guard for exactly its wipe (the same sanctioned-bypass contract as the
-    // row-trigger disables elsewhere), atomically so a failed wipe rolls the disable back.
+    // The CASCADE from "Decision" reaches several statement-level TRUNCATE seals
+    // ("DecisionEvent", "Decision" itself, "DecisionOption"). Naming them here meant this
+    // suite had to learn every seal the cascade touches and re-learn it on each new one;
+    // the sanctioned reset owns that registry now, and disables them atomically for exactly
+    // this wipe so a failure rolls the disable back with it.
     if (t) {
-      await t.prisma.$transaction([
-        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4a_no_truncate"'),
-        // Phase 6 unit 4b installs the same statement-level guard on "Decision" itself, which
-        // refuses while any approval/withdrawal evidence stands — disabled by name for exactly
-        // this wipe, in the same atomic transaction.
-        t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_no_truncate"'),
-        // 4b round 5 (Codex F5): the CASCADE also reaches "DecisionOption", whose new
-        // statement-level guard refuses while options of PUBLISHED decisions stand — same
-        // sanctioned-bypass contract, disabled by name inside the same atomic transaction.
-        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b2_no_truncate"'),
-        t.prisma.$executeRawUnsafe('TRUNCATE "Decision","Activity","Phase","Inspection","Drawing","DailyLog","SiteMaterial","Media","DomainEvent" CASCADE'),
-        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b2_no_truncate"'),
-        t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_no_truncate"'),
-        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4a_no_truncate"'),
-      ]);
+      await sanctionedReset(
+        t.prisma,
+        ['Decision', 'Activity', 'Phase', 'Inspection', 'Drawing', 'DailyLog', 'SiteMaterial',
+          'Media', 'DomainEvent'],
+        { cascade: true },
+      );
     }
     await f?.cleanup();
     await t?.close();

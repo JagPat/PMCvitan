@@ -6,6 +6,7 @@ import { CompaniesService } from '../../src/orgs/companies.service';
 import { OrgsParticipant } from '../../src/orgs/orgs.participant';
 import { CapabilitiesService, MATERIALS_CAPABILITY } from '../../src/platform/capabilities.service';
 import type { AuthUser } from '../../src/common/auth';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 6 unit 6.1a — the canonical external party (§A), its promotion seam (§E) and its tenancy
@@ -38,8 +39,9 @@ describe('Phase 6 unit 6.1a — the canonical party, its seals and its promotion
   const party = new OrgsParticipant();
   let seq = 0;
 
-  const TRUNCATE =
-    'TRUNCATE TABLE "ProjectPartyVendorSource", "ProjectPartyCompanySource", "ProjectParty", "ProjectVendor", "CommandExecution", "ProjectCapability" CASCADE';
+  const RESET_TABLES = ['ProjectPartyVendorSource', 'ProjectPartyCompanySource', 'ProjectParty',
+    'ProjectVendor', 'CommandExecution', 'ProjectCapability'
+  ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const orgAdmin = (orgId: string): AuthUser => ({ sub: f.ownerUser.id, role: 'pmc', orgId }) as AuthUser;
@@ -53,7 +55,7 @@ describe('Phase 6 unit 6.1a — the canonical party, its seals and its promotion
   });
 
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await cleanupProjects();
     await t?.prisma.vendor.deleteMany({ where: { orgId: { in: [f.orgA.id, f.orgB.id] } } });
     await t?.prisma.externalParty.deleteMany({ where: { orgId: { in: [f.orgA.id, f.orgB.id] } } });
@@ -62,7 +64,7 @@ describe('Phase 6 unit 6.1a — the canonical party, its seals and its promotion
   });
 
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     await cleanupProjects();
     await t.prisma.vendor.deleteMany({ where: { orgId: { in: [f.orgA.id, f.orgB.id] } } });
     await t.prisma.externalParty.deleteMany({ where: { orgId: { in: [f.orgA.id, f.orgB.id] } } });

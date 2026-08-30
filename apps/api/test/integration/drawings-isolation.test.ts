@@ -9,6 +9,7 @@ import { DrawingsService } from '../../src/drawings/drawings.service';
 import { DrawingsQueryService } from '../../src/drawings/drawings.query';
 import { DRAWINGS_PROJECTION } from '../../src/drawings/drawings.projection';
 import type { AuthUser } from '../../src/common/auth';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 2 Task 10 — the MODULE-OWNED drawings read is tenant-isolated, RECIPIENT-isolated and
@@ -23,7 +24,9 @@ import type { AuthUser } from '../../src/common/auth';
  */
 
 const TINY_PDF = Buffer.from('%PDF-1.4 iso').toString('base64');
-const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DrawingsProjection" CASCADE';
+const RESET_TABLES = ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+  'ProjectionGeneration', 'DrawingsProjection'
+] as const;
 
 describe('Phase 2 Task 10 — drawings module read isolation + recipient isolation + lifecycle (live PG)', () => {
   let t: TestApp;
@@ -45,12 +48,12 @@ describe('Phase 2 Task 10 — drawings module read isolation + recipient isolati
     query = t.app.get(DrawingsQueryService);
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     const pids = { startsWith: 'it-dwiso-' };
     const both = { in: [f.projectA.id, f.projectB.id] };
     await t.prisma.drawingRecipient.deleteMany({ where: { OR: [{ projectId: pids }, { projectId: both }] } });

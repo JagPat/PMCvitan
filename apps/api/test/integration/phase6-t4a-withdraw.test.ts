@@ -20,6 +20,7 @@ import { pendingDecisionNotice, withdrawnDecisionNotice, isWithdrawnDecisionNoti
 import { deriveDecisionReading } from '@vitan/shared';
 import type { AuthUser } from '../../src/common/auth';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 6 unit 4a — `decisions.withdraw` (plan §A), proven live against PostgreSQL through the
  * REAL application. The owner's live defect: a wrongly-published decision had no honest exit.
@@ -97,9 +98,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
   });
 
   async function cleanup(): Promise<void> {
-    await t.prisma.$executeRawUnsafe(
-      'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DecisionApprovalRevision", "CommandExecution" CASCADE',
-    );
+    await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'DecisionProjection', 'DecisionApprovalRevision', 'CommandExecution'], { cascade: true });
     await t.prisma.notification.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
     await t.prisma.auditLog.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
     await t.prisma.activity.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
@@ -1443,9 +1442,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         const after = await t.prisma.projectionGeneration.findUniqueOrThrow({ where: { id: replacement.id } });
         expect(after.appliedPosition! > replacement.appliedPosition!).toBe(true);
       } finally {
-        await t.prisma.$executeRawUnsafe(
-          'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "CommandExecution" CASCADE',
-        );
+        await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'DecisionProjection', 'CommandExecution'], { cascade: true });
         await t.prisma.notification.deleteMany({ where: { projectId: projW } });
         await t.prisma.auditLog.deleteMany({ where: { projectId: projW } });
         await t.prisma.$transaction([
@@ -1742,9 +1739,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         await drain();
         expect(await t.prisma.outboxDelivery.count({ where: { consumer: 'decisions.inbox', projectId: projW, status: { in: ['pending', 'leased'] } } })).toBe(0);
       } finally {
-        await t.prisma.$executeRawUnsafe(
-          'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "CommandExecution" CASCADE',
-        );
+        await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'DecisionProjection', 'CommandExecution'], { cascade: true });
         await t.prisma.notification.deleteMany({ where: { projectId: projW } });
         await t.prisma.auditLog.deleteMany({ where: { projectId: projW } });
         await t.prisma.$transaction([
@@ -1909,9 +1904,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         const normalized = stored.map((r) => ({ ...r, dto: { deciderKind: 'client', ...(r.dto as Record<string, unknown>) } }));
         expect(normalized).toEqual(canonical);
       } finally {
-        await t.prisma.$executeRawUnsafe(
-          'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "CommandExecution" CASCADE',
-        );
+        await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'DecisionProjection', 'CommandExecution'], { cascade: true });
         await t.prisma.notification.deleteMany({ where: { projectId: projW } });
         await t.prisma.auditLog.deleteMany({ where: { projectId: projW } });
         await t.prisma.$transaction([
@@ -2024,9 +2017,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       expect(proj.decisions).toEqual(live.decisions);
       expect(proj.decisions.find((d) => d.id === id)?.status).toBe('withdrawn');
     } finally {
-      await t.prisma.$executeRawUnsafe(
-        'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "CommandExecution" CASCADE',
-      );
+      await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'DecisionProjection', 'CommandExecution'], { cascade: true });
       await t.prisma.notification.deleteMany({ where: { projectId: proj13 } });
       await t.prisma.auditLog.deleteMany({ where: { projectId: proj13 } });
       // this probe's row IS withdrawn — the same sanctioned destructive-reset bypass as

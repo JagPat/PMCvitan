@@ -11,6 +11,7 @@ import {
   verifyB1Seals,
 } from '../../src/activities/b1/b1-seals';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Schedule unit B1 — the ACYCLIC ACTIVITY DEPENDENCY GRAPH, proven against live PostgreSQL.
  *
@@ -86,13 +87,7 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
     // test reset uses the same sanctioned destructive contract the seed does: disable the seal BY
     // NAME for exactly this wipe, inside ONE transaction, so a wipe that throws rolls the DISABLE
     // back with it and no failure path can leave the seal off for the suites that follow.
-    await t.prisma.$transaction([
-      t.prisma.$executeRawUnsafe(
-        `ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_no_truncate"`),
-      t.prisma.$executeRawUnsafe(`TRUNCATE TABLE "ActivityDependency"`),
-      t.prisma.$executeRawUnsafe(
-        `ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_no_truncate"`),
-    ]);
+    await sanctionedReset(t.prisma, ['ActivityDependency']);
     await t.prisma.activity.deleteMany({ where: { id: { startsWith: `act-b1-` } } });
   };
   afterEach(wipe);
@@ -1694,13 +1689,7 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
       // The uncontained row is not deletable — the no-delete seal was armed the whole time, which
       // is precisely why the abort tells the operator to confirm what was written. The suite's own
       // sanctioned reset is the only way out, and it is the same one `wipe()` uses.
-      await t.prisma.$transaction([
-        t.prisma.$executeRawUnsafe(
-          `ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_no_truncate"`),
-        t.prisma.$executeRawUnsafe(`TRUNCATE TABLE "ActivityDependency"`),
-        t.prisma.$executeRawUnsafe(
-          `ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_no_truncate"`),
-      ]);
+      await sanctionedReset(t.prisma, ['ActivityDependency']);
     }
 
     expect(await enforcement(), 'enforcement is back on').toBe('O');
@@ -1810,13 +1799,7 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
       // holds a revoker naming no membership would fail validation, which is the correct behaviour
       // of a real repair and would leave this database with four foreign keys for every suite that
       // follows.
-      await t.prisma.$transaction([
-        t.prisma.$executeRawUnsafe(
-          `ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_no_truncate"`),
-        t.prisma.$executeRawUnsafe(`TRUNCATE TABLE "ActivityDependency"`),
-        t.prisma.$executeRawUnsafe(
-          `ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_no_truncate"`),
-      ]);
+      await sanctionedReset(t.prisma, ['ActivityDependency']);
       await t.prisma.$executeRawUnsafe(
         `ALTER TABLE "ActivityDependency" DROP CONSTRAINT IF EXISTS "ActivityDependency_revokedBy_fkey"`);
       await t.prisma.$executeRawUnsafe(`
@@ -1991,13 +1974,7 @@ END $hollow$`);
       expect(err, 'and the migration refuses it too').not.toBeNull();
       expect(err, 'naming both definitions').toMatch(/ActivityDependency_attribution_check/u);
     } finally {
-      await t.prisma.$transaction([
-        t.prisma.$executeRawUnsafe(
-          `ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_no_truncate"`),
-        t.prisma.$executeRawUnsafe(`TRUNCATE TABLE "ActivityDependency"`),
-        t.prisma.$executeRawUnsafe(
-          `ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_no_truncate"`),
-      ]);
+      await sanctionedReset(t.prisma, ['ActivityDependency']);
       await t.prisma.$executeRawUnsafe(
         `ALTER TABLE "ActivityDependency" DROP CONSTRAINT IF EXISTS "ActivityDependency_attribution_check"`);
       await t.prisma.$executeRawUnsafe(
@@ -2062,13 +2039,7 @@ END $hollow$`);
       expect(await edgeCount(), 'evidence still intact').toBe(1);
     } finally {
       await other.$disconnect();
-      await t.prisma.$transaction([
-        t.prisma.$executeRawUnsafe(
-          `ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_no_truncate"`),
-        t.prisma.$executeRawUnsafe(`TRUNCATE TABLE "ActivityDependency"`),
-        t.prisma.$executeRawUnsafe(
-          `ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_no_truncate"`),
-      ]);
+      await sanctionedReset(t.prisma, ['ActivityDependency']);
     }
 
     // (3) PRECISION: the fast path is KEPT. On an EMPTY table under READ COMMITTED — every fixture

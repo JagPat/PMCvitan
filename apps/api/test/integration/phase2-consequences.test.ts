@@ -7,6 +7,7 @@ import { RealtimeGateway } from '../../src/realtime/realtime.gateway';
 import { PushService } from '../../src/push/push.service';
 import { pendingDecisionNotice } from '../../src/domain/notifications';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 Task 1 — CHARACTERIZATION (live PostgreSQL) of the EXACT per-mutation
  * consequence set. EVERY semantic mutation BRANCH is its own isolated test with a
@@ -130,7 +131,7 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
     await t.prisma.crewRow.deleteMany({ where: { dailyLog: { projectId: pid } } });
     await t.prisma.dailyLog.deleteMany({ where: { projectId: pid } });
     await t.prisma.gateOverride.deleteMany({ where: { projectId: pid } });
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision" CASCADE');
+    await sanctionedReset(t.prisma, ['LabourDemandSlice', 'LabourRequirementSpec', 'MaterialRequirementSpec', 'DecisionApprovalRevision'], { cascade: true });
     await wipeDecisionEvents(t.prisma, { decision: { projectId: pid } });
     await t.prisma.activity.deleteMany({ where: { projectId: pid } });
     // one sanctioned bypass: options of published parents are frozen (4b widened freeze)

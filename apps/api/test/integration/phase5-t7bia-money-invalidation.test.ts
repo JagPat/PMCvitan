@@ -17,6 +17,7 @@ import { executeCommand, hashRequest } from '../../src/platform/commands';
 import type { AuthUser } from '../../src/common/auth';
 import type { Actor } from '../../src/common/actor';
 import type { CreateRequirementInput } from '../../src/contracts';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 5 Task 7B-i-a — A COMMAND'S EXTERNAL EFFECTS ARE WHAT IT EMITTED. Live PG, reproduce-first.
@@ -58,8 +59,15 @@ describe('Phase 5 Task 7B-i-a — commercial money invalidation + the emission r
   let realtime: RealtimeGateway;
   let seq = 0;
 
-  const TRUNCATE =
-    'TRUNCATE TABLE "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "CashForecastProjection", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "VendorQuote", "QuoteComparison", "Rfq", "RequisitionLine", "Requisition", "ProjectPartyVendorSource", "ProjectPartyCompanySource", "ProjectParty", "ProjectVendor", "CommandExecution", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "ProjectCapability" CASCADE';
+  const RESET_TABLES = ['BudgetException', 'BudgetLine', 'CommitmentAttribution', 'CostHead',
+    'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'CashForecastProjection', 'DeliveryPromise', 'DeliveryCommitment',
+    'PurchaseOrderLine', 'PurchaseOrderVersion', 'PurchaseOrder', 'VendorQuoteLine',
+    'VendorQuote', 'QuoteComparison', 'Rfq', 'RequisitionLine', 'Requisition',
+    'ProjectPartyVendorSource', 'ProjectPartyCompanySource', 'ProjectParty', 'ProjectVendor',
+    'CommandExecution', 'MaterialRequirementSpec', 'ActivityRequirement',
+    'ActivityRequirementRoot', 'ProjectCapability'
+  ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const orgAdmin = (): AuthUser => ({ sub: f.ownerUser.id, role: 'pmc', orgId: f.orgA.id }) as AuthUser;
@@ -78,14 +86,14 @@ describe('Phase 5 Task 7B-i-a — commercial money invalidation + the emission r
     realtime = t.app.get(RealtimeGateway);
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await t?.prisma.vendor.deleteMany({ where: { orgId: f.orgA.id } });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
     vi.restoreAllMocks();
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     await t.prisma.vendor.deleteMany({ where: { orgId: f.orgA.id } });
     for (const [model, where] of [
       ['auditLog', { projectId: { startsWith: 'it-p57bia-' } }],

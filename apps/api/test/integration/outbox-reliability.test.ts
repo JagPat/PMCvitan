@@ -3,6 +3,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { emitEvent } from '../../src/platform/events';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 fix-forward PR B Task 1 — the durable-outbox constraint probes (live PG). Each proves a
  * constraint the pre-PR-B database LACKED: a delivery can no longer claim coordinates its event
@@ -21,13 +22,13 @@ describe('PR B Task 1 — durable outbox constraints (live PG)', () => {
     human.actorId = f.memberUser.id;
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
+    await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
     await t?.prisma.outboxConsumerCatalog.deleteMany({ where: { consumer: { startsWith: 'probe.' } } });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
+    await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
     await t.prisma.outboxConsumerCatalog.deleteMany({ where: { consumer: { startsWith: 'probe.' } } });
     await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-rel-' } } });
   });

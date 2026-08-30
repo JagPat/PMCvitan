@@ -7,6 +7,7 @@ import { CompaniesService } from '../../src/orgs/companies.service';
 import { OrgsParticipant } from '../../src/orgs/orgs.participant';
 import { CapabilitiesService, MATERIALS_CAPABILITY } from '../../src/platform/capabilities.service';
 import type { AuthUser } from '../../src/common/auth';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 6 unit 6.1a — the eight Codex findings on head `9a03d95`, each reproduced RED here
@@ -34,8 +35,9 @@ describe('Phase 6 unit 6.1a — the review corrections (live PG)', () => {
   const participant = new OrgsParticipant();
   let seq = 0;
 
-  const TRUNCATE =
-    'TRUNCATE TABLE "ProjectPartyVendorSource", "ProjectPartyCompanySource", "ProjectParty", "ProjectVendor", "CommandExecution", "ProjectCapability" CASCADE';
+  const RESET_TABLES = ['ProjectPartyVendorSource', 'ProjectPartyCompanySource', 'ProjectParty',
+    'ProjectVendor', 'CommandExecution', 'ProjectCapability'
+  ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const orgAdmin = (orgId: string): AuthUser => ({ sub: f.ownerUser.id, role: 'pmc', orgId }) as AuthUser;
@@ -49,14 +51,14 @@ describe('Phase 6 unit 6.1a — the review corrections (live PG)', () => {
   });
 
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await cleanup();
     await f?.cleanup();
     await t?.close();
   });
 
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     await cleanup();
   });
 

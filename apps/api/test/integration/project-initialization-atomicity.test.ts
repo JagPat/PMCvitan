@@ -7,6 +7,7 @@ import { OrgsService } from '../../src/orgs/orgs.service';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { createTestApp, type TestApp } from './test-app';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 type ModulePayloadJson = {
   nodes: Array<{ key: string; parentKey: string | null; name: string; kind: 'zone' | 'room' | 'element'; order: number }>;
   phases: Array<{ name: string; order: number; plannedStart: number; plannedEnd: number }>;
@@ -138,7 +139,7 @@ describe('project initialization atomicity (live PostgreSQL)', () => {
     try {
       await dropFaultProbe();
       if (f) {
-        await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
+        await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
         const projects = await t.prisma.project.findMany({ where: { orgId: f.orgA.id }, select: { id: true } });
         const projectIds = projects.map((project) => project.id);
         const inspections = await t.prisma.inspection.findMany({ where: { projectId: { in: projectIds } }, select: { id: true } });

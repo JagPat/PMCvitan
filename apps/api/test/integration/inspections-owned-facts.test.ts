@@ -9,6 +9,7 @@ import { InspectionsQueryService } from '../../src/inspections/inspections.query
 import { INSPECTIONS_PROJECTION } from '../../src/inspections/inspections.projection';
 import { OrgsService } from '../../src/orgs/orgs.service';
 import type { AuthUser } from '../../src/common/auth';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 2 Task 10 (Module 3) CORRECTION — the `inspections.inbox` projection is a TRUTHFUL, module-owned
@@ -45,7 +46,9 @@ describe('Phase 2 Task 10 (Module 3) correction — foreign mutations keep inspe
   let orgs: OrgsService;
   let seq = 0;
 
-  const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "InspectionsProjection", "InspectionEvidence" CASCADE';
+  const RESET_TABLES = ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'InspectionsProjection', 'InspectionEvidence'
+  ] as const;
 
   beforeAll(async () => {
     t = await createTestApp();
@@ -58,13 +61,13 @@ describe('Phase 2 Task 10 (Module 3) correction — foreign mutations keep inspe
   });
 
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
 
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     await t.prisma.commandExecution.deleteMany({ where: { projectId: { startsWith: 'it-iof-' } } });
     await t.prisma.media.deleteMany({ where: { projectId: { startsWith: 'it-iof-' } } });
     await t.prisma.inspectionItem.deleteMany({ where: { inspection: { projectId: { startsWith: 'it-iof-' } } } });
@@ -256,7 +259,7 @@ describe('Phase 2 Task 10 (Module 3) correction — foreign mutations keep inspe
     } finally {
       if (created) {
         const cid = created.id;
-        await t.prisma.$executeRawUnsafe(TRUNCATE);
+        await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
         await t.prisma.inspectionItem.deleteMany({ where: { inspection: { projectId: cid } } });
         await t.prisma.inspection.deleteMany({ where: { projectId: cid } });
         await t.prisma.projectNode.deleteMany({ where: { projectId: cid } });

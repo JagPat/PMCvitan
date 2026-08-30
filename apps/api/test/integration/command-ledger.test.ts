@@ -7,6 +7,7 @@ import { DecisionsService } from '../../src/decisions/decisions.service';
 import type { Actor } from '../../src/common/actor';
 import type { AuthUser } from '../../src/common/auth';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 Task 5 — the Command-Idempotency Ledger, proven against live PostgreSQL.
  *
@@ -39,7 +40,7 @@ describe('Phase 2 Task 5 — command-idempotency ledger (live PG)', () => {
   afterAll(async () => {
     await t?.prisma.commandExecution.deleteMany({ where: { projectId: projectA2 } });
     await t?.prisma.project.delete({ where: { id: projectA2 } }).catch(() => {});
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
+    await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
@@ -238,7 +239,7 @@ describe('Phase 2 Task 5 — decision pillar is idempotent end-to-end (live PG)'
     user = { sub: f.memberUser.id, role: 'pmc', projectId: f.projectA.id };
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
+    await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
@@ -254,10 +255,10 @@ describe('Phase 2 Task 5 — decision pillar is idempotent end-to-end (live PG)'
   };
   const cleanupDecision = async (id: string) => {
     await t.prisma.commandExecution.deleteMany({ where: { projectId: f.projectA.id } });
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
+    await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
     await t.prisma.auditLog.deleteMany({ where: { entityId: id } });
     await t.prisma.notification.deleteMany({ where: { projectId: f.projectA.id } });
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision" CASCADE');
+    await sanctionedReset(t.prisma, ['LabourDemandSlice', 'LabourRequirementSpec', 'MaterialRequirementSpec', 'DecisionApprovalRevision'], { cascade: true });
     await t.prisma.changeRequest.deleteMany({ where: { decisionId: id } });
     await wipeDecisionEvents(t.prisma, { decisionId: id });
     await wipeDecisionsVia(t.prisma, async (tx) => {

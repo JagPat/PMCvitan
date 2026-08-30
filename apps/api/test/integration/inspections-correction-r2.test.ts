@@ -7,6 +7,7 @@ import { InspectionsService } from '../../src/inspections/inspections.service';
 import { InspectionsQueryService } from '../../src/inspections/inspections.query';
 import { INSPECTIONS_PROJECTION } from '../../src/inspections/inspections.projection';
 import type { AuthUser } from '../../src/common/auth';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 2 Task 10 (Module 3) correction ROUND 2 — the two narrow findings of the PR #179 re-review,
@@ -44,7 +45,9 @@ describe('Task 10 (Module 3) correction round 2 — tenant-contained evidence FK
   let query: InspectionsQueryService;
   let seq = 0;
 
-  const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "InspectionsProjection", "InspectionEvidence" CASCADE';
+  const RESET_TABLES = ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'InspectionsProjection', 'InspectionEvidence'
+  ] as const;
 
   beforeAll(async () => {
     t = await createTestApp();
@@ -56,13 +59,13 @@ describe('Task 10 (Module 3) correction round 2 — tenant-contained evidence FK
   });
 
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
 
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     await t.prisma.commandExecution.deleteMany({ where: { projectId: { startsWith: 'it-r2-' } } });
     await t.prisma.media.deleteMany({ where: { projectId: { startsWith: 'it-r2-' } } });
     await t.prisma.inspectionItem.deleteMany({ where: { inspection: { projectId: { startsWith: 'it-r2-' } } } });

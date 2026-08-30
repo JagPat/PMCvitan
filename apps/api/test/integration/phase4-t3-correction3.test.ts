@@ -15,6 +15,7 @@ import { CapabilitiesService, LABOUR_CAPABILITY } from '../../src/platform/capab
 import { T3CRepairService, RepairAbortedError } from '../../src/labour/t3c/t3c-repair.service';
 import { t3cRenderTs, T3C_INVALID_LEGACY_PREFIX, T3C_PREREQUISITE_TRIGGER_SEALS } from '../../src/labour/t3c/t3c-diagnostics';
 import type { AuthUser } from '../../src/common/auth';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 4 Task 3 correction ROUND 3 — the three post-merge review findings, reproduce-first against
@@ -58,8 +59,23 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
   let raceA: PrismaClient;
   let raceB: PrismaClient;
 
-  const TRUNCATE =
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "CashForecastProjection", "LabourReadinessProjection", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourQuoteComparison", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "ProjectPartyVendorSource", "ProjectPartyCompanySource", "ProjectParty", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability", "Media" CASCADE';
+  const RESET_TABLES = ['VendorAdvance', 'PaymentReversal', 'Payment', 'PaymentApproval',
+    'BillDeductionRelease', 'BillDeduction', 'SodException', 'SodGrant',
+    'CertifiedMeasurementConsumption', 'CertifiedAcceptanceConsumption', 'BillCertificate',
+    'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
+    'InspectionsProjection', 'ActivitiesProjection', 'MaterialReadinessProjection',
+    'CashForecastProjection', 'LabourReadinessProjection', 'LabourWorkFact', 'WorkerAllocation',
+    'LabourAttendance', 'ApprovedSkillSubstitution', 'CapacityPromise', 'CapacityCommitment',
+    'LabourPurchaseOrderLine', 'LabourPurchaseOrderVersion', 'LabourPurchaseOrder',
+    'SupplierLabourQuoteLine', 'SupplierLabourQuote', 'LabourQuoteComparison', 'LabourRfq',
+    'LabourRequisitionLine', 'LabourRequisition', 'VendorLabourProfile',
+    'ProjectPartyVendorSource', 'ProjectPartyCompanySource', 'ProjectParty', 'ProjectVendor',
+    'CommandExecution', 'CrewMembership', 'Crew', 'WorkerDevice', 'WorkerSkill', 'Worker',
+    'LabourDemandSlice', 'LabourRequirementSpec', 'LabourTrade', 'LabourSkill',
+    'MaterialRequirementSpec', 'ActivityRequirement', 'ActivityRequirementRoot',
+    'DecisionApprovalRevision', 'ProjectCapability', 'Media'
+  ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
 
@@ -78,7 +94,7 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
   afterAll(async () => {
     await raceA?.$disconnect();
     await raceB?.$disconnect();
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await t?.prisma.$executeRawUnsafe('DROP EVENT TRIGGER IF EXISTS phase4_t3c_evidence_drop_guard');
     await t?.prisma.$executeRawUnsafe('DROP EVENT TRIGGER IF EXISTS phase4_t3c_evidence_alter_guard');
     await t?.prisma.$executeRawUnsafe('DROP TABLE IF EXISTS "T3CRepairAction"');
@@ -86,7 +102,7 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     // The round-7 DROP guard would (correctly) refuse this drop — removing it first is the
     // deliberate, loud act the guard is designed to force. That is the honest teardown shape:
     // a test harness resetting a scratch table is exactly the actor the guard cannot and does
@@ -2837,7 +2853,7 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
       // the (legitimate) repair leaves an attendance row referencing a probe user via
       // `LabourAttendance_revokedBy_fkey`, and attendance is append-only — TRUNCATE (the suite's
       // own teardown shape) before the probe users can be removed
-      await t.prisma.$executeRawUnsafe(TRUNCATE);
+      await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
       await t.prisma.orgMembership.deleteMany({ where: { userId: { in: [contractor.id, admin.id] } } });
       await t.prisma.membership.deleteMany({ where: { userId: { in: [contractor.id, admin.id] } } });
       await t.prisma.user.deleteMany({ where: { id: { in: [contractor.id, admin.id] } } });
@@ -2879,7 +2895,7 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
       expect(after[0]!.reason).toBe('   ');
     } finally {
       // the ghost row would block re-validating the FK — the suite's own TRUNCATE teardown first
-      await t.prisma.$executeRawUnsafe(TRUNCATE);
+      await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
       await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" ADD CONSTRAINT "LabourAttendance_revokedBy_fkey" ${fkDef}`);
     }
     // precision: with the FK canonical again, a genuinely-revoked row still repairs on the
@@ -2932,7 +2948,7 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
         `SELECT "revokedById" AS r FROM "LabourAttendance" WHERE "id" = $1`, blank,
       ))[0]!.r).toBe(dual.id);
     } finally {
-      await t.prisma.$executeRawUnsafe(TRUNCATE);
+      await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
       await t.prisma.orgMembership.deleteMany({ where: { userId: dual.id } });
       await t.prisma.membership.deleteMany({ where: { userId: dual.id } });
       await t.prisma.user.deleteMany({ where: { id: dual.id } });
