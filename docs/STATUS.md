@@ -17,25 +17,32 @@ task_state: merged
 work_item: none
 reviewed_merge: d4e2ddf5
 open_pr: none
-next_task: phase-6-task-4c
+next_task: none
 blocking_directive: none
 updated: 2026-08-30
 ```
 
 **4c-i IS MERGED (PR #493 at `main` `d4e2ddf5`) WITH A FRESH INDEPENDENT CODEX +1 ON THE
 EXACT REVIEWED HEAD `7650109`, AND THE REMOVAL-AND-REINSTATE BLOCKER IS CLEARED BY
-BOARD CALL** (2026-08-30, ~23:07 IST). No PR is open: the plan's next unit is **4c-ii**
-(the behaviour unit — contracts, commands, routes, the projection thread, the push families and
-the UI, plus the `sourceCommandId` writer and its constraint trigger after the drain-first
-cutover), and it is **NOT started**. Every Board pin in this sequence has named exactly one next
-PR, and the pin that authorised 4c-i named only 4c-i, so 4c-ii waits for its own GO rather than
-being assumed. Contractor-capture units 1–6 remain under their per-unit Board gate.
+BOARD CALL** (2026-08-30, ~23:07 IST). Nothing is scheduled: the Now block is the documented
+TERMINAL NONE-FLIP — the OWNER-GATED INTERREGNUM (`task_state: merged`, `work_item: none`,
+`open_pr: none`, `next_task: none`), which `isNoneFlipShape` recognizes as a landing, and which
+`assessRunnerState` resolves to the standing **Maintenance queue**. So the loop stays LIVE and
+machine-actionable with no human-approval condition anywhere in its path — the failure this
+encoding exists to avoid is a STATUS that names a next task while its prose says a person must
+first approve it, which leaves the runner to either start work STATUS did not schedule or stop
+indefinitely waiting for someone. `task_state: merged` is the state of the WORK ITEM that was in
+flight — 4c-i — exactly as the 4b landing used it while task 4 continued; it is not a claim that
+task 4c is finished.
 
-The Now block is the documented TERMINAL HANDOFF SHAPE (`task_state: merged`, `open_pr: none`,
-`work_item: none`, a NAMED `next_task`) so `isHandoffShape` recognizes this landing instead of
-instructing the loop to point `open_pr` at this PR itself (the #303 trap). `task_state: merged`
-is the state of the WORK ITEM that was in flight — 4c-i — exactly as the 4b landing used it while
-task 4 continued on 4c–4d; it is not a claim that task 4c is finished. Five plan units remain.
+The plan's next unit remains **4c-ii** (the behaviour unit — contracts, commands, routes, the
+projection thread, the push families and the UI, plus the `sourceCommandId` writer and its
+constraint trigger after the drain-first cutover), and five plan units remain after 4c-i. It is
+recorded here as the plan's ordering, NOT as a scheduled next step: every Board pin in this
+sequence has named exactly one next PR, and the pin that authorised 4c-i named only 4c-i, so
+`next_task` is the `none` sentinel rather than a name the runner would start on. Scheduling 4c-ii
+is a one-line edit to `next_task` whenever the owner wants it. Contractor-capture units 1–6 remain
+under their per-unit Board gate.
 
 `blocking_directive` is `none` and the 4c plan STAYS on `main`. The recorded Board sequence is **STATUS, then 4c**: the unwind was dismissed
 at 09:36; #487 was the first removal attempt and closed unmerged; #491 was the same removal again
