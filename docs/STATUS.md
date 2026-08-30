@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4c-0
 reviewed_merge: d86cfb60
-open_pr: 488
+open_pr: 489
 next_task: phase-6-task-4c
 blocking_directive: none
 updated: 2026-08-30
@@ -75,6 +75,13 @@ suite. Nothing sanctioned clears that register — not a Prisma model, no inboun
 reaches it, and its only TRUNCATE is a hostile probe asserting rejection — so it is removed, with
 the reason recorded beside the registry against a future "completeness" fix that would re-break
 every reset.
+
+**UNIT 4c-0 IS OPEN AS PR #489** (branch `claude/phase6-4c-0-reset-sweep-r2`,
+`Replaces: #488`) — the prerequisite reset sweep, tree-identical to #488's final head
+`87df7b29`. #488 reached the two-finding-bearing-head limit (round 1 P1: the sweep missed every
+inline reset; round 2 P2: it missed the resets living inside `it(...)` bodies as `finally`
+teardowns) and is CLOSED UNMERGED; both rounds are folded here. `open_pr` NAMES this PR because
+it is a WORK-ITEM PR, not a status landing.
 
 The #480 review lineage is preserved as history: the WORK lineage
 #470 → #471 → #473 → #474 → #476 → #477 → #478 → #479 → #480, each closing at the
