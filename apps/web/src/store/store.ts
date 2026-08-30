@@ -402,6 +402,11 @@ export interface AppActions {
   /** Withdraw a PUBLISHED, never-approved decision — pmc only, reason required (Phase 6 task 4a). */
   openWithdraw: (decId: string) => void;
   confirmWithdraw: () => void;
+  /** Phase 6 unit 4c-ii (§A) — ask a named ACTIVE member for advice on a published, still-open
+   *  decision. Capability-gated in the UI exactly as the server gates the command. */
+  requestConsultation: (decId: string, consulteeMembershipId: string, question: string) => void;
+  /** Phase 6 unit 4c-ii (§A) — answer one outstanding consultation you were named on. */
+  respondToConsultation: (decId: string, consultationId: string, response: string, recommendedOptionKey?: string) => void;
   setWithdrawReason: (v: string) => void;
   setChangeText: (v: string) => void;
   setChangeCost: (v: string) => void;
@@ -2053,6 +2058,37 @@ export const useStore = create<Store>()(
         }
       });
       get().flash('Change request withdrawn — the decision is locked again.');
+    },
+    requestConsultation: (decId, consulteeMembershipId, question) => {
+      const q = question.trim();
+      // the contract refuses a blank question; the form disables its own submit, and this is the
+      // second guard so a programmatic caller cannot queue an op the server will only reject
+      if (!q || !consulteeMembershipId) return;
+      // a fresh key per deliberate action — a second, legitimate consultation on the same
+      // decision is a different act and gets its own key; the queued op replays under the SAME
+      // key exactly once
+      const key = newIdempotencyKey();
+      runRemoteOrQueue(
+        { t: 'consultRequest', decisionId: decId, consulteeMembershipId, question: q, idempotencyKey: key },
+        'Consult ' + decId,
+        () => gateway!.requestConsultation(decId, consulteeMembershipId, q, key),
+        'Asked — they’ll see the decision and can reply.',
+      );
+      // NO optimistic local mutation: a consultation WIDENS an audience, and the canonical
+      // audience is resolved server-side from the membership. Guessing it here would render a
+      // thread the server may refuse (an inactive consultee, a decision approved in the window)
+      // and — worse — could show a decision to a viewer the server never admitted.
+    },
+    respondToConsultation: (decId, consultationId, response, recommendedOptionKey) => {
+      const answer = response.trim();
+      if (!answer) return;
+      const key = newIdempotencyKey();
+      runRemoteOrQueue(
+        { t: 'consultRespond', decisionId: decId, consultationId, response: answer, recommendedOptionKey, idempotencyKey: key },
+        'Reply ' + consultationId,
+        () => gateway!.respondToConsultation(decId, consultationId, answer, recommendedOptionKey, key),
+        'Reply sent — the person who asked has been told.',
+      );
     },
     openWithdraw: (decId) => {
       const d = get().decisions.find((x) => x.id === decId);

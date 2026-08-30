@@ -11,6 +11,7 @@
  * end-to-end in CI (the sandbox has no Postgres). Validate it once the API is
  * deployed and `VITE_API_URL` points at it.
  */
+import { DECISIONS_CONTRACT_CONSULTATION } from '@vitan/shared';
 import { deleteEvidence, getEvidence, markEvidenceFailed } from './evidenceStore';
 import type {
   Activity,
@@ -768,7 +769,15 @@ export class ApiGateway {
         // Phase 6 unit 4b (Codex R2-F1) — this bundle understands the `recorded` status; the
         // declaration is the version boundary that lets the server serve records to it while
         // stripping them for a still-cached PREVIOUS bundle (which never sends the header).
-        'X-Vitan-Decisions-Contract': 'recorded-v1',
+        //
+        // Phase 6 unit 4c-ii — the value MOVES ON to `consultation-v1`. Browser tabs cannot be
+        // drained, so the two consultation WRITE commands refuse a caller that has not advertised
+        // it: a tab still running the 4b bundle would otherwise create a thread its own
+        // `selectVisibleDecisions` then hides, and no response shape can repair that (the filter
+        // is client-side). The value is a SUPERSET declaration, not a switch — a
+        // consultation-aware bundle understands records too, and the server's record-stripping
+        // interceptor keys on the header being present at all, so nothing about 4b changes.
+        'X-Vitan-Decisions-Contract': DECISIONS_CONTRACT_CONSULTATION,
         ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
         ...(init?.headers ?? {}),
       },
@@ -1162,6 +1171,26 @@ export class ApiGateway {
   withdrawDecision(decisionId: string, reason: string, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.p(`/decisions/${decisionId}/withdraw`, { reason }, idempotencyKey);
   }
+  /** Phase 6 unit 4c-ii (§A) — ask a named ACTIVE member for advice on a published, still-open
+   *  decision. Keyed for replay-safety: a lost-response retry asks exactly once. */
+  requestConsultation(decisionId: string, consulteeMembershipId: string, question: string, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p(`/decisions/${decisionId}/consultations`, { consulteeMembershipId, question }, idempotencyKey);
+  }
+  /** Phase 6 unit 4c-ii (§A) — answer one outstanding consultation. Keyed the same way; the
+   *  server's one-response UNIQUE makes a second answer a deterministic conflict either way. */
+  respondToConsultation(
+    decisionId: string,
+    consultationId: string,
+    response: string,
+    recommendedOptionKey: string | undefined,
+    idempotencyKey?: string,
+  ): Promise<ApiSnapshot> {
+    return this.p(
+      `/decisions/${decisionId}/consultations/${consultationId}/respond`,
+      { response, ...(recommendedOptionKey ? { recommendedOptionKey } : {}) },
+      idempotencyKey,
+    );
+  }
   /** Keyed for replay-safety (Task 10 Module 4): a lost-response retry starts exactly once. */
   startActivity(activityId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.p(`/activities/${activityId}/start`, undefined, idempotencyKey);
@@ -1544,6 +1573,8 @@ export type OutboxOp =
   // Phase 6 task 4a — withdraw a published, never-approved decision (pmc; terminal; the reason
   // travels with the op so an offline replay carries the exact attribution evidence).
   | { t: 'withdraw'; decisionId: string; reason: string; idempotencyKey: string }
+  | { t: 'consultRequest'; decisionId: string; consulteeMembershipId: string; question: string; idempotencyKey: string }
+  | { t: 'consultRespond'; decisionId: string; consultationId: string; response: string; recommendedOptionKey?: string; idempotencyKey: string }
   // the drawing acknowledgement carries a stable idempotencyKey (Phase 2 Task 10): a queued ack
   // replayed on reconnect reaches the server under the SAME key it was first sent with, so a
   // lost-response retry records the acknowledgement exactly once (actor-scoped).
@@ -1647,6 +1678,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.withdrawChange(op.decisionId, op.idempotencyKey);
     case 'withdraw':
       return gw.withdrawDecision(op.decisionId, op.reason, op.idempotencyKey);
+    case 'consultRequest':
+      return gw.requestConsultation(op.decisionId, op.consulteeMembershipId, op.question, op.idempotencyKey);
+    case 'consultRespond':
+      return gw.respondToConsultation(op.decisionId, op.consultationId, op.response, op.recommendedOptionKey, op.idempotencyKey);
     case 'ackDrawing':
       // the server ack is idempotent under the command-ledger (same key ⇒ recorded once,
       // actor-scoped); it returns {ok,ackCount}, so refetch to reconcile the register

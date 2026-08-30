@@ -1,3 +1,4 @@
+import { ConsultationPanel } from '../components/ConsultationPanel';
 import { useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
@@ -274,6 +275,11 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
               )}
             </div>
           </div>
+          {/* Phase 6 unit 4c-ii (§A/§J) — the consultation thread and its two acts. Renders NOTHING
+              until the per-project `consultation` capability is on, which is the same gate the
+              write surface and the emitter read; a decision with no thread on an enabled project
+              shows only the pmc's ask form, and nothing at all to anyone else. */}
+          <ConsultationPanel d={d} />
           {/* Can I edit this? If not, why — and what may I do instead? The verdict is the domain's
               (approved ⇒ locked; a change request is with the DECIDER — round-11 Codex F2:
               every message on this workflow derives from `deciderNoun(kind)`, so a pmc- or

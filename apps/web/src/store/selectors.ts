@@ -54,7 +54,14 @@ export function selectLogDecisions(s: AppState): Decision[] {
       (d) =>
         !d.draft &&
         d.status !== 'withdrawn' &&
-        (d.status !== 'pending' || viewerIsDecider(d, s.role, s.sessionUserId)),
+        (d.status !== 'pending'
+          || viewerIsDecider(d, s.role, s.sessionUserId)
+          // Phase 6 unit 4c-ii (§A) — the named CONSULTEE joins the pending audience, mirroring
+          // the server's `decisionVisibleToViewer` exactly. Without this the client would filter
+          // out the very decision the server just widened to them: they would receive the push,
+          // open the app, and find nothing — the audience rule has to hold on BOTH sides or the
+          // widening is invisible.
+          || isConsultee(d, s.sessionUserId)),
     );
   }
   return s.decisions.filter((d) => !d.draft);
@@ -84,6 +91,31 @@ export function selectVisibleDecisions(s: AppState): Decision[] {
     );
   }
   return s.decisions.filter((d) => !d.draft);
+}
+
+/** Phase 6 unit 4c-ii — is this viewer a named consultee on this decision? Reads the canonical
+ *  audience the server serializes onto the thread, never a role or a name. */
+export function isConsultee(d: Decision, userId?: string | null): boolean {
+  return !!userId && (d.consultations ?? []).some((c) => c.consulteeUserId === userId);
+}
+
+/** Phase 6 unit 4c-ii (§D's disclosed bound) — the REQUESTER's outstanding questions: every
+ *  consultation they asked that has not been answered, newest first, with the decision it belongs
+ *  to. A consultation informs and never gates, so an unanswered one blocks nothing — but it can
+ *  sit unseen (a consultee's tab may be stale, and push is best-effort), and the person who can
+ *  follow it up by other means is the one who asked. Surfacing it is what makes the gap visible
+ *  rather than silently pending. */
+export function selectOutstandingConsultations(
+  s: AppState,
+): Array<{ decision: Decision; consultation: NonNullable<Decision['consultations']>[number] }> {
+  if (!s.sessionUserId) return [];
+  const out: Array<{ decision: Decision; consultation: NonNullable<Decision['consultations']>[number] }> = [];
+  for (const d of s.decisions) {
+    for (const c of d.consultations ?? []) {
+      if (c.requestedById === s.sessionUserId && !c.response) out.push({ decision: d, consultation: c });
+    }
+  }
+  return out.sort((a, b) => b.consultation.requestedAt.localeCompare(a.consultation.requestedAt));
 }
 
 /** Private, unpublished draft decisions — the author's Drafts workspace. */
