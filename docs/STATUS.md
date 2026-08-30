@@ -16,41 +16,84 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: fe9df58d
-open_pr: 480
+open_pr: none
 next_task: phase-6-task-4c
-blocking_directive: none
-updated: 2026-08-29
+blocking_directive: phase-6-4c-plan-independent-clearance
+updated: 2026-08-30
 ```
 
-**THE DOCS-ONLY 4c PLAN UNIT IS PR #480** (branch `claude/decision-workflow-4c-plan-r9`,
-`Replaces: #479` — the eighth replacement) — the first review unit of
-`next_task: phase-6-task-4c`, exactly as the binding §E order below requires (plan unit first;
-4c implementation only after it merges AND clears). **This STATUS record travels IN THAT PR,
-not beside it** (2026-08-29): the two-step convention the 4b plan's §E used for plan units
-produced exactly the failure the rule below the Now block forbids — "Update this file in the
-same PR as the work it describes, so state and code never disagree on `main`". The evidence is
-on the record: the separate pointer PR #472 merged naming `open_pr: 473`, #473 was then
-replaced at its round limit, and `main` was left pointing `assessRunnerState` at a CLOSED PR.
-The separate pointer PR #475 is therefore CLOSED UNMERGED and its content folded here.
+**THE 4c PLAN DOCUMENT IS ON `main` BUT IT IS NOT INDEPENDENTLY CLEARED.** PR #480
+(branch `claude/decision-workflow-4c-plan-r9`, `Replaces: #479`) was merged at `main`
+`d06af48e` on 2026-08-30 by an explicit Board merge call **while the required exact-head
+status `codex-current-head` on its authoritative head `25b43f77` was FAILING**
+(`replacement_required` — thirteen finding-bearing heads reached the review-round limit).
+So `docs/superpowers/plans/2026-08-29-decision-workflow-4c.md` is deployed prose that never
+received the exact-head clearance the programme gate requires, and rounds 19–29 folded
+findings on heads no independent review ever confirmed clean. The gate behaved correctly at
+every step: the post-merge autonomous handoff REFUSED to continue (`Skipping continuation
+for PR #480: exact-head Codex status was not successful`), which is precisely why the loop
+had no move — not a runner defect, the fail-closed design working.
 
-`open_pr` NAMES THIS PR (review round 8, correcting an earlier record): a draft once left
-it `none` on the theory that naming the PR would go stale on that PR's own merge. That was
-wrong, and the code says so — `assessPostMergeRunnerState` simulates the merge by clearing a
-SELF-REFERENTIAL `open_pr` before resolving (`namesThisPullRequest ? { ...state, open_pr: NONE }
-: state`), so `open_pr: 480` survives its own merge (falling back to `task: 4`) AND keeps
-`detectStatusDrift` quiet while #480 is open. Leaving it `none` bought nothing and cost a
-drift-shepherd cycle.
+**A Board merge call is not review evidence, and this record does not convert one into the
+other.** That is why `reviewed_merge` deliberately still reads `fe9df58d` (the merged 4b
+unit #468, cleared on a fresh exact-head +1) and is NOT advanced to `d06af48e`. Advancing it
+would launder the bypass into recorded clearance and hand the next continuation an
+implementation authority no review ever granted — the exact conversion the 2026-08-30
+supervision stop forbids. `main` carries the plan; `main` does not carry its clearance, and
+the two are recorded separately here so no later reader has to reconstruct the difference.
 
-LINEAGE vs LEDGER — two different things, both true (review round 8). The WORK lineage is
-#470 → #471 → #473 → #474 → #476 → #477 → #478 → #479 → #480: each closed at the
-two-finding-bearing-head limit and the next carries the same unit forward. The LEDGER claim is a separate, executable fact: the
-scope gate holds an obligation only while its PR carries the `review-replacement-required`
-label. #479 IS labelled, so #480 declares `Replaces: #479` — its immediate exhausted
-predecessor, lineage and ledger agreeing. The one exception on record: #473 closed at its limit WITHOUT the
-label, so `Replaces: #473` was refused on #474's `2249ba3d` and #474 claimed the oldest pending
-obligation (#470) instead. That is why the chain's declarations are not uniformly
-"the immediate predecessor" — not a choice, a gate verdict. Still pending and labelled: #471,
-for the next unit in the lineage (the 4c-i implementation PR). The exhausted #465 obligation was discharged by the merged #472.
+`open_pr: none` is the truth and the fix: #480 is MERGED, so the record that named it live
+resolved `assessRunnerState` to a pull request that no longer exists — the same stale-pointer
+strand the #472/#473 pair produced, and the reason zero open PRs left the loop stuck. This
+correction is STATUS-only, so it lands in the shape that is true AFTER its own merge; the
+transient default-branch drift while it is open is the documented trade (see the handoff rule
+below), and it self-clears on merge because no other PR is open.
+
+`task_state: in_progress` with a named `blocking_directive` is the runner rules' own
+post-merge fix-forward path ("If post-merge review finds a defect, return the parent task to
+`in_progress` and name its blocking directive"). It is NOT `correction_required`, whose
+definition — "a **reviewed** merge has a validated defect" — presumes the very clearance
+`d06af48e` lacks. `assessRunnerState` returns `directive:phase-6-4c-plan-independent-clearance`
+from this state and returns it FIRST, ahead of `task: 4` and ahead of any open PR, so the
+directive is not advisory: 4c implementation is structurally unreachable until it clears.
+
+### Directive `phase-6-4c-plan-independent-clearance`
+
+Scheduled from the Now block (not a standing gate — see **Blocking directives**, which is
+reserved for gates that bind regardless of resolver output).
+
+- **The defect.** The 4c plan merged without the independent exact-head review that every
+  unit owes. Its content is authoritative-looking on `main` and is not authorized.
+- **The work.** One docs-only, gate-compliant PR that carries the 4c plan through a real
+  exact-head Codex review: a review-provenance record IN
+  `docs/superpowers/plans/2026-08-29-decision-workflow-4c.md` stating that the document
+  merged on a Board call over a failing required status, naming the rounds (19–29) whose
+  fixes were never independently confirmed, and marking the plan not-authorizing until the
+  clearance lands. That is a genuine diff anchored on the plan, so Codex reviews the plan's
+  substance on an exact head — which is what was skipped — without opening any implementation
+  seam.
+- **NOT cleared by:** the #480 merge itself; a Board merge call; a human ready-for-review or
+  merge action; a drift-shepherd or watchdog notice; this STATUS correction merging. None of
+  those is exact-head review evidence, and the first four are the specific things that were
+  mistaken for it.
+- **Cleared by:** a fresh, clean `codex-current-head` success on the exact head of that
+  docs-only clearance PR. On that signal, and only then, `blocking_directive` returns to
+  `none` and `task: 4` resumes at `next_task: phase-6-task-4c`.
+
+**4c IMPLEMENTATION DOES NOT START** — not 4c-0, not 4c-i, not any later stage. The
+post-merge continuation comment on #480 (2026-08-30 ~02:10 IST) that instructed a
+STATUS-clear PR followed immediately by 4c-0 is **SUPERSEDED** by the programme-supervision
+stop posted on the same thread at 02:37 IST, which is the last word on that thread and is
+recorded here so no continuation has to re-derive the ordering from comment timestamps.
+Equally: do NOT open another paper or tree-identical replacement of #480, do NOT reopen the
+Claude GitHub listener infrastructure (#483/#484, both closed), and the standing
+`contractor-capture-units-1-6-board-go` gate on units 1–6 is untouched and still binding.
+
+The #480 review lineage is preserved as history: the WORK lineage
+#470 → #471 → #473 → #474 → #476 → #477 → #478 → #479 → #480, each closing at the
+two-finding-bearing-head limit with the next carrying the unit forward. On the LEDGER, #471
+remains pending and labelled `review-replacement-required` for the next unit in the lineage;
+the exhausted #465 obligation was discharged by the merged #472.
 
 **DECISION-WORKFLOW UNIT 4b IS DELIVERED AND CLEARED — PR #468 (the fifth replacement, branch
 `claude/decision-workflow-4b-r6`, `Replaces: #467`) MERGED at `main` `fe9df58d` on 2026-08-29
