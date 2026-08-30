@@ -116,8 +116,11 @@ const EXPECT: Record<string, Spec> = {
     // Phase 6 task 4b — the DECIDER designation travels through the contract too: the kind, the
     // named membership, and the RESOLVED decider user every viewer/decider predicate compares.
     // `photoSwatch` becomes optional (a record-only issue has no option-sourced swatch).
-    keys: ['id', 'title', 'room', 'nodeId', 'status', 'ageDays', 'photoSwatch', 'deciderKind', 'deciderMembershipId', 'deciderUserId', 'options', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(),
-    optional: ['nodeId', 'ageDays', 'photoSwatch', 'deciderMembershipId', 'deciderUserId', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(), nullable: [],
+    // Phase 6 unit 4c-ii — the consultation thread joins the contract, OPTIONAL and absent (never
+    // `[]`) when a decision carries none. That is what keeps a gate-OFF project's served decision
+    // byte-identical to today while still letting the thread travel where there is one.
+    keys: ['id', 'title', 'room', 'nodeId', 'status', 'ageDays', 'photoSwatch', 'deciderKind', 'deciderMembershipId', 'deciderUserId', 'options', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'consultations'].sort(),
+    optional: ['nodeId', 'ageDays', 'photoSwatch', 'deciderMembershipId', 'deciderUserId', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'consultations'].sort(), nullable: [],
   },
   OptionDto: { keys: ['label', 'key', 'material', 'delta', 'swatch', 'photoUrl', 'recommended'].sort(), optional: ['photoUrl'], nullable: [] },
   ActivityDto: {

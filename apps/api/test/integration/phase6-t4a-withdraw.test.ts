@@ -50,6 +50,32 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
  *   P13 projection: live == projection == rebuild across a withdraw; a rebuild emits zero events
  */
 describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
+
+  /**
+   * Replay a HISTORICAL migration file against the CURRENT schema.
+   *
+   * Phase 6 unit 4c-ii made `ProjectionGeneration.catalogVersion` NOT NULL with NO DEFAULT — the
+   * fence that stops a previous release's standalone rebuild CLI creating a generation at all.
+   * The 4a migration predates that column and inserts a generation without it, which is correct
+   * in production (migrations run in order, so 4a always runs while the column does not yet
+   * exist) but fails on the artificial replay these probes perform.
+   *
+   * The accommodation is therefore FIXTURE-LOCAL and temporary: a session default for the one
+   * replay, dropped immediately afterwards, so the SHIPPED schema keeps the fence and only this
+   * out-of-contract replay is made possible. The value is 1 — the catalog version the generations
+   * that migration writes were actually built at.
+   */
+  const replayHistoricalMigration = (dbUrl: string, migrationPath: string, env?: NodeJS.ProcessEnv): void => {
+    const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
+    execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-c',
+      'ALTER TABLE "ProjectionGeneration" ALTER COLUMN "catalogVersion" SET DEFAULT 1'], { stdio: 'pipe' });
+    try {
+      execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], env ? { stdio: 'pipe', env } : { stdio: 'pipe' });
+    } finally {
+      execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-c',
+        'ALTER TABLE "ProjectionGeneration" ALTER COLUMN "catalogVersion" DROP DEFAULT'], { stdio: 'pipe' });
+    }
+  };
   let t: TestApp;
   let f: TwoProjectFixture;
   let svc: DecisionsService;
@@ -1416,7 +1442,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         // that emits NO event — exactly the partial/manual-apply state the migration accepts
         await t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='Manual PMC', "withdrawReason"='partial apply' WHERE "id"=${id}`;
         // the migration file is rerunnable BY DESIGN — run it as the operator would
-        execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe' });
+        replayHistoricalMigration(dbUrl, migrationPath);
         await restore4bWidenedBodies();
         const retired = await t.prisma.projectionGeneration.findUniqueOrThrow({ where: { id: before.id } });
         expect(retired.status).toBe('retired');
@@ -1708,7 +1734,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         // generation's row for it removed entirely (the partial apply that never reached idW)
         await t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='Manual PMC', "withdrawReason"='partial apply, no row' WHERE "id"=${idW}`;
         await t.prisma.decisionProjection.deleteMany({ where: { generationId: before.id, decisionId: idW } });
-        execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe' });
+        replayHistoricalMigration(dbUrl, migrationPath);
         await restore4bWidenedBodies();
         const replacement = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
         expect(replacement.id).not.toBe(before.id);
@@ -1812,7 +1838,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       await t.prisma.notification.create({
         data: { projectId: f.projectA.id, decisionId: id, text: 'Decision awaiting approval: Rerun survivor', color: '#C08A2D', time: '2d ago' },
       });
-      execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe' });
+      replayHistoricalMigration(dbUrl, migrationPath);
       await restore4bWidenedBodies();
       const after = await t.prisma.notification.findMany({ where: { decisionId: id } });
       expect(after.map((n) => n.text.split(':')[0])).toEqual(['Decision withdrawn']);
@@ -1894,7 +1920,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         // the two stale shapes: idMissing has NO row (seed arm); idStale keeps its pending row (correction arm)
         await t.prisma.decisionProjection.deleteMany({ where: { generationId: gen.id, decisionId: idMissing } });
         // the operator's psql session is NOT UTC — the repair must not care
-        execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe', env: { ...process.env, PGTZ: 'Asia/Kolkata' } });
+        replayHistoricalMigration(dbUrl, migrationPath, { ...process.env, PGTZ: 'Asia/Kolkata' });
         await restore4bWidenedBodies();
         const replacement = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
         const stored = await storedDecisionRows(t.prisma, replacement.id);

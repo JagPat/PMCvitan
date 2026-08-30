@@ -4398,9 +4398,9 @@ assert_rejects "4c-i: TRUNCATE of the approval register whose COUNT 4c turns int
 assert "4c-i: both owned ORGS primitives are installed" \
   "SELECT COUNT(*)::text FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable');" \
   "2"
-assert "4c-i: the nine seals of this unit are armed" \
+assert "4c: the ten t4c seals are armed (4c-i's nine plus 4c-ii's capability reservation)" \
   "SELECT COUNT(*)::text FROM pg_trigger WHERE tgname LIKE '%t4c%';" \
-  "9"
+  "10"
 
 # ── the PARTIAL-APPLY RETRY, executed rather than asserted ───────────────────────────────────────
 # A deploy that dies part-way must COMPLETE on retry, not stop at the objects it already made. The
@@ -4418,16 +4418,57 @@ DROP FUNCTION IF EXISTS phase6_project_operable(TEXT) CASCADE;
 SQL
 assert "4c-i retry: the staged partial state really is incomplete" \
   "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgname LIKE '%t4c%')::text || '|' || (SELECT COUNT(*) FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable'))::text;" \
-  "5|0"
+  "6|0"
 
 apply_one "$T4C_I"
 
 assert "4c-i retry: re-running the same file COMPLETES the deployment" \
   "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgname LIKE '%t4c%')::text || '|' || (SELECT COUNT(*) FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable'))::text;" \
-  "9|2"
+  "10|2"
 assert_rejects "4c-i retry: the re-armed request seal refuses the same hostile insert" \
   "INSERT INTO \"DecisionConsultation\"(\"id\",\"projectId\",\"decisionId\",\"requestedById\",\"consulteeMembershipId\",\"consulteeUserId\",\"question\",\"openCycle\",\"sourceCommandId\") VALUES ('UP4CI-C2','p1','DL-1','USER-1','no-such-membership','USER-1','Which finish?',0,'no-such-command')" \
   "phase6-4c"
+
+
+# ── Phase 6 unit 4c-ii — the BEHAVIOUR unit's own upgrade obligations ────────────────────────────
+# 4c-ii adds no consultation table and no seal to them; what it must prove over a migrated legacy
+# database is that its two FENCES are armed and that its capability reservation holds.
+echo ""
+echo "── Phase 6 unit 4c-ii — the consultation rollout fences ──"
+
+# the CAPABILITY RESERVATION: the gate cannot be opened by the ordinary writer while the window is
+# open, through EITHER door. `capability` is a mutable key with no freeze trigger, so an
+# INSERT-only guard would leave the re-key wide open — the same gate-open state by another route.
+assert_rejects "4c-ii: the reserved consultation capability cannot be INSERTED" \
+  "INSERT INTO \"ProjectCapability\"(\"projectId\",\"capability\",\"enabledById\") VALUES ('p1','consultation','USER-1')" \
+  "RESERVED until the enablement unit"
+$PSQL -q >/dev/null <<'SQL' 2>/dev/null || true
+INSERT INTO "ProjectCapability"("projectId","capability","enabledById") VALUES ('p1','materials','USER-1')
+  ON CONFLICT DO NOTHING;
+SQL
+assert_rejects "4c-ii: nor RE-KEYED into from an existing capability row" \
+  "UPDATE \"ProjectCapability\" SET \"capability\" = 'consultation' WHERE \"projectId\" = 'p1' AND \"capability\" = 'materials'" \
+  "RESERVED until the enablement unit"
+# and it is PRECISE, not merely strict: every other capability still enables through the unchanged
+# generic writer, which is the Board decision this reservation must not quietly reverse
+assert "4c-ii: an ordinary capability still enables through the unchanged writer" \
+  "SELECT COUNT(*)::text FROM \"ProjectCapability\" WHERE \"projectId\" = 'p1' AND \"capability\" = 'materials';" \
+  "1"
+
+# the GENERATION FENCE: NOT NULL with NO DEFAULT is the whole mechanism. The previous release's
+# standalone rebuild CLI does not know the column exists, so its INSERT names no value — and is
+# refused by PostgreSQL before any generation is built or swapped.
+assert "4c-ii: the generation catalog version is NOT NULL and carries NO default" \
+  "SELECT (a.attnotnull)::text || '|' || COALESCE(pg_get_expr(d.adbin, d.adrelid), 'none') FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum WHERE a.attrelid = '\"ProjectionGeneration\"'::regclass AND a.attname = 'catalogVersion';" \
+  "true|none"
+assert_rejects "4c-ii: a PREVIOUS-release generation insert — naming no version — is refused" \
+  "INSERT INTO \"ProjectionGeneration\"(\"id\",\"consumer\",\"projectId\",\"generation\",\"status\",\"cursorStatus\",\"createdAt\",\"updatedAt\") VALUES ('UP4CII-G1','decisions.inbox','p1',9001,'building','live',now(),now())" \
+  "catalogVersion"
+# every legacy generation was BACKFILLED rather than defaulted — no row silently acquired a
+# version it was not built with
+assert "4c-ii: no generation is left without a version" \
+  "SELECT COUNT(*)::text FROM \"ProjectionGeneration\" WHERE \"catalogVersion\" IS NULL;" \
+  "0"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
