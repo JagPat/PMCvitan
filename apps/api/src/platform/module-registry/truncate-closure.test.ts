@@ -47,7 +47,7 @@ describe('Phase 5 Task 5A — the seed reset is closed under inbound foreign key
     const seed = readFileSync(join(__dirname, '../../../prisma/seed.ts'), 'utf8');
     const raw = [...seed.matchAll(/TRUNCATE TABLE ([^']+)/gu)]
       .map((statement) => [...statement[1]!.matchAll(/"([A-Za-z0-9_]+)"/gu)].map((m) => m[1]!));
-    const arrays = [...seed.matchAll(/const RESET_TABLES = \[([\s\S]*?)\] as const;/gu)]
+    const arrays = [...seed.matchAll(/const RESET_[A-Z_]+ = \[([\s\S]*?)\] as const;/gu)]
       .map((statement) => [...statement[1]!.matchAll(/'([A-Za-z0-9_]+)'/gu)].map((m) => m[1]!));
     const statements = [...raw, ...arrays];
     expect(statements.length, 'seed.ts must contain a reset').toBeGreaterThan(0);

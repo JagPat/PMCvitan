@@ -43,9 +43,16 @@ async function main(): Promise<void> {
   // can exceed the fresh, shorter stream head) would claim to be CURRENT while its projection rows still
   // hold the PREVIOUS run's state — a stale-served projection by construction. Truncate the generations and
   // every projection table alongside the events/cursors so each run rebuilds its read models from ITS data.
-  await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBillRevision", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "MaterialReadinessProjection", "CashForecastProjection", "LabourReadinessProjection"',
-  );
+    const RESET_EVENTS = ['VendorAdvance', 'PaymentReversal', 'Payment', 'PaymentApproval',
+    'BillDeductionRelease', 'BillDeduction', 'SodException', 'SodGrant',
+    'CertifiedMeasurementConsumption', 'CertifiedAcceptanceConsumption', 'BillCertificate',
+    'BillVerification', 'VendorBillLine', 'VendorBillVersion', 'VendorBillRevision',
+    'VendorBill', 'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
+    'InspectionsProjection', 'MaterialReadinessProjection', 'CashForecastProjection',
+    'LabourReadinessProjection'
+  ] as const;
+  await sanctionedReset(prisma, RESET_EVENTS);
   // Phase 3 append-only tables (BEFORE UPDATE/DELETE triggers block deleteMany): the requirement
   // spec/revision/root chain and the immutable decision approval register — TRUNCATEd together
   // because the spec FKs onto the register. Approvals recorded through the API in a prior run
