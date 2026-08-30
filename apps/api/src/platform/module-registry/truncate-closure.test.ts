@@ -24,7 +24,15 @@ import { Prisma } from '@prisma/client';
  */
 describe('Phase 5 Task 5A — the seed reset is closed under inbound foreign keys', () => {
   /**
-   * Every table named in EACH of `seed.ts`'s TRUNCATE statements, in DMMF (model) terms.
+   * Every table named in EACH of `seed.ts`'s reset statements, in DMMF (model) terms.
+   *
+   * Phase 6 unit 4c-0 — TWO SYNTAXES, one rule. The sanctioned reset moved into the shared
+   * `sanctionedReset` helper, so a reset now appears either as a raw `TRUNCATE TABLE "a", "b"`
+   * or as a `const RESET_TABLES = ['a', 'b'] as const` array handed to that helper. Both emit a
+   * bare TRUNCATE of exactly the names listed, so both carry the identical closure obligation
+   * and both are parsed here. Reading only the raw form would have quietly stopped checking the
+   * statement that moved — the parse would still succeed, on less of the file, which is the
+   * vacuous-pass shape the second test below exists to refuse.
    *
    * Phase 5 Task 5B — one set per STATEMENT, not one set for the file. `seed.ts` resets in two
    * statements (the projection/event side and the Phase-3-onward append-only side), and the first
@@ -37,11 +45,13 @@ describe('Phase 5 Task 5A — the seed reset is closed under inbound foreign key
    */
   const truncated = (): Set<string>[] => {
     const seed = readFileSync(join(__dirname, '../../../prisma/seed.ts'), 'utf8');
-    const statements = [...seed.matchAll(/TRUNCATE TABLE ([^']+)/gu)];
-    expect(statements.length, 'seed.ts must contain a TRUNCATE TABLE reset').toBeGreaterThan(0);
-    return statements.map((statement) => new Set(
-      [...statement[1]!.matchAll(/"([A-Za-z0-9_]+)"/gu)].map((m) => m[1]!),
-    ));
+    const raw = [...seed.matchAll(/TRUNCATE TABLE ([^']+)/gu)]
+      .map((statement) => [...statement[1]!.matchAll(/"([A-Za-z0-9_]+)"/gu)].map((m) => m[1]!));
+    const arrays = [...seed.matchAll(/const RESET_TABLES = \[([\s\S]*?)\] as const;/gu)]
+      .map((statement) => [...statement[1]!.matchAll(/'([A-Za-z0-9_]+)'/gu)].map((m) => m[1]!));
+    const statements = [...raw, ...arrays];
+    expect(statements.length, 'seed.ts must contain a reset').toBeGreaterThan(0);
+    return statements.map((names) => new Set(names));
   };
 
   /**
@@ -76,8 +86,9 @@ describe('Phase 5 Task 5A — the seed reset is closed under inbound foreign key
     expect(
       [...new Set(missing)].sort(),
       'PostgreSQL refuses a bare TRUNCATE when an unlisted table references a listed one. '
-      + 'Add the referring table to the TRUNCATE in prisma/seed.ts (and to the per-suite lists that '
-      + 'mirror it) rather than reaching for CASCADE, which would delete rows nobody declared.',
+      + 'Add the referring table to the reset in prisma/seed.ts — its RESET_TABLES array or its '
+      + 'remaining raw TRUNCATE — and to the per-suite RESET_TABLES lists that mirror it, rather '
+      + 'than reaching for CASCADE, which would delete rows nobody declared.',
     ).toEqual([]);
   });
 

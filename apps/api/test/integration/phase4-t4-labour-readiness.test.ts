@@ -22,6 +22,7 @@ import { SystemClock } from '../../src/common/clock';
 import { addCivilDays } from '../../src/common/civil-date';
 import type { AuthUser } from '../../src/common/auth';
 import type { LabourReadinessDto } from '@vitan/shared';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 4 Task 4 — canonical labour coverage + the derived Team gate + combined readiness + the
@@ -66,8 +67,23 @@ describe('Phase 4 Task 4 — §A labour readiness (live PG)', () => {
   const today = new SystemClock().today('Asia/Kolkata');
   const day = (offset: number): string => addCivilDays(today, offset);
 
-  const TRUNCATE =
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "CashForecastProjection", "LabourReadinessProjection", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourQuoteComparison", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "ProjectPartyVendorSource", "ProjectPartyCompanySource", "ProjectParty", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
+  const RESET_TABLES = ['VendorAdvance', 'PaymentReversal', 'Payment', 'PaymentApproval',
+    'BillDeductionRelease', 'BillDeduction', 'SodException', 'SodGrant',
+    'CertifiedMeasurementConsumption', 'CertifiedAcceptanceConsumption', 'BillCertificate',
+    'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
+    'InspectionsProjection', 'ActivitiesProjection', 'MaterialReadinessProjection',
+    'CashForecastProjection', 'LabourReadinessProjection', 'LabourWorkFact', 'WorkerAllocation',
+    'LabourAttendance', 'ApprovedSkillSubstitution', 'CapacityPromise', 'CapacityCommitment',
+    'LabourPurchaseOrderLine', 'LabourPurchaseOrderVersion', 'LabourPurchaseOrder',
+    'SupplierLabourQuoteLine', 'SupplierLabourQuote', 'LabourQuoteComparison', 'LabourRfq',
+    'LabourRequisitionLine', 'LabourRequisition', 'VendorLabourProfile',
+    'ProjectPartyVendorSource', 'ProjectPartyCompanySource', 'ProjectParty', 'ProjectVendor',
+    'CommandExecution', 'CrewMembership', 'Crew', 'WorkerDevice', 'WorkerSkill', 'Worker',
+    'LabourDemandSlice', 'LabourRequirementSpec', 'LabourTrade', 'LabourSkill',
+    'MaterialRequirementSpec', 'ActivityRequirement', 'ActivityRequirementRoot',
+    'DecisionApprovalRevision', 'ProjectCapability'
+  ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const orgAdmin = (): AuthUser => ({ sub: f.ownerUser.id, role: 'pmc', projectId: '' }) as AuthUser;
@@ -88,13 +104,13 @@ describe('Phase 4 Task 4 — §A labour readiness (live PG)', () => {
     ops = new ProjectionRebuildOperations(t.prisma, t.app.get(ProjectionRebuilder));
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await t?.prisma.vendor.deleteMany({ where: { orgId: f.orgA.id } });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     await t.prisma.vendor.deleteMany({ where: { orgId: f.orgA.id } });
     for (const [model, where] of [
       ['auditLog', { projectId: { startsWith: 'it-p4t4-' } }],

@@ -16,6 +16,7 @@ import { OrgsService } from '../../src/orgs/orgs.service';
 import type { AuthUser } from '../../src/common/auth';
 import type { Actor } from '../../src/common/actor';
 import type { CreateActivityInput } from '../../src/contracts';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 2 Task 10 (Module 4) — the ACTIVITIES read path moves onto its rebuildable projection, proven
@@ -50,7 +51,9 @@ describe('Phase 2 Task 10 (Module 4) — activities projection == live slices, l
   let orgs: OrgsService;
   let projSeq = 0;
 
-  const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "ActivitiesProjection", "InspectionsProjection" CASCADE';
+  const RESET_TABLES = ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'ActivitiesProjection', 'InspectionsProjection'
+  ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const eng = (projectId: string, engId: string): AuthUser => ({ sub: engId, role: 'engineer', projectId }) as AuthUser;
@@ -70,13 +73,13 @@ describe('Phase 2 Task 10 (Module 4) — activities projection == live slices, l
     human.actorId = f.memberUser.id;
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
     const pids = { startsWith: 'it-acpj-' };
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     await t.prisma.commandExecution.deleteMany({ where: { projectId: pids } });
     await t.prisma.gateOverride.deleteMany({ where: { projectId: pids } });
     await t.prisma.inspectionItem.deleteMany({ where: { inspection: { projectId: pids } } });
@@ -338,7 +341,7 @@ describe('Phase 2 Task 10 (Module 4) — activities projection == live slices, l
     } finally {
       if (created) {
         const cid = created.id;
-        await t.prisma.$executeRawUnsafe(TRUNCATE);
+        await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
         await t.prisma.activity.deleteMany({ where: { projectId: cid } });
         await t.prisma.phase.deleteMany({ where: { projectId: cid } });
         await t.prisma.projectNode.deleteMany({ where: { projectId: cid } });

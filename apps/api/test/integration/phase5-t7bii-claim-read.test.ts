@@ -19,6 +19,7 @@ import { CommercialClaimQuery } from '../../src/commercial/commercial-claim.quer
 import { CapabilitiesService, MATERIALS_CAPABILITY } from '../../src/platform/capabilities.service';
 import type { AuthUser } from '../../src/common/auth';
 import type { CreateRequirementInput } from '../../src/contracts';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 5 Task 7B-ii (§M) — THE CLAIM LIFECYCLE READ, proven live against PostgreSQL.
@@ -58,8 +59,29 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
   let capabilities: CapabilitiesService;
   let seq = 0;
 
-  const TRUNCATE =
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBillRevision", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "CashForecastProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectPartyVendorSource", "ProjectPartyCompanySource", "ProjectParty", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
+  const RESET_TABLES = ['VendorAdvance', 'PaymentReversal', 'Payment', 'PaymentApproval',
+    'BillDeductionRelease', 'BillDeduction', 'SodException', 'SodGrant',
+    'CertifiedMeasurementConsumption', 'CertifiedAcceptanceConsumption', 'BillCertificate',
+    'BillVerification', 'VendorBillLine', 'VendorBillVersion', 'VendorBillRevision',
+    'VendorBill', 'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
+    'InspectionsProjection', 'ActivitiesProjection', 'MaterialReadinessProjection',
+    'CashForecastProjection', 'LabourReadinessProjection', 'Measurement', 'BudgetException',
+    'BudgetLine', 'CommitmentAttribution', 'CostHead', 'LabourMismatchResolution',
+    'LabourMismatch', 'ActivityWorkOutput', 'LabourWorkFact', 'WorkerAllocation',
+    'LabourAttendance', 'ApprovedSkillSubstitution', 'CapacityPromise', 'CapacityCommitment',
+    'LabourPurchaseOrderLine', 'LabourPurchaseOrderVersion', 'LabourPurchaseOrder',
+    'LabourQuoteComparison', 'SupplierLabourQuoteLine', 'SupplierLabourQuote', 'LabourRfq',
+    'LabourRequisitionLine', 'LabourRequisition', 'VendorLabourProfile', 'StockTransaction',
+    'MaterialIssue', 'StockLot', 'DeliveryPromise', 'DeliveryCommitment', 'PurchaseOrderLine',
+    'PurchaseOrderVersion', 'PurchaseOrder', 'VendorQuoteLine', 'QuoteComparison', 'VendorQuote',
+    'Rfq', 'RequisitionLine', 'Requisition', 'ProjectPartyVendorSource',
+    'ProjectPartyCompanySource', 'ProjectParty', 'ProjectVendor', 'CommandExecution',
+    'CrewMembership', 'Crew', 'WorkerDevice', 'WorkerSkill', 'Worker', 'ApprovedSubstitution',
+    'LabourDemandSlice', 'LabourRequirementSpec', 'LabourTrade', 'LabourSkill',
+    'MaterialRequirementSpec', 'ActivityRequirement', 'ActivityRequirementRoot',
+    'DecisionApprovalRevision', 'ProjectCapability'
+  ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const asUser = (projectId: string, userId: string): AuthUser => ({ sub: userId, role: 'pmc', projectId }) as AuthUser;
@@ -83,7 +105,7 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     capabilities = t.app.get(CapabilitiesService);
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await t?.prisma.vendor.deleteMany({ where: { orgId: f.orgA.id } });
     await t?.prisma.membership.deleteMany({ where: { projectId: { startsWith: 'it-p57bii-' } } });
     await t?.prisma.project.deleteMany({ where: { id: { startsWith: 'it-p57bii-' } } });
@@ -91,7 +113,7 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     await t.prisma.vendor.deleteMany({ where: { orgId: f.orgA.id } });
     for (const [model, where] of [
       ['auditLog', { projectId: { startsWith: 'it-p57bii-' } }],

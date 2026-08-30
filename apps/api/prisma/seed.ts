@@ -12,6 +12,7 @@ import {
 import { addCivilDays, fromIsoCivilDate } from '../src/common/civil-date';
 import { ddMmmYyyy } from '../src/domain/dates';
 
+import { sanctionedReset } from './sanctioned-reset';
 const prisma = new PrismaClient();
 
 const PROJECT_ID = 'ambli';
@@ -60,26 +61,25 @@ async function main(): Promise<void> {
   // so the seal is disabled BY NAME for exactly this wipe. Guarded: a pre-B1 database has no such
   // trigger. ONE transaction, because PostgreSQL DDL is transactional — a wipe that throws rolls
   // the DISABLE back with it, so no failure path leaves the seal off.
-  await prisma.$transaction([
-    prisma.$executeRawUnsafe(
-      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'ActivityDependency_no_truncate') THEN EXECUTE 'ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_no_truncate"'; END IF; END $$;`,
-    ),
-    prisma.$executeRawUnsafe(
-    // Phase 4 Task 2 labour commercial chain (deepest children of ProjectVendor/Vendor/
-    // LabourRequirementSpec/LabourRequisition) — truncated in the SAME statement so their FKs
-    // never block the ProjectVendor/Vendor wipe below (PostgreSQL truncates a multi-table set
-    // atomically, so explicit listing is preferred here over CASCADE).
-    // Phase 4 Task 3 §C time-capacity facts — LabourWorkFact FKs WorkerAllocation, which FKs
-    // CapacityCommitment (§F bound 3) and LabourRequirementSpec, so they lead the same statement.
-    // Phase 4 Task 5 §E/§I — the append-only mismatch register (resolution FKs the observation)
-    // and the measured-output facts FK Worker/Activity/Media/CommandExecution, so they lead the
-    // statement for the same reason (deleteMany is blocked by their append-only triggers).
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBillRevision", "VendorBill", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectPartyVendorSource", "ProjectPartyCompanySource", "ProjectParty", "ProjectVendor", "Vendor", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ActivityDependency"',
-    ),
-    prisma.$executeRawUnsafe(
-      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'ActivityDependency_no_truncate') THEN EXECUTE 'ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_no_truncate"'; END IF; END $$;`,
-    ),
-  ]);
+  const RESET_TABLES = ['VendorAdvance', 'PaymentReversal', 'Payment', 'PaymentApproval',
+    'BillDeductionRelease', 'BillDeduction', 'SodException', 'SodGrant',
+    'CertifiedMeasurementConsumption', 'CertifiedAcceptanceConsumption', 'BillCertificate',
+    'BillVerification', 'VendorBillLine', 'VendorBillVersion', 'VendorBillRevision',
+    'VendorBill', 'Measurement', 'BudgetException', 'BudgetLine', 'CommitmentAttribution',
+    'CostHead', 'LabourMismatchResolution', 'LabourMismatch', 'ActivityWorkOutput',
+    'LabourWorkFact', 'WorkerAllocation', 'LabourAttendance', 'ApprovedSkillSubstitution',
+    'CapacityPromise', 'CapacityCommitment', 'LabourPurchaseOrderLine',
+    'LabourPurchaseOrderVersion', 'LabourPurchaseOrder', 'LabourQuoteComparison',
+    'SupplierLabourQuoteLine', 'SupplierLabourQuote', 'LabourRfq', 'LabourRequisitionLine',
+    'LabourRequisition', 'VendorLabourProfile', 'StockTransaction', 'MaterialIssue', 'StockLot',
+    'DeliveryPromise', 'DeliveryCommitment', 'PurchaseOrderLine', 'PurchaseOrderVersion',
+    'PurchaseOrder', 'VendorQuoteLine', 'QuoteComparison', 'VendorQuote', 'Rfq',
+    'RequisitionLine', 'Requisition', 'ProjectPartyVendorSource', 'ProjectPartyCompanySource',
+    'ProjectParty', 'ProjectVendor', 'Vendor', 'ApprovedSubstitution', 'LabourDemandSlice',
+    'LabourRequirementSpec', 'MaterialRequirementSpec', 'ActivityRequirement',
+    'ActivityRequirementRoot', 'DecisionApprovalRevision', 'ActivityDependency'
+  ] as const;
+  await sanctionedReset(prisma, RESET_TABLES);
   await prisma.projectCapability.deleteMany();
   await prisma.gateOverride.deleteMany();
   await prisma.drawingRecipient.deleteMany();

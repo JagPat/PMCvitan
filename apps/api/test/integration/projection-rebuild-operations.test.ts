@@ -16,6 +16,7 @@ import { LABOUR_READINESS_PROJECTION } from '../../src/labour/labour-readiness.p
 import { CASH_FORECAST_PROJECTION } from '../../src/commercial/cash-forecast.projection';
 import type { AuthUser } from '../../src/common/auth';
 import { Prisma } from '@prisma/client';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Task 10 finalization — the operator rebuild's CHECKPOINT-AWARE diagnostics + attributable partial
@@ -49,8 +50,14 @@ describe('Task 10 finalization — checkpoint-aware operator rebuild diagnostics
 
   const OPERATOR = 'it-prop-operator';
   const TINY_PDF = Buffer.from('%PDF-1.4 rebuild-ops probe').toString('base64');
-  const TRUNCATE =
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "StockTransaction", "MaterialIssue", "StockLot", "CommandExecution" CASCADE';
+  const RESET_TABLES = ['VendorAdvance', 'PaymentReversal', 'Payment', 'PaymentApproval',
+    'BillDeductionRelease', 'BillDeduction', 'SodException', 'SodGrant',
+    'CertifiedMeasurementConsumption', 'CertifiedAcceptanceConsumption', 'BillCertificate',
+    'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
+    'InspectionsProjection', 'ActivitiesProjection', 'StockTransaction', 'MaterialIssue',
+    'StockLot', 'CommandExecution'
+  ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
 
@@ -64,13 +71,13 @@ describe('Task 10 finalization — checkpoint-aware operator rebuild diagnostics
     ops = new ProjectionRebuildOperations(t.prisma, rebuilder);
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
     rebuilder.barrierHook = null;
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     for (const [model, where] of [
       ['drawingRecipient', { projectId: { startsWith: 'it-prop-' } }],
       ['drawingRevision', { projectId: { startsWith: 'it-prop-' } }],

@@ -13,6 +13,7 @@ import { createRequirementSchema } from '../../src/contracts';
 import { computeLabourSpecFingerprint } from '@vitan/shared';
 import type { AuthUser } from '../../src/common/auth';
 import type { CreateRequirementInput } from '../../src/contracts';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 3 Task 1 + its CORRECTION — live-PG proofs.
@@ -50,8 +51,18 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
 
   // The Task-2/3 procurement tables reference ActivityRequirement (RequisitionLine → revision
   // row → PurchaseOrderLine), so PG requires them in the same TRUNCATE even when empty here.
-  const TRUNCATE =
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "StockTransaction", "MaterialIssue", "StockLot", "CommandExecution", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
+  const RESET_TABLES = ['VendorAdvance', 'PaymentReversal', 'Payment', 'PaymentApproval',
+    'BillDeductionRelease', 'BillDeduction', 'SodException', 'SodGrant',
+    'CertifiedMeasurementConsumption', 'CertifiedAcceptanceConsumption', 'BillCertificate',
+    'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
+    'InspectionsProjection', 'ActivitiesProjection', 'StockTransaction', 'MaterialIssue',
+    'StockLot', 'CommandExecution', 'DeliveryPromise', 'DeliveryCommitment', 'PurchaseOrderLine',
+    'PurchaseOrderVersion', 'PurchaseOrder', 'VendorQuoteLine', 'QuoteComparison', 'VendorQuote',
+    'Rfq', 'RequisitionLine', 'Requisition', 'ApprovedSubstitution', 'LabourDemandSlice',
+    'LabourRequirementSpec', 'MaterialRequirementSpec', 'ActivityRequirement',
+    'ActivityRequirementRoot', 'DecisionApprovalRevision', 'ProjectCapability'
+  ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const client = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'client', projectId }) as AuthUser;
@@ -65,12 +76,12 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     relay = t.app.get(OutboxRelay);
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     // approval DecisionEvents are undeletable evidence (round 12) — the sanctioned
     // destructive-reset helper wipes them with the named seal disabled
     await wipeDecisionEvents(t.prisma, { decision: { projectId: { startsWith: 'it-p3-' } } });
