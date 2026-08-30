@@ -80,14 +80,17 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
     // its stable KEY. The option id is a database identifier; the key is what every other surface
     // already names an option by, and it survives a reordering an index would not.
     //
-    // ABSENT WHEN EMPTY, not `[]`. §D requires a gate-OFF project's payload to be byte-identical
-    // to today's, and an always-emitted array would add `consultations: []` and `approvalCycle: 0`
-    // to every decision of every project — including the ones the feature does not exist for. This
-    // way a decision nobody was consulted on serializes exactly as it does now, which also makes a
-    // projection row written BEFORE this unit byte-EQUAL to live rather than merely compatible.
-    // `approvalCycle` rides the same rule for the same reason: it is only meaningful beside a
-    // thread, and the cycle predicate treats an absent value as 0.
-    ...(consultations.length ? { consultations, approvalCycle: d.approvalRevisions.length } : {}),
+    // ALWAYS EMITTED, including as an empty array. There is an open DISPUTE about this, recorded
+    // for the reviewer rather than settled here (JagPat, 2026-08-31 on #497: "do not reshape that
+    // product surface on your own"). The closed parallel #496 serialized absent-when-empty and
+    // argued that an always-emitted array breaks §D's byte-identity requirement for gate-OFF
+    // projects, since it adds `consultations: []` and `approvalCycle: 0` to every decision of every
+    // project — including ones the feature does not exist for. The case FOR always-emitting is that
+    // an optional collection makes every consumer handle two shapes for one meaning, and that §D's
+    // inertness claim is about the FEATURE being inert (no affordance, no write, commands 404)
+    // rather than about the DTO's key set. Both readings are defensible; the reviewer decides.
+    consultations,
+    approvalCycle: d.approvalRevisions.length,
     options: d.options.map((o) => ({
       label: o.label,
       key: o.optionKey,
@@ -173,21 +176,30 @@ export function decisionVisibleToViewer(
 }
 
 /**
- * Phase 6 task 4b — normalize a STORED projection DTO to the current shape at READ time.
+ * Phase 6 unit 4c-ii (§B P25c, review round 18) — HYDRATE a STORED projection DTO at READ time.
  *
- * Widening the serializer does not rewrite JSON already stored in an ACTIVE, caught-up generation,
- * and a `catalogVersion` bump does not itself trigger a rebuild. A pre-4b row therefore stores no
- * decider designation, and its semantic is exactly the column backfill's: every legacy decision is
- * `client`-held.
+ * Widening `DECISION_INCLUDE` and the serializer does not rewrite JSON already stored in an
+ * ACTIVE, caught-up generation, and a `catalogVersion` bump does not itself trigger a rebuild. So
+ * a quiet project would keep answering `source: 'projection'` with pre-4c DTOs that lack the
+ * consultation collection entirely, breaking live/projection equality — and the new UI with it —
+ * until some unrelated decision event happened to refresh the row. The first consultation REQUEST
+ * emits an event that refreshes every row, which is exactly why the P25c probe alone does not
+ * catch this: the gap only exists for a project where nothing has happened yet.
  *
- * Unit 4c-ii needs NO arm here, and that is a property of its serializer rather than an omission
- * (review round 18 asked for a hydration step; absent-when-empty removes the need for one). The
- * consultation collection is absent when there is no thread, so a stored pre-4c DTO is already in
- * the current shape for a decision nobody was consulted on — byte-EQUAL to live, not merely
- * compatible with it — and a decision that HAS a thread has an event behind it that refreshed its
- * row. There is no state where a stored row disagrees with live about a thread.
+ * The rule is the delivered decider one, extended: a missing field means the pre-change default,
+ * never an absent field. `deciderKind` hydrates to `client` (the column backfill's own semantic);
+ * the consultation collection hydrates to EMPTY and the cycle to `0`, which is what a decision
+ * nobody was consulted on and nobody has approved actually is.
  */
 export function hydrateStoredDecisionDto(raw: DecisionDto): DecisionDto {
-  if (raw.deciderKind !== undefined) return raw;
-  return { ...raw, deciderKind: 'client' as const };
+  const needsDecider = raw.deciderKind === undefined;
+  const needsConsultations = !Array.isArray(raw.consultations);
+  const needsCycle = typeof raw.approvalCycle !== 'number';
+  if (!needsDecider && !needsConsultations && !needsCycle) return raw;
+  return {
+    ...raw,
+    ...(needsDecider ? { deciderKind: 'client' as const } : {}),
+    ...(needsConsultations ? { consultations: [] } : {}),
+    ...(needsCycle ? { approvalCycle: 0 } : {}),
+  };
 }

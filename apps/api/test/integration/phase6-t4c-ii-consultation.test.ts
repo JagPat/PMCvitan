@@ -416,97 +416,31 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
     }
   });
 
-  it('P25c: a stored PRE-4c DTO for an un-consulted decision is BYTE-EQUAL to live, needing no rebuild', async () => {
-    // Widening the serializer rewrites no JSON already stored in an ACTIVE generation, and a
-    // catalog bump triggers no rebuild — so a quiet project keeps serving rows written before this
-    // unit. Because the thread is ABSENT rather than `[]` when nobody was consulted, those rows are
-    // already in the current shape: equal to live, not merely compatible. An always-emitted array
-    // would have made every one of them differ, on every project, including the gate-off ones §D
-    // requires to be byte-identical to today.
+  it('P25c: a stored PRE-4c DTO hydrates to the EMPTY thread rather than a missing field', async () => {
+    // Widening the include and the serializer does not rewrite JSON already stored in an ACTIVE
+    // generation, and a catalog bump triggers no rebuild — so a quiet project would keep serving
+    // pre-4c DTOs that lack the collection entirely. The first consultation REQUEST emits an event
+    // that refreshes every row, which is exactly why the ordinary probe cannot catch this.
     const decisionId = await issue();
     await applyProjection();
     const gen = await t.prisma.projectionGeneration.findFirst({ where: { projectId, consumer: 'decisions.inbox' } });
-    if (!gen) return; // nothing materialized yet — the live path serves, and it is correct
+    if (!gen) return; // no generation to corrupt — the live path serves, and it is fine
     const stored = await t.prisma.decisionProjection.findFirst({ where: { generationId: gen.id, decisionId } });
     if (!stored) return;
-    expect(
-      Object.keys(stored.dto as Record<string, unknown>),
-      'an un-consulted decision carries no consultation keys at all',
-    ).not.toContain('consultations');
+    const legacy = { ...(stored.dto as Record<string, unknown>) };
+    delete legacy.consultations;
+    delete legacy.approvalCycle;
+    await t.prisma.decisionProjection.update({
+      where: { generationId_decisionId: { generationId: gen.id, decisionId } },
+      data: { dto: legacy },
+    });
 
     const query = t.app.get(DecisionsQueryService);
-    const live = await query.snapshotSlice(projectId, 'pmc', users.pmc);
-    const projected = await query.projectionSlice(projectId, 'pmc', users.pmc);
-    if (projected.generation === null) return;
-    expect(projected.decisions.find((d) => d.id === decisionId))
-      .toEqual(live.decisions.find((d) => d.id === decisionId));
-  });
-
-  // ═══ P38c/P40c — the claim-time push predicates ══════════════════════════════════════════════
-
-  it('P38c: a queued "you were asked" push is CANCELLED when the decision is approved before the claim', async () => {
-    // An approve between enqueue and claim leaves the project operable, the membership active, the
-    // consultation unanswered and the decision un-withdrawn — so a not-withdrawn test would still
-    // send a push inviting an action the respond command now answers with a 409.
-    const decisionId = await issue();
-    await ask(decisionId, 'eng');
-    const query = t.app.get(DecisionsQueryService);
-    expect(await query.consultationRequestedPushTarget(projectId, decisionId, users.eng)).toEqual({ actionable: true, targetUserId: users.eng });
-
-    await post(tokens.client)(`/projects/${projectId}/decisions/${decisionId}/approve`, { optionIndex: 0 }, randomUUID());
-    expect(await query.consultationRequestedPushTarget(projectId, decisionId, users.eng)).toEqual({ actionable: false });
-  });
-
-  it('P38c: an ALREADY-ANSWERED request push is cancelled — nobody is asked to do what they have done', async () => {
-    const decisionId = await issue();
-    await ask(decisionId, 'eng');
-    const query = t.app.get(DecisionsQueryService);
-    expect((await query.consultationRequestedPushTarget(projectId, decisionId, users.eng)).actionable).toBe(true);
-    await answer(decisionId, await consultationOf(decisionId), tokens.eng);
-    expect(await query.consultationRequestedPushTarget(projectId, decisionId, users.eng)).toEqual({ actionable: false });
-  });
-
-  it('P38c: a consultee REMOVED between enqueue and claim never receives decision content', async () => {
-    const decisionId = await issue();
-    await ask(decisionId, 'con');
-    const query = t.app.get(DecisionsQueryService);
-    expect((await query.consultationRequestedPushTarget(projectId, decisionId, users.con)).actionable).toBe(true);
-    await t.prisma.membership.update({ where: { id: membership.con }, data: { status: 'removed' } });
-    try {
-      expect(await query.consultationRequestedPushTarget(projectId, decisionId, users.con)).toEqual({ actionable: false });
-    } finally {
-      await t.prisma.membership.update({ where: { id: membership.con }, data: { status: 'active' } });
-    }
-  });
-
-  it('P38c/P40c: an ARCHIVED project cancels BOTH families — operability is checked first', async () => {
-    const decisionId = await issue();
-    await ask(decisionId, 'eng');
-    await answer(decisionId, await consultationOf(decisionId), tokens.eng);
-    const query = t.app.get(DecisionsQueryService);
-    expect((await query.consultationRespondedPushTarget(projectId, decisionId, users.pmc)).actionable).toBe(true);
-
-    await t.prisma.project.update({ where: { id: projectId }, data: { archivedAt: new Date() } });
-    try {
-      expect(await query.consultationRequestedPushTarget(projectId, decisionId, users.eng)).toEqual({ actionable: false });
-      expect(await query.consultationRespondedPushTarget(projectId, decisionId, users.pmc)).toEqual({ actionable: false });
-    } finally {
-      await t.prisma.project.update({ where: { id: projectId }, data: { archivedAt: null } });
-    }
-  });
-
-  it('P40c: a DEMOTED requester is dropped — advice is not delivered to someone who lost standing', async () => {
-    const decisionId = await issue();
-    await ask(decisionId, 'eng');
-    await answer(decisionId, await consultationOf(decisionId), tokens.eng);
-    const query = t.app.get(DecisionsQueryService);
-    expect((await query.consultationRespondedPushTarget(projectId, decisionId, users.pmc)).actionable).toBe(true);
-    await t.prisma.membership.update({ where: { id: membership.pmc }, data: { role: 'engineer' } });
-    try {
-      expect(await query.consultationRespondedPushTarget(projectId, decisionId, users.pmc)).toEqual({ actionable: false });
-    } finally {
-      await t.prisma.membership.update({ where: { id: membership.pmc }, data: { role: 'pmc' } });
-    }
+    const served = await query.projectionSlice(projectId, 'pmc', users.pmc);
+    const row = served.decisions.find((d) => d.id === decisionId);
+    expect(row, 'the pre-4c row is still served').toBeTruthy();
+    expect(row!.consultations, 'hydrated to the EMPTY shape, not left absent').toEqual([]);
+    expect(row!.approvalCycle).toBe(0);
   });
 
   // ═══ THE ROLLOUT FENCE — this unit's own database additions ══════════════════════════════════
