@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { plantLegacyApprovalRevision } from './fixtures';
 
 /**
  * Phase 6 unit 4c-i — CONSULTATION, deployed DARK (plan §A/§D, probes P23/P25/P25d/P27/P41 DB arms).
@@ -340,8 +341,11 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     // decision: an approval-bearing decision can never leave approved/change standing (the
     // delivered 4b seal), so the shared fixture could not be put back.
     const own = await make(projectId, `cyc${seq++}`);
-    await t.prisma.decisionApprovalRevision.create({
-      data: { id: id(`rev${seq++}`), projectId, decisionId: own.d, version: 1, optionKey: 'a', approvedAt: new Date(), approvedById: users.client },
+    // Phase 6 unit 4c-ii seals the register: a NEW revision must name the approval command it is
+    // the product of. This one stands in for an approval that already happened, so it is planted
+    // through the fixture's named bypass rather than given invented provenance.
+    await plantLegacyApprovalRevision(t.prisma, {
+      id: id(`rev${seq++}`), projectId, decisionId: own.d, version: 1, optionKey: 'a', approvedById: users.client,
     });
     const c2 = await reserve('consultations.request', users.pmc);
     await refused(requestSql({ id: id('s7'), decisionId: own.d, openCycle: 0, sourceCommandId: c2 }), /cycle/i);
@@ -377,8 +381,11 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     const cons = await commitRequest({ decisionId: own.d });
     // approve, then reopen: the STATUS is open again, but the cycle has moved on — which is
     // exactly why eligibility is not a status test
-    await t.prisma.decisionApprovalRevision.create({
-      data: { id: id(`rev${seq++}`), projectId, decisionId: own.d, version: 1, optionKey: 'a', approvedAt: new Date(), approvedById: users.client },
+    // Phase 6 unit 4c-ii seals the register: a NEW revision must name the approval command it is
+    // the product of. This one stands in for an approval that already happened, so it is planted
+    // through the fixture's named bypass rather than given invented provenance.
+    await plantLegacyApprovalRevision(t.prisma, {
+      id: id(`rev${seq++}`), projectId, decisionId: own.d, version: 1, optionKey: 'a', approvedById: users.client,
     });
     await t.prisma.decision.update({ where: { id: own.d }, data: { status: 'change' } });
     const c1 = await reserve('consultations.respond', users.eng);
@@ -770,13 +777,34 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
 
   // ── old-release compatibility: the dark migration must not break the serving release ────────
 
-  it('a PREVIOUS-RELEASE approval still succeeds against the migrated schema', async () => {
-    // today's `approve` writes a revision with NO source command; 4c-i adds the column nullable
-    // and enforces nothing, so the still-serving 4b instance keeps working
+  it('4c-i\u2019s compatibility claim, SUPERSEDED by 4c-ii: an unsourced revision is now refused', async () => {
+    // This probe asserted the opposite until 4c-ii, and the change is deliberate rather than a
+    // regression — the same shape 4b recorded when it moved the goalposts its own option probes
+    // stood on.
+    //
+    // 4c-i added `sourceCommandId` NULLABLE and enforced nothing BECAUSE it is the dark migration
+    // a still-serving previous release must keep approving against. 4c-ii runs after the
+    // drain-first cutover — the one moment the plan guarantees no old writer exists — so its
+    // migration installs the deferred provenance trigger, and from that point a revision must
+    // name the approval command it is the product of. That requirement is what lets 4c treat the
+    // register's COUNT as cycle evidence at all.
+    //
+    // What is preserved, and asserted here, is the part that still matters after the cutover:
+    // LEGACY rows keep their NULL. The trigger is INSERT-scoped, so history stays honestly
+    // incomplete rather than being backfilled with provenance nobody recorded.
     const own = await make(projectId, `old${seq++}`);
-    const rev = await t.prisma.decisionApprovalRevision.create({
-      data: { id: id(`rev${seq++}`), projectId, decisionId: own.d, version: 1, optionKey: 'a', approvedAt: new Date(), approvedById: users.client },
+    await expect(
+      t.prisma.decisionApprovalRevision.create({
+        data: { id: id(`rev${seq++}`), projectId, decisionId: own.d, version: 1, optionKey: 'a', approvedAt: new Date(), approvedById: users.client },
+      }),
+    ).rejects.toThrow(/carries no source command/);
+
+    // …and the fixture bypass — which is what a legacy row IS — still lands, with its NULL intact
+    const legacyId = id(`rev${seq++}`);
+    await plantLegacyApprovalRevision(t.prisma, {
+      id: legacyId, projectId, decisionId: own.d, version: 1, optionKey: 'a', approvedById: users.client,
     });
-    expect(rev.sourceCommandId).toBeNull();
+    const planted = await t.prisma.decisionApprovalRevision.findUniqueOrThrow({ where: { id: legacyId } });
+    expect(planted.sourceCommandId, 'history is left incomplete, never invented').toBeNull();
   });
 });

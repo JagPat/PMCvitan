@@ -185,7 +185,13 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
   const manufactureLegacyGeneration = async (projectId: string, storedIds: string[]): Promise<{ id: string }> => {
     const stream = await t.prisma.projectEventStream.findUniqueOrThrow({ where: { projectId }, select: { nextPosition: true } });
     const gen = await t.prisma.projectionGeneration.create({
-      data: { consumer: DECISIONS_PROJECTION, projectId, generation: 1, status: 'active', cursorStatus: 'live', appliedPosition: stream.nextPosition - 1n, activatedAt: new Date() },
+      // Phase 6 unit 4c-ii — the generation is STAMPED with the catalog version it was built at,
+      // and this fixture is simulating a generation the PREVIOUS release built, so it says so
+      // EXPLICITLY: version 1. The column is NOT NULL with no default precisely so a binary that
+      // does not know it exists cannot create a generation at all; writing the value here is the
+      // fixture making its own claim about which release it is standing in for, rather than
+      // silently inheriting one.
+      data: { consumer: DECISIONS_PROJECTION, projectId, generation: 1, status: 'active', cursorStatus: 'live', appliedPosition: stream.nextPosition - 1n, activatedAt: new Date(), catalogVersion: 1 },
     });
     for (const id of storedIds) {
       const d = await t.prisma.decision.findUniqueOrThrow({

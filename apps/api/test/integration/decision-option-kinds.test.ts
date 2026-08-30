@@ -800,9 +800,23 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
     // exact shape the finding named. Its entry seal reads the parent FOR UPDATE to judge
     // withdrawal, so this transaction holds the same row lock without ever writing to it.
     await raceAgainst(
-      (tx, d) => tx.$executeRawUnsafe(
-        `INSERT INTO "DecisionApprovalRevision"("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
-         VALUES ('ar-a1-${run}-${seq++}','${f.projectA.id}','${d}',1,'ka', now(),'${f.memberUser.id}')`),
+      // Phase 6 unit 4c-ii — this approval must genuinely COMMIT (the reclassification is refused
+      // BECAUSE the register row is there by commit time), so it carries a real approval receipt:
+      // reserved, cited, completed in the same transaction, exactly as `executeCommand` does it.
+      // The fixture bypass would be wrong here — this is not a row standing in for history, it is
+      // an approval happening now, which is the whole shape of the race.
+      async (tx, d) => {
+        const receipt = `cmd-ok-${run}-${seq++}`;
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+           SELECT '${receipt}','project', p."orgId", '${f.projectA.id}','${f.memberUser.id}','decisions.approve','${receipt}','${receipt}','reserved'
+             FROM "Project" p WHERE p."id" = '${f.projectA.id}'`);
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "DecisionApprovalRevision"("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
+           VALUES ('ar-a1-${run}-${seq++}','${f.projectA.id}','${d}',1,'ka', now(),'${f.memberUser.id}','${receipt}')`);
+        await tx.$executeRawUnsafe(
+          `UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='${d}', "completedAt"=now() WHERE "id"='${receipt}'`);
+      },
       /entry in the approval register/u);
   });
 

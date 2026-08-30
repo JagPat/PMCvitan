@@ -116,8 +116,13 @@ const EXPECT: Record<string, Spec> = {
     // Phase 6 task 4b — the DECIDER designation travels through the contract too: the kind, the
     // named membership, and the RESOLVED decider user every viewer/decider predicate compares.
     // `photoSwatch` becomes optional (a record-only issue has no option-sourced swatch).
-    keys: ['id', 'title', 'room', 'nodeId', 'status', 'ageDays', 'photoSwatch', 'deciderKind', 'deciderMembershipId', 'deciderUserId', 'options', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(),
-    optional: ['nodeId', 'ageDays', 'photoSwatch', 'deciderMembershipId', 'deciderUserId', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(), nullable: [],
+    // Phase 6 unit 4c-ii — the CONSULTATION thread and the approval CYCLE it is judged against.
+    // Both are always emitted by a 4c server (empty / 0 for a decision nobody was consulted on),
+    // and both are listed OPTIONAL here because a projection row stored before this unit carries
+    // neither until the read path hydrates it — the shape pin describes what a consumer must
+    // tolerate, not only what the current serializer happens to produce.
+    keys: ['id', 'title', 'room', 'nodeId', 'status', 'ageDays', 'photoSwatch', 'deciderKind', 'deciderMembershipId', 'deciderUserId', 'options', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'consultations', 'approvalCycle'].sort(),
+    optional: ['nodeId', 'ageDays', 'photoSwatch', 'deciderMembershipId', 'deciderUserId', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'consultations', 'approvalCycle'].sort(), nullable: [],
   },
   OptionDto: { keys: ['label', 'key', 'material', 'delta', 'swatch', 'photoUrl', 'recommended'].sort(), optional: ['photoUrl'], nullable: [] },
   ActivityDto: {
