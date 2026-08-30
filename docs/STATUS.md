@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: fe9df58d
-open_pr: none
+open_pr: 487
 next_task: phase-6-task-4c
 blocking_directive: phase-6-4c-plan-independent-clearance
 updated: 2026-08-30
@@ -107,6 +107,13 @@ reserved for gates that bind regardless of resolver output).
   REINSTATEMENT PR — the head that carries the full plan as additions, after the removal has
   landed. On that signal, and only then,
   `blocking_directive` returns to `none` and `task: 4` resumes at `next_task: phase-6-task-4c`.
+
+**CLEARANCE STEP 1 IS OPEN AS PR #487** (branch `claude/4c-plan-clearance-step1`,
+`Replaces: #480`) — the removal half of the directive above, opened after this record
+merged at `d86cfb60` with a fresh clean exact-head Codex +1. `open_pr` NAMES it because it
+is a WORK-ITEM PR, not a status landing: `isDirectiveLandingShape` is false while `open_pr`
+names a PR, so the shepherd computes drift normally and this head answers it. A clean review
+of #487 does NOT clear the directive — step 2 (reinstatement) is where clearance is decided.
 
 **4c IMPLEMENTATION DOES NOT START** — not 4c-0, not 4c-i, not any later stage. The
 post-merge continuation comment on #480 (2026-08-30 ~02:10 IST) that instructed a
