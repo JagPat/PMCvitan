@@ -585,6 +585,11 @@ model CommandExecution {
 
   // Phase 3 Task 4 — stock ledger rows recording this execution as their source action (§C)
   stockTransactions StockTransaction[]
+  // Phase 6 unit 4c — the one-use provenance receipt behind each consultation fact, and (from
+  // 4c-ii, nullable here) the approval command a revision is a product of
+  decisionConsultations         DecisionConsultation[]         @relation("decisionConsultationSource")
+  decisionConsultationResponses DecisionConsultationResponse[] @relation("decisionConsultationResponseSource")
+  approvalRevisions             DecisionApprovalRevision[]     @relation("approvalRevisionSource")
 
   // Tasks 4–5 integrity correction (F1) — the project-contained candidate key a
   // StockTransaction's (projectId, sourceCommandId) composite FK references, so a ledger row
@@ -870,6 +875,8 @@ model Membership {
   decisionWithdrawals Decision[] @relation("DecisionWithdrawals")
   // current decision-holder designations (Phase 6 task 4b expansion)
   decisionsHeld Decision[] @relation("DecisionDeciders")
+  // consultations this membership was asked for (Phase 6 unit 4c) — project-scoped by construction
+  decisionConsultations DecisionConsultation[] @relation("decisionConsultations")
 
   @@unique([projectId, userId])
   // candidate key for Decision's same-project holder FK
@@ -1121,6 +1128,11 @@ model User {
   requirementRootsCreated ActivityRequirementRoot[]  @relation("requirementRootsCreated")
   requirementsCreated     ActivityRequirement[]      @relation("requirementsCreated")
   approvalsRecorded       DecisionApprovalRevision[] @relation("approvalRevisionsApproved")
+  // Phase 6 unit 4c — the three consultation roles a user can hold on the append-only thread:
+  // who asked, who was asked (the canonical audience), and who answered.
+  consultationsRequested  DecisionConsultation[]         @relation("decisionConsultationsRequested")
+  consultationsReceived   DecisionConsultation[]         @relation("decisionConsultationsReceived")
+  consultationsAnswered   DecisionConsultationResponse[] @relation("decisionConsultationsAnswered")
   vendorsCreated          Vendor[]                   @relation("vendorsCreated")
   externalPartiesCreated  ExternalParty[]            @relation("externalPartiesCreated")
   vendorsBound            ProjectVendor[]            @relation("vendorsBound")
@@ -2061,6 +2073,8 @@ model Decision {
   materialSpecs     MaterialRequirementSpec[]
   labourSpecs       LabourRequirementSpec[] // Phase 4 Task 1 — labour demand provenance
   changeRequests ChangeRequest[]
+  // Phase 6 unit 4c — the consultation thread hanging off this decision (deployed dark by 4c-i)
+  consultations  DecisionConsultation[] @relation("decisionConsultations")
   activities     Activity[]
   materials      SiteMaterial[]
   media          Media[]
@@ -2158,10 +2172,19 @@ model DecisionOption {
   order       Int      @default(0)
 
   approvalRevisions DecisionApprovalRevision[]
+  // Phase 6 unit 4c — consultation answers recommending THIS option (same-decision bound)
+  consultationRecommendations DecisionConsultationResponse[] @relation("decisionConsultationRecommendations")
 
   // the approval register (and requirement provenance behind it) pins an option by
   // (decisionId, optionKey) — the pair is a database-enforced candidate key
   @@unique([decisionId, optionKey])
+  // Phase 6 unit 4c-i — the SAME-DECISION candidate key a consultation response's recommended
+  // option binds to. Additive and vacuously satisfiable: `id` is already unique on its own, so
+  // this index can reject no existing or future row and no writer changes. Deliberately
+  // project-LESS: `DecisionOption` has no `projectId`, and the response's project↔decision
+  // pairing is already pinned by its consultation FK, whose parent binds
+  // `Decision(projectId, id)` — so same-decision binding completes the chain transitively.
+  @@unique([decisionId, id], map: "DecisionOption_decision_option_key")
   // declared so `migrate diff` sees the index the A1-i migration really creates; an undeclared
   // physical index makes every later migration generation want to drop it
   @@index([kindCode])
@@ -2204,6 +2227,21 @@ model DecisionApprovalRevision {
   approvedBy   User?          @relation("approvalRevisionsApproved", fields: [approvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   approvedById String? // null only on backfilled legacy rows whose approver was never recorded
   onBehalfOf   String? // 'client' when a PMC recorded the client's consent — never disguised
+  /// Phase 6 unit 4c-i (plan §A, review rounds 27-29) — the approval COMMAND this revision is a
+  /// product of. 4c makes the revision COUNT trusted cycle evidence (a consultation freezes the
+  /// decision's open cycle as that count), so a direct writer who could mint a revision could
+  /// move the cycle past every open consultation and deny answers no forgery of a consultation
+  /// table would show. Binding the revision to a COMPLETED `decisions.approve` receipt whose
+  /// `resultRef` names this decision closes that.
+  ///
+  /// NULLABLE here, and enforced by NOTHING in this unit: 4c-i is the DARK migration the
+  /// still-serving previous release must keep running against, and today's `approve` writes no
+  /// source command. Requiring it now would reject every approval a 4b instance performs — a
+  /// live workflow broken by a migration whose whole premise is that nothing else changes. The
+  /// writer lands in 4c-ii and the constraint trigger lands in 4c-ii's own migration, after the
+  /// drain-first cutover, at the one moment zero old instances are running.
+  sourceCommandId String?
+  sourceCommand   CommandExecution? @relation("approvalRevisionSource", fields: [projectId, sourceCommandId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
 
   materialSpecs MaterialRequirementSpec[]
   labourSpecs   LabourRequirementSpec[] // Phase 4 Task 1 — labour demand provenance (same register)
@@ -2235,6 +2273,118 @@ model DecisionEvent {
 // (raw SQL in 20260910000000_phase1_change_control; not expressible in Prisma).
 // Legacy rows were backfilled: 'pending' -> 'open' only while their decision was
 // still reopened, else 'resolved' with a null resolution.
+/// Phase 6 unit 4c — a CONSULTATION request: the PMC asks a named project member for advice on
+/// an open, published decision (`docs/superpowers/plans/2026-08-29-decision-workflow-4c.md` §A).
+///
+/// Append-only evidence, owned by decisions. It changes no status and no gate verdict; what it
+/// does is WIDEN visibility exactly one way — the consultee sees that decision and its thread
+/// while their consultation stands.
+///
+/// DEPLOYED DARK by unit 4c-i: no contract, no command, no route, no reader. The seals are
+/// installed with the table so that no invariant this schema states waits for a later unit to be
+/// probed — a DB invariant whose first probe arrives after the merge can be wrong and become
+/// immutable history before anything detects it.
+model DecisionConsultation {
+  id        String @id @default(cuid())
+  /// The child carries its OWN project key: a composite FK cannot bind columns the child does
+  /// not have, and every reference below is project-scoped through this one.
+  projectId String
+
+  decision   Decision @relation("decisionConsultations", fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  decisionId String
+
+  /// The pmc who asked. The INSERT seal re-judges that this user held decision authority here.
+  requestedBy   User   @relation("decisionConsultationsRequested", fields: [requestedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  requestedById String
+
+  /// WHO was asked, as a project-scoped membership — bound to the `(projectId, id)` candidate key
+  /// 4b added, so a project-A consultation can never name a project-B consultee.
+  consulteeMembership   Membership @relation("decisionConsultations", fields: [projectId, consulteeMembershipId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  consulteeMembershipId String
+
+  /// The DECISIONS-OWNED CANONICAL AUDIENCE. It is not a drift snapshot — `Membership`'s identity
+  /// is frozen by the delivered `Membership_t4b_identity_frozen`, so it can never diverge. It is
+  /// here because the projection must be REBUILDABLE: `rebuildSeed` seeds from canonical rows and
+  /// replays no historical payloads, so an audience living only in an event payload is lost by
+  /// every rebuild, and a fold resolving it from `Membership` would be a cross-module read from a
+  /// projection. One column, read by the live path and the rebuild alike. What it CAN be is
+  /// FORGED by a raw writer, which is what the INSERT seal's wrong-audience arm judges.
+  consulteeUser   User   @relation("decisionConsultationsReceived", fields: [consulteeUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  consulteeUserId String
+
+  /// User-supplied evidence: NOT NULL, and non-blank by CHECK (a CHECK over NULL is UNKNOWN and
+  /// PASSES, so the null and the whitespace-only guards are two separate obligations).
+  question String
+
+  /// The decision's approval-revision count FROZEN at request time — the decision's OPEN CYCLE.
+  /// "While their consultation stands" is a CYCLE test, not a status test: approve then
+  /// `requestChange` returns the decision to an open status, and a status-only rule would expose
+  /// the REOPENED cycle to someone nobody consulted there. The INSERT seal validates this EQUALS
+  /// the current count under the decision row lock, so a legitimate command bug cannot mint a
+  /// consultation that becomes answerable one approve-and-reopen later.
+  openCycle Int
+
+  /// §C rule-ii provenance: the command execution that produced this row, project-contained and
+  /// ONE-USE. An eventless alternate write is what the projection would never see, so every
+  /// accepted write is bound to a receipt the ledger already governs.
+  sourceCommand   CommandExecution @relation("decisionConsultationSource", fields: [projectId, sourceCommandId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  sourceCommandId String
+
+  requestedAt DateTime @default(now())
+
+  response DecisionConsultationResponse?
+
+  @@unique([projectId, sourceCommandId], map: "DecisionConsultation_source_command_key")
+  /// The candidate key the response's triple FK references, so the response's own project and
+  /// decision must agree with its consultation's.
+  @@unique([projectId, id, decisionId], map: "DecisionConsultation_response_target_key")
+  @@index([projectId, decisionId])
+  @@index([consulteeUserId])
+  @@index([projectId, consulteeMembershipId])
+}
+
+/// Phase 6 unit 4c — the consultee's ANSWER. Append-only, ONE per consultation (a UNIQUE makes a
+/// second unrepresentable: readers model a singular response, and two contradictory immutable
+/// recommendations must not exist). Deployed dark by 4c-i exactly as its parent is.
+model DecisionConsultationResponse {
+  id String @id @default(cuid())
+
+  /// Its OWN project key — the uniform seal contract binds every reference through the child's
+  /// own project column, and a response without one would leave its FK tuples project-unbound.
+  projectId String
+
+  /// Bound to the consultation TWICE over: the triple carries the decision, so a response can
+  /// never name a different decision than the consultation it answers.
+  consultation   DecisionConsultation @relation(fields: [projectId, consultationId, decisionId], references: [projectId, id, decisionId], onDelete: NoAction, onUpdate: NoAction)
+  consultationId String               @unique
+  decisionId     String
+
+  /// The RECORDED responder. Without it the non-consultee seal has nothing to compare against the
+  /// named consultee, and a raw writer could forge advice presented forever as the member's own.
+  respondedBy   User   @relation("decisionConsultationsAnswered", fields: [respondedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  respondedById String
+
+  /// User-supplied evidence — NOT NULL and non-blank, the same two obligations as `question`.
+  response String
+
+  /// The recommendation is a same-decision option REFERENCE, never a raw index: an index is
+  /// evidence bound to nothing (`3` on a two-option decision is immutable nonsense) and survives
+  /// reordering pointing somewhere else. Optional — advice need not pick a side.
+  recommendedOption   DecisionOption? @relation("decisionConsultationRecommendations", fields: [decisionId, recommendedOptionId], references: [decisionId, id], onDelete: NoAction, onUpdate: NoAction)
+  recommendedOptionId String?
+
+  sourceCommand   CommandExecution @relation("decisionConsultationResponseSource", fields: [projectId, sourceCommandId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  sourceCommandId String
+
+  respondedAt DateTime @default(now())
+
+  @@unique([projectId, sourceCommandId], map: "DecisionConsultationResponse_source_command_key")
+  /// The one-to-one's defining side: implied by the `consultationId` UNIQUE above, and stated
+  /// because the relation binds the whole triple.
+  @@unique([projectId, consultationId, decisionId], map: "DecisionConsultationResponse_consultation_key")
+  @@index([projectId, decisionId])
+}
+
 model ChangeRequest {
   id             String    @id @default(cuid())
   decision       Decision  @relation(fields: [decisionId], references: [id])
