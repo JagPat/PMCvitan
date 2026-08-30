@@ -1122,6 +1122,51 @@ inside its transaction — a concurrent old-build role change or decision birth 
 before the audit observes the register or blocks until the guards exist to judge it, so run the
 deploy with the drain-first discipline of §P6-4a and no special quiescing is needed beyond it.
 
+## §P6T4C. Phase 6 unit 4c-i — the consultation migration aborts: a project already carries the reserved `consultation` capability
+
+`20271101000000_phase6_t4c_consultation` deploys the consultation tables DARK — no caller, no
+contract, no route — so the write surface and the emitter that 4c-ii adds are gated on a
+per-project `ProjectCapability` row named `consultation`, enabled by the operator only after
+4c-iii. `ProjectCapability.capability` is free text with no whitelist and the delivered
+`capability:enable` accepts any string, so that row COULD be created before the code that reads
+it exists. If it were, the first upgraded instance would emit consultation events while
+previous-release workers were still serving — precisely what the gate exists to prevent.
+
+The migration therefore installs a RESERVATION trigger (rejecting both an INSERT of, and an
+UPDATE into, `capability = 'consultation'`) and only then audits. On a pre-existing row the
+deploy ABORTS, naming the projects:
+
+    phase6-4c ABORT: N project(s) already carry the RESERVED `consultation` capability
+    (sample: <projectId>, …) — … Operator repair (docs/RUNBOOK.md §P6T4C)
+
+Nothing was created at that point — the abort runs inside the migration's single transaction, so
+neither table exists and no seal is armed. Prisma records the migration as failed: after
+repairing, run `prisma migrate resolve --rolled-back 20271101000000_phase6_t4c_consultation`,
+then redeploy.
+
+**Repair.** The unit is dark, so nothing legitimate can have created such a row: it is either an
+operator who enabled the capability ahead of the rollout, or a copied fixture. Disable it on each
+named project with the ordinary operator path (`capability:disable`, the same command that
+enabled it), or, if the row was never meant to exist:
+
+    DELETE FROM "ProjectCapability" WHERE "capability" = 'consultation' AND "projectId" = '<named project>';
+
+Then redeploy. Do NOT skip the abort by dropping the audit or the reservation: the capability is
+what makes the gate machine-checkable, and re-enabling it is a step of §D's 4c-iii transition —
+not something to restore by hand between deploys. The reservation stays armed through 4c-ii and
+is replaced, atomically with the controlled enablement, in 4c-iii.
+
+**Ordering note, for anyone reading the migration.** The reservation trigger is created BEFORE the
+audit reads, in the same transaction. That is deliberate: an audit that read first could observe
+no `consultation` row, a concurrent `capability:enable` against the previous release could
+commit, and only then would `CREATE TRIGGER` take its lock — leaving the migration committed
+having passed its own diagnostic with the gate already open. `CREATE TRIGGER` takes ACCESS
+EXCLUSIVE on `ProjectCapability`, so creating it first makes any concurrent writer block until
+commit and the audit then reads a snapshot no other session can extend. Both orderings of that
+race are proven end-to-end by `apps/api/scripts/phase6-t4c-migration-proof.sh`, which also
+exercises a PARTIAL apply: every statement in the migration is retry-safe, so a deploy that dies
+part-way COMPLETES on re-run rather than stopping at an object it already created.
+
 ## §B1. Schedule B1 — `prisma migrate deploy` aborts on `ActivityDependency`
 
 `20270930000000_schedule_dependency_graph` COMPLETES ITS OWN INSTALL of `ActivityDependency` and
