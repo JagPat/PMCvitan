@@ -11,16 +11,59 @@ narrative and may lag behind reality.
 
 ```yaml
 phase: 6
-phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
+phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: d86cfb60
-open_pr: none
+open_pr: 492
 next_task: phase-6-task-4c
-blocking_directive: phase-6-4c-plan-independent-clearance
+blocking_directive: none
 updated: 2026-08-30
 ```
+
+**4c-i IS OPEN AS PR #492, AND THE REMOVAL-AND-REINSTATE BLOCKER IS CLEARED BY
+BOARD CALL** (2026-08-30, ~23:07 IST). `blocking_directive` is `none` and the 4c plan STAYS on
+`main` at `4ff4565c`. The recorded Board sequence is **STATUS, then 4c**: the unwind was dismissed
+at 09:36; #487 was the first removal attempt and closed unmerged; #491 was the same removal again
+and is now also CLOSED UNMERGED; and #490 — which restored the
+`phase-6-4c-plan-independent-clearance` record — is a record of a supervision concern, not a
+Board GO to take the plan off `main`. **Board beats programme supervision**, so no clearance
+step 1 is re-opened, no step 2 / plan reinstatement is opened, and the plan is not removed.
+`phase_plan` moves to the 4c document because that is what this task's remaining work executes.
+
+The directive's own text is preserved below as the RECORD of what was asked and why it was
+superseded — it is deliberately no longer scheduled. Leaving it in `blocking_directive` would
+route every continuation back to the removal the Board dismissed, because `assessRunnerState`
+resolves a directive from `in_progress` before the task's own work; that is the loop, not a
+safeguard.
+
+**What PR #492 delivers is 4c-i, the plan's own FIRST implementation unit**
+(`docs/superpowers/plans/2026-08-29-decision-workflow-4c.md` §D): ONE additive migration,
+deployed DARK. The two append-only consultation facts (`DecisionConsultation`,
+`DecisionConsultationResponse`) with their project-scoped composite FKs and candidate keys, the
+`(decisionId, id)` key on `DecisionOption` a recommended option binds to, the non-blank evidence
+CHECKs, the one-response UNIQUE, the two INSERT eligibility seals (published-and-open decision,
+ACTIVE consultee through the new owned primitive, the canonical-audience forgery arm, requester
+authority, and the frozen `openCycle` sealed at INSERT rather than merely compared later), the
+§C rule-ii provenance pair (a RESERVED receipt of the right type and actor at INSERT; a DEFERRED
+constraint trigger requiring that receipt to have SUCCEEDED naming THIS row at commit), the
+row-level append-only seals, three statement-level no-TRUNCATE seals — including
+`DecisionApprovalRevision`, whose COUNT 4c turns into trusted cycle evidence — and the TWO NEW
+ORGS-owned SQL primitives (`phase6_membership_active_user`, `phase6_project_operable`) the seals
+call across the already-declared decisions → orgs edge. `DecisionApprovalRevision.sourceCommandId`
+lands NULLABLE and enforced by nothing: 4c-i is the dark migration the still-serving previous
+release must keep running against, and its writer and constraint trigger belong to 4c-ii, after
+the drain-first cutover.
+
+NO contract, NO command, NO route, NO reader — that is what makes the migration/service seam real
+rather than claimed, and the upgrade proof asserts it directly (the tables arrive EMPTY, and a
+previous-release approval still records). Every invariant the migration installs is probed in the
+PR that installs it, because a DB invariant whose first probe waits for the behaviour unit can be
+wrong and become immutable history before anything detects it. 4c-ii (contracts, commands,
+routes, the projection thread, the push families and the UI) is the next unit and is NOT started
+here. Contractor-capture units 1–6 remain under their separate per-unit Board gate; listener
+#482/#483/#484 remains deferred.
 
 **4c-0 IS DELIVERED AND INDEPENDENTLY CLEARED; 4c-i AND ALL LATER 4c UNITS ARE BLOCKED.**
 PR #489 earned a fresh exact-head Codex +1 on `4afb56e1` and auto-merged as `881002bb`.
@@ -38,7 +81,12 @@ last merge whose STATUS/orchestration disposition independently cleared; it is d
 not advanced to the unreviewed plan merge or used to turn #489's reviewed refactor into plan
 clearance.
 
-### Directive `phase-6-4c-plan-independent-clearance`
+### Directive `phase-6-4c-plan-independent-clearance` — SUPERSEDED BY BOARD CALL, kept as record
+
+**This directive is no longer scheduled** (Board, 2026-08-30 ~23:07 IST). It is preserved verbatim
+below because what it asked, and why, is worth keeping; it is NOT to be executed. Both removal
+attempts are closed unmerged (#487, #491), no reinstatement PR is to be opened, and the 4c plan
+stays on `main`. What follows is the record of the superseded ask:
 
 This is executable correction work, not a request for human approval. Work it in two ordered
 docs-only PRs from current `main`:
