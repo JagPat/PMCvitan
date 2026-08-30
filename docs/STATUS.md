@@ -13,32 +13,37 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: merged
+task_state: in_progress
 work_item: none
 reviewed_merge: d4e2ddf5
-open_pr: none
+open_pr: 496
 next_task: phase-6-task-4c-ii
 blocking_directive: none
 updated: 2026-08-30
 ```
 
-**4c-i IS MERGED (PR #493 at `main` `d4e2ddf5`) WITH A FRESH INDEPENDENT CODEX +1 ON THE
-EXACT REVIEWED HEAD `7650109`, AND THE REMOVAL-AND-REINSTATE BLOCKER IS CLEARED BY
-BOARD CALL** (2026-08-30, ~23:07 IST). The next unit is **4c-ii, SCHEDULED from `main`
-`d4e2ddf5`**: the 30 August Board sequence authorized 4c implementation **4c-0 through 4c-v**, so
-no unit of 4c waits for a fresh GO and none is to be re-asked for. `next_task` NAMES that unit
-(`phase-6-task-4c-ii`), which `assessRunnerState` resolves to `next_task:phase-6-task-4c-ii` — an
-EXECUTABLE next step with no human-approval condition anywhere in the loop's path. The Now block
-keeps the documented TERMINAL HANDOFF SHAPE (`task_state: merged`, `work_item: none`,
-`open_pr: none`, a NAMED `next_task`) so `isHandoffShape` recognizes this landing instead of
-instructing the loop to point `open_pr` at the landing PR itself (the #303 trap). `task_state:
-merged` is the state of the WORK ITEM that was in flight — 4c-i — exactly as the 4b landing used
-it while task 4 continued; it is not a claim that task 4c is finished. Four plan units remain
-after 4c-ii.
+**4c-i IS MERGED (PR #493 at `main` `d4e2ddf5`) AND 4c-ii IS OPEN AS PR #496**, built from
+`main` `1d6c4ff` under the 30 August Board sequence, which authorized 4c implementation **4c-0
+through 4c-v** — so no unit of 4c waits for a fresh GO and none is to be re-asked for. `open_pr`
+NAMES this PR, per §D's self-naming convention: `assessPostMergeRunnerState` clears a
+SELF-REFERENTIAL `open_pr` before resolving, so naming it survives its own merge while keeping
+`detectStatusDrift` quiet for as long as the PR is open. Three plan units remain after 4c-ii.
 
-**4c-ii** is the behaviour unit: contracts, commands, routes, the projection thread, the push
-families and the UI, plus the `DecisionApprovalRevision.sourceCommandId` writer and its constraint
-trigger after the drain-first cutover — the callers 4c-i deliberately shipped without.
+**4c-ii** is the behaviour unit: the two commands, the audience widening, the projection thread,
+the two push families and the UI — the callers 4c-i deliberately shipped without — plus the
+`DecisionApprovalRevision.sourceCommandId` writer and its provenance seal, which lands here
+because this migration runs AFTER the drain-first cutover, and the two halves of the
+consumer-version fence that make the eventual enablement safe.
+
+**Two things #496 records against the merged 4c-i, rather than quietly absorbing.** First, §D
+requires 4c-i to install a `ProjectCapability` reservation trigger and a pre-existing-row abort so
+the gate cannot be opened during the dark window; the merged `20271101000000` contains no
+`ProjectCapability` statement at all, leaving the pre-enablement hole open on `main` today. 4c-ii
+carries that obligation, in the round-24 trigger-before-audit order. Second, §B.1's hydration of a
+pre-4c-ii stored DTO to an EMPTY consultation shape presumes a serializer that always emits the
+array, which would add `consultations: []` to every decision of every project and break the
+gate-off byte-identity the same section requires; absent-when-empty satisfies both and is probed.
+
 Contractor-capture units 1–6 remain under their per-unit Board gate, which is a SEPARATE gate from
 the 4c sequence and is not lifted by it.
 

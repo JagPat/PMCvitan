@@ -4367,18 +4367,24 @@ assert "4c-i: the consultation register arrives EMPTY — a dark migration inven
   "SELECT (SELECT COUNT(*) FROM \"DecisionConsultation\")::text || '|' || (SELECT COUNT(*) FROM \"DecisionConsultationResponse\")::text;" \
   "0|0"
 
-# the PREVIOUS-RELEASE approval writer: today's `approve` records no source command, and 4c-i adds
-# that column nullable and enforces nothing. A migration that broke this would break a live
-# workflow while claiming to change nothing.
+# The PREVIOUS-RELEASE approval writer records no source command, and 4c-i deliberately added that
+# column NULLABLE and enforced nothing so a live workflow would keep working through the dark
+# window. That compatibility is what 4c-i had to prove and did.
+#
+# It is no longer assertable HERE, and saying so is the point: this proof applies EVERY migration
+# and then asserts, so the database it questions is post-4c-ii — and 4c-ii's own migration, which
+# runs only AFTER the drain-first cutover, adds the provenance seal precisely because by then no
+# writer without a command is still serving. Asserting the old behaviour on this database would be
+# asserting that the seal does not work.
+#
+# What survives, and is what actually mattered, is that the dark window cost the previous release
+# nothing and that its history was never rewritten: LEGACY revisions still carry their NULL. That
+# is asserted in the 4c-ii section below, together with the seal that now refuses a NEW one.
 # `UP4A-D2` + its option `a` are the register's own composite FK target, already planted above by
 # the 4a section — the revision demands a REAL option of the named decision.
-$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-i: a previous-release approval could not be recorded"; FAIL=1; }
-INSERT INTO "DecisionApprovalRevision"("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
-VALUES ('UP4CI-REV','p1','UP4A-D2',99,'a',now(),'USER-1');
-SQL
-assert "4c-i: a previous-release approval still records, with no source command" \
-  "SELECT COALESCE(\"sourceCommandId\", 'null') FROM \"DecisionApprovalRevision\" WHERE \"id\"='UP4CI-REV';" \
-  "null"
+assert_rejects "4c-i/4c-ii: after the drain, a previous-release-shaped approval is refused" \
+  "INSERT INTO \"DecisionApprovalRevision\"(\"id\",\"projectId\",\"decisionId\",\"version\",\"optionKey\",\"approvedAt\",\"approvedById\") VALUES ('UP4CI-REV','p1','UP4A-D2',99,'a',now(),'USER-1')" \
+  "must name the command that recorded it"
 
 # the alternate writer, tried where it would actually try: a consultation minted with no command
 # receipt behind it is invisible to the projection, which is the whole point of the provenance rule
@@ -4398,9 +4404,9 @@ assert_rejects "4c-i: TRUNCATE of the approval register whose COUNT 4c turns int
 assert "4c-i: both owned ORGS primitives are installed" \
   "SELECT COUNT(*)::text FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable');" \
   "2"
-assert "4c: the ten t4c seals are armed (4c-i's nine plus 4c-ii's capability reservation)" \
+assert "4c: the eleven t4c seals are armed (4c-i's nine plus 4c-ii's capability reservation and approval-provenance seals)" \
   "SELECT COUNT(*)::text FROM pg_trigger WHERE tgname LIKE '%t4c%';" \
-  "10"
+  "11"
 
 # ── the PARTIAL-APPLY RETRY, executed rather than asserted ───────────────────────────────────────
 # A deploy that dies part-way must COMPLETE on retry, not stop at the objects it already made. The
@@ -4418,13 +4424,13 @@ DROP FUNCTION IF EXISTS phase6_project_operable(TEXT) CASCADE;
 SQL
 assert "4c-i retry: the staged partial state really is incomplete" \
   "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgname LIKE '%t4c%')::text || '|' || (SELECT COUNT(*) FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable'))::text;" \
-  "6|0"
+  "7|0"
 
 apply_one "$T4C_I"
 
 assert "4c-i retry: re-running the same file COMPLETES the deployment" \
   "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgname LIKE '%t4c%')::text || '|' || (SELECT COUNT(*) FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable'))::text;" \
-  "10|2"
+  "11|2"
 assert_rejects "4c-i retry: the re-armed request seal refuses the same hostile insert" \
   "INSERT INTO \"DecisionConsultation\"(\"id\",\"projectId\",\"decisionId\",\"requestedById\",\"consulteeMembershipId\",\"consulteeUserId\",\"question\",\"openCycle\",\"sourceCommandId\") VALUES ('UP4CI-C2','p1','DL-1','USER-1','no-such-membership','USER-1','Which finish?',0,'no-such-command')" \
   "phase6-4c"
@@ -4469,6 +4475,17 @@ assert_rejects "4c-ii: a PREVIOUS-release generation insert — naming no versio
 assert "4c-ii: no generation is left without a version" \
   "SELECT COUNT(*)::text FROM \"ProjectionGeneration\" WHERE \"catalogVersion\" IS NULL;" \
   "0"
+
+# the APPROVAL REGISTER's provenance seal. 4c-i landed the column nullable and enforced nothing so
+# the still-serving previous release could keep recording approvals; 4c-ii is the writer, and this
+# seal lands only after the drain. It judges NEW rows: a LEGACY revision keeps its NULL, because
+# backfilling one would invent provenance for an approval whose command was never recorded.
+assert_rejects "4c-ii: an approval revision with no command provenance is refused" \
+  "INSERT INTO \"DecisionApprovalRevision\"(\"id\",\"projectId\",\"decisionId\",\"version\",\"optionKey\",\"approvedAt\",\"approvedById\") VALUES ('UP4CII-R1','p1','DL-1',99,'a',now(),'USER-1')" \
+  "must name the command that recorded it"
+assert "4c-ii: legacy revisions keep their NULL provenance — history is left honestly incomplete" \
+  "SELECT (COUNT(*) > 0)::text FROM \"DecisionApprovalRevision\" WHERE \"sourceCommandId\" IS NULL;" \
+  "true"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it

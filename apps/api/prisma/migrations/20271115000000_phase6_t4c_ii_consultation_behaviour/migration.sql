@@ -133,3 +133,27 @@ BEGIN
     RAISE EXCEPTION 'phase6-4c ABORT: % project(s) already hold the reserved `consultation` capability (sample: %). The unit was dark, so nothing legitimate can have created one — an operator enabled it early through the generic capability:enable CLI. Remove those rows before deploying: the gate must be OFF until the drain-first cutover is confirmed complete.', bad, sample;
   END IF;
 END $$;
+
+-- ── 4. the APPROVAL REGISTER's provenance seal — the other half of a 4c-i column ────────────────
+-- 4c-i added `DecisionApprovalRevision.sourceCommandId` NULLABLE and enforced NOTHING, deliberately:
+-- the still-serving previous release records approvals with no source command, and requiring one
+-- during the dark window would have rejected every approval that release performs. 4c-ii is the
+-- WRITER (`decisions.approve` now names its command), and this is the seal — which lands only here
+-- because this migration runs AFTER the drain-first cutover, so by the time it applies no writer
+-- without a command is still serving.
+--
+-- A BEFORE INSERT trigger, NOT a column `SET NOT NULL`: every LEGACY revision has a NULL there and
+-- must keep it. Backfilling one would be inventing provenance for an approval whose command was
+-- never recorded — the exact fabrication the §C rule exists to make impossible — so the seal judges
+-- NEW rows and leaves history honestly incomplete.
+CREATE OR REPLACE FUNCTION phase6_t4c_approval_provenance() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW."sourceCommandId" IS NULL THEN
+    RAISE EXCEPTION 'phase6-4c: an approval revision must name the command that recorded it — a revision with no provenance is an approval nothing can attribute (decision %, version %)', NEW."decisionId", NEW."version";
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS "DecisionApprovalRevision_t4c_provenance" ON "DecisionApprovalRevision";
+CREATE TRIGGER "DecisionApprovalRevision_t4c_provenance"
+  BEFORE INSERT ON "DecisionApprovalRevision"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4c_approval_provenance();

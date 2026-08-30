@@ -391,7 +391,11 @@ export class DecisionsService {
       commandType: 'decisions.approve',
       idempotencyKey,
       requestHash,
-      run: async (tx) => {
+      // Phase 6 unit 4c-ii — the approval register joins the §C rule-ii provenance shape: every
+      // NEW revision names the command that wrote it. An unkeyed call therefore reserves a SERVER
+      // one-shot receipt (a missing CLIENT key is still refused first under enforcement).
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, ctx) => {
         // a lock-state transition moves the decision gate (gate finding 1)
         await lockProjectReadiness(tx, projectId);
         // round-11 Codex F1 — the ROLE that granted authority is re-validated LIVE inside the
@@ -486,6 +490,12 @@ export class DecisionsService {
             approvedAt: new Date(),
             approvedById: actor.actorId,
             onBehalfOf,
+            // 4c-i landed this column NULLABLE and enforced nothing, because the still-serving
+            // previous release writes approvals with no source command and requiring one would
+            // have rejected every one of them. 4c-ii is the writer, and its migration adds the
+            // seal — which runs AFTER the drain-first cutover, so by then no writer without a
+            // command exists. Legacy rows keep their NULL: the seal judges new rows only.
+            sourceCommandId: ctx.commandId,
           },
         });
         await tx.decisionEvent.create({
