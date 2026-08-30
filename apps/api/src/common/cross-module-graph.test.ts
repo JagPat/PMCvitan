@@ -60,6 +60,9 @@ const MODEL_OWNER: Record<string, string> = {
   decision: 'decisions', decisionOption: 'decisions', decisionOptionTouch: 'decisions', decisionEvent: 'decisions', changeRequest: 'decisions',
   // Task-1 correction round 2 — the immutable approval register, written only by decisions.approve
   decisionApprovalRevision: 'decisions',
+  // Phase 6 unit 4c-i — deployed dark; owned here from the moment the tables exist
+  decisionConsultation: 'decisions',
+  decisionConsultationResponse: 'decisions',
   activity: 'activities', gateOverride: 'activities',
   phase: 'phases',
   inspection: 'inspections', inspectionItem: 'inspections',

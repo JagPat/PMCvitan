@@ -4349,6 +4349,57 @@ assert "A1-i precision: neither the option nor the retirement landed" \
   "SELECT (SELECT COUNT(*) FROM \"DecisionOption\" WHERE \"id\"='UPA1-SAMETX')::text || '|' || (SELECT \"active\"::text FROM \"DecisionOptionKind\" WHERE \"code\"='up-samefx');" \
   "0|true"
 
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# Phase 6 unit 4c-i — CONSULTATION, deployed DARK, over the migrated legacy database
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+#
+# The unit's compatibility claim is the whole reason it is a separate migration: nothing reads or
+# writes the two new tables, so the PREVIOUS release runs unchanged over the migrated schema. Two
+# things are proven here — that the tables arrive EMPTY (a dark migration invents no rows), and
+# that the previous release's own approval writer still works — plus the seal network against the
+# alternate writer, on a legacy database rather than a purpose-built fixture.
+echo ""
+echo "Phase 6 unit 4c-i — consultation deployed dark"
+
+assert "4c-i: the consultation register arrives EMPTY — a dark migration invents no rows" \
+  "SELECT (SELECT COUNT(*) FROM \"DecisionConsultation\")::text || '|' || (SELECT COUNT(*) FROM \"DecisionConsultationResponse\")::text;" \
+  "0|0"
+
+# the PREVIOUS-RELEASE approval writer: today's `approve` records no source command, and 4c-i adds
+# that column nullable and enforces nothing. A migration that broke this would break a live
+# workflow while claiming to change nothing.
+# `UP4A-D2` + its option `a` are the register's own composite FK target, already planted above by
+# the 4a section — the revision demands a REAL option of the named decision.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-i: a previous-release approval could not be recorded"; FAIL=1; }
+INSERT INTO "DecisionApprovalRevision"("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
+VALUES ('UP4CI-REV','p1','UP4A-D2',99,'a',now(),'USER-1');
+SQL
+assert "4c-i: a previous-release approval still records, with no source command" \
+  "SELECT COALESCE(\"sourceCommandId\", 'null') FROM \"DecisionApprovalRevision\" WHERE \"id\"='UP4CI-REV';" \
+  "null"
+
+# the alternate writer, tried where it would actually try: a consultation minted with no command
+# receipt behind it is invisible to the projection, which is the whole point of the provenance rule
+assert_rejects "4c-i: a consultation with no command receipt behind it" \
+  "INSERT INTO \"DecisionConsultation\"(\"id\",\"projectId\",\"decisionId\",\"requestedById\",\"consulteeMembershipId\",\"consulteeUserId\",\"question\",\"openCycle\",\"sourceCommandId\") VALUES ('UP4CI-C1','p1','DL-1','USER-1','no-such-membership','USER-1','Which finish?',0,'no-such-command')" \
+  "phase6-4c"
+
+assert_rejects "4c-i: TRUNCATE of the append-only consultation register" \
+  "TRUNCATE TABLE \"DecisionConsultation\" CASCADE" \
+  "phase6-4c"
+assert_rejects "4c-i: TRUNCATE of the approval register whose COUNT 4c turns into cycle evidence" \
+  "TRUNCATE TABLE \"DecisionApprovalRevision\" CASCADE" \
+  "phase6-4c"
+
+# the two owned ORGS primitives the seals call must be ARMED — a seal whose primitive is missing
+# fails open at the next INSERT, and that is precisely the partial-apply state the retry closes
+assert "4c-i: both owned ORGS primitives are installed" \
+  "SELECT COUNT(*)::text FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable');" \
+  "2"
+assert "4c-i: the nine seals of this unit are armed" \
+  "SELECT COUNT(*)::text FROM pg_trigger WHERE tgname LIKE '%t4c%';" \
+  "9"
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller
