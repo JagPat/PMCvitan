@@ -79,3 +79,57 @@ END $$;
 -- will CREATE them at the compiled version) is untouched.
 UPDATE "OutboxConsumerCatalog" SET "catalogVersion" = 2
  WHERE "consumer" IN ('decisions.inbox', 'webpush.notify') AND "catalogVersion" = 1;
+
+-- ── 3. the CAPABILITY RESERVATION — a 4c-i obligation this unit carries forward ─────────────────
+-- §D requires the `consultation` capability row to be IMPOSSIBLE to create while the dark window
+-- is open, and places both halves (a diagnostic-first abort over any pre-existing row, and a
+-- reservation trigger rejecting new ones) in 4c-i. The merged 20271101000000 ships neither — it
+-- contains no `ProjectCapability` statement at all — so the hole is live right now: the previous
+-- release's generic `capability:enable` CLI accepts ANY string, so an operator can enable
+-- `consultation` today, and the first upgraded instance would emit `decision.consultation_*` while
+-- old workers were still claiming deliveries. That is precisely the state the gate exists to
+-- prevent, and it is THIS unit whose compatibility story depends on it, so the obligation is
+-- carried here rather than left for a unit that runs after the risk has already passed.
+--
+-- The ORDERING is the round-24 rule: the trigger is created BEFORE the audit reads. "Diagnostic
+-- first" orders the abort before the SCHEMA CHANGE, which is not sufficient — an audit that reads
+-- first can observe no row, a concurrent `capability:enable` can commit against the previous
+-- release, and only THEN would `CREATE TRIGGER` take its lock; the trigger is not retroactive, so
+-- this migration would commit having passed its own diagnostic with the gate already open.
+-- `CREATE TRIGGER` takes ACCESS EXCLUSIVE on `ProjectCapability` inside this transaction, so any
+-- concurrent writer blocks until commit and the audit then reads a snapshot no other session can
+-- extend: a writer already in flight either committed before the lock (the audit sees its row and
+-- aborts) or resumes after commit (the reservation rejects it).
+--
+-- This does NOT reopen the Board decision that there is no CHECK on the column's vocabulary. The
+-- column stays free text, every SHIPPED capability still enables through the unchanged generic
+-- writer, and the ONE rejected value is the one no legitimate caller can yet have reason to write.
+-- The reservation gives way at 4c-iii, atomically with the controlled enablement, where it is
+-- REPLACED by the preservation seal rather than simply dropped.
+CREATE OR REPLACE FUNCTION phase6_t4c_capability_reserved() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  -- BOTH doors: an INSERT naming the reserved value, and an UPDATE transitioning an existing row
+  -- into it. `capability` is a mutable key with no freeze trigger, so an INSERT-only guard would
+  -- leave `UPDATE "ProjectCapability" SET "capability" = 'consultation'` wide open — the same
+  -- gate-open state by another route.
+  IF NEW."capability" = 'consultation' THEN
+    RAISE EXCEPTION 'phase6-4c: the `consultation` capability is RESERVED until the enablement unit — it is the rollout latch for an unreleased workflow, and enabling it now would let an upgraded instance emit consultation events while previous-release workers can still claim them (project %)', NEW."projectId";
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS "ProjectCapability_t4c_reserved" ON "ProjectCapability";
+CREATE TRIGGER "ProjectCapability_t4c_reserved"
+  BEFORE INSERT OR UPDATE OF "capability" ON "ProjectCapability"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4c_capability_reserved();
+
+-- the audit, reading a snapshot the trigger above has already frozen
+DO $$
+DECLARE bad BIGINT; sample TEXT;
+BEGIN
+  SELECT count(*), string_agg("projectId", ', ' ORDER BY "projectId")
+    INTO bad, sample
+    FROM (SELECT "projectId" FROM "ProjectCapability" WHERE "capability" = 'consultation' LIMIT 20) s;
+  IF bad > 0 THEN
+    RAISE EXCEPTION 'phase6-4c ABORT: % project(s) already hold the reserved `consultation` capability (sample: %). The unit was dark, so nothing legitimate can have created one — an operator enabled it early through the generic capability:enable CLI. Remove those rows before deploying: the gate must be OFF until the drain-first cutover is confirmed complete.', bad, sample;
+  END IF;
+END $$;
