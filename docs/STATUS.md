@@ -64,21 +64,36 @@ reserved for gates that bind regardless of resolver output).
 
 - **The defect.** The 4c plan merged without the independent exact-head review that every
   unit owes. Its content is authoritative-looking on `main` and is not authorized.
-- **The work.** One docs-only, gate-compliant PR that carries the 4c plan through a real
-  exact-head Codex review: a review-provenance record IN
-  `docs/superpowers/plans/2026-08-29-decision-workflow-4c.md` stating that the document
-  merged on a Board call over a failing required status, naming the rounds (19–29) whose
-  fixes were never independently confirmed, and marking the plan not-authorizing until the
-  clearance lands. That is a genuine diff anchored on the plan, so Codex reviews the plan's
-  substance on an exact head — which is what was skipped — without opening any implementation
-  seam.
+- **The requirement (corrected on review round 1 of #485).** Clearance requires the PLAN'S OWN
+  DECISION CONTENT to be inside the reviewed diff. An earlier draft of this directive
+  prescribed adding a review-provenance NOTE to
+  `docs/superpowers/plans/2026-08-29-decision-workflow-4c.md` and called that sufficient
+  because it is "anchored on the plan". It is not, and the review said so: Codex reviews the
+  DIFF, so it would have reviewed the new note while the unreviewed rounds 19–29 content sat
+  unchanged around it — then a clean status would have cleared this directive and released 4c
+  with the plan's substance still never independently reviewed. That is the exact laundering
+  this record exists to prevent, reintroduced one level down. **A provenance-only, metadata-only
+  or otherwise non-substantive diff DOES NOT clear this directive, and a clean
+  `codex-current-head` on such a diff must not be read as clearance.**
+- **The mechanism, and why it needs a call.** The content is already ON `main`, so the only way
+  to put it in front of a reviewer as a diff is to take it off `main` and let it re-enter as a
+  reviewed unit: one PR that REMOVES the unreviewed plan document (a substantive diff, reviewed
+  on its own merits — should an unreviewed 1,577-line document be authoritative? no), after
+  which the plan returns through the normal gate and is reviewed in full. Nothing is destroyed:
+  the document survives in git history and on #480. **This step is NOT taken autonomously.** It
+  unwinds a merge the Board made deliberately, so it needs an explicit Board or programme-
+  supervision call, and that decision is hereby routed to them rather than assumed here. Until
+  that call arrives the directive stands and 4c stays blocked — which is the honest state, not a
+  stall to be worked around: the loop's other duties (the Maintenance queue, open-PR
+  shepherding) remain available and are not gated by this directive.
 - **NOT cleared by:** the #480 merge itself; a Board merge call; a human ready-for-review or
-  merge action; a drift-shepherd or watchdog notice; this STATUS correction merging. None of
-  those is exact-head review evidence, and the first four are the specific things that were
-  mistaken for it.
-- **Cleared by:** a fresh, clean `codex-current-head` success on the exact head of that
-  docs-only clearance PR. On that signal, and only then, `blocking_directive` returns to
-  `none` and `task: 4` resumes at `next_task: phase-6-task-4c`.
+  merge action; a drift-shepherd or watchdog notice; this STATUS correction merging; **or a
+  clean review of any diff that does not carry the plan's own decision content.** None of those
+  is exact-head review evidence of the PLAN, and each of them has already been mistaken for it
+  once.
+- **Cleared by:** a fresh, clean `codex-current-head` success on the exact head of a PR whose
+  diff actually contains the plan's decision content. On that signal, and only then,
+  `blocking_directive` returns to `none` and `task: 4` resumes at `next_task: phase-6-task-4c`.
 
 **4c IMPLEMENTATION DOES NOT START** — not 4c-0, not 4c-i, not any later stage. The
 post-merge continuation comment on #480 (2026-08-30 ~02:10 IST) that instructed a
