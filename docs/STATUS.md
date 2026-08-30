@@ -16,13 +16,13 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4c-ii
 reviewed_merge: d4e2ddf5
-open_pr: PENDING
+open_pr: 497
 next_task: phase-6-task-4c-iii
 blocking_directive: none
 updated: 2026-08-30
 ```
 
-**UNIT 4c-ii IS THE OPEN WORK, scheduled from `main` `1d6c4ff1` per the Board's 2026-08-31 03:45
+**UNIT 4c-ii IS OPEN AS PR #497** (branch `claude/phase6-4c-ii-consultation-behaviour`, `Replaces: none`). It is scheduled from `main` `1d6c4ff1` per the Board's 2026-08-31 03:45
 IST direction on #495.** The 30 August sequence authorized 4c-0 through 4c-v, so this unit waits
 on no fresh GO and none is to be asked for. Contractor-capture units 1–6 stay Board-gated — a
 SEPARATE gate the 4c sequence does not lift.
