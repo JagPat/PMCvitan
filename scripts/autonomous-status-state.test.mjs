@@ -1091,3 +1091,47 @@ test('a directive landing that retains a work item is recognized', async () => {
     'a directive landing with a retained work item was sent into the #303 trap',
   );
 });
+
+// FINDING (#486 P2, round 1) — the two readers must not spell the state vocabulary differently.
+// `isDirectiveLandingShape` lowercased `task_state` while `assessRunnerState` compares it
+// case-exactly, so a typo'd `IN_PROGRESS` was a VALID LANDING to the drift reader (shepherd
+// suppressed, on the theory a correction was in flight) and UNACTIONABLE to the resolver (a
+// directive from a non-scheduling state) — the loop left with no next step after merge AND no
+// warning that anything was wrong. The predicate now tests the resolver's own exported
+// DIRECTIVE_STATES against the raw field: one derivation, one spelling, refused loudly by both.
+test('a malformed directive state is refused by BOTH readers, not just one', async () => {
+  const { isDirectiveLandingShape, buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const { assessRunnerState, DIRECTIVE_STATES } = await import('./autonomous-status-state.mjs');
+  const base = {
+    phase: '6', task: '4', work_item: 'none', open_pr: 'none',
+    next_task: 'phase-6-task-4c', blocking_directive: 'phase-6-4c-plan-independent-clearance',
+  };
+
+  for (const typo of ['IN_PROGRESS', 'In_Progress', 'CORRECTION_REQUIRED']) {
+    const now = { ...base, task_state: typo };
+    assert.equal(
+      assessRunnerState(now, ['upkeep']).actionable,
+      false,
+      `precondition: the resolver refuses '${typo}'`,
+    );
+    assert.equal(
+      isDirectiveLandingShape(now),
+      false,
+      `'${typo}' was a valid landing to the drift reader while the resolver called it unactionable`,
+    );
+    assert.ok(
+      buildDriftHandoff({
+        statusNow: { ...base, task_state: 'in_progress', open_pr: '480', blocking_directive: 'none' },
+        openPullRequests: [{ number: 487, headRefName: 'claude/typo-head', isDraft: true }],
+        headStatuses: [{ number: 487, now, editsStatus: true }],
+      }),
+      `a malformed head silenced the shepherd for '${typo}'`,
+    );
+  }
+
+  // The well-formed states stay landings, and the vocabulary is the resolver's own object.
+  for (const state of DIRECTIVE_STATES) {
+    assert.equal(isDirectiveLandingShape({ ...base, task_state: state }), true);
+    assert.equal(assessRunnerState({ ...base, task_state: state }, ['upkeep']).actionable, true);
+  }
+});

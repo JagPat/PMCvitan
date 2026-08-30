@@ -1,4 +1,4 @@
-import { assessRunnerState, isNoneValue } from './autonomous-status-state.mjs';
+import { DIRECTIVE_STATES, assessRunnerState, isNoneValue } from './autonomous-status-state.mjs';
 
 const NONE = 'none';
 
@@ -150,12 +150,15 @@ const TERMINAL_HANDOFF_STATES = new Set(['merged', 'complete', 'completed', 'cle
  *  correction's own number — the #303 trap, planted by the very PR whose purpose is to
  *  remove a stale pointer.
  *
- *  The states are the two `assessRunnerState` schedules a directive from, spelled the
- *  same way: a directive recorded from any other state does not resolve, so treating it
- *  as a landing would suppress drift for a record the runner cannot act on. The directive
- *  itself is tested with the runner's own case-exact sentinel (#334 round 3) rather than a
- *  lowercased compare, so `NONE` is refused here exactly as `assessRunnerState` refuses it
- *  instead of being read as "no directive" by one reader and a named one by the other.
+ *  The state is tested against the resolver's OWN exported `DIRECTIVE_STATES`, case-exact
+ *  against the raw field — not a local copy and not a lowercased compare (#486 round 1). A
+ *  directive recorded from any other state does not resolve, so treating it as a landing would
+ *  suppress drift for a record the runner cannot act on; a lowercasing copy did exactly that for
+ *  a typo'd `IN_PROGRESS`, which this predicate called a valid landing while `assessRunnerState`
+ *  called it unactionable — drift suppressed AND no next step after merge. The directive itself
+ *  uses the runner's own case-exact sentinel for the same reason (#334 round 3), so `NONE` is
+ *  refused here exactly as the resolver refuses it, instead of being read as "no directive" by
+ *  one reader and a named one by the other.
  *
  *  It deliberately does NOT require `work_item: none` (#485 round 2). The other two landings
  *  test it because a terminal task with a work item still names follow-on work; a DIRECTIVE
@@ -165,16 +168,13 @@ const TERMINAL_HANDOFF_STATES = new Set(['merged', 'complete', 'completed', 'cle
  *  sub-unit was reported as drift and the shepherd sent it into the #303 trap. Read only the
  *  fields that decide the resolution: the state, the directive, and `open_pr`. */
 export function isDirectiveLandingShape(now) {
-  const state = String(now?.task_state ?? '').trim().toLowerCase();
   const openPr = String(now?.open_pr ?? '').trim().toLowerCase();
   return (
-    DIRECTIVE_SCHEDULING_STATES.has(state)
+    DIRECTIVE_STATES.has(String(now?.task_state ?? '').trim())
     && (openPr === '' || openPr === 'none')
     && !isNoneValue(String(now?.blocking_directive ?? '').trim())
   );
 }
-// Mirrors assessRunnerState's DIRECTIVE_STATES: the states STATUS schedules a directive from.
-const DIRECTIVE_SCHEDULING_STATES = new Set(['correction_required', 'in_progress']);
 
 /** Whether a head's Now block PROPOSES a state transition (#334 rounds 5–6). A head whose
  *  Now block EQUALS the default branch's is carrying main's state, whatever else its diff
