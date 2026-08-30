@@ -215,6 +215,7 @@ function makeLifecycle(status: string) {
   const revisions: Array<{ id: string; decisionId: string; version: number; optionKey: string; approvedById?: string | null; onBehalfOf?: string | null }> = [];
   const audits: Array<{ actor: string; actorId?: string; actorRole?: string; action: string }> = [];
   const notices: string[] = [];
+  const receipts: unknown[] = [];
   const prisma = {
     user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (NAMES[where.id] ? { name: NAMES[where.id] } : null)) },
     decision: {
@@ -254,6 +255,17 @@ function makeLifecycle(status: string) {
     },
     notification: { create: vi.fn((args: { data: { text: string } }) => { notices.push(args.data.text); return Promise.resolve(args.data); }) },
     auditLog: { create: vi.fn((args: { data: (typeof audits)[number] }) => { audits.push(args.data); return Promise.resolve(args.data); }) },
+    // Phase 6 unit 4c-ii — the approval register now names the command that recorded it (§C rule
+    // ii), so an UNKEYED approve reserves a SERVER one-shot receipt rather than running
+    // ledger-less. That puts these probes on `executeCommand`'s keyed path, which reads and
+    // writes the command ledger: modelled here in miniature, one row per reservation, completed
+    // in the same transaction exactly as the real protocol requires.
+    commandExecution: {
+      findFirst: vi.fn(async () => null), // no prior receipt: every probe is a fresh execution
+      create: vi.fn(async (args: { data: { id?: string } }) => ({ id: args.data.id ?? `cmd-${receipts.length + 1}`, ...args.data })),
+      update: vi.fn(async (args: { data: unknown }) => { receipts.push(args.data); return args.data; }),
+      updateMany: vi.fn(async (args: { data: unknown }) => { receipts.push(args.data); return { count: 1 }; }),
+    },
     // the platform event kernel (Phase 2 Task 4) writes through the tx — stub its three steps
     project: { findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test' })) },
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
