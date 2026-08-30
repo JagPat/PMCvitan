@@ -45,14 +45,31 @@ previous-release approval still records with no source command" — is DELIBERAT
 since 4c-ii runs after the drain-first cutover, which is the one moment the plan guarantees no old
 writer exists. Both are recorded in the packet rather than quietly absorbed.
 
-**One observation carried forward from the closed #495, not acted on.** The merged 4c-i migration
-contains no reference to `ProjectCapability`: the `consultation` capability RESERVATION trigger and
-its diagnostic-first abort, which the plan lists under "4c-i, the migration unit" (§D, review
-rounds 13/19/21/24), are not in it, and no `'consultation'` guard exists anywhere in
-`apps/api/prisma` or `apps/api/src`. That may be a deliberate deferral to 4c-iii, where the
-reservation is due to be REPLACED by the preservation seal. It is recorded here because 4c-ii is
-the unit that first makes the capability meaningful, and because 4c-iii's own scope assumes a
-reservation exists to replace.
+**The 4c-i `ProjectCapability` gap is now CLOSED here, not merely flagged.** The merged 4c-i
+migration contains no `ProjectCapability` statement at all, so the reservation trigger and its
+diagnostic-first abort that §D (rounds 13/19/21/24) places in 4c-i were never installed — leaving
+the hole live on `main`, since the generic `capability:enable` CLI accepts any string. 4c-ii's
+whole compatibility story rests on that being shut, so this unit carries the obligation forward
+rather than leaving it to 4c-iii, which runs after the risk has already passed. Both halves land
+in the round-24 order (trigger created BEFORE the audit reads).
+
+**A PARALLEL 4c-ii, PR #496, was closed as superseded** on JagPat's direction (2026-08-31), and
+three things it held that PR #497 lacked have been PORTED rather than discarded: the capability
+reservation above; the ROLLOUT FENCE in both halves (the compiled `catalogVersion` bump on
+`decisions.inbox` and `webpush.notify` plus the catalog-data migration that arms it — since
+`syncConsumerCatalog` asserts and never updates, a code-only bump would point the fence the wrong
+way — and `ProjectionGeneration.catalogVersion` NOT NULL with NO DEFAULT, which is the only thing
+that can stop the standalone rebuild CLI, the one path that skips the startup fence entirely); and
+its objection that always emitting `consultations: []` breaks §D's byte-identity requirement for
+gate-OFF projects, which is right — the serializer now omits the thread when there is none, so a
+projection row written before this unit is byte-EQUAL to live rather than merely compatible.
+
+What was NOT taken from #496 is its approval-provenance seal, and deliberately: that one is a
+BEFORE INSERT null-check, while this PR already carries the strictly stronger DEFERRED commit-time
+binding review round 29 requires (the receipt must have SUCCEEDED with its `resultRef` naming this
+decision — a reserved-only receipt inserted in the same transaction would satisfy a null-check and
+still advance the cycle without approving anything). Two seals on one table would be a second
+answer to one question.
 
 **4c-i IS MERGED (PR #493 at `main` `d4e2ddf5`) WITH A FRESH INDEPENDENT CODEX +1 ON THE
 EXACT REVIEWED HEAD `7650109`, AND THE REMOVAL-AND-REINSTATE BLOCKER IS CLEARED BY

@@ -125,6 +125,53 @@ trigger still fails, and a RENAMED one now fails too, where a count would hide i
 | A queued push never delivers decision content to someone who has lost standing, and never invites an action the server now refuses | both claim predicates: operability first, then the locked decision, then cycle/answer/standing | approve-before-claim cancelled; already-answered cancelled; removed consultee cancelled; archived project cancels BOTH; demoted requester dropped |
 | The approval register's COUNT is trustworthy, because a revision is the product of an approval COMMAND | `approve`'s receipt + the deferred provenance trigger | the receipt assertion on a real approval; the bare-revision forgery REFUSED with the open consultation still answerable afterwards; the upgrade proof's accept/refuse pair |
 
+## Ported from the closed parallel PR #496
+
+A second 4c-ii was built independently in another session (#496, branch `claude/phase6-4c-ii`,
+same base). JagPat closed it as superseded and kept this PR as the sole open work. Three things it
+held that this PR lacked have been PORTED rather than discarded, because each is plan-mandated:
+
+1. **The 4c-i `ProjectCapability` obligation, discharged.** §D (rounds 13/19/21/24) places the
+   reservation trigger AND the diagnostic-first abort in 4c-i; the merged `20271101000000` ships
+   neither, so the hole is live on `main` — the generic `capability:enable` CLI accepts any string,
+   an operator could open the gate today, and the first upgraded instance would emit while old
+   workers could still claim. This unit's compatibility story rests on it, so the obligation is
+   carried here rather than left to a unit that runs after the risk has passed. Round-24 order:
+   the trigger is created BEFORE the audit reads, because `CREATE TRIGGER` takes `ACCESS EXCLUSIVE`
+   and an audit that reads first can be overtaken by a concurrent enable. Both doors are sealed
+   (INSERT and re-key) and both are hostile-probed, alongside a PRECISION probe proving every other
+   capability still enables through the unchanged generic writer — the Board's free-text decision
+   is not quietly reversed.
+2. **The rollout fence, both halves.** The compiled `catalogVersion` bump on `decisions.inbox` and
+   `webpush.notify` (the socket consumer is not bumped — it carries no consultation contract), plus
+   the catalog-data migration that arms it: `syncConsumerCatalog` asserts and never updates, so a
+   code-only bump would leave the persisted rows behind and abort every upgraded process at
+   bootstrap — the fence pointed the wrong way. And `ProjectionGeneration.catalogVersion`, NOT NULL
+   with NO DEFAULT, added in three steps with an explicit backfill from the persisted pre-4c-ii
+   catalog. That column is the only thing that stops the standalone rebuild CLI, which registers
+   consumers directly and never calls sync: a previous release's CLI run would otherwise rebuild
+   `decisions.inbox` with the v1 serializer and ACTIVATE it — a register with no thread and no
+   widened audience, swapped in by a supported command, at exactly the moment something already
+   looks wrong.
+3. **Absent-when-empty serialization.** #496's objection is correct: always emitting
+   `consultations: []` would add the key to every decision of every project, including the gate-OFF
+   ones §D requires to be byte-identical to today. Omitting it when there is no thread satisfies
+   both obligations at once and makes a pre-4c projection row byte-EQUAL to live rather than merely
+   compatible — which also removes the need for the round-18 hydration step rather than skipping it.
+   Probed directly.
+
+**What was NOT taken, and why.** #496's approval-provenance seal is a BEFORE INSERT null-check.
+This PR already carries the strictly stronger DEFERRED commit-time binding round 29 requires: the
+cited receipt must have SUCCEEDED with its `resultRef` naming this decision. A null-check alone is
+satisfied by a receipt left `reserved` and inserted in the same transaction — precisely the shape
+round 29 identified, which would advance the cycle without approving anything. Two seals on one
+table would be a second answer to one question, so the weaker one is not ported.
+
+**One process note carried across.** #496 recorded that `npx tsc` was resolving a newer TypeScript
+that bailed on the tsconfig before compiling, and that `apps/web/tsconfig.json` is a solution file
+with `files: []` — both reporting clean while checking nothing. Every gate figure in this packet
+comes from `pnpm check` by exit code, which runs the repo's own tooling.
+
 ## What this unit does NOT do
 
 - **It does not enable the capability anywhere.** `consultation` stays off on every project; 4c-iii
