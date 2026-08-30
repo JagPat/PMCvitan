@@ -28,6 +28,19 @@ export const OPEN_TASK_STATES = new Set([
 // Codex review" and "PR marked ready for review". Without one they are broken.
 const PR_BEARING_STATES = new Set(['in_review', 'ready']);
 
+// The states STATUS schedules a `blocking_directive` from: `correction_required` ("launch the
+// named blocking_directive") and `in_progress` (the post-merge fix-forward path). A directive
+// recorded from any OTHER state parks the loop behind work the state machine never scheduled,
+// which is the shape a human-approval gate takes.
+//
+// EXPORTED, and compared CASE-EXACTLY against the raw field, because a second reader exists:
+// `isDirectiveLandingShape` in runner-continuation decides whether a head is a valid landing and
+// suppresses the drift shepherd when it is. Round 1 of #486 found it lowercasing the field while
+// this resolver did not, so a typo'd `IN_PROGRESS` was a valid landing to one reader and
+// unactionable to the other — drift silently suppressed AND no next step after merge, the worst
+// of both. One derivation, one spelling: a malformed state is refused by both, loudly.
+export const DIRECTIVE_STATES = new Set(['correction_required', 'in_progress']);
+
 const NONE = 'none';
 
 // EXPORTED (#334 round 3): the sentinel predicate is an interface with several readers
@@ -107,7 +120,6 @@ export function assessRunnerState(state, maintenanceQueue = []) {
   // names its directive, which is the documented fix-forward path. A directive
   // recorded from any OTHER state parks the loop behind work the state machine
   // never scheduled, which is the shape a human-approval gate takes.
-  const DIRECTIVE_STATES = new Set(['correction_required', 'in_progress']);
   if (!isNone(state.blocking_directive) && !DIRECTIVE_STATES.has(taskState)) {
     return {
       actionable: false,
