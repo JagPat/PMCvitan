@@ -65,109 +65,109 @@ enum InspectionResult {
 }
 
 model Project {
-  billVerifications BillVerification[]
-  billCertificates BillCertificate[]
-  sodExceptions SodException[]
-  sodGrants SodGrant[]
-  billDeductions BillDeduction[]
-  billDeductionReleases BillDeductionRelease[]
-  certifiedAcceptanceConsumption CertifiedAcceptanceConsumption[]
+  billVerifications               BillVerification[]
+  billCertificates                BillCertificate[]
+  sodExceptions                   SodException[]
+  sodGrants                       SodGrant[]
+  billDeductions                  BillDeduction[]
+  billDeductionReleases           BillDeductionRelease[]
+  certifiedAcceptanceConsumption  CertifiedAcceptanceConsumption[]
   certifiedMeasurementConsumption CertifiedMeasurementConsumption[]
-  id           String   @id
-  name         String
-  short        String
-  descriptor   String
-  stage        String
-  siteCode     String
-  location     String   @default("") // site address / locality (free text)
-  projStart    String
-  projEnd      String
+  id                              String                            @id
+  name                            String
+  short                           String
+  descriptor                      String
+  stage                           String
+  siteCode                        String
+  location                        String                            @default("") // site address / locality (free text)
+  projStart                       String
+  projEnd                         String
   // Real civil dates (Phase 0 Task 6). scheduleStartDate is the SCHEDULE ANCHOR —
   // the calendar day legacy day-offset 0 refers to (proven by characterization:
   // dayLabel(0) === '1 Jun'); display projStart/projEnd stay as legacy strings.
-  scheduleStartDate DateTime? @db.Date
-  scheduleEndDate   DateTime? @db.Date
-  timeZone          String    @default("Asia/Kolkata")
-  elapsedPct   Int
-  todayDay     Int
-  milestonePct Int
-  createdAt    DateTime @default(now())
-  archivedAt   DateTime? // soft-delete: hidden from listings/switcher/portfolio when set
+  scheduleStartDate               DateTime?                         @db.Date
+  scheduleEndDate                 DateTime?                         @db.Date
+  timeZone                        String                            @default("Asia/Kolkata")
+  elapsedPct                      Int
+  todayDay                        Int
+  milestonePct                    Int
+  createdAt                       DateTime                          @default(now())
+  archivedAt                      DateTime? // soft-delete: hidden from listings/switcher/portfolio when set
 
-  decisions     Decision[]
-  activities    Activity[]
-  inspections   Inspection[]
-  dailyLogs     DailyLog[]
-  notifications Notification[]
-  users         User[]
-  workerDevices WorkerDevice[]
-  media         Media[]
-  pushSubs      PushSubscription[]
-  drawings      Drawing[]
-  phases        Phase[]
-  gateOverrides GateOverride[]
-  activityDependencies ActivityDependency[]
+  decisions                  Decision[]
+  activities                 Activity[]
+  inspections                Inspection[]
+  dailyLogs                  DailyLog[]
+  notifications              Notification[]
+  users                      User[]
+  workerDevices              WorkerDevice[]
+  media                      Media[]
+  pushSubs                   PushSubscription[]
+  drawings                   Drawing[]
+  phases                     Phase[]
+  gateOverrides              GateOverride[]
+  activityDependencies       ActivityDependency[]
   // Tenant — NON-NULL since Phase 2 Task 4 (the event envelope's composite tenant key
   // (organizationId, projectId) references Project(orgId, id); a project cannot exist
   // without an org). Legacy null-org projects are backfilled by the migration's diagnostic,
   // which ABORTS rather than guess a tenant. @@unique([orgId, id]) is added in raw SQL.
-  org           Org            @relation(fields: [orgId], references: [id])
-  orgId         String
-  memberships   Membership[]
-  companies     ProjectCompany[]
+  org                        Org                         @relation(fields: [orgId], references: [id])
+  orgId                      String
+  memberships                Membership[]
+  companies                  ProjectCompany[]
   // Phase 6 unit 6.1a (§A) — the org-bound side of the same rows, and the canonical
   // per-project party associations the collaborator resolver reads.
-  projectParties ProjectParty[]  @relation("projectPartyProject")
-  nodes         ProjectNode[]
-  siteMaterials SiteMaterial[]
-  eventStream   ProjectEventStream?
-  domainEvents  DomainEvent[]
+  projectParties             ProjectParty[]              @relation("projectPartyProject")
+  nodes                      ProjectNode[]
+  siteMaterials              SiteMaterial[]
+  eventStream                ProjectEventStream?
+  domainEvents               DomainEvent[]
+  capabilities               ProjectCapability[]
+  requirements               ActivityRequirement[]
+  requirementRoots           ActivityRequirementRoot[]
+  materialSpecs              MaterialRequirementSpec[]
+  approvedSubstitutions      ApprovedSubstitution[]
+  vendorBindings             ProjectVendor[]             @relation("projectVendorProject")
+  requisitions               Requisition[]
+  purchaseOrders             PurchaseOrder[]             @relation("purchaseOrderProject")
+  stockLots                  StockLot[]
+  stockTransactions          StockTransaction[]
+  materialIssues             MaterialIssue[]
+  mismatchResolutions        MismatchResolution[]
+  // Phase 4 Task 1 — the labour module's project-contained rows (plan §§B/H)
+  labourTrades               LabourTrade[]
+  labourSkills               LabourSkill[]
+  workers                    Worker[]
+  crews                      Crew[]
+  crewMemberships            CrewMembership[]
+  labourRequirementSpecs     LabourRequirementSpec[]
+  labourDemandSlices         LabourDemandSlice[]
+  // Phase 4 Task 3 — the §C time-capacity facts (project-contained)
+  workerAllocations          WorkerAllocation[]
+  labourAttendance           LabourAttendance[]
+  labourWorkFacts            LabourWorkFact[]
+  labourMismatches           LabourMismatch[]
+  labourMismatchResolutions  LabourMismatchResolution[]
+  activityWorkOutputs        ActivityWorkOutput[]
+  approvedSkillSubstitutions ApprovedSkillSubstitution[]
+  // Phase 5 Task 1 — the commercial cost-head catalog + commitment attributions (§C/§L)
+  costHeads                  CostHead[]
+  commitmentAttributions     CommitmentAttribution[]
+  budgetLines                BudgetLine[]
+  budgetExceptions           BudgetException[]
+  measurements               Measurement[]
+  // Phase 5 Task 4 (§F) — the vendor claim
+  vendorBills                VendorBill[]
+  vendorBillVersions         VendorBillVersion[]
+  vendorBillLines            VendorBillLine[]
+  paymentApprovals           PaymentApproval[]
+  payments                   Payment[]
+  paymentReversals           PaymentReversal[]
+  vendorAdvances             VendorAdvance[]
 
   // Composite identity the DomainEvent tenant FK references (Phase 2 Task 4) — proves an
   // event's (organizationId, projectId) is the project's REAL org, so org cannot be forged.
   @@unique([orgId, id])
-  capabilities     ProjectCapability[]
-  requirements     ActivityRequirement[]
-  requirementRoots ActivityRequirementRoot[]
-  materialSpecs    MaterialRequirementSpec[]
-  approvedSubstitutions ApprovedSubstitution[]
-  vendorBindings   ProjectVendor[]           @relation("projectVendorProject")
-  requisitions     Requisition[]
-  purchaseOrders   PurchaseOrder[]           @relation("purchaseOrderProject")
-  stockLots           StockLot[]
-  stockTransactions   StockTransaction[]
-  materialIssues      MaterialIssue[]
-  mismatchResolutions MismatchResolution[]
-  // Phase 4 Task 1 — the labour module's project-contained rows (plan §§B/H)
-  labourTrades          LabourTrade[]
-  labourSkills          LabourSkill[]
-  workers               Worker[]
-  crews                 Crew[]
-  crewMemberships       CrewMembership[]
-  labourRequirementSpecs LabourRequirementSpec[]
-  labourDemandSlices     LabourDemandSlice[]
-  // Phase 4 Task 3 — the §C time-capacity facts (project-contained)
-  workerAllocations         WorkerAllocation[]
-  labourAttendance          LabourAttendance[]
-  labourWorkFacts           LabourWorkFact[]
-  labourMismatches          LabourMismatch[]
-  labourMismatchResolutions LabourMismatchResolution[]
-  activityWorkOutputs       ActivityWorkOutput[]
-  approvedSkillSubstitutions ApprovedSkillSubstitution[]
-  // Phase 5 Task 1 — the commercial cost-head catalog + commitment attributions (§C/§L)
-  costHeads                 CostHead[]
-  commitmentAttributions    CommitmentAttribution[]
-  budgetLines               BudgetLine[]
-  budgetExceptions          BudgetException[]
-  measurements      Measurement[]
-  // Phase 5 Task 4 (§F) — the vendor claim
-  vendorBills        VendorBill[]
-  vendorBillVersions VendorBillVersion[]
-  vendorBillLines    VendorBillLine[]
-  paymentApprovals PaymentApproval[]
-  payments Payment[]
-  paymentReversals PaymentReversal[]
-  vendorAdvances VendorAdvance[]
 }
 
 // Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
@@ -187,9 +187,9 @@ model ProjectEventStream {
 // append-only trigger are all added in raw SQL by 20261015000000_phase2_event_envelope
 // (Prisma cannot express them). See packages/shared/src/platform/events.ts for the envelope.
 model DomainEvent {
-  eventId         String   @id @default(uuid())
+  eventId         String           @id @default(uuid())
   eventType       String
-  payloadVersion  Int      @default(1)
+  payloadVersion  Int              @default(1)
   organizationId  String
   projectId       String
   streamPosition  BigInt
@@ -199,7 +199,7 @@ model DomainEvent {
   systemActor     String? // NON-NULL iff actorKind='system' (a named constant system actor)
   entityType      String
   entityId        String
-  occurredAt      DateTime @default(now()) // DISPLAY/AUDIT ONLY — never an ordering key
+  occurredAt      DateTime         @default(now()) // DISPLAY/AUDIT ONLY — never an ordering key
   correlationId   String?
   causedByEventId String?
   payload         Json?
@@ -211,7 +211,8 @@ model DomainEvent {
   dispatchIntent  Json?
   // Composite tenant FK → Project(orgId, id): a forged organizationId (not the project's own
   // org) is rejected by the DB. RESTRICT — an append-only event outlives soft-deletes.
-  tenant          Project  @relation(fields: [organizationId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: Cascade)
+  tenant          Project          @relation(fields: [organizationId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: Cascade)
+  deliveries      OutboxDelivery[]
 
   @@unique([projectId, streamPosition])
   // Candidate key the OutboxDelivery composite FK references (PR B) — a delivery's copied
@@ -219,7 +220,6 @@ model DomainEvent {
   @@unique([eventId, projectId, streamPosition])
   @@index([projectId, streamPosition])
   @@index([eventType])
-  deliveries      OutboxDelivery[]
 }
 
 // Phase 2 Task 6 — the per-consumer transactional outbox. For each DomainEvent, one
@@ -230,11 +230,11 @@ model DomainEvent {
 // lease + backs off (attempts++, nextAttemptAt) back to pending, or on exhaustion → dead. There
 // is NO ambiguous 'failed'. Contract: at-least-once delivery, effectively-once DB effects.
 model OutboxDelivery {
-  id             String      @id @default(uuid())
+  id             String                @id @default(uuid())
   // PR B — the composite FK binds the copied (projectId, streamPosition) to the event's REAL
   // coordinates, so a forged/mismatched delivery coordinate is rejected by PostgreSQL. Replaces
   // the Task-6 event-only FK. Cascade delete only ever fires for a disposable TRUNCATE reset.
-  event          DomainEvent @relation(fields: [eventId, projectId, streamPosition], references: [eventId, projectId, streamPosition], onDelete: Cascade, onUpdate: Cascade)
+  event          DomainEvent           @relation(fields: [eventId, projectId, streamPosition], references: [eventId, projectId, streamPosition], onDelete: Cascade, onUpdate: Cascade)
   eventId        String
   projectId      String
   consumer       String
@@ -242,11 +242,11 @@ model OutboxDelivery {
   // PR B — every registered consumer gets a row for every event: 'dispatch' invokes the consumer,
   // 'noop' records the event was deliberately irrelevant (so an ordered cursor never waits behind
   // a stream position for which no row exists). Closed set; no inferred representation.
-  deliveryAction String    @default("dispatch") // 'dispatch' | 'noop'
+  deliveryAction String                @default("dispatch") // 'dispatch' | 'noop'
   streamPosition BigInt // copied from the event; ordered consumers checkpoint on it
-  status         String    @default("pending") // 'pending' | 'leased' | 'succeeded' | 'dead'
-  attempts       Int       @default(0)
-  nextAttemptAt  DateTime  @default(now())
+  status         String                @default("pending") // 'pending' | 'leased' | 'succeeded' | 'dead'
+  attempts       Int                   @default(0)
+  nextAttemptAt  DateTime              @default(now())
   leaseOwner     String?
   leaseExpiresAt DateTime?
   lastError      String?
@@ -265,8 +265,8 @@ model OutboxDelivery {
   // its OWN row drops the send and records the drop the same way. NOT a new status value —
   // the status CHECK is a deliberately closed set.
   cancelledAt    DateTime?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
   // PR B — a restrictive composite FK to the durable consumer catalog: a delivery's
   // (consumer, consumerKind) must name a declared catalog contract, and a catalog row that still
   // has deliveries cannot be deleted (Restrict). Deactivation stops new obligations, never deletes.
@@ -284,13 +284,13 @@ model OutboxDelivery {
 // the append-only DomainEvent — the scanner derives missing deliveries from this catalog. A changed
 // kind/effect/version is a startup error requiring an explicit migration (never a silent reinterpret).
 model OutboxConsumerCatalog {
-  consumer       String   @id
+  consumer       String           @id
   consumerKind   String // 'ordered' | 'unordered'
   consumerEffect String // 'db' | 'external'
   catalogVersion Int // the consumer CONTRACT version, not an app release
-  active         Boolean  @default(true)
-  registeredAt   DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  active         Boolean          @default(true)
+  registeredAt   DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
   deliveries     OutboxDelivery[]
 
   @@unique([consumer, consumerKind]) // the composite the OutboxDelivery FK references
@@ -586,15 +586,16 @@ model CommandExecution {
   // Phase 3 Task 4 — stock ledger rows recording this execution as their source action (§C)
   stockTransactions StockTransaction[]
 
+  consultationRequests  DecisionConsultation[]         @relation("consultationRequests")
+  consultationResponses DecisionConsultationResponse[] @relation("consultationResponseCommands")
+  approvalRevisions     DecisionApprovalRevision[]     @relation("approvalRevisionCommands")
+
   // Tasks 4–5 integrity correction (F1) — the project-contained candidate key a
   // StockTransaction's (projectId, sourceCommandId) composite FK references, so a ledger row
   // can only cite a command execution IN ITS OWN PROJECT.
   @@unique([projectId, id])
   @@index([organizationId])
   @@index([projectId])
-
-  consultationRequests  DecisionConsultation[]         @relation("consultationRequests")
-  consultationResponses DecisionConsultationResponse[] @relation("consultationResponseCommands")
 }
 
 // A firm/consultant associated with a project — the client company, the main
@@ -607,7 +608,7 @@ model CommandExecution {
 // Project(orgId, id)`: without that, a row could keep `projectId` on an org-A project, set
 // its copied `orgId` to org B and point at an org-B party, and every other FK would pass.
 model ProjectCompany {
-  id           String   @id @default(cuid())
+  id           String        @id @default(cuid())
   projectId    String
   // The project's own org, DB-bound to it — never an independently settable copy.
   orgId        String
@@ -617,7 +618,7 @@ model ProjectCompany {
   // wherever it held a directory row. Two keys to the same parent with different delete actions
   // is not a stronger seal, it is an incoherent one. The composite key subsumes the single
   // column, so the single column goes.
-  project      Project  @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Cascade, onUpdate: NoAction)
+  project      Project       @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Cascade, onUpdate: NoAction)
   // The canonical firm this directory entry represents (§A). Same-org composite FK, so a
   // cross-org party link is unrepresentable rather than merely refused.
   partyId      String
@@ -628,18 +629,18 @@ model ProjectCompany {
   contactEmail String?
   contactPhone String?
   notes        String?
-  createdAt    DateTime @default(now())
+  createdAt    DateTime      @default(now())
 
   partySources ProjectPartyCompanySource[]
 
-  @@index([projectId])
-  @@index([orgId, partyId])
   // The candidate key `ProjectPartyCompanySource` binds through, so a source row proves its
   // origin is the source FOR THIS association rather than merely existing in the same org.
   @@unique([orgId, projectId, partyId, id])
   // §A: one party, one directory row per project. 6.1b's merge must resolve a same-project
   // collision explicitly instead of repointing into it and leaving two rows for one firm.
   @@unique([projectId, partyId])
+  @@index([projectId])
+  @@index([orgId, partyId])
 }
 
 // ─── Phase 6 unit 6.1a (§A) — one canonical external party ────────────────────────────────
@@ -654,16 +655,16 @@ model ProjectCompany {
 // `orgs.dependsOn += procurement` — the module deciding who may see anything reading the
 // module that buys things.
 model ExternalParty {
-  id        String   @id @default(cuid())
-  org       Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  orgId     String
-  name      String
-  createdAt DateTime @default(now())
+  id          String   @id @default(cuid())
+  org         Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId       String
+  name        String
+  createdAt   DateTime @default(now())
   // NULLABLE, and only for rows the 6.1a backfill created. `ProjectCompany` carries no
   // creator column, so a party derived from one has no attributable author — and inventing
   // an actor would be worse than recording that none is known. Every party created by a
   // COMMAND carries its caller; a NULL here means "existed before parties did".
-  createdBy User?    @relation("externalPartiesCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdBy   User?    @relation("externalPartiesCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   createdById String?
 
   // §E — the stable link to a future tenant. The promotion COMMAND is deferred out of Phase
@@ -680,14 +681,14 @@ model ExternalParty {
   // typo the one-way trigger can never let an operator correct.
   promotedOrg   Org?    @relation("externalPartyPromotedTo", fields: [promotedOrgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  vendors        Vendor[]
+  vendors          Vendor[]
   projectCompanies ProjectCompany[]
-  projectVendors ProjectVendor[]
-  projectParties ProjectParty[]
+  projectVendors   ProjectVendor[]
+  projectParties   ProjectParty[]
 
-  @@index([orgId])
   // Every party reference in this schema is a same-org composite FK through this key.
   @@unique([orgId, id])
+  @@index([orgId])
 }
 
 // The canonical per-project association — the ONLY table the collaborator resolver reads.
@@ -701,13 +702,13 @@ model ExternalParty {
 // pairing an org-A project with an org-B party would make that party associated with that
 // project no matter how well every other table is sealed.
 model ProjectParty {
-  id        String   @id @default(cuid())
+  id        String        @id @default(cuid())
   orgId     String
   projectId String
   partyId   String
-  project   Project  @relation("projectPartyProject", fields: [orgId, projectId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
+  project   Project       @relation("projectPartyProject", fields: [orgId, projectId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
   party     ExternalParty @relation(fields: [orgId, partyId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
-  createdAt DateTime @default(now())
+  createdAt DateTime      @default(now())
 
   companySources ProjectPartyCompanySource[]
   vendorSources  ProjectPartyVendorSource[]
@@ -734,24 +735,24 @@ model ProjectParty {
 // alone would say only "some binding exists in this org", so a row justifying
 // ProjectParty(project B, party P) could point at an origin on project A and still pass.
 model ProjectPartyCompanySource {
-  id             String   @id @default(cuid())
-  orgId          String
-  projectId      String
-  partyId        String
+  id               String         @id @default(cuid())
+  orgId            String
+  projectId        String
+  partyId          String
   projectCompanyId String
   // Restrict, NOT cascade: cascading let a direct delete of the association take its own
   // justification with it, after which the deferred check counted zero sources and returned
   // happy — leaving a directory row whose firm the resolver cannot see. The release path already
   // deletes the association only once both counts are zero, so the legitimate order still works.
-  projectParty   ProjectParty   @relation(fields: [projectId, partyId], references: [projectId, partyId], onDelete: Restrict)
-  origin         ProjectCompany @relation(fields: [orgId, projectId, partyId, projectCompanyId], references: [orgId, projectId, partyId, id], onDelete: Cascade)
+  projectParty     ProjectParty   @relation(fields: [projectId, partyId], references: [projectId, partyId], onDelete: Restrict)
+  origin           ProjectCompany @relation(fields: [orgId, projectId, partyId, projectCompanyId], references: [orgId, projectId, partyId, id], onDelete: Cascade)
 
   @@unique([projectCompanyId])
   @@index([projectId, partyId])
 }
 
 model ProjectPartyVendorSource {
-  id              String   @id @default(cuid())
+  id              String        @id @default(cuid())
   orgId           String
   projectId       String
   partyId         String
@@ -768,19 +769,19 @@ model ProjectPartyVendorSource {
 // An Org/Account (an architecture practice, e.g. "Vitan Architecture") — owns
 // projects and the people who administer them. Multi-tenant foundation.
 model Org {
-  id        String          @id @default(cuid())
-  name      String
-  slug      String          @unique
-  createdAt DateTime        @default(now())
-  projects  Project[]
-  members   OrgMembership[]
-  modules   TemplateModule[]
-  templates ProjectTemplate[]
+  id                String             @id @default(cuid())
+  name              String
+  slug              String             @unique
+  createdAt         DateTime           @default(now())
+  projects          Project[]
+  members           OrgMembership[]
+  modules           TemplateModule[]
+  templates         ProjectTemplate[]
   commandExecutions CommandExecution[]
   vendors           Vendor[]
   // Phase 6 unit 6.1a (§A) — the canonical external firms this org collaborates with.
   externalParties   ExternalParty[]
-  promotedParties   ExternalParty[] @relation("externalPartyPromotedTo")
+  promotedParties   ExternalParty[]    @relation("externalPartyPromotedTo")
 }
 
 // Templates Slice 3 (docs/TEMPLATES.md): a named PRESET — an ordered selection of modules
@@ -844,17 +845,17 @@ model OrgMembership {
 // can have memberships on several projects (different roles on each). This is the
 // grant the app scopes tokens to; the legacy User.projectId/role is the default.
 model Membership {
-  id        String   @id @default(cuid())
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId    String
-  role      String // pmc | client | engineer | contractor | consultant
+  id         String   @id @default(cuid())
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId  String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String
+  role       String // pmc | client | engineer | contractor | consultant
   // For a `consultant` member: the discipline they cover (architect | mep | lighting | …).
   // A label, not a permission — every consultant shares the same read-mostly role.
   discipline String?
-  status    String   @default("active") // invited | active | removed
-  createdAt DateTime @default(now())
+  status     String   @default("active") // invited | active | removed
+  createdAt  DateTime @default(now())
 
   /// Phase 5 Task 6A (§I) — this member's payment-approval ceiling, applied to a claim's
   /// CUMULATIVE approved total rather than to one authorisation: a per-row check lets a ₹50 holder
@@ -864,43 +865,43 @@ model Membership {
   approvalLimit Decimal? @db.Decimal(18, 2)
 
   // drawing distributions frozen against this membership (Phase 1 Task 3)
-  drawingRecipients DrawingRecipient[]
+  drawingRecipients           DrawingRecipient[]
   // corrective/reinspection work assigned to this membership (Phase 1 Task 4)
-  inspectionAssignments Inspection[]
+  inspectionAssignments       Inspection[]
   // completion claims recorded against this membership (Phase 1 Task 5)
-  completionClaims Activity[] @relation("CompletionClaims")
+  completionClaims            Activity[]            @relation("CompletionClaims")
   // decisions this member withdrew (Phase 6 task 4a) — attribution is FK-backed, never free-text
-  decisionWithdrawals Decision[] @relation("DecisionWithdrawals")
+  decisionWithdrawals         Decision[]            @relation("DecisionWithdrawals")
   // current decision-holder designations (Phase 6 task 4b expansion)
-  decisionsHeld Decision[] @relation("DecisionDeciders")
+  decisionsHeld               Decision[]            @relation("DecisionDeciders")
+  responsibleFor              ActivityRequirement[]
+  // schedule dependency edges this member imposed / withdrew (schedule B1) — attribution is
+  // FK-backed and project-scoped, never a bare global user id
+  scheduleDependenciesCreated ActivityDependency[]  @relation("ScheduleDependencyAuthor")
+  scheduleDependenciesRevoked ActivityDependency[]  @relation("ScheduleDependencyRevoker")
+
+  consultationsRequested DecisionConsultation[]         @relation("consultationsRequested")
+  consultationsReceived  DecisionConsultation[]         @relation("consultationsReceived")
+  consultationResponses  DecisionConsultationResponse[] @relation("consultationResponders")
 
   @@unique([projectId, userId])
   // candidate key for Decision's same-project holder FK
   @@unique([projectId, id])
   @@index([userId])
-  responsibleFor ActivityRequirement[]
-  // schedule dependency edges this member imposed / withdrew (schedule B1) — attribution is
-  // FK-backed and project-scoped, never a bare global user id
-  scheduleDependenciesCreated ActivityDependency[] @relation("ScheduleDependencyAuthor")
-  scheduleDependenciesRevoked ActivityDependency[] @relation("ScheduleDependencyRevoker")
-
-  consultationsRequested DecisionConsultation[]         @relation("consultationsRequested")
-  consultationsReceived  DecisionConsultation[]         @relation("consultationsReceived")
-  consultationResponses  DecisionConsultationResponse[] @relation("consultationResponders")
 }
 
 // A browser Web Push subscription (Phase 8). Endpoint is unique per device;
 // notifications for a project fan out to all its subscriptions. When no VAPID
 // keys are configured the send path is a no-op (dev stub).
 model PushSubscription {
-  id        String   @id @default(cuid())
-  project   Project  @relation(fields: [projectId], references: [id])
-  projectId String
-  endpoint  String   @unique
-  p256dh    String
-  auth      String
-  role      String?
-  createdAt DateTime @default(now())
+  id                      String    @id @default(cuid())
+  project                 Project   @relation(fields: [projectId], references: [id])
+  projectId               String
+  endpoint                String    @unique
+  p256dh                  String
+  auth                    String
+  role                    String?
+  createdAt               DateTime  @default(now())
   // Phase 6 task 4b (§A.3, rounds 9/13/14/15) — the OPTIONAL user linkage for TARGETED delivery,
   // attributed opportunistically on an authenticated app open and severed by sign-out (unlink),
   // credential invalidation (the recorded version no longer matches), or the linking token's own
@@ -908,10 +909,10 @@ model PushSubscription {
   // user; an unlinked or stale-linked device receives NO targeted content (never a role-ceiling
   // fallback). Non-targeted pushes are unaffected. SetNull: a deleted user leaves the device
   // unlinked, exactly like a sign-out.
-  linkedUser               User?     @relation("pushSubscriptionsLinked", fields: [linkedUserId], references: [id], onDelete: SetNull, onUpdate: NoAction)
-  linkedUserId             String?
-  linkedCredentialVersion  Int?
-  linkedExpiresAt          DateTime?
+  linkedUser              User?     @relation("pushSubscriptionsLinked", fields: [linkedUserId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  linkedUserId            String?
+  linkedCredentialVersion Int?
+  linkedExpiresAt         DateTime?
 }
 
 // An uploaded site photo (geo + timestamp, zoomable on the client). Phase
@@ -920,61 +921,61 @@ model PushSubscription {
 // in `data` (dev stub) and served from GET /media/:id. `decisionId`/`dailyLogId`
 // are loose links to what the photo documents.
 model Media {
-  id         String   @id @default(cuid())
+  id                         String               @id @default(cuid())
   // Phase 4 Task 3 correction (F2) — the musters citing this photo as presence evidence
-  labourAttendance LabourAttendance[] @relation("labourAttendanceEvidence")
+  labourAttendance           LabourAttendance[]   @relation("labourAttendanceEvidence")
   activityWorkOutputEvidence ActivityWorkOutput[]
-  project    Project  @relation(fields: [projectId], references: [id])
-  projectId  String
-  kind       String // progress | inspection | decision | attendance | material
-  mime       String
-  data       Bytes? // dev stub: bytes in the DB; null once stored in S3/R2
-  url        String? // set in S3/R2 mode; null for the dev stub
-  storageKey String?
-  sizeBytes  Int      @default(0)
-  geoLat     Float?
-  geoLng     Float?
-  takenAt    String? // display timestamp, e.g. "03 Jul 2026 · 9:12 AM"
-  uploadedBy String
+  project                    Project              @relation(fields: [projectId], references: [id])
+  projectId                  String
+  kind                       String // progress | inspection | decision | attendance | material
+  mime                       String
+  data                       Bytes? // dev stub: bytes in the DB; null once stored in S3/R2
+  url                        String? // set in S3/R2 mode; null for the dev stub
+  storageKey                 String?
+  sizeBytes                  Int                  @default(0)
+  geoLat                     Float?
+  geoLng                     Float?
+  takenAt                    String? // display timestamp, e.g. "03 Jul 2026 · 9:12 AM"
+  uploadedBy                 String
   // Project-owned references: composite (projectId, x) FKs — PostgreSQL rejects a
   // link to another project's record even on a direct write. NoAction because the
   // owning projectId is non-null (SET NULL would null it too); deletion behavior
   // is service-owned. Phase 0 Task 5.
-  decision   Decision? @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  decisionId String?
-  dailyLog   DailyLog? @relation(fields: [projectId, dailyLogId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  dailyLogId String?
+  decision                   Decision?            @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  decisionId                 String?
+  dailyLog                   DailyLog?            @relation(fields: [projectId, dailyLogId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  dailyLogId                 String?
   // The place this photo shows the reality of (zone/room/object). The location tree is
   // the shared spatial spine: a photo here + a drawing on the same node = intent vs reality
   // for one object. SET NULL so removing a node never deletes the photo. Location spine.
-  node       ProjectNode? @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  nodeId     String?
+  node                       ProjectNode?         @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  nodeId                     String?
   // The evidence containment CHAIN (Phase 1 Task 4): (projectId, inspectionId) proves
   // the inspection belongs to this project; (inspectionId, inspectionItemId) proves the
   // item belongs to THAT inspection. Raw SQL cannot pair inspection A with an item of
   // inspection B, and the CHECK "Media_item_requires_inspection" (raw SQL — Prisma can't
   // express CHECKs) closes the MATCH SIMPLE escape: a non-null item with a NULL
   // inspection would bypass the composite FK entirely, so it is forbidden outright.
-  inspection       Inspection?     @relation(fields: [projectId, inspectionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  inspectionId     String?
-  inspectionItem   InspectionItem? @relation(fields: [inspectionId, inspectionItemId], references: [inspectionId, id], onDelete: NoAction, onUpdate: NoAction)
-  inspectionItemId String?
+  inspection                 Inspection?          @relation(fields: [projectId, inspectionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  inspectionId               String?
+  inspectionItem             InspectionItem?      @relation(fields: [inspectionId, inspectionItemId], references: [inspectionId, id], onDelete: NoAction, onUpdate: NoAction)
+  inspectionItemId           String?
   // PROJECT-SCOPED idempotency for offline replays — the same (projectId, clientKey)
   // is the same photo, uploaded exactly once. Never a global unique.
-  clientKey  String?
-  createdAt  DateTime @default(now())
+  clientKey                  String?
+  createdAt                  DateTime             @default(now())
   // overrides citing this photo as supporting evidence (Phase 1 Task 6)
-  gateOverrides GateOverride[]
+  gateOverrides              GateOverride[]
   // stock quality decisions citing this photo (Phase 3 Task 4) — the ledger is immutable, so
   // media backing a stock transaction is not deletable (InventoryParticipant refuses)
-  stockEvidence StockTransaction[]
+  stockEvidence              StockTransaction[]
+  measurements               Measurement[]
 
   @@unique([projectId, id]) // referenced identity (Task 6 override evidence)
   @@unique([projectId, clientKey])
   @@index([projectId, kind])
   @@index([nodeId])
   @@index([inspectionId])
-  measurements Measurement[]
 }
 
 // A controlled drawing in the project's register (the source of truth the team
@@ -982,34 +983,34 @@ model Media {
 // DrawingRevision, the latest non-superseded one being "current". Files are held
 // by StorageService (S3/R2 or the DB dev stub), same as Media. Slice 1.
 model Drawing {
-  id         String            @id @default(cuid())
-  project    Project           @relation(fields: [projectId], references: [id])
-  projectId  String
-  number     String // e.g. "A-201"
-  title      String
-  discipline String // architectural | structural | mep | other
-  zone       String?
+  id          String            @id @default(cuid())
+  project     Project           @relation(fields: [projectId], references: [id])
+  projectId   String
+  number      String // e.g. "A-201"
+  title       String
+  discipline  String // architectural | structural | mep | other
+  zone        String?
   // Project-owned references (composite FKs, same rationale as Media). The activity
   // link is severed by ActivitiesService.remove BEFORE the activity row is deleted.
-  activity   Activity? @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  activityId String? // the work this drawing governs (Slice 2 linkage)
-  decision   Decision? @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  decisionId String?
+  activity    Activity?         @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  activityId  String? // the work this drawing governs (Slice 2 linkage)
+  decision    Decision?         @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  decisionId  String?
   // The place this drawing governs (zone/room/object). Filed at its natural level — a
   // floor plan on the zone, a joinery detail on the element — and inherited DOWN: a room
   // shows every drawing filed on it or any ancestor. A node delete keeps the drawing
   // (it becomes unfiled) — NodesService unlinks in-transaction; the composite FK makes
   // a cross-project filing impossible even on a direct write. Location spine.
-  node       ProjectNode?      @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  nodeId     String?
+  node        ProjectNode?      @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  nodeId      String?
   // Draft → Publish lifecycle (mirrors Decision). While `publishedAt` is null the drawing is
   // a private DRAFT: the snapshot delivers it only to its author, it never notifies the build
   // team, and it's absent from the register / Site Map. Publishing issues it. Both nullable/
   // additive; existing rows backfilled to createdAt so nothing becomes an invisible draft.
   publishedAt DateTime?
-  authorId   String?
-  createdAt  DateTime          @default(now())
-  revisions  DrawingRevision[]
+  authorId    String?
+  createdAt   DateTime          @default(now())
+  revisions   DrawingRevision[]
 
   @@unique([projectId, number])
   @@unique([projectId, id]) // composite identity — tenant-safe containment target (Phase 1 Task 3)
@@ -1022,35 +1023,35 @@ model Drawing {
 // for_construction set; a for_review issue supersedes NOTHING — it coexists
 // as a review copy and can never govern the field.
 model DrawingRevision {
-  id         String   @id @default(cuid())
+  id                 String             @id @default(cuid())
   // Containment: the revision's project IS its parent drawing's project — the
   // composite FK makes a cross-project revision row impossible even on a direct write.
-  drawing    Drawing  @relation(fields: [projectId, drawingId], references: [projectId, id], onDelete: Cascade)
-  drawingId  String
-  projectId  String
-  rev        String // "A" | "B" | "C" …
+  drawing            Drawing            @relation(fields: [projectId, drawingId], references: [projectId, id], onDelete: Cascade)
+  drawingId          String
+  projectId          String
+  rev                String // "A" | "B" | "C" …
   // for_review | for_construction | superseded. AT MOST ONE live for_construction
   // revision may exist per drawing — enforced by the partial unique index
   // "DrawingRevision_one_construction_per_drawing" ON ("drawingId") WHERE
   // status = 'for_construction' (raw SQL in 20260925000000_phase1_drawing_governing;
   // Prisma cannot express partial uniques). The service serializes issues/publishes
   // on the parent Drawing row (SELECT … FOR UPDATE); this index is the DB backstop.
-  status     String
-  mime       String
-  data       Bytes? // dev stub: bytes in the DB; null once stored in S3/R2
-  url        String? // set in S3/R2 mode; null for the dev stub
-  storageKey String?
-  sizeBytes  Int      @default(0)
-  note       String   @default("")
-  issuedBy   String
-  issuedAt   String // display timestamp, e.g. "08 Jul 2026"
+  status             String
+  mime               String
+  data               Bytes? // dev stub: bytes in the DB; null once stored in S3/R2
+  url                String? // set in S3/R2 mode; null for the dev stub
+  storageKey         String?
+  sizeBytes          Int                @default(0)
+  note               String             @default("")
+  issuedBy           String
+  issuedAt           String // display timestamp, e.g. "08 Jul 2026"
   // Stamped when the recipient snapshot executed — EVEN when it froze an empty set.
   // null = the revision predates recipient snapshots (legacy); the migration never
   // invents snapshots, and Task 6's readiness truth table treats the two differently.
   recipientsFrozenAt DateTime?
-  createdAt  DateTime @default(now())
-  acks       DrawingAck[]
-  recipients DrawingRecipient[]
+  createdAt          DateTime           @default(now())
+  acks               DrawingAck[]
+  recipients         DrawingRecipient[]
 
   @@unique([projectId, id]) // composite identity — tenant-safe reference target (Task 3)
   @@unique([drawingId, rev]) // one Rev B per drawing — a duplicate label is a 409
@@ -1099,87 +1100,87 @@ model DrawingAck {
 // ALLOW_DEV_AUTH. Phase 7c-auth.
 model User {
   // Phase 6 task 4b (§A.3) — push subscriptions currently linked to this user for targeted delivery
-  pushSubscriptionsLinked   PushSubscription[] @relation("pushSubscriptionsLinked")
-  billVerificationsVerified BillVerification[] @relation("billVerificationsVerified")
-  billCertificatesCertified BillCertificate[]  @relation("billCertificatesCertified")
-  sodExceptionsActor        SodException[]     @relation("sodExceptionsActor")
-  sodExceptionsApprover     SodException[]     @relation("sodExceptionsApprover")
-  sodGrantsActor            SodGrant[]         @relation("sodGrantsActor")
-  sodGrantsApprover         SodGrant[]         @relation("sodGrantsApprover")
-  billDeductionsRecorded    BillDeduction[]    @relation("billDeductionsRecorded")
+  pushSubscriptionsLinked   PushSubscription[]     @relation("pushSubscriptionsLinked")
+  billVerificationsVerified BillVerification[]     @relation("billVerificationsVerified")
+  billCertificatesCertified BillCertificate[]      @relation("billCertificatesCertified")
+  sodExceptionsActor        SodException[]         @relation("sodExceptionsActor")
+  sodExceptionsApprover     SodException[]         @relation("sodExceptionsApprover")
+  sodGrantsActor            SodGrant[]             @relation("sodGrantsActor")
+  sodGrantsApprover         SodGrant[]             @relation("sodGrantsApprover")
+  billDeductionsRecorded    BillDeduction[]        @relation("billDeductionsRecorded")
   billDeductionReleases     BillDeductionRelease[] @relation("billDeductionReleases")
-  id                String    @id @default(cuid())
-  project           Project   @relation(fields: [projectId], references: [id])
-  projectId         String
-  role              String // pmc | client | engineer | contractor
-  name              String
-  email             String?   @unique
-  phone             String?   @unique
-  passwordHash      String?
-  emailVerifiedAt   DateTime?
-  credentialVersion Int       @default(0)
-  createdAt         DateTime  @default(now())
+  id                        String                 @id @default(cuid())
+  project                   Project                @relation(fields: [projectId], references: [id])
+  projectId                 String
+  role                      String // pmc | client | engineer | contractor
+  name                      String
+  email                     String?                @unique
+  phone                     String?                @unique
+  passwordHash              String?
+  emailVerifiedAt           DateTime?
+  credentialVersion         Int                    @default(0)
+  createdAt                 DateTime               @default(now())
 
-  orgMemberships OrgMembership[]
-  memberships    Membership[]
-  passwordChallenges PasswordCredentialChallenge[]
-  securityEvents     SecurityAuditEvent[]          @relation("SecurityEventTarget")
-  securityActorEvents SecurityAuditEvent[]         @relation("SecurityEventActor")
-  requirementRootsCreated ActivityRequirementRoot[]  @relation("requirementRootsCreated")
-  requirementsCreated     ActivityRequirement[]      @relation("requirementsCreated")
-  approvalsRecorded       DecisionApprovalRevision[] @relation("approvalRevisionsApproved")
-  vendorsCreated          Vendor[]                   @relation("vendorsCreated")
-  externalPartiesCreated  ExternalParty[]            @relation("externalPartiesCreated")
-  vendorsBound            ProjectVendor[]            @relation("vendorsBound")
-  requisitionsCreated     Requisition[]              @relation("requisitionsCreated")
-  rfqsIssued              Rfq[]                      @relation("rfqsIssued")
-  quotesRecorded          VendorQuote[]              @relation("quotesRecorded")
-  comparisonsCreated      QuoteComparison[]          @relation("comparisonsCreated")
-  purchaseOrdersCreated   PurchaseOrder[]            @relation("purchaseOrdersCreated")
-  poVersionsCreated       PurchaseOrderVersion[]     @relation("poVersionsCreated")
-  commitmentsCreated      DeliveryCommitment[]       @relation("commitmentsCreated")
-  promisesRecorded        DeliveryPromise[]          @relation("promisesRecorded")
-  stockLotsReceived         StockLot[]         @relation("stockLotsReceived")
-  stockTransactionsRecorded StockTransaction[] @relation("stockTransactionsRecorded")
-  materialIssuesIssued      MaterialIssue[]      @relation("materialIssuesIssued")
-  mismatchesResolved        MismatchResolution[] @relation("mismatchesResolved")
-  substitutionsApproved     ApprovedSubstitution[] @relation("substitutionsApproved")
-  substitutionsRevoked      ApprovedSubstitution[] @relation("substitutionsRevoked")
+  orgMemberships               OrgMembership[]
+  memberships                  Membership[]
+  passwordChallenges           PasswordCredentialChallenge[]
+  securityEvents               SecurityAuditEvent[]          @relation("SecurityEventTarget")
+  securityActorEvents          SecurityAuditEvent[]          @relation("SecurityEventActor")
+  requirementRootsCreated      ActivityRequirementRoot[]     @relation("requirementRootsCreated")
+  requirementsCreated          ActivityRequirement[]         @relation("requirementsCreated")
+  approvalsRecorded            DecisionApprovalRevision[]    @relation("approvalRevisionsApproved")
+  vendorsCreated               Vendor[]                      @relation("vendorsCreated")
+  externalPartiesCreated       ExternalParty[]               @relation("externalPartiesCreated")
+  vendorsBound                 ProjectVendor[]               @relation("vendorsBound")
+  requisitionsCreated          Requisition[]                 @relation("requisitionsCreated")
+  rfqsIssued                   Rfq[]                         @relation("rfqsIssued")
+  quotesRecorded               VendorQuote[]                 @relation("quotesRecorded")
+  comparisonsCreated           QuoteComparison[]             @relation("comparisonsCreated")
+  purchaseOrdersCreated        PurchaseOrder[]               @relation("purchaseOrdersCreated")
+  poVersionsCreated            PurchaseOrderVersion[]        @relation("poVersionsCreated")
+  commitmentsCreated           DeliveryCommitment[]          @relation("commitmentsCreated")
+  promisesRecorded             DeliveryPromise[]             @relation("promisesRecorded")
+  stockLotsReceived            StockLot[]                    @relation("stockLotsReceived")
+  stockTransactionsRecorded    StockTransaction[]            @relation("stockTransactionsRecorded")
+  materialIssuesIssued         MaterialIssue[]               @relation("materialIssuesIssued")
+  mismatchesResolved           MismatchResolution[]          @relation("mismatchesResolved")
+  substitutionsApproved        ApprovedSubstitution[]        @relation("substitutionsApproved")
+  substitutionsRevoked         ApprovedSubstitution[]        @relation("substitutionsRevoked")
   // Phase 4 Task 1 — trusted-workforce identity attribution (plan §H)
-  labourTradesCreated       LabourTrade[]  @relation("labourTradesCreated")
-  labourSkillsCreated       LabourSkill[]  @relation("labourSkillsCreated")
-  workersOnboarded          Worker[]       @relation("workersOnboarded")
-  workersRevoked            Worker[]       @relation("workersRevoked")
-  crewsFormed               Crew[]         @relation("crewsFormed")
-  crewsRevoked              Crew[]         @relation("crewsRevoked")
-  crewMembersAdded          CrewMembership[] @relation("crewMembersAdded")
-  crewMembersRemoved        CrewMembership[] @relation("crewMembersRemoved")
+  labourTradesCreated          LabourTrade[]                 @relation("labourTradesCreated")
+  labourSkillsCreated          LabourSkill[]                 @relation("labourSkillsCreated")
+  workersOnboarded             Worker[]                      @relation("workersOnboarded")
+  workersRevoked               Worker[]                      @relation("workersRevoked")
+  crewsFormed                  Crew[]                        @relation("crewsFormed")
+  crewsRevoked                 Crew[]                        @relation("crewsRevoked")
+  crewMembersAdded             CrewMembership[]              @relation("crewMembersAdded")
+  crewMembersRemoved           CrewMembership[]              @relation("crewMembersRemoved")
   // Phase 4 Task 3 — attribution on the §C time-capacity facts
-  allocationsMade            WorkerAllocation[] @relation("allocationsMade")
-  allocationsReleased        WorkerAllocation[] @relation("allocationsReleased")
-  attendanceRecorded         LabourAttendance[] @relation("attendanceRecorded")
-  attendanceRevoked          LabourAttendance[] @relation("attendanceRevoked")
-  labourWorkRecorded         LabourWorkFact[]   @relation("labourWorkRecorded")
-  labourMismatchesRecorded   LabourMismatch[]   @relation("labourMismatchesRecorded")
-  labourMismatchesResolved   LabourMismatchResolution[] @relation("labourMismatchesResolved")
-  activityOutputsRecorded    ActivityWorkOutput[] @relation("activityOutputsRecorded")
-  skillSubstitutionsApproved ApprovedSkillSubstitution[] @relation("skillSubstitutionsApproved")
-  skillSubstitutionsRevoked  ApprovedSkillSubstitution[] @relation("skillSubstitutionsRevoked")
+  allocationsMade              WorkerAllocation[]            @relation("allocationsMade")
+  allocationsReleased          WorkerAllocation[]            @relation("allocationsReleased")
+  attendanceRecorded           LabourAttendance[]            @relation("attendanceRecorded")
+  attendanceRevoked            LabourAttendance[]            @relation("attendanceRevoked")
+  labourWorkRecorded           LabourWorkFact[]              @relation("labourWorkRecorded")
+  labourMismatchesRecorded     LabourMismatch[]              @relation("labourMismatchesRecorded")
+  labourMismatchesResolved     LabourMismatchResolution[]    @relation("labourMismatchesResolved")
+  activityOutputsRecorded      ActivityWorkOutput[]          @relation("activityOutputsRecorded")
+  skillSubstitutionsApproved   ApprovedSkillSubstitution[]   @relation("skillSubstitutionsApproved")
+  skillSubstitutionsRevoked    ApprovedSkillSubstitution[]   @relation("skillSubstitutionsRevoked")
   // Phase 5 Task 1 (§C/§L)
-  costHeadsDefined           CostHead[]              @relation("costHeadsDefined")
-  attributionsCreated        CommitmentAttribution[] @relation("attributionsCreated")
-  attributionsSuperseded     CommitmentAttribution[] @relation("attributionsSuperseded")
-  budgetLinesAuthored        BudgetLine[]            @relation("budgetLinesAuthored")
-  budgetLinesSuperseded      BudgetLine[]            @relation("budgetLinesSuperseded")
-  budgetExceptionsRaised     BudgetException[]       @relation("budgetExceptionsRaised")
-  measurementsTaken Measurement[] @relation("measurementsTaken")
-  vendorBillsCreated          VendorBill[]        @relation("vendorBillsCreated")
-  vendorBillVersionsCreated   VendorBillVersion[] @relation("vendorBillVersionsCreated")
-  vendorBillVersionsSuperseded VendorBillVersion[] @relation("vendorBillVersionsSuperseded")
-  paymentApprovalsApproved PaymentApproval[] @relation("paymentApprovalsApproved")
-  paymentsRecorded Payment[] @relation("paymentsRecorded")
-  paymentsReversed PaymentReversal[] @relation("paymentsReversed")
-  advancesPaid VendorAdvance[] @relation("advancesPaid")
+  costHeadsDefined             CostHead[]                    @relation("costHeadsDefined")
+  attributionsCreated          CommitmentAttribution[]       @relation("attributionsCreated")
+  attributionsSuperseded       CommitmentAttribution[]       @relation("attributionsSuperseded")
+  budgetLinesAuthored          BudgetLine[]                  @relation("budgetLinesAuthored")
+  budgetLinesSuperseded        BudgetLine[]                  @relation("budgetLinesSuperseded")
+  budgetExceptionsRaised       BudgetException[]             @relation("budgetExceptionsRaised")
+  measurementsTaken            Measurement[]                 @relation("measurementsTaken")
+  vendorBillsCreated           VendorBill[]                  @relation("vendorBillsCreated")
+  vendorBillVersionsCreated    VendorBillVersion[]           @relation("vendorBillVersionsCreated")
+  vendorBillVersionsSuperseded VendorBillVersion[]           @relation("vendorBillVersionsSuperseded")
+  paymentApprovalsApproved     PaymentApproval[]             @relation("paymentApprovalsApproved")
+  paymentsRecorded             Payment[]                     @relation("paymentsRecorded")
+  paymentsReversed             PaymentReversal[]             @relation("paymentsReversed")
+  advancesPaid                 VendorAdvance[]               @relation("advancesPaid")
 
   consultationsAsConsultee DecisionConsultation[] @relation("consultationsAsConsultee")
 }
@@ -1253,24 +1254,24 @@ model WorkerDevice {
 // (and later activities / inspections / materials) attach to a node so they can be
 // grouped, filtered and browsed by where they live in the building.
 model ProjectNode {
-  id        String   @id @default(cuid())
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId String
+  id          String       @id @default(cuid())
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId   String
   // Composite self-FK: a node can only hang under a parent in the SAME project —
   // PostgreSQL rejects a cross-project tree edge even on a direct write. Cascade
   // still removes the subtree when a parent goes.
-  parent    ProjectNode?  @relation("NodeChildren", fields: [projectId, parentId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
-  parentId  String?
-  name      String
-  kind      String // zone | room | element
-  order     Int      @default(0)
+  parent      ProjectNode? @relation("NodeChildren", fields: [projectId, parentId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  parentId    String?
+  name        String
+  kind        String // zone | room | element
+  order       Int          @default(0)
   // Draft → Publish lifecycle (mirrors Decision/Drawing). A node with a null `publishedAt` is a
   // private DRAFT: it's delivered only to its author and hidden from the team's Site Map and the
   // filing pickers — so no published item can ever be filed on a draft node (the invariant that
   // keeps the location spine safe). Publishing a node publishes its subtree + draft ancestors.
   publishedAt DateTime?
-  authorId  String?
-  createdAt DateTime @default(now())
+  authorId    String?
+  createdAt   DateTime     @default(now())
 
   children    ProjectNode[]  @relation("NodeChildren")
   decisions   Decision[]
@@ -1314,18 +1315,18 @@ enum RequirementType {
 // revision belongs to. Every revision row carries a composite FK to (projectId, rootId), so a
 // revision lineage CROSSING projects is unrepresentable in PostgreSQL (review finding 2).
 model ActivityRequirementRoot {
-  id          String                @id // the stable requirementId
-  project     Project               @relation(fields: [projectId], references: [id])
-  projectId   String
-  createdAt   DateTime              @default(now())
-  createdBy   User                  @relation("requirementRootsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  createdById String
-  revisions   ActivityRequirement[]
-  substitutions ApprovedSubstitution[]
-
-  @@unique([projectId, id])
+  id                         String                      @id // the stable requirementId
+  project                    Project                     @relation(fields: [projectId], references: [id])
+  projectId                  String
+  createdAt                  DateTime                    @default(now())
+  createdBy                  User                        @relation("requirementRootsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById                String
+  revisions                  ActivityRequirement[]
+  substitutions              ApprovedSubstitution[]
   // Phase 4 Task 3 — pmc-authored labour skill substitutions widening this requirement's §B satisfaction
   approvedSkillSubstitutions ApprovedSkillSubstitution[]
+
+  @@unique([projectId, id])
 }
 
 // The §11 demand contract (plan §§B/F) — TYPE-NEUTRAL revision rows (correction finding 3).
@@ -1345,9 +1346,9 @@ model ActivityRequirement {
   activityId    String
   type          RequirementType         @default(material)
 
-  requiredQty Decimal  @db.Decimal(18, 6)
-  baseUom     String
-  requiredBy  DateTime @db.Date // civil DATE (correction finding 3)
+  requiredQty   Decimal     @db.Decimal(18, 6)
+  baseUom       String
+  requiredBy    DateTime    @db.Date // civil DATE (correction finding 3)
   // the accountable party: an ACTIVE same-project membership (service-validated; FK backstop)
   responsible   Membership? @relation(fields: [projectId, responsibleId], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
   responsibleId String?
@@ -1412,88 +1413,87 @@ model MaterialRequirementSpec {
 // point on. `coverageFor` (inventory) reads it ONLY indirectly: activities resolves each
 // requirement's acceptable fingerprint set and passes it in, keeping the activities→inventory edge.
 model ApprovedSubstitution {
-  id            String                  @id @default(cuid())
-  project       Project                 @relation(fields: [projectId], references: [id])
-  projectId     String
-  root          ActivityRequirementRoot @relation(fields: [projectId, requirementId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  requirementId String
+  id              String                  @id @default(cuid())
+  project         Project                 @relation(fields: [projectId], references: [id])
+  projectId       String
+  root            ActivityRequirementRoot @relation(fields: [projectId, requirementId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  requirementId   String
   fromFingerprint String // the requirement's own §B technical-identity fingerprint
   toFingerprint   String // the substitute stock identity admitted as satisfying it
-  reason        String
-  approvedBy    User     @relation("substitutionsApproved", fields: [approvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  approvedById  String
-  at            DateTime @default(now())
+  reason          String
+  approvedBy      User                    @relation("substitutionsApproved", fields: [approvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  approvedById    String
+  at              DateTime                @default(now())
   // revocation (append-in-place: the row survives, coverage re-derives without it)
-  revokedAt     DateTime?
-  revokedBy     User?     @relation("substitutionsRevoked", fields: [revokedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  revokedById   String?
-  revokeReason  String?
-
-  @@index([projectId, requirementId])
-  @@index([projectId, toFingerprint])
+  revokedAt       DateTime?
+  revokedBy       User?                   @relation("substitutionsRevoked", fields: [revokedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  revokedById     String?
+  revokeReason    String?
   // Task 6 correction (F2): a PARTIAL unique index on
   // (projectId, requirementId, fromFingerprint, toFingerprint) WHERE "revokedAt" IS NULL forbids a
   // second ACTIVE row for the same material pair (revoked rows are excluded, so history survives and
   // re-approval after revocation is allowed). Prisma cannot express a partial index, so it lives in
   // migration 20270103000000_phase3_t6_correction (like the other DB-only Phase-3 constructs).
-}
 
+  @@index([projectId, requirementId])
+  @@index([projectId, toFingerprint])
+}
 
 // ─── Phase 3 Task 2 — the procurement module (plan §§F/G/H) ────────────────────────────────
 // Vendor is ORG-scoped — the ONE exception to the every-table-carries-projectId rule, because
 // a vendor is an organization-level party (§H). Project reach is ONLY the additive
 // ProjectVendor binding below, whose org provably matches both sides.
 model Vendor {
-  id          String   @id @default(cuid())
-  org         Org      @relation(fields: [orgId], references: [id])
+  id          String        @id @default(cuid())
+  org         Org           @relation(fields: [orgId], references: [id])
   orgId       String
   name        String
   contact     String?
   gstin       String?
-  createdAt   DateTime @default(now())
-  createdBy   User     @relation("vendorsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdAt   DateTime      @default(now())
+  createdBy   User          @relation("vendorsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   createdById String
   // Phase 6 unit 6.1a (§A) — the canonical firm this commercial counterparty IS. A foreign
   // key, not a read: procurement gains no `dependsOn` edge from holding it.
   partyId     String
   party       ExternalParty @relation(fields: [orgId, partyId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
 
-  bindings ProjectVendor[]
+  bindings           ProjectVendor[]
   // Back-relation for `ProjectVendor.vendorParty` — the binding's party copy is bound
   // THROUGH this vendor's own party, not directly to `ExternalParty`.
   partyBoundBindings ProjectVendor[] @relation("projectVendorParty")
 
   @@unique([orgId, id])
-  @@index([orgId, partyId])
   // The candidate key `ProjectVendor` binds its own party copy through, so the copy is
   // provably the vendor's rather than an independently settable value.
   @@unique([orgId, id, partyId])
+  @@index([orgId, partyId])
 }
 
 // §H — a vendor's explicit reach into ONE project. The composite FKs bind the SAME orgId to
 // the vendor AND the project, so a cross-org binding is unrepresentable in PostgreSQL; every
 // procurement row references (projectId, vendorId) THROUGH this binding.
 model ProjectVendor {
-  id        String   @id @default(cuid())
-  projectId String
-  orgId     String
-  project   Project  @relation("projectVendorProject", fields: [orgId, projectId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
-  vendor    Vendor   @relation(fields: [orgId, vendorId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
-  vendorId  String
+  id          String        @id @default(cuid())
+  projectId   String
+  orgId       String
+  project     Project       @relation("projectVendorProject", fields: [orgId, projectId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
+  vendor      Vendor        @relation(fields: [orgId, vendorId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
+  vendorId    String
   // Phase 6 unit 6.1a (§A) — the party copy, bound THROUGH the vendor's own party rather
   // than to `ExternalParty` directly. A same-org row could otherwise bind project A to
   // vendor V1 while mirroring a different party P2, and the resolver would grant P2 access
   // to V1's project records — or would have to read procurement to re-check, which is what
   // the orgs-owned mirror exists to avoid.
-  partyId   String
+  partyId     String
   // ON UPDATE CASCADE, matching the migration: the copy is DERIVED and must follow its source, or
   // 6.1b cannot repoint an already-bound vendor in any order. Declared here because the schema is
   // what a generated migration diffs against — SQL-only would drift straight back.
-  vendorParty Vendor @relation("projectVendorParty", fields: [orgId, vendorId, partyId], references: [orgId, id, partyId], onDelete: NoAction, onUpdate: Cascade)
-  party     ExternalParty @relation(fields: [orgId, partyId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
-  boundAt   DateTime @default(now())
-  boundBy   User     @relation("vendorsBound", fields: [boundById], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  boundById String
+  vendorParty Vendor        @relation("projectVendorParty", fields: [orgId, vendorId, partyId], references: [orgId, id, partyId], onDelete: NoAction, onUpdate: Cascade)
+  party       ExternalParty @relation(fields: [orgId, partyId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
+  boundAt     DateTime      @default(now())
+  boundBy     User          @relation("vendorsBound", fields: [boundById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  boundById   String
 
   partySources ProjectPartyVendorSource[]
 
@@ -1506,12 +1506,12 @@ model ProjectVendor {
 
   @@unique([projectId, vendorId])
   @@unique([projectId, id])
-  @@index([orgId, partyId])
   // The candidate key `ProjectPartyVendorSource` binds through.
   @@unique([orgId, projectId, partyId, id])
   // §A: the same one-party-one-binding-per-project seal. Implied by `(projectId, vendorId)`
   // only while `partyId` is the vendor's — 6.1b's merge repoints it, and then it is not.
   @@unique([projectId, partyId])
+  @@index([orgId, partyId])
 }
 
 // §F — a demand batch against pinned requirement revisions. CAS state machine:
@@ -1690,22 +1690,22 @@ model QuoteComparison {
 // requisition + comparison provenance). Lifecycle lives on VERSION rows; the root never
 // changes (DB append-only trigger, the ActivityRequirementRoot pattern).
 model PurchaseOrder {
-  id            String        @id @default(cuid())
-  projectId     String
-  project       Project       @relation("purchaseOrderProject", fields: [projectId], references: [id])
-  binding       ProjectVendor @relation(fields: [projectId, vendorId], references: [projectId, vendorId], onDelete: NoAction, onUpdate: NoAction)
-  vendorId      String
-  requisition   Requisition   @relation(fields: [projectId, requisitionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  requisitionId String
-  comparisonId  String // provenance: the APPROVED comparison this PO executes
+  id               String        @id @default(cuid())
+  projectId        String
+  project          Project       @relation("purchaseOrderProject", fields: [projectId], references: [id])
+  binding          ProjectVendor @relation(fields: [projectId, vendorId], references: [projectId, vendorId], onDelete: NoAction, onUpdate: NoAction)
+  vendorId         String
+  requisition      Requisition   @relation(fields: [projectId, requisitionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  requisitionId    String
+  comparisonId     String // provenance: the APPROVED comparison this PO executes
   // F4-r2: CHECK-pinned to 'approved' and part of the provenance FK — a PO referencing a
   // draft comparison is unrepresentable at PostgreSQL, not merely refused by the service.
-  comparisonStatus String     @default("approved")
-  createdAt     DateTime      @default(now())
-  createdBy     User          @relation("purchaseOrdersCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  createdById   String
+  comparisonStatus String        @default("approved")
+  createdAt        DateTime      @default(now())
+  createdBy        User          @relation("purchaseOrdersCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById      String
 
-  versions PurchaseOrderVersion[]
+  versions    PurchaseOrderVersion[]
   // Phase 5 Task 4 (§F) — the lines carrying this order's pinned identity
   pinnedLines PurchaseOrderLine[]
 
@@ -1816,7 +1816,7 @@ model PurchaseOrderLine {
   purchaseOrderId String
   vendorId        String
 
-  commitments DeliveryCommitment[]
+  commitments       DeliveryCommitment[]
   // Phase 3 Task 4 — received batches + receipt ledger rows against this line
   stockLots         StockLot[]
   stockTransactions StockTransaction[]
@@ -1848,7 +1848,7 @@ model DeliveryCommitment {
   fulfilledAt DateTime?
   defaultedAt DateTime?
 
-  promises DeliveryPromise[]
+  promises          DeliveryPromise[]
   // Phase 3 Task 4 — received batches + receipt ledger rows fulfilling this commitment
   stockLots         StockLot[]
   stockTransactions StockTransaction[]
@@ -1905,9 +1905,9 @@ model StockLot {
   baseUom              String
   specFingerprint      String
   // §B provenance (all null = manual spec) — copied from the revision's spec at receipt
-  decisionId      String?
-  decisionVersion Int?
-  optionKey       String?
+  decisionId           String?
+  decisionVersion      Int?
+  optionKey            String?
 
   receivedAt   DateTime @default(now())
   receivedBy   User     @relation("stockLotsReceived", fields: [receivedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -1949,12 +1949,12 @@ model StockTransaction {
 
   // Task 5 — activity linkage (CHECK: exactly the reservation/release/issue/consumption/
   // site-return/wastage rows carry it; reversals copy their target's, trigger-verified)
-  activity   Activity? @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  activityId String?
+  activity        Activity?      @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  activityId      String?
   // Task 5 — the §E MaterialIssue this row belongs to: the issue row itself plus every
   // custody movement (consumption/site-return/wastage) recorded AGAINST it
-  issue   MaterialIssue? @relation(fields: [projectId, issueId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  issueId String?
+  issue           MaterialIssue? @relation(fields: [projectId, issueId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  issueId         String?
   // Task 5 — a transfer's DESTINATION stock key (CHECK: exactly the transfer rows carry it);
   // the row's own storeLocation is the source, so ONE row moves acceptedOnHand between keys
   toStoreLocation String?
@@ -1975,8 +1975,8 @@ model StockTransaction {
   // and project-contained by the composite FK (a cross-project source command is unrepresentable).
   sourceCommand   CommandExecution @relation(fields: [projectId, sourceCommandId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   sourceCommandId String
-  recordedAt      DateTime          @default(now())
-  recordedBy      User              @relation("stockTransactionsRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  recordedAt      DateTime         @default(now())
+  recordedBy      User             @relation("stockTransactionsRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   recordedById    String
 
   @@unique([projectId, id])
@@ -2015,67 +2015,69 @@ model MaterialIssue {
 }
 
 model Decision {
-  id             String           @id // e.g. "DL-014"
-  project        Project          @relation(fields: [projectId], references: [id])
-  projectId      String
-  title          String
-  room           String // display fallback / legacy; the node path is authoritative when nodeId is set
-  node           ProjectNode?     @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  nodeId         String?
-  status         DecisionStatus   @default(pending)
-  ageDays        Int?
+  id                          String         @id // e.g. "DL-014"
+  project                     Project        @relation(fields: [projectId], references: [id])
+  projectId                   String
+  title                       String
+  room                        String // display fallback / legacy; the node path is authoritative when nodeId is set
+  node                        ProjectNode?   @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  nodeId                      String?
+  status                      DecisionStatus @default(pending)
+  ageDays                     Int?
   // Task 4b (§A.2): nullable for a RECORD (`deciderKind='none'`), whose zero-option form has no
   // option-sourced presentation; a CHECK keeps it required for every choice kind.
-  photoSwatch    String?
-  approvedOption String?
-  material       String?
-  approver       String? // human-readable approver line (the caller's REAL name since Phase 1 Task 2)
-  approvedById   String? // the approving user's id — real attribution (Phase 1 Task 2)
-  onBehalfOf     String? // 'client' when a PMC approves on the client's behalf — never disguised
+  photoSwatch                 String?
+  approvedOption              String?
+  material                    String?
+  approver                    String? // human-readable approver line (the caller's REAL name since Phase 1 Task 2)
+  approvedById                String? // the approving user's id — real attribution (Phase 1 Task 2)
+  onBehalfOf                  String? // 'client' when a PMC approves on the client's behalf — never disguised
   // Phase 6 task 4b expansion. The default preserves every older writer's client-held behavior.
   // Holder state can be supplied before publication; the migration freezes it once published.
-  deciderKind         DeciderKind @default(client)
-  deciderMembershipId String?
-  deciderMembership   Membership? @relation("DecisionDeciders", fields: [projectId, deciderMembershipId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  deciderKind                 DeciderKind    @default(client)
+  deciderMembershipId         String?
+  deciderMembership           Membership?    @relation("DecisionDeciders", fields: [projectId, deciderMembershipId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   // The optional tuple freezes the holder represented by an approval act. It remains nullable
   // until tuple-writing application code has replaced every older writer.
   approvedDeciderKind         DeciderKind?
   approvedDeciderMembershipId String?
   approvedDeciderLabel        String?
-  date           String? // display date, e.g. "12 Jun 2026"
-  cost           Int? // rupees
-  createdAt      DateTime         @default(now())
+  date                        String? // display date, e.g. "12 Jun 2026"
+  cost                        Int? // rupees
+  createdAt                   DateTime       @default(now())
   // Draft → Publish lifecycle. While `publishedAt` is null the decision is a private
   // DRAFT: the snapshot delivers it only to its author (`authorId`), it never notifies
   // the client, and the app treats it as weightless (no pending count, no gate). Publish
   // sets `publishedAt` and fires the normal side-effects. Both nullable/additive so the
   // migration is safe on the live DB; existing rows (published) are backfilled to createdAt.
-  publishedAt    DateTime?
-  authorId       String?
+  publishedAt                 DateTime?
+  authorId                    String?
   // Phase 6 task 4a — the withdrawal evidence, written ONCE by `decisions.withdraw` and frozen
   // by trigger with the terminal status (rewritten attribution is forged history). All three are
   // required (and only legal) when status='withdrawn' — the coherence trigger enforces both
   // directions. `withdrawnById` is FK-backed to a REAL member of THIS project (the same identity
   // discipline as `completionRequestedById`); `withdrawnByName` denormalizes the display identity
   // at withdraw time (the `approver` precedent), so the serialized register never joins for it.
-  withdrawnAt     DateTime?
-  withdrawnById   String?
-  withdrawnByName String?
-  withdrawReason  String?
-  withdrawnBy     Membership? @relation("DecisionWithdrawals", fields: [projectId, withdrawnById], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
+  withdrawnAt                 DateTime?
+  withdrawnById               String?
+  withdrawnByName             String?
+  withdrawReason              String?
+  withdrawnBy                 Membership?    @relation("DecisionWithdrawals", fields: [projectId, withdrawnById], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
 
   options           DecisionOption[]
   events            DecisionEvent[]
   approvalRevisions DecisionApprovalRevision[]
   materialSpecs     MaterialRequirementSpec[]
   labourSpecs       LabourRequirementSpec[] // Phase 4 Task 1 — labour demand provenance
-  changeRequests ChangeRequest[]
-  activities     Activity[]
-  materials      SiteMaterial[]
-  media          Media[]
-  drawings       Drawing[]
-  optionTouches  DecisionOptionTouch[] // phase6-4a round 13 — per-tx option touch notes
-  legacyApproval DecisionLegacyApproval? @ignore
+  changeRequests    ChangeRequest[]
+  activities        Activity[]
+  materials         SiteMaterial[]
+  media             Media[]
+  drawings          Drawing[]
+  optionTouches     DecisionOptionTouch[] // phase6-4a round 13 — per-tx option touch notes
+  legacyApproval    DecisionLegacyApproval?    @ignore
+
+  consultations DecisionConsultation[]
 
   // composite identity so referencing models can carry (projectId, decisionId)
   // foreign keys — the DB itself rejects a cross-project link (Phase 0 Task 5)
@@ -2085,8 +2087,6 @@ model Decision {
   @@index([nodeId])
   @@index([projectId, deciderMembershipId], map: "Decision_deciderMembershipId_idx")
   @@index([projectId, approvedDeciderMembershipId], map: "Decision_approvedDeciderMembershipId_idx")
-
-  consultations DecisionConsultation[]
 }
 
 // Migration-owned evidence for approvals that predate tuple-writing application code. Rows are
@@ -2145,8 +2145,8 @@ model DecisionOptionKindSelection {
 }
 
 model DecisionOption {
-  id          String   @id @default(cuid())
-  decision    Decision @relation(fields: [decisionId], references: [id])
+  id          String             @id @default(cuid())
+  decision    Decision           @relation(fields: [decisionId], references: [id])
   decisionId  String
   label       String
   optionKey   String
@@ -2165,10 +2165,12 @@ model DecisionOption {
   kind        DecisionOptionKind @relation(fields: [kindCode], references: [code], onDelete: NoAction, onUpdate: NoAction)
   kindCode    String             @default("material")
   photoUrl    String? // uploaded sample photo (media url); swatch is the fallback
-  recommended Boolean  @default(false)
-  order       Int      @default(0)
+  recommended Boolean            @default(false)
+  order       Int                @default(0)
 
   approvalRevisions DecisionApprovalRevision[]
+
+  recommendedBy DecisionConsultationResponse[]
 
   // the approval register (and requirement provenance behind it) pins an option by
   // (decisionId, id) — the candidate key 4c-i's response FK binds to, so a recommendation can
@@ -2183,8 +2185,6 @@ model DecisionOption {
   // declared so `migrate diff` sees the index the A1-i migration really creates; an undeclared
   // physical index makes every later migration generation want to drop it
   @@index([kindCode])
-
-  recommendedBy DecisionConsultationResponse[]
 }
 
 // Phase 6 task 4a (round 13) — the per-transaction OPTION TOUCH NOTE behind the withdrawal
@@ -2224,6 +2224,16 @@ model DecisionApprovalRevision {
   approvedBy   User?          @relation("approvalRevisionsApproved", fields: [approvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   approvedById String? // null only on backfilled legacy rows whose approver was never recorded
   onBehalfOf   String? // 'client' when a PMC recorded the client's consent — never disguised
+
+  /// Phase 6 unit 4c-i — STAGED approval-command provenance. NULLABLE and enforced by NOTHING
+  /// here: the delivered `DecisionsService.approve` writes no receipt, and 4c-i is the DARK unit
+  /// the previous release must keep running against, so requiring it would reject every approval
+  /// performed by a still-serving 4b instance. 4c-ii's writer populates it and 4c-ii's own
+  /// migration — which runs after the drain-first cutover, at the one moment zero old instances
+  /// are guaranteed — installs the deferred commit-time trigger that makes a revision provable as
+  /// the product of an approval TRANSITION rather than a bare row write.
+  sourceCommand   CommandExecution? @relation("approvalRevisionCommands", fields: [projectId, sourceCommandId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  sourceCommandId String?
 
   materialSpecs MaterialRequirementSpec[]
   labourSpecs   LabourRequirementSpec[] // Phase 4 Task 1 — labour demand provenance (same register)
@@ -2360,69 +2370,69 @@ model ChangeRequest {
 }
 
 model Activity {
-  id             String         @id // e.g. "ACT-31"
-  project        Project        @relation(fields: [projectId], references: [id])
-  projectId      String
-  name           String
-  zone           String
-  status         ActivityStatus @default(not_started)
+  id                        String                @id // e.g. "ACT-31"
+  project                   Project               @relation(fields: [projectId], references: [id])
+  projectId                 String
+  name                      String
+  zone                      String
+  status                    ActivityStatus        @default(not_started)
   // planned/actual as day-offsets from 1 Jun 2026 (LEGACY prototype timeline model —
   // kept for compatibility; the civil dates below are canonical going forward)
-  plannedStart   Int
-  plannedEnd     Int
-  actualStart    Int?
-  actualEnd      Int?
+  plannedStart              Int
+  plannedEnd                Int
+  actualStart               Int?
+  actualEnd                 Int?
   // Real civil dates (Phase 0 Task 6); display strings are derived, never compared
-  plannedStartDate DateTime? @db.Date
-  plannedEndDate   DateTime? @db.Date
-  actualStartDate  DateTime? @db.Date
-  actualEndDate    DateTime? @db.Date
+  plannedStartDate          DateTime?             @db.Date
+  plannedEndDate            DateTime?             @db.Date
+  actualStartDate           DateTime?             @db.Date
+  actualEndDate             DateTime?             @db.Date
   // Phase 1 Task 5 — the sign-off civil day (set ONLY by closing-inspection
   // approval); actualEndDate above remains the CLAIMED work-end day
-  doneAt           DateTime? @db.Date
+  doneAt                    DateTime?             @db.Date
   // The completion CLAIM: who said the work was finished (an attributable,
   // membership-validated fact — the reject path assigns corrective work from it).
   // Composite FK to Membership — a claimant without a membership on THIS
   // project is impossible even on a direct write (memberships are soft-removed).
-  completionRequestedBy     Membership? @relation("CompletionClaims", fields: [projectId, completionRequestedById], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
+  completionRequestedBy     Membership?           @relation("CompletionClaims", fields: [projectId, completionRequestedById], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
   completionRequestedById   String?
   completionRequestedByName String?
   completionRequestedAt     DateTime?
-  block          String?
+  block                     String?
   // stored readiness gates; the Decision gate is derived live from the decision
-  gateMaterial   GateState @default(na)
-  gateTeam       GateState @default(na)
-  gateInspection GateState @default(na)
-  decision       Decision?      @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  decisionId     String?
-  phase          Phase?         @relation(fields: [projectId, phaseId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  phaseId        String?
+  gateMaterial              GateState             @default(na)
+  gateTeam                  GateState             @default(na)
+  gateInspection            GateState             @default(na)
+  decision                  Decision?             @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  decisionId                String?
+  phase                     Phase?                @relation(fields: [projectId, phaseId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  phaseId                   String?
   // Location spine: where this work happens (zone/room/object). NodesService unlinks
   // on node delete; the composite FK forbids a cross-project filing at the database.
-  node           ProjectNode?   @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  nodeId         String?
-  order          Int            @default(0)
-  drawings       Drawing[]
+  node                      ProjectNode?          @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  nodeId                    String?
+  order                     Int                   @default(0)
+  drawings                  Drawing[]
   // Phase 3 Task 5 — stock movements scoped to this activity + the §E issue records
-  stockTransactions StockTransaction[]
-  materialIssues    MaterialIssue[]
+  stockTransactions         StockTransaction[]
+  materialIssues            MaterialIssue[]
   // inspections whose requirement edge names this activity (Phase 1 Task 4)
-  inspections    Inspection[]
+  inspections               Inspection[]
   // manual readiness exceptions — attributable, evidenced, EXPIRING (Phase 1 Task 6)
-  gateOverrides  GateOverride[]
-
-  @@unique([projectId, id])
-  @@index([nodeId])
-  requirements ActivityRequirement[]
-  labourMismatches LabourMismatch[]
-  workOutputs      ActivityWorkOutput[]
-  measurements Measurement[]
+  gateOverrides             GateOverride[]
+  requirements              ActivityRequirement[]
+  labourMismatches          LabourMismatch[]
+  workOutputs               ActivityWorkOutput[]
+  measurements              Measurement[]
   // Schedule graph: the finish-to-start edges this activity sits on. `dependsOn` are the
   // edges where THIS activity is the successor (its predecessors); `enables` are the edges
   // where it is the predecessor (what it unblocks). An activity with no `dependsOn` edge is
   // a ROOT and takes its start from an authorized anchor, not from another activity.
-  dependsOn      ActivityDependency[] @relation("DependencySuccessor")
-  enables        ActivityDependency[] @relation("DependencyPredecessor")
+  dependsOn                 ActivityDependency[]  @relation("DependencySuccessor")
+  enables                   ActivityDependency[]  @relation("DependencyPredecessor")
+
+  @@unique([projectId, id])
+  @@index([nodeId])
 }
 
 // One FINISH-TO-START dependency: `successor` may not commence until `predecessor` is
@@ -2446,19 +2456,19 @@ model Activity {
 // seven-day constraint imposed today's zero-day one. Changing a lag is revoking the edge and
 // imposing the one you mean.
 model ActivityDependency {
-  id            String   @id @default(cuid())
-  project       Project  @relation(fields: [projectId], references: [id])
-  projectId     String
-  predecessor   Activity @relation("DependencyPredecessor", fields: [projectId, predecessorId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  predecessorId String
-  successor     Activity @relation("DependencySuccessor", fields: [projectId, successorId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  successorId   String
+  id             String      @id @default(cuid())
+  project        Project     @relation(fields: [projectId], references: [id])
+  projectId      String
+  predecessor    Activity    @relation("DependencyPredecessor", fields: [projectId, predecessorId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  predecessorId  String
+  successor      Activity    @relation("DependencySuccessor", fields: [projectId, successorId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  successorId    String
   /// Working days that must elapse AFTER the predecessor completes before the successor may
   /// start — concrete curing, screed drying. Working days, so the project calendar applies.
-  lagWorkingDays Int     @default(0)
+  lagWorkingDays Int         @default(0)
   // Attribution is not decoration: only `schedule.manage` may shape a programme, and the
   // record of who added an edge is what makes a disputed sequence answerable later.
-  createdAt     DateTime @default(now())
+  createdAt      DateTime    @default(now())
   // The relation, not just the scalar. Prisma treats this datamodel as the DESIRED database shape,
   // so a foreign key that exists only in SQL can be diffed as drift and DROPPED by a later
   // generated migration — after which forged creator ids become insertable again and the freeze
@@ -2476,20 +2486,20 @@ model ActivityDependency {
   // drift — after which the migration's twenty-row enforcement inventory, which names the
   // constraint literally, would reject a CORRECTLY migrated database and `migrate.sh` would refuse
   // to start. The name is load-bearing in both directions, so it is stated in both places.
-  createdBy     Membership @relation("ScheduleDependencyAuthor", fields: [projectId, createdById], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction, map: "ActivityDependency_createdBy_fkey")
-  createdById   String
-  createdByName String
+  createdBy      Membership  @relation("ScheduleDependencyAuthor", fields: [projectId, createdById], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction, map: "ActivityDependency_createdBy_fkey")
+  createdById    String
+  createdByName  String
   // Edges are REVOKED, never deleted. See the migration: the creation provenance is frozen against
   // UPDATE, but a hard DELETE followed by re-inserting the same pair under a different name laundered
   // it completely — the freeze had nothing to hold on to. A revoked edge stays on the record with
   // both attributions intact, and only live edges bind the graph. An edge is also BORN LIVE: these
   // three columns cannot be set by the INSERT that creates the row, because a withdrawal of a
   // constraint that never stood is not a withdrawal.
-  revokedAt     DateTime?
-  revokedById   String?
-  revokedByName String?
+  revokedAt      DateTime?
+  revokedById    String?
+  revokedByName  String?
   // Mapped for the same measured reason as `createdBy` above.
-  revokedBy     Membership? @relation("ScheduleDependencyRevoker", fields: [projectId, revokedById], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction, map: "ActivityDependency_revokedBy_fkey")
+  revokedBy      Membership? @relation("ScheduleDependencyRevoker", fields: [projectId, revokedById], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction, map: "ActivityDependency_revokedBy_fkey")
 
   // One edge per ordered pair — and the target an edge-scoped dependency override references (a
   // successor-wide override would clear the wrong predecessors, so the override must name the
@@ -2511,22 +2521,22 @@ model ActivityDependency {
 // ALWAYS expires — expiry (or early revocation) restores the derivation. No
 // silent flag-flips: every override is audited and serialized in the snapshot.
 model GateOverride {
-  id         String    @id @default(cuid())
-  project    Project   @relation(fields: [projectId], references: [id])
-  projectId  String
+  id              String    @id @default(cuid())
+  project         Project   @relation(fields: [projectId], references: [id])
+  projectId       String
   // composite FK — an override can only name THIS project's activity
-  activity   Activity  @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  activityId String
-  gate       String // decision | material | team | inspection | drawing
-  state      GateState
-  reason     String
-  actorId    String
-  actorName  String
+  activity        Activity  @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  activityId      String
+  gate            String // decision | material | team | inspection | drawing
+  state           GateState
+  reason          String
+  actorId         String
+  actorName       String
   // optional supporting photo — composite FK, same-project by construction (Task 4 key)
-  evidence        Media?  @relation(fields: [projectId, evidenceMediaId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  evidence        Media?    @relation(fields: [projectId, evidenceMediaId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   evidenceMediaId String?
-  expiresAt  DateTime
-  createdAt  DateTime  @default(now())
+  expiresAt       DateTime
+  createdAt       DateTime  @default(now())
 
   @@index([projectId, activityId])
 }
@@ -2534,17 +2544,17 @@ model GateOverride {
 // A project phase (Foundation → Structure → MEP → Finishing…). Groups activities
 // for phase-level monitoring; planned window as day-offsets (like activities).
 model Phase {
-  id           String     @id @default(cuid())
-  project      Project    @relation(fields: [projectId], references: [id])
-  projectId    String
-  name         String
-  order        Int        @default(0)
-  plannedStart Int        @default(0) // LEGACY day-offset (kept for compatibility)
-  plannedEnd   Int        @default(0) // LEGACY day-offset (kept for compatibility)
+  id               String     @id @default(cuid())
+  project          Project    @relation(fields: [projectId], references: [id])
+  projectId        String
+  name             String
+  order            Int        @default(0)
+  plannedStart     Int        @default(0) // LEGACY day-offset (kept for compatibility)
+  plannedEnd       Int        @default(0) // LEGACY day-offset (kept for compatibility)
   // Real civil dates (Phase 0 Task 6)
-  plannedStartDate DateTime? @db.Date
-  plannedEndDate   DateTime? @db.Date
-  activities   Activity[]
+  plannedStartDate DateTime?  @db.Date
+  plannedEndDate   DateTime?  @db.Date
+  activities       Activity[]
 
   // composite identity for the (projectId, phaseId) FK on Activity
   @@unique([projectId, id])
@@ -2552,53 +2562,53 @@ model Phase {
 }
 
 model Inspection {
-  id        String           @id // e.g. "INSP-22"
-  project   Project          @relation(fields: [projectId], references: [id])
-  projectId String
-  kind      String // "checklist" (engineer draft) | "review" (submitted to PMC)
-  title     String
-  zone      String
-  by        String?
-  date      String // LEGACY display string (derived; never sorted or compared)
-  inspectionDate DateTime? @db.Date // real civil date (Phase 0 Task 6)
-  submitted Boolean          @default(false)
-  decided   Boolean          @default(false)
+  id               String           @id // e.g. "INSP-22"
+  project          Project          @relation(fields: [projectId], references: [id])
+  projectId        String
+  kind             String // "checklist" (engineer draft) | "review" (submitted to PMC)
+  title            String
+  zone             String
+  by               String?
+  date             String // LEGACY display string (derived; never sorted or compared)
+  inspectionDate   DateTime?        @db.Date // real civil date (Phase 0 Task 6)
+  submitted        Boolean          @default(false)
+  decided          Boolean          @default(false)
   // Phase 1 Task 5: the UNAMBIGUOUS closing-sign-off marker (id-pattern matching
   // retired). Approving a closing inspection is what completes its activity.
-  closing   Boolean          @default(false)
+  closing          Boolean          @default(false)
   // The REQUIREMENT EDGE (Phase 1 Task 4): the Activity this inspection accepts.
   // Composite FK — a cross-project edge is impossible even on a direct write.
-  activity   Activity? @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  activityId String?
+  activity         Activity?        @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  activityId       String?
   // Phase 2 Task 10 (Module 3) correction — the INSPECTION-OWNED activity label. A closing inspection's
   // serialized `activityName` was formerly read live off `Activity.name` (a cross-module read the projection
   // could not observe). It is now stored here: set when the closing inspection is created, updated by the
   // inspections participant when the activity is renamed (both append an inspection event), and backfilled
   // from the linked Activity in the correction migration. Null for inspections with no linked activity.
-  activityName String?
+  activityName     String?
   // A reinspection names its predecessor and inherits its activityId. AT MOST ONE
   // direct child per rejected inspection — partial unique index
   // "Inspection_one_reinspection_child" ON ("reinspectionOfId") WHERE NOT NULL
   // (raw SQL in 20260930000000_phase1_inspection_evidence).
-  reinspectionOf   Inspection?  @relation("Reinspection", fields: [projectId, reinspectionOfId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  reinspectionOf   Inspection?      @relation("Reinspection", fields: [projectId, reinspectionOfId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   reinspectionOfId String?
-  reinspections    Inspection[] @relation("Reinspection")
+  reinspections    Inspection[]     @relation("Reinspection")
   // WHO must correct the work: an ACTIVE engineer/contractor member (service-validated;
   // the Membership FK is the backstop — memberships are soft-removed, never deleted).
-  assignee   Membership? @relation(fields: [projectId, assigneeId], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
-  assigneeId String?
-  dueDate    DateTime? @db.Date // real civil due date (decide-day + N days, PMC-overridable)
+  assignee         Membership?      @relation(fields: [projectId, assigneeId], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
+  assigneeId       String?
+  dueDate          DateTime?        @db.Date // real civil due date (decide-day + N days, PMC-overridable)
   // attribution (Phase 1 global rule): who submitted / decided
-  submittedById   String?
-  submittedByName String?
-  decidedById     String?
-  decidedByName   String?
+  submittedById    String?
+  submittedByName  String?
+  decidedById      String?
+  decidedByName    String?
   // Location spine: where this quality check happens. NodesService unlinks on node
   // delete; the composite FK forbids a cross-project filing at the database.
-  node      ProjectNode?     @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  nodeId    String?
-  items     InspectionItem[]
-  media     Media[]
+  node             ProjectNode?     @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  nodeId           String?
+  items            InspectionItem[]
+  media            Media[]
 
   @@unique([projectId, id]) // composite identity — tenant-safe reference target (Task 4)
   @@index([nodeId])
@@ -2656,27 +2666,27 @@ model CrewRow {
 }
 
 model SiteMaterial {
-  id         String    @id @default(cuid())
+  id         String       @id @default(cuid())
   // Canonical project ownership (Codex gate finding 4): a material belongs to ONE
   // project directly — the composite FKs below then make every reference (its log,
   // the approving decision, the staging place) provably same-project in PostgreSQL.
-  project    Project   @relation(fields: [projectId], references: [id])
+  project    Project      @relation(fields: [projectId], references: [id])
   projectId  String
-  dailyLog   DailyLog  @relation(fields: [projectId, dailyLogId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  dailyLog   DailyLog     @relation(fields: [projectId, dailyLogId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   dailyLogId String
-  decision   Decision? @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  decision   Decision?    @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   decisionId String?
   name       String
   qty        String
   zone       String
-  matched    Boolean   @default(true)
+  matched    Boolean      @default(true)
   swatch     String
-  photo      Boolean   @default(false)
+  photo      Boolean      @default(false)
   // Location spine: where this material was delivered / is staged. NodesService
   // unlinks on node delete; the composite FK forbids a cross-project filing.
   node       ProjectNode? @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   nodeId     String?
-  order      Int       @default(0)
+  order      Int          @default(0)
 
   // Phase 3 Task 5 (§E) — the explicit resolution closing this observation (at most one)
   resolution MismatchResolution?
@@ -2712,13 +2722,13 @@ model MismatchResolution {
 }
 
 model Notification {
-  id        String   @id @default(cuid())
-  project   Project  @relation(fields: [projectId], references: [id])
-  projectId String
-  text      String
-  color     String
-  time      String // relative label, e.g. "2h ago" / "just now"
-  at        DateTime @default(now())
+  id         String   @id @default(cuid())
+  project    Project  @relation(fields: [projectId], references: [id])
+  projectId  String
+  text       String
+  color      String
+  time       String // relative label, e.g. "2h ago" / "just now"
+  at         DateTime @default(now())
   // Phase 6 task 4a — the decision a decision-notice announces. Notices are DERIVED
   // communication artifacts (the DecisionEvent register is the history), so retiring a
   // now-false pending notice must not depend on matching display text: the writers stamp
@@ -2791,8 +2801,8 @@ model LabourSkill {
 // A trusted, project-contained WORKER identity (§H) — the atomic capacity source (round-1).
 // activeFrom/activeTo bound the engagement; a revoke stamps revokedAt+revokedById.
 model Worker {
-  id          String    @id @default(cuid())
-  project     Project   @relation(fields: [projectId], references: [id])
+  id          String      @id @default(cuid())
+  project     Project     @relation(fields: [projectId], references: [id])
   projectId   String
   name        String
   // the worker's primary trade — a same-project catalog entry (composite FK)
@@ -2802,18 +2812,18 @@ model Worker {
   // composite FK to LabourSkill, so a nonexistent/cross-project/subsequently-deleted skill is
   // unrepresentable AND concurrency-safe (no worker-insert vs skill-delete race). The DTO's
   // skillCodes[] is DERIVED from these rows.
-  activeFrom  DateTime  @db.Date
-  activeTo    DateTime? @db.Date
+  activeFrom  DateTime    @db.Date
+  activeTo    DateTime?   @db.Date
   revokedAt   DateTime?
-  revokedBy   User?     @relation("workersRevoked", fields: [revokedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  revokedBy   User?       @relation("workersRevoked", fields: [revokedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   revokedById String?
-  createdAt   DateTime  @default(now())
-  createdBy   User      @relation("workersOnboarded", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdAt   DateTime    @default(now())
+  createdBy   User        @relation("workersOnboarded", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   createdById String
 
   devices         WorkerDevice[]
   crewMemberships CrewMembership[]
-  ledBy           Crew[]           @relation("crewIncharge")
+  ledBy           Crew[]             @relation("crewIncharge")
   skills          WorkerSkill[]
   // Phase 4 Task 3 — the §C time-capacity facts conserved at this worker (the atomic source)
   allocations     WorkerAllocation[]
@@ -2904,7 +2914,7 @@ model LabourRequirementSpec {
   requirementId String
   revision      Int
 
-  trade                 LabourTrade @relation(fields: [projectId, tradeCode], references: [projectId, code], onDelete: NoAction, onUpdate: NoAction)
+  trade                 LabourTrade  @relation(fields: [projectId, tradeCode], references: [projectId, code], onDelete: NoAction, onUpdate: NoAction)
   tradeCode             String
   // optional; a bare-trade demand. Task-1 correction F3 — a same-project composite FK makes a
   // nonexistent OR cross-project skill unrepresentable in PostgreSQL (was service-validated only).
@@ -2937,7 +2947,7 @@ model LabourDemandSlice {
   requirement    ActivityRequirement @relation(fields: [projectId, requirementId, revision], references: [projectId, requirementId, revision], onDelete: NoAction, onUpdate: NoAction)
   requirementId  String
   revision       Int
-  civilDate      DateTime @db.Date
+  civilDate      DateTime            @db.Date
   personShiftQty Int
 
   @@index([projectId, requirementId, revision])
@@ -2995,18 +3005,18 @@ model LabourRequisition {
 // One per-(requirementId, revision, civilDate) demand slice a labour requisition allocates. The
 // spec's shift + fingerprint are frozen onto the line. Unit: person-shift. §F bound-1 allocation unit.
 model LabourRequisitionLine {
-  id                    String   @id @default(cuid())
+  id                    String            @id @default(cuid())
   projectId             String
   requisition           LabourRequisition @relation(fields: [projectId, requisitionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   requisitionId         String
   // the labour requirement revision pin (composite raw-SQL FK to LabourRequirementSpec)
   requirementId         String
   revision              Int
-  civilDate             DateTime @db.Date
+  civilDate             DateTime          @db.Date
   shift                 String
   labourSpecFingerprint String
   personShiftQty        Int
-  status                String   @default("open") // open | ordered | cancelled
+  status                String            @default("open") // open | ordered | cancelled
   cancelledAt           DateTime?
   cancelledById         String?
 
@@ -3021,12 +3031,12 @@ model LabourRequisitionLine {
 
 // The labour RFQ — issued→closed. Mirrors Rfq.
 model LabourRfq {
-  id            String    @id @default(cuid())
+  id            String            @id @default(cuid())
   projectId     String
   requisition   LabourRequisition @relation(fields: [projectId, requisitionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   requisitionId String
-  status        String    @default("issued") // issued | closed
-  issuedAt      DateTime  @default(now())
+  status        String            @default("issued") // issued | closed
+  issuedAt      DateTime          @default(now())
   issuedById    String
   closedAt      DateTime?
 
@@ -3040,17 +3050,17 @@ model LabourRfq {
 // A supplier's labour quote — recorded→superseded|expired. Mirrors VendorQuote. Bound to the vendor
 // through ProjectVendor (raw-SQL composite FK) — same-project + same-org enforced.
 model SupplierLabourQuote {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   projectId     String
   rfq           LabourRfq @relation(fields: [projectId, rfqId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   rfqId         String
-  requisitionId String   // denormalized + FK-sealed (containment)
-  vendorId      String   // bound through ProjectVendor(projectId, vendorId), raw-SQL FK
-  status        String   @default("recorded") // recorded | superseded | expired
-  validUntil    DateTime @db.Date
+  requisitionId String // denormalized + FK-sealed (containment)
+  vendorId      String // bound through ProjectVendor(projectId, vendorId), raw-SQL FK
+  status        String    @default("recorded") // recorded | superseded | expired
+  validUntil    DateTime  @db.Date
   leadTimeDays  Int?
   notes         String?
-  recordedAt    DateTime @default(now())
+  recordedAt    DateTime  @default(now())
   recordedById  String
 
   lines SupplierLabourQuoteLine[]
@@ -3064,16 +3074,16 @@ model SupplierLabourQuote {
 // A supplier labour quote LINE — the rate for ONE requisition line (one demand slice). Mirrors
 // VendorQuoteLine. Rate/premium in INR paise-safe decimals; the person-shift qty comes from the line.
 model SupplierLabourQuoteLine {
-  id                String   @id @default(cuid())
-  projectId         String
-  quote             SupplierLabourQuote @relation(fields: [projectId, quoteId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  quoteId           String
-  requisitionLine   LabourRequisitionLine @relation(fields: [projectId, requisitionLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  requisitionLineId String
-  requisitionId     String  // containment, sealed both ways (raw-SQL FK)
-  ratePerPersonShift Decimal @db.Decimal(18, 2)
-  shiftPremium       Decimal @db.Decimal(18, 2)
-  landedPerPersonShift Decimal @db.Decimal(18, 2)
+  id                   String                @id @default(cuid())
+  projectId            String
+  quote                SupplierLabourQuote   @relation(fields: [projectId, quoteId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  quoteId              String
+  requisitionLine      LabourRequisitionLine @relation(fields: [projectId, requisitionLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  requisitionLineId    String
+  requisitionId        String // containment, sealed both ways (raw-SQL FK)
+  ratePerPersonShift   Decimal               @db.Decimal(18, 2)
+  shiftPremium         Decimal               @db.Decimal(18, 2)
+  landedPerPersonShift Decimal               @db.Decimal(18, 2)
   matchesSpecification Boolean
 
   @@unique([quoteId, requisitionLineId])
@@ -3115,7 +3125,7 @@ model LabourPurchaseOrder {
   createdAt        DateTime @default(now())
   createdById      String
 
-  versions LabourPurchaseOrderVersion[]
+  versions    LabourPurchaseOrderVersion[]
   // Phase 5 Task 4 (§F) — the lines carrying this order's pinned identity
   pinnedLines LabourPurchaseOrderLine[]
 
@@ -3128,14 +3138,14 @@ model LabourPurchaseOrder {
 // A labour PO version — the frozen-identity CAS lifecycle. Mirrors PurchaseOrderVersion. An amendment
 // issues a NEW version retaining the prior verbatim (supersedesVersion lineage).
 model LabourPurchaseOrderVersion {
-  id                String    @id @default(cuid())
+  id                String              @id @default(cuid())
   projectId         String
   po                LabourPurchaseOrder @relation(fields: [projectId, poId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   poId              String
   version           Int
   requisitionId     String
-  comparisonId      String    // Task-2 correction F4: the approved comparison this version executes (frozen; DB-bound to the PO root)
-  status            String    @default("draft") // draft|issued|partially_committed|completed|amended|cancelled|closed_short
+  comparisonId      String // Task-2 correction F4: the approved comparison this version executes (frozen; DB-bound to the PO root)
+  status            String              @default("draft") // draft|issued|partially_committed|completed|amended|cancelled|closed_short
   supersedesVersion Int?
   issuedById        String?
   issuedAt          DateTime?
@@ -3145,7 +3155,7 @@ model LabourPurchaseOrderVersion {
   cancelReason      String?
   closedShortAt     DateTime?
   closeShortReason  String?
-  createdAt         DateTime  @default(now())
+  createdAt         DateTime            @default(now())
   createdById       String
 
   lines LabourPurchaseOrderLine[]
@@ -3160,23 +3170,23 @@ model LabourPurchaseOrderVersion {
 // A labour PO LINE — the FROZEN rate snapshot for ONE demand slice. Mirrors PurchaseOrderLine. The
 // ONLY mutable column is committedQty (the person-shifts committed against this line, a progress fact).
 model LabourPurchaseOrderLine {
-  id                    String   @id @default(cuid())
+  id                    String                     @id @default(cuid())
   projectId             String
   poVersion             LabourPurchaseOrderVersion @relation(fields: [projectId, poVersionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   poVersionId           String
-  requisitionLine       LabourRequisitionLine @relation(fields: [projectId, requisitionLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  requisitionLine       LabourRequisitionLine      @relation(fields: [projectId, requisitionLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   requisitionLineId     String
   requisitionId         String
   requirementId         String
   revision              Int
-  civilDate             DateTime @db.Date
+  civilDate             DateTime                   @db.Date
   shift                 String
   labourSpecFingerprint String
   personShiftQty        Int
-  ratePerPersonShift    Decimal  @db.Decimal(18, 2)
-  shiftPremium          Decimal  @db.Decimal(18, 2)
-  committedAmountBase   Decimal  @db.Decimal(18, 2)
-  committedQty          Int      @default(0) // person-shifts committed (progress; the ONE mutable column)
+  ratePerPersonShift    Decimal                    @db.Decimal(18, 2)
+  shiftPremium          Decimal                    @db.Decimal(18, 2)
+  committedAmountBase   Decimal                    @db.Decimal(18, 2)
+  committedQty          Int                        @default(0) // person-shifts committed (progress; the ONE mutable column)
   // Task-2 correction F4 — provenance: the comparison-selected quote line this line's rate/premium
   // came from (frozen; a composite-FK chain proves rate/premium == the selected quote line's).
   comparisonId          String
@@ -3186,11 +3196,11 @@ model LabourPurchaseOrderLine {
   // Phase 5 Task 4 (§F) — VENDOR PINNING, the labour twin. Same reasoning, same seals: the
   // vendor lives on the labour PO ROOT, so the line copies it (and its order) and both copies
   // are FK-sealed back to the version→root chain they came from.
-  labourPurchaseOrder   LabourPurchaseOrder @relation(fields: [projectId, purchaseOrderId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  purchaseOrderId       String
-  vendorId              String
+  labourPurchaseOrder LabourPurchaseOrder @relation(fields: [projectId, purchaseOrderId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  purchaseOrderId     String
+  vendorId            String
 
-  commitments CapacityCommitment[]
+  commitments  CapacityCommitment[]
   // Phase 5 Task 1 (§C) — the commercial-owned cost-head attribution history for this line
   attributions CommitmentAttribution[]
 
@@ -3207,20 +3217,20 @@ model LabourPurchaseOrderLine {
 // Inbound forecast capacity a source commits per (civilDate, shift) slice of a labourSpecFingerprint
 // (§C.1). Unit: person-shift. One commitment per PO line (partial unique). committed→revised→defaulted.
 model CapacityCommitment {
-  id                    String   @id @default(cuid())
+  id                    String                  @id @default(cuid())
   projectId             String
   poLine                LabourPurchaseOrderLine @relation(fields: [projectId, poLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   poLineId              String
   labourSpecFingerprint String
-  civilDate             DateTime @db.Date
+  civilDate             DateTime                @db.Date
   shift                 String
   personShiftQty        Int
-  status                String   @default("committed") // committed | revised | defaulted
-  createdAt             DateTime @default(now())
+  status                String                  @default("committed") // committed | revised | defaulted
+  createdAt             DateTime                @default(now())
   createdById           String
   defaultedAt           DateTime?
 
-  promises CapacityPromise[]
+  promises    CapacityPromise[]
   // Phase 4 Task 3 — the named-worker allocations that draw this forecast capacity down (§F bound 3)
   allocations WorkerAllocation[]
 
@@ -3233,14 +3243,14 @@ model CapacityCommitment {
 // A dated arrival/rate promise in the APPEND-ONLY register (§F). seq monotone; only the initial
 // promise (seq 1) may omit the reason. Mirrors DeliveryPromise.
 model CapacityPromise {
-  id           String   @id @default(cuid())
+  id           String             @id @default(cuid())
   projectId    String
   commitment   CapacityCommitment @relation(fields: [projectId, commitmentId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   commitmentId String
   seq          Int
-  promisedDate DateTime @db.Date
+  promisedDate DateTime           @db.Date
   reason       String?
-  recordedAt   DateTime @default(now())
+  recordedAt   DateTime           @default(now())
   recordedById String
 
   @@unique([commitmentId, seq])
@@ -3271,15 +3281,15 @@ model CapacityPromise {
 // PurchaseOrderVersion frozen-identity CAS pattern, NOT append-only. Global conservation is the
 // partial-unique on (projectId, workerId, civilDate, shift) WHERE status='active' (raw SQL).
 model WorkerAllocation {
-  id        String  @id @default(cuid())
-  project   Project @relation(fields: [projectId], references: [id])
-  projectId String
+  id                    String              @id @default(cuid())
+  project               Project             @relation(fields: [projectId], references: [id])
+  projectId             String
   // the atomic capacity source — a same-project worker (composite FK)
-  worker    Worker  @relation(fields: [projectId, workerId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  workerId  String
+  worker                Worker              @relation(fields: [projectId, workerId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  workerId              String
   // the slice this person-shift is consumed by
-  civilDate DateTime @db.Date
-  shift     String   // 'day' | 'night'
+  civilDate             DateTime            @db.Date
+  shift                 String // 'day' | 'night'
   // the demand it satisfies — the activity target is validated through ActivityParticipant
   // (cycle-exempt); requirementId/originRevision/labourSpecFingerprint pin §B provenance so
   // coverage can carry a compatible revision forward (or strand an incompatible one).
@@ -3289,25 +3299,25 @@ model WorkerAllocation {
   labourSpecFingerprint String
   // if the allocation came from a crew expansion, which crew (provenance only — capacity is
   // conserved per WORKER, never per crew)
-  crewId    String?
+  crewId                String?
   // §F bound 3 — the supplier capacity this allocation draws down, or NULL for own workforce
   // (an in-house worker needs no commitment). When set, a five-column composite FK binds the
   // allocation's (fingerprint, civilDate, shift) to the commitment's OWN slice, so capacity
   // committed for one slice can never be drawn for another; the bound
   // `active allocations ≤ commitment.personShiftQty` is re-derived under the commitment
   // `FOR UPDATE` in the allocating transaction.
-  capacityCommitment   CapacityCommitment? @relation(fields: [projectId, capacityCommitmentId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  capacityCommitmentId String?
-  status    String   @default("active") // active | released
-  allocatedAt   DateTime @default(now())
-  allocatedBy   User     @relation("allocationsMade", fields: [allocatedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  allocatedById String
-  releasedAt    DateTime?
-  releasedBy    User?     @relation("allocationsReleased", fields: [releasedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  releasedById  String?
-  releaseReason String?
+  capacityCommitment    CapacityCommitment? @relation(fields: [projectId, capacityCommitmentId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  capacityCommitmentId  String?
+  status                String              @default("active") // active | released
+  allocatedAt           DateTime            @default(now())
+  allocatedBy           User                @relation("allocationsMade", fields: [allocatedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  allocatedById         String
+  releasedAt            DateTime?
+  releasedBy            User?               @relation("allocationsReleased", fields: [releasedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  releasedById          String?
+  releaseReason         String?
   // §C rule ii — every fact records the command that produced it (project-contained composite FK)
-  sourceCommandId String
+  sourceCommandId       String
 
   work LabourWorkFact[]
 
@@ -3323,34 +3333,34 @@ model WorkerAllocation {
 // (projectId, workerId, civilDate, shift) WHERE revokedAt IS NULL gives one LIVE attendance per
 // worker/date/shift (a revoked row survives as history and permits a corrected re-record).
 model LabourAttendance {
-  id        String  @id @default(cuid())
-  project   Project @relation(fields: [projectId], references: [id])
-  projectId String
-  worker    Worker  @relation(fields: [projectId, workerId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  workerId  String
-  civilDate DateTime @db.Date
-  shift     String
+  id              String        @id @default(cuid())
+  project         Project       @relation(fields: [projectId], references: [id])
+  projectId       String
+  worker          Worker        @relation(fields: [projectId, workerId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  workerId        String
+  civilDate       DateTime      @db.Date
+  shift           String
   // Task-3 correction F2 — canonical presence carries TRUSTED evidence, because the Team gate reads
   // it as execution truth. EXACTLY ONE of the two below (a CHECK enforces it), so a bare presence
   // claim is unrepresentable: either the worker's OWN bound device evidenced the muster (the device
   // path; a device bound to another worker is rejected by the Task-3 trigger) …
-  device    WorkerDevice? @relation(fields: [projectId, deviceId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  deviceId  String?
+  device          WorkerDevice? @relation(fields: [projectId, deviceId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  deviceId        String?
   // … or a pmc recorded an EXPLICIT, attributable exception saying why there is no device behind it.
-  manualReason String?
+  manualReason    String?
   // the optional selfie/QR capture. Correction F2 adds the same-project composite FK (there was
   // none, so a nonexistent or cross-project id was accepted); while cited it cannot be deleted —
   // the labour participant refuses the media delete, since a muster is an append-only fact.
-  evidenceMedia   Media? @relation("labourAttendanceEvidence", fields: [projectId, evidenceMediaId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  evidenceMedia   Media?        @relation("labourAttendanceEvidence", fields: [projectId, evidenceMediaId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   evidenceMediaId String?
-  recordedAt   DateTime @default(now())
-  recordedBy   User     @relation("attendanceRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  recordedById String
+  recordedAt      DateTime      @default(now())
+  recordedBy      User          @relation("attendanceRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  recordedById    String
   // revocation is a CORRECTION, not a delete (the row survives; coverage re-derives without it)
-  revokedAt    DateTime?
-  revokedBy    User?     @relation("attendanceRevoked", fields: [revokedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  revokedById  String?
-  revokeReason String?
+  revokedAt       DateTime?
+  revokedBy       User?         @relation("attendanceRevoked", fields: [revokedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  revokedById     String?
+  revokeReason    String?
   sourceCommandId String
 
   @@unique([projectId, id])
@@ -3365,23 +3375,23 @@ model LabourAttendance {
 // FOR UPDATE and must not exceed shiftMinutes — a per-row CHECK alone cannot stop rows summing past
 // the shift). The measured construction OUTPUT is a separate Activities-owned fact (§I), not this.
 model LabourWorkFact {
-  id        String  @id @default(cuid())
-  project   Project @relation(fields: [projectId], references: [id])
-  projectId String
-  worker    Worker  @relation(fields: [projectId, workerId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  workerId  String
+  id              String           @id @default(cuid())
+  project         Project          @relation(fields: [projectId], references: [id])
+  projectId       String
+  worker          Worker           @relation(fields: [projectId, workerId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  workerId        String
   // the allocation this effort was performed under (same-project composite FK); its slice identity
   // is copied here and DB-bound to the allocation, so effort can never name a different slice.
-  allocation   WorkerAllocation @relation(fields: [projectId, allocationId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  allocationId String
-  activityId   String
-  civilDate    DateTime @db.Date
-  shift        String
-  workedMinutes Int
-  note          String?
-  recordedAt   DateTime @default(now())
-  recordedBy   User     @relation("labourWorkRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  recordedById String
+  allocation      WorkerAllocation @relation(fields: [projectId, allocationId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  allocationId    String
+  activityId      String
+  civilDate       DateTime         @db.Date
+  shift           String
+  workedMinutes   Int
+  note            String?
+  recordedAt      DateTime         @default(now())
+  recordedBy      User             @relation("labourWorkRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  recordedById    String
   sourceCommandId String
 
   @@unique([projectId, id])
@@ -3396,19 +3406,19 @@ model LabourWorkFact {
 // partial-unique on (projectId, requirementId, fromFingerprint, toFingerprint) WHERE revokedAt IS
 // NULL forbids a second ACTIVE row while keeping revoked rows as history (raw SQL).
 model ApprovedSkillSubstitution {
-  id              String  @id @default(cuid())
-  project         Project @relation(fields: [projectId], references: [id])
+  id              String                  @id @default(cuid())
+  project         Project                 @relation(fields: [projectId], references: [id])
   projectId       String
   root            ActivityRequirementRoot @relation(fields: [projectId, requirementId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   requirementId   String
   fromFingerprint String
   toFingerprint   String
   reason          String
-  approvedBy      User     @relation("skillSubstitutionsApproved", fields: [approvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  approvedBy      User                    @relation("skillSubstitutionsApproved", fields: [approvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   approvedById    String
-  at              DateTime @default(now())
+  at              DateTime                @default(now())
   revokedAt       DateTime?
-  revokedBy       User?     @relation("skillSubstitutionsRevoked", fields: [revokedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  revokedBy       User?                   @relation("skillSubstitutionsRevoked", fields: [revokedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   revokedById     String?
   revokeReason    String?
   sourceCommandId String
@@ -3426,19 +3436,19 @@ model ApprovedSkillSubstitution {
 // observation — the observation row is never edited. Both tables are labour-owned and sealed
 // append-only in raw SQL (migration 20270305000000).
 model LabourMismatch {
-  id        String   @id @default(cuid())
-  project   Project  @relation(fields: [projectId], references: [id])
-  projectId String
+  id              String   @id @default(cuid())
+  project         Project  @relation(fields: [projectId], references: [id])
+  projectId       String
   // the activity whose Team gate this observation blocks (same-project composite FK)
-  activity   Activity @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  activityId String
-  civilDate  DateTime @db.Date
-  shift      String
-  kind       String // 'wrong_trade' | 'shortfall' (raw-SQL CHECK)
+  activity        Activity @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  activityId      String
+  civilDate       DateTime @db.Date
+  shift           String
+  kind            String // 'wrong_trade' | 'shortfall' (raw-SQL CHECK)
   // the observed worker (wrong-trade case); a shortfall observation names no worker
-  worker   Worker? @relation(fields: [projectId, workerId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  workerId String?
-  note     String
+  worker          Worker?  @relation(fields: [projectId, workerId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  workerId        String?
+  note            String
   recordedAt      DateTime @default(now())
   recordedBy      User     @relation("labourMismatchesRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   recordedById    String
@@ -3451,15 +3461,15 @@ model LabourMismatch {
 }
 
 model LabourMismatchResolution {
-  id        String  @id @default(cuid())
-  project   Project @relation(fields: [projectId], references: [id])
-  projectId String
-  mismatch   LabourMismatch @relation(fields: [projectId, mismatchId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  mismatchId String
-  resolution String // the disposition, e.g. 'reassigned-correct-trade'
-  reason     String
-  resolvedAt      DateTime @default(now())
-  resolvedBy      User     @relation("labourMismatchesResolved", fields: [resolvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  id              String         @id @default(cuid())
+  project         Project        @relation(fields: [projectId], references: [id])
+  projectId       String
+  mismatch        LabourMismatch @relation(fields: [projectId, mismatchId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  mismatchId      String
+  resolution      String // the disposition, e.g. 'reassigned-correct-trade'
+  reason          String
+  resolvedAt      DateTime       @default(now())
+  resolvedBy      User           @relation("labourMismatchesResolved", fields: [resolvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   resolvedById    String
   sourceCommandId String
 
@@ -3473,16 +3483,16 @@ model LabourMismatchResolution {
 // quantity ÷ Labour's `LabourWorkFact` worked-minutes — a DERIVED read composed on the
 // Activities side (Labour never reads this table), no stored column.
 model ActivityWorkOutput {
-  id        String   @id @default(cuid())
-  project   Project  @relation(fields: [projectId], references: [id])
-  projectId String
-  activity   Activity @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  activityId String
-  civilDate  DateTime @db.Date
-  shift      String
-  quantity   Decimal  @db.Decimal(18, 6) // raw-SQL CHECK > 0
-  uom        String
-  evidence        Media?  @relation(fields: [projectId, evidenceMediaId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  id              String   @id @default(cuid())
+  project         Project  @relation(fields: [projectId], references: [id])
+  projectId       String
+  activity        Activity @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  activityId      String
+  civilDate       DateTime @db.Date
+  shift           String
+  quantity        Decimal  @db.Decimal(18, 6) // raw-SQL CHECK > 0
+  uom             String
+  evidence        Media?   @relation(fields: [projectId, evidenceMediaId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   evidenceMediaId String?
   note            String?
   recordedAt      DateTime @default(now())
@@ -3562,13 +3572,13 @@ model CommitmentAttribution {
   supersededBy    User?     @relation("attributionsSuperseded", fields: [supersededById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   supersededById  String?
   supersedeReason String?
-
-  @@unique([projectId, id])
-  @@index([projectId, costHeadCode])
   // The two PARTIAL uniques — one per TARGET, not per row — live in the migration
   // (Prisma cannot express a partial index):
   //   (projectId, poLineId)       WHERE "supersededAt" IS NULL AND "poLineId"       IS NOT NULL
   //   (projectId, labourPoLineId) WHERE "supersededAt" IS NULL AND "labourPoLineId" IS NOT NULL
+
+  @@unique([projectId, id])
+  @@index([projectId, costHeadCode])
 }
 
 // Phase 5 Task 2 (§B) — the BUDGET, versioned and immutable.
@@ -3609,13 +3619,13 @@ model BudgetLine {
   supersededBy    User?     @relation("budgetLinesSuperseded", fields: [supersededById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   supersededById  String?
   supersedeReason String?
+  // The PARTIAL unique — exactly one LIVE version per head — lives in the migration
+  // (Prisma cannot express a partial index):
+  //   (projectId, costHeadCode) WHERE "supersededAt" IS NULL
 
   @@unique([projectId, id])
   @@unique([projectId, costHeadCode, version]) // versions are monotonic and never reused
   @@index([projectId, costHeadCode])
-  // The PARTIAL unique — exactly one LIVE version per head — lives in the migration
-  // (Prisma cannot express a partial index):
-  //   (projectId, costHeadCode) WHERE "supersededAt" IS NULL
 }
 
 // Phase 5 Task 2 (§B) — the over-budget EXCEPTION.
@@ -3674,14 +3684,14 @@ model Measurement {
   /// `labourPoLineId`/`activityId`/`citedOutputId` described B's work: the fold would apply the
   /// signed quantity to B while `netOf(A)` counted it as A's child, so the immutable register could
   /// add or withdraw payable evidence for a different line than the correction says it adjusts.
-  corrects   Measurement? @relation("measurementCorrections", fields: [projectId, correctsId, labourPoLineId, activityId, citedOutputId], references: [projectId, id, labourPoLineId, activityId, citedOutputId], onDelete: NoAction, onUpdate: NoAction)
-  correctsId String?
+  corrects    Measurement?  @relation("measurementCorrections", fields: [projectId, correctsId, labourPoLineId, activityId, citedOutputId], references: [projectId, id, labourPoLineId, activityId, citedOutputId], onDelete: NoAction, onUpdate: NoAction)
+  correctsId  String?
   corrections Measurement[] @relation("measurementCorrections")
 
   /// non-blank CHECK; required on a correction (a signed delta with no reason is unauditable)
   reason String?
 
-  measuredOn DateTime @db.Date
+  measuredOn    DateTime           @db.Date
   /// progress EVIDENCE (§0 `OUTPUT` is a predicate, not a pool) — the cited activity work output
   /// Codex round-4 P2 — the FK binds the output to THIS measurement's activity. Project
   /// containment alone let a maintenance insert or a future writer store `activityId = A` while
@@ -3730,12 +3740,12 @@ model BudgetException {
 
   /// cleared when a later write returns headroom to non-negative — the ONE permitted transition
   clearedAt DateTime?
-
-  @@unique([projectId, id])
-  @@index([projectId, costHeadCode])
   // Exactly one OPEN exception per head — a partial unique in the migration, so a second
   // headroom-moving write on an already-excepted head does not stack duplicate Inbox actions:
   //   (projectId, costHeadCode) WHERE "clearedAt" IS NULL
+
+  @@unique([projectId, id])
+  @@index([projectId, costHeadCode])
 }
 
 // ─── Phase 5 Task 4 (§F/§G) — the VENDOR BILL: the vendor's CLAIM ────────────────────────────
@@ -3782,9 +3792,9 @@ model VendorBillRevision {
 model VendorBill {
   revisionRow  VendorBillRevision?
   certificates BillCertificate[]
-  id        String  @id @default(cuid())
-  projectId String
-  project   Project @relation(fields: [projectId], references: [id])
+  id           String              @id @default(cuid())
+  projectId    String
+  project      Project             @relation(fields: [projectId], references: [id])
 
   /// the counterparty, bound to this project. A LINE's PO line is FK-proven to carry the SAME
   /// vendor, so Vendor A claiming against Vendor B's order is unrepresentable (§F).
@@ -3805,10 +3815,10 @@ model VendorBill {
   /// verified → rejected. Task 4 ships the lifecycle UP TO `under-verification` plus `disputed`,
   /// `resolved` and `rejected`. `verified` and everything past it belong to the task that
   /// produces their evidence (§E, Task 5) — a control ships with the transition it guards.
-  status         String    @default("draft")
-  statusChangedAt DateTime @default(now())
+  status            String   @default("draft")
+  statusChangedAt   DateTime @default(now())
   /// why the claim left the live set — required on `rejected` and on `disputed` (non-blank CHECK)
-  statusReason   String?
+  statusReason      String?
   /// §F — the version that was live when this claim was DISPUTED, captured by the lifecycle
   /// trigger and overwritten on every update, so no writer can supply it. `disputed → resolved`
   /// requires a live version superseding exactly this one: a resolution releases the
@@ -3827,20 +3837,20 @@ model VendorBill {
   /// §C rule ii — every fact records the command that produced it
   sourceCommandId String
 
-  versions      VendorBillVersion[]
-  verifications BillVerification[]
-
-  @@unique([projectId, id])
-  /// the FK target proving a VERSION belongs to a bill of this vendor, and a LINE in turn
-  @@unique([projectId, id, vendorId])
-  @@index([projectId, vendorId])
+  versions         VendorBillVersion[]
+  verifications    BillVerification[]
   // The DUPLICATE-DOCUMENT partial unique lives in the migration (Prisma cannot express one):
   //   (projectId, vendorId, vendorBillNumber) WHERE "status" NOT IN ('rejected','resolved')
   // It releases on the LIFECYCLE'S OWN terminal states and on nothing else (§F, probe 5bj): a
   // predicate naming a state §F does not define would never release at all.
   paymentApprovals PaymentApproval[]
-  payments Payment[]
+  payments         Payment[]
   paymentReversals PaymentReversal[]
+
+  @@unique([projectId, id])
+  /// the FK target proving a VERSION belongs to a bill of this vendor, and a LINE in turn
+  @@unique([projectId, id, vendorId])
+  @@index([projectId, vendorId])
 }
 
 /// §F — an IMMUTABLE claim version. Amending issues a NEW version and supersedes this one; §0's
@@ -3851,13 +3861,13 @@ model VendorBillVersion {
   projectId String
   project   Project @relation(fields: [projectId], references: [id])
 
-  bill   VendorBill @relation(fields: [projectId, billId, vendorIdPin], references: [projectId, id, vendorId], onDelete: NoAction, onUpdate: NoAction)
-  billId String
+  bill              VendorBill @relation(fields: [projectId, billId, vendorIdPin], references: [projectId, id, vendorId], onDelete: NoAction, onUpdate: NoAction)
+  billId            String
   /// the bill's vendor, denormalized and FK-sealed to the root above, so a LINE can be
   /// vendor-sealed in turn without a transitive join PostgreSQL cannot express
-  vendorIdPin String
+  vendorIdPin       String
   /// monotonic within the bill; v1 is the first claim
-  version Int
+  version           Int
   /// the amended prior version this reissue replaces — the PO's `supersedesVersion` lineage
   supersedesVersion Int?
 
@@ -3883,6 +3893,8 @@ model VendorBillVersion {
 
   lines     VendorBillLine[]
   sodGrants SodGrant[]
+  // The partial unique — exactly one CURRENT version per bill — lives in the migration:
+  //   (projectId, billId) WHERE "supersededAt" IS NULL
 
   @@unique([projectId, id])
   @@unique([projectId, billId, version]) // versions are monotonic and never reused
@@ -3892,8 +3904,6 @@ model VendorBillVersion {
   /// the FK target sealing every LINE to its version's own bill and vendor
   @@unique([projectId, id, billId, vendorIdPin])
   @@index([projectId, billId])
-  // The partial unique — exactly one CURRENT version per bill — lives in the migration:
-  //   (projectId, billId) WHERE "supersededAt" IS NULL
 }
 
 /// §F — ONE immutable claim line, naming EXACTLY ONE PO line.
@@ -3931,10 +3941,10 @@ model VendorBillLine {
   /// a negative line inside a conservation fold, and Phase 5 has no credit note. A live −100-unit
   /// claim beside a 200-unit bill would leave cumulative `BILLED_QTY` at 100 and pass bounds 1–2
   /// against 100 accepted while the second bill certifies against its own bill-scoped amount.
-  quantity Decimal @db.Decimal(18, 6)
+  quantity      Decimal @db.Decimal(18, 6)
   /// the claimed per-base-unit rate. §E compares it to the frozen ordered rate in Task 5; here it
   /// is the money the claim is made of.
-  rate     Decimal @db.Decimal(18, 2)
+  rate          Decimal @db.Decimal(18, 2)
   /// NON-NEGATIVE, not strictly positive (§0b): `PurchaseOrderLine`'s own CHECK is
   /// `taxAmount >= 0 AND freightAmount >= 0`, so a zero-tax / zero-freight PO is legitimate and a
   /// strictly-positive claim check would refuse a bill that matches the ordered evidence EXACTLY.
@@ -3946,13 +3956,13 @@ model VendorBillLine {
   /// fold reads is always the money the line's own components make (§A: half-up at 2 decimals,
   /// applied only where a value is persisted)
   amount        Decimal @db.Decimal(18, 2)
+  // The XOR CHECK, the type↔reference correspondence, the sign CHECKs, the labour tax/freight
+  // pin and the derived-amount CHECK all live in the migration.
 
   @@unique([projectId, id])
   @@index([projectId, versionId])
   @@index([projectId, poLineId])
   @@index([projectId, labourPoLineId])
-  // The XOR CHECK, the type↔reference correspondence, the sign CHECKs, the labour tax/freight
-  // pin and the derived-amount CHECK all live in the migration.
 }
 
 /// Phase 5 Task 5A (§E) — the VERDICT, recorded.
@@ -3975,14 +3985,14 @@ model BillVerification {
   projectId String
   project   Project @relation(fields: [projectId], references: [id])
 
-  bill   VendorBill @relation(fields: [projectId, billId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  billId String
+  bill      VendorBill @relation(fields: [projectId, billId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  billId    String
   /// the claim version verified. An amendment supersedes it, so a verdict cannot outlive the claim
   /// it was computed over — which is what makes the trigger's check meaningful.
   versionId String
 
   /// `matched` | `exception`
-  verdict String
+  verdict    String
   /// the §E exception kinds, empty on a match. Stored as the durable evidence a replay returns.
   exceptions String[]
 
@@ -4351,8 +4361,8 @@ model PaymentApproval {
   /// binds that command's `resultRef` AND its actor back to THIS row
   sourceCommandId String
 
-  payments      Payment[]
-  sodExceptions SodException[]
+  payments       Payment[]
+  sodExceptions  SodException[]
   /// the §I grants this approval CONSUMED — at most one, and the seal requires exactly one
   /// whenever the approver is the actor who certified
   consumedGrants SodGrant[]

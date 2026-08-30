@@ -53,6 +53,14 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   { table: 'DecisionOptionKindSelection', trigger: 'DecisionOptionKindSelection_no_truncate' },
   { table: 'DecisionOptionTouch', trigger: 'DecisionOptionTouch_t4a_no_truncate' },
   { table: 'OrgMembership', trigger: 'OrgMembership_t4b2_no_truncate' },
+  // Phase 6 unit 4c-i. The approval register joins the list because 4c makes its COUNT trusted
+  // cycle evidence: `TRUNCATE "DecisionApprovalRevision" CASCADE` would return every decision to
+  // cycle 0 and revive consultations an approval had closed. The two consultation tables carry
+  // their own append-only statement seals. All three fire on an EMPTY table, so every one of them
+  // has to be here or the suites that reset them — directly or through a cascade — fail in setup.
+  { table: 'DecisionApprovalRevision', trigger: 'DecisionApprovalRevision_no_truncate' },
+  { table: 'DecisionConsultation', trigger: 'DecisionConsultation_t4c_no_truncate' },
+  { table: 'DecisionConsultationResponse', trigger: 'DecisionConsultationResponse_t4c_no_truncate' },
 ];
 
 /**
