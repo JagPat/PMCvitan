@@ -27,11 +27,17 @@ export const DECISION_COMMANDS = [
   // (kind / named membership), convert to/from a record (`none` ⟺ `recorded` as one coherent
   // pair), or replace its options. Publication freezes the holder; this is the drafting door.
   'decisions.updateDraft',
-  // Phase 6 unit 4c-ii (§A) — CONSULTATION: the PMC asks a named member a question about an open
+  // Phase 6 unit 4c (§A) — CONSULTATION: the PMC asks a named member a question about an open
   // decision, and that member answers. Advice that INFORMS without gating: neither command moves
   // a status or changes a gate verdict. Both are capability-gated on `consultation` per project.
-  'decisions.requestConsultation',
-  'decisions.respondToConsultation',
+  //
+  // These two break this list's `decisions.*` prefix DELIBERATELY, and the reason is immutable
+  // history: the merged 4c-i migration's provenance seal checks `CommandExecution.commandType`
+  // against these exact strings, so the ledger type IS `consultations.request` /
+  // `consultations.respond`. A command whose manifest name and ledger type disagreed would be a
+  // second name for one fact, which is the drift the manifest exists to prevent.
+  'consultations.request',
+  'consultations.respond',
 ] as const;
 export type DecisionCommand = (typeof DECISION_COMMANDS)[number];
 
@@ -131,7 +137,7 @@ export interface WithdrawDecisionInput {
 }
 
 /**
- * `decisions.requestConsultation` — ask ONE named member for advice on an open decision.
+ * `consultations.request` — ask ONE named member for advice on an open decision.
  *
  * The consultee is named BY MEMBERSHIP, not by user: a membership id denotes one person for its
  * lifetime (the delivered `Membership_t4b_identity_frozen` refuses any change to `userId` or
@@ -145,7 +151,7 @@ export interface RequestConsultationInput {
   readonly question: string;
 }
 
-/** `decisions.respondToConsultation` — the NAMED consultee answers, once. */
+/** `consultations.respond` — the NAMED consultee answers, once. */
 export interface RespondToConsultationInput {
   /** the consultation being answered */
   readonly consultationId: string;

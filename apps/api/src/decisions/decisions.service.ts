@@ -592,18 +592,18 @@ export class DecisionsService {
     // and runs with `{ commandId: null }`. Without this refusal the write reaches PostgreSQL and
     // surfaces as an internal constraint failure — a 500 where the honest answer is that this
     // command needs a key.
-    const key = requireIdempotencyKey(idempotencyKey, 'decisions.requestConsultation');
+    const key = requireIdempotencyKey(idempotencyKey, 'consultations.request');
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const requestHash = hashRequest({ decisionId, consulteeMembershipId: input.consulteeMembershipId, question: input.question });
-    if (await peekReplay(this.prisma, scope, actor.actorId, 'decisions.requestConsultation', key, requestHash)) {
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'consultations.request', key, requestHash)) {
       return this.snapshot.build(projectId, user.role, user.sub);
     }
 
     const outcome = await executeCommand(this.prisma, {
       scope,
       actor,
-      commandType: 'decisions.requestConsultation',
+      commandType: 'consultations.request',
       idempotencyKey: key,
       requestHash,
       run: async (tx, ctx) => {
@@ -654,7 +654,7 @@ export class DecisionsService {
             sourceCommandId: ctx.commandId!,
           },
         });
-        await recordAudit(tx, { projectId, actor, action: 'decisions.requestConsultation', entity: 'Decision', entityId: decisionId });
+        await recordAudit(tx, { projectId, actor, action: 'consultations.request', entity: 'Decision', entityId: decisionId });
         const body = `${actor.actorName} asked you about ${d.title}`;
         const ev = await emitEvent(tx, {
           projectId, actor,
@@ -697,21 +697,21 @@ export class DecisionsService {
     idempotencyKey?: string,
   ): Promise<SnapshotDto> {
     await this.capabilities.assertEnabled(projectId, CONSULTATION_CAPABILITY);
-    const key = requireIdempotencyKey(idempotencyKey, 'decisions.respondToConsultation');
+    const key = requireIdempotencyKey(idempotencyKey, 'consultations.respond');
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const requestHash = hashRequest({
       decisionId, consultationId: input.consultationId, response: input.response,
       recommendedOptionIndex: input.recommendedOptionIndex ?? null,
     });
-    if (await peekReplay(this.prisma, scope, actor.actorId, 'decisions.respondToConsultation', key, requestHash)) {
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'consultations.respond', key, requestHash)) {
       return this.snapshot.build(projectId, user.role, user.sub);
     }
 
     const outcome = await executeCommand(this.prisma, {
       scope,
       actor,
-      commandType: 'decisions.respondToConsultation',
+      commandType: 'consultations.respond',
       idempotencyKey: key,
       requestHash,
       run: async (tx, ctx) => {
@@ -766,7 +766,7 @@ export class DecisionsService {
             sourceCommandId: ctx.commandId!,
           },
         });
-        await recordAudit(tx, { projectId, actor, action: 'decisions.respondToConsultation', entity: 'Decision', entityId: decisionId });
+        await recordAudit(tx, { projectId, actor, action: 'consultations.respond', entity: 'Decision', entityId: decisionId });
         const body = `${actor.actorName} answered your question about ${d.title}`;
         const ev = await emitEvent(tx, {
           projectId, actor,
