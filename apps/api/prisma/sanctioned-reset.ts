@@ -52,6 +52,13 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   { table: 'DecisionOptionKind', trigger: 'DecisionOptionKind_no_truncate' },
   { table: 'DecisionOptionKindSelection', trigger: 'DecisionOptionKindSelection_no_truncate' },
   { table: 'DecisionOptionTouch', trigger: 'DecisionOptionTouch_t4a_no_truncate' },
+  // Phase 6 unit 4c-i — the consultation register, and the approval register whose COUNT 4c
+  // turns into trusted cycle evidence. Truncating the approval register would return the count
+  // to 0 and make a stale cycle-0 consultation answerable in a reopened cycle: the exact revival
+  // `openCycle` exists to prevent, reached by ERASING the evidence rather than forging it.
+  { table: 'DecisionApprovalRevision', trigger: 'DecisionApprovalRevision_t4c_no_truncate' },
+  { table: 'DecisionConsultation', trigger: 'DecisionConsultation_t4c_no_truncate' },
+  { table: 'DecisionConsultationResponse', trigger: 'DecisionConsultationResponse_t4c_no_truncate' },
   { table: 'OrgMembership', trigger: 'OrgMembership_t4b2_no_truncate' },
 ];
 
