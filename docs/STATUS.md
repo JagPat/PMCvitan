@@ -14,13 +14,47 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4c-0
-reviewed_merge: d86cfb60
-open_pr: 489
-next_task: phase-6-task-4c
+work_item: phase-6-task-4c-i
+reviewed_merge: 881002bb
+open_pr: none
+next_task: phase-6-task-4c-ii
 blocking_directive: none
 updated: 2026-08-30
 ```
+
+**UNIT 4c-0 IS MERGED AND CLEARED (PR #489 at `main` `881002bb`); UNIT 4c-i IS THE OPEN WORK.**
+`reviewed_merge` advances to `881002bb` — #489 earned a fresh clean exact-head Codex +1, so it
+is a genuinely reviewed merge, the same standard `d86cfb60` met and `d06af48e` never did.
+
+**4c-i IS THE DARK MIGRATION UNIT** (the merged plan, §D "4c-i, the migration unit"): ONE
+additive migration creating the two append-only consultation facts with their composite keys,
+CHECKs, the two NEW orgs-owned SQL primitives (`phase6_membership_active_user`,
+`phase6_project_operable`), both INSERT eligibility seals under the canonical lock order
+(readiness key → `Project` → `Membership` → `Decision`), the §C rule-ii provenance pair (the
+INSERT arm plus the DEFERRABLE commit-time result binding), the row-level append-only seals
+PLUS three named statement-level no-TRUNCATE seals — the two new tables and
+`DecisionApprovalRevision`, whose COUNT 4c now treats as cycle evidence — and the
+`consultation` capability RESERVATION installed before its own diagnostic-first audit reads.
+Deployed dark: no caller, no contract, no route, and the one existing table that changes gains
+a NULLABLE column enforced by nothing, so the previous release runs unchanged.
+
+Every statement is RETRY-SAFE, and that is proven rather than asserted:
+`apps/api/scripts/phase6-t4c-migration-proof.sh` drives five states — the pre-enabled-capability
+ABORT, BOTH orderings of the concurrent `capability:enable` race with the loser observed waiting
+in `pg_stat_activity`, a PARTIAL apply completing on re-run with all ten seals armed, and the
+clean row-free deploy — and is wired into CI beside `upgrade-proof.sh`.
+
+Two things 4c-i deliberately does NOT do, both recorded so a reader does not mistake them for
+gaps: there is **no CHECK on `ProjectCapability.capability`** (Board decision, 2026-08-29 on
+#480, not re-litigable — it would break the previous release's generic `capability:enable`
+writer during exactly the window this unit must survive), and the
+`DecisionApprovalRevision.sourceCommandId` requirement is **staged, not enforced** (the
+delivered `DecisionsService.approve` writes no receipt, so enforcing it here would reject every
+approval performed by a still-serving 4b instance; the trigger lands in 4c-ii, after the
+drain-first cutover). The hostile arm that proves that trigger therefore lands WITH the trigger;
+4c-i proves only the compatibility direction, and its probe suite says so.
+
+Units 1–6 of contractor capture stay gated; listener #482/#483/#484 wait.
 
 **THE BOARD ACCEPTED THE 4c PLAN AS-IS; 4c IMPLEMENTATION IS RUNNING, STARTING AT 4c-0.**
 On 2026-08-30 the Board dismissed the unwind (09:36 IST) and directed the loop explicitly
@@ -76,12 +110,11 @@ reaches it, and its only TRUNCATE is a hostile probe asserting rejection — so 
 the reason recorded beside the registry against a future "completeness" fix that would re-break
 every reset.
 
-**UNIT 4c-0 IS OPEN AS PR #489** (branch `claude/phase6-4c-0-reset-sweep-r2`,
+**UNIT 4c-0 MERGED AS PR #489** (branch `claude/phase6-4c-0-reset-sweep-r2`,
 `Replaces: #488`) — the prerequisite reset sweep, tree-identical to #488's final head
 `87df7b29`. #488 reached the two-finding-bearing-head limit (round 1 P1: the sweep missed every
 inline reset; round 2 P2: it missed the resets living inside `it(...)` bodies as `finally`
-teardowns) and is CLOSED UNMERGED; both rounds are folded here. `open_pr` NAMES this PR because
-it is a WORK-ITEM PR, not a status landing.
+teardowns) and is CLOSED UNMERGED; both rounds are folded there.
 
 The #480 review lineage is preserved as history: the WORK lineage
 #470 → #471 → #473 → #474 → #476 → #477 → #478 → #479 → #480, each closing at the
