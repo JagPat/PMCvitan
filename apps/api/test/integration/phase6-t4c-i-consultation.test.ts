@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
@@ -30,6 +31,8 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
   // without a client cannot have a decision at all
   const users = { pmc: id('pmc'), client: id('client'), eng: id('eng'), other: id('other'), bpmc: id('bpmc'), bclient: id('bclient') };
   const membership: Record<string, string> = {};
+  /** A SECOND connection, so two transactions can genuinely overlap (P41's barrier arms). */
+  let other: PrismaClient;
   let decisionId = '';
   let optionAId = '';
   let bDecisionId = '';
@@ -107,6 +110,7 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
 
   beforeAll(async () => {
     t = await createTestApp();
+    other = new PrismaClient();
     await t.prisma.org.create({ data: { id: orgId, name: `T4CI ${run}`, slug: orgId } });
     await t.prisma.org.create({ data: { id: orgBId, name: `T4CI B ${run}`, slug: orgBId } });
     const projectData = (pid: string, oid: string) => ({
@@ -174,6 +178,7 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
       t.prisma.project.deleteMany({ where: { id: { in: [projectId, projectBId] } } }),
       t.prisma.org.deleteMany({ where: { id: { in: [orgId, orgBId] } } }),
     ]);
+    await other?.$disconnect();
     await t?.close();
   });
 
@@ -340,6 +345,47 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     await refused(responseSql({ id: id('x3'), consultationId: cons, decisionId: own.d, sourceCommandId: c1 }), /cycle/i);
   });
 
+  it('P25d (Codex F5): the response seal judges ELIGIBILITY at its own moment — withdrawn, approved, archived', async () => {
+    // A request made while `pending` OUTLIVES the decision, so eligibility is re-judged HERE. The
+    // request-side checks prove nothing about this: they ran when the decision was still open.
+
+    // withdrawn — its title and reason are pmc-only, so advice against it would append to exactly
+    // what 4a hides
+    const wd = await make(projectId, `elw${seq++}`);
+    const consW = await commitRequest({ decisionId: wd.d });
+    await t.prisma.decision.update({
+      where: { id: wd.d },
+      data: { status: 'withdrawn', withdrawnAt: new Date(), withdrawnById: users.pmc, withdrawnByName: 'U pmc', withdrawReason: 'asked in error' },
+    });
+    const cw = await reserve('consultations.respond', users.eng);
+    await refused(responseSql({ id: id('e1'), consultationId: consW, decisionId: wd.d, sourceCommandId: cw }), /PUBLISHED, still-open/i);
+
+    // approved — the question is answered; note this decision carries NO approval revision, so the
+    // cycle still matches and it is the STATUS arm alone that must refuse (the reopened-cycle probe
+    // above covers the other arm, and this one would pass on it by accident if they were merged)
+    const ap = await make(projectId, `ela${seq++}`);
+    const consA = await commitRequest({ decisionId: ap.d });
+    await t.prisma.decision.update({ where: { id: ap.d }, data: { status: 'approved' } });
+    const ca = await reserve('consultations.respond', users.eng);
+    await refused(responseSql({ id: id('e2'), consultationId: consA, decisionId: ap.d, sourceCommandId: ca }), /PUBLISHED, still-open/i);
+
+    // archived project — the operability arm, judged under the Project row lock
+    const ar = await make(projectId, `elr${seq++}`);
+    const consR = await commitRequest({ decisionId: ar.d });
+    await t.prisma.project.update({ where: { id: projectId }, data: { archivedAt: new Date() } });
+    const cr = await reserve('consultations.respond', users.eng);
+    try {
+      await refused(responseSql({ id: id('e3'), consultationId: consR, decisionId: ar.d, sourceCommandId: cr }), /archiv/i);
+    } finally {
+      await t.prisma.project.update({ where: { id: projectId }, data: { archivedAt: null } });
+    }
+
+    // DELIBERATELY NOT PROBED: a response against a DRAFT decision. It is unreachable, not
+    // untested — the response is FK-bound to its consultation's decision, a consultation cannot be
+    // born against a draft (the request seal), and publication is one-way (the delivered 4b seal
+    // refuses un-publishing). A probe for it could only be written by disabling one of those.
+  });
+
   // ── the §C rule-ii provenance chain, on BOTH tables ─────────────────────────────────────────
 
   it('provenance: a fabricated, foreign-project, SUCCEEDED, wrong-type or mis-attributed receipt is refused', async () => {
@@ -393,6 +439,57 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     ).rejects.toThrow(/result names/i);
   });
 
+  it('provenance (Codex F1): the RESPONSE table is judged by the same rules, through its own writer', async () => {
+    // Every negative above went through `requestSql`. That leaves the response seal's provenance
+    // arm untested: dropping its command-type or actor comparison would keep this suite green
+    // while accepting immutable advice whose receipt belongs to another operation or actor.
+    const cons = await commitRequest({});
+
+    const wrongType = await reserve('decisions.approve', users.eng);
+    await refused(responseSql({ id: id('q1'), consultationId: cons, sourceCommandId: wrongType }), /is a decisions.approve command/i);
+
+    const wrongActor = await reserve('consultations.respond', users.pmc);
+    await refused(responseSql({ id: id('q2'), consultationId: cons, sourceCommandId: wrongActor }), /different actor/i);
+
+    await refused(responseSql({ id: id('q3'), consultationId: cons, sourceCommandId: 'no-such-command' }), /no command receipt/i);
+
+    const foreign = await reserve('consultations.respond', users.bpmc, projectBId, orgBId);
+    await refused(responseSql({ id: id('q4'), consultationId: cons, sourceCommandId: foreign }), /no command receipt/i);
+
+    // a genuinely SUCCEEDED receipt cannot be borrowed
+    const done = id(`cmd${seq++}`);
+    await t.prisma.$transaction([
+      sql(reserveSql(done, 'consultations.respond', users.eng)),
+      sql(completeSql(done, 'something-else')),
+    ]);
+    await refused(responseSql({ id: id('q5'), consultationId: cons, sourceCommandId: done }), /not the RESERVED command/i);
+
+    // the DEFERRED half, on this table: a receipt left reserved at commit, and one completing with
+    // a `resultRef` naming another row
+    const dangling = id(`cmd${seq++}`);
+    await expect(
+      t.prisma.$transaction([
+        sql(reserveSql(dangling, 'consultations.respond', users.eng)),
+        sql(responseSql({ id: id('q6'), consultationId: cons, sourceCommandId: dangling })),
+      ]),
+    ).rejects.toThrow(/did not succeed/i);
+
+    const misbound = id(`cmd${seq++}`);
+    await expect(
+      t.prisma.$transaction([
+        sql(reserveSql(misbound, 'consultations.respond', users.eng)),
+        sql(responseSql({ id: id('q7'), consultationId: cons, sourceCommandId: misbound })),
+        sql(completeSql(misbound, 'a-different-row')),
+      ]),
+    ).rejects.toThrow(/result names/i);
+
+    // and the one-use rule, reached through the seal exactly as on the request side
+    const answered = await commitResponse({ consultationId: cons });
+    const spent = await t.prisma.decisionConsultationResponse.findUniqueOrThrow({ where: { id: answered } });
+    const cons2 = await commitRequest({});
+    await refused(responseSql({ id: id('q8'), consultationId: cons2, sourceCommandId: spent.sourceCommandId }), /not the RESERVED command/i);
+  });
+
   // ── P27 — cross-project tuples are unrepresentable ──────────────────────────────────────────
 
   it('P27: no consultation or answer can cross a project boundary', async () => {
@@ -415,6 +512,105 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     // the foreign OPTION is caught by the same-decision composite FK — nothing in the seal reads
     // it, which is exactly why the key exists
     await refused(responseSql({ id: id('c4'), consultationId: cons, recommendedOptionId: bOptionId, sourceCommandId: c4 }), /foreign key|violates/i);
+  });
+
+  it('P27 (Codex F3): a response cannot name ANOTHER decision in its own project, with that decision’s own option', async () => {
+    // The cases above disagree on `projectId` or reach for a foreign option, so each is refused by
+    // the project column or the option FK ALONE. Neither touches the `decisionId` leg of the
+    // response→consultation triple: if that leg were dropped, a response could attach to a
+    // same-project sibling decision — carrying that sibling's own legitimate option, so the option
+    // FK is satisfied too — and the recommendation would be bound permanently to the wrong thread.
+    const sibling = await make(projectId, `sib${seq++}`);
+    const cons = await commitRequest({});
+    const c1 = await reserve('consultations.respond', users.eng);
+    await refused(
+      responseSql({ id: id('c5'), consultationId: cons, decisionId: sibling.d, recommendedOptionId: sibling.o, sourceCommandId: c1 }),
+      /foreign key|violates|no consultation/i,
+    );
+    expect(await t.prisma.decisionConsultationResponse.count({ where: { projectId } })).toBe(0);
+  });
+
+  // ── P41 — the decision row lock, proven by overlapping transactions ─────────────────────────
+
+  /**
+   * Wait until `pid`'s backend is genuinely BLOCKED on a lock, rather than sleeping and hoping.
+   * Condition-based: the probe only proceeds once PostgreSQL reports the wait.
+   */
+  const waitUntilBlocked = async (needle: string): Promise<void> => {
+    for (let i = 0; i < 200; i++) {
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+        `SELECT count(*) AS n FROM pg_stat_activity
+          WHERE state = 'active' AND wait_event_type = 'Lock' AND query LIKE $1`,
+        `%${needle}%`,
+      );
+      if (Number(rows[0]!.n) > 0) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error(`the competing statement never blocked on a lock (looking for ${needle})`);
+  };
+
+  it('P41 (Codex F2): request-vs-withdraw, BOTH orderings — the seal holds the decision row', async () => {
+    // Ordering 1 — INSERT FIRST. The seal takes the decision row's share lock, so a withdrawal
+    // cannot slip in between the seal's read and the row's commit: it BLOCKS. Dropping that lock
+    // is what this arm detects — without it the withdrawal commits in the window and the
+    // consultation lands against a decision that is already terminal.
+    const d1 = await make(projectId, `p41a${seq++}`);
+    const rid = id(`p41r${seq++}`);
+    const cid = id(`cmd${seq++}`);
+
+    let held: (v: unknown) => void = () => {};
+    const gate = new Promise((r) => { held = r; });
+    const inserter = t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(reserveSql(cid, 'consultations.request', users.pmc));
+      await tx.$executeRawUnsafe(requestSql({ id: rid, decisionId: d1.d, sourceCommandId: cid }));
+      await tx.$executeRawUnsafe(completeSql(cid, rid));
+      await gate; // hold the transaction open, share lock and all
+    }, { timeout: 30_000 });
+
+    // the competing withdrawal, on its OWN connection
+    const withdrawal = other.$executeRawUnsafe(
+      `UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=$1,
+              "withdrawnByName"='U pmc', "withdrawReason"='raced' WHERE "id"=$2`,
+      users.pmc, d1.d,
+    ).catch((e: unknown) => e);
+    await waitUntilBlocked('SET "status"=\'withdrawn\'');
+
+    held(null);
+    await inserter;
+    await withdrawal;
+
+    // both landed, in the only order the lock permits: the advice was recorded against a decision
+    // that was still open when it committed, and the withdrawal followed it
+    expect(await t.prisma.decisionConsultation.count({ where: { id: rid } })).toBe(1);
+    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: d1.d } })).status).toBe('withdrawn');
+
+    // Ordering 2 — WITHDRAW FIRST. The insert now waits on the withdrawal's row lock, re-reads a
+    // terminal decision, and is REFUSED. This is the arm that would silently pass if the seal read
+    // the status without taking the lock at all.
+    const d2 = await make(projectId, `p41b${seq++}`);
+    const cid2 = id(`cmd${seq++}`);
+    let held2: (v: unknown) => void = () => {};
+    const gate2 = new Promise((r) => { held2 = r; });
+    const withdrawer = other.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        `UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=$1,
+                "withdrawnByName"='U pmc', "withdrawReason"='first' WHERE "id"=$2`,
+        users.pmc, d2.d,
+      );
+      await gate2;
+    }, { timeout: 30_000 });
+
+    const late = t.prisma.$transaction([
+      sql(reserveSql(cid2, 'consultations.request', users.pmc)),
+      sql(requestSql({ id: id(`p41r${seq++}`), decisionId: d2.d, sourceCommandId: cid2 })),
+    ]).catch((e: unknown) => e);
+    await waitUntilBlocked('INSERT INTO "DecisionConsultation"');
+
+    held2(null);
+    await withdrawer;
+    const outcome = await late;
+    expect(String(outcome)).toMatch(/PUBLISHED, still-open/i);
+    expect(await t.prisma.decisionConsultation.count({ where: { decisionId: d2.d } })).toBe(0);
   });
 
   // ── old-release compatibility: the dark migration must not break the serving release ────────
