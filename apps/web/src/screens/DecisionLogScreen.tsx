@@ -2,7 +2,7 @@ import { useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
-import { Eyebrow, DecisionChip, Button, Modal, LocationContext, EditState } from '@/components';
+import { Eyebrow, DecisionChip, Button, Modal, LocationContext, EditState, ConsultationThread } from '@/components';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { Lock, Plus, ChevronRight, Pencil, Trash2, BookmarkPlus } from '@/lib/icons';
 import { deciderNoun, signed, swatch as swatchGradient, decisionRail, can, type Decision } from '@vitan/shared';
@@ -249,6 +249,10 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision
               <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted)' }}>Withdrawn: {d.withdrawReason}</div>
             </div>
           )}
+          {/* Phase 6 unit 4c-ii — the consultation thread and its affordances. Renders nothing at
+              all off-pilot (the component reads the same per-project capability the server does),
+              and nothing for a decision with no thread and no action available to this viewer. */}
+          <ConsultationThread decision={d} />
           {d.status === 'change' && d.changeRequest && (
             <div style={{ marginTop: 12, padding: '9px 12px', borderRadius: 10, background: 'rgba(180,70,46,.07)', border: '1px solid rgba(180,70,46,.2)' }} data-testid={`cr-detail-${d.id}`}>
               <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--red-text)' }}>Change requested: {d.changeRequest.reason}</div>

@@ -115,6 +115,12 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'project.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant'],
   'members.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant'],
   'companies.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant'],
+  // Phase 6 unit 4c-ii — asking for advice is the practice's call (`architect` joins in 4d WITH
+  // the role); ANSWERING admits every role a consultee can hold, because the service narrows to
+  // the ONE named consultee. A tighter ceiling here would make RolesGuard reject a legitimately
+  // named contractor consultee before the service's own check could admit them.
+  'consultation.request': ['pmc'],
+  'consultation.respond': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
 };
 
 describe('authorization policy (shared source of truth)', () => {

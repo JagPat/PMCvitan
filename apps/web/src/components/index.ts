@@ -16,3 +16,4 @@ export { EditState, type EditAvailability } from './EditState';
 export { InheritedContext } from './InheritedContext';
 export { CreateMenu } from './CreateMenu';
 export { MoreDetails } from './MoreDetails';
+export { ConsultationThread } from './ConsultationThread';
