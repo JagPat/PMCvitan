@@ -236,6 +236,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Upgraded-database proof (legacy fixture through all Phase 1 migrations)
         run: bash apps/api/scripts/upgrade-proof.sh
+      # Phase 6 unit 4c-i. `upgrade-proof.sh` proves what the migrated SCHEMA does; this proves
+      # what the MIGRATION does — the diagnostic-first abort, both orderings of the concurrent
+      # `capability:enable` race, the partial-apply retry, and the clean deploy. Those claims only
+      # exist while the file is still being written: once it merges it is immutable history.
+      - name: Phase 6 4c-i migration proof (abort, both race orderings, partial-apply retry)
+        run: bash apps/api/scripts/phase6-t4c-migration-proof.sh
 
   api:
     needs: [review-scope, battery-plan]

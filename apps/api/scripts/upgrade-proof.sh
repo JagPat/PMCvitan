@@ -4349,6 +4349,186 @@ assert "A1-i precision: neither the option nor the retirement landed" \
   "SELECT (SELECT COUNT(*) FROM \"DecisionOption\" WHERE \"id\"='UPA1-SAMETX')::text || '|' || (SELECT \"active\"::text FROM \"DecisionOptionKind\" WHERE \"code\"='up-samefx');" \
   "0|true"
 
+
+# ═════════════════════════════════════════════════════════════════════════════════════════════
+# Phase 6 unit 4c-i — CONSULTATION, deployed dark
+# ═════════════════════════════════════════════════════════════════════════════════════════════
+# The unit's whole premise is that the previous release keeps running against this schema. That
+# claim is only worth as much as the evidence for it, so it is asserted in three directions here:
+# the new tables land ROW-FREE over the legacy fixture with their seals armed; a COHERENT
+# command-path chain is ACCEPTED (a seal that refuses everything is an outage, not a seal); and
+# every hostile shape the seals exist to refuse is EXECUTED against a migrated database rather
+# than described.
+echo ""
+echo "=== Phase 6 unit 4c-i: the consultation tables land row-free with their seals armed ==="
+
+assert "4c-i: the consultation register is EMPTY over the legacy fixture" \
+  "SELECT COUNT(*) FROM \"DecisionConsultation\";" "0"
+assert "4c-i: the response register is EMPTY over the legacy fixture" \
+  "SELECT COUNT(*) FROM \"DecisionConsultationResponse\";" "0"
+assert "4c-i: no legacy approval revision was given invented command provenance" \
+  "SELECT COUNT(*) FROM \"DecisionApprovalRevision\" WHERE \"sourceCommandId\" IS NOT NULL;" "0"
+assert "4c-i: all ten seals are armed after the upgrade" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled='O' AND tgname IN ('ProjectCapability_t4c_consultation_reserved','DecisionApprovalRevision_no_truncate','DecisionConsultation_t4c_insert_seal','DecisionConsultation_t4c_result_bound','DecisionConsultation_t4c_append_only','DecisionConsultation_t4c_no_truncate','DecisionConsultationResponse_t4c_insert_seal','DecisionConsultationResponse_t4c_result_bound','DecisionConsultationResponse_t4c_append_only','DecisionConsultationResponse_t4c_no_truncate');" \
+  "10"
+assert "4c-i: the additive DecisionOption candidate key exists and rejected nothing" \
+  "SELECT COUNT(*) FROM pg_indexes WHERE indexname='DecisionOption_decisionId_id_key';" "1"
+
+# ---- the behavioural arms, on a fully-migrated scratch database ------------------------------
+echo ""
+echo "=== Phase 6 unit 4c-i: the seals refuse every hostile shape, and ACCEPT the coherent one ==="
+DB4C="${DB}_t4c"
+PSQL4C="psql -X -v ON_ERROR_STOP=1 -d $DB4C"
+$PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB4C;" || exit 1
+$PSQL_ADMIN -c "CREATE DATABASE $DB4C;" || exit 1
+for d in $(ls -d "$MIG_DIR"/*/ | sort); do
+  psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB4C" -f "$d/migration.sql" >/dev/null 2>&1 \
+    || { echo "FAILED  4c-i: migration $(basename "$d") did not apply to the scratch database"; FAIL=1; }
+done
+
+$PSQL4C -q >/dev/null <<'SQL' || { echo "FAILED  4c-i: the consultation fixture was refused"; FAIL=1; }
+INSERT INTO "Org" ("id","name","slug") VALUES ('org-4c','Consult Org','consult-org');
+INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+VALUES ('4c-p1','org-4c','Consult Site','C4','','Finishing','C4-01','01 Jan 2026','31 Dec 2026',0,0,0);
+INSERT INTO "User" ("id","projectId","role","name","email") VALUES
+  ('4c-pmc','4c-p1','pmc','Consult PMC','4c-pmc@vitan.in'),
+  ('4c-cli','4c-p1','client','Consult Client','4c-cli@vitan.in'),
+  ('4c-eng','4c-p1','engineer','Consult Engineer','4c-eng@vitan.in'),
+  ('4c-oth','4c-p1','engineer','Other Engineer','4c-oth@vitan.in');
+INSERT INTO "Membership" ("id","projectId","userId","role","status") VALUES
+  ('4c-m-pmc','4c-p1','4c-pmc','pmc','active'),
+  ('4c-m-cli','4c-p1','4c-cli','client','active'),
+  ('4c-m-eng','4c-p1','4c-eng','engineer','active'),
+  ('4c-m-oth','4c-p1','4c-oth','engineer','active');
+-- born unpublished with its options, then published in the same transaction (the delivered
+-- deferred option floor refuses a published-and-optionless birth)
+INSERT INTO "Decision" ("id","projectId","title","room","status","ageDays","photoSwatch","authorId","deciderKind")
+VALUES ('4c-d1','4c-p1','Which finish','Office','pending',0,'blue','4c-pmc','client');
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch") VALUES
+  ('4c-o1','4c-d1','Teak','a','Teak',0,'sw-a'),
+  ('4c-o2','4c-d1','Walnut','b','Walnut',100,'sw-b');
+UPDATE "Decision" SET "publishedAt" = now() WHERE "id" = '4c-d1';
+SQL
+
+# PRECISION FIRST. The command shape is reproduced exactly as `executeCommand` performs it:
+# RESERVE the receipt, RUN the mutation, COMPLETE the receipt with its resultRef — one transaction.
+if $PSQL4C -q >/dev/null 2>&1 <<'SQL'
+BEGIN;
+INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+VALUES ('4c-cmd1','project','org-4c','4c-p1','4c-pmc','consultations.request','k-4c-1','h-4c-1','reserved');
+INSERT INTO "DecisionConsultation" ("id","projectId","decisionId","requestedById","consulteeMembershipId","consulteeUserId","openCycle","question","requestedAt","sourceCommandId")
+VALUES ('4c-c1','4c-p1','4c-d1','4c-pmc','4c-m-eng','4c-eng',0,'Which finish holds up here?',now(),'4c-cmd1');
+UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='4c-c1', "completedAt"=now() WHERE "id"='4c-cmd1';
+INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+VALUES ('4c-cmd2','project','org-4c','4c-p1','4c-eng','consultations.respond','k-4c-2','h-4c-2','reserved');
+INSERT INTO "DecisionConsultationResponse" ("id","projectId","consultationId","decisionId","respondedById","response","recommendedOptionId","respondedAt","sourceCommandId")
+VALUES ('4c-r1','4c-p1','4c-c1','4c-d1','4c-eng','Walnut. The teak cups.','4c-o2',now(),'4c-cmd2');
+UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='4c-r1', "completedAt"=now() WHERE "id"='4c-cmd2';
+COMMIT;
+SQL
+then
+  echo "ok      4c-i PRECISION: a coherent command-path request and its consultee response are ACCEPTED"
+else
+  echo "FAILED  4c-i PRECISION: the seals refused a legitimate command-path consultation — that is an outage, not a seal"
+  FAIL=1
+fi
+
+reject4c() {
+  local label="$1" want="$2" out
+  out=$($PSQL4C -q 2>&1 <<SQL
+$3
+SQL
+)
+  if [ $? -eq 0 ]; then
+    echo "FAILED  4c-i: $label — ACCEPTED"
+    FAIL=1
+  elif printf '%s' "$out" | grep -qF "$want"; then
+    echo "ok      4c-i: $label"
+  else
+    echo "FAILED  4c-i: $label — refused, but not by the claimed seal: $(printf '%s' "$out" | tail -2)"
+    FAIL=1
+  fi
+}
+
+reject4c "a FORGED audience (a consulteeUserId that is not the membership's user)" "is not the user membership" "
+BEGIN;
+INSERT INTO \"CommandExecution\" (\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\")
+VALUES ('4c-h1','project','org-4c','4c-p1','4c-pmc','consultations.request','k-h1','h-h1','reserved');
+INSERT INTO \"DecisionConsultation\" (\"id\",\"projectId\",\"decisionId\",\"requestedById\",\"consulteeMembershipId\",\"consulteeUserId\",\"openCycle\",\"question\",\"requestedAt\",\"sourceCommandId\")
+VALUES ('4c-h1r','4c-p1','4c-d1','4c-pmc','4c-m-eng','4c-oth',0,'Forged audience',now(),'4c-h1');
+COMMIT;"
+
+reject4c "a consultation whose frozen openCycle is not the decision's current cycle" "is not the decision's current cycle" "
+BEGIN;
+INSERT INTO \"CommandExecution\" (\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\")
+VALUES ('4c-h2','project','org-4c','4c-p1','4c-pmc','consultations.request','k-h2','h-h2','reserved');
+INSERT INTO \"DecisionConsultation\" (\"id\",\"projectId\",\"decisionId\",\"requestedById\",\"consulteeMembershipId\",\"consulteeUserId\",\"openCycle\",\"question\",\"requestedAt\",\"sourceCommandId\")
+VALUES ('4c-h2r','4c-p1','4c-d1','4c-pmc','4c-m-eng','4c-eng',1,'Wrong cycle',now(),'4c-h2');
+COMMIT;"
+
+reject4c "advice from anyone but the named consultee" "only the named consultee may answer" "
+BEGIN;
+INSERT INTO \"CommandExecution\" (\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\")
+VALUES ('4c-h3','project','org-4c','4c-p1','4c-oth','consultations.respond','k-h3','h-h3','reserved');
+INSERT INTO \"DecisionConsultationResponse\" (\"id\",\"projectId\",\"consultationId\",\"decisionId\",\"respondedById\",\"response\",\"respondedAt\",\"sourceCommandId\")
+VALUES ('4c-h3r','4c-p1','4c-c1','4c-d1','4c-oth','Not mine to give',now(),'4c-h3');
+COMMIT;"
+
+reject4c "a consultation citing a receipt that never completes (the DEFERRED result binding)" "at commit" "
+BEGIN;
+INSERT INTO \"CommandExecution\" (\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\")
+VALUES ('4c-h4','project','org-4c','4c-p1','4c-pmc','consultations.request','k-h4','h-h4','reserved');
+INSERT INTO \"DecisionConsultation\" (\"id\",\"projectId\",\"decisionId\",\"requestedById\",\"consulteeMembershipId\",\"consulteeUserId\",\"openCycle\",\"question\",\"requestedAt\",\"sourceCommandId\")
+VALUES ('4c-h4r','4c-p1','4c-d1','4c-pmc','4c-m-oth','4c-oth',0,'Never emitted',now(),'4c-h4');
+COMMIT;"
+
+reject4c "a consultation whose command commits naming a DIFFERENT result" "committed with resultRef" "
+BEGIN;
+INSERT INTO \"CommandExecution\" (\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\")
+VALUES ('4c-h5','project','org-4c','4c-p1','4c-pmc','consultations.request','k-h5','h-h5','reserved');
+INSERT INTO \"DecisionConsultation\" (\"id\",\"projectId\",\"decisionId\",\"requestedById\",\"consulteeMembershipId\",\"consulteeUserId\",\"openCycle\",\"question\",\"requestedAt\",\"sourceCommandId\")
+VALUES ('4c-h5r','4c-p1','4c-d1','4c-pmc','4c-m-oth','4c-oth',0,'Wrong result',now(),'4c-h5');
+UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='something-else', \"completedAt\"=now() WHERE \"id\"='4c-h5';
+COMMIT;"
+
+reject4c "rewriting a recorded question" "append-only" \
+  "UPDATE \"DecisionConsultation\" SET \"question\"='rewritten' WHERE \"id\"='4c-c1';"
+reject4c "deleting recorded advice" "append-only" \
+  "DELETE FROM \"DecisionConsultationResponse\" WHERE \"id\"='4c-r1';"
+reject4c "TRUNCATE of the consultation register" "would erase the consultation register" \
+  "TRUNCATE TABLE \"DecisionConsultation\" CASCADE;"
+reject4c "TRUNCATE of recorded advice" "would erase recorded consultation advice" \
+  "TRUNCATE TABLE \"DecisionConsultationResponse\";"
+reject4c "enabling the RESERVED consultation capability" "capability is RESERVED" \
+  "INSERT INTO \"ProjectCapability\" (\"projectId\",\"capability\",\"enabledById\") VALUES ('4c-p1','consultation','4c-pmc');"
+
+# the PREVIOUS-RELEASE compatibility direction: an approval revision with no command provenance
+if $PSQL4C -q >/dev/null 2>&1 <<'SQL'
+INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
+VALUES ('4c-rev1','4c-p1','4c-d1',1,'a',now(),'4c-pmc');
+SQL
+then
+  echo "ok      4c-i: a PREVIOUS-RELEASE approval (no sourceCommandId) still succeeds against the migrated schema"
+else
+  echo "FAILED  4c-i: the staged provenance column rejected a previous-release approval — the dark window is broken"
+  FAIL=1
+fi
+
+# …and, with a revision now standing, the register's own statement seal refuses the erasure that
+# would return every decision to cycle 0 and revive consultations an approval had closed.
+reject4c "TRUNCATE of the approval register (the cycle evidence)" "would erase the approval revision register" \
+  "TRUNCATE TABLE \"DecisionApprovalRevision\" CASCADE;"
+
+surv=$(psql -X -tAc "SELECT (SELECT COUNT(*) FROM \"DecisionConsultation\")::text || '|' || (SELECT COUNT(*) FROM \"DecisionConsultationResponse\")::text || '|' || (SELECT COUNT(*) FROM \"DecisionApprovalRevision\")::text" -d "$DB4C")
+if [ "$surv" = "1|1|1" ]; then
+  echo "ok      4c-i precision: the coherent chain survived every refused forgery"
+else
+  echo "FAILED  4c-i precision: expected 1|1|1 surviving rows, found $surv"
+  FAIL=1
+fi
+
+$PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB4C;" >/dev/null 2>&1 || true
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller
