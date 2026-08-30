@@ -78,18 +78,22 @@ export interface DecisionDto {
   withdrawReason?: string;
   /**
    * Phase 6 unit 4c-ii — the consultation thread: who was asked, what was asked, and what they
-   * answered. Present on every decision the viewer may see (the visibility rule removes the whole
-   * row otherwise); EMPTY, never absent, for a decision nobody was consulted on — including a DTO
-   * stored by a pre-4c generation, which the read path hydrates to this shape so live and
-   * projection stay comparable without a rebuild.
+   * answered.
+   *
+   * ABSENT when nobody was consulted, not an empty array. §D requires a gate-OFF project's payload
+   * to be byte-identical to today's, and an always-emitted `[]` would appear on every decision of
+   * every project — including the ones the feature does not exist for. Absent-when-empty satisfies
+   * both obligations at once: a decision with no thread serializes exactly as it does now, so a
+   * projection row written before this unit is byte-EQUAL to live rather than merely compatible.
    */
-  consultations: ConsultationDto[];
+  consultations?: ConsultationDto[];
   /**
    * The decision's CURRENT approval cycle — its `DecisionApprovalRevision` count. A consultation
    * grants visibility only while its frozen `openCycle` still equals this, so every viewer
-   * predicate needs the pair. `0` before the first approval.
+   * predicate needs the pair; it therefore rides the same absent-when-empty rule, and the cycle
+   * predicate reads an absent value as 0.
    */
-  approvalCycle: number;
+  approvalCycle?: number;
 }
 
 /** One consultation and, once given, its single answer (Phase 6 unit 4c-ii §A). Both facts are

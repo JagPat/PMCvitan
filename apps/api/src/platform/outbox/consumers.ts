@@ -63,7 +63,17 @@ export function makePushConsumer(push: PushService, claims?: PushClaimDeps): Out
     name: PUSH_CONSUMER,
     kind: 'unordered',
     effect: 'external',
-    catalogVersion: 1,
+    // Phase 6 unit 4c-ii (§D) — BUMPED for the two consultation push families. `syncConsumerCatalog`
+    // asserts the compiled contract against the persisted row at every startup and THROWS on any
+    // difference, so from the moment this unit's catalog-data migration lands, a PREVIOUS-release
+    // process cannot take up service at all — it never reaches the claim path, where it would
+    // recognize neither family and fall through to the unguarded targeted send. That is what makes
+    // the drain DURABLE: a rolled-back or newly-scheduled old worker is fenced out on EVERY start,
+    // not merely at the one moment an operator looked.
+    //
+    // The SOCKET consumer is deliberately NOT bumped: it carries no consultation contract — it
+    // tells a room to refetch and has nothing new to understand.
+    catalogVersion: 2,
     // Dispatch only when the PERSISTED intent carries a push body; otherwise a recorded no-op. A
     // null-intent legacy event has no push, so it is always a no-op — the outbox never invents a
     // historical push from an old payload.

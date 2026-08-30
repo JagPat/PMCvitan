@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { getConsumer } from '../outbox/registry';
 
 /**
  * Phase 2 Task 9 — the ACTIVE-generation lock, shared by the relay's live apply and the rebuilder's
@@ -45,7 +46,11 @@ export async function lockActiveGeneration(
   const generation = (agg._max.generation ?? 0) + 1;
   try {
     const created = await tx.projectionGeneration.create({
-      data: { consumer, projectId, generation, status: 'active', appliedPosition: null },
+      // Phase 6 unit 4c-ii (§D) — every generation is STAMPED with the catalog version of the
+      // code that built it. The column is NOT NULL with no default, so this is not a convenience:
+      // a binary that does not know the column exists cannot create a generation at all, which is
+      // exactly the fence the standalone rebuild CLI otherwise walks straight past.
+      data: { consumer, projectId, generation, status: 'active', appliedPosition: null, catalogVersion: catalogVersionFor(consumer) },
       select: { id: true, generation: true, appliedPosition: true },
     });
     return created;
@@ -96,4 +101,12 @@ export async function readServableGeneration(
   const head = stream ? stream.nextPosition - 1n : -1n;
   if (gen.appliedPosition < head) return null; // checkpoint lags the committed stream — not current
   return { id: gen.id, generation: gen.generation };
+}
+
+/** The COMPILED catalog version of a registered consumer — the version the generation this
+ *  process is about to build will actually have been built at. An unregistered name cannot be
+ *  reached through either creator (both are called with a registered consumer), so falling back
+ *  to 1 records the only version such a generation could hold rather than inventing one. */
+export function catalogVersionFor(consumer: string): number {
+  return getConsumer(consumer)?.catalogVersion ?? 1;
 }

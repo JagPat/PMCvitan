@@ -73,7 +73,9 @@ export class ProjectionRebuilder {
       const agg = await tx.projectionGeneration.aggregate({ where: { consumer: consumerName, projectId }, _max: { generation: true } });
       const generation = (agg._max.generation ?? 0) + 1;
       return tx.projectionGeneration.create({
-        data: { consumer: consumerName, projectId, generation, status: 'building', appliedPosition: null },
+        // stamped with the version of the code performing THIS rebuild (§D) — the fence the
+        // previous release's CLI cannot satisfy, because its INSERT names no version at all
+        data: { consumer: consumerName, projectId, generation, status: 'building', appliedPosition: null, catalogVersion: consumer.catalogVersion },
         select: { id: true, generation: true },
       });
     });

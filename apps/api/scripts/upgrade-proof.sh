@@ -4413,9 +4413,9 @@ assert_rejects "4c-i: TRUNCATE of the approval register whose COUNT 4c turns int
 assert "4c-i: both owned ORGS primitives are installed" \
   "SELECT COUNT(*)::text FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable');" \
   "2"
-assert "4c-i: the nine seals of this unit are armed, and 4c-ii's provenance trigger beside them" \
+assert "4c-i: the nine seals of this unit are armed, plus 4c-ii's provenance and capability seals" \
   "SELECT COUNT(*)::text FROM pg_trigger WHERE tgname LIKE '%t4c%';" \
-  "10"
+  "11"
 
 # ── the PARTIAL-APPLY RETRY, executed rather than asserted ───────────────────────────────────────
 # A deploy that dies part-way must COMPLETE on retry, not stop at the objects it already made. The

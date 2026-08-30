@@ -121,7 +121,18 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
       offTokens[key] = t.issueProjectToken(uid, offProjectId, roleOf[key]);
     }
     // ONLY the pilot project gets the capability — the §D inertness arm needs a live sibling.
-    await t.prisma.projectCapability.create({ data: { projectId, capability: 'consultation', enabledById: users.pmc } });
+    //
+    // The row has to be planted THROUGH the reservation this unit installs, which is the point of
+    // the reservation: until 4c-iii nothing may create it, and that includes this fixture. The
+    // trigger is disabled for exactly this statement and re-enabled in the SAME transaction, so a
+    // throw rolls the disable back with it — the sanctioned-reset contract, applied to a seal
+    // rather than to a truncate. The reservation's own hostile probe asserts it refuses the
+    // ordinary path.
+    await t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe('ALTER TABLE "ProjectCapability" DISABLE TRIGGER "ProjectCapability_t4c_reserved"'),
+      t.prisma.projectCapability.create({ data: { projectId, capability: 'consultation', enabledById: users.pmc } }),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "ProjectCapability" ENABLE TRIGGER "ProjectCapability_t4c_reserved"'),
+    ]);
   });
 
   afterEach(async () => {
@@ -151,6 +162,8 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
     await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
     await t.prisma.projectionGeneration.deleteMany({ where: { projectId: { in: [projectId, offProjectId] } } });
     await t.prisma.commandExecution.deleteMany({ where: { organizationId: orgId } });
+    // the fence probes enable ordinary capabilities on the gate-OFF project; the pilot row stays
+    await t.prisma.projectCapability.deleteMany({ where: { projectId: offProjectId } });
   });
 
   afterAll(async () => {
@@ -403,28 +416,30 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
     }
   });
 
-  it('P25c: a stored PRE-4c DTO hydrates to the EMPTY thread rather than a missing field', async () => {
-    // Widening the include and the serializer does not rewrite JSON already stored in an ACTIVE
-    // generation, and a catalog bump triggers no rebuild — so a quiet project would keep serving
-    // pre-4c DTOs that lack the collection entirely. The first consultation REQUEST emits an event
-    // that refreshes every row, which is exactly why the ordinary probe cannot catch this.
+  it('P25c: a stored PRE-4c DTO for an un-consulted decision is BYTE-EQUAL to live, needing no rebuild', async () => {
+    // Widening the serializer rewrites no JSON already stored in an ACTIVE generation, and a
+    // catalog bump triggers no rebuild — so a quiet project keeps serving rows written before this
+    // unit. Because the thread is ABSENT rather than `[]` when nobody was consulted, those rows are
+    // already in the current shape: equal to live, not merely compatible. An always-emitted array
+    // would have made every one of them differ, on every project, including the gate-off ones §D
+    // requires to be byte-identical to today.
     const decisionId = await issue();
     await applyProjection();
     const gen = await t.prisma.projectionGeneration.findFirst({ where: { projectId, consumer: 'decisions.inbox' } });
-    if (!gen) return; // no generation to corrupt — the live path is what serves, and it is fine
+    if (!gen) return; // nothing materialized yet — the live path serves, and it is correct
     const stored = await t.prisma.decisionProjection.findFirst({ where: { generationId: gen.id, decisionId } });
     if (!stored) return;
-    const legacy = { ...(stored.dto as Record<string, unknown>) };
-    delete legacy.consultations;
-    delete legacy.approvalCycle;
-    await t.prisma.decisionProjection.update({ where: { generationId_decisionId: { generationId: gen.id, decisionId } }, data: { dto: legacy } });
+    expect(
+      Object.keys(stored.dto as Record<string, unknown>),
+      'an un-consulted decision carries no consultation keys at all',
+    ).not.toContain('consultations');
 
     const query = t.app.get(DecisionsQueryService);
-    const served = await query.projectionSlice(projectId, 'pmc', users.pmc);
-    const row = served.decisions.find((d) => d.id === decisionId);
-    expect(row, 'the pre-4c row is still served').toBeTruthy();
-    expect(row!.consultations, 'hydrated to the EMPTY shape, not left absent').toEqual([]);
-    expect(row!.approvalCycle).toBe(0);
+    const live = await query.snapshotSlice(projectId, 'pmc', users.pmc);
+    const projected = await query.projectionSlice(projectId, 'pmc', users.pmc);
+    if (projected.generation === null) return;
+    expect(projected.decisions.find((d) => d.id === decisionId))
+      .toEqual(live.decisions.find((d) => d.id === decisionId));
   });
 
   // ═══ P38c/P40c — the claim-time push predicates ══════════════════════════════════════════════
@@ -492,6 +507,74 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
     } finally {
       await t.prisma.membership.update({ where: { id: membership.pmc }, data: { role: 'pmc' } });
     }
+  });
+
+  // ═══ THE ROLLOUT FENCE — this unit's own database additions ══════════════════════════════════
+
+  it('the `consultation` capability is RESERVED through BOTH doors — INSERT and re-key', async () => {
+    // §D places this in 4c-i (rounds 13/19/21/24) and the merged 4c-i ships neither half, so the
+    // hole is live on `main`: the generic `capability:enable` CLI accepts any string, and an
+    // operator could open the gate today — the first upgraded instance would emit while old
+    // workers could still claim. 4c-ii's whole compatibility story rests on it being closed, so
+    // the obligation is carried here rather than left to a unit that runs after the risk passed.
+    await expect(
+      t.prisma.projectCapability.create({ data: { projectId: offProjectId, capability: 'consultation', enabledById: users.pmc } }),
+    ).rejects.toThrow(/RESERVED/);
+
+    // …and the UPDATE door: `capability` is a mutable key with no freeze trigger, so an
+    // INSERT-only guard leaves the same gate-open state reachable by re-keying an existing row.
+    await t.prisma.projectCapability.create({ data: { projectId: offProjectId, capability: 'materials', enabledById: users.pmc } });
+    await expect(
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "ProjectCapability" SET "capability" = 'consultation' WHERE "projectId" = $1 AND "capability" = 'materials'`,
+        offProjectId,
+      ),
+    ).rejects.toThrow(/RESERVED/);
+    expect(await t.prisma.projectCapability.count({ where: { projectId: offProjectId, capability: 'consultation' } })).toBe(0);
+  });
+
+  it('the reservation is PRECISE: every other capability still enables through the unchanged writer', async () => {
+    // A seal that refused every capability would be an outage, and the Board's decision that the
+    // column stays free text would have been quietly reversed. Exactly one value is rejected.
+    for (const capability of ['labour', 'commercial', 'anything-an-operator-types']) {
+      await expect(
+        t.prisma.projectCapability.create({ data: { projectId: offProjectId, capability, enabledById: users.pmc } }),
+      ).resolves.toBeTruthy();
+    }
+  });
+
+  it('a projection generation cannot be created without a catalog version — the rebuild-CLI fence', async () => {
+    // The startup fence protects processes that TAKE UP SERVICE; the standalone rebuild CLI is not
+    // one — it registers consumers directly and never calls `syncConsumerCatalog`. So the fence
+    // goes at the boundary every binary must cross: NOT NULL with NO DEFAULT, which the previous
+    // release cannot satisfy because it does not know the column exists.
+    await expect(
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "ProjectionGeneration" ("id","consumer","projectId","generation","status","cursorStatus","createdAt","updatedAt")
+         VALUES ($1,'decisions.inbox',$2,999,'building','live',now(),now())`,
+        `fence-${run}`, projectId,
+      ),
+    ).rejects.toThrow(/23502|Failing row contains/i);
+
+    const col = await t.prisma.$queryRawUnsafe<Array<{ is_nullable: string; column_default: string | null }>>(
+      `SELECT is_nullable, column_default FROM information_schema.columns
+        WHERE table_name = 'ProjectionGeneration' AND column_name = 'catalogVersion'`,
+    );
+    expect(col[0]?.is_nullable, 'NOT NULL is half the fence').toBe('NO');
+    expect(col[0]?.column_default, 'NO DEFAULT is the other half — a default would let the old binary through').toBeNull();
+  });
+
+  it('the two consultation-consuming consumers are at catalog version 2, and the socket consumer is not', async () => {
+    const rows = await t.prisma.outboxConsumerCatalog.findMany({
+      where: { consumer: { in: ['decisions.inbox', 'webpush.notify', 'socket.invalidate'] } },
+      select: { consumer: true, catalogVersion: true },
+      orderBy: { consumer: 'asc' },
+    });
+    const byName = Object.fromEntries(rows.map((r) => [r.consumer, r.catalogVersion]));
+    expect(byName['decisions.inbox']).toBe(2);
+    expect(byName['webpush.notify']).toBe(2);
+    // the socket consumer carries no consultation contract — it tells a room to refetch
+    if (byName['socket.invalidate'] !== undefined) expect(byName['socket.invalidate']).toBe(1);
   });
 
   // ═══ THE APPROVAL REGISTER BECOMES PROVABLE ══════════════════════════════════════════════════

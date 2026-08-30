@@ -123,7 +123,13 @@ export function makeDecisionsProjectionConsumer(): OutboxConsumer {
     name: DECISIONS_PROJECTION,
     kind: 'ordered',
     effect: 'db',
-    catalogVersion: 1,
+    // Phase 6 unit 4c-ii (§D) — BUMPED for the consultation fold. `syncConsumerCatalog` asserts
+    // the compiled contract against the persisted row at every startup and THROWS on any
+    // difference, so from the moment this unit's catalog-data migration lands, a PREVIOUS-release
+    // process cannot take up service at all: it never reaches the claim path. That is what makes
+    // the drain durable — a rolled-back or newly-scheduled old worker is fenced out on EVERY
+    // start, not merely at the one moment an operator looked.
+    catalogVersion: 2,
     deliveryFor,
     projection: {
       // Seed the replacement generation from the CONSISTENT canonical snapshot. Read the max committed

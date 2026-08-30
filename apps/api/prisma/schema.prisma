@@ -383,6 +383,21 @@ model ProjectionGeneration {
   appliedPosition BigInt? // contiguous checkpoint INTO THIS generation (NULL = none applied yet)
   cursorStatus    String    @default("live") // 'live' | 'blocked' (a dead earlier position blocks)
   activatedAt     DateTime? // when this generation became 'active' (the barrier commit)
+  /// Phase 6 unit 4c-ii (§D) — the CONSUMER CATALOG VERSION this generation was built at.
+  ///
+  /// The startup fence (`syncConsumerCatalog` throwing on a version difference) protects processes
+  /// that TAKE UP SERVICE. `projection-rebuild.cli.ts` is not one: it constructs the rebuilder and
+  /// registers consumers directly and never calls sync, so a PREVIOUS release's CLI run against a
+  /// migrated database would rebuild with the old serializer and ACTIVATE that generation — a
+  /// register missing the consultation thread and the widened audience, swapped in by a supported
+  /// command, and reached for precisely when something already looks wrong.
+  ///
+  /// The fence therefore lives at the one boundary every binary must cross. NOT NULL with NO
+  /// DEFAULT is the whole mechanism: the previous release does not know this column exists, so its
+  /// INSERT names no value and PostgreSQL rejects it before any generation is built or swapped. A
+  /// check inside the new CLI could not do this — that binary contains neither the check nor any
+  /// sync call.
+  catalogVersion  Int
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
