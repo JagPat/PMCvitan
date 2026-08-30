@@ -196,7 +196,16 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
     for (const id of storedIds) {
       const d = await t.prisma.decision.findUniqueOrThrow({
         where: { id },
-        include: { options: { orderBy: { order: 'asc' } }, changeRequests: { where: { status: 'open' }, take: 1 } },
+        // the include must track what `serializeDecision` READS, or the fixture builds its rows
+        // through a serializer that is reaching for relations this query never loaded: 4b's named
+        // holder, and Phase 6 unit 4c-ii's consultation thread and approval register.
+        include: {
+          options: { orderBy: { order: 'asc' } },
+          changeRequests: { where: { status: 'open' }, take: 1 },
+          deciderMembership: { select: { userId: true } },
+          consultations: { include: { response: true } },
+          approvalRevisions: { select: { version: true } },
+        },
       });
       await t.prisma.decisionProjection.create({
         data: {
