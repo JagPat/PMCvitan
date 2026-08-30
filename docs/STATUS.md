@@ -13,14 +13,46 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: merged
-work_item: none
+task_state: in_progress
+work_item: phase-6-task-4c-ii
 reviewed_merge: d4e2ddf5
-open_pr: none
-next_task: phase-6-task-4c-ii
+open_pr: PENDING
+next_task: phase-6-task-4c-iii
 blocking_directive: none
 updated: 2026-08-30
 ```
+
+**UNIT 4c-ii IS THE OPEN WORK, scheduled from `main` `1d6c4ff1` per the Board's 2026-08-31 03:45
+IST direction on #495.** The 30 August sequence authorized 4c-0 through 4c-v, so this unit waits
+on no fresh GO and none is to be asked for. Contractor-capture units 1–6 stay Board-gated — a
+SEPARATE gate the 4c sequence does not lift.
+
+**4c-ii IS THE BEHAVIOUR UNIT**: the contracts, the two commands, `ROLE_POLICY` and the guarded
+routes, the visibility widening on BOTH sides, the P25c projection thread, the two push families
+with their claim-time predicates, the UI affordances, and the
+`DecisionApprovalRevision.sourceCommandId` writer with the constraint trigger 4c-i deliberately
+staged. It reads the `consultation` capability in all THREE places the plan requires — the write
+commands, the emitter and the CLIENT — because gating only the server would leave the upgraded
+bundle rendering request/respond controls during the whole window in which every project is still
+gate-off, and controls whose every request 404s are a visibly broken state, not an inert one. All
+three reads retire together in 4c-iv.
+
+Two things this unit had to reconcile with delivered reality rather than with the plan's prose:
+the command LEDGER types are `consultations.request` / `consultations.respond` (not the module's
+usual `decisions.*` prefix) because the merged 4c-i provenance seal checks those exact strings and
+that migration is immutable history; and 4c-i's own upgrade-proof compatibility arm — "a
+previous-release approval still records with no source command" — is DELIBERATELY SUPERSEDED here,
+since 4c-ii runs after the drain-first cutover, which is the one moment the plan guarantees no old
+writer exists. Both are recorded in the packet rather than quietly absorbed.
+
+**One observation carried forward from the closed #495, not acted on.** The merged 4c-i migration
+contains no reference to `ProjectCapability`: the `consultation` capability RESERVATION trigger and
+its diagnostic-first abort, which the plan lists under "4c-i, the migration unit" (§D, review
+rounds 13/19/21/24), are not in it, and no `'consultation'` guard exists anywhere in
+`apps/api/prisma` or `apps/api/src`. That may be a deliberate deferral to 4c-iii, where the
+reservation is due to be REPLACED by the preservation seal. It is recorded here because 4c-ii is
+the unit that first makes the capability meaningful, and because 4c-iii's own scope assumes a
+reservation exists to replace.
 
 **4c-i IS MERGED (PR #493 at `main` `d4e2ddf5`) WITH A FRESH INDEPENDENT CODEX +1 ON THE
 EXACT REVIEWED HEAD `7650109`, AND THE REMOVAL-AND-REINSTATE BLOCKER IS CLEARED BY
