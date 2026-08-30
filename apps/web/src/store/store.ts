@@ -395,6 +395,13 @@ export interface AppActions {
   // decisions
   openApprove: (decId: string, optIdx: number) => void;
   confirmApprove: () => void;
+  /**
+   * Phase 6 unit 4c-ii — ask a named member for advice on an open decision (pmc), and answer as
+   * the named consultee. Both go through the durable outbox under ONE stable key, so a
+   * lost-response retry records the append-only fact exactly once.
+   */
+  requestConsultation: (decId: string, consulteeMembershipId: string, question: string) => void;
+  respondToConsultation: (decId: string, consultationId: string, response: string, recommendedOptionIndex?: number) => void;
   openChange: (decId: string) => void;
   submitChange: () => void;
   /** Withdraw the open change request — the decision re-locks (requester or PMC only). */
@@ -2009,6 +2016,46 @@ export const useStore = create<Store>()(
         s.modal = { type: null };
       });
       get().flash('Approved & locked — the Decision Log and PMC dashboard are updated.');
+    },
+    requestConsultation: (decId, consulteeMembershipId, question) => {
+      const text = question.trim();
+      if (!text) return;
+      // ONE stable key for this question — the online send and any offline replay reach the
+      // server under it, so a lost-response retry appends the consultation once.
+      const key = newIdempotencyKey();
+      if (
+        runRemoteOrQueue(
+          { t: 'consultationRequest', decisionId: decId, consulteeMembershipId, question: text, idempotencyKey: key },
+          'Consult ' + decId,
+          () => gateway!.requestConsultation(decId, consulteeMembershipId, text, key),
+          'Asked — they will see this decision and your question.',
+        )
+      ) {
+        set((s) => { s.modal = { type: null }; });
+        return;
+      }
+      // demo/offline-only fallback: the server is the authority on the thread, so nothing is
+      // fabricated locally beyond closing the sheet.
+      set((s) => { s.modal = { type: null }; });
+      get().flash('Asked — they will see this decision and your question.');
+    },
+    respondToConsultation: (decId, consultationId, response, recommendedOptionIndex) => {
+      const text = response.trim();
+      if (!text) return;
+      const key = newIdempotencyKey();
+      if (
+        runRemoteOrQueue(
+          { t: 'consultationRespond', decisionId: decId, consultationId, response: text, ...(recommendedOptionIndex !== undefined ? { recommendedOptionIndex } : {}), idempotencyKey: key },
+          'Advise ' + decId,
+          () => gateway!.respondToConsultation(decId, consultationId, text, recommendedOptionIndex, key),
+          'Advice recorded — the person who asked has been told.',
+        )
+      ) {
+        set((s) => { s.modal = { type: null }; });
+        return;
+      }
+      set((s) => { s.modal = { type: null }; });
+      get().flash('Advice recorded — the person who asked has been told.');
     },
     openChange: (decId) => {
       const d = get().decisions.find((x) => x.id === decId);

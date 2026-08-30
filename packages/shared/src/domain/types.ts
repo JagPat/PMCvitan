@@ -176,6 +176,41 @@ export interface Decision {
   /** the withdrawer's display identity, frozen at withdraw time (the `approver` precedent) */
   withdrawnBy?: string;
   withdrawReason?: string;
+  /**
+   * Phase 6 unit 4c-ii — the consultation thread: who was asked, what they were asked, and what
+   * they answered. Optional in the TYPE (a pre-4c stored projection DTO carries no collection, and
+   * demo/fixture data need not invent one) but always PRESENT from a 4c server, which hydrates a
+   * legacy stored DTO to the EMPTY shape rather than leaving the field absent.
+   */
+  consultations?: Consultation[];
+  /** the decision's CURRENT approval cycle — the value a consultation's frozen `openCycle` is
+   *  compared against, so a reopened decision does not expose a closed thread to its consultee */
+  approvalCycle?: number;
+}
+
+/** One consultation and, once given, its single answer (Phase 6 unit 4c-ii). Both facts are
+ *  append-only: a question that was asked was asked, and advice that was given was given. */
+export interface Consultation {
+  id: string;
+  /** the consultee BY MEMBERSHIP — one person for its lifetime (identity is DB-frozen) */
+  consulteeMembershipId: string;
+  /** the canonical audience: the user this membership resolves to */
+  consulteeUserId: string;
+  requestedById: string;
+  question: string;
+  /** the cycle this question was asked in */
+  openCycle: number;
+  requestedAt: string;
+  response?: ConsultationResponse;
+}
+
+export interface ConsultationResponse {
+  id: string;
+  respondedById: string;
+  response: string;
+  /** the recommended option's stable KEY, when the consultee named one */
+  recommendedOptionKey?: string;
+  respondedAt: string;
 }
 
 export interface Activity {

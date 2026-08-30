@@ -418,7 +418,18 @@ export class DecisionsService {
       commandType: 'decisions.approve',
       idempotencyKey,
       requestHash,
-      run: async (tx) => {
+      // Phase 6 unit 4c-ii — an approval now carries COMMAND PROVENANCE, because 4c makes the
+      // revision COUNT trusted cycle evidence: a revision that is not the product of an approval
+      // TRANSITION could advance a decision's cycle past every open consultation, making those
+      // answers 409 permanently and cancelling their deliveries — a DENIAL of a fact the workflow
+      // promises to keep answerable, reached without touching a consultation table.
+      //
+      // The synthesis preserves legacy unkeyed behaviour EXACTLY (the synthesized key is unique
+      // per call, so it is never a replay and two unkeyed retries each execute once, today's
+      // semantics); it only guarantees the receipt exists. A CLIENT-supplied key keeps its
+      // exactly-once replay unchanged, and enforcement still takes precedence over synthesis.
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, ctx) => {
         // a lock-state transition moves the decision gate (gate finding 1)
         await lockProjectReadiness(tx, projectId);
         // round-11 Codex F1 — the ROLE that granted authority is re-validated LIVE inside the
@@ -513,6 +524,15 @@ export class DecisionsService {
             approvedAt: new Date(),
             approvedById: actor.actorId,
             onBehalfOf,
+            // 4c-ii — the receipt of the approval command this revision IS the product of. The
+            // deferred trigger installed in this unit's migration requires it to have SUCCEEDED
+            // at commit with its `resultRef` naming THIS decision, which is precisely when
+            // `executeCommand` writes it. A reserved-only test would not be enough: the receipt
+            // seal permits a `reserved` INSERT and validates completion only if an UPDATE occurs,
+            // so an alternate writer could insert a reserved receipt and a revision citing it in
+            // ONE transaction and commit — never approving, never completing — and the count
+            // would still advance.
+            sourceCommandId: ctx.commandId,
           },
         });
         await tx.decisionEvent.create({

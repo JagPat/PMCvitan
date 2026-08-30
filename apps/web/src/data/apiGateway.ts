@@ -1157,6 +1157,31 @@ export class ApiGateway {
   withdrawChange(decisionId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.p(`/decisions/${decisionId}/change/withdraw`, undefined, idempotencyKey);
   }
+  /**
+   * Phase 6 unit 4c-ii — ask a named member for advice on an open decision.
+   *
+   * The key is REQUIRED, not optional: both consultation facts carry a NOT NULL `sourceCommandId`
+   * naming the receipt of the command currently executing, and the server's unkeyed branch
+   * reserves no ledger row. Sending without one earns a deliberate 400 rather than a 500, and
+   * this signature makes that impossible to get wrong from here.
+   */
+  requestConsultation(decisionId: string, consulteeMembershipId: string, question: string, idempotencyKey: string): Promise<ApiSnapshot> {
+    return this.p(`/decisions/${decisionId}/consultations`, { consulteeMembershipId, question }, idempotencyKey);
+  }
+  /** Phase 6 unit 4c-ii — the NAMED consultee answers, once. */
+  respondToConsultation(
+    decisionId: string,
+    consultationId: string,
+    response: string,
+    recommendedOptionIndex: number | undefined,
+    idempotencyKey: string,
+  ): Promise<ApiSnapshot> {
+    return this.p(
+      `/decisions/${decisionId}/consultations/respond`,
+      { consultationId, response, ...(recommendedOptionIndex !== undefined ? { recommendedOptionIndex } : {}) },
+      idempotencyKey,
+    );
+  }
   /** Withdraw a PUBLISHED, never-approved decision — pmc only, terminal, reason required
    *  (Phase 6 task 4a). Distinct from `withdrawChange`, which closes a reopening. */
   withdrawDecision(decisionId: string, reason: string, idempotencyKey?: string): Promise<ApiSnapshot> {
@@ -1541,6 +1566,10 @@ export type OutboxOp =
   | { t: 'approve'; decisionId: string; optionIndex: number; idempotencyKey: string }
   | { t: 'change'; decisionId: string; reason: string; costImpact: number; timeImpactDays: number; idempotencyKey: string }
   | { t: 'changeWithdraw'; decisionId: string; idempotencyKey: string }
+  // Phase 6 unit 4c-ii — consultation. Both ops carry their full payload so an offline replay
+  // reaches the server with the exact evidence the append-only fact records, under the SAME key.
+  | { t: 'consultationRequest'; decisionId: string; consulteeMembershipId: string; question: string; idempotencyKey: string }
+  | { t: 'consultationRespond'; decisionId: string; consultationId: string; response: string; recommendedOptionIndex?: number; idempotencyKey: string }
   // Phase 6 task 4a — withdraw a published, never-approved decision (pmc; terminal; the reason
   // travels with the op so an offline replay carries the exact attribution evidence).
   | { t: 'withdraw'; decisionId: string; reason: string; idempotencyKey: string }
@@ -1647,6 +1676,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.withdrawChange(op.decisionId, op.idempotencyKey);
     case 'withdraw':
       return gw.withdrawDecision(op.decisionId, op.reason, op.idempotencyKey);
+    case 'consultationRequest':
+      return gw.requestConsultation(op.decisionId, op.consulteeMembershipId, op.question, op.idempotencyKey);
+    case 'consultationRespond':
+      return gw.respondToConsultation(op.decisionId, op.consultationId, op.response, op.recommendedOptionIndex, op.idempotencyKey);
     case 'ackDrawing':
       // the server ack is idempotent under the command-ledger (same key ⇒ recorded once,
       // actor-scoped); it returns {ok,ackCount}, so refetch to reconcile the register
