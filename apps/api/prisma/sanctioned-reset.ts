@@ -33,6 +33,15 @@ export interface TruncateCapableClient {
  * Cascades are why this list is applied wholesale rather than matched against the caller's table
  * list: `TRUNCATE "Decision" CASCADE` fires the seal on every table PostgreSQL pulls into the
  * cascade, which the caller never names and cannot be expected to enumerate.
+ *
+ * DELIBERATELY ABSENT: `T3CRepairAction_no_truncate`. Do not add it — it breaks every reset in
+ * the repository, which is how it was found. That table additionally carries a DDL guard that
+ * refuses ALTER TABLE outright ("is the durable repair-evidence register and is never altered"),
+ * and disabling a trigger IS an ALTER TABLE, so listing it here makes the very first statement of
+ * every reset raise P0001. It also does not belong here on the merits: no sanctioned reset clears
+ * that register — it is not a Prisma model, nothing holds a foreign key into it so no CASCADE can
+ * reach it, and the only TRUNCATE aimed at it in the whole suite is a HOSTILE PROBE asserting the
+ * seal rejects it. A seal nothing sanctioned needs to bypass does not go in the bypass list.
  */
 export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger: string }[] = [
   { table: 'ActivityDependency', trigger: 'ActivityDependency_no_truncate' },
@@ -44,7 +53,6 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   { table: 'DecisionOptionKindSelection', trigger: 'DecisionOptionKindSelection_no_truncate' },
   { table: 'DecisionOptionTouch', trigger: 'DecisionOptionTouch_t4a_no_truncate' },
   { table: 'OrgMembership', trigger: 'OrgMembership_t4b2_no_truncate' },
-  { table: 'T3CRepairAction', trigger: 'T3CRepairAction_no_truncate' },
 ];
 
 /**
