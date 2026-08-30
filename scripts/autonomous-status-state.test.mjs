@@ -980,3 +980,114 @@ test('the live docs/STATUS.md survives the merge of the PR it names', async () =
   );
   assert.equal(verdict.allowed, true, verdict.detail ?? '');
 });
+
+// FINDING (#485 P1, round 1) — the THIRD landing shape. A status-only correction that records a
+// post-merge defect lands `open_pr: none` WITH a scheduled `blocking_directive`, so its task is
+// not terminal (not a handoff) and it does schedule work (not a none-flip). Neither predicate
+// recognized it, so `detectStatusDriftAcrossHeads` treated the correction's own head as drift and
+// `buildDriftHandoff` advised replacing `open_pr: none` with the correction PR's OWN number —
+// planting the #303 stale-pointer trap in the merged record, by way of the very PR whose purpose
+// is to remove a stale pointer. Reproduced against the live #485 shape before the fix.
+test('a directive-scheduling status-only landing is recognized as the correction in flight', async () => {
+  const { isDirectiveLandingShape, buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const stale = {
+    phase: '6', task: '4', task_state: 'in_progress', work_item: 'none',
+    reviewed_merge: 'fe9df58d', open_pr: '480', next_task: 'phase-6-task-4c', blocking_directive: 'none',
+  };
+  const landing = {
+    ...stale, open_pr: 'none', blocking_directive: 'phase-6-4c-plan-independent-clearance',
+  };
+  assert.equal(isDirectiveLandingShape(landing), true);
+  assert.equal(
+    buildDriftHandoff({
+      statusNow: stale,
+      openPullRequests: [{ number: 485, headRefName: 'claude/github-app-install-1m0mir', isDraft: true }],
+      headStatuses: [{ number: 485, now: landing, editsStatus: true }],
+    }),
+    null,
+    'the shepherd advised pointing open_pr at the correction PR itself — the #303 trap',
+  );
+});
+
+// The same class gates that the other two landings gate. A directive landing must not become a
+// blanket excuse: it qualifies only when the head PROPOSES the transition, only from a state the
+// runner actually schedules a directive from, and never while another PR's drift is real.
+test('the directive landing does not over-suppress', async () => {
+  const { isDirectiveLandingShape, buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const landing = {
+    phase: '6', task: '4', task_state: 'in_progress', work_item: 'none',
+    open_pr: 'none', next_task: 'phase-6-task-4c', blocking_directive: 'phase-6-4c-plan-independent-clearance',
+  };
+
+  // A PR that NAMES its own open PR is a work item, not a landing.
+  assert.equal(isDirectiveLandingShape({ ...landing, open_pr: '486' }), false);
+  // …but a RETAINED work item is still a landing: a directive outranks the work item, and
+  // assessRunnerState resolves that exact shape to the directive (pinned above). Requiring
+  // `work_item: none` here rejected a valid landing straight into the #303 trap (#485 round 2).
+  assert.equal(isDirectiveLandingShape({ ...landing, work_item: 'phase-6-task-4c-i' }), true);
+  // `merged` + a directive does not RESOLVE (assessRunnerState refuses a directive from a
+  // non-scheduling state), so suppressing drift for it would hide an unactionable record.
+  assert.equal(isDirectiveLandingShape({ ...landing, task_state: 'merged' }), false);
+  // No directive at all is a plain in-progress record, not a directive landing.
+  assert.equal(isDirectiveLandingShape({ ...landing, blocking_directive: 'none' }), false);
+  // Case-exact, like the runner's own sentinel: `NONE` is refused, not read as "no directive".
+  assert.equal(isDirectiveLandingShape({ ...landing, blocking_directive: 'NONE' }), true);
+
+  // CARRIES rather than proposes: the head's Now block equals the default branch's, so a
+  // maintenance PR inheriting a merged directive record is still reported as drift.
+  assert.ok(
+    buildDriftHandoff({
+      statusNow: landing,
+      openPullRequests: [{ number: 490, headRefName: 'claude/maintenance', isDraft: true }],
+      headStatuses: [{ number: 490, now: landing, editsStatus: false }],
+    }),
+    'a maintenance PR merely carrying the directive record suppressed its own open_pr drift',
+  );
+
+  // …and it must not mask a CONCURRENT work-item PR's genuine drift (the #303 round-3a lesson).
+  assert.ok(
+    buildDriftHandoff({
+      statusNow: { ...landing, open_pr: '480', blocking_directive: 'none' },
+      openPullRequests: [
+        { number: 485, headRefName: 'claude/github-app-install-1m0mir', isDraft: true },
+        { number: 491, headRefName: 'claude/phase6-work-item', isDraft: true },
+      ],
+      headStatuses: [
+        { number: 485, now: landing, editsStatus: true },
+        { number: 491, now: { ...landing, work_item: 'phase-6-task-4c-i', open_pr: 'none', blocking_directive: 'none' }, editsStatus: true },
+      ],
+    }),
+    'the directive landing silenced a concurrent work-item PR\'s genuine open_pr drift',
+  );
+});
+
+// FINDING (#485 P1, round 2) — a directive landing that RETAINS its work item is still a landing.
+// `assessRunnerState` accepts `in_progress` with BOTH a named work item and a named directive and
+// resolves it to the directive (the exemption pinned in 'a directive outranks work_item without
+// tripping the override guard'). Round 1's predicate required `work_item: none`, so a status-only
+// correction for a defect belonging to a NAMED sub-unit was reported as drift and buildDriftHandoff
+// instructed the owner to point `open_pr` at the correction PR itself — the #303 trap, reached from
+// the one shape the resolver explicitly blesses.
+test('a directive landing that retains a work item is recognized', async () => {
+  const { isDirectiveLandingShape, buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const landing = {
+    phase: '6', task: '4', task_state: 'in_progress', work_item: 'phase-6-task-4c-i',
+    open_pr: 'none', next_task: 'phase-6-task-4c', blocking_directive: 'fix-forward-something',
+  };
+  const { assessRunnerState } = await import('./autonomous-status-state.mjs');
+  assert.equal(
+    assessRunnerState(landing, ['upkeep']).nextStep,
+    'directive:fix-forward-something',
+    'precondition: the resolver treats this shape as a directive landing',
+  );
+  assert.equal(isDirectiveLandingShape(landing), true);
+  assert.equal(
+    buildDriftHandoff({
+      statusNow: { ...landing, open_pr: '480', blocking_directive: 'none' },
+      openPullRequests: [{ number: 486, headRefName: 'claude/status-correction', isDraft: true }],
+      headStatuses: [{ number: 486, now: landing, editsStatus: true }],
+    }),
+    null,
+    'a directive landing with a retained work item was sent into the #303 trap',
+  );
+});

@@ -139,6 +139,43 @@ export function isNoneFlipShape(now) {
 }
 const TERMINAL_HANDOFF_STATES = new Set(['merged', 'complete', 'completed', 'cleared']);
 
+/** The DIRECTIVE landing: a status-only correction that records a post-merge defect —
+ *  `open_pr: none` with a scheduled `blocking_directive` — and is therefore neither a
+ *  handoff (its task is not terminal) nor a none-flip (it schedules work).
+ *
+ *  It belongs to the SAME class as the two shapes above and for the same reason: the
+ *  record it proposes is the one that will be true AFTER its own merge, so
+ *  `detectStatusDrift` cannot help but read its `open_pr: none` as drift while its own
+ *  PR is still open. Without this arm the shepherd advises pointing `open_pr` at the
+ *  correction's own number — the #303 trap, planted by the very PR whose purpose is to
+ *  remove a stale pointer.
+ *
+ *  The states are the two `assessRunnerState` schedules a directive from, spelled the
+ *  same way: a directive recorded from any other state does not resolve, so treating it
+ *  as a landing would suppress drift for a record the runner cannot act on. The directive
+ *  itself is tested with the runner's own case-exact sentinel (#334 round 3) rather than a
+ *  lowercased compare, so `NONE` is refused here exactly as `assessRunnerState` refuses it
+ *  instead of being read as "no directive" by one reader and a named one by the other.
+ *
+ *  It deliberately does NOT require `work_item: none` (#485 round 2). The other two landings
+ *  test it because a terminal task with a work item still names follow-on work; a DIRECTIVE
+ *  outranks the work item entirely — `assessRunnerState` returns the directive from
+ *  `in_progress` WITH a work item in place, and that exemption is separately pinned. Requiring
+ *  `none` here rejected exactly that valid landing, so a post-merge defect belonging to a named
+ *  sub-unit was reported as drift and the shepherd sent it into the #303 trap. Read only the
+ *  fields that decide the resolution: the state, the directive, and `open_pr`. */
+export function isDirectiveLandingShape(now) {
+  const state = String(now?.task_state ?? '').trim().toLowerCase();
+  const openPr = String(now?.open_pr ?? '').trim().toLowerCase();
+  return (
+    DIRECTIVE_SCHEDULING_STATES.has(state)
+    && (openPr === '' || openPr === 'none')
+    && !isNoneValue(String(now?.blocking_directive ?? '').trim())
+  );
+}
+// Mirrors assessRunnerState's DIRECTIVE_STATES: the states STATUS schedules a directive from.
+const DIRECTIVE_SCHEDULING_STATES = new Set(['correction_required', 'in_progress']);
+
 /** Whether a head's Now block PROPOSES a state transition (#334 rounds 5–6). A head whose
  *  Now block EQUALS the default branch's is carrying main's state, whatever else its diff
  *  touches — editing a historical STATUS paragraph puts the file in the diff without
@@ -187,7 +224,8 @@ export function detectStatusDriftAcrossHeads({
     // So: exclude this head's own PR from the live set and re-ask. Nothing else open can be in
     // drift against it, or the head is not a correction — it is one of the things that is wrong.
     //
-    // TWO landing shapes qualify (#334 rounds 3–5), and the PROPOSES-vs-CARRIES test
+    // THREE landing shapes qualify (#334 rounds 3–5; the directive landing added on #485),
+    // and the PROPOSES-vs-CARRIES test
     // applies to BOTH — the distinguisher belongs to the CLASS, not to whichever shape
     // last bit us. A HANDOFF names its next task; a NONE-FLIP is the deliberate
     // interregnum. Either one, read from a head's Now block, is IDENTICAL to a
@@ -202,7 +240,11 @@ export function detectStatusDriftAcrossHeads({
     // shepherd nudge, while wrongly advising a landing head to point `open_pr` at
     // itself plants the #303 trap in the merged record. Fail toward the recoverable
     // mistake.
-    const qualifies = (isHandoffShape(entry.now) || isNoneFlipShape(entry.now))
+    const qualifies = (
+      isHandoffShape(entry.now)
+      || isNoneFlipShape(entry.now)
+      || isDirectiveLandingShape(entry.now)
+    )
       && entry.editsStatus !== false
       && landingFieldsDiffer(entry.now, defaultBranchNow);
     if (!qualifies) return false;
