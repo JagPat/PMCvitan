@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4c-i
 reviewed_merge: 881002bb
-open_pr: none
+open_pr: 495
 next_task: phase-6-task-4c-ii
 blocking_directive: none
 updated: 2026-08-30
@@ -25,6 +25,11 @@ updated: 2026-08-30
 **UNIT 4c-0 IS MERGED AND CLEARED (PR #489 at `main` `881002bb`); UNIT 4c-i IS THE OPEN WORK.**
 `reviewed_merge` advances to `881002bb` — #489 earned a fresh clean exact-head Codex +1, so it
 is a genuinely reviewed merge, the same standard `d86cfb60` met and `d06af48e` never did.
+
+**4c-i IS OPEN AS PR #495** (branch `claude/phase6-4c-i-consultation-migration`,
+`Replaces: none` — no replacement obligation is outstanding for this unit). `open_pr` NAMES it
+because it is a WORK-ITEM PR, not a status landing, and `task_state: in_progress` records that it
+is still being driven to a clean exact-head review rather than waiting on one.
 
 **4c-i IS THE DARK MIGRATION UNIT** (the merged plan, §D "4c-i, the migration unit"): ONE
 additive migration creating the two append-only consultation facts with their composite keys,
