@@ -4,6 +4,7 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { emitEvent, type EmitInput } from '../../src/platform/events';
 import type { Actor } from '../../src/common/actor';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 Task 4 — the DomainEvent envelope, proven against live PostgreSQL.
  *
@@ -23,7 +24,7 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
     human.actorId = f.memberUser.id;
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
+    await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
     await f?.cleanup();
     await t?.close();
   });

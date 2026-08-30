@@ -6,6 +6,7 @@ import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import { SnapshotService } from '../../src/snapshot/snapshot.service';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 6 task 4b — the decision-workflow decider model (server arms, live PG).
  *
@@ -120,7 +121,7 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     ]);
     // the fixture-cleanup discipline (fixtures.ts): append-only platform tables truncate, then
     // reverse-FK-order deletes so a failed test never strands rows for the next suite
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
+    await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
     await t?.prisma.$transaction([
       t.prisma.commandExecution.deleteMany({ where: { OR: [{ projectId: { in: [projectId, projectBId] } }, { organizationId: { in: [orgId, orgBId] } }] } }),
       t.prisma.auditLog.deleteMany({ where: { projectId: { in: [projectId, projectBId] } } }),

@@ -10,6 +10,7 @@ import { InspectionsQueryService } from '../../src/inspections/inspections.query
 import { INSPECTIONS_PROJECTION } from '../../src/inspections/inspections.projection';
 import type { AuthUser } from '../../src/common/auth';
 import type { Actor } from '../../src/common/actor';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 2 Task 10 (Module 3) — the INSPECTIONS read path moves onto its rebuildable projection, proven
@@ -35,7 +36,9 @@ describe('Phase 2 Task 10 (Module 3) — inspections projection == live slices, 
   let query: InspectionsQueryService;
   let projSeq = 0;
 
-  const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "InspectionsProjection" CASCADE';
+  const RESET_TABLES = ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'InspectionsProjection'
+  ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
 
@@ -49,12 +52,12 @@ describe('Phase 2 Task 10 (Module 3) — inspections projection == live slices, 
     human.actorId = f.memberUser.id;
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     await t.prisma.commandExecution.deleteMany({ where: { projectId: { startsWith: 'it-inpj-' } } });
     await t.prisma.inspectionItem.deleteMany({ where: { inspection: { projectId: { startsWith: 'it-inpj-' } } } });
     await t.prisma.inspection.deleteMany({ where: { projectId: { startsWith: 'it-inpj-' } } });

@@ -6,6 +6,7 @@ import { NodesService } from '../../src/nodes/nodes.service';
 import { treeLockKey } from '../../src/common/tree-lock';
 import type { AuthUser } from '../../src/common/auth';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 6 task 2 — nested locations, §A probes (P1–P3, P6–P8, P10, P14, P15, P17).
  *
@@ -48,7 +49,7 @@ describe('phase-6-task-2 — nested locations (§A, live PG)', () => {
     nodes = t.app.get(NodesService);
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
+    await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
     await f?.cleanup();
     await t?.close();
   });

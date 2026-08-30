@@ -14,114 +14,76 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
-work_item: none
-reviewed_merge: fe9df58d
-open_pr: none
+work_item: phase-6-task-4c-0
+reviewed_merge: d86cfb60
+open_pr: 488
 next_task: phase-6-task-4c
-blocking_directive: phase-6-4c-plan-independent-clearance
+blocking_directive: none
 updated: 2026-08-30
 ```
 
-**THE 4c PLAN DOCUMENT IS ON `main` BUT IT IS NOT INDEPENDENTLY CLEARED.** PR #480
-(branch `claude/decision-workflow-4c-plan-r9`, `Replaces: #479`) was merged at `main`
-`d06af48e` on 2026-08-30 by an explicit Board merge call **while the required exact-head
-status `codex-current-head` on its authoritative head `25b43f77` was FAILING**
-(`replacement_required` — thirteen finding-bearing heads reached the review-round limit).
-So `docs/superpowers/plans/2026-08-29-decision-workflow-4c.md` is deployed prose that never
-received the exact-head clearance the programme gate requires, and rounds 19–29 folded
-findings on heads no independent review ever confirmed clean. The gate behaved correctly at
-every step: the post-merge autonomous handoff REFUSED to continue (`Skipping continuation
-for PR #480: exact-head Codex status was not successful`), which is precisely why the loop
-had no move — not a runner defect, the fail-closed design working.
+**THE BOARD ACCEPTED THE 4c PLAN AS-IS; 4c IMPLEMENTATION IS RUNNING, STARTING AT 4c-0.**
+On 2026-08-30 the Board dismissed the unwind (09:36 IST) and directed the loop explicitly
+(11:25 IST, on #487): the 4c plan document STAYS on `main`, the removal PR #487 is closed
+unmerged, no reinstatement step is opened, and the next unit from `d86cfb60` is 4c
+implementation — 4c-0, reproduce-first, service-only unless the merged plan named a schema.
+Units 1–6 stay gated; listener #482/#483/#484 wait.
 
-**A Board merge call is not review evidence, and this record does not convert one into the
-other.** That is why `reviewed_merge` deliberately still reads `fe9df58d` (the merged 4b
-unit #468, cleared on a fresh exact-head +1) and is NOT advanced to `d06af48e`. Advancing it
-would launder the bypass into recorded clearance and hand the next continuation an
-implementation authority no review ever granted — the exact conversion the 2026-08-30
-supervision stop forbids. `main` carries the plan; `main` does not carry its clearance, and
-the two are recorded separately here so no later reader has to reconstruct the difference.
+**The history stays on the record, because the disposition changed and the facts did not.**
+PR #480 merged at `d06af48e` on a Board merge call while the required exact-head
+`codex-current-head` status on its authoritative head `25b43f77` was FAILING
+(`replacement_required` — thirteen finding-bearing heads), so
+`docs/superpowers/plans/2026-08-29-decision-workflow-4c.md` never received an independent
+exact-head review, and the corrections folded across rounds 19–29 were never confirmed clean
+on any reviewed head. What the Board decided is the DISPOSITION of that fact, not the fact:
+the plan is accepted as it stands, and any defect in it surfaces in the review of the
+implementation units that carry it out, rather than in a re-review of the document. A future
+reader must not mistake "accepted" for "independently cleared" — it was not, and the plan's
+own §D staging is what each implementation PR is reviewed against.
 
-`open_pr: none` is the truth and the fix: #480 is MERGED, so the record that named it live
-resolved `assessRunnerState` to a pull request that no longer exists — the same stale-pointer
-strand the #472/#473 pair produced, and the reason zero open PRs left the loop stuck. This
-correction is STATUS-only, so it lands in the shape that is true AFTER its own merge; the
-transient default-branch drift while it is open is the documented trade (see the handoff rule
-below), and it self-clears on merge because no other PR is open.
+`blocking_directive` is therefore `none`: the directive
+`phase-6-4c-plan-independent-clearance` scheduled the removal-and-reinstatement work the Board
+has now dismissed, so the work no longer exists and the directive is retired rather than
+paused. Leaving it named would be worse than useless — `assessRunnerState` returns a directive
+AHEAD of both `task: 4` and the Maintenance queue, so it would hand the runner an unbuildable
+step forever and block the very unit the Board just scheduled.
 
-`task_state: in_progress` with a named `blocking_directive` is the runner rules' own
-post-merge fix-forward path ("If post-merge review finds a defect, return the parent task to
-`in_progress` and name its blocking directive"). It is NOT `correction_required`, whose
-definition — "a **reviewed** merge has a validated defect" — presumes the very clearance
-`d06af48e` lacks. `assessRunnerState` returns `directive:phase-6-4c-plan-independent-clearance`
-from this state and returns it FIRST, ahead of `task: 4` and ahead of any open PR, so the
-directive is not advisory: 4c implementation is structurally unreachable until it clears.
+`reviewed_merge: d86cfb60` is advanced, and honestly: PR #486 earned a fresh clean exact-head
+Codex +1 (`review_clean`, attempt 1/2, head `b089200f`), so it IS a genuinely reviewed merge —
+the first in this lineage. It is deliberately NOT `d06af48e`, which never was one. The field
+means "the last merge an independent review actually cleared", and that distinction is the
+whole reason the record above is kept rather than deleted.
 
-### Directive `phase-6-4c-plan-independent-clearance`
+**4c-0 IS THE PREREQUISITE RESET SWEEP** (the merged plan, §D and review rounds 21/29) and it
+is PURE REFACTOR: it centralizes the sanctioned destructive reset into ONE shared helper
+(`apps/api/prisma/sanctioned-reset.ts`) performing the guarded disable/truncate/re-enable, and
+converts every sanctioned reset to call it — all 55 integration suites plus `prisma/seed.ts`,
+direct truncations AND cascade parents, covering `DecisionApprovalRevision` and
+`ProjectCapability` alike. NO seal is installed and NO behaviour changes, so it is reviewable
+as exactly what it is and is separately revertible. It exists as its own unit because it
+touches more files than the review budget allows and folding it into 4c-i would bury a
+mechanical refactor inside a migration review. The point is the registry: adding a
+statement-level TRUNCATE seal becomes one entry in `TRUNCATE_SEALS`, not an edit to fifty
+suites — and a missed one does not fail at the seal, it fails in the SETUP of every suite whose
+reset touches that table, which is how the required battery stops being runnable.
 
-Scheduled from the Now block (not a standing gate — see **Blocking directives**, which is
-reserved for gates that bind regardless of resolver output).
-
-- **The defect.** The 4c plan merged without the independent exact-head review that every
-  unit owes. Its content is authoritative-looking on `main` and is not authorized.
-- **The requirement (corrected on review round 1 of #485).** Clearance requires the PLAN'S OWN
-  DECISION CONTENT to be inside the reviewed diff. An earlier draft of this directive
-  prescribed adding a review-provenance NOTE to
-  `docs/superpowers/plans/2026-08-29-decision-workflow-4c.md` and called that sufficient
-  because it is "anchored on the plan". It is not, and the review said so: Codex reviews the
-  DIFF, so it would have reviewed the new note while the unreviewed rounds 19–29 content sat
-  unchanged around it — then a clean status would have cleared this directive and released 4c
-  with the plan's substance still never independently reviewed. That is the exact laundering
-  this record exists to prevent, reintroduced one level down. **A provenance-only, metadata-only
-  or otherwise non-substantive diff DOES NOT clear this directive, and a clean
-  `codex-current-head` on such a diff must not be read as clearance.**
-- **The work, in two ordered steps — both autonomously executable (corrected on review round 2
-  of #485).** The content is already ON `main`, so the only way to put it in front of a reviewer
-  as a diff is to take it off `main` and let it re-enter as a reviewed unit:
-  - **Step 1 — removal.** One PR that REMOVES
-    `docs/superpowers/plans/2026-08-29-decision-workflow-4c.md`, reviewed on its own merits
-    (should an unreviewed 1,577-line document be authoritative? no). Nothing is destroyed: the
-    document survives in git history and on #480.
-  - **Step 2 — reinstatement.** After step 1 lands, one PR that RE-ADDS the plan in full, so
-    every decision line is an ADDITION in a diff a reviewer must accept.
-
-  A round-1 draft made step 1 conditional on an explicit Board call and claimed the loop's other
-  duties stayed available meanwhile. Both halves were wrong, and the review was right on both.
-  `assessRunnerState` returns this directive AHEAD of the task AND the Maintenance queue, so
-  gating it on a human reply hands the runner work it is forbidden to perform, every tick,
-  forever — the queue is NOT available behind it, and saying otherwise was false. Nothing here
-  needs new authority: OPENING a reviewed PR is a proposal, not an unwind, and whether either
-  step MERGES is decided by the ordinary exact-head gate exactly as for every other unit. The
-  runner therefore always has an executable move — open step 1, drive it to green, then step 2 —
-  and no step of this directive waits on a person.
-- **NOT cleared by:** the #480 merge itself; a Board merge call; a human ready-for-review or
-  merge action; a drift-shepherd or watchdog notice; this STATUS correction merging; a clean
-  review of any diff that does not carry the plan's own decision content; **or a clean review of
-  the step-1 REMOVAL head.** That last one is the subtle case and it was live in the round-1
-  wording (found on review round 2): a removal diff contains every line of the plan as
-  DELETIONS, so a literal "the diff contains the plan's decision content" test accepts it — and
-  the directive could then be cleared with the plan ABSENT and never reviewed in restored form.
-  Deleting a document is not review of it. None of these is exact-head review evidence of the
-  PLAN, and every one of them has been mistaken for it at least once.
-- **Cleared by:** a fresh, clean `codex-current-head` success on the exact head of the STEP-2
-  REINSTATEMENT PR — the head that carries the full plan as additions, after the removal has
-  landed. On that signal, and only then,
-  `blocking_directive` returns to `none` and `task: 4` resumes at `next_task: phase-6-task-4c`.
-
-**4c IMPLEMENTATION DOES NOT START** — not 4c-0, not 4c-i, not any later stage. The
-post-merge continuation comment on #480 (2026-08-30 ~02:10 IST) that instructed a
-STATUS-clear PR followed immediately by 4c-0 is **SUPERSEDED** by the programme-supervision
-stop posted on the same thread at 02:37 IST, which is the last word on that thread and is
-recorded here so no continuation has to re-derive the ordering from comment timestamps.
-Equally: do NOT open another paper or tree-identical replacement of #480, do NOT reopen the
-Claude GitHub listener infrastructure (#483/#484, both closed), and the standing
-`contractor-capture-units-1-6-board-go` gate on units 1–6 is untouched and still binding.
+The battery is the gate and it PASSED on `4bfa4cd7`: **99 files / 1,321 tests, 0 failures** over
+a freshly migrated database. It also earned its keep — the first head listed
+`T3CRepairAction_no_truncate` in the registry, and that table's DDL guard refuses ALTER TABLE
+(disabling a trigger IS an ALTER TABLE), so the helper's first statement raised P0001 on EVERY
+suite. Nothing sanctioned clears that register — not a Prisma model, no inbound FK so no CASCADE
+reaches it, and its only TRUNCATE is a hostile probe asserting rejection — so it is removed, with
+the reason recorded beside the registry against a future "completeness" fix that would re-break
+every reset.
 
 The #480 review lineage is preserved as history: the WORK lineage
 #470 → #471 → #473 → #474 → #476 → #477 → #478 → #479 → #480, each closing at the
-two-finding-bearing-head limit with the next carrying the unit forward. On the LEDGER, #471
-remains pending and labelled `review-replacement-required` for the next unit in the lineage;
-the exhausted #465 obligation was discharged by the merged #472.
+two-finding-bearing-head limit with the next carrying the unit forward. The STATUS correction
+lineage that followed it: #485 (two rounds, five P1s) → #486 (`Replaces: #485`, one P2, MERGED
+CLEAN at `d86cfb60`) → #487 (`Replaces: #480`, the removal step, CLOSED UNMERGED by Board
+decision). On the LEDGER, #471 and #480 remain pending and labelled
+`review-replacement-required`; the exhausted #465 obligation was discharged by the merged
+#472, and #485 by the merged #486.
 
 **DECISION-WORKFLOW UNIT 4b IS DELIVERED AND CLEARED — PR #468 (the fifth replacement, branch
 `claude/decision-workflow-4b-r6`, `Replaces: #467`) MERGED at `main` `fe9df58d` on 2026-08-29

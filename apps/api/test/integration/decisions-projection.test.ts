@@ -10,6 +10,7 @@ import { DECISIONS_PROJECTION } from '../../src/decisions/decisions.projection';
 import type { Actor } from '../../src/common/actor';
 import type { Role } from '../../src/common/auth';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 Task 9 Step 2 — the DECISIONS read path moves onto its rebuildable projection, proven
  * EQUIVALENT to the live snapshot slice (the Task-1 characterization) and proven live == rebuild.
@@ -44,12 +45,12 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
     await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: f.strangerUser.id, role: 'client', status: 'active' } });
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection" CASCADE');
+    await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'DecisionProjection'], { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection" CASCADE');
+    await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'DecisionProjection'], { cascade: true });
     // Phase 6 task 4b — options of published parents leave WITH their heads through the ONE
     // sanctioned bypass (the option freeze now covers every published parent).
     await wipeDecisionsVia(t.prisma, async (tx) => {

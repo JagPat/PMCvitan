@@ -8,6 +8,7 @@ import { registerConsumer, unregisterConsumer, syncConsumerCatalog, type OutboxC
 import { effectCoverageVersion } from '../../src/platform/external-effects';
 import type { Actor } from '../../src/common/actor';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 fix-forward PR B Task 4 — audited dead-letter operations (live PG). status aggregates +
  * truncates errors (no payloads); retry accepts only a dead delivery, requires operator+reason,
@@ -35,13 +36,13 @@ describe('PR B Task 4 — outbox operations (live PG)', () => {
   });
   afterAll(async () => {
     unregisterConsumer(ORD);
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "OutboxOperatorAction" CASCADE');
+    await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'OutboxOperatorAction'], { cascade: true });
     await t?.prisma.outboxConsumerCatalog.deleteMany({ where: { consumer: ORD } });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "OutboxOperatorAction" CASCADE');
+    await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'OutboxOperatorAction'], { cascade: true });
     await t.prisma.auditLog.deleteMany({ where: { action: 'test.ops' } });
     await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-ops-' } } });
   });

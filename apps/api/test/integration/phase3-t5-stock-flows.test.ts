@@ -11,6 +11,7 @@ import { CapabilitiesService, MATERIALS_CAPABILITY } from '../../src/platform/ca
 import { lockProjectReadiness } from '../../src/common/readiness-lock';
 import type { AuthUser } from '../../src/common/auth';
 import type { CreateRequirementInput } from '../../src/contracts';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 3 Task 5 — store-to-site flows + the §E mismatch resolution, live-PG acceptance
@@ -49,8 +50,20 @@ describe('Phase 3 Task 5 — reservations, issues, site flows, mismatch resoluti
   let capabilities: CapabilitiesService;
   let seq = 0;
 
-  const TRUNCATE =
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "StockTransaction", "MaterialIssue", "StockLot", "MismatchResolution", "CommandExecution", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectPartyVendorSource", "ProjectPartyCompanySource", "ProjectParty", "ProjectVendor", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
+  const RESET_TABLES = ['VendorAdvance', 'PaymentReversal', 'Payment', 'PaymentApproval',
+    'BillDeductionRelease', 'BillDeduction', 'SodException', 'SodGrant',
+    'CertifiedMeasurementConsumption', 'CertifiedAcceptanceConsumption', 'BillCertificate',
+    'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
+    'InspectionsProjection', 'ActivitiesProjection', 'StockTransaction', 'MaterialIssue',
+    'StockLot', 'MismatchResolution', 'CommandExecution', 'DeliveryPromise',
+    'DeliveryCommitment', 'PurchaseOrderLine', 'PurchaseOrderVersion', 'PurchaseOrder',
+    'VendorQuoteLine', 'QuoteComparison', 'VendorQuote', 'Rfq', 'RequisitionLine', 'Requisition',
+    'ProjectPartyVendorSource', 'ProjectPartyCompanySource', 'ProjectParty', 'ProjectVendor',
+    'ApprovedSubstitution', 'LabourDemandSlice', 'LabourRequirementSpec',
+    'MaterialRequirementSpec', 'ActivityRequirement', 'ActivityRequirementRoot',
+    'DecisionApprovalRevision', 'ProjectCapability'
+  ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const orgAdmin = (): AuthUser => ({ sub: f.ownerUser.id, role: 'pmc' }) as AuthUser;
@@ -67,13 +80,13 @@ describe('Phase 3 Task 5 — reservations, issues, site flows, mismatch resoluti
     capabilities = t.app.get(CapabilitiesService);
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await t?.prisma.vendor.deleteMany({ where: { orgId: { in: [f.orgA.id, f.orgB.id] } } });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     await t.prisma.vendor.deleteMany({ where: { orgId: { in: [f.orgA.id, f.orgB.id] } } });
     for (const [model, where] of [
       ['siteMaterial', { projectId: { startsWith: 'it-p3t5-' } }],

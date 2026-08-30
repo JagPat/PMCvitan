@@ -3,6 +3,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { OrgsService } from '../../src/orgs/orgs.service';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 6 task 2 — nested locations, the SECOND write path (§A.3) probes:
  * P4, P5, P11, P16, P18.
@@ -34,7 +35,7 @@ describe('phase-6-task-2 — nested locations through project initialization (li
     orgs = t.app.get(OrgsService);
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
+    await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
     // projects created by these probes (unique short prefix) — nodes/memberships cascade
     const created = await t.prisma.project.findMany({ where: { name: { startsWith: 'P6T2M ' } }, select: { id: true } });
     for (const p of created) {

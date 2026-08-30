@@ -3,6 +3,7 @@ import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 1 — INTEGRATION CHARACTERIZATION against live PostgreSQL. One flow per
  * pillar, exactly as the server behaves. Task 1 wrote these at the baseline
@@ -29,7 +30,7 @@ describe('phase 1 baseline characterization (integration)', () => {
 
   afterAll(async () => {
     const projectId = f.projectA.id;
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision" CASCADE');
+    await sanctionedReset(t.prisma, ['LabourDemandSlice', 'LabourRequirementSpec', 'MaterialRequirementSpec', 'DecisionApprovalRevision'], { cascade: true });
     await t.prisma.$transaction([
       t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } }),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),

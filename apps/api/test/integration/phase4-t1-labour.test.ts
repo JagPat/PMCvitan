@@ -7,6 +7,7 @@ import { CapabilitiesService, MATERIALS_CAPABILITY, LABOUR_CAPABILITY } from '..
 import { SnapshotService } from '../../src/snapshot/snapshot.service';
 import { computeLabourSpecFingerprint } from '@vitan/shared';
 import type { AuthUser } from '../../src/common/auth';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 4 Task 1 — the labour capability + type-routed demand + trusted workforce identity
@@ -31,8 +32,20 @@ describe('Phase 4 Task 1 — labour capability + type-routed demand + workforce 
   let snapshot: SnapshotService;
   let seq = 0;
 
-  const TRUNCATE =
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "CashForecastProjection", "LabourReadinessProjection", "StockTransaction", "MaterialIssue", "StockLot", "CommandExecution", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ApprovedSubstitution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
+  const RESET_TABLES = ['VendorAdvance', 'PaymentReversal', 'Payment', 'PaymentApproval',
+    'BillDeductionRelease', 'BillDeduction', 'SodException', 'SodGrant',
+    'CertifiedMeasurementConsumption', 'CertifiedAcceptanceConsumption', 'BillCertificate',
+    'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
+    'InspectionsProjection', 'ActivitiesProjection', 'MaterialReadinessProjection',
+    'CashForecastProjection', 'LabourReadinessProjection', 'StockTransaction', 'MaterialIssue',
+    'StockLot', 'CommandExecution', 'DeliveryPromise', 'DeliveryCommitment', 'PurchaseOrderLine',
+    'PurchaseOrderVersion', 'PurchaseOrder', 'VendorQuoteLine', 'QuoteComparison', 'VendorQuote',
+    'Rfq', 'RequisitionLine', 'Requisition', 'ApprovedSubstitution', 'CrewMembership', 'Crew',
+    'WorkerDevice', 'WorkerSkill', 'Worker', 'LabourDemandSlice', 'LabourRequirementSpec',
+    'LabourTrade', 'LabourSkill', 'MaterialRequirementSpec', 'ActivityRequirement',
+    'ActivityRequirementRoot', 'DecisionApprovalRevision', 'ProjectCapability'
+  ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const engineer = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'engineer', projectId }) as AuthUser;
@@ -47,12 +60,12 @@ describe('Phase 4 Task 1 — labour capability + type-routed demand + workforce 
     snapshot = t.app.get(SnapshotService);
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     // approval DecisionEvents are undeletable evidence (round 12) — the sanctioned
     // destructive-reset helper wipes them with the named seal disabled
     await wipeDecisionEvents(t.prisma, { decision: { projectId: { startsWith: 'it-p4-' } } });

@@ -5,6 +5,7 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { InspectionsService } from '../../src/inspections/inspections.service';
 import type { AuthUser } from '../../src/common/auth';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 Task 10 (Module 3) — the inspection COMMANDS are idempotent under the Task-5 CommandExecution
  * ledger. A retried command (network retry / offline write-ahead replay / double-tap) carrying the SAME
@@ -34,7 +35,7 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
   });
   afterEach(async () => {
     const pids = { startsWith: 'it-inidem-' };
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "InspectionsProjection" CASCADE');
+    await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'InspectionsProjection'], { cascade: true });
     await t.prisma.commandExecution.deleteMany({ where: { projectId: pids } });
     await t.prisma.inspectionItem.deleteMany({ where: { inspection: { projectId: pids } } });
     await t.prisma.inspection.deleteMany({ where: { projectId: pids } });

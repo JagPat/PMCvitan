@@ -8,6 +8,7 @@ import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.se
 import { DailyLogQueryService } from '../../src/daily-log/daily-log.query';
 import { DAILY_LOG_PROJECTION } from '../../src/daily-log/daily-log.projection';
 import type { Actor } from '../../src/common/actor';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 2 Task 10 Step 2 — the DAILY-LOG read path moves onto its rebuildable projection, proven
@@ -31,7 +32,9 @@ describe('Phase 2 Task 10 — daily-log projection == live slice, live == rebuil
   let query: DailyLogQueryService;
   let projSeq = 0;
 
-  const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DailyLogProjection" CASCADE';
+  const RESET_TABLES = ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'DailyLogProjection'
+  ] as const;
 
   beforeAll(async () => {
     t = await createTestApp();
@@ -42,12 +45,12 @@ describe('Phase 2 Task 10 — daily-log projection == live slice, live == rebuil
     human.actorId = f.memberUser.id;
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     await t.prisma.siteMaterial.deleteMany({ where: { projectId: { startsWith: 'it-dlpj-' } } });
     await t.prisma.crewRow.deleteMany({ where: { dailyLog: { projectId: { startsWith: 'it-dlpj-' } } } });
     await t.prisma.dailyLog.deleteMany({ where: { projectId: { startsWith: 'it-dlpj-' } } });

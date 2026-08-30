@@ -9,6 +9,7 @@ import { LabourCapacityService } from '../../src/labour/labour-capacity.service'
 import { WorkerDevicesService } from '../../src/orgs/worker-devices.service';
 import { CapabilitiesService, LABOUR_CAPABILITY } from '../../src/platform/capabilities.service';
 import type { AuthUser } from '../../src/common/auth';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Contractor capture UNIT 0 (docs/ux/CONTRACTOR_CAPTURE_PROPOSAL.md §4 item 0) — FAIL CLOSED,
@@ -38,8 +39,14 @@ describe('Contractor capture unit 0 — the three §C writes fail closed for a c
   let capabilities: CapabilitiesService;
   let seq = 0;
 
-  const TRUNCATE =
-    'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "LabourReadinessProjection", "ActivitiesProjection", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "ProjectCapability" CASCADE';
+  const RESET_TABLES = ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'LabourReadinessProjection', 'ActivitiesProjection',
+    'LabourMismatchResolution', 'LabourMismatch', 'ActivityWorkOutput', 'LabourWorkFact',
+    'WorkerAllocation', 'LabourAttendance', 'ApprovedSkillSubstitution', 'CommandExecution',
+    'CrewMembership', 'Crew', 'WorkerDevice', 'WorkerSkill', 'Worker', 'LabourDemandSlice',
+    'LabourRequirementSpec', 'LabourTrade', 'LabourSkill', 'MaterialRequirementSpec',
+    'ActivityRequirement', 'ActivityRequirementRoot', 'ProjectCapability'
+  ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
 
@@ -54,12 +61,12 @@ describe('Contractor capture unit 0 — the three §C writes fail closed for a c
     capabilities = t.app.get(CapabilitiesService);
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     for (const [model, where] of [
       ['auditLog', { projectId: { startsWith: 'it-p4u0-' } }],
       ['activity', { projectId: { startsWith: 'it-p4u0-' } }],

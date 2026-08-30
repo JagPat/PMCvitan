@@ -11,6 +11,7 @@ import { DailyLogQueryService } from '../../src/daily-log/daily-log.query';
 import { DAILY_LOG_PROJECTION } from '../../src/daily-log/daily-log.projection';
 import { NodesService } from '../../src/nodes/nodes.service';
 import type { AuthUser } from '../../src/common/auth';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 2 Task 10 Module-4 correction — ON DELETE SET NULL must not silently mutate a PROJECTED
@@ -50,8 +51,14 @@ describe('Module-4 correction — SET NULL FKs produce owner-aligned projection 
   let seq = 0;
 
   const TINY_PDF = Buffer.from('%PDF-1.4 set-null probe').toString('base64');
-  const TRUNCATE =
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "StockTransaction", "MaterialIssue", "StockLot", "CommandExecution" CASCADE';
+  const RESET_TABLES = ['VendorAdvance', 'PaymentReversal', 'Payment', 'PaymentApproval',
+    'BillDeductionRelease', 'BillDeduction', 'SodException', 'SodGrant',
+    'CertifiedMeasurementConsumption', 'CertifiedAcceptanceConsumption', 'BillCertificate',
+    'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
+    'InspectionsProjection', 'ActivitiesProjection', 'StockTransaction', 'MaterialIssue',
+    'StockLot', 'CommandExecution'
+  ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
 
@@ -67,12 +74,12 @@ describe('Module-4 correction — SET NULL FKs produce owner-aligned projection 
     nodes = t.app.get(NodesService);
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     for (const [model, where] of [
       ['gateOverride', { projectId: { startsWith: 'it-snos-' } }],
       ['drawingRecipient', { projectId: { startsWith: 'it-snos-' } }],

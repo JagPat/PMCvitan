@@ -4,6 +4,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia } from './fixtures';
 import { ActivitiesService } from '../../src/activities/activities.service';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 1 gate finding 1 (P1) — reproduce-first probes, written to assert the
  * CORRECT behavior and run RED against the pre-fix head:
@@ -47,7 +48,7 @@ describe('start vs readiness concurrency (integration)', () => {
     await t.prisma.siteMaterial.deleteMany({ where: { projectId } });
     await t.prisma.crewRow.deleteMany({ where: { dailyLog: { projectId } } });
     await t.prisma.dailyLog.deleteMany({ where: { projectId } });
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision" CASCADE');
+    await sanctionedReset(t.prisma, ['LabourDemandSlice', 'LabourRequirementSpec', 'MaterialRequirementSpec', 'DecisionApprovalRevision'], { cascade: true });
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } });
     await wipeDecisionEvents(t.prisma, { decision: { projectId } });
     // one sanctioned bypass: options of published parents are frozen (4b widened freeze)

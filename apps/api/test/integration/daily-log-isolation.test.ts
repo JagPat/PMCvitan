@@ -8,6 +8,7 @@ import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.se
 import { DailyLogQueryService } from '../../src/daily-log/daily-log.query';
 import { DAILY_LOG_PROJECTION } from '../../src/daily-log/daily-log.projection';
 import type { Actor } from '../../src/common/actor';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 2 Task 10 (correction, finding 5) — the MODULE-OWNED daily-log read is tenant-isolated and
@@ -22,7 +23,9 @@ import type { Actor } from '../../src/common/actor';
  */
 
 const human: Actor = { actorId: '', actorName: 'Ravi (Engineer)', actorRole: 'engineer', actorKind: 'human' };
-const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DailyLogProjection" CASCADE';
+const RESET_TABLES = ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+  'ProjectionGeneration', 'DailyLogProjection'
+] as const;
 
 describe('Phase 2 Task 10 (correction, finding 5) — module read isolation + lifecycle (live PG)', () => {
   let t: TestApp;
@@ -41,12 +44,12 @@ describe('Phase 2 Task 10 (correction, finding 5) — module read isolation + li
     human.actorId = f.memberUser.id;
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     // clean daily-log rows for BOTH the disposable projects and the fixture projects the HTTP tests use
     const pids = { startsWith: 'it-dliso-' };
     await t.prisma.siteMaterial.deleteMany({ where: { OR: [{ projectId: pids }, { projectId: { in: [f.projectA.id, f.projectB.id] } }] } });

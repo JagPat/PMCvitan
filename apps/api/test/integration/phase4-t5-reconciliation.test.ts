@@ -17,6 +17,7 @@ import { lockProjectReadiness } from '../../src/common/readiness-lock';
 import { SystemClock } from '../../src/common/clock';
 import { recordLabourMismatchSchema } from '../../src/contracts';
 import type { AuthUser } from '../../src/common/auth';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 4 Task 5 — §E Daily-Log labour reconciliation + §I planned-vs-actual productivity,
@@ -59,8 +60,25 @@ describe('Phase 4 Task 5 — §E labour reconciliation + §I productivity (live 
 
   const today = new SystemClock().today('Asia/Kolkata');
 
-  const TRUNCATE =
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "CashForecastProjection", "LabourReadinessProjection", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "MismatchResolution", "SiteMaterial", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourQuoteComparison", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "ProjectPartyVendorSource", "ProjectPartyCompanySource", "ProjectParty", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
+  const RESET_TABLES = ['VendorAdvance', 'PaymentReversal', 'Payment', 'PaymentApproval',
+    'BillDeductionRelease', 'BillDeduction', 'SodException', 'SodGrant',
+    'CertifiedMeasurementConsumption', 'CertifiedAcceptanceConsumption', 'BillCertificate',
+    'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
+    'InspectionsProjection', 'ActivitiesProjection', 'MaterialReadinessProjection',
+    'CashForecastProjection', 'LabourReadinessProjection', 'LabourMismatchResolution',
+    'LabourMismatch', 'ActivityWorkOutput', 'MismatchResolution', 'SiteMaterial',
+    'LabourWorkFact', 'WorkerAllocation', 'LabourAttendance', 'ApprovedSkillSubstitution',
+    'CapacityPromise', 'CapacityCommitment', 'LabourPurchaseOrderLine',
+    'LabourPurchaseOrderVersion', 'LabourPurchaseOrder', 'SupplierLabourQuoteLine',
+    'SupplierLabourQuote', 'LabourQuoteComparison', 'LabourRfq', 'LabourRequisitionLine',
+    'LabourRequisition', 'VendorLabourProfile', 'ProjectPartyVendorSource',
+    'ProjectPartyCompanySource', 'ProjectParty', 'ProjectVendor', 'CommandExecution',
+    'CrewMembership', 'Crew', 'WorkerDevice', 'WorkerSkill', 'Worker', 'LabourDemandSlice',
+    'LabourRequirementSpec', 'LabourTrade', 'LabourSkill', 'MaterialRequirementSpec',
+    'ActivityRequirement', 'ActivityRequirementRoot', 'DecisionApprovalRevision',
+    'ProjectCapability'
+  ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
 
@@ -79,12 +97,12 @@ describe('Phase 4 Task 5 — §E labour reconciliation + §I productivity (live 
     relay = t.app.get(OutboxRelay);
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     const pids = { startsWith: 'it-p4t5-' };
     for (const [model, where] of [
       ['auditLog', { projectId: pids }],

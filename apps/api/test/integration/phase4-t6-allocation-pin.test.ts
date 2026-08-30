@@ -6,6 +6,7 @@ import { LabourService } from '../../src/labour/labour.service';
 import { LabourCapacityService } from '../../src/labour/labour-capacity.service';
 import { CapabilitiesService, LABOUR_CAPABILITY } from '../../src/platform/capabilities.service';
 import type { AuthUser } from '../../src/common/auth';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
 /**
  * Phase 4 Task 6 — Codex review round 3 (P1): allocation commands PIN the requirement head the
@@ -32,8 +33,23 @@ describe('Phase 4 Task 6 round 3 — allocation pinned to the selected requireme
   let capabilities: CapabilitiesService;
   let seq = 0;
 
-  const TRUNCATE =
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "CashForecastProjection", "LabourReadinessProjection", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourQuoteComparison", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "ProjectPartyVendorSource", "ProjectPartyCompanySource", "ProjectParty", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
+  const RESET_TABLES = ['VendorAdvance', 'PaymentReversal', 'Payment', 'PaymentApproval',
+    'BillDeductionRelease', 'BillDeduction', 'SodException', 'SodGrant',
+    'CertifiedMeasurementConsumption', 'CertifiedAcceptanceConsumption', 'BillCertificate',
+    'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
+    'InspectionsProjection', 'ActivitiesProjection', 'MaterialReadinessProjection',
+    'CashForecastProjection', 'LabourReadinessProjection', 'LabourWorkFact', 'WorkerAllocation',
+    'LabourAttendance', 'ApprovedSkillSubstitution', 'CapacityPromise', 'CapacityCommitment',
+    'LabourPurchaseOrderLine', 'LabourPurchaseOrderVersion', 'LabourPurchaseOrder',
+    'SupplierLabourQuoteLine', 'SupplierLabourQuote', 'LabourQuoteComparison', 'LabourRfq',
+    'LabourRequisitionLine', 'LabourRequisition', 'VendorLabourProfile',
+    'ProjectPartyVendorSource', 'ProjectPartyCompanySource', 'ProjectParty', 'ProjectVendor',
+    'CommandExecution', 'CrewMembership', 'Crew', 'WorkerDevice', 'WorkerSkill', 'Worker',
+    'LabourDemandSlice', 'LabourRequirementSpec', 'LabourTrade', 'LabourSkill',
+    'MaterialRequirementSpec', 'ActivityRequirement', 'ActivityRequirementRoot',
+    'DecisionApprovalRevision', 'ProjectCapability'
+  ] as const;
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
 
@@ -46,12 +62,12 @@ describe('Phase 4 Task 6 round 3 — allocation pinned to the selected requireme
     capabilities = t.app.get(CapabilitiesService);
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t?.prisma, RESET_TABLES, { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await sanctionedReset(t.prisma, RESET_TABLES, { cascade: true });
     for (const [model, where] of [
       ['auditLog', { projectId: { startsWith: 'it-p4pin-' } }],
       ['activity', { projectId: { startsWith: 'it-p4pin-' } }],

@@ -3,6 +3,7 @@ import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 1 Task 2 — decision change-control against live PostgreSQL.
  * The contract: approval locks with REAL attribution; a change request reopens
@@ -37,7 +38,7 @@ describe('decision change-control (integration)', () => {
     const projectId = f.projectA.id;
     // approvals in this suite wrote immutable register rows (append-only trigger blocks
     // deleteMany; the spec table FKs the register) — the sanctioned reset is TRUNCATE
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision" CASCADE');
+    await sanctionedReset(t.prisma, ['LabourDemandSlice', 'LabourRequirementSpec', 'MaterialRequirementSpec', 'DecisionApprovalRevision'], { cascade: true });
     await t.prisma.$transaction([
       t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } }),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),

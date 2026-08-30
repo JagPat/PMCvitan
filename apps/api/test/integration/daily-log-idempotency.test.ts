@@ -5,6 +5,7 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { DailyLogService } from '../../src/daily-log/daily-log.service';
 import type { AuthUser } from '../../src/common/auth';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 Task 10 (correction, finding 3) — the four daily-log commands are idempotent end-to-end,
  * proven against live PostgreSQL. Each command now runs through the Task-5 CommandExecution ledger:
@@ -35,14 +36,14 @@ describe('Phase 2 Task 10 (correction) — daily-log commands are idempotent (li
   afterAll(async () => {
     await t?.prisma.membership.deleteMany({ where: { userId: member2Id } });
     await t?.prisma.user.deleteMany({ where: { id: member2Id } });
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DailyLogProjection" CASCADE');
+    await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'DailyLogProjection'], { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
     const p = f.projectA.id;
     await t.prisma.commandExecution.deleteMany({ where: { projectId: p } });
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DailyLogProjection" CASCADE');
+    await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'DailyLogProjection'], { cascade: true });
     await t.prisma.auditLog.deleteMany({ where: { projectId: p } });
     await t.prisma.notification.deleteMany({ where: { projectId: p } });
     await t.prisma.siteMaterial.deleteMany({ where: { projectId: p } });
