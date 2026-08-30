@@ -16,14 +16,14 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: d86cfb60
-open_pr: 492
+open_pr: 493
 next_task: phase-6-task-4c
 blocking_directive: none
 updated: 2026-08-30
 ```
 
-**4c-i IS OPEN AS PR #492, AND THE REMOVAL-AND-REINSTATE BLOCKER IS CLEARED BY
-BOARD CALL** (2026-08-30, ~23:07 IST). `blocking_directive` is `none` and the 4c plan STAYS on
+**4c-i IS OPEN AS PR #493 — THE REPLACEMENT FOR #492 — AND THE REMOVAL-AND-REINSTATE
+BLOCKER IS CLEARED BY BOARD CALL** (2026-08-30, ~23:07 IST). `blocking_directive` is `none` and the 4c plan STAYS on
 `main` at `4ff4565c`. The recorded Board sequence is **STATUS, then 4c**: the unwind was dismissed
 at 09:36; #487 was the first removal attempt and closed unmerged; #491 was the same removal again
 and is now also CLOSED UNMERGED; and #490 — which restored the
@@ -38,7 +38,16 @@ route every continuation back to the removal the Board dismissed, because `asses
 resolves a directive from `in_progress` before the task's own work; that is the loop, not a
 safeguard.
 
-**What PR #492 delivers is 4c-i, the plan's own FIRST implementation unit**
+PR #492 carried the same unit and reached the two-finding-bearing-head review-round limit; it is
+CLOSED UNMERGED with no third correction head, and PR #493 is its replacement from the same `main`
+(`4ff4565c`), declaring `Replaces: #492` and carrying the four round-2 findings as work. All four
+were on the PROOF, not the runtime — the migration SQL, the schema and the seal semantics are
+byte-identical to #492's reviewed head; what changed is that request eligibility now reaches
+`approved` and `recorded`, the archive races are barrier-controlled overlaps on both tables, the
+NULL `response` arm exists, and every barrier awaits its holder's lock before launching the
+competitor. Each new arm is mutation-verified.
+
+**What PR #493 delivers is 4c-i, the plan's own FIRST implementation unit**
 (`docs/superpowers/plans/2026-08-29-decision-workflow-4c.md` §D): ONE additive migration,
 deployed DARK. The two append-only consultation facts (`DecisionConsultation`,
 `DecisionConsultationResponse`) with their project-scoped composite FKs and candidate keys, the
