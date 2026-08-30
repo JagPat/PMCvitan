@@ -259,6 +259,8 @@ echo ""
 echo "=== REHEARSAL: applying the provenance migration over FORGED provenance (must ABORT) ==="
 R2_PROVENANCE="$MIG_DIR/20261212000000_phase3_approval_provenance"
 R3_HISTORY="$MIG_DIR/20261216000000_phase3_approval_history"
+# Phase 6 unit 4c-i — named here so the partial-apply retry below can re-run the very same file.
+T4C_I="$MIG_DIR/20271101000000_phase6_t4c_i_consultation"
 [ -d "$R2_PROVENANCE" ] && [ -d "$R3_HISTORY" ] || { echo "FAILED: expected Phase-3 provenance migrations missing from the ledger"; exit 1; }
 if psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB" -f "$R2_PROVENANCE/migration.sql" > /tmp/upgrade-r2-rehearsal.log 2>&1; then
   echo "FAILED: the provenance migration applied over FORGED provenance instead of aborting"; exit 1
@@ -4399,6 +4401,33 @@ assert "4c-i: both owned ORGS primitives are installed" \
 assert "4c-i: the nine seals of this unit are armed" \
   "SELECT COUNT(*)::text FROM pg_trigger WHERE tgname LIKE '%t4c%';" \
   "9"
+
+# ── the PARTIAL-APPLY RETRY, executed rather than asserted ───────────────────────────────────────
+# A deploy that dies part-way must COMPLETE on retry, not stop at the objects it already made. The
+# counts above cannot show that: they only describe a database where the file ran once, cleanly.
+# So this DESTROYS a committed partial state — the late half of the file, exactly what a deploy
+# killed mid-run would leave behind — re-runs the SAME file, and requires every object back. Drop
+# a retry guard from any statement in that half and this stops passing.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-i: could not stage the partial-apply state"; FAIL=1; }
+DROP TRIGGER IF EXISTS "DecisionConsultation_t4c_request_seal" ON "DecisionConsultation";
+DROP TRIGGER IF EXISTS "DecisionConsultationResponse_t4c_response_seal" ON "DecisionConsultationResponse";
+DROP TRIGGER IF EXISTS "DecisionApprovalRevision_t4c_no_truncate" ON "DecisionApprovalRevision";
+DROP TRIGGER IF EXISTS "DecisionConsultation_t4c_no_truncate" ON "DecisionConsultation";
+DROP FUNCTION IF EXISTS phase6_membership_active_user(TEXT, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS phase6_project_operable(TEXT) CASCADE;
+SQL
+assert "4c-i retry: the staged partial state really is incomplete" \
+  "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgname LIKE '%t4c%')::text || '|' || (SELECT COUNT(*) FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable'))::text;" \
+  "5|0"
+
+apply_one "$T4C_I"
+
+assert "4c-i retry: re-running the same file COMPLETES the deployment" \
+  "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgname LIKE '%t4c%')::text || '|' || (SELECT COUNT(*) FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable'))::text;" \
+  "9|2"
+assert_rejects "4c-i retry: the re-armed request seal refuses the same hostile insert" \
+  "INSERT INTO \"DecisionConsultation\"(\"id\",\"projectId\",\"decisionId\",\"requestedById\",\"consulteeMembershipId\",\"consulteeUserId\",\"question\",\"openCycle\",\"sourceCommandId\") VALUES ('UP4CI-C2','p1','DL-1','USER-1','no-such-membership','USER-1','Which finish?',0,'no-such-command')" \
+  "phase6-4c"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
