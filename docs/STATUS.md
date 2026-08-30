@@ -13,24 +13,44 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: in_progress
+task_state: merged
 work_item: none
-reviewed_merge: d86cfb60
-open_pr: 493
-next_task: phase-6-task-4c
+reviewed_merge: d4e2ddf5
+open_pr: none
+next_task: phase-6-task-4c-ii
 blocking_directive: none
 updated: 2026-08-30
 ```
 
-**4c-i IS OPEN AS PR #493 — THE REPLACEMENT FOR #492 — AND THE REMOVAL-AND-REINSTATE
-BLOCKER IS CLEARED BY BOARD CALL** (2026-08-30, ~23:07 IST). `blocking_directive` is `none` and the 4c plan STAYS on
-`main` at `4ff4565c`. The recorded Board sequence is **STATUS, then 4c**: the unwind was dismissed
+**4c-i IS MERGED (PR #493 at `main` `d4e2ddf5`) WITH A FRESH INDEPENDENT CODEX +1 ON THE
+EXACT REVIEWED HEAD `7650109`, AND THE REMOVAL-AND-REINSTATE BLOCKER IS CLEARED BY
+BOARD CALL** (2026-08-30, ~23:07 IST). The next unit is **4c-ii, SCHEDULED from `main`
+`d4e2ddf5`**: the 30 August Board sequence authorized 4c implementation **4c-0 through 4c-v**, so
+no unit of 4c waits for a fresh GO and none is to be re-asked for. `next_task` NAMES that unit
+(`phase-6-task-4c-ii`), which `assessRunnerState` resolves to `next_task:phase-6-task-4c-ii` — an
+EXECUTABLE next step with no human-approval condition anywhere in the loop's path. The Now block
+keeps the documented TERMINAL HANDOFF SHAPE (`task_state: merged`, `work_item: none`,
+`open_pr: none`, a NAMED `next_task`) so `isHandoffShape` recognizes this landing instead of
+instructing the loop to point `open_pr` at the landing PR itself (the #303 trap). `task_state:
+merged` is the state of the WORK ITEM that was in flight — 4c-i — exactly as the 4b landing used
+it while task 4 continued; it is not a claim that task 4c is finished. Four plan units remain
+after 4c-ii.
+
+**4c-ii** is the behaviour unit: contracts, commands, routes, the projection thread, the push
+families and the UI, plus the `DecisionApprovalRevision.sourceCommandId` writer and its constraint
+trigger after the drain-first cutover — the callers 4c-i deliberately shipped without.
+Contractor-capture units 1–6 remain under their per-unit Board gate, which is a SEPARATE gate from
+the 4c sequence and is not lifted by it.
+
+`blocking_directive` is `none` and the 4c plan STAYS on `main`. The recorded Board sequence is **STATUS, then 4c**: the unwind was dismissed
 at 09:36; #487 was the first removal attempt and closed unmerged; #491 was the same removal again
-and is now also CLOSED UNMERGED; and #490 — which restored the
+and is CLOSED UNMERGED as of 2026-08-30 21:05 UTC — it had in fact remained OPEN as a draft
+(`codex/remove-unreviewed-4c-plan`, head `199d602`) until the Board pointed that out on #494, and
+this record previously asserted a closure that had not happened; and #490 — which restored the
 `phase-6-4c-plan-independent-clearance` record — is a record of a supervision concern, not a
 Board GO to take the plan off `main`. **Board beats programme supervision**, so no clearance
 step 1 is re-opened, no step 2 / plan reinstatement is opened, and the plan is not removed.
-`phase_plan` moves to the 4c document because that is what this task's remaining work executes.
+`phase_plan` stays on the 4c document because that is what this task's remaining work executes.
 
 The directive's own text is preserved below as the RECORD of what was asked and why it was
 superseded — it is deliberately no longer scheduled. Leaving it in `blocking_directive` would
@@ -47,7 +67,7 @@ byte-identical to #492's reviewed head; what changed is that request eligibility
 NULL `response` arm exists, and every barrier awaits its holder's lock before launching the
 competitor. Each new arm is mutation-verified.
 
-**What PR #493 delivers is 4c-i, the plan's own FIRST implementation unit**
+**What PR #493 delivered is 4c-i, the plan's own FIRST implementation unit**
 (`docs/superpowers/plans/2026-08-29-decision-workflow-4c.md` §D): ONE additive migration,
 deployed DARK. The two append-only consultation facts (`DecisionConsultation`,
 `DecisionConsultationResponse`) with their project-scoped composite FKs and candidate keys, the
