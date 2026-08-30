@@ -116,6 +116,10 @@ describe('Phase 6 unit 4c-0 — sanctioned resets route through the shared helpe
       // The repair register's seal must REFUSE the truncate — routing it through the helper, which
       // disables seals, would invert the probe.
       'phase4-t3-correction3.test.ts': 1,
+      // Phase 6 unit 4c-i: the two consultation no-truncate seals and the approval-register one,
+      // each asserted to REFUSE its statement. Routing these through the helper would disable the
+      // very seals under test and leave three vacuous green assertions.
+      'phase6-t4c-i-consultation.test.ts': 3,
     };
 
     const offenders: string[] = [];

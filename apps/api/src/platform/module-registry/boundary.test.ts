@@ -205,7 +205,10 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
     // `decisionOptionKindSelection` is its per-transaction selection note, written only by DB
     // trigger and read by no module — listed here so a model added to `ownsModels` and forgotten
     // in `readEncapsulated` fails this pin rather than silently losing its boundary.
-    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionKindSelection', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection']);
+    // Phase 6 unit 4c-i — the two consultation facts join the encapsulated set the moment their
+    // tables exist, DARK: a model owned but not read-encapsulated produces no cross-module-read
+    // finding, which is exactly the gap that would let 4c-ii's first foreign read slip through.
+    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionKindSelection', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'decisionConsultation', 'decisionConsultationResponse', 'changeRequest', 'decisionProjection']);
     // it declares the queries other modules reach it through, and depends on nothing
     expect(decisions?.queries.length).toBeGreaterThan(0);
     // and every module that reads decisions now declares the dependency
