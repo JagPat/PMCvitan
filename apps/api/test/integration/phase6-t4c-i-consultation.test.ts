@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 
@@ -201,11 +201,25 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     await refused(
       `INSERT INTO "DecisionConsultation" ("id","projectId","decisionId","requestedById","consulteeMembershipId","consulteeUserId","question","openCycle","sourceCommandId")
        VALUES ('${id('w2')}','${projectId}','${decisionId}','${users.pmc}','${membership.eng}','${users.eng}',NULL,0,'${c1}')`,
-      /null/i,
+      // SQLSTATE 23502 is not_null_violation specifically: a CHECK (23514) or a seal's own
+      // RAISE (P0001) cannot satisfy this match, so the arm cannot pass on the wrong refusal
+      /23502/,
     );
     const cons = await commitRequest({});
     const c2 = await reserve('consultations.respond', users.eng);
     await refused(responseSql({ id: id('w3'), consultationId: cons, response: '   ', sourceCommandId: c2 }), /response|check/i);
+
+    // ...and NULL on the RESPONSE side (round-2 Codex F3). The whitespace arm does not cover it:
+    // a `response` that lost its NOT NULL would leave the CHECK evaluating to UNKNOWN for NULL,
+    // which PostgreSQL ACCEPTS — freezing an evidence-less answer into an append-only table. The
+    // match is on the not-null violation itself, so a seal refusing earlier for some other reason
+    // does not pass this arm by accident.
+    const c3 = await reserve('consultations.respond', users.eng);
+    await refused(
+      `INSERT INTO "DecisionConsultationResponse" ("id","projectId","consultationId","decisionId","respondedById","response","recommendedOptionId","sourceCommandId")
+       VALUES ('${id('w4')}','${projectId}','${cons}','${decisionId}','${users.eng}',NULL,NULL,'${c3}')`,
+      /23502/,
+    );
   });
 
   it('P23: a SECOND response to one consultation is unrepresentable', async () => {
@@ -246,7 +260,7 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
       data: { id: draft, projectId, title: 'D', room: 'K', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: users.pmc },
     });
     const c1 = await reserve('consultations.request', users.pmc);
-    await refused(requestSql({ id: id('s1'), decisionId: draft, sourceCommandId: c1 }), /published|open/i);
+    await refused(requestSql({ id: id('s1'), decisionId: draft, sourceCommandId: c1 }), /PUBLISHED, still-open/i);
 
     // withdrawn: pmc-only title and reason — a consultation there would leak exactly what 4a hides
     const wd = id('wd');
@@ -267,7 +281,33 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
       data: { status: 'withdrawn', withdrawnAt: new Date(), withdrawnById: users.pmc, withdrawnByName: 'U pmc', withdrawReason: 'asked in error' },
     });
     const c2 = await reserve('consultations.request', users.pmc);
-    await refused(requestSql({ id: id('s2'), decisionId: wd, sourceCommandId: c2 }), /published|open/i);
+    await refused(requestSql({ id: id('s2'), decisionId: wd, sourceCommandId: c2 }), /PUBLISHED, still-open/i);
+
+    // APPROVED (round-2 Codex F1) — the question is settled, so advice minted here would be
+    // immutable evidence attached to a decision nobody is still taking. This arm is what a
+    // regression widening the seal's allowed statuses would trip: the eligibility test above
+    // stops at `withdrawn`, and `approved`/`recorded` would otherwise never be attempted.
+    // NOTE this fixture carries NO approval revision, so the frozen-cycle arm still matches at 0
+    // and it is the STATUS arm ALONE that must refuse — merged with an approval-bearing decision
+    // this probe would pass on the cycle arm by accident.
+    const ap = await make(projectId, `apr${seq++}`);
+    await t.prisma.decision.update({ where: { id: ap.d }, data: { status: 'approved' } });
+    const c3 = await reserve('consultations.request', users.pmc);
+    await refused(requestSql({ id: id('s2a'), decisionId: ap.d, sourceCommandId: c3 }), /PUBLISHED, still-open/i);
+
+    // RECORDED (round-2 Codex F1) — the §A.2 record-only issue: filed, team-visible, approvable
+    // by nobody, so there is no decision to advise on at all. Records are BORN, never laundered
+    // out of a published row (the delivered 4b seal refuses that transition), so the fixture is
+    // born published with the paired `deciderKind='none'` the kind⟺status CHECK demands.
+    const rec = id(`rec${seq++}`);
+    await t.prisma.decision.create({
+      data: {
+        id: rec, projectId, title: 'R', room: 'K', status: 'recorded', deciderKind: 'none',
+        ageDays: 0, photoSwatch: 'sw1', authorId: users.pmc, publishedAt: new Date(),
+      },
+    });
+    const c4 = await reserve('consultations.request', users.pmc);
+    await refused(requestSql({ id: id('s2b'), decisionId: rec, sourceCommandId: c4 }), /PUBLISHED, still-open/i);
   });
 
   it('P25: a REMOVED consultee membership can never be consulted, and the audience cannot be forged', async () => {
@@ -549,6 +589,26 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     throw new Error(`the competing statement never blocked on a lock (looking for ${needle})`);
   };
 
+  /**
+   * A two-phase barrier for a lock HOLDER (round-2 Codex F4). `ready` resolves only once the
+   * holder's lock-taking statement has returned, and the competitor is not launched until then:
+   * without it an unlucky interleaving runs the competitor FIRST, the holder is refused, and
+   * `waitUntilBlocked` times out on a race that never happened — a false red, or worse a green
+   * arm that never overlapped. A holder that dies before reaching the gate rejects `ready`, so a
+   * broken arm fails fast with its real error instead of hanging until the suite timeout.
+   */
+  const holdingTx = (client: PrismaClient, body: (tx: Prisma.TransactionClient) => Promise<void>) => {
+    let reached: () => void = () => {};
+    let abort: (e: unknown) => void = () => {};
+    let release: () => void = () => {};
+    const ready = new Promise<void>((res, rej) => { reached = () => res(); abort = rej; });
+    const hold = new Promise<void>((res) => { release = () => res(); });
+    const done = client
+      .$transaction(async (tx) => { await body(tx); reached(); await hold; }, { timeout: 30_000 })
+      .then(() => undefined as unknown, (e: unknown) => { abort(e); return e; });
+    return { ready, release: () => release(), done };
+  };
+
   it('P41 (Codex F2): request-vs-withdraw, BOTH orderings — the seal holds the decision row', async () => {
     // Ordering 1 — INSERT FIRST. The seal takes the decision row's share lock, so a withdrawal
     // cannot slip in between the seal's read and the row's commit: it BLOCKS. Dropping that lock
@@ -558,14 +618,14 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     const rid = id(`p41r${seq++}`);
     const cid = id(`cmd${seq++}`);
 
-    let held: (v: unknown) => void = () => {};
-    const gate = new Promise((r) => { held = r; });
-    const inserter = t.prisma.$transaction(async (tx) => {
+    const inserter = holdingTx(t.prisma, async (tx) => {
       await tx.$executeRawUnsafe(reserveSql(cid, 'consultations.request', users.pmc));
       await tx.$executeRawUnsafe(requestSql({ id: rid, decisionId: d1.d, sourceCommandId: cid }));
       await tx.$executeRawUnsafe(completeSql(cid, rid));
-      await gate; // hold the transaction open, share lock and all
-    }, { timeout: 30_000 });
+    });
+    // the insert has RETURNED, so the seal's share lock is taken and this transaction still holds
+    // it — only now can the withdrawal be the LATE arrival this ordering is about
+    await inserter.ready;
 
     // the competing withdrawal, on its OWN connection
     const withdrawal = other.$executeRawUnsafe(
@@ -575,8 +635,8 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     ).catch((e: unknown) => e);
     await waitUntilBlocked('SET "status"=\'withdrawn\'');
 
-    held(null);
-    await inserter;
+    inserter.release();
+    expect(await inserter.done).toBeUndefined();
     await withdrawal;
 
     // both landed, in the only order the lock permits: the advice was recorded against a decision
@@ -589,16 +649,14 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     // the status without taking the lock at all.
     const d2 = await make(projectId, `p41b${seq++}`);
     const cid2 = id(`cmd${seq++}`);
-    let held2: (v: unknown) => void = () => {};
-    const gate2 = new Promise((r) => { held2 = r; });
-    const withdrawer = other.$transaction(async (tx) => {
+    const withdrawer = holdingTx(other, async (tx) => {
       await tx.$executeRawUnsafe(
         `UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=$1,
                 "withdrawnByName"='U pmc', "withdrawReason"='first' WHERE "id"=$2`,
         users.pmc, d2.d,
       );
-      await gate2;
-    }, { timeout: 30_000 });
+    });
+    await withdrawer.ready; // the withdrawal's row lock is held before the insert is launched
 
     const late = t.prisma.$transaction([
       sql(reserveSql(cid2, 'consultations.request', users.pmc)),
@@ -606,11 +664,108 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     ]).catch((e: unknown) => e);
     await waitUntilBlocked('INSERT INTO "DecisionConsultation"');
 
-    held2(null);
-    await withdrawer;
+    withdrawer.release();
+    expect(await withdrawer.done).toBeUndefined();
     const outcome = await late;
     expect(String(outcome)).toMatch(/PUBLISHED, still-open/i);
     expect(await t.prisma.decisionConsultation.count({ where: { decisionId: d2.d } })).toBe(0);
+  });
+
+  it('P41 (round-2 Codex F2): archive-vs-write, BOTH orderings, on BOTH tables', async () => {
+    // Setting `archivedAt` BEFORE the insert (what the eligibility probes above do) proves only
+    // that an already-archived project refuses: drop the `FOR UPDATE` out of
+    // `phase6_project_operable` and those arms stay green. The interleaving that matters is
+    // `the seal reads archivedAt = NULL → the archive commits → the insert commits immutable
+    // evidence against a project that is now archived`, and only a barrier-controlled overlap can
+    // reach it. Both orderings, on both tables, because each table has its own seal.
+    const archiveSql = `UPDATE "Project" SET "archivedAt"=now() WHERE "id"='${projectId}'`;
+    const unarchive = () => t.prisma.project.update({ where: { id: projectId }, data: { archivedAt: null } });
+
+    try {
+      // ── REQUEST · ordering 1 — INSERT FIRST ───────────────────────────────────────────────
+      // The seal holds the Project row to commit, so the archive cannot land inside the window:
+      // it BLOCKS and follows. Without the lock it would commit in the window, and the terminal
+      // state would be immutable advice attached to an archived project.
+      const d1 = await make(projectId, `arc1${seq++}`);
+      const rid1 = id(`arcq${seq++}`);
+      const cid1 = id(`cmd${seq++}`);
+      const inserter = holdingTx(t.prisma, async (tx) => {
+        await tx.$executeRawUnsafe(reserveSql(cid1, 'consultations.request', users.pmc));
+        await tx.$executeRawUnsafe(requestSql({ id: rid1, decisionId: d1.d, sourceCommandId: cid1 }));
+        await tx.$executeRawUnsafe(completeSql(cid1, rid1));
+      });
+      await inserter.ready;
+      const archiving1 = other.$executeRawUnsafe(archiveSql).catch((e: unknown) => e);
+      await waitUntilBlocked('SET "archivedAt"=now()');
+      inserter.release();
+      expect(await inserter.done).toBeUndefined();
+      await archiving1;
+      // serialized, in the only order the lock permits: the request committed while the project
+      // was still operable, and the archive followed it
+      expect(await t.prisma.decisionConsultation.count({ where: { id: rid1 } })).toBe(1);
+      expect((await t.prisma.project.findUniqueOrThrow({ where: { id: projectId } })).archivedAt).not.toBeNull();
+      await unarchive();
+
+      // ── REQUEST · ordering 2 — ARCHIVE FIRST ──────────────────────────────────────────────
+      // The insert now waits on the archive's row lock, re-reads an archived project, and is
+      // REFUSED. This is the arm that would pass silently if the seal read `archivedAt` without
+      // taking the lock at all.
+      const d2 = await make(projectId, `arc2${seq++}`);
+      const cid2 = id(`cmd${seq++}`);
+      const archiver2 = holdingTx(other, async (tx) => { await tx.$executeRawUnsafe(archiveSql); });
+      await archiver2.ready;
+      const lateReq = t.prisma.$transaction([
+        sql(reserveSql(cid2, 'consultations.request', users.pmc)),
+        sql(requestSql({ id: id(`arcq${seq++}`), decisionId: d2.d, sourceCommandId: cid2 })),
+      ]).catch((e: unknown) => e);
+      await waitUntilBlocked('INSERT INTO "DecisionConsultation"');
+      archiver2.release();
+      expect(await archiver2.done).toBeUndefined();
+      expect(String(await lateReq)).toMatch(/archiv/i);
+      expect(await t.prisma.decisionConsultation.count({ where: { decisionId: d2.d } })).toBe(0);
+      await unarchive();
+
+      // ── RESPONSE · ordering 1 — INSERT FIRST ──────────────────────────────────────────────
+      // The response seal is the request seal's twin and takes the same lock; it is probed on its
+      // own because it is its own function, and a lock dropped from one is not dropped from both.
+      const d3 = await make(projectId, `arc3${seq++}`);
+      const cons3 = await commitRequest({ decisionId: d3.d });
+      const rid3 = id(`arcx${seq++}`);
+      const cid3 = id(`cmd${seq++}`);
+      const responder = holdingTx(t.prisma, async (tx) => {
+        await tx.$executeRawUnsafe(reserveSql(cid3, 'consultations.respond', users.eng));
+        await tx.$executeRawUnsafe(responseSql({ id: rid3, consultationId: cons3, decisionId: d3.d, sourceCommandId: cid3 }));
+        await tx.$executeRawUnsafe(completeSql(cid3, rid3));
+      });
+      await responder.ready;
+      const archiving3 = other.$executeRawUnsafe(archiveSql).catch((e: unknown) => e);
+      await waitUntilBlocked('SET "archivedAt"=now()');
+      responder.release();
+      expect(await responder.done).toBeUndefined();
+      await archiving3;
+      expect(await t.prisma.decisionConsultationResponse.count({ where: { id: rid3 } })).toBe(1);
+      expect((await t.prisma.project.findUniqueOrThrow({ where: { id: projectId } })).archivedAt).not.toBeNull();
+      await unarchive();
+
+      // ── RESPONSE · ordering 2 — ARCHIVE FIRST ─────────────────────────────────────────────
+      const d4 = await make(projectId, `arc4${seq++}`);
+      const cons4 = await commitRequest({ decisionId: d4.d });
+      const cid4 = id(`cmd${seq++}`);
+      const archiver4 = holdingTx(other, async (tx) => { await tx.$executeRawUnsafe(archiveSql); });
+      await archiver4.ready;
+      const lateRes = t.prisma.$transaction([
+        sql(reserveSql(cid4, 'consultations.respond', users.eng)),
+        sql(responseSql({ id: id(`arcx${seq++}`), consultationId: cons4, decisionId: d4.d, sourceCommandId: cid4 })),
+      ]).catch((e: unknown) => e);
+      await waitUntilBlocked('INSERT INTO "DecisionConsultationResponse"');
+      archiver4.release();
+      expect(await archiver4.done).toBeUndefined();
+      expect(String(await lateRes)).toMatch(/archiv/i);
+      expect(await t.prisma.decisionConsultationResponse.count({ where: { consultationId: cons4 } })).toBe(0);
+    } finally {
+      // the shared project is fixture state for every later probe — never leave it archived
+      await unarchive();
+    }
   });
 
   // ── old-release compatibility: the dark migration must not break the serving release ────────
