@@ -4367,18 +4367,33 @@ assert "4c-i: the consultation register arrives EMPTY — a dark migration inven
   "SELECT (SELECT COUNT(*) FROM \"DecisionConsultation\")::text || '|' || (SELECT COUNT(*) FROM \"DecisionConsultationResponse\")::text;" \
   "0|0"
 
-# the PREVIOUS-RELEASE approval writer: today's `approve` records no source command, and 4c-i adds
-# that column nullable and enforces nothing. A migration that broke this would break a live
-# workflow while claiming to change nothing.
-# `UP4A-D2` + its option `a` are the register's own composite FK target, already planted above by
-# the 4a section — the revision demands a REAL option of the named decision.
-$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-i: a previous-release approval could not be recorded"; FAIL=1; }
-INSERT INTO "DecisionApprovalRevision"("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
-VALUES ('UP4CI-REV','p1','UP4A-D2',99,'a',now(),'USER-1');
+# The 4c-i compatibility arm, DELIBERATELY SUPERSEDED by 4c-ii — the same shape the 4b section
+# above records for the option writes it moved the goalposts on.
+#
+# 4c-i staged `DecisionApprovalRevision.sourceCommandId` nullable and enforced nothing, because it
+# is the DARK migration a still-serving previous release must keep approving against. 4c-ii runs
+# AFTER the drain-first cutover (the external-effect reseal requires zero old instances), at the
+# one moment the plan guarantees no old writer exists — so its own migration installs the deferred
+# provenance trigger, and an unsourced revision is refused from that point on. What this pair of
+# assertions now proves is the pair of claims that matter after both units: the FORGERY is refused,
+# and the SHAPE THE REAL WRITER PRODUCES is accepted. Legacy revisions already in the register keep
+# their NULL — the trigger is INSERT-scoped, and inventing provenance for a historical approval
+# would be the forgery it exists to refuse.
+assert_rejects "4c-ii: a bare revision with no source command (the cycle-advancing DENIAL)" \
+  "INSERT INTO \"DecisionApprovalRevision\"(\"id\",\"projectId\",\"decisionId\",\"version\",\"optionKey\",\"approvedAt\",\"approvedById\") VALUES ('UP4CI-REV','p1','UP4A-D2',99,'a',now(),'USER-1')" \
+  "carries no source command"
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-ii: the real approval shape (a completed receipt naming this decision) was refused"; FAIL=1; }
+BEGIN;
+INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+VALUES ('UP4CII-CMD','project','org-legacy','p1','USER-1','decisions.approve','k-up4cii','h-up4cii','reserved');
+INSERT INTO "DecisionApprovalRevision"("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
+VALUES ('UP4CI-REV','p1','UP4A-D2',99,'a',now(),'USER-1','UP4CII-CMD');
+UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='UP4A-D2', "completedAt"=now() WHERE "id"='UP4CII-CMD';
+COMMIT;
 SQL
-assert "4c-i: a previous-release approval still records, with no source command" \
+assert "4c-ii: the accepted revision names the approval command it is the product of" \
   "SELECT COALESCE(\"sourceCommandId\", 'null') FROM \"DecisionApprovalRevision\" WHERE \"id\"='UP4CI-REV';" \
-  "null"
+  "UP4CII-CMD"
 
 # the alternate writer, tried where it would actually try: a consultation minted with no command
 # receipt behind it is invisible to the projection, which is the whole point of the provenance rule
@@ -4398,9 +4413,9 @@ assert_rejects "4c-i: TRUNCATE of the approval register whose COUNT 4c turns int
 assert "4c-i: both owned ORGS primitives are installed" \
   "SELECT COUNT(*)::text FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable');" \
   "2"
-assert "4c-i: the nine seals of this unit are armed" \
+assert "4c-i: the nine seals of this unit are armed, and 4c-ii's provenance trigger beside them" \
   "SELECT COUNT(*)::text FROM pg_trigger WHERE tgname LIKE '%t4c%';" \
-  "9"
+  "10"
 
 # ── the PARTIAL-APPLY RETRY, executed rather than asserted ───────────────────────────────────────
 # A deploy that dies part-way must COMPLETE on retry, not stop at the objects it already made. The
@@ -4416,14 +4431,20 @@ DROP TRIGGER IF EXISTS "DecisionConsultation_t4c_no_truncate" ON "DecisionConsul
 DROP FUNCTION IF EXISTS phase6_membership_active_user(TEXT, TEXT) CASCADE;
 DROP FUNCTION IF EXISTS phase6_project_operable(TEXT) CASCADE;
 SQL
+# Phase 6 unit 4c-ii — the two assertions below name 4c-i's OWN NINE triggers instead of counting
+# every `%t4c%` one. The count was correct when 4c-i was the only unit in the family; 4c-ii adds
+# `DecisionApprovalRevision_t4c_provenance`, which is not part of what this retry probe is about,
+# and a count would have failed here for a reason that has nothing to do with 4c-i's retry-safety.
+# Naming them is strictly more precise: a MISSING 4c-i trigger still fails, and a renamed one now
+# fails too, where the count would have hidden it behind an unrelated addition.
 assert "4c-i retry: the staged partial state really is incomplete" \
-  "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgname LIKE '%t4c%')::text || '|' || (SELECT COUNT(*) FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable'))::text;" \
+  "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('DecisionConsultation_t4c_provenance_bound','DecisionConsultationResponse_t4c_provenance_bound','DecisionConsultation_t4c_request_seal','DecisionConsultationResponse_t4c_response_seal','DecisionConsultation_t4c_append_only','DecisionConsultationResponse_t4c_append_only','DecisionConsultation_t4c_no_truncate','DecisionConsultationResponse_t4c_no_truncate','DecisionApprovalRevision_t4c_no_truncate'))::text || '|' || (SELECT COUNT(*) FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable'))::text;" \
   "5|0"
 
 apply_one "$T4C_I"
 
 assert "4c-i retry: re-running the same file COMPLETES the deployment" \
-  "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgname LIKE '%t4c%')::text || '|' || (SELECT COUNT(*) FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable'))::text;" \
+  "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('DecisionConsultation_t4c_provenance_bound','DecisionConsultationResponse_t4c_provenance_bound','DecisionConsultation_t4c_request_seal','DecisionConsultationResponse_t4c_response_seal','DecisionConsultation_t4c_append_only','DecisionConsultationResponse_t4c_append_only','DecisionConsultation_t4c_no_truncate','DecisionConsultationResponse_t4c_no_truncate','DecisionApprovalRevision_t4c_no_truncate'))::text || '|' || (SELECT COUNT(*) FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable'))::text;" \
   "9|2"
 assert_rejects "4c-i retry: the re-armed request seal refuses the same hostile insert" \
   "INSERT INTO \"DecisionConsultation\"(\"id\",\"projectId\",\"decisionId\",\"requestedById\",\"consulteeMembershipId\",\"consulteeUserId\",\"question\",\"openCycle\",\"sourceCommandId\") VALUES ('UP4CI-C2','p1','DL-1','USER-1','no-such-membership','USER-1','Which finish?',0,'no-such-command')" \
