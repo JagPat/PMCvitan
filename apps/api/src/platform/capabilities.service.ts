@@ -21,6 +21,16 @@ export const LABOUR_CAPABILITY = 'labour';
 // difference that is the whole point of §L: enabling `commercial` is NOT a no-op on a project
 // that already holds live purchase orders. See `CommercialActivationService`.
 export const COMMERCIAL_CAPABILITY = 'commercial';
+// Phase 6 unit 4c-ii (§D) — the consultation ROLLOUT LATCH. Same per-project row and the same
+// `capability:enable` CLI, but this one is NOT a product pilot: consultation is a core decision
+// workflow, and the gate exists only so an operator can turn emission on AFTER confirming the
+// drain-first cutover is complete. The outbox has ONE ordered delivery per consumer, so an old
+// projection or push worker claiming a `decision.consultation_*` event would fold the row through
+// its old serializer or fall through to an unguarded send; nothing shipped IN this unit can change
+// the behaviour of a process that is already running, so the deploy-then-enable ORDER is the
+// protection and this row is its machine-checkable predicate. The write surface, the emitter and
+// the client all read it, and it RETIRES in 4c-iv — a latch, not a permanent pilot.
+export const CONSULTATION_CAPABILITY = 'consultation';
 
 @Injectable()
 export class CapabilitiesService {

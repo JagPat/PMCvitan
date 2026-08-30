@@ -17,7 +17,18 @@ import type { DecisionDto } from '../snapshot/types';
 /** The canonical row shape the serializer needs: a `Decision` with its ordered options and, when
  *  reopened, its single OPEN change request (Phase 1 Task 2). */
 export type DecisionRow = Prisma.DecisionGetPayload<{
-  include: { options: true; changeRequests: true; deciderMembership: { select: { userId: true } } };
+  include: {
+    options: true;
+    changeRequests: true;
+    deciderMembership: { select: { userId: true } };
+    // Phase 6 unit 4c-ii (§A/P25c) — the consultation thread travels with the decision through the
+    // ONE serializer, so the live slice, the stored projection row and a rebuild carry the same
+    // thread by construction. The recommended OPTION is joined to its key: the stored DTO must
+    // survive a reorder, and an option id means nothing to a client.
+    consultations: {
+      include: { response: { include: { recommendedOption: { select: { optionKey: true } } } } };
+    };
+  };
 }>;
 
 /** Serialize one canonical decision row into its snapshot `DecisionDto` (unfiltered). */
@@ -65,6 +76,36 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
           withdrawReason: d.withdrawReason ?? undefined,
         }
       : {}),
+    // Phase 6 unit 4c-ii — the thread, oldest first (the order it was asked in). ABSENT rather
+    // than empty when there is none, so a decision that was never consulted serializes exactly as
+    // it does today and the §D gate-off byte-identity proof holds.
+    ...(d.consultations.length > 0
+      ? {
+          consultations: [...d.consultations]
+            .sort((a, b) => a.requestedAt.getTime() - b.requestedAt.getTime())
+            .map((c) => ({
+              id: c.id,
+              consulteeMembershipId: c.consulteeMembershipId,
+              consulteeUserId: c.consulteeUserId,
+              requestedById: c.requestedById,
+              question: c.question,
+              requestedAt: c.requestedAt.toISOString(),
+              openCycle: c.openCycle,
+              ...(c.response
+                ? {
+                    response: {
+                      respondedById: c.response.respondedById,
+                      response: c.response.response,
+                      respondedAt: c.response.respondedAt.toISOString(),
+                      ...(c.response.recommendedOption
+                        ? { recommendedOptionKey: c.response.recommendedOption.optionKey }
+                        : {}),
+                    },
+                  }
+                : {}),
+            })),
+        }
+      : {}),
     options: d.options.map((o) => ({
       label: o.label,
       key: o.optionKey,
@@ -91,7 +132,14 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
  *     visible to the project.
  */
 export function decisionVisibleToViewer(
-  d: { publishedAt: Date | null; authorId: string | null; status: string } & DeciderSlice,
+  d: {
+    publishedAt: Date | null;
+    authorId: string | null;
+    status: string;
+    /** Phase 6 unit 4c-ii — the canonical audience column of every consultation on this decision.
+     *  Optional so every pre-4c caller compiles unchanged and behaves identically. */
+    consultations?: readonly { consulteeUserId: string }[];
+  } & DeciderSlice,
   role: string,
   userId?: string,
 ): boolean {
@@ -100,6 +148,18 @@ export function decisionVisibleToViewer(
   // pending, contractor/engineer/consultant NEVER saw it, and withdrawal must not widen an
   // audience — including to the client, for whom nothing is awaited any more.
   if (d.status === 'withdrawn') return role === 'pmc';
-  if (d.status === 'pending') return role === 'pmc' || viewerIsDecider(d, role, userId);
+  // Phase 6 unit 4c-ii (§A) — the CONSULTEE joins the pending audience. This is the whole point
+  // of a consultation: someone who does not decide is asked to advise, and they cannot advise on
+  // a decision they cannot see. The audience is read from the decisions-owned canonical column,
+  // never resolved from `Membership` — a projection fold that reached into orgs persistence would
+  // be a cross-module read, and a rebuild (which replays no payloads) would lose it entirely.
+  //
+  // It widens the PENDING arm only. A withdrawn decision stays pmc-only above: withdrawal never
+  // widens an audience, and a consultation on a question the practice has taken back is history
+  // its consultee has no live interest in.
+  if (d.status === 'pending') {
+    if (role === 'pmc' || viewerIsDecider(d, role, userId)) return true;
+    return !!userId && (d.consultations ?? []).some((c) => c.consulteeUserId === userId);
+  }
   return true;
 }

@@ -176,6 +176,42 @@ export interface Decision {
   /** the withdrawer's display identity, frozen at withdraw time (the `approver` precedent) */
   withdrawnBy?: string;
   withdrawReason?: string;
+  /** Phase 6 task 4c (§A/P25c) — the CONSULTATION thread on this decision: who was asked, what
+   *  they were asked, and what they answered. A consultation INFORMS and never GATES, so this
+   *  field moves no status and no readiness verdict; it is carried by the ONE serializer so the
+   *  live slice, the projection and a rebuild show the same thread by construction.
+   *
+   *  Audience: the thread travels only to viewers the decision itself is visible to — pmc, the
+   *  decider, and (task 4c) the named CONSULTEE, for whom it is the whole reason the decision is
+   *  visible at all. Absent (not empty) when the decision carries no consultation. */
+  consultations?: DecisionConsultation[];
+}
+
+/** Phase 6 task 4c — one consultation on a decision, with its answer when it has been given.
+ *  Append-only at the database: the request is never edited and a response is written once. */
+export interface DecisionConsultation {
+  readonly id: string;
+  /** WHO was asked — the named consultee's membership and the canonical audience user it
+   *  resolves to (the server resolves it; every audience predicate reads the same value). */
+  readonly consulteeMembershipId: string;
+  readonly consulteeUserId: string;
+  /** WHO asked, and what was asked. */
+  readonly requestedById: string;
+  readonly question: string;
+  readonly requestedAt: string;
+  /** the approval cycle this consultation belongs to, frozen at request time: an approval closes
+   *  every consultation of its cycle, so a reopened decision's old thread is answered no further. */
+  readonly openCycle: number;
+  /** the answer, once given. Absent while the consultation is OUTSTANDING — which is what the
+   *  requester's own view surfaces with its age, so an unanswered request is visible to the
+   *  person who can follow it up rather than silently pending (§D's disclosed bound). */
+  readonly response?: {
+    readonly respondedById: string;
+    readonly response: string;
+    readonly respondedAt: string;
+    /** the option the consultee recommends, when they named one (advice, never a choice). */
+    readonly recommendedOptionKey?: string;
+  };
 }
 
 export interface Activity {

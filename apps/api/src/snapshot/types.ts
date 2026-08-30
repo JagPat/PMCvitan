@@ -1,5 +1,6 @@
 /** API response shapes — aligned with the frontend domain model so the client
  *  hydrates its store directly from a snapshot. */
+import type { DecisionConsultation } from '@vitan/shared';
 import type { Drawing, Checklist, Review, PlacedInspection } from '@vitan/shared';
 
 /** Phase 2 Task 9 — the project-shell summary (identity + projection counts), the light payload the
@@ -76,6 +77,11 @@ export interface DecisionDto {
   /** the withdrawer's display identity, frozen at withdraw time (the `approver` precedent) */
   withdrawnBy?: string;
   withdrawReason?: string;
+  /** Phase 6 unit 4c-ii (§A/P25c) — the consultation thread, oldest first. ABSENT (never `[]`)
+   *  when the decision carries none, so a decision that was never consulted serializes exactly as
+   *  it does today: that is what keeps a gate-OFF project byte-identical AND makes a projection
+   *  row written before this unit equal to live rather than merely compatible with it. */
+  consultations?: DecisionConsultation[];
 }
 
 /** One derived gate value with its provenance (Phase 1 Task 6). */

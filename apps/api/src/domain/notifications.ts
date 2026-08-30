@@ -54,3 +54,34 @@ export function recordedDecisionNotice(title: string): string {
 export function isRecordedDecisionNotice(text: string): boolean {
   return text.startsWith(RECORDED_DECISION_PREFIX);
 }
+
+/**
+ * Phase 6 unit 4c-ii (§A) — the two consultation push bodies.
+ *
+ * Both are TARGETED at one user (the consultee, then the requester), never a role fan-out: a
+ * consultation widens the audience of a decision by exactly one person, so a role-addressed
+ * announcement would hand a pending decision to every same-role member who cannot see it.
+ *
+ * Neither body carries the QUESTION or the ANSWER. A push is delivered to a device lock screen
+ * outside the app's authorization, and the substance of a consultation belongs to the decision's
+ * audience — the notice says that something awaits, and the app is where it is read.
+ */
+const CONSULTATION_REQUESTED_PREFIX = 'Your input requested';
+
+export function consultationRequestedNotice(decisionTitle: string, requestedBy: string): string {
+  return `${CONSULTATION_REQUESTED_PREFIX}: ${requestedBy} asked for your view on “${decisionTitle}”`;
+}
+
+export function isConsultationRequestedNotice(text: string): boolean {
+  return text.startsWith(CONSULTATION_REQUESTED_PREFIX);
+}
+
+const CONSULTATION_ANSWERED_PREFIX = 'Consultation answered';
+
+export function consultationAnsweredNotice(decisionTitle: string, respondedBy: string): string {
+  return `${CONSULTATION_ANSWERED_PREFIX}: ${respondedBy} replied on “${decisionTitle}”`;
+}
+
+export function isConsultationAnsweredNotice(text: string): boolean {
+  return text.startsWith(CONSULTATION_ANSWERED_PREFIX);
+}

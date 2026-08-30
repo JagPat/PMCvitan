@@ -27,8 +27,20 @@ export const DECISION_COMMANDS = [
   // (kind / named membership), convert to/from a record (`none` ⟺ `recorded` as one coherent
   // pair), or replace its options. Publication freezes the holder; this is the drafting door.
   'decisions.updateDraft',
+  // Phase 6 task 4c (§A) — ASK a named project member for advice on a published, still-open
+  // decision, and ANSWER that request. A consultation INFORMS and never GATES: neither command
+  // moves a status, an approval or a readiness verdict (P24).
+  'consultations.request',
+  'consultations.respond',
 ] as const;
 export type DecisionCommand = (typeof DECISION_COMMANDS)[number];
+
+/** Phase 6 task 4c — the CLIENT CONTRACT value a consultation-aware bundle advertises in the
+ *  `x-vitan-decisions-contract` header (the 4b `recorded-v1` mechanism, extended rather than
+ *  reinvented). The consultation WRITE commands refuse a caller that has not advertised it: a
+ *  stale tab must never originate a consultation its own UI could not then show. Reads are
+ *  unaffected — a pre-4c bundle keeps receiving the shape it understands. */
+export const DECISIONS_CONTRACT_CONSULTATION = 'consultation-v1';
 
 /** The decisions module's read queries (must equal the manifest `queries`). */
 export const DECISION_QUERIES = [
@@ -54,6 +66,10 @@ export const DECISION_QUERIES = [
   // Phase 6 task 4b (§A.3) — the decider push family's claim-time predicate (bound at bootstrap):
   // is a queued "decide this" push still actionable, and for whom?
   'decisions.deciderPushTarget',
+  // Phase 6 task 4c (§B.3) — the two consultation push families' claim-time predicates, bound at
+  // bootstrap exactly like the decider family's: is a queued "you were asked" / "they answered"
+  // push still actionable, and for whom?
+  'decisions.consultationPushTarget',
 ] as const;
 export type DecisionQuery = (typeof DECISION_QUERIES)[number];
 
@@ -119,6 +135,26 @@ export interface RequestDecisionChangeInput {
  *  The reason is REQUIRED: a withdrawal without one is the silent delete this design refuses. */
 export interface WithdrawDecisionInput {
   readonly reason: string;
+}
+
+/** `consultations.request` — ask a named ACTIVE project member for advice on a published,
+ *  still-open decision (Phase 6 task 4c §A). The consultee is named by MEMBERSHIP: the server
+ *  resolves the canonical audience user from it, so a caller can never forge who gets to see the
+ *  decision. The question is required and non-blank — a request with nothing asked is not one. */
+export interface RequestConsultationInput {
+  readonly consulteeMembershipId: string;
+  readonly question: string;
+}
+
+/** `consultations.respond` — answer one outstanding consultation (Phase 6 task 4c §A). Only the
+ *  named consultee may answer, once, and only while the decision is still the one they were asked
+ *  about: an approval closes every consultation of its cycle. The recommended option is ADVICE —
+ *  naming it moves no status and locks nothing. */
+export interface RespondToConsultationInput {
+  readonly consultationId: string;
+  readonly response: string;
+  /** the option key the consultee recommends, when they name one. */
+  readonly recommendedOptionKey?: string;
 }
 
 /** `decisions.publish` and `decisions.withdrawChange` carry no request body — the decision id comes

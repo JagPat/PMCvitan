@@ -40,6 +40,17 @@ export const DOMAIN_EVENT_TYPES = [
   'decision.change_withdrawn',
   // Phase 6 task 4a — a published, never-approved decision taken back (terminal)
   'decision.withdrawn',
+  // Phase 6 task 4c (§A/§G) — the consultation thread's two facts. Both are SIGNAL events: they
+  // carry no status change and no gate verdict, and exist so the decisions projection refreshes
+  // the thread and the two push families reach the people the fact is about.
+  //
+  // ROLLOUT-SEQUENCED (§D): the projection consumer dispatches every `decision.*` event, so an
+  // old worker claiming one of these would refresh the row through its old serializer and ERASE
+  // the thread it does not know about. Emission is therefore gated on the per-project
+  // `consultation` capability, which an operator turns on only AFTER the drain, and the consumer
+  // catalog version is bumped so a previous-release worker cannot take up service at all.
+  'decision.consultation_requested',
+  'decision.consultation_answered',
   // activities
   'activity.created',
   'activity.updated',

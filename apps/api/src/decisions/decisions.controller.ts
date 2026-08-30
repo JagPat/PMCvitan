@@ -4,7 +4,8 @@ import { DecisionsQueryService } from './decisions.query';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
-import { approveSchema, changeSchema, createDecisionSchema, updateDecisionDraftSchema, withdrawDecisionSchema, type ApproveInput, type ChangeInput, type CreateDecisionInput, type UpdateDecisionDraftInput, type WithdrawDecisionInput } from '../contracts';
+import { approveSchema, changeSchema, createDecisionSchema, requestConsultationSchema, respondToConsultationSchema, updateDecisionDraftSchema, withdrawDecisionSchema, type ApproveInput, type ChangeInput, type CreateDecisionInput, type RequestConsultationInput, type RespondToConsultationInput, type UpdateDecisionDraftInput, type WithdrawDecisionInput } from '../contracts';
+import { DECISIONS_CONTRACT_HEADER } from '../common/recorded-compat.interceptor';
 
 @Controller('projects/:projectId/decisions')
 @UseGuards(JwtGuard, RolesGuard)
@@ -122,5 +123,38 @@ export class DecisionsController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.decisions.withdrawChange(projectId, decisionId, user, idempotencyKey);
+  }
+
+  /** Phase 6 unit 4c-ii (§A) — ask a named ACTIVE member for advice on a published, still-open
+   *  decision. Capability-gated (404 off the rollout latch) and CLIENT-CONTRACT-gated: the
+   *  declared `x-vitan-decisions-contract` travels to the service, which refuses a bundle that
+   *  could not then show the thread it just created. */
+  @Post(':decisionId/consultations')
+  @RolesFor('decision.consult')
+  requestConsultation(
+    @Param('projectId') projectId: string,
+    @Param('decisionId') decisionId: string,
+    @Body(new ZodPipe(requestConsultationSchema)) body: RequestConsultationInput,
+    @CurrentUser() user: AuthUser,
+    @Headers(DECISIONS_CONTRACT_HEADER) contractDeclared?: string,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.decisions.requestConsultation(projectId, decisionId, body, user, contractDeclared, idempotencyKey);
+  }
+
+  /** Phase 6 unit 4c-ii (§A) — answer one outstanding consultation. The route ceiling is the union
+   *  of consultable roles; the SERVICE narrows to the ONE named consultee. */
+  @Post(':decisionId/consultations/:consultationId/respond')
+  @RolesFor('decision.respondConsult')
+  respondToConsultation(
+    @Param('projectId') projectId: string,
+    @Param('decisionId') decisionId: string,
+    @Param('consultationId') consultationId: string,
+    @Body(new ZodPipe(respondToConsultationSchema)) body: RespondToConsultationInput,
+    @CurrentUser() user: AuthUser,
+    @Headers(DECISIONS_CONTRACT_HEADER) contractDeclared?: string,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.decisions.respondToConsultation(projectId, decisionId, consultationId, body, user, contractDeclared, idempotencyKey);
   }
 }

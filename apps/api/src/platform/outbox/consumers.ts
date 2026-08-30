@@ -13,6 +13,18 @@ import { EXTERNAL_EFFECTS, type ExternalEffectDef, type ExternalEffectKey } from
  */
 export interface PushClaimDeps {
   deciderTarget(projectId: string, decisionId: string): Promise<{ actionable: false } | { actionable: true; roles?: string[]; targetUserId?: string }>;
+  /** Phase 6 unit 4c-ii (§B.3/P38c/P40c) — the two consultation families' claim-time predicate,
+   *  the SAME class as `decider` and answered by the same owning module. `kind` selects which
+   *  side of the thread is being delivered to: the `consultee` invitation (still unanswered, the
+   *  decision still open at the frozen cycle, the consultee still active) or the `requester`
+   *  answer (they still hold the authority that let them ask). Project operability is judged
+   *  FIRST in both, under the project row's lock — an archived project receives no decision
+   *  content at all. */
+  consultationTarget(
+    projectId: string,
+    consultationId: string,
+    kind: 'consultee' | 'requester',
+  ): Promise<{ actionable: false } | { actionable: true; roles?: string[]; targetUserId?: string }>;
   markCancelled(deliveryId: string): Promise<void>;
   /** round-1 Codex F5 — WHO currently holds a role's effective standing (orgs-owned answer):
    *  a role claim delivers to these users' valid links, never to a subscription's stored role. */
@@ -55,7 +67,13 @@ export function makePushConsumer(push: PushService, claims?: PushClaimDeps): Out
     name: PUSH_CONSUMER,
     kind: 'unordered',
     effect: 'external',
-    catalogVersion: 1,
+    // Phase 6 unit 4c-ii (§D) — BUMPED for the consultation fold. `syncConsumerCatalog` asserts
+    // the compiled contract against the persisted row at every startup and THROWS on any
+    // difference, so from the moment this unit's catalog-data migration lands, a PREVIOUS-release
+    // process cannot take up service at all: it never reaches the claim path. That is what makes
+    // the drain durable — a rolled-back or newly-scheduled old worker is fenced out on EVERY
+    // start, not merely at the one moment an operator looked.
+    catalogVersion: 2,
     // Dispatch only when the PERSISTED intent carries a push body; otherwise a recorded no-op. A
     // null-intent legacy event has no push, so it is always a no-op — the outbox never invents a
     // historical push from an old payload.
@@ -63,8 +81,23 @@ export function makePushConsumer(push: PushService, claims?: PushClaimDeps): Out
       const push = meta.dispatchIntent?.push;
       // `subject` = the emitting module's entityId (Phase 6 task 4a): the domain that later
       // learns this announcement went stale cancels by this key — never by reading the queue.
+      // Phase 6 unit 4c-ii — a family whose claim predicate judges the CONSULTATION needs its id
+      // at claim time, and the delivery payload is the only durable place it can travel: the
+      // relay claims from the stored row, long after the emitting transaction is gone. It is read
+      // from the event's own payload, so no command can hand the consumer a subject its event
+      // does not actually carry.
+      const consultationId = (meta.payload as { consultationId?: unknown } | null)?.consultationId;
       return push?.body
-        ? { action: 'dispatch', payload: { body: push.body, roles: push.roles ?? null, targetUserId: push.targetUserId ?? null }, subject: meta.entityId }
+        ? {
+            action: 'dispatch',
+            payload: {
+              body: push.body,
+              roles: push.roles ?? null,
+              targetUserId: push.targetUserId ?? null,
+              ...(typeof consultationId === 'string' ? { consultationId } : {}),
+            },
+            subject: meta.entityId,
+          }
         : { action: 'noop' };
     },
     handle: async (ctx) => {
@@ -78,6 +111,28 @@ export function makePushConsumer(push: PushService, claims?: PushClaimDeps): Out
       // exists in 4b, and its subject is the decision id the 4a `subject` key already carries.
       const effectKey = ctx.meta.dispatchIntent?.effectKey as ExternalEffectKey | undefined;
       const family = effectKey ? (EXTERNAL_EFFECTS[effectKey] as ExternalEffectDef | undefined)?.pushFamily : undefined;
+      // Phase 6 unit 4c-ii — the two consultation families are re-judged the same way, but their
+      // subject is the CONSULTATION, not the decision: the decision id alone cannot say whether
+      // THIS invitation has since been answered or overtaken by an approval. The id rides the
+      // delivery payload, put there by the emitting command.
+      if ((family === 'consultee' || family === 'requester') && claims) {
+        const consultationId = (ctx.delivery.payload as { consultationId?: unknown } | null)?.consultationId;
+        // a delivery with no subject cannot be re-judged, and an unjudged targeted send is
+        // exactly what the family exists to prevent — drop it with the mark, never send blind
+        if (typeof consultationId !== 'string') {
+          await claims.markCancelled(ctx.delivery.id);
+          return;
+        }
+        const target = await claims.consultationTarget(ctx.meta.projectId, consultationId, family);
+        if (!target.actionable) {
+          await claims.markCancelled(ctx.delivery.id);
+          return;
+        }
+        if (target.targetUserId) {
+          await push.notifyTargetedUser(ctx.meta.projectId, payload, target.targetUserId);
+        }
+        return;
+      }
       if (family === 'decider' && claims) {
         const target = await claims.deciderTarget(ctx.meta.projectId, ctx.meta.entityId);
         if (!target.actionable) {

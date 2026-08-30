@@ -48,7 +48,16 @@ export class DecisionsQueryService {
     const rows = await this.prisma.decision.findMany({
       where: { projectId },
       // the OPEN change request travels with a reopened decision (Phase 1 Task 2)
-      include: { options: { orderBy: { order: 'asc' } }, changeRequests: { where: { status: 'open' }, take: 1 }, deciderMembership: { select: { userId: true } } },
+      include: {
+        options: { orderBy: { order: 'asc' } },
+        changeRequests: { where: { status: 'open' }, take: 1 },
+        deciderMembership: { select: { userId: true } },
+  // Phase 6 unit 4c-ii (§A/P25c) — the consultation thread, with its answer and the recommended
+  // option's KEY (never its id: the stored DTO must survive an option reorder and an id means
+  // nothing to a client). The audience travels as the consultation's own canonical column, so a
+  // rebuild — which replays no payloads — carries it too.
+  consultations: { include: { response: { include: { recommendedOption: { select: { optionKey: true } } } } } },
+      },
       orderBy: { id: 'desc' },
     });
 
@@ -181,6 +190,19 @@ export class DecisionsQueryService {
             status: row.status,
             deciderKind: dto.deciderKind,
             deciderUserId: dto.deciderUserId ?? null,
+            // Phase 6 unit 4c-ii (P25c) — the pending audience the stored thread carries. The
+            // collection is ABSENT (never `[]`) when a decision has no consultation, which is
+            // what makes a projection row written BEFORE 4c-ii equal to live rather than merely
+            // compatible with it: both sides serialize the same decision to the same bytes, so no
+            // hydration step is needed and no stale generation serves a shape live never emits.
+            //
+            // Stated plainly because it deviates from §B.1's wording: the plan specified
+            // hydrating a legacy row to an EMPTY consultation shape, which presumes a serializer
+            // that always emits the array. Always emitting it would add a `consultations: []` key
+            // to every decision of every project — including the gate-OFF ones §D requires to be
+            // byte-identical to today. Absent-when-empty satisfies both obligations at once, and
+            // the equality the hydration existed to protect is proven by the same probe.
+            consultations: dto.consultations,
           },
           role,
           userId,
@@ -249,6 +271,73 @@ export class DecisionsQueryService {
         return { actionable: true, targetUserId: m.userId };
       }
       return { actionable: false };
+    });
+  }
+
+  /**
+   * Phase 6 unit 4c-ii (§B.3/P38c/P40c) — the two consultation push families' claim-time predicate,
+   * the `deciderPushTarget` class applied to the consultation thread.
+   *
+   * A push is enqueued when the fact happens and CLAIMED later, so everything it depends on can
+   * have moved. PROJECT OPERABILITY IS JUDGED FIRST, under the project row's lock: an archived
+   * project receives no decision content at all, whoever the target is. The rest is per side:
+   *
+   *   `consultee` — the invitation to advise. It is actionable only while the consultee is still
+   *   ACTIVE (a removed member is not merely un-notified, they can no longer answer), the
+   *   decision is still published and open, its cycle still equals the frozen `openCycle`, and
+   *   the consultation is still UNANSWERED. An approval between enqueue and claim closes the
+   *   invitation, and an already-answered one is not re-invited: in both cases §A's respond
+   *   command would 409 the very reply this push asks for, so sending it invites a dead end.
+   *
+   *   `requester` — the answer. It reaches the person who asked only while they still hold the
+   *   authority that let them ask, so a demoted requester never receives decision content. The
+   *   decision's own state is deliberately NOT re-checked here: the answer is a fact that already
+   *   happened, and an approval landing first does not make it untrue or unwelcome.
+   *
+   * The whole predicate runs in ONE transaction and takes the DECISION row's lock before reading
+   * its status and cycle — the project lock serializes archival only, so without this an approve
+   * committing mid-claim could be read half-applied.
+   */
+  async consultationPushTarget(
+    projectId: string,
+    consultationId: string,
+    kind: 'consultee' | 'requester',
+  ): Promise<{ actionable: false } | { actionable: true; roles?: string[]; targetUserId?: string }> {
+    return this.prisma.$transaction(async (tx) => {
+      if (!(await this.orgsParticipant.isProjectOperable(tx, projectId))) return { actionable: false };
+      const c = await tx.decisionConsultation.findFirst({
+        where: { id: consultationId, projectId },
+        select: {
+          decisionId: true,
+          openCycle: true,
+          requestedById: true,
+          consulteeMembershipId: true,
+          consulteeUserId: true,
+          response: { select: { id: true } },
+        },
+      });
+      if (!c) return { actionable: false };
+
+      if (kind === 'requester') {
+        // still entitled to ask — and therefore to be told the answer
+        const entitled = await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, c.requestedById, ['pmc']);
+        return entitled ? { actionable: true, targetUserId: c.requestedById } : { actionable: false };
+      }
+
+      // an answered invitation is spent — never invite a reply the respond command would refuse
+      if (c.response) return { actionable: false };
+      const consultee = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, c.consulteeMembershipId);
+      if (!consultee || consultee.userId !== c.consulteeUserId) return { actionable: false };
+      // the DECISION row's own lock, before its status and cycle are read
+      const rows = await tx.$queryRawUnsafe<Array<{ status: string; publishedAt: Date | null }>>(
+        `SELECT "status"::text AS status, "publishedAt" FROM "Decision" WHERE "projectId" = $1 AND "id" = $2 FOR UPDATE`,
+        projectId, c.decisionId,
+      );
+      const d = rows[0];
+      if (!d || d.publishedAt === null || (d.status !== 'pending' && d.status !== 'change')) return { actionable: false };
+      const openCycle = await tx.decisionApprovalRevision.count({ where: { decisionId: c.decisionId } });
+      if (openCycle !== c.openCycle) return { actionable: false };
+      return { actionable: true, targetUserId: c.consulteeUserId };
     });
   }
 

@@ -39,6 +39,16 @@ export const ROLE_POLICY = {
   // Phase 6 task 4a — withdrawing a published decision retires a question the practice asked;
   // that is the practice's call alone (the client never had authority over the asking either).
   'decision.withdraw': ['pmc'],
+  // Phase 6 task 4c (§A) — ASKING for advice is the practice's act: the PMC runs the decision
+  // process and decides whose input it needs, exactly as `decision.create` and `decision.publish`
+  // are pmc-only. The SERVICE additionally requires live requesting authority on the project, so
+  // a stale token cannot ask on behalf of a role its holder no longer occupies.
+  'decision.consult': ['pmc'],
+  // ANSWERING is the consultee's act, and a consultee may be any project role — the whole point
+  // is reaching the person with the relevant expertise. The route ceiling is therefore the union
+  // of consultable roles and the SERVICE narrows to the ONE named consultee: a member who was not
+  // asked cannot answer, and neither can a different member of the same role.
+  'decision.respondConsult': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   // Phase 3 Task 1 — the ActivityRequirement demand contract is authored by the PMC (plan §H matrix)
   'requirement.manage': ['pmc'],
   // the full requirement register read (§H): pmc + engineer; the client sees only the readiness

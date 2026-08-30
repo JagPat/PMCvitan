@@ -34,8 +34,17 @@ export interface ExternalEffectDef {
    *  predicate, declared beside the catalog entry (the class mechanism; each family names its
    *  own). `'decider'`: the target must still be the decision's holder AND the status must still
    *  demand their decision — re-judged at claim through the decisions-owned answer, re-targeting
-   *  a changed holder or dropping with the cancellation mark. Absent = no claim-time predicate. */
-  readonly pushFamily?: 'decider';
+   *  a changed holder or dropping with the cancellation mark. Absent = no claim-time predicate.
+   *
+   *  Phase 6 unit 4c-ii (§B.3/P38c/P40c) instantiates the same CLASS twice more. `'consultee'`:
+   *  the invitation to advise is still actionable only while the project is operable, the named
+   *  consultee is still ACTIVE, the decision is still published and open, its cycle has not moved
+   *  since the request was frozen, and the consultation is still UNANSWERED — an answered or
+   *  overtaken invitation is dropped with the cancellation mark rather than inviting a reply the
+   *  respond command would refuse. `'requester'`: the answer reaches the person who asked only
+   *  while the project is operable and they still hold the authority that let them ask, so a
+   *  demoted requester never receives decision content. */
+  readonly pushFamily?: 'decider' | 'consultee' | 'requester';
 }
 
 /**
@@ -56,6 +65,13 @@ export const EXTERNAL_EFFECTS = {
   // Phase 6 task 4a — surfaces refresh; no push (`change_requested`/`change_withdrawn` set the
   // precedent for lifecycle corrections, and the pmc who acted needs no announcement).
   'decision.withdrawn': { eventType: 'decision.withdrawn', invalidate: true, push: null },
+  // Phase 6 unit 4c-ii (§A/§B.3) — the consultation thread's two facts. Both invalidate (the
+  // thread is part of the decision every surface shows) and both push at ONE user: the CEILING
+  // here is the union of consultable roles, and the dispatch site narrows to the named consultee
+  // / the requester by user target. A role fan-out would hand a pending decision to every
+  // same-role member who cannot see it.
+  'decision.consultation_requested': { eventType: 'decision.consultation_requested', invalidate: true, push: ['pmc', 'client', 'contractor', 'engineer', 'consultant'], pushFamily: 'consultee' },
+  'decision.consultation_answered': { eventType: 'decision.consultation_answered', invalidate: true, push: ['pmc'], pushFamily: 'requester' },
   // ── activities ─────────────────────────────────────────────────────────────────────────────
   'activity.created': { eventType: 'activity.created', invalidate: true, push: ['engineer', 'contractor'] },
   'activity.updated': { eventType: 'activity.updated', invalidate: true, push: null },

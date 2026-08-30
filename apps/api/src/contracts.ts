@@ -90,6 +90,25 @@ export type ApproveInput = z.infer<typeof approveSchema>;
 export const withdrawDecisionSchema = z.object({ reason: z.string().trim().min(1, 'A withdrawal needs a reason') });
 export type WithdrawDecisionInput = z.infer<typeof withdrawDecisionSchema>;
 
+/** Phase 6 unit 4c-ii (§A) — asking for advice. Both fields are required and non-blank at the
+ *  contract: a consultation with no consultee is unaddressed and one with no question asks
+ *  nothing. `.trim()` strips the whole whitespace class, so a tabs-and-newlines-only question is
+ *  a 400 here — the same shape the database's `btrim` CHECK enforces for a direct writer. */
+export const requestConsultationSchema = z.object({
+  consulteeMembershipId: z.string().min(1),
+  question: z.string().trim().min(1, 'A consultation needs a question'),
+});
+export type RequestConsultationInput = z.infer<typeof requestConsultationSchema>;
+
+/** Phase 6 unit 4c-ii (§A) — answering one. The recommended option is OPTIONAL because advice
+ *  need not name a choice; when present it is validated against the decision's own options in the
+ *  service (the contract cannot know them). */
+export const respondToConsultationSchema = z.object({
+  response: z.string().trim().min(1, 'A response needs an answer'),
+  recommendedOptionKey: z.string().min(1).optional(),
+});
+export type RespondToConsultationInput = z.infer<typeof respondToConsultationSchema>;
+
 export const changeSchema = z.object({
   reason: z.string().min(1),
   costImpact: z.number().int(),

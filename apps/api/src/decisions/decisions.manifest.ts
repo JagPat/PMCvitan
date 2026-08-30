@@ -32,14 +32,23 @@ export const decisionsManifest: ModuleManifest = {
     'decision.change_requested',
     'decision.change_withdrawn',
     'decision.withdrawn',
+    // Phase 6 unit 4c-ii (§A/§G) — the consultation thread's two SIGNAL events. Emission is
+    // gated on the per-project `consultation` capability until the drain-first cutover is
+    // confirmed complete (§D): the projection consumer dispatches every `decision.*` event, so
+    // an old worker claiming one of these would refresh the row through its old serializer and
+    // erase the thread it cannot see.
+    'decision.consultation_requested',
+    'decision.consultation_answered',
   ],
   consumesEvents: [],
   // Phase 6 task 4b (§A.1/§A.2) — `decisions.updateDraft` re-points an UNPUBLISHED draft's
   // decider/kind/options as one coherent pair (the write-once holder freeze starts at publication).
-  commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange', 'decisions.withdraw', 'decisions.updateDraft'],
+  // 4c-ii adds the two consultation commands: ask a named ACTIVE member for advice on a
+  // published, still-open decision, and answer that request. Neither moves a status or a gate.
+  commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange', 'decisions.withdraw', 'decisions.updateDraft', 'consultations.request', 'consultations.respond'],
   // 4b adds: `statusAndDraftMap`/`statusAndDraftOf` (the recorded gate arm's draft flag),
   // `deciderPushTarget` (the decider push family's claim-time predicate, bound at bootstrap).
-  queries: ['decisions.snapshotSlice', 'decisions.projectionSlice', 'decisions.existsInProject', 'decisions.linkableInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending', 'decisions.approvedRef', 'decisions.statusAndDraftMap', 'decisions.statusAndDraftOf', 'decisions.deciderPushTarget'],
+  queries: ['decisions.snapshotSlice', 'decisions.projectionSlice', 'decisions.existsInProject', 'decisions.linkableInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending', 'decisions.approvedRef', 'decisions.statusAndDraftMap', 'decisions.statusAndDraftOf', 'decisions.deciderPushTarget', 'decisions.consultationPushTarget'],
   routes: [
     'POST /projects/:projectId/decisions',
     'POST /projects/:projectId/decisions/:decisionId/publish',
@@ -48,6 +57,8 @@ export const decisionsManifest: ModuleManifest = {
     'POST /projects/:projectId/decisions/:decisionId/change/withdraw',
     'POST /projects/:projectId/decisions/:decisionId/withdraw',
     'PATCH /projects/:projectId/decisions/:decisionId/draft',
+    'POST /projects/:projectId/decisions/:decisionId/consultations',
+    'POST /projects/:projectId/decisions/:decisionId/consultations/:consultationId/respond',
   ],
   permissions: ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
 };

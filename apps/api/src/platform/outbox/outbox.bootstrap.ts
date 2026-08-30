@@ -60,6 +60,9 @@ export class OutboxBootstrap implements OnModuleInit {
     registerConsumer(
       makePushConsumer(this.push, {
         deciderTarget: (projectId, decisionId) => this.decisionsQuery.deciderPushTarget(projectId, decisionId),
+        // Phase 6 unit 4c-ii (§B.3) — the two consultation families route through the same
+        // decisions-owned answer; boot binds it so platform code never reads a decisions table.
+        consultationTarget: (projectId, consultationId, kind) => this.decisionsQuery.consultationPushTarget(projectId, consultationId, kind),
         roleHolderUserIds: (projectId, role) => this.orgsParticipant.effectiveRoleHolderUserIds(this.prisma, projectId, role),
         // the claim-time drop is recorded on the delivery's own row (the 4a cancellation mark) —
         // a platform-internal write of the platform's own table
