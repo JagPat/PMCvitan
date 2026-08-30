@@ -13,24 +13,37 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: in_progress
+task_state: merged
 work_item: none
-reviewed_merge: d86cfb60
-open_pr: 493
+reviewed_merge: d4e2ddf5
+open_pr: none
 next_task: phase-6-task-4c
 blocking_directive: none
 updated: 2026-08-30
 ```
 
-**4c-i IS OPEN AS PR #493 — THE REPLACEMENT FOR #492 — AND THE REMOVAL-AND-REINSTATE
-BLOCKER IS CLEARED BY BOARD CALL** (2026-08-30, ~23:07 IST). `blocking_directive` is `none` and the 4c plan STAYS on
-`main` at `4ff4565c`. The recorded Board sequence is **STATUS, then 4c**: the unwind was dismissed
+**4c-i IS MERGED (PR #493 at `main` `d4e2ddf5`) WITH A FRESH INDEPENDENT CODEX +1 ON THE
+EXACT REVIEWED HEAD `7650109`, AND THE REMOVAL-AND-REINSTATE BLOCKER IS CLEARED BY
+BOARD CALL** (2026-08-30, ~23:07 IST). No PR is open: the plan's next unit is **4c-ii**
+(the behaviour unit — contracts, commands, routes, the projection thread, the push families and
+the UI, plus the `sourceCommandId` writer and its constraint trigger after the drain-first
+cutover), and it is **NOT started**. Every Board pin in this sequence has named exactly one next
+PR, and the pin that authorised 4c-i named only 4c-i, so 4c-ii waits for its own GO rather than
+being assumed. Contractor-capture units 1–6 remain under their per-unit Board gate.
+
+The Now block is the documented TERMINAL HANDOFF SHAPE (`task_state: merged`, `open_pr: none`,
+`work_item: none`, a NAMED `next_task`) so `isHandoffShape` recognizes this landing instead of
+instructing the loop to point `open_pr` at this PR itself (the #303 trap). `task_state: merged`
+is the state of the WORK ITEM that was in flight — 4c-i — exactly as the 4b landing used it while
+task 4 continued on 4c–4d; it is not a claim that task 4c is finished. Five plan units remain.
+
+`blocking_directive` is `none` and the 4c plan STAYS on `main`. The recorded Board sequence is **STATUS, then 4c**: the unwind was dismissed
 at 09:36; #487 was the first removal attempt and closed unmerged; #491 was the same removal again
 and is now also CLOSED UNMERGED; and #490 — which restored the
 `phase-6-4c-plan-independent-clearance` record — is a record of a supervision concern, not a
 Board GO to take the plan off `main`. **Board beats programme supervision**, so no clearance
 step 1 is re-opened, no step 2 / plan reinstatement is opened, and the plan is not removed.
-`phase_plan` moves to the 4c document because that is what this task's remaining work executes.
+`phase_plan` stays on the 4c document because that is what this task's remaining work executes.
 
 The directive's own text is preserved below as the RECORD of what was asked and why it was
 superseded — it is deliberately no longer scheduled. Leaving it in `blocking_directive` would
@@ -47,7 +60,7 @@ byte-identical to #492's reviewed head; what changed is that request eligibility
 NULL `response` arm exists, and every barrier awaits its holder's lock before launching the
 competitor. Each new arm is mutation-verified.
 
-**What PR #493 delivers is 4c-i, the plan's own FIRST implementation unit**
+**What PR #493 delivered is 4c-i, the plan's own FIRST implementation unit**
 (`docs/superpowers/plans/2026-08-29-decision-workflow-4c.md` §D): ONE additive migration,
 deployed DARK. The two append-only consultation facts (`DecisionConsultation`,
 `DecisionConsultationResponse`) with their project-scoped composite FKs and candidate keys, the
