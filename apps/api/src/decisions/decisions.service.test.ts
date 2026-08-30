@@ -252,6 +252,17 @@ function makeLifecycle(status: string) {
       findFirst: vi.fn(async () => (revisions.length ? revisions[revisions.length - 1] : null)),
       create: vi.fn((args: { data: (typeof revisions)[number] }) => { revisions.push(args.data); return Promise.resolve(args.data); }),
     },
+    // Phase 6 unit 4c-ii — `approve` now reserves a command receipt even when the caller sends no
+    // key (`synthesizeKeyWhenAbsent`), because the approval revision it writes carries the
+    // provenance 4c's cycle evidence rests on. The ledger is stubbed here rather than skipped: a
+    // mock that lacked it would make these lifecycle tests fail on a missing delegate instead of
+    // on the behaviour they assert.
+    commandExecution: {
+      findFirst: vi.fn(async () => null),
+      create: vi.fn(async ({ data }: { data: { id: string } }) => ({ ...data, status: 'reserved' })),
+      update: vi.fn(async ({ data }: { data: unknown }) => data),
+      updateMany: vi.fn(async () => ({ count: 1 })),
+    },
     notification: { create: vi.fn((args: { data: { text: string } }) => { notices.push(args.data.text); return Promise.resolve(args.data); }) },
     auditLog: { create: vi.fn((args: { data: (typeof audits)[number] }) => { audits.push(args.data); return Promise.resolve(args.data); }) },
     // the platform event kernel (Phase 2 Task 4) writes through the tx — stub its three steps

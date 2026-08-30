@@ -17,11 +17,7 @@ import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { OrgsParticipant } from '../orgs/orgs.participant';
-import { CapabilitiesService } from '../platform/capabilities.service';
-
-/** Phase 6 unit 4c-ii (§D) — the per-project pilot gate both consultation commands, the emitter
- *  and the client read. Named once so the three reads retire together in 4c-iv. */
-export const CONSULTATION_CAPABILITY = 'consultation';
+import { CapabilitiesService, CONSULTATION_CAPABILITY } from '../platform/capabilities.service';
 
 /** The consultation commands REQUIRE a client key (review round 19) — see `requestConsultation`. */
 function requireIdempotencyKey(key: string | undefined, commandType: string): string {

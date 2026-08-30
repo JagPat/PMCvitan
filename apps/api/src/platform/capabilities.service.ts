@@ -22,6 +22,16 @@ export const LABOUR_CAPABILITY = 'labour';
 // that already holds live purchase orders. See `CommercialActivationService`.
 export const COMMERCIAL_CAPABILITY = 'commercial';
 
+/** Phase 6 unit 4c-ii (§D) — the CONSULTATION pilot gate. Read by the two write commands, by the
+ *  emitter, and by the CLIENT through the shell's `capabilities` — all three, deliberately: a
+ *  gate on the server alone would leave the upgraded bundle rendering request/respond controls
+ *  during the whole window in which every project is still gate-off, and controls whose every
+ *  request 404s are a visibly broken state, not a byte-identical inert one. All three reads
+ *  retire together in 4c-iv. Until 4c-iii the capability is RESERVED at the database — the
+ *  4c-i migration refuses any row naming it — so this constant is the name of a gate that
+ *  cannot yet be opened. */
+export const CONSULTATION_CAPABILITY = 'consultation';
+
 @Injectable()
 export class CapabilitiesService {
   constructor(private readonly prisma: PrismaService) {}
