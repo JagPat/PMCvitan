@@ -4,7 +4,7 @@ import { DecisionsQueryService } from './decisions.query';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
-import { approveSchema, changeSchema, createDecisionSchema, updateDecisionDraftSchema, withdrawDecisionSchema, type ApproveInput, type ChangeInput, type CreateDecisionInput, type UpdateDecisionDraftInput, type WithdrawDecisionInput } from '../contracts';
+import { approveSchema, changeSchema, createDecisionSchema, requestConsultationSchema, respondToConsultationSchema, updateDecisionDraftSchema, withdrawDecisionSchema, type ApproveInput, type ChangeInput, type CreateDecisionInput, type RequestConsultationInput, type RespondToConsultationInput, type UpdateDecisionDraftInput, type WithdrawDecisionInput } from '../contracts';
 
 @Controller('projects/:projectId/decisions')
 @UseGuards(JwtGuard, RolesGuard)
@@ -122,5 +122,45 @@ export class DecisionsController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.decisions.withdrawChange(projectId, decisionId, user, idempotencyKey);
+  }
+
+  /**
+   * Phase 6 unit 4c-ii (§A) — ASK a named member for advice on an open decision.
+   *
+   * The route ceiling is the REQUESTING set (`pmc` in 4c; `architect` joins in 4d with the role).
+   * Off-pilot the service answers 404 through the `consultation` capability, so the endpoint does
+   * not exist for a project the gate is closed on.
+   */
+  @Post(':decisionId/consultations')
+  @RolesFor('consultation.request')
+  requestConsultation(
+    @Param('projectId') projectId: string,
+    @Param('decisionId') decisionId: string,
+    @Body(new ZodPipe(requestConsultationSchema)) body: RequestConsultationInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.decisions.requestConsultation(projectId, decisionId, body, user, idempotencyKey);
+  }
+
+  /**
+   * Phase 6 unit 4c-ii (§A) — the NAMED consultee answers.
+   *
+   * The ceiling admits EVERY role a consultee can hold, and the SERVICE narrows to the one named
+   * consultee. That is the delivered 4b widen-ceiling-narrow-in-service rule, and it is
+   * load-bearing here: a ceiling tighter than the eligible set would make `RolesGuard` reject a
+   * legitimately named consultee — say, a contractor — before the service's own check could admit
+   * them, and the shipped app would lock out exactly the person being asked.
+   */
+  @Post(':decisionId/consultations/respond')
+  @RolesFor('consultation.respond')
+  respondToConsultation(
+    @Param('projectId') projectId: string,
+    @Param('decisionId') decisionId: string,
+    @Body(new ZodPipe(respondToConsultationSchema)) body: RespondToConsultationInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.decisions.respondToConsultation(projectId, decisionId, body, user, idempotencyKey);
   }
 }

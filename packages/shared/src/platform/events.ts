@@ -40,6 +40,12 @@ export const DOMAIN_EVENT_TYPES = [
   'decision.change_withdrawn',
   // Phase 6 task 4a — a published, never-approved decision taken back (terminal)
   'decision.withdrawn',
+  // Phase 6 unit 4c-ii (§A) — consultation. Both are SIGNAL events: they move no status and
+  // change no gate verdict. `requested` is targeted at the consultee, `responded` at whoever
+  // asked (who may be an org-admin USER with no membership row here — which is exactly why the
+  // targeted dispatch is user-keyed).
+  'decision.consultation_requested',
+  'decision.consultation_responded',
   // activities
   'activity.created',
   'activity.updated',

@@ -174,7 +174,7 @@ const MODEL_OWNER: Record<string, string> = {
 const SERVICES: Record<string, { domain: string; foreign: Record<string, number>; dispatch: number }> = {
   // Phase 6 task 4b — +1: `decisions.updateDraft` (the draft-edit command dispatches its
   // weightless committed effect like every other emitting command).
-  'decisions/decisions.service.ts': { domain: 'decisions', foreign: {}, dispatch: 7 },
+  'decisions/decisions.service.ts': { domain: 'decisions', foreign: {}, dispatch: 9 },
   // edge 1 (closing inspection) → inspection.participant; edge 5 (drawing unlink) → FK SET NULL
   'activities/activities.service.ts': { domain: 'activities', foreign: {}, dispatch: 8 },
   // edge 6 (phase→activity detach) → FK SET NULL (phaseId)
@@ -396,7 +396,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   'nodes/nodes.controller.ts': ['Post()', "Patch(':nodeId')", "Post(':nodeId/move')", "Post(':nodeId/publish')", "Delete(':nodeId')"],
   // Phase 6 task 4b — Patch(':decisionId/draft') edits an UNPUBLISHED draft (decider re-point /
   // record conversion / options) under the new `decision.updateDraft` policy.
-  'decisions/decisions.controller.ts': ['Post()', "Post(':decisionId/publish')", "Patch(':decisionId/draft')", "Post(':decisionId/approve')", "Post(':decisionId/change')", "Post(':decisionId/withdraw')", "Post(':decisionId/change/withdraw')"],
+  'decisions/decisions.controller.ts': ['Post()', "Post(':decisionId/publish')", "Patch(':decisionId/draft')", "Post(':decisionId/approve')", "Post(':decisionId/change')", "Post(':decisionId/withdraw')", "Post(':decisionId/change/withdraw')", "Post(':decisionId/consultations')", "Post(':decisionId/consultations/respond')"],
   'daily-log/daily-log.controller.ts': ["Post('start')", "Post('materials')", "Post('flag-mismatch')", "Post('resolve-mismatch')", "Post('submit')"],
   'orgs/members.controller.ts': ['Post()', "Patch(':userId')", "Delete(':userId')"],
   'orgs/companies.controller.ts': ['Post()', "Patch(':companyId')", "Delete(':companyId')"],
@@ -593,9 +593,9 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
       });
     }
 
-    it('82 external-effect dispatch sites total across the pillar services (81 + Phase-6 task-4b decisions.updateDraft)', () => {
+    it('84 external-effect dispatch sites total across the pillar services (82 + Phase-6 unit 4c-ii request/respond consultation)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(82);
+      expect(total).toBe(84);
     });
   });
 
@@ -606,12 +606,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('170 mutating routes total (§4 command inventory; +2 Phase-6 task-4b decisions.updateDraft + push.unlink)', () => {
+    it('172 mutating routes total (§4 command inventory; +2 Phase-6 unit 4c-ii consultation request/respond)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(170);
+      expect(total).toBe(172);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(170);
+      expect(live).toBe(172);
     });
   });
 

@@ -45,6 +45,9 @@ describe('Task 8 — the decisions module implements its shared command/query co
         'decision.reapproved',
         // Phase 6 task 4a
         'decision.withdrawn',
+        // Phase 6 unit 4c-ii — consultation signals (they move no status, gate nothing)
+        'decision.consultation_requested',
+        'decision.consultation_responded',
       ].sort(),
     );
     // an extracted module reaches no other module's persistence — it depends on nothing

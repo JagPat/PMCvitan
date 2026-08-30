@@ -10,13 +10,65 @@ import { lockProjectReadiness } from '../common/readiness-lock';
 import { nextSeqId } from '../domain/ids';
 import { pendingDecisionNotice, recordedDecisionNotice, withdrawnDecisionNotice } from '../domain/notifications';
 import { cancelQueuedPushBySubject } from '../platform/outbox/cancellation';
-import type { ApproveInput, ChangeInput, CreateDecisionInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
+import type { ApproveInput, ChangeInput, CreateDecisionInput, RequestConsultationInput, RespondToConsultationInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { OrgsParticipant } from '../orgs/orgs.participant';
+import { CapabilitiesService } from '../platform/capabilities.service';
+
+/** Phase 6 unit 4c-ii (§D) — the per-project pilot gate both consultation commands, the emitter
+ *  and the client read. Named once so the three reads retire together in 4c-iv. */
+export const CONSULTATION_CAPABILITY = 'consultation';
+
+/** The consultation commands REQUIRE a client key (review round 19) — see `requestConsultation`. */
+function requireIdempotencyKey(key: string | undefined, commandType: string): string {
+  const trimmed = (key ?? '').trim();
+  if (!trimmed) {
+    throw new BadRequestException(
+      `${commandType} requires an Idempotency-Key header — this command records a permanent, append-only fact and must run exactly once`,
+    );
+  }
+  return trimmed;
+}
+
+/** Lock the decision row and read the fields consultation eligibility is judged from. `FOR SHARE`
+ *  conflicts with the `FOR UPDATE` that withdraw/approve/requestChange take, so a transition
+ *  committing concurrently either waits or is seen — and it does not block a second consultation
+ *  on the same decision, which needs no serializing against. */
+async function lockDecisionForConsultation(
+  tx: Prisma.TransactionClient,
+  projectId: string,
+  decisionId: string,
+): Promise<{ status: string; publishedAt: Date | null; title: string } | null> {
+  const rows = await tx.$queryRaw<Array<{ status: string; publishedAt: Date | null; title: string }>>`
+    SELECT "status"::text AS status, "publishedAt", "title" FROM "Decision"
+     WHERE "projectId" = ${projectId} AND "id" = ${decisionId}
+     FOR SHARE`;
+  return rows[0] ?? null;
+}
+
+/**
+ * The ELIGIBILITY carve-out, applied identically at the request and at the response.
+ *
+ * A consultation belongs only to a decision whose question is still OPEN — `pending` or `change`
+ * in 4c (the `awaiting_countersign` arm is ADDED BY 4d with the status itself) — AND PUBLISHED.
+ * Status alone would admit an author-private DRAFT whose status is `pending`. Never `withdrawn`,
+ * whose title and reason are pmc-only: a consultation there would leak exactly what 4a hides.
+ * Never `approved` or `recorded`: there is nothing left to inform.
+ */
+function assertConsultationEligible(d: { status: string; publishedAt: Date | null }, decisionId: string): void {
+  if (d.publishedAt === null) {
+    throw new ConflictException(`Decision ${decisionId} is an unpublished draft — there is nobody to consult about it yet`);
+  }
+  if (d.status !== 'pending' && d.status !== 'change') {
+    throw new ConflictException(
+      `Decision ${decisionId} is ${d.status} — advice can only be asked for, or given, while the question is still open`,
+    );
+  }
+}
 
 @Injectable()
 export class DecisionsService {
@@ -31,6 +83,11 @@ export class DecisionsService {
     // (an active membership, locked — the FK's target) is answered by its owner through the
     // declared decisions → orgs workflow-participant edge, never by a raw read here.
     private readonly orgsParticipant: OrgsParticipant,
+    // Phase 6 unit 4c-ii (§D) — the per-project `consultation` capability. Both write commands
+    // and the emitter read it, and so does the client (the delivered `capabilities: string[]`
+    // shell contract), so a gate-off project renders no affordance rather than affordances whose
+    // every request 404s. All three reads retire together in 4c-iv.
+    private readonly capabilities: CapabilitiesService,
   ) {}
 
   /** Phase 6 task 4b (§A.3) — the decider-routed push: the catalog names the CEILING and this
@@ -481,6 +538,234 @@ export class DecisionsService {
     });
 
     // the decision is locked; PMC/contractor/engineer act on it — told truthfully by whom (fresh only)
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /**
+   * Phase 6 unit 4c-ii (§A) — ASK a named member for advice on an open decision.
+   *
+   * Consultation INFORMS; it never gates. This command moves no status, touches no gate verdict,
+   * and grants the consultee no authority — it widens their sight of ONE decision, for the cycle
+   * it was asked in, and queues a "you were asked" push.
+   *
+   * THE CANONICAL 4c LOCK ORDER (§A round 13), which every 4c path takes without exception:
+   *
+   *     readiness key → `Project` → `Membership` → `Decision`
+   *
+   * It is APPROVAL's order, not a tidier one. `decisions.approve` takes the readiness key, then
+   * the named decider's membership through `lockActiveMembershipById`, and only then updates the
+   * `Decision` row. When the consultee IS the named decider — an ordinary case, since the person
+   * best placed to advise is often the one deciding — a decision-before-membership order here
+   * would have approval holding `Membership` waiting for `Decision` while this path holds
+   * `Decision` waiting for `Membership`, and PostgreSQL would abort one of them. Status and cycle
+   * are still judged AFTER the decision lock is held; only the order of the earlier locks changes.
+   */
+  async requestConsultation(
+    projectId: string,
+    decisionId: string,
+    input: RequestConsultationInput,
+    user: AuthUser,
+    idempotencyKey?: string,
+  ): Promise<SnapshotDto> {
+    await this.capabilities.assertEnabled(projectId, CONSULTATION_CAPABILITY);
+    // Review round 19 — the key is REQUIRED, and refused at the contract with a deliberate 400.
+    // Both consultation facts carry a NOT NULL `sourceCommandId` naming the receipt of the
+    // command currently executing; when `COMMAND_KEY_ENFORCED` is unset and a caller omits the
+    // header, the delivered kernel takes its LEGACY unkeyed branch, which reserves NO ledger row
+    // and runs with `{ commandId: null }`. Without this refusal the write reaches PostgreSQL and
+    // surfaces as an internal constraint failure — a 500 where the honest answer is that this
+    // command needs a key.
+    const key = requireIdempotencyKey(idempotencyKey, 'decisions.requestConsultation');
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({ decisionId, consulteeMembershipId: input.consulteeMembershipId, question: input.question });
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'decisions.requestConsultation', key, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
+
+    const outcome = await executeCommand(this.prisma, {
+      scope,
+      actor,
+      commandType: 'decisions.requestConsultation',
+      idempotencyKey: key,
+      requestHash,
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+        // (2) `Project`. Passing `ProjectAccessService` at the door was a read of a THEN-live
+        // project: an archive can commit between the guard and the write, and every eligibility
+        // predicate below would still pass, appending immutable advice plus its push into an
+        // archived project. This lock-and-check is inside the transaction for that reason, and
+        // the DB INSERT seal mirrors the same predicate.
+        if (!(await this.orgsParticipant.isProjectOperable(tx, projectId))) {
+          throw new ConflictException('This project is archived — no consultation can be recorded against it');
+        }
+        // (3) `Membership` — the consultee, locked and resolved by its OWNER in one call. The
+        // membership id denotes one person for its lifetime (identity is DB-frozen), so what this
+        // serializes against is the ACTIVE→removed transition, which is a live state change.
+        const consultee = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, input.consulteeMembershipId);
+        if (!consultee) throw new ConflictException('That member is not an active member of this project');
+        // the 4b round-11 LIVE-STANDING rule: `user.role` was established by JwtGuard BEFORE this
+        // transaction, so the authority to ASK is re-validated inside it, under the row lock.
+        const standing = await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, user.sub, ['pmc'], { forUpdate: true });
+        if (!standing) {
+          throw new ForbiddenException('Your project standing changed — asking for advice on this decision is a PMC authority');
+        }
+        // (4) `Decision`, last, under its own row lock, so a withdrawal committing concurrently
+        // either waits or is seen.
+        const d = await lockDecisionForConsultation(tx, projectId, decisionId);
+        if (!d) throw new NotFoundException(`Decision ${decisionId} not found`);
+        assertConsultationEligible(d, decisionId);
+        if (consultee.userId === user.sub) {
+          throw new BadRequestException('Asking yourself for advice records nothing — name the member you want to hear from');
+        }
+        // the cycle is FROZEN here, counted under the decision lock the seal re-counts under.
+        const openCycle = await tx.decisionApprovalRevision.count({ where: { decisionId } });
+
+        const id = `dc-${ctx.commandId}`;
+        await tx.decisionConsultation.create({
+          data: {
+            id, projectId, decisionId,
+            requestedById: actor.actorId,
+            consulteeMembershipId: input.consulteeMembershipId,
+            // the DECISIONS-OWNED canonical audience, resolved by the owner in this transaction —
+            // never folded from `Membership` at read time (a cross-module read) and never carried
+            // only in an event payload (a rebuild replays none)
+            consulteeUserId: consultee.userId,
+            question: input.question,
+            openCycle,
+            requestedAt: new Date(),
+            sourceCommandId: ctx.commandId!,
+          },
+        });
+        await recordAudit(tx, { projectId, actor, action: 'decisions.requestConsultation', entity: 'Decision', entityId: decisionId });
+        const body = `${actor.actorName} asked you about ${d.title}`;
+        const ev = await emitEvent(tx, {
+          projectId, actor,
+          eventType: 'decision.consultation_requested',
+          entityType: 'Decision', entityId: decisionId,
+          payload: { consultationId: id, consulteeUserId: consultee.userId },
+          effectKey: 'decision.consultation_requested',
+          // TARGETED at the consultee. The ceiling in the catalog is every role a consultee can
+          // hold; this site narrows it to the ONE user, so the delivery reaches their currently
+          // valid links and no same-role device.
+          dispatch: { push: { body, roles: [consultee.role as 'contractor'], targetUserId: consultee.userId } },
+        });
+        return { resultRef: id, events: [ev] };
+      },
+    });
+
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /**
+   * Phase 6 unit 4c-ii (§A) — the NAMED consultee answers, once.
+   *
+   * Eligibility is re-judged at THIS moment, not inherited from the request: a request made while
+   * `pending` outlives the decision, and a stale answer would append immutable advice — and its
+   * push — against a row the consultee must no longer see. The same canonical lock order applies.
+   *
+   * And eligibility is not a STATUS test alone. `decisions.requestChange` moves an `approved`
+   * decision back to `change`, so a status-only guard would REVIVE a consultation the approval
+   * already closed: ask while `pending` → approve → request change → a late answer appends advice
+   * against a question that belonged to the PREVIOUS cycle. The consultation's frozen `openCycle`
+   * must still equal the decision's current cycle; asking again in the new cycle means a NEW
+   * consultation, the same shape as the register's own "a changed need is a NEW decision" rule.
+   */
+  async respondToConsultation(
+    projectId: string,
+    decisionId: string,
+    input: RespondToConsultationInput,
+    user: AuthUser,
+    idempotencyKey?: string,
+  ): Promise<SnapshotDto> {
+    await this.capabilities.assertEnabled(projectId, CONSULTATION_CAPABILITY);
+    const key = requireIdempotencyKey(idempotencyKey, 'decisions.respondToConsultation');
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({
+      decisionId, consultationId: input.consultationId, response: input.response,
+      recommendedOptionIndex: input.recommendedOptionIndex ?? null,
+    });
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'decisions.respondToConsultation', key, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
+
+    const outcome = await executeCommand(this.prisma, {
+      scope,
+      actor,
+      commandType: 'decisions.respondToConsultation',
+      idempotencyKey: key,
+      requestHash,
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+        if (!(await this.orgsParticipant.isProjectOperable(tx, projectId))) {
+          throw new ConflictException('This project is archived — no advice can be recorded against it');
+        }
+        const consultation = await tx.decisionConsultation.findFirst({
+          where: { id: input.consultationId, projectId, decisionId },
+          include: { response: { select: { id: true } } },
+        });
+        if (!consultation) throw new NotFoundException('That consultation does not exist on this decision');
+        if (consultation.response) {
+          throw new ConflictException('This consultation has already been answered — advice is recorded once and never edited');
+        }
+        // the consultee membership, RE-LOCKED and re-resolved: a consultee removed after their JWT
+        // was minted cannot append immutable advice.
+        const consultee = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, consultation.consulteeMembershipId);
+        if (!consultee) throw new ConflictException('You are no longer an active member of this project');
+        if (consultee.userId !== user.sub) {
+          throw new ForbiddenException('Only the member who was asked can answer this consultation');
+        }
+        const d = await lockDecisionForConsultation(tx, projectId, decisionId);
+        if (!d) throw new NotFoundException(`Decision ${decisionId} not found`);
+        assertConsultationEligible(d, decisionId);
+        const cycle = await tx.decisionApprovalRevision.count({ where: { decisionId } });
+        if (cycle !== consultation.openCycle) {
+          throw new ConflictException(
+            'This decision was approved since you were asked — that question is closed. A new question in the reopened decision is a new consultation.',
+          );
+        }
+
+        // an option INDEX is resolved to the option's id HERE, against this decision's own ordered
+        // options: an index is evidence bound to nothing and survives a reordering pointing
+        // elsewhere. The stored reference is same-decision by the delivered composite FK.
+        let recommendedOptionId: string | null = null;
+        if (input.recommendedOptionIndex !== undefined) {
+          const options = await tx.decisionOption.findMany({ where: { decisionId }, orderBy: { order: 'asc' }, select: { id: true } });
+          const chosen = options[input.recommendedOptionIndex];
+          if (!chosen) throw new BadRequestException('Invalid option index');
+          recommendedOptionId = chosen.id;
+        }
+
+        const id = `dcr-${ctx.commandId}`;
+        await tx.decisionConsultationResponse.create({
+          data: {
+            id, projectId, consultationId: consultation.id, decisionId,
+            respondedById: actor.actorId,
+            response: input.response,
+            recommendedOptionId,
+            respondedAt: new Date(),
+            sourceCommandId: ctx.commandId!,
+          },
+        });
+        await recordAudit(tx, { projectId, actor, action: 'decisions.respondToConsultation', entity: 'Decision', entityId: decisionId });
+        const body = `${actor.actorName} answered your question about ${d.title}`;
+        const ev = await emitEvent(tx, {
+          projectId, actor,
+          eventType: 'decision.consultation_responded',
+          entityType: 'Decision', entityId: decisionId,
+          payload: { consultationId: consultation.id, responseId: id },
+          effectKey: 'decision.consultation_responded',
+          // TARGETED at the person who asked. The requester may be an org-admin USER with no
+          // membership row on this project, which is exactly why the target is user-keyed.
+          dispatch: { push: { body, roles: ['pmc'], targetUserId: consultation.requestedById } },
+        });
+        return { resultRef: id, events: [ev] };
+      },
+    });
+
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }

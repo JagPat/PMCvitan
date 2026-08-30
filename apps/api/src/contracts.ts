@@ -543,6 +543,29 @@ export const updateDecisionDraftSchema = z
   .refine((v) => Object.values(v).some((x) => x !== undefined), { message: 'Provide at least one field to update' });
 export type UpdateDecisionDraftInput = z.infer<typeof updateDecisionDraftSchema>;
 
+/**
+ * Phase 6 unit 4c-ii (§A) — the consultation contracts.
+ *
+ * `question` and `response` are user-supplied EVIDENCE: `trim().min(1)` here, and the exact
+ * `btrim(x, E' \t\n\x0B\f\r') <> ''` CHECK at the database, so a whitespace-only body is
+ * refused at both layers and an append-only fact can never carry no evidence at all.
+ */
+export const requestConsultationSchema = z.object({
+  consulteeMembershipId: z.string().trim().min(1),
+  question: z.string().trim().min(1).max(2000),
+});
+export type RequestConsultationInput = z.infer<typeof requestConsultationSchema>;
+
+export const respondToConsultationSchema = z.object({
+  consultationId: z.string().trim().min(1),
+  response: z.string().trim().min(1).max(2000),
+  // an INDEX at the contract, resolved server-side to the option's id: the caller names a
+  // position in the options they were shown, and the server binds it to the row that position
+  // actually is, in this decision.
+  recommendedOptionIndex: z.number().int().min(0).max(3).optional(),
+});
+export type RespondToConsultationInput = z.infer<typeof respondToConsultationSchema>;
+
 // ── Location tree (zones → rooms → elements) ─────────────────────────────────
 export const NODE_KINDS = ['zone', 'room', 'element'] as const;
 export const createNodeSchema = z.object({

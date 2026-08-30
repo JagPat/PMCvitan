@@ -1,6 +1,6 @@
 import type { Prisma } from '@prisma/client';
-import { viewerIsDecider, type DeciderSlice } from '@vitan/shared';
-import type { DecisionDto } from '../snapshot/types';
+import { viewerIsConsultee, viewerIsDecider, type ConsultationAudienceEntry, type DeciderSlice } from '@vitan/shared';
+import type { ConsultationDto, DecisionDto } from '../snapshot/types';
 
 /**
  * Phase 2 Task 9 — the ONE canonical decision serializer.
@@ -17,7 +17,17 @@ import type { DecisionDto } from '../snapshot/types';
 /** The canonical row shape the serializer needs: a `Decision` with its ordered options and, when
  *  reopened, its single OPEN change request (Phase 1 Task 2). */
 export type DecisionRow = Prisma.DecisionGetPayload<{
-  include: { options: true; changeRequests: true; deciderMembership: { select: { userId: true } } };
+  include: {
+    options: true;
+    changeRequests: true;
+    deciderMembership: { select: { userId: true } };
+    // Phase 6 unit 4c-ii — the consultation thread and its answers, plus the approval register
+    // COUNT the cycle test compares against. Both are decisions-owned (`decisionConsultation`,
+    // `decisionConsultationResponse`, `decisionApprovalRevision` are in this module's
+    // `ownsModels`), so this is a same-module read, not a boundary crossing.
+    consultations: { include: { response: true } };
+    approvalRevisions: { select: { version: true } };
+  };
 }>;
 
 /** Serialize one canonical decision row into its snapshot `DecisionDto` (unfiltered). */
@@ -65,6 +75,11 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
           withdrawReason: d.withdrawReason ?? undefined,
         }
       : {}),
+    // Phase 6 unit 4c-ii — the thread, oldest first, with each option recommendation resolved to
+    // its stable KEY. The option id is a database identifier; the key is what every other surface
+    // already names an option by, and it survives a reordering an index would not.
+    consultations: serializeConsultations(d),
+    approvalCycle: d.approvalRevisions.length,
     options: d.options.map((o) => ({
       label: o.label,
       key: o.optionKey,
@@ -75,6 +90,35 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
       recommended: o.recommended,
     })),
   };
+}
+
+/** The consultation thread of one decision, oldest first. */
+function serializeConsultations(d: DecisionRow): ConsultationDto[] {
+  const optionKeyById = new Map(d.options.map((o) => [o.id, o.optionKey]));
+  return [...d.consultations]
+    .sort((a, b) => a.requestedAt.getTime() - b.requestedAt.getTime() || a.id.localeCompare(b.id))
+    .map((c) => ({
+      id: c.id,
+      consulteeMembershipId: c.consulteeMembershipId,
+      consulteeUserId: c.consulteeUserId,
+      requestedById: c.requestedById,
+      question: c.question,
+      openCycle: c.openCycle,
+      requestedAt: c.requestedAt.toISOString(),
+      ...(c.response
+        ? {
+            response: {
+              id: c.response.id,
+              respondedById: c.response.respondedById,
+              response: c.response.response,
+              ...(c.response.recommendedOptionId && optionKeyById.has(c.response.recommendedOptionId)
+                ? { recommendedOptionKey: optionKeyById.get(c.response.recommendedOptionId)! }
+                : {}),
+              respondedAt: c.response.respondedAt.toISOString(),
+            },
+          }
+        : {}),
+    }));
 }
 
 /**
@@ -91,7 +135,15 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
  *     visible to the project.
  */
 export function decisionVisibleToViewer(
-  d: { publishedAt: Date | null; authorId: string | null; status: string } & DeciderSlice,
+  d: {
+    publishedAt: Date | null;
+    authorId: string | null;
+    status: string;
+    /** Phase 6 unit 4c-ii — the standing consultees and the cycle their standing is judged in.
+     *  Optional so a caller holding a pre-4c stored DTO passes the same predicate. */
+    consultations?: readonly ConsultationAudienceEntry[];
+    approvalCycle?: number;
+  } & DeciderSlice,
   role: string,
   userId?: string,
 ): boolean {
@@ -100,6 +152,45 @@ export function decisionVisibleToViewer(
   // pending, contractor/engineer/consultant NEVER saw it, and withdrawal must not widen an
   // audience — including to the client, for whom nothing is awaited any more.
   if (d.status === 'withdrawn') return role === 'pmc';
-  if (d.status === 'pending') return role === 'pmc' || viewerIsDecider(d, role, userId);
+  // Phase 6 unit 4c-ii (§A) — the widening, and it is EXACTLY one way: a STANDING consultee sees
+  // the decision they were asked about, and its thread, while their consultation stands. It is an
+  // exception added BESIDE the decider arm, not a rewrite of it — a consultee gains no authority,
+  // only sight of the question they are being asked to inform. `withdrawn` is deliberately above
+  // this line: withdrawal never widens an audience, and a consultation there would leak the
+  // pmc-only title and reason 4a hides.
+  if (d.status === 'pending') {
+    return role === 'pmc' || viewerIsDecider(d, role, userId) || viewerIsConsultee(d.consultations, d.approvalCycle, userId);
+  }
   return true;
+}
+
+/**
+ * Phase 6 unit 4c-ii (§B P25c, review round 18) — HYDRATE a STORED projection DTO to the current
+ * shape at READ time.
+ *
+ * Widening `DECISION_INCLUDE` and the serializer does not rewrite JSON already stored in an
+ * ACTIVE, caught-up generation, and a `catalogVersion` bump does not trigger a rebuild. So a quiet
+ * project would keep answering `source: 'projection'` with pre-4c DTOs that lack the consultation
+ * collection entirely — breaking live/projection equality, and the new UI with it, until some
+ * unrelated decision event happened to refresh the row. The first consultation REQUEST emits an
+ * event that refreshes every row, which is exactly why the P25c probe alone does not catch this:
+ * the gap only exists for a project where nothing has happened yet.
+ *
+ * The rule is the delivered decider one, extended: a missing field means the pre-change default,
+ * never an absent field. `deciderKind` hydrates to `client` (the column backfill's own semantic);
+ * the consultation collection hydrates to EMPTY and the cycle to `0` — which is what a decision
+ * nobody was consulted on and nobody has approved actually is. The next applied event or rebuild
+ * re-serializes the row with the fields stored.
+ */
+export function hydrateStoredDecisionDto(raw: DecisionDto): DecisionDto {
+  const needsDecider = raw.deciderKind === undefined;
+  const needsConsultations = !Array.isArray(raw.consultations);
+  const needsCycle = typeof raw.approvalCycle !== 'number';
+  if (!needsDecider && !needsConsultations && !needsCycle) return raw;
+  return {
+    ...raw,
+    ...(needsDecider ? { deciderKind: 'client' as const } : {}),
+    ...(needsConsultations ? { consultations: [] } : {}),
+    ...(needsCycle ? { approvalCycle: 0 } : {}),
+  };
 }

@@ -36,6 +36,17 @@ const DECISION_INCLUDE = {
   // Phase 6 task 4b — the named holder's USER, resolved into the stored DTO by the ONE fold so
   // live == projection == rebuild carry the same decider designation (§A.3 round 3).
   deciderMembership: { select: { userId: true } },
+  // Phase 6 unit 4c-ii (§B P25c) — the consultation thread and the approval-register COUNT the
+  // audience predicate compares against. Both projection paths read ONE source: this include.
+  // The incremental fold upserts from the canonical rows it already loads, and `rebuildSeed`
+  // seeds from the same query — so a generation swap carries the audience with it.
+  //
+  // The audience is a canonical COLUMN, never an event payload. `rebuildSeed` replays no
+  // historical payloads, so an audience living only in a payload is dropped by every rebuild;
+  // and folding it from `Membership` here would be the cross-module read the module rules forbid
+  // — which is exactly why §A made `DecisionConsultation.consulteeUserId` decisions-owned.
+  consultations: { include: { response: true } },
+  approvalRevisions: { select: { version: true } },
 } satisfies Prisma.DecisionInclude;
 
 /** Upsert one decision's generation-scoped projection row from its canonical record. */
