@@ -592,6 +592,9 @@ model CommandExecution {
   @@unique([projectId, id])
   @@index([organizationId])
   @@index([projectId])
+
+  consultationRequests  DecisionConsultation[]         @relation("consultationRequests")
+  consultationResponses DecisionConsultationResponse[] @relation("consultationResponseCommands")
 }
 
 // A firm/consultant associated with a project — the client company, the main
@@ -880,6 +883,10 @@ model Membership {
   // FK-backed and project-scoped, never a bare global user id
   scheduleDependenciesCreated ActivityDependency[] @relation("ScheduleDependencyAuthor")
   scheduleDependenciesRevoked ActivityDependency[] @relation("ScheduleDependencyRevoker")
+
+  consultationsRequested DecisionConsultation[]         @relation("consultationsRequested")
+  consultationsReceived  DecisionConsultation[]         @relation("consultationsReceived")
+  consultationResponses  DecisionConsultationResponse[] @relation("consultationResponders")
 }
 
 // A browser Web Push subscription (Phase 8). Endpoint is unique per device;
@@ -1173,6 +1180,8 @@ model User {
   paymentsRecorded Payment[] @relation("paymentsRecorded")
   paymentsReversed PaymentReversal[] @relation("paymentsReversed")
   advancesPaid VendorAdvance[] @relation("advancesPaid")
+
+  consultationsAsConsultee DecisionConsultation[] @relation("consultationsAsConsultee")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -2076,6 +2085,8 @@ model Decision {
   @@index([nodeId])
   @@index([projectId, deciderMembershipId], map: "Decision_deciderMembershipId_idx")
   @@index([projectId, approvedDeciderMembershipId], map: "Decision_approvedDeciderMembershipId_idx")
+
+  consultations DecisionConsultation[]
 }
 
 // Migration-owned evidence for approvals that predate tuple-writing application code. Rows are
@@ -2160,11 +2171,20 @@ model DecisionOption {
   approvalRevisions DecisionApprovalRevision[]
 
   // the approval register (and requirement provenance behind it) pins an option by
+  // (decisionId, id) — the candidate key 4c-i's response FK binds to, so a recommendation can
+  // only ever name an option of its OWN decision. Additive and vacuously satisfiable: `id` is
+  // already unique on its own, so this index can reject no existing or future row and needs no
+  // writer change — the same shape as 4b's Membership (projectId, id) key. The tuple is
+  // deliberately project-less: DecisionOption has no projectId column, and the response's
+  // project↔decision pairing is already pinned by its consultation FK.
+  @@unique([decisionId, id])
   // (decisionId, optionKey) — the pair is a database-enforced candidate key
   @@unique([decisionId, optionKey])
   // declared so `migrate diff` sees the index the A1-i migration really creates; an undeclared
   // physical index makes every later migration generation want to drop it
   @@index([kindCode])
+
+  recommendedBy DecisionConsultationResponse[]
 }
 
 // Phase 6 task 4a (round 13) — the per-transaction OPTION TOUCH NOTE behind the withdrawal
@@ -2212,6 +2232,95 @@ model DecisionApprovalRevision {
   // the provenance FK target: version AND option bind together to one immutable approval fact
   // (explicit name — the generated one exceeds PostgreSQL's 63-char identifier limit)
   @@unique([projectId, decisionId, version, optionKey], map: "DecisionApprovalRevision_provenance_target_key")
+}
+
+/// Phase 6 unit 4c-i — an APPEND-ONLY request for advice on a published, still-open decision.
+///
+/// Deployed DARK by 4c-i: no caller, no contract, no route. Every seal below is installed and
+/// hostile-probed in the same migration, because a database invariant whose first probe waits for
+/// the behaviour unit can merge wrong and become immutable history before anything detects it.
+model DecisionConsultation {
+  id         String   @id
+  projectId  String
+  decision   Decision @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  decisionId String
+
+  /// The recorded requester (a user holding pmc decision authority), compared against the
+  /// source command's own actorId at INSERT and again at commit.
+  requestedBy   Membership @relation("consultationsRequested", fields: [projectId, requestedById], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
+  requestedById String
+
+  /// The consultee, by membership — a lifetime identity, since Membership_t4b_identity_frozen
+  /// refuses any change to userId or projectId.
+  consulteeMembership   Membership @relation("consultationsReceived", fields: [projectId, consulteeMembershipId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  consulteeMembershipId String
+
+  /// The DECISIONS-OWNED CANONICAL AUDIENCE. It cannot drift from Membership (identity is frozen),
+  /// but it CAN be forged by a raw writer, so the INSERT seal requires it to equal the user
+  /// phase6_membership_active_user resolves. It exists because rebuildSeed replays no historical
+  /// payloads: an audience living only in an event payload is lost by every rebuild, and folding
+  /// it from Membership would be a cross-module read.
+  consulteeUser   User   @relation("consultationsAsConsultee", fields: [consulteeUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  consulteeUserId String
+
+  /// The approval cycle this consultation belongs to: the count of DecisionApprovalRevision rows
+  /// at request time, frozen. A response is answerable only while the decision's current cycle
+  /// still equals it, so an approve-then-reopen cannot revive a closed thread.
+  openCycle Int
+
+  question    String
+  requestedAt DateTime
+
+  /// §C rule-ii provenance. NOT NULL, one-use, and bound to the command's RESULT at commit, so
+  /// the only writer that can append is the command path — which emits, which refreshes the
+  /// projection in the same transaction.
+  sourceCommand   CommandExecution @relation("consultationRequests", fields: [projectId, sourceCommandId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  sourceCommandId String
+
+  response DecisionConsultationResponse?
+
+  /// The candidate key the response binds to, carrying the decision so a response can never
+  /// straddle two decisions.
+  @@unique([projectId, id, decisionId], map: "DecisionConsultation_response_target_key")
+  @@unique([projectId, sourceCommandId], map: "DecisionConsultation_source_command_key")
+  @@index([projectId, decisionId])
+  @@index([projectId, consulteeMembershipId])
+}
+
+/// Phase 6 unit 4c-i — the APPEND-ONLY advice, at most ONE per consultation.
+model DecisionConsultationResponse {
+  id        String @id
+  projectId String
+
+  /// Bound through the consultation's own project+decision tuple, so the response inherits the
+  /// cross-project impossibility its parent already carries.
+  consultation   DecisionConsultation @relation(fields: [projectId, consultationId, decisionId], references: [projectId, id, decisionId], onDelete: NoAction, onUpdate: NoAction)
+  consultationId String               @unique
+  decisionId     String
+
+  /// The recorded responder. Without it the non-consultee seal has nothing to compare against
+  /// the named consultee, and a raw writer could forge advice presented forever as theirs.
+  respondedBy   Membership @relation("consultationResponders", fields: [projectId, respondedById], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
+  respondedById String
+
+  response String
+
+  /// A same-decision option REFERENCE, never a raw index: an index is evidence bound to nothing
+  /// and survives reordering pointing elsewhere.
+  recommendedOption   DecisionOption? @relation(fields: [decisionId, recommendedOptionId], references: [decisionId, id], onDelete: NoAction, onUpdate: NoAction)
+  recommendedOptionId String?
+
+  respondedAt DateTime
+
+  sourceCommand   CommandExecution @relation("consultationResponseCommands", fields: [projectId, sourceCommandId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  sourceCommandId String
+
+  /// Required by Prisma for a one-to-one defined over a composite FK. The REAL one-per-consultation
+  /// seal is the `@unique` on consultationId above, which is strictly stronger — this tuple adds
+  /// nothing a second response could slip past.
+  @@unique([projectId, consultationId, decisionId], map: "DecisionConsultationResponse_consultation_key")
+  @@unique([projectId, sourceCommandId], map: "DecisionConsultationResponse_source_command_key")
+  @@index([projectId, decisionId])
 }
 
 // Append-only lifecycle + audit log for a decision.
