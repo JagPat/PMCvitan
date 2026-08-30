@@ -67,6 +67,15 @@ statement-level TRUNCATE seal becomes one entry in `TRUNCATE_SEALS`, not an edit
 suites — and a missed one does not fail at the seal, it fails in the SETUP of every suite whose
 reset touches that table, which is how the required battery stops being runnable.
 
+The battery is the gate and it PASSED on `4bfa4cd7`: **99 files / 1,321 tests, 0 failures** over
+a freshly migrated database. It also earned its keep — the first head listed
+`T3CRepairAction_no_truncate` in the registry, and that table's DDL guard refuses ALTER TABLE
+(disabling a trigger IS an ALTER TABLE), so the helper's first statement raised P0001 on EVERY
+suite. Nothing sanctioned clears that register — not a Prisma model, no inbound FK so no CASCADE
+reaches it, and its only TRUNCATE is a hostile probe asserting rejection — so it is removed, with
+the reason recorded beside the registry against a future "completeness" fix that would re-break
+every reset.
+
 The #480 review lineage is preserved as history: the WORK lineage
 #470 → #471 → #473 → #474 → #476 → #477 → #478 → #479 → #480, each closing at the
 two-finding-bearing-head limit with the next carrying the unit forward. The STATUS correction
