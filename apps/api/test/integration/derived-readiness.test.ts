@@ -3,6 +3,7 @@ import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia } from './fixtures';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 1 Task 6 — readiness derived from explicit links, against live
  * PostgreSQL (written BEFORE the implementation):
@@ -54,7 +55,7 @@ describe('derived readiness + gate overrides (integration)', () => {
     await t.prisma.drawingRevision.deleteMany({ where: { drawing: { projectId } } });
     await t.prisma.drawing.deleteMany({ where: { projectId } });
     await t.prisma.activity.deleteMany({ where: { projectId } });
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision" CASCADE');
+    await sanctionedReset(t.prisma, ['LabourDemandSlice', 'LabourRequirementSpec', 'MaterialRequirementSpec', 'DecisionApprovalRevision'], { cascade: true });
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } });
     await wipeDecisionEvents(t.prisma, { decision: { projectId } });
     // one sanctioned bypass: options of published parents are frozen (4b widened freeze)

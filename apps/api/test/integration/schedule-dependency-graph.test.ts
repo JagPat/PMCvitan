@@ -11,6 +11,7 @@ import {
   verifyB1Seals,
 } from '../../src/activities/b1/b1-seals';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Schedule unit B1 — the ACYCLIC ACTIVITY DEPENDENCY GRAPH, proven against live PostgreSQL.
  *
@@ -86,13 +87,7 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
     // test reset uses the same sanctioned destructive contract the seed does: disable the seal BY
     // NAME for exactly this wipe, inside ONE transaction, so a wipe that throws rolls the DISABLE
     // back with it and no failure path can leave the seal off for the suites that follow.
-    await t.prisma.$transaction([
-      t.prisma.$executeRawUnsafe(
-        `ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_no_truncate"`),
-      t.prisma.$executeRawUnsafe(`TRUNCATE TABLE "ActivityDependency"`),
-      t.prisma.$executeRawUnsafe(
-        `ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_no_truncate"`),
-    ]);
+    await sanctionedReset(t.prisma, ['ActivityDependency']);
     await t.prisma.activity.deleteMany({ where: { id: { startsWith: `act-b1-` } } });
   };
   afterEach(wipe);

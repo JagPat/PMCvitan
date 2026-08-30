@@ -7,6 +7,7 @@ import { PhasesService } from '../../src/activities/phases.service';
 import type { AuthUser } from '../../src/common/auth';
 import type { CreateActivityInput } from '../../src/contracts';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 Task 10 (Module 4) — the activity + phase COMMANDS are idempotent under the Task-5
  * CommandExecution ledger. A retried command (network retry / offline write-ahead replay / double-tap)
@@ -38,7 +39,7 @@ describe('Phase 2 Task 10 (Module 4) — activity/phase commands are idempotent 
   });
   afterEach(async () => {
     const pids = { startsWith: 'it-actidem-' };
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "ActivitiesProjection" CASCADE');
+    await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'ActivitiesProjection'], { cascade: true });
     await t.prisma.commandExecution.deleteMany({ where: { projectId: pids } });
     await t.prisma.gateOverride.deleteMany({ where: { projectId: pids } });
     await t.prisma.inspectionItem.deleteMany({ where: { inspection: { projectId: pids } } });

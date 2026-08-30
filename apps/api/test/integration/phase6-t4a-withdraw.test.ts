@@ -20,6 +20,7 @@ import { pendingDecisionNotice, withdrawnDecisionNotice, isWithdrawnDecisionNoti
 import { deriveDecisionReading } from '@vitan/shared';
 import type { AuthUser } from '../../src/common/auth';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 6 unit 4a — `decisions.withdraw` (plan §A), proven live against PostgreSQL through the
  * REAL application. The owner's live defect: a wrongly-published decision had no honest exit.
@@ -97,9 +98,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
   });
 
   async function cleanup(): Promise<void> {
-    await t.prisma.$executeRawUnsafe(
-      'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DecisionApprovalRevision", "CommandExecution" CASCADE',
-    );
+    await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'DecisionProjection', 'DecisionApprovalRevision', 'CommandExecution'], { cascade: true });
     await t.prisma.notification.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
     await t.prisma.auditLog.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
     await t.prisma.activity.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });

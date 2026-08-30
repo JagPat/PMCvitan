@@ -7,6 +7,7 @@ import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.se
 import { registerConsumer, unregisterConsumer, syncConsumerCatalog, type OutboxConsumer, type ProjectionTarget } from '../../src/platform/outbox/registry';
 import type { Actor } from '../../src/common/actor';
 
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
  * Phase 2 Task 9 Step 1 — the projection base: generation-swap rebuild + the FINAL ACTIVATION
  * BARRIER, proven against live PostgreSQL.
@@ -88,14 +89,14 @@ describe('Phase 2 Task 9 — projection generations + activation barrier (live P
   afterAll(async () => {
     unregisterConsumer(PROJ);
     unregisterConsumer(SEEDED);
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration" CASCADE');
+    await sanctionedReset(t?.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration'], { cascade: true });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
     rebuilder.barrierHook = null;
     seedThrough = -1n;
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration" CASCADE');
+    await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration'], { cascade: true });
     await t.prisma.auditLog.deleteMany({ where: { action: { in: [PROJ, SEEDED] } } });
     await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-pg-' } } });
   });
