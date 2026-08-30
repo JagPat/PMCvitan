@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: d86cfb60
-open_pr: none
+open_pr: 491
 next_task: phase-6-task-4c
 blocking_directive: phase-6-4c-plan-independent-clearance
 updated: 2026-08-30
@@ -39,6 +39,9 @@ not advanced to the unreviewed plan merge or used to turn #489's reviewed refact
 clearance.
 
 ### Directive `phase-6-4c-plan-independent-clearance`
+
+Clearance step 1 is open as draft PR #491. It removes only the unreviewed plan; review or
+merge of #491 does not clear this directive and cannot authorize 4c-i.
 
 This is executable correction work, not a request for human approval. Work it in two ordered
 docs-only PRs from current `main`:
