@@ -84,10 +84,13 @@ async function main(): Promise<void> {
     'RequisitionLine', 'Requisition', 'ProjectPartyVendorSource', 'ProjectPartyCompanySource',
     'ProjectParty', 'ProjectVendor', 'Vendor', 'ApprovedSubstitution', 'LabourDemandSlice',
     'LabourRequirementSpec', 'MaterialRequirementSpec', 'ActivityRequirement',
-    'ActivityRequirementRoot', 'DecisionApprovalRevision', 'ActivityDependency'
+    'ActivityRequirementRoot', 'DecisionApprovalRevision', 'ActivityDependency',
+    // Phase 6 unit 4c-iii — the consultation preservation seal refuses a direct DELETE of a
+    // `consultation` row, so the wipe moves from `deleteMany()` to the sanctioned reset, which
+    // disables that table's TRUNCATE seal BY NAME inside this same guarded transaction.
+    'ProjectCapability'
   ] as const;
   await sanctionedReset(prisma, RESET_TABLES);
-  await prisma.projectCapability.deleteMany();
   await prisma.gateOverride.deleteMany();
   await prisma.drawingRecipient.deleteMany();
   await prisma.passwordCredentialChallenge.deleteMany();
