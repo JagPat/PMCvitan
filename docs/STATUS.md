@@ -16,14 +16,22 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4c-ii
 reviewed_merge: d4e2ddf5
-open_pr: 497
+open_pr: 498
 next_task: phase-6-task-4c-iii
 blocking_directive: none
 updated: 2026-08-31
 ```
 
-**UNIT 4c-ii IS OPEN AS PR #497** (branch `claude/phase6-4c-ii-consultation-behaviour`, `Replaces: none`). It is scheduled from `main` `1d6c4ff1` per the Board's 2026-08-31 03:45
-IST direction on #495.** The 30 August sequence authorized 4c-0 through 4c-v, so this unit waits
+**UNIT 4c-ii IS OPEN AS PR #498** (branch `claude/phase6-4c-ii-replacement`, `Replaces: #497`),
+scheduled from `main` `1d6c4ff1`. PR #497 carried this same unit, reached the two-finding-bearing-
+head review-round limit and is CLOSED UNMERGED carrying `review-replacement-required`; #498 is the
+gate-mandated close-and-replace, authorized by the Board's A/B rubric (2026-08-28 §3) Option 1 on
+2026-08-31. It carries the whole unit AS ALREADY FOLDED — every correction round plus the round-30
+work on `196eeb92` — so no review budget is waived and no finding is treated as settled by the
+replacement: the unit re-enters review from a fresh head with its history intact. The earlier
+"do not open a third 4c-ii PR" governed the PARALLEL DUPLICATES (#495, #496), which were closed as
+superseded while #497 remained the sole open work; it does not govern this replacement, and the
+Board said so when authorizing it.** The 30 August sequence authorized 4c-0 through 4c-v, so this unit waits
 on no fresh GO and none is to be asked for. Contractor-capture units 1–6 stay Board-gated — a
 SEPARATE gate the 4c sequence does not lift.
 
