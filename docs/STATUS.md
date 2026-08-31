@@ -13,14 +13,46 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: merged
-work_item: none
-reviewed_merge: 5fcc2a58
-open_pr: none
-next_task: phase-6-task-4c-iii
+task_state: in_progress
+work_item: phase-6-task-4c-iii
+reviewed_merge: 2cec61f0
+open_pr: 503
+next_task: phase-6-task-4c-iv
 blocking_directive: none
 updated: 2026-08-31
 ```
+
+**UNIT 4c-iii IS OPEN AS PR #503** (branch `claude/phase6-4c-iii-enablement`), scheduled from
+`main` `2cec61f` — the drain-directive clearance, which is the prerequisite §D attaches to this
+unit and the reason it could not open sooner.
+
+**4c-iii IS THE ENABLEMENT TRANSITION**: ONE migration doing three inseparable things in ONE
+transaction, in the order §D mandates — the reservation gives way to a PRESERVATION seal (round
+24), an `AFTER INSERT` trigger on `Project` covers every future create, and THEN the backfill
+covers every existing project (round 21: the trigger takes ACCESS EXCLUSIVE on `Project` inside the
+transaction, so a concurrent create is covered by one mechanism or the other; backfilling first
+would leave a project visible to neither). The migration CHECKS its own claim and refuses to commit
+if any project still lacks the row. Behaviour does not change: the gate reads stay in place and
+authoritative, they simply always find a row — which is what keeps this unit separately revertible
+and 4c-iv a pure service change.
+
+**ONE DELIBERATE DEVIATION from §D, argued in the packet rather than taken silently.** §D says the
+seal rejects every way PostgreSQL offers to remove the row. Taken literally, combined with this
+unit's own backfill and the delivered `ON DELETE RESTRICT`, that makes a `Project` row undeletable
+FOREVER — inert in production (nothing in `src/` deletes a project; they are archived) but not in
+the repository, where 36 test files plus the shared fixture teardown delete the projects they
+create, while §D declares this unit migration-only. So the FK becomes `ON DELETE CASCADE` and the
+seal is SCOPED TO A LIVE PROJECT: every removal that could produce the split brain the seal exists
+for is refused, and the project's own deletion — which has no such state to protect — is permitted.
+The discriminator is exact rather than heuristic, and probed from both sides.
+
+THREE delivered probes asserting a GATE-OFF project are REWRITTEN, not deleted: this unit abolishes
+that state, and a probe left asserting it would be testing something the product no longer has.
+
+**4c is NOT complete until 4c-v merges.** `next_task` names 4c-iv (the gate-read removal, a pure
+service unit carrying NO migration — round 25), after which 4c-v retires the preservation seal
+behind its own operator attestation. Contractor-capture units 1–6 stay under their separate
+per-unit Board gate.
 
 **UNIT 4c-ii IS MERGED (PR #498 at `main` `5fcc2a58`) WITH A FRESH INDEPENDENT CODEX +1 ON THE
 EXACT REVIEWED HEAD `7c4318e8`** — first review attempt on that head, no findings, and the
