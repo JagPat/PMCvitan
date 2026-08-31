@@ -13,12 +13,12 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: correction_required
+task_state: merged
 work_item: none
 reviewed_merge: 5fcc2a58
 open_pr: none
 next_task: phase-6-task-4c-iii
-blocking_directive: phase-6-4c-previous-release-drained
+blocking_directive: none
 updated: 2026-08-31
 ```
 
@@ -28,16 +28,19 @@ trusted exact-head gate completed it directly. `open_pr` goes to `none` and `rev
 advances to the 4c-ii merge, so the hourly shepherd stops seeing `main` record a PR that is not
 live.
 
-The Now block takes the DIRECTIVE LANDING SHAPE (`task_state: correction_required`,
-`work_item: none`, `open_pr: none`, a named `blocking_directive`), NOT the terminal handoff shape,
-and that is the plan's own instruction rather than a choice made here. §D says it in terms:
+The 4c-ii landing itself took the DIRECTIVE LANDING SHAPE (`task_state: correction_required`,
+`work_item: none`, `open_pr: none`, a named `blocking_directive`) rather than the terminal handoff
+shape, and that was the plan's own instruction rather than a choice made there. §D says it in
+terms:
 "4c-ii's own STATUS fold SETS `blocking_directive` naming the rollout prerequisite — the DRAIN
 CONFIRMATION ONLY … with `task_state: correction_required`", and it is a BOARD DECISION recorded
-as not re-litigable (2026-08-29, on PR #480). `assessRunnerState` therefore resolves to
-`directive:phase-6-4c-previous-release-drained` and CANNOT start 4c-iii or 4c-iv, nor hand off to
-4d, while the directive stands. `isDirectiveLandingShape` recognizes this landing, so the shepherd
-does not read its own `open_pr: none` as drift and does not instruct the loop to point `open_pr` at
-the landing PR itself (the #303 trap).
+as not re-litigable (2026-08-29, on PR #480). `assessRunnerState` therefore resolved to
+`directive:phase-6-4c-previous-release-drained` and could not start 4c-iii or 4c-iv, nor hand off to
+4d, while the directive stood — **it has since been CLEARED by attestation (see its record above),
+so the Now block is now the terminal handoff shape and `next_task` is executable.**
+`isDirectiveLandingShape` recognized that landing, so the shepherd did not read its own
+`open_pr: none` as drift and did not instruct the loop to point `open_pr` at the landing PR itself
+(the #303 trap).
 
 **A first draft of this landing used the terminal handoff shape and was WRONG**, caught by Codex
 on head `4058c3f6`: `task_state: merged` with `blocking_directive: none` makes 4c-iii immediately
@@ -50,18 +53,28 @@ recognizes no family and falls through to the unguarded targeted send, bypassing
 predicate. The outbox has ONE ordered delivery per consumer, so a claim by the wrong version is not
 retried by the right one. The gate has to be fail-closed BEFORE 4c-iii can start, not after.
 
-`task_state: correction_required` is not a claim that 4c-ii is defective — 4c-ii merged clean. It
-is the state from which STATUS schedules a directive, and the directive is the rollout prerequisite
-the plan attaches to this landing. THREE plan units remain after 4c-ii (4c-iii, 4c-iv, 4c-v);
-`next_task` records that 4c-iii is the ordering, and the directive is what decides WHEN it may
-open. The 30 August Board sequence authorized 4c-0 through 4c-v, so no unit of 4c waits on a fresh
+`task_state: correction_required` was not a claim that 4c-ii is defective — 4c-ii merged clean. It
+is the state from which STATUS schedules a directive, and the directive was the rollout prerequisite
+the plan attaches to that landing. THREE plan units remain after 4c-ii (4c-iii, 4c-iv, 4c-v);
+`next_task` records that 4c-iii is the ordering, and the directive decided WHEN it could open. The 30 August Board sequence authorized 4c-0 through 4c-v, so no unit of 4c waits on a fresh
 GO — this directive is a ROLLOUT ordering prerequisite, not a scope authorization, and it is
 cleared by a STATUS commit rather than by asking for permission to proceed. Contractor-capture
 units 1–6 stay Board-gated — a SEPARATE gate the 4c sequence does not lift.
 
-### Directive `phase-6-4c-previous-release-drained`
+### Directive `phase-6-4c-previous-release-drained` — **CLEARED 2026-08-31**
 
-**What it attests, and why a human declares it.** One fact, and only one: every previous-release
+**THE ATTESTATION.** JagPat declared, in session on 2026-08-31, that every previous-release serving
+process has drained: no worker predating 4c-ii can still claim a delivery. THIS COMMIT IS THAT
+DECLARATION — the plan requires the clearance to be a STATUS commit precisely so the fact has an
+attributable, reviewable record rather than living in a chat log. `blocking_directive` therefore
+goes to `none` and the Now block returns to the terminal handoff shape, with `next_task` naming
+4c-iii as the executable next step.
+
+Nothing here is inferred. No code in this repository observed the drain and none was asked to; the
+declaration is the evidence, and its author is on the record. The directive's own terms are kept
+below unchanged, because a discharged gate is only meaningful if what it demanded is still legible.
+
+**What it attested, and why a human declared it.** One fact, and only one: every previous-release
 serving process has drained — no worker predating 4c-ii can still claim a delivery. No code in this
 repository can observe that. `OutboxConsumerCatalog.catalogVersion` is a per-CONSUMER contract
 version and `syncConsumerCatalog` upserts one global row per consumer name; it cannot enumerate
@@ -76,18 +89,19 @@ the loop would wait forever, or an operator would mutate production outside a re
 is the exact thing putting the backfill in a reviewed unit prevents. Everything mechanical belongs
 to 4c-iii. This directive carries the one fact code cannot see.
 
-**How to clear it.** Confirm the fleet is drained, then land a STATUS commit setting
-`blocking_directive: none` and `task_state` to the state the next unit opens from. That commit is
-the attributable, reviewable record of WHO declared the fleet drained — the same shape every other
-blocking directive in this loop uses. Nothing else clears it: not a Board call, not the handoff
-watchdog, not the drift shepherd, not a clean signal on any PR, and not a review finding asking for
-its removal.
+**How it was cleared, and what could not have cleared it.** By the one route its terms allow:
+confirm the fleet is drained, then land a STATUS commit setting `blocking_directive: none` and
+`task_state` to the state the next unit opens from — this commit. Nothing else would have done it,
+and nothing else was used: not a Board call, not the handoff watchdog, not the drift shepherd, not a
+clean signal on any PR, and not a review finding asking for its removal.
 
-**What it blocks while it stands.** `assessRunnerState` returns `directive:` ahead of every other
-work source, so 4c-iii, 4c-iv and the §E handoff to 4d are all unreachable. The runner is not
-stranded: it continues every already-authorized duty — shepherding open PRs, fix-forward
-corrections, CI and the gate battery, and the Maintenance queue. 4c is not complete until 4c-v
-merges, so no unit's merge — 4c-ii's included — may be treated as the end of the task.
+**What it blocked while it stood.** `assessRunnerState` returned `directive:` ahead of every other
+work source, so 4c-iii, 4c-iv and the §E handoff to 4d were all unreachable, and STATUS's own
+definition of the Maintenance queue ("whenever no phase task, no correction directive, and no open
+PR is active") excluded that queue too. It stood from the 4c-ii landing (#500, `main` `8b23e19`)
+until this commit. 4c is STILL not complete until 4c-v merges: no unit's merge — 4c-ii's
+included — may be treated as the end of the task, and this clearance discharges the ROLLOUT
+prerequisite only, not the task.
 
 **How #498 came to be, kept on the record rather than tidied away.** PR #497 carried this same
 unit, reached the two-finding-bearing-head review-round limit and is CLOSED UNMERGED carrying
