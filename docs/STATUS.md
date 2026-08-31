@@ -16,13 +16,13 @@ task: 4
 task_state: in_progress
 work_item: projection-generation-version
 reviewed_merge: d4e2ddf5
-open_pr: none
+open_pr: 499
 next_task: phase-6-task-4c-ii
 blocking_directive: none
 updated: 2026-08-31
 ```
 
-**THE OPEN UNIT IS THE PROJECTION GENERATION VERSION FENCE** (branch
+**THE OPEN UNIT IS THE PROJECTION GENERATION VERSION FENCE — PR #499** (branch
 `claude/phase6-generation-version-fence`, from `main` `1d6c4ff1`, `Replaces: #497`). It carries
 ONLY the two Codex findings that PR #497 never resolved, and none of that unit's consultation work.
 
