@@ -186,12 +186,18 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
     const stream = await t.prisma.projectEventStream.findUniqueOrThrow({ where: { projectId }, select: { nextPosition: true } });
     const gen = await t.prisma.projectionGeneration.create({
       // Phase 6 unit 4c-ii — the generation is STAMPED with the catalog version it was built at,
-      // and this fixture is simulating a generation the PREVIOUS release built, so it says so
-      // EXPLICITLY: version 1. The column is NOT NULL with no default precisely so a binary that
-      // does not know it exists cannot create a generation at all; writing the value here is the
-      // fixture making its own claim about which release it is standing in for, rather than
-      // silently inheriting one.
-      data: { consumer: DECISIONS_PROJECTION, projectId, generation: 1, status: 'active', cursorStatus: 'live', appliedPosition: stream.nextPosition - 1n, activatedAt: new Date(), catalogVersion: 1 },
+      // written EXPLICITLY rather than left to the stamp trigger so the fixture states its own
+      // claim rather than inheriting one.
+      //
+      // The value is the CURRENT version (2 — pinned by the catalog probe in
+      // `phase6-t4c-ii-consultation.test.ts`, which fails first if it is ever bumped again), and
+      // that is deliberate. What this probe is about is a COMPLETENESS defect — a caught-up
+      // generation holding a non-empty SUBSET of the register — which is orthogonal to which
+      // serializer wrote the rows, and the rows here are built by the CURRENT one. Stamping it 1
+      // would make the round-30 serve-side version fence refuse it before the subset was ever
+      // reached, quietly converting this into a test of a different thing. The version-stale case
+      // has its own probe.
+      data: { consumer: DECISIONS_PROJECTION, projectId, generation: 1, status: 'active', cursorStatus: 'live', appliedPosition: stream.nextPosition - 1n, activatedAt: new Date(), catalogVersion: 2 },
     });
     for (const id of storedIds) {
       const d = await t.prisma.decision.findUniqueOrThrow({

@@ -30,16 +30,56 @@
 --    is the documented repair for a lagging generation.
 --
 --    A check added to the NEW CLI cannot make the PREVIOUS binary refuse — that binary contains
---    neither the check nor any sync call. So the fence goes at the DATABASE boundary every binary
---    must cross: a NOT NULL column with NO DEFAULT that the new code supplies and the previous
---    release, which does not know it exists, cannot. Its INSERT is rejected by PostgreSQL before
---    any generation is built or swapped.
+--    neither the check nor any sync call. So every generation is STAMPED with the catalog version
+--    of the code that built it, and the new release REFUSES TO SERVE a generation stamped below
+--    its own compiled version (`readServableGeneration`), falling back to the canonical live read
+--    exactly as it already does for a lagging or blocked one. The old CLI can still build and
+--    activate a v1 `decisions.inbox` generation; what it cannot do is get that thread-less
+--    register SERVED, which is the harm.
 --
---    In THREE steps, not one: `ADD COLUMN ... NOT NULL` with no default fails immediately on any
---    deployment that already holds a `ProjectionGeneration` row, because every existing row would
---    take NULL. The column is added NULLABLE, existing generations are backfilled to the version
---    they were ACTUALLY built at, and only then is NOT NULL applied — still with NO DEFAULT,
---    which is what preserves the fence.
+--    WHY NOT "NOT NULL WITH NO DEFAULT" (review round 30, correcting round 29's own remedy). That
+--    was the first shape here, and it is too blunt in two ways a write-side fence cannot avoid:
+--
+--      (a) It breaks an ALREADY-RUNNING previous-release relay, not just a newly started binary.
+--          `migrate.sh` applies this file BEFORE the old processes stop — that ordering is what
+--          section 1 above depends on — and during that window the old `lockActiveGeneration`
+--          lazily bootstraps a generation for any (consumer, project) that has none yet, with an
+--          INSERT naming no version. A no-default NOT NULL rejects it and STALLS that ordered
+--          projection while the previous release is still supposed to be serving. The backfill
+--          protects only generations that already exist; a project or consumer that has not yet
+--          materialized one is exposed.
+--
+--      (b) It breaks the DOCUMENTED, deliberately rerunnable 4a repair. The merged
+--          `20270810000000_phase6_t4a_withdraw` inserts a replacement `ProjectionGeneration` with
+--          an explicit column list that cannot name a column added later, so the operator replay
+--          `docs/RUNBOOK.md` prescribes would fail against the fence instead of repairing the
+--          projection. That migration is merged history and is not edited to accommodate this one.
+--
+--    So the column is NOT NULL and an un-versioned INSERT is STAMPED by a BEFORE INSERT trigger
+--    rather than rejected. A plain `DEFAULT 1` would have been enough for (a), but not for (b): the
+--    4a repair's replacement generation COPIES its rows from the generation it retires, so its true
+--    version is that generation's, and stamping it `1` would leave a correctly-repaired projection
+--    permanently unservable — turning a cleared, targeted operator repair into "repair, then run a
+--    full rebuild as well". So the trigger inherits in exactly the case where inheriting is true:
+--
+--      an INSERT that names no version, in a transaction that has ALREADY RETIRED a sibling
+--      generation of the same (consumer, projectId), takes that sibling's version; every other
+--      un-versioned INSERT takes 1.
+--
+--    That is structural rather than a guess about intent. `ProjectionRebuilder` — in this release
+--    and the previous one, since the swap logic predates this unit — INSERTS its new generation in
+--    ONE transaction and retires the incumbent in a LATER one, so a rebuild (old CLI included)
+--    never satisfies the same-transaction condition and always stamps 1. The relay's lazy bootstrap
+--    retires nothing and stamps 1. The 4a repair retires-then-inserts in a single transaction and
+--    is the only writer that inherits. `xmin` is the right instrument for precisely this claim —
+--    "written by the transaction that retired the predecessor" — unlike round 28's rejected use of
+--    it, which asked it to prove a transition it cannot see.
+--
+--    In THREE steps, not one: `ADD COLUMN ... NOT NULL` fails immediately on any deployment that
+--    already holds a `ProjectionGeneration` row, because every existing row would take NULL. The
+--    column is added NULLABLE, existing generations are backfilled to the version they were
+--    ACTUALLY built at, and only then is NOT NULL applied — the trigger, not a default, is what
+--    keeps un-versioned writers working, so no row can silently acquire a version by omission.
 --
 -- The APPROVAL REGISTER's provenance seal is deliberately NOT here: it lives in this unit's
 -- companion migration `20271115000000_phase6_t4c_ii_approval_provenance`, as a DEFERRABLE
@@ -68,13 +108,45 @@ UPDATE "ProjectionGeneration" g
        )
  WHERE g."catalogVersion" IS NULL;
 
--- ── 2c. NOT NULL — and NO DEFAULT, which is the fence itself ────────────────────────────────────
+-- ── 2c. the STAMP for writers that do not know the column exists ───────────────────────────────
+-- Installed BEFORE `SET NOT NULL` so an un-versioned writer is never briefly rejected while this
+-- migration is mid-flight, and AFTER the 2b backfill so it never touches an existing row.
+CREATE OR REPLACE FUNCTION phase6_t4c_stamp_generation_version() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+DECLARE inherited INTEGER;
+BEGIN
+  IF NEW."catalogVersion" IS NOT NULL THEN
+    RETURN NEW; -- the running code stamped it explicitly; never second-guess that
+  END IF;
+  -- The 4a repair: this transaction has already retired the generation whose ROWS this one copies,
+  -- so that generation's version is this one's. `xmin` is what makes it the SAME transaction and
+  -- not merely some earlier retirement — a rebuild retires in a later transaction than it inserts,
+  -- so the previous release's CLI cannot reach this branch and always falls through to 1.
+  SELECT s."catalogVersion" INTO inherited
+    FROM "ProjectionGeneration" s
+   WHERE s."consumer" = NEW."consumer" AND s."projectId" = NEW."projectId"
+     AND s."status" = 'retired'
+     AND s.xmin::text::bigint = pg_current_xact_id()::text::bigint
+   ORDER BY s."generation" DESC
+   LIMIT 1;
+  -- Otherwise 1, which is the TRUTH about such a row: it was written by something that does not
+  -- know this unit's serializer exists, so version 1 is the only version its contents can have.
+  NEW."catalogVersion" := COALESCE(inherited, 1);
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "ProjectionGeneration_t4c_stamp_version" ON "ProjectionGeneration";
+CREATE TRIGGER "ProjectionGeneration_t4c_stamp_version"
+  BEFORE INSERT ON "ProjectionGeneration"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4c_stamp_generation_version();
+
+-- ── 2d. NOT NULL — satisfied by the stamp above, which runs first ──────────────────────────────
 DO $$ BEGIN
   ALTER TABLE "ProjectionGeneration" ALTER COLUMN "catalogVersion" SET NOT NULL;
 EXCEPTION WHEN others THEN
   -- already NOT NULL on a re-run: `SET NOT NULL` is idempotent in PostgreSQL, so reaching this
   -- handler means a row is still NULL — which can only happen if 2b did not run. Re-raise: a
-  -- silently skipped fence is worse than a failed deploy.
+  -- silently skipped stamp is worse than a failed deploy.
   RAISE;
 END $$;
 

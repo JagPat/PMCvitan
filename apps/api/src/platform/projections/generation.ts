@@ -47,9 +47,10 @@ export async function lockActiveGeneration(
   try {
     const created = await tx.projectionGeneration.create({
       // Phase 6 unit 4c-ii (§D) — every generation is STAMPED with the catalog version of the
-      // code that built it. The column is NOT NULL with no default, so this is not a convenience:
-      // a binary that does not know the column exists cannot create a generation at all, which is
-      // exactly the fence the standalone rebuild CLI otherwise walks straight past.
+      // code that built it, so `readServableGeneration` can refuse one whose contents predate this
+      // serializer. Written EXPLICITLY even though the column defaults to 1: the default exists
+      // only for writers that do not know the column (the previous release's bootstrap, the 4a
+      // repair replay), and a new generation silently taking it would understate its own version.
       data: { consumer, projectId, generation, status: 'active', appliedPosition: null, catalogVersion: catalogVersionFor(consumer) },
       select: { id: true, generation: true, appliedPosition: true },
     });
@@ -92,11 +93,28 @@ export async function readServableGeneration(
 ): Promise<ServableGenerationRow | null> {
   const gen = await client.projectionGeneration.findFirst({
     where: { consumer, projectId, status: 'active' },
-    select: { id: true, generation: true, appliedPosition: true, cursorStatus: true },
+    select: { id: true, generation: true, appliedPosition: true, cursorStatus: true, catalogVersion: true },
   });
   if (!gen) return null; // no active generation — never rebuilt / no deliveries yet
   if (gen.cursorStatus !== 'live') return null; // blocked on a dead earlier position — stale
   if (gen.appliedPosition === null) return null; // bootstrapped only, nothing applied
+  // Phase 6 unit 4c-ii (§D, review round 30) — CONTENTS OLDER THAN THIS SERIALIZER.
+  //
+  // A generation stamped below the running code's compiled `catalogVersion` was materialized by an
+  // older serializer, so its stored DTOs are not what this release would produce. The concrete
+  // hazard is the previous release's standalone `projection-rebuild` CLI: it registers consumers
+  // directly, never calls `syncConsumerCatalog`, and would rebuild `decisions.inbox` with the v1
+  // serializer and ACTIVATE it — a register with no consultation thread and no widened audience,
+  // swapped in by a SUPPORTED command, at exactly the moment something already looks wrong.
+  //
+  // A write-side fence cannot close this without collateral: the same INSERT shape is used by an
+  // already-running previous-release relay's lazy bootstrap during the documented
+  // migrate-before-restart window, and by the rerunnable 4a repair. Refusing here instead costs
+  // nothing — it is the SAME answer this function already gives a lagging or blocked generation,
+  // and every caller falls back to the canonical live read, which is always current. The repair is
+  // the ordinary `projection:rebuild` the cutover already runs, which stamps the fresh generation
+  // at the current version.
+  if (gen.catalogVersion < catalogVersionFor(consumer)) return null;
   const stream = await client.projectEventStream.findUnique({ where: { projectId }, select: { nextPosition: true } });
   const head = stream ? stream.nextPosition - 1n : -1n;
   if (gen.appliedPosition < head) return null; // checkpoint lags the committed stream — not current

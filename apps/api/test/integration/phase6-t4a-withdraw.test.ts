@@ -51,31 +51,22 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
  */
 describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
   /**
-   * Replay a HISTORICAL migration file against the CURRENT schema.
+   * Replay a HISTORICAL migration file against the CURRENT schema — exactly as the operator does.
    *
-   * Phase 6 unit 4c-ii made `ProjectionGeneration.catalogVersion` NOT NULL with NO DEFAULT — the
-   * fence that stops a previous release's standalone rebuild CLI creating a generation at all.
-   * The 4a migration predates that column and inserts a generation without it, which is CORRECT
-   * in production (migrations run in order, so 4a always runs while the column does not yet
-   * exist) but fails on the artificial replay these probes perform.
+   * NO accommodation of any kind, and that is the point (review round 30, finding P2). An earlier
+   * version of this helper installed a temporary `catalogVersion` default around the replay,
+   * because unit 4c-ii had made that column NOT NULL with NO DEFAULT and the 4a repair inserts a
+   * generation with an explicit column list that cannot name a column added later. That helper was
+   * MASKING a real defect: the operator running the documented, deliberately rerunnable 4a repair
+   * has no such accommodation, so for them the replay would simply fail.
    *
-   * The accommodation is therefore FIXTURE-LOCAL and temporary: a default for the one replay,
-   * dropped immediately afterwards in a `finally`, so the SHIPPED schema keeps the fence and only
-   * this out-of-contract replay is made possible. Weakening the column with a real default would
-   * hand the previous release exactly the value it must not be able to supply; editing the
-   * deployed 4a migration is not an option either. The value is 1 — the catalog version the
-   * generations that migration writes were actually built at.
+   * The fence was moved instead — the column now carries `DEFAULT 1` and the refusal happens at
+   * the serve gate (`readServableGeneration`) — so this replay works natively, and this helper
+   * being a bare `psql -f` is the evidence that it does.
    */
   const replayHistoricalMigration = async (dbUrl: string, migrationPath: string, env?: NodeJS.ProcessEnv): Promise<void> => {
     const { execFileSync } = await import('node:child_process');
-    execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-c',
-      'ALTER TABLE "ProjectionGeneration" ALTER COLUMN "catalogVersion" SET DEFAULT 1'], { stdio: 'pipe' });
-    try {
-      execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], env ? { stdio: 'pipe', env } : { stdio: 'pipe' });
-    } finally {
-      execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-c',
-        'ALTER TABLE "ProjectionGeneration" ALTER COLUMN "catalogVersion" DROP DEFAULT'], { stdio: 'pipe' });
-    }
+    execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], env ? { stdio: 'pipe', env } : { stdio: 'pipe' });
   };
 
   let t: TestApp;

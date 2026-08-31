@@ -290,6 +290,92 @@ that row, which IS the ordering. Run against the reviewed head's order (both rea
 above their locks) the probe fails with PostgreSQL's own `40P01 deadlock detected`. Both families
 are covered.
 
+## Round 30 — the rollout fence, corrected (two findings on head `1c719152`)
+
+The batched five-finding correction drew two further findings, both on the SAME mechanism: the
+`ProjectionGeneration.catalogVersion` fence was implemented as **NOT NULL with NO DEFAULT**, so that
+every INSERT naming no version was rejected. That is too blunt, in two ways a write-side fence
+cannot avoid — and neither was hypothetical.
+
+**P1 — it breaks a still-running previous-release relay, not just a newly started binary.**
+`migrate.sh` applies this migration BEFORE the old processes stop; that ordering is what the
+catalog-data half of the same file depends on. Inside that window the old `lockActiveGeneration`
+lazily bootstraps a generation for any `(consumer, project)` that has none yet, with an INSERT
+naming no version. A no-default NOT NULL rejects it and STALLS that ordered projection while the
+previous release is still supposed to be serving. The backfill protects only generations that
+already exist; a project or consumer that has not yet materialized one is exactly the case it
+cannot reach.
+
+**P2 — it breaks the documented, deliberately rerunnable 4a repair.** The merged
+`20270810000000_phase6_t4a_withdraw` inserts a replacement `ProjectionGeneration` with an explicit
+column list, which cannot name a column added later, so the operator replay the RUNBOOK prescribes
+would fail against the fence instead of repairing the projection. **The reviewer also caught that
+this PR's own test helper was masking it**: `replayHistoricalMigration` installed a temporary
+default around the replay, an accommodation no operator has. That helper is now a bare `psql -f`,
+and its being bare is the evidence the replay works natively.
+
+### The correction: the fence moves to where the harm is
+
+The harm was never a previous release WRITING a generation. It is a previous release's output being
+SERVED — specifically, the old standalone rebuild CLI (which registers consumers directly and never
+calls `syncConsumerCatalog`) rebuilding `decisions.inbox` with the v1 serializer and ACTIVATING it:
+a register whose DTOs omit the consultation collection entirely, so the projection read-path filter
+sees no `consultations`, excludes every standing consultee from the audience, and the thread is
+gone — swapped in by a SUPPORTED command.
+
+So the refusal moved to `readServableGeneration`, the ONE serve gate every module's projection read
+already goes through: a generation stamped below the running code's compiled `catalogVersion` is not
+servable, and the caller falls back to the canonical live read. That is the SAME answer this
+function already gives a lagging or blocked generation, and the fallback is always current — it
+carries the thread the v1 generation would omit, which the probe asserts directly.
+
+### Why a plain `DEFAULT 1` was not enough either
+
+It would have fixed P1, and it did fix P1 in the first draft. It did not fix P2 in the way that
+matters: the 4a repair's replacement generation COPIES its rows from the generation it retires, so
+its true version is that generation's, and stamping it `1` left a correctly-repaired projection
+permanently unservable — converting a cleared, targeted repair into "repair, then run a full rebuild
+as well". Two delivered round-12/13 probes failed on exactly that, which is how it was caught rather
+than shipped.
+
+The column is therefore NOT NULL with **no** default, and a BEFORE INSERT trigger
+(`ProjectionGeneration_t4c_stamp_version`) supplies the value when the writer names none:
+
+> an INSERT that names no version, in a transaction that has ALREADY RETIRED a sibling generation of
+> the same `(consumer, projectId)`, takes that sibling's version; every other un-versioned INSERT
+> takes 1.
+
+This is structural, not a guess about intent, and the structure was verified rather than assumed:
+`ProjectionRebuilder` INSERTS its new generation in ONE transaction (`rebuilder.service.ts:72-80`)
+and retires the incumbent in a LATER one (`:96-116`) — logic that predates this unit, so the
+previous release's CLI has the same shape and can never satisfy the same-transaction condition. The
+relay's lazy bootstrap retires nothing. The 4a repair retires-then-inserts in a single transaction
+and is the only writer that inherits. `xmin` is the right instrument for precisely this claim
+("written by the transaction that retired the predecessor"), unlike round 28's rejected use of it,
+which asked it to prove a transition it cannot see.
+
+### Evidence
+
+Every arm RED first, verified by removing the mechanism rather than by argument:
+
+- Dropping `ProjectionGeneration_t4c_stamp_version` turns **5** tests red — the three delivered 4a
+  repair probes (P2, reproduced exactly) plus both new round-30 probes.
+- Removing the one-line serve fence turns the serve-gate probe red (`expected {…} to be null`).
+- New probes: an un-versioned bootstrap INSERT SUCCEEDS and is stamped 1; the stamp inherits ONLY
+  inside the retiring transaction, and a rebuild inserting beside an already-retired v2 sibling
+  still takes 1 (the anti-laundering half); an older-serializer generation is refused at the serve
+  gate while the live fallback still carries the thread.
+- `upgrade-proof.sh` gains four arms exercising all of this on the FULLY MIGRATED database — the
+  state that matters, and the one the pre-existing arms never reached, since their generation insert
+  runs before `20271116` applies and the column does not yet exist. The documented 4a replay is run
+  against that migrated database directly.
+- `projection-rebuild-upgrade`'s planted legacy generation is re-stamped at the CURRENT version,
+  with the reason recorded: that probe is about a COMPLETENESS defect (a caught-up generation
+  holding a non-empty subset), which is orthogonal to serializer version, and its rows are built by
+  the current serializer. Leaving it at 1 would have let the new version fence refuse it before the
+  subset was ever reached — quietly converting a cleared probe into a test of something else.
+- The `%t4c%` trigger-count pin advances 11 → 12.
+
 ## What this unit does NOT do
 
 - **It does not enable the capability anywhere.** `consultation` stays off on every project; 4c-iii

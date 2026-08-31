@@ -4414,6 +4414,51 @@ assert "4c-ii F1: legacy NULL-provenance revisions still coexist (the index is p
   "SELECT (COUNT(*) > 1)::text FROM \"DecisionApprovalRevision\" WHERE \"sourceCommandId\" IS NULL;" \
   "true"
 
+# ── round 30: the ROLLOUT FENCE keeps previous-release WRITERS working ─────────────────────────
+# The first shape of the generation fence was NOT NULL with NO DEFAULT, which rejected every
+# un-versioned INSERT. Two of those INSERTs are legitimate and documented: the already-running
+# previous-release relay's lazy bootstrap during the migrate-before-restart window, and the
+# deliberately rerunnable 4a repair. Both are exercised HERE, on the FULLY MIGRATED database —
+# which is the state that matters and the one the earlier arms above never reach (their generation
+# insert happens before 20271116 applies, while the column does not yet exist).
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-ii round 30: an un-versioned generation INSERT (the old relay's bootstrap) was rejected on the migrated database"; FAIL=1; }
+INSERT INTO "ProjectionGeneration"("id","consumer","projectId","generation","status","cursorStatus","updatedAt")
+VALUES ('UP4CII-R30-BOOT','decisions.inbox','p1',9301,'building','live',now());
+SQL
+assert "4c-ii round 30: the un-versioned bootstrap is STAMPED 1 — the only version its contents can have" \
+  "SELECT \"catalogVersion\"::text FROM \"ProjectionGeneration\" WHERE \"id\"='UP4CII-R30-BOOT';" \
+  "1"
+
+# …and the stamp does NOT launder a rebuild: an un-versioned INSERT beside an ALREADY-retired
+# sibling (a different transaction — the rebuilder's shape, old CLI included) still takes 1.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-ii round 30: could not stage the rebuild-shape probe"; FAIL=1; }
+UPDATE "ProjectionGeneration" SET "status"='retired', "catalogVersion"=2 WHERE "id"='UP4CII-R30-BOOT';
+INSERT INTO "ProjectionGeneration"("id","consumer","projectId","generation","status","cursorStatus","updatedAt")
+VALUES ('UP4CII-R30-REBUILD','decisions.inbox','p1',9302,'building','live',now());
+SQL
+assert "4c-ii round 30: a rebuild inserting beside an already-retired v2 sibling does NOT inherit it" \
+  "SELECT \"catalogVersion\"::text FROM \"ProjectionGeneration\" WHERE \"id\"='UP4CII-R30-REBUILD';" \
+  "1"
+
+# the 4a repair shape: retire and insert in ONE transaction → inherits, so a correctly repaired
+# projection is not left permanently unservable by the serve-side version fence
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-ii round 30: the 4a-repair-shaped retire-then-insert was rejected"; FAIL=1; }
+BEGIN;
+UPDATE "ProjectionGeneration" SET "status"='retired' WHERE "id"='UP4CII-R30-REBUILD';
+UPDATE "ProjectionGeneration" SET "catalogVersion"=2 WHERE "id"='UP4CII-R30-REBUILD';
+INSERT INTO "ProjectionGeneration"("id","consumer","projectId","generation","status","cursorStatus","updatedAt")
+VALUES ('UP4CII-R30-REPAIR','decisions.inbox','p1',9303,'building','live',now());
+COMMIT;
+SQL
+assert "4c-ii round 30: the same-transaction repair INHERITS the retired generation's version" \
+  "SELECT \"catalogVersion\"::text FROM \"ProjectionGeneration\" WHERE \"id\"='UP4CII-R30-REPAIR';" \
+  "2"
+
+# and the documented replay itself: the 4a migration re-run against the MIGRATED database, which is
+# where the no-default fence would have broken it
+$PSQL -q -f "$MIG_DIR/20270810000000_phase6_t4a_withdraw/migration.sql" >/dev/null \
+  || { echo "FAILED  4c-ii round 30: the rerunnable 4a repair does not replay against the migrated database"; FAIL=1; }
+
 # the alternate writer, tried where it would actually try: a consultation minted with no command
 # receipt behind it is invisible to the projection, which is the whole point of the provenance rule
 assert_rejects "4c-i: a consultation with no command receipt behind it" \
@@ -4432,9 +4477,9 @@ assert_rejects "4c-i: TRUNCATE of the approval register whose COUNT 4c turns int
 assert "4c-i: both owned ORGS primitives are installed" \
   "SELECT COUNT(*)::text FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable');" \
   "2"
-assert "4c-i: the nine seals of this unit are armed, plus 4c-ii's provenance and capability seals" \
+assert "4c-i: the nine seals of this unit are armed, plus 4c-ii's provenance, capability and generation-stamp seals" \
   "SELECT COUNT(*)::text FROM pg_trigger WHERE tgname LIKE '%t4c%';" \
-  "11"
+  "12"
 
 # ── the PARTIAL-APPLY RETRY, executed rather than asserted ───────────────────────────────────────
 # A deploy that dies part-way must COMPLETE on retry, not stop at the objects it already made. The

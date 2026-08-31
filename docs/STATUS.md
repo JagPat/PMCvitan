@@ -100,6 +100,36 @@ now lock MEMBERSHIP before DECISION, with every verdict predicate re-read under 
 proven by a deterministic AB-BA probe that yields `40P01 deadlock detected` against the reviewed
 head's order.
 
+**THE REVIEW OF THE CORRECTION HEAD `1c719152` RETURNED TWO FURTHER FINDINGS, BOTH ON THE ROLLOUT
+FENCE, AND BOTH ARE CORRECTED IN ONE HEAD.** The fence was `ProjectionGeneration.catalogVersion`
+NOT NULL with NO DEFAULT — every un-versioned INSERT rejected — and that is too blunt in two ways:
+**(P1)** `migrate.sh` applies the migration BEFORE the old processes stop, and inside that window
+the previous release's `lockActiveGeneration` lazily bootstraps a generation for any
+`(consumer, project)` that has none yet, with an INSERT naming no version; a no-default NOT NULL
+rejects it and STALLS that ordered projection while the old release is still supposed to be
+serving (the backfill reaches only generations that already exist). **(P2)** the merged, documented,
+deliberately rerunnable `20270810000000_phase6_t4a_withdraw` repair inserts a replacement generation
+with an explicit column list that cannot name a later column, so the operator replay would FAIL
+instead of repairing — and this PR's own test helper was MASKING that by installing a temporary
+default the operator does not have. The fence therefore MOVES to where the harm actually is: a
+generation stamped below the running code's compiled `catalogVersion` is not SERVABLE
+(`readServableGeneration`, the one serve gate every module read already crosses), and the caller
+falls back to the canonical live read — the same answer that function already gives a lagging or
+blocked generation, and one that still carries the consultation thread a v1 generation would omit.
+A plain `DEFAULT 1` fixes P1 but not P2 (the 4a repair COPIES its rows from the generation it
+retires, so stamping the replacement `1` leaves a correctly-repaired projection permanently
+unservable — two delivered round-12/13 probes failed on exactly that), so the column stays NOT NULL
+with NO default and a BEFORE INSERT trigger supplies the value: an un-versioned INSERT in a
+transaction that has ALREADY RETIRED a sibling of the same `(consumer, projectId)` inherits that
+sibling's version, and every other un-versioned INSERT takes 1. That is structural and was verified,
+not assumed — `ProjectionRebuilder` inserts in one transaction and retires in a later one (logic
+predating this unit, so the previous release's CLI has the same shape and can never inherit), while
+the relay bootstrap retires nothing. The test helper is now a bare `psql -f`, and its being bare is
+the evidence the replay works natively. RED-first by removal: dropping the stamp trigger turns FIVE
+tests red (the three delivered 4a repair probes plus both new round-30 probes) and removing the
+one-line serve fence turns the serve-gate probe red; `upgrade-proof.sh` gains four arms exercising
+all of it on the FULLY MIGRATED database, which the pre-existing arms never reached.
+
 **4c-i IS MERGED (PR #493 at `main` `d4e2ddf5`) WITH A FRESH INDEPENDENT CODEX +1 ON THE
 EXACT REVIEWED HEAD `7650109`, AND THE REMOVAL-AND-REINSTATE BLOCKER IS CLEARED BY
 BOARD CALL** (2026-08-30, ~23:07 IST). The next unit is **4c-ii, SCHEDULED from `main`

@@ -5,6 +5,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { DECISIONS_PROJECTION } from '../../src/decisions/decisions.projection';
+import { readServableGeneration } from '../../src/platform/projections/generation';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { plantLegacyApprovalRevision } from './fixtures';
 import { PrismaClient } from '@prisma/client';
@@ -517,25 +518,116 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
     }
   });
 
-  it('a projection generation cannot be created without a catalog version — the rebuild-CLI fence', async () => {
-    // The startup fence protects processes that TAKE UP SERVICE; the standalone rebuild CLI is not
-    // one — it registers consumers directly and never calls `syncConsumerCatalog`. So the fence
-    // goes at the boundary every binary must cross: NOT NULL with NO DEFAULT, which the previous
-    // release cannot satisfy because it does not know the column exists.
-    await expect(
-      t.prisma.$executeRawUnsafe(
-        `INSERT INTO "ProjectionGeneration" ("id","consumer","projectId","generation","status","cursorStatus","createdAt","updatedAt")
-         VALUES ($1,'decisions.inbox',$2,999,'building','live',now(),now())`,
-        `fence-${run}`, projectId,
-      ),
-    ).rejects.toThrow(/23502|Failing row contains/i);
+  it('round 30 (P1): an un-versioned generation INSERT — the old relay\u2019s bootstrap — still SUCCEEDS', async () => {
+    // The first shape of this fence was NOT NULL with NO DEFAULT, which rejected this INSERT. That
+    // is the previous release's own `lockActiveGeneration` lazy bootstrap, and `migrate.sh` applies
+    // this migration BEFORE the old processes stop — so during the documented compatibility window
+    // a project or consumer with no generation yet would have had its ordered projection STALLED
+    // while the old release was still supposed to be serving. The backfill covers only generations
+    // that already exist; this is the case it cannot reach.
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "ProjectionGeneration" ("id","consumer","projectId","generation","status","cursorStatus","createdAt","updatedAt")
+       VALUES ($1,'decisions.inbox',$2,999,'building','live',now(),now())`,
+      `fence-${run}`, projectId,
+    );
+    const row = await t.prisma.projectionGeneration.findUniqueOrThrow({ where: { id: `fence-${run}` } });
+    // …and it is stamped 1, which is the TRUTH about it: written by something that does not know
+    // this serializer exists, so version 1 is the only version its contents could have.
+    expect(row.catalogVersion, 'stamped by the trigger, not left to a lie').toBe(1);
 
     const col = await t.prisma.$queryRawUnsafe<Array<{ is_nullable: string; column_default: string | null }>>(
       `SELECT is_nullable, column_default FROM information_schema.columns
         WHERE table_name = 'ProjectionGeneration' AND column_name = 'catalogVersion'`,
     );
-    expect(col[0]?.is_nullable, 'NOT NULL is half the fence').toBe('NO');
-    expect(col[0]?.column_default, 'NO DEFAULT is the other half — a default would let the old binary through').toBeNull();
+    expect(col[0]?.is_nullable, 'every generation still carries a version').toBe('NO');
+    // NO DEFAULT: the stamp is a BEFORE INSERT trigger, so no row can acquire a version by
+    // omission without the trigger having decided what that version truthfully is.
+    expect(col[0]?.column_default).toBeNull();
+    await t.prisma.projectionGeneration.delete({ where: { id: `fence-${run}` } });
+  });
+
+  it('round 30 (P2): the stamp INHERITS only inside the retiring transaction — a rebuild cannot', async () => {
+    // The 4a repair retires a generation and inserts its replacement in ONE transaction, copying
+    // the retired generation's rows — so the replacement's true version is the retired one's, and
+    // stamping it 1 would leave a correctly-repaired projection permanently unservable.
+    // A REBUILD inserts in one transaction and retires in a later one, so it must NOT inherit;
+    // otherwise the previous release's CLI would launder a v1 rebuild into a v2 stamp and walk
+    // straight through the serve gate. Both halves are asserted here, on the same fixture.
+    const mk = (id: string, generation: number, status: string, version?: number) =>
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "ProjectionGeneration" ("id","consumer","projectId","generation","status","cursorStatus","createdAt","updatedAt"${version === undefined ? '' : ',"catalogVersion"'})
+         VALUES ($1,'decisions.inbox',$2,$3,$4,'live',now(),now()${version === undefined ? '' : ',$5'})`,
+        ...[id, projectId, generation, status, ...(version === undefined ? [] : [version])],
+      );
+
+    // an incumbent at the CURRENT version, as a real deployment would have
+    await mk(`inh-old-${run}`, 901, 'retired', 2);
+
+    // (1) the REBUILD shape: a separate transaction, un-versioned → 1, never the retired sibling's 2
+    await mk(`inh-rebuild-${run}`, 902, 'building');
+    expect(
+      (await t.prisma.projectionGeneration.findUniqueOrThrow({ where: { id: `inh-rebuild-${run}` } })).catalogVersion,
+      'a rebuild inserting beside an already-retired sibling must NOT launder its version',
+    ).toBe(1);
+
+    // (2) the 4a-REPAIR shape: retire and insert in ONE transaction → inherits
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`UPDATE "ProjectionGeneration" SET "status" = 'retired' WHERE "id" = $1`, `inh-rebuild-${run}`);
+      await tx.$executeRawUnsafe(
+        `UPDATE "ProjectionGeneration" SET "catalogVersion" = 2 WHERE "id" = $1`, `inh-rebuild-${run}`);
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "ProjectionGeneration" ("id","consumer","projectId","generation","status","cursorStatus","createdAt","updatedAt")
+         VALUES ($1,'decisions.inbox',$2,903,'active','live',now(),now())`,
+        `inh-repair-${run}`, projectId,
+      );
+    });
+    expect(
+      (await t.prisma.projectionGeneration.findUniqueOrThrow({ where: { id: `inh-repair-${run}` } })).catalogVersion,
+      'the repair copies the retired generation\u2019s rows, so it carries its version',
+    ).toBe(2);
+
+    for (const id of [`inh-old-${run}`, `inh-rebuild-${run}`, `inh-repair-${run}`]) {
+      await t.prisma.projectionGeneration.delete({ where: { id } });
+    }
+  });
+
+  it('round 30 (P1): the fence is on the SERVE gate — an older-serializer generation is never served', async () => {
+    // Where the harm actually is. The previous release's standalone rebuild CLI registers consumers
+    // directly and never calls `syncConsumerCatalog`, so it can still BUILD and ACTIVATE a v1
+    // `decisions.inbox` generation — a register with no consultation thread and no widened
+    // audience, swapped in by a supported command. What it must not be able to do is get that
+    // served, and that is a decision the NEW code makes on every read.
+    const decisionId = await issue();
+    await ask(decisionId, 'eng');
+    await applyProjection();
+    const gen = await t.prisma.projectionGeneration.findFirst({ where: { projectId, consumer: 'decisions.inbox', status: 'active' } });
+    if (!gen) return; // nothing materialized — the live path serves, which is the safe answer anyway
+
+    // Put the generation in the one state where the version is the ONLY thing left to judge:
+    // healthy and caught up to the committed stream head. Asserting through `projectionSlice`
+    // alone would prove nothing here — this suite's fixture resets the event stream between
+    // probes, so a generation is routinely unservable for reasons that have nothing to do with
+    // the fence (which is why the P25c probe above guards on `generation !== null`).
+    const stream = await t.prisma.projectEventStream.findUnique({ where: { projectId }, select: { nextPosition: true } });
+    const head = stream ? stream.nextPosition - 1n : -1n;
+    await t.prisma.projectionGeneration.update({
+      where: { id: gen.id },
+      data: { cursorStatus: 'live', appliedPosition: head < 0n ? 0n : head, catalogVersion: 2 },
+    });
+    expect(await readServableGeneration(t.prisma, DECISIONS_PROJECTION, projectId), 'at the CURRENT version it serves').not.toBeNull();
+
+    // now exactly what the old CLI leaves behind: the same healthy, caught-up generation, stamped v1
+    await t.prisma.projectionGeneration.update({ where: { id: gen.id }, data: { catalogVersion: 1 } });
+    expect(
+      await readServableGeneration(t.prisma, DECISIONS_PROJECTION, projectId),
+      'an older-serializer generation is refused — the caller falls back to the canonical live read',
+    ).toBeNull();
+
+    // and the fallback is not a degradation: it carries the thread the v1 generation would omit
+    const query = t.app.get(DecisionsQueryService);
+    expect((await query.projectionSlice(projectId, 'pmc', users.pmc)).generation).toBeNull();
+    const live = await query.snapshotSlice(projectId, 'pmc', users.pmc);
+    expect(live.decisions.find((d) => d.id === decisionId)?.consultations).toHaveLength(1);
   });
 
   it('the two consultation-consuming consumers are at catalog version 2, and the socket consumer is not', async () => {
