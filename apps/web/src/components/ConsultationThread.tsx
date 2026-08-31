@@ -1,7 +1,10 @@
 import { useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { Button } from '@/components';
+// the LEAF module, not the `@/components` barrel: this component is itself exported from that
+// barrel, so importing through it closes an index → ConsultationThread → index cycle (the
+// `LocationPicker` convention).
+import { Button } from './Button';
 import { can, viewerIsConsultee, type Decision } from '@vitan/shared';
 
 /**
@@ -42,9 +45,13 @@ export function ConsultationThread({ decision }: { decision: Decision }) {
   // The viewer's OWN unanswered consultation, in the CURRENT cycle. A consultation from a closed
   // cycle is not answerable — the approval that ended that cycle closed it — so no compose box
   // appears for one, which is the same answer the respond command gives.
+  // `approvalCycle` travels only WITH a non-empty thread (§D byte-identity), so read the absent
+  // case as `0` here exactly as `viewerIsConsultee` does — the two must agree or the predicate
+  // would admit a consultee the finder then fails to find.
+  const cycle = decision.approvalCycle ?? 0;
   const mine =
-    open && viewerIsConsultee(thread, decision.approvalCycle, sessionUserId)
-      ? thread.find((c) => c.consulteeUserId === sessionUserId && c.openCycle === decision.approvalCycle && !c.response)
+    open && viewerIsConsultee(thread, cycle, sessionUserId)
+      ? thread.find((c) => c.consulteeUserId === sessionUserId && c.openCycle === cycle && !c.response)
       : undefined;
 
   const nameOf = (userId: string): string => members.find((m) => m.userId === userId)?.name ?? 'a team member';

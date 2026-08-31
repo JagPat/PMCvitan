@@ -19,7 +19,7 @@ reviewed_merge: d4e2ddf5
 open_pr: 497
 next_task: phase-6-task-4c-iii
 blocking_directive: none
-updated: 2026-08-30
+updated: 2026-08-31
 ```
 
 **UNIT 4c-ii IS OPEN AS PR #497** (branch `claude/phase6-4c-ii-consultation-behaviour`, `Replaces: none`). It is scheduled from `main` `1d6c4ff1` per the Board's 2026-08-31 03:45
@@ -63,6 +63,10 @@ that can stop the standalone rebuild CLI, the one path that skips the startup fe
 its objection that always emitting `consultations: []` breaks §D's byte-identity requirement for
 gate-OFF projects, which is right — the serializer now omits the thread when there is none, so a
 projection row written before this unit is byte-EQUAL to live rather than merely compatible.
+(That last one was NOT in head `d117f140`: JagPat's direction was to leave the dispute recorded
+for the reviewer rather than reshape the product surface unilaterally, so that head shipped the
+always-emit form with both positions written into the serializer. The reviewer settled it in
+#496's favour — F3 below — and the correction head implements it.)
 
 What was NOT taken from #496 is its approval-provenance seal, and deliberately: that one is a
 BEFORE INSERT null-check, while this PR already carries the strictly stronger DEFERRED commit-time
@@ -70,6 +74,31 @@ binding review round 29 requires (the receipt must have SUCCEEDED with its `resu
 decision — a reserved-only receipt inserted in the same transaction would satisfy a null-check and
 still advance the cycle without approving anything). Two seals on one table would be a second
 answer to one question.
+
+**THE INDEPENDENT REVIEW OF HEAD `d117f140` RETURNED FIVE FINDINGS; ALL FIVE ARE CORRECTED IN
+ONE BATCHED HEAD** — this is the unit's FIRST finding-bearing head, so one further correction head
+remains before the replacement rule applies. Each was reproduced RED first. **F1 (P1)** an approval
+receipt was REUSABLE: the deferred provenance trigger's predicates all stay true however many times
+one receipt is cited, so a single genuine approval could mint arbitrarily many revisions and
+inflate the COUNT every open consultation is frozen against — closed by the one-use partial unique
+`DecisionApprovalRevision_source_command_key` on `("projectId","sourceCommandId") WHERE
+"sourceCommandId" IS NOT NULL`, the exact shape both consultation facts already carry, added to the
+unmerged `20271115000000` with a diagnostic-first abort naming any duplicate (unreachable today —
+nothing has ever written a non-NULL value) and operator repair at `docs/RUNBOOK.md §P6-4C`.
+**F2 (P1)** `ConsultationThread` imported `Button` from the `@/components` barrel that also exports
+it — an index cycle, now the leaf `./Button`. **F3 (P2)** the consultation keys were emitted
+unconditionally; both now travel TOGETHER and only when a thread exists, because `approvalCycle` is
+non-zero on any approved decision and would otherwise add a key to gate-OFF projects on its own —
+and `hydrateStoredDecisionDto` correspondingly STOPS backfilling them, since under absent-when-empty
+a stored pre-4c DTO already equals live and backfilling would invert the equality defect rather than
+fix it. **F4 (P1)** both consultation commands used `runRemoteOrQueue`, which persists nothing when
+online: a lost response stranded the command with its key and the only recovery appended a SECOND
+consultation to a permanent thread — both now take `runWriteAhead`. **F5 (P1)** both push-claim
+predicates read the `Decision` row `FOR SHARE` before locking `Membership`, inverting approval's
+own order, so when the push target is also the named decider PostgreSQL must abort one side — both
+now lock MEMBERSHIP before DECISION, with every verdict predicate re-read under the decision lock,
+proven by a deterministic AB-BA probe that yields `40P01 deadlock detected` against the reviewed
+head's order.
 
 **4c-i IS MERGED (PR #493 at `main` `d4e2ddf5`) WITH A FRESH INDEPENDENT CODEX +1 ON THE
 EXACT REVIEWED HEAD `7650109`, AND THE REMOVAL-AND-REINSTATE BLOCKER IS CLEARED BY

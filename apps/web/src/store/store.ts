@@ -2017,17 +2017,24 @@ export const useStore = create<Store>()(
       });
       get().flash('Approved & locked — the Decision Log and PMC dashboard are updated.');
     },
+    // Both consultation commands take the WRITE-AHEAD path (review finding F4), not
+    // `runRemoteOrQueue`. The distinction matters here precisely because a consultation is an
+    // append-only FACT: `runRemoteOrQueue` mints the idempotency key in memory and, when online,
+    // fires a bare call that persists nothing — so a lost or uncertain response strands the
+    // command with its key, and the only recovery available to the user is to ask again, which
+    // arrives under a DIFFERENT key and appends a SECOND consultation. Writing the op to the
+    // durable outbox first means the same key is replayed until the server confirms, and the
+    // ledger applies it exactly once however many times that takes.
     requestConsultation: (decId, consulteeMembershipId, question) => {
       const text = question.trim();
       if (!text) return;
-      // ONE stable key for this question — the online send and any offline replay reach the
-      // server under it, so a lost-response retry appends the consultation once.
+      // ONE stable key for this question — persisted WITH the op, so the online flush, a retry
+      // after a lost response, and an offline replay all reach the server under it.
       const key = newIdempotencyKey();
       if (
-        runRemoteOrQueue(
+        runWriteAhead(
           { t: 'consultationRequest', decisionId: decId, consulteeMembershipId, question: text, idempotencyKey: key },
           'Consult ' + decId,
-          () => gateway!.requestConsultation(decId, consulteeMembershipId, text, key),
           'Asked — they will see this decision and your question.',
         )
       ) {
@@ -2044,10 +2051,9 @@ export const useStore = create<Store>()(
       if (!text) return;
       const key = newIdempotencyKey();
       if (
-        runRemoteOrQueue(
+        runWriteAhead(
           { t: 'consultationRespond', decisionId: decId, consultationId, response: text, ...(recommendedOptionIndex !== undefined ? { recommendedOptionIndex } : {}), idempotencyKey: key },
           'Advise ' + decId,
-          () => gateway!.respondToConsultation(decId, consultationId, text, recommendedOptionIndex, key),
           'Advice recorded — the person who asked has been told.',
         )
       ) {

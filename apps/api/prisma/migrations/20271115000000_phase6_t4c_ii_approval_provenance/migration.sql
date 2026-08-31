@@ -45,10 +45,11 @@
 -- forgery inside ONE transaction by a role holding INSERT/UPDATE on the ledger, whose answer is a
 -- privilege grant (`docs/RUNBOOK.md §CMDR`) rather than another trigger.
 --
--- NO BACKFILL AND NO ABORT. Legacy revisions carry a NULL `sourceCommandId` by design — 4c-i
--- staged the column nullable precisely so they could — and this is a BEFORE-INSERT-scoped
--- constraint trigger, so it judges only rows written from here on. Inventing provenance for a
--- historical approval would be a forgery of exactly the kind this seal exists to refuse.
+-- NO BACKFILL. Legacy revisions carry a NULL `sourceCommandId` by design — 4c-i staged the column
+-- nullable precisely so they could — and this is an INSERT-scoped constraint trigger, so it judges
+-- only rows written from here on. Inventing provenance for a historical approval would be a
+-- forgery of exactly the kind this seal exists to refuse. (The ONE-USE section below does abort,
+-- diagnostically, on a state no database can currently be in; it never edits or fabricates a row.)
 --
 -- Every statement is retry-safe (the 20271015/20271101 discipline).
 
@@ -84,3 +85,54 @@ CREATE CONSTRAINT TRIGGER "DecisionApprovalRevision_t4c_provenance"
   AFTER INSERT ON "DecisionApprovalRevision"
   DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase6_t4c_approval_revision_provenance();
+
+-- ---------------------------------------------------------------------------
+-- ONE-USE: a completed approval receipt backs AT MOST ONE revision.
+--
+-- Review finding F1 on head d117f140. The trigger above proves that the cited receipt exists,
+-- belongs to this project, is a SUCCEEDED `decisions.approve`, and names THIS decision — and every
+-- one of those predicates stays true no matter how many times the same receipt is cited. So a
+-- direct writer holding one genuine approval receipt could mint arbitrarily many revisions from
+-- it, advancing the count exactly as the forged-revision path this migration exists to close does:
+-- open consultations bound to the frozen cycle 409 permanently, and their deliveries cancel
+-- themselves at the claim predicate. The receipt has to be SPENT, not merely valid.
+--
+-- The two consultation facts already carry precisely this shape
+-- (`DecisionConsultation_source_command_key`, `DecisionConsultationResponse_source_command_key` in
+-- 20271101000000) — the approval register is the one provenance seal of the unit that lacked it.
+--
+-- PARTIAL, on `"sourceCommandId" IS NOT NULL`. PostgreSQL treats NULLs as distinct in a unique
+-- index, so a plain UNIQUE would already admit every legacy revision; the predicate says that in
+-- the index definition rather than relying on the reader knowing it, and keeps the index off the
+-- historical rows entirely. Legacy provenance is still NEVER invented — 4c-i staged the column
+-- nullable so approvals performed by a pre-4c release keep their honest NULL.
+--
+-- Diagnostic-first: a bare `CREATE UNIQUE INDEX` over pre-existing duplicates fails with
+-- PostgreSQL's own opaque "could not create unique index" (the §F3.1 defect the platform t45
+-- correction was raised for), so the offending receipts are NAMED first. No database can be in
+-- that state today — nothing has ever written a non-NULL `sourceCommandId`, because 4c-i is dark
+-- and this unit's `approve` is the first writer — but the abort is what makes that claim
+-- CHECKED rather than asserted, and it is what an operator would need if it were ever false.
+DO $$
+DECLARE n BIGINT; sample TEXT;
+BEGIN
+  -- the count is over EVERY offending receipt; the sample is bounded separately, so an operator
+  -- is told the true scale and shown the first twenty rather than being told there are twenty
+  WITH offenders AS (
+    SELECT "projectId" || '/' || "sourceCommandId" AS pair
+      FROM "DecisionApprovalRevision"
+     WHERE "sourceCommandId" IS NOT NULL
+     GROUP BY "projectId", "sourceCommandId"
+    HAVING COUNT(*) > 1
+  )
+  SELECT (SELECT COUNT(*) FROM offenders),
+         (SELECT string_agg(pair, ', ' ORDER BY pair) FROM (SELECT pair FROM offenders ORDER BY pair LIMIT 20) s)
+    INTO n, sample;
+  IF COALESCE(n, 0) > 0 THEN
+    RAISE EXCEPTION 'phase6-4c F1: % approval command receipt(s) already back more than one revision (first 20 — project/command: %). A receipt records ONE approval; repair the register before deploying — see docs/RUNBOOK.md §P6-4C.', n, sample;
+  END IF;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS "DecisionApprovalRevision_source_command_key"
+  ON "DecisionApprovalRevision"("projectId", "sourceCommandId")
+  WHERE "sourceCommandId" IS NOT NULL;

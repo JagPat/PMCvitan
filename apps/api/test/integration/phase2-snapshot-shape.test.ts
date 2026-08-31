@@ -117,10 +117,11 @@ const EXPECT: Record<string, Spec> = {
     // named membership, and the RESOLVED decider user every viewer/decider predicate compares.
     // `photoSwatch` becomes optional (a record-only issue has no option-sourced swatch).
     // Phase 6 unit 4c-ii — the CONSULTATION thread and the approval CYCLE it is judged against.
-    // Both are always emitted by a 4c server (empty / 0 for a decision nobody was consulted on),
-    // and both are listed OPTIONAL here because a projection row stored before this unit carries
-    // neither until the read path hydrates it — the shape pin describes what a consumer must
-    // tolerate, not only what the current serializer happens to produce.
+    // Both are OPTIONAL and travel TOGETHER: a decision with no thread emits neither, which is
+    // what keeps a gate-OFF project's response byte-identical to the previous release's (§D) —
+    // `approvalCycle` in particular is non-zero on any approved decision, so emitting it
+    // unconditionally would add a key to projects the feature does not exist for. Every consumer
+    // reads the absent case as the empty one (`viewerIsConsultee`: no standing, cycle `0`).
     keys: ['id', 'title', 'room', 'nodeId', 'status', 'ageDays', 'photoSwatch', 'deciderKind', 'deciderMembershipId', 'deciderUserId', 'options', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'consultations', 'approvalCycle'].sort(),
     optional: ['nodeId', 'ageDays', 'photoSwatch', 'deciderMembershipId', 'deciderUserId', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'consultations', 'approvalCycle'].sort(), nullable: [],
   },

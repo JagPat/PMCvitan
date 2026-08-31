@@ -6,6 +6,8 @@ import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { DECISIONS_PROJECTION } from '../../src/decisions/decisions.projection';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { plantLegacyApprovalRevision } from './fixtures';
+import { PrismaClient } from '@prisma/client';
 
 /**
  * Phase 6 unit 4c-ii — CONSULTATION as a product surface (server + read path, live PG).
@@ -416,11 +418,14 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
     }
   });
 
-  it('P25c: a stored PRE-4c DTO hydrates to the EMPTY thread rather than a missing field', async () => {
+  it('F3: a stored PRE-4c DTO is served UNCHANGED — live and projection agree by BOTH omitting', async () => {
     // Widening the include and the serializer does not rewrite JSON already stored in an ACTIVE
-    // generation, and a catalog bump triggers no rebuild — so a quiet project would keep serving
-    // pre-4c DTOs that lack the collection entirely. The first consultation REQUEST emits an event
-    // that refreshes every row, which is exactly why the ordinary probe cannot catch this.
+    // generation, and a catalog bump triggers no rebuild — so a quiet project keeps serving pre-4c
+    // DTOs. Under the corrected absent-when-empty serialization that is not a defect to repair but
+    // the ALREADY-CORRECT answer: a decision with no thread carries neither key on either path, so
+    // the stored row and a live serialization are identical without any hydration. Hydrating to
+    // `consultations: []` here — as the head under review did — would invert the equality defect,
+    // making the projection answer differ from live for exactly the quiet projects it protects.
     const decisionId = await issue();
     await applyProjection();
     const gen = await t.prisma.projectionGeneration.findFirst({ where: { projectId, consumer: 'decisions.inbox' } });
@@ -439,8 +444,43 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
     const served = await query.projectionSlice(projectId, 'pmc', users.pmc);
     const row = served.decisions.find((d) => d.id === decisionId);
     expect(row, 'the pre-4c row is still served').toBeTruthy();
-    expect(row!.consultations, 'hydrated to the EMPTY shape, not left absent').toEqual([]);
-    expect(row!.approvalCycle).toBe(0);
+    expect('consultations' in row!, 'no key is invented for a thread that does not exist').toBe(false);
+    expect('approvalCycle' in row!, 'and none for the cycle that only accompanies one').toBe(false);
+    // the equality that matters: the live path answers with the SAME shape, key for key
+    const live = await query.snapshotSlice(projectId, 'pmc', users.pmc);
+    const liveRow = live.decisions.find((d) => d.id === decisionId);
+    expect(Object.keys(liveRow!).sort()).toEqual(Object.keys(row!).sort());
+  });
+
+  it('F3 (§D): a decision that HAS a thread carries both keys, and the cycle travels with it', async () => {
+    // Absent-when-empty is only defensible if present-when-present is exact: the collection appears
+    // the moment a question exists, and `approvalCycle` appears WITH it — never alone, because a
+    // gate-OFF project's approved decisions would otherwise gain a key the previous release never
+    // sent, which is the byte-identity §D claims.
+    const decisionId = await issue();
+    const query = t.app.get(DecisionsQueryService);
+    const before = (await query.snapshotSlice(projectId, 'pmc', users.pmc)).decisions.find((d) => d.id === decisionId)!;
+    expect('approvalCycle' in before, 'no thread, so no cycle key either').toBe(false);
+
+    await ask(decisionId, 'eng');
+    const after = (await query.snapshotSlice(projectId, 'pmc', users.pmc)).decisions.find((d) => d.id === decisionId)!;
+    expect(after.consultations).toHaveLength(1);
+    expect(after.approvalCycle, 'the comparand the frozen openCycle is judged against').toBe(0);
+  });
+
+  it('F3 (§D): a GATE-OFF project’s APPROVED decision gains neither key — byte-identity is total', async () => {
+    // The sharpest form of the finding. `approvalCycle` is derived from the approval register,
+    // which every project has — so emitting it whenever it is non-zero would add a key to decisions
+    // on projects the consultation feature does not exist for. Approving is exactly the operation
+    // that makes it non-zero.
+    const decisionId = await issue(offProjectId);
+    await post(offTokens.client)(`/projects/${offProjectId}/decisions/${decisionId}/approve`, { optionIndex: 0 }, randomUUID());
+    expect(await t.prisma.decisionApprovalRevision.count({ where: { decisionId } }), 'the register did advance').toBe(1);
+
+    const query = t.app.get(DecisionsQueryService);
+    const row = (await query.snapshotSlice(offProjectId, 'pmc', users.pmc)).decisions.find((d) => d.id === decisionId)!;
+    expect('consultations' in row).toBe(false);
+    expect('approvalCycle' in row, 'a non-zero cycle is still not sent to a project without the feature').toBe(false);
   });
 
   // ═══ THE ROLLOUT FENCE — this unit's own database additions ══════════════════════════════════
@@ -536,5 +576,155 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
     expect(await t.prisma.decisionApprovalRevision.count({ where: { decisionId: open } })).toBe(0);
     // …and the consultation is still answerable, which is the point
     expect((await answer(open, await consultationOf(open), tokens.eng)).status).toBe(201);
+  });
+
+  it('F1: an approval receipt is SPENT — it cannot back a second revision', async () => {
+    // The provenance trigger proves the cited receipt exists, belongs to this project, is a
+    // SUCCEEDED `decisions.approve`, and names THIS decision — and every one of those stays true
+    // however many times the same receipt is cited. So one genuine approval was enough to mint
+    // arbitrarily many revisions and inflate the COUNT every open consultation is frozen against:
+    // the same denial the forged-revision arm above refuses, reached with a real receipt.
+    const decisionId = await issue();
+    await ask(decisionId, 'eng');
+    const consultationId = await consultationOf(decisionId);
+    await post(tokens.client)(`/projects/${projectId}/decisions/${decisionId}/approve`, { optionIndex: 0 }, randomUUID());
+    const genuine = await t.prisma.decisionApprovalRevision.findFirstOrThrow({ where: { decisionId } });
+    expect(genuine.sourceCommandId).toBeTruthy();
+
+    // RED before the one-use index: every predicate the trigger tests passes, because the receipt
+    // really did approve this decision — it has simply already been spent on `genuine`.
+    await expect(
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
+         SELECT $1,$2,$3,99,$4,now(),$5,$6`,
+        `replay-${run}`, projectId, decisionId, genuine.optionKey, users.pmc, genuine.sourceCommandId,
+      ),
+      // PostgreSQL reports the one-use index by its KEY COLUMNS (`23505`, "Key (projectId,
+      // sourceCommandId)=… already exists"), so that is what is asserted — matching the index's
+      // own name would pass on a driver that happened to echo it and say nothing about the
+      // constraint that actually fired.
+    ).rejects.toThrow(/23505[\s\S]*"projectId", "sourceCommandId"/);
+    expect(await t.prisma.decisionApprovalRevision.count({ where: { decisionId } }), 'the register records ONE approval').toBe(1);
+
+    // the consequence the seal protects: the consultee's answer is still refused for the RIGHT
+    // reason (its cycle genuinely closed when the decision was approved), not because a replayed
+    // receipt moved the count out from under it
+    const late = await answer(decisionId, consultationId, tokens.eng);
+    expect(late.status).toBe(409);
+  });
+
+  // ═══ F5 — THE CLAIM PATHS TAKE THE CANONICAL 4c LOCK ORDER ═══════════════════════════════════
+
+  it('F5: both claim paths lock MEMBERSHIP before DECISION — the concrete AB-BA cannot form', async () => {
+    // The reviewed head read the `Decision` row `FOR SHARE` and only then locked the consultee's
+    // `Membership`. Approval takes the opposite order (readiness key → `Membership` →
+    // update `Decision`), so when the push target is also the named decider the two transactions
+    // hold exactly what the other is waiting for and PostgreSQL must abort one side — a push
+    // claim killing a live approval, or the reverse.
+    //
+    // This is a DETERMINISTIC reproduction, not a timing loop. A dedicated session takes the
+    // membership lock an approval would hold and keeps it; the claim is then dispatched and
+    // OBSERVED waiting on that lock (via `pg_stat_activity`, condition-based — never a sleep).
+    // At that instant the claim must hold NO decision lock: the held session takes `Decision FOR
+    // UPDATE` and it must SUCCEED WHILE the claim is still pending. On the reviewed head that
+    // second lock is the deadlock — the claim already holds the row `FOR SHARE`.
+    const decisionId = await issue();
+    await ask(decisionId, 'eng');
+    const query = t.app.get(DecisionsQueryService);
+
+    /** Wait until SOME session is blocked on a lock while running a query matching `like`. */
+    const blocksWithin = async (like: string, ms = 8000): Promise<boolean> => {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline) {
+        const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+          `SELECT COUNT(*)::bigint AS n FROM pg_stat_activity
+            WHERE query LIKE $1 AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`,
+          like,
+        );
+        if (Number(rows[0]?.n ?? 0) > 0) return true;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      return false;
+    };
+
+    const CASES = [
+      {
+        name: 'requested',
+        // the consultee's own membership — the row `lockActiveMembershipById` takes
+        membershipId: () => membership.eng,
+        claim: () => query.consultationRequestedPushTarget(projectId, decisionId, users.eng),
+      },
+      {
+        name: 'responded',
+        // the requester's pmc membership — the row `hasProjectRoleStanding(forUpdate)` takes
+        membershipId: () => membership.pmc,
+        // this family reports that advice was GIVEN, so it needs the answer on the record
+        setup: async () => { await answer(decisionId, await consultationOf(decisionId), tokens.eng); },
+        claim: () => query.consultationRespondedPushTarget(projectId, decisionId, users.pmc),
+      },
+    ];
+
+    for (const c of CASES) {
+      await (c as { setup?: () => Promise<void> }).setup?.();
+      const holder = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL! } } });
+      try {
+        let released: (() => void) | undefined;
+        let acquired: (() => void) | undefined;
+        const gate = new Promise<void>((r) => { released = r; });
+        const holds = new Promise<void>((r) => { acquired = r; });
+        let decisionLocked: 'pending' | 'ok' | 'error' = 'pending';
+
+        // the HOLDER: takes the membership lock an in-flight approval would hold, then — once the
+        // claim is observed waiting on it — reaches for the decision, which is the second half of
+        // the AB-BA. It commits only after that. `holds` is resolved from INSIDE the transaction,
+        // so the claim is never dispatched into a lock that is not yet taken (a Prisma interactive
+        // transaction starts asynchronously — dispatching both and hoping is a race, not a probe).
+        const held = holder.$transaction(async (tx) => {
+          await tx.$executeRawUnsafe(`SELECT 1 FROM "Membership" WHERE "id" = $1 FOR UPDATE`, c.membershipId());
+          acquired!();
+          await gate;
+          await tx.$executeRawUnsafe(
+            `SELECT 1 FROM "Decision" WHERE "projectId" = $1 AND "id" = $2 FOR UPDATE`, projectId, decisionId,
+          ).then(() => { decisionLocked = 'ok'; }, () => { decisionLocked = 'error'; });
+        }, { timeout: 30000, maxWait: 30000 });
+        await holds;
+
+        let claimSettled = false;
+        const claim = c.claim().finally(() => { claimSettled = true; });
+
+        // the claim must be WAITING on the membership row — the `FOR UPDATE OF m` of
+        // `lockActiveMembershipById`, or the role-standing lock of its sibling
+        expect(await blocksWithin('%Membership%'), `${c.name}: the claim blocks on Membership`).toBe(true);
+        expect(claimSettled, `${c.name}: and is still pending, so it holds whatever it has taken`).toBe(false);
+
+        released!();
+        await held;
+        // THE ASSERTION: the decision lock was granted while the claim was still waiting. It could
+        // only be granted if the claim held no `FOR SHARE` on that row — which is the ordering.
+        expect(decisionLocked, `${c.name}: the decision lock succeeded, so no AB-BA formed`).toBe('ok');
+
+        const verdict = await claim;
+        expect(verdict.actionable, `${c.name}: and the claim then answers normally`).toBe(true);
+      } finally {
+        await holder.$disconnect();
+      }
+    }
+  });
+
+  it('F1 is PARTIAL: legacy revisions with no source command still coexist', async () => {
+    // 4c-i staged `sourceCommandId` nullable precisely so approvals performed by a pre-4c release
+    // keep their honest NULL, and PostgreSQL treats NULLs as distinct — a one-use index that
+    // collapsed them would make the register unmigratable for every existing database. Planted
+    // through the sanctioned trigger-disable path because the provenance trigger (correctly)
+    // refuses a NULL on any row written from 4c-ii onward.
+    const decisionId = await issue();
+    for (const version of [1, 2]) {
+      await plantLegacyApprovalRevision(t.prisma, {
+        id: `legacy-${version}-${run}`, projectId, decisionId, version, optionKey: 'a', approvedById: users.pmc,
+      });
+    }
+    const rows = await t.prisma.decisionApprovalRevision.findMany({ where: { decisionId } });
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.sourceCommandId === null)).toBe(true);
   });
 });

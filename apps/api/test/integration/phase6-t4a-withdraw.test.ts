@@ -1777,11 +1777,10 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         const canonical = await computeDecisionRows(t.prisma, projW);
         // a 4a-migration-seeded dto predates the 4b decider fields; its semantic IS the column
         // backfill's (`client`), and the read path normalizes it exactly so — compare normalized
-        // …and Phase 6 unit 4c-ii adds two more of the same kind: a dto that migration seeded
-        // predates the consultation thread and the approval cycle, and for a never-approved
-        // decision nobody was consulted on, EMPTY and 0 are exactly what those mean. The defaults
-        // go first so a value the row actually carries still wins.
-        const normalized = stored.map((r) => ({ ...r, dto: { deciderKind: 'client', consultations: [], approvalCycle: 0, ...(r.dto as Record<string, unknown>) } }));
+        // Phase 6 unit 4c-ii needs NO such normalization: the serializer omits the consultation
+        // thread and its cycle when the thread is empty, so a migration-seeded dto and a freshly
+        // computed one already agree by both carrying neither key.
+        const normalized = stored.map((r) => ({ ...r, dto: { deciderKind: 'client', ...(r.dto as Record<string, unknown>) } }));
         expect(normalized).toEqual(canonical);
         expect(stored.map((r) => r.decisionId).sort()).toEqual([idK, idW].sort());
         // the pmc register SERVES the withdrawal from the replacement generation
@@ -1962,11 +1961,10 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         const canonical = await computeDecisionRows(t.prisma, projW);
         // a 4a-migration-seeded dto predates the 4b decider fields; its semantic IS the column
         // backfill's (`client`), and the read path normalizes it exactly so — compare normalized
-        // …and Phase 6 unit 4c-ii adds two more of the same kind: a dto that migration seeded
-        // predates the consultation thread and the approval cycle, and for a never-approved
-        // decision nobody was consulted on, EMPTY and 0 are exactly what those mean. The defaults
-        // go first so a value the row actually carries still wins.
-        const normalized = stored.map((r) => ({ ...r, dto: { deciderKind: 'client', consultations: [], approvalCycle: 0, ...(r.dto as Record<string, unknown>) } }));
+        // Phase 6 unit 4c-ii needs NO such normalization: the serializer omits the consultation
+        // thread and its cycle when the thread is empty, so a migration-seeded dto and a freshly
+        // computed one already agree by both carrying neither key.
+        const normalized = stored.map((r) => ({ ...r, dto: { deciderKind: 'client', ...(r.dto as Record<string, unknown>) } }));
         expect(normalized).toEqual(canonical);
       } finally {
         await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'DecisionProjection', 'CommandExecution'], { cascade: true });

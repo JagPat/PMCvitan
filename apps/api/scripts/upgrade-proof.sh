@@ -4395,6 +4395,25 @@ assert "4c-ii: the accepted revision names the approval command it is the produc
   "SELECT COALESCE(\"sourceCommandId\", 'null') FROM \"DecisionApprovalRevision\" WHERE \"id\"='UP4CI-REV';" \
   "UP4CII-CMD"
 
+# Review finding F1 — the receipt just accepted above is now SPENT. Every predicate the provenance
+# trigger tests still passes for it (right project, `decisions.approve`, succeeded, resultRef names
+# this decision), because it really did approve this decision; what must refuse the replay is the
+# one-use partial unique. Without it, one genuine approval mints unbounded revisions and inflates
+# the COUNT every open consultation is frozen against — the same denial the bare-revision arm
+# refuses, reached with a real receipt.
+assert_rejects "4c-ii F1: a SPENT approval receipt replayed onto a second revision" \
+  "INSERT INTO \"DecisionApprovalRevision\"(\"id\",\"projectId\",\"decisionId\",\"version\",\"optionKey\",\"approvedAt\",\"approvedById\",\"sourceCommandId\") VALUES ('UP4CII-REPLAY','p1','UP4A-D2',98,'a',now(),'USER-1','UP4CII-CMD')" \
+  "DecisionApprovalRevision_source_command_key"
+assert "4c-ii F1: the register still records exactly ONE revision for that receipt" \
+  "SELECT COUNT(*)::text FROM \"DecisionApprovalRevision\" WHERE \"sourceCommandId\"='UP4CII-CMD';" \
+  "1"
+# …and the index is PARTIAL, so the legacy rows this fixture's own pre-4c approvals left behind —
+# the ones 4c-i staged the column nullable for — still coexist. A non-partial unique would have
+# made every existing database unmigratable, which is the opposite of an additive migration.
+assert "4c-ii F1: legacy NULL-provenance revisions still coexist (the index is partial)" \
+  "SELECT (COUNT(*) > 1)::text FROM \"DecisionApprovalRevision\" WHERE \"sourceCommandId\" IS NULL;" \
+  "true"
+
 # the alternate writer, tried where it would actually try: a consultation minted with no command
 # receipt behind it is invisible to the projection, which is the whole point of the provenance rule
 assert_rejects "4c-i: a consultation with no command receipt behind it" \

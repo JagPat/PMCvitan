@@ -2265,6 +2265,13 @@ model DecisionApprovalRevision {
   // the provenance FK target: version AND option bind together to one immutable approval fact
   // (explicit name — the generated one exceeds PostgreSQL's 63-char identifier limit)
   @@unique([projectId, decisionId, version, optionKey], map: "DecisionApprovalRevision_provenance_target_key")
+  // Phase 6 unit 4c-ii (review F1) — ONE-USE provenance, the shape the two consultation facts
+  // already carry: a completed `decisions.approve` receipt backs AT MOST ONE revision, so a single
+  // genuine receipt cannot be replayed to inflate the approval COUNT every open consultation is
+  // frozen against. Lives in SQL only (`DecisionApprovalRevision_source_command_key` in
+  // 20271115000000) because it is PARTIAL — `WHERE "sourceCommandId" IS NOT NULL`, so the legacy
+  // rows 4c-i staged the column nullable for stay out of it — and Prisma cannot express a
+  // predicate on `@@unique`.
 }
 
 // Append-only lifecycle + audit log for a decision.
