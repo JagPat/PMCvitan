@@ -13,27 +13,94 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: in_progress
-work_item: phase-6-task-4c-ii
-reviewed_merge: d4e2ddf5
-open_pr: 498
+task_state: correction_required
+work_item: none
+reviewed_merge: 5fcc2a58
+open_pr: none
 next_task: phase-6-task-4c-iii
-blocking_directive: none
+blocking_directive: phase-6-4c-previous-release-drained
 updated: 2026-08-31
 ```
 
-**UNIT 4c-ii IS OPEN AS PR #498** (branch `claude/phase6-4c-ii-replacement`, `Replaces: #497`),
-scheduled from `main` `1d6c4ff1`. PR #497 carried this same unit, reached the two-finding-bearing-
-head review-round limit and is CLOSED UNMERGED carrying `review-replacement-required`; #498 is the
-gate-mandated close-and-replace, authorized by the Board's A/B rubric (2026-08-28 §3) Option 1 on
-2026-08-31. It carries the whole unit AS ALREADY FOLDED — every correction round plus the round-30
-work on `196eeb92` — so no review budget is waived and no finding is treated as settled by the
-replacement: the unit re-enters review from a fresh head with its history intact. The earlier
-"do not open a third 4c-ii PR" governed the PARALLEL DUPLICATES (#495, #496), which were closed as
-superseded while #497 remained the sole open work; it does not govern this replacement, and the
-Board said so when authorizing it.** The 30 August sequence authorized 4c-0 through 4c-v, so this unit waits
-on no fresh GO and none is to be asked for. Contractor-capture units 1–6 stay Board-gated — a
-SEPARATE gate the 4c sequence does not lift.
+**UNIT 4c-ii IS MERGED (PR #498 at `main` `5fcc2a58`) WITH A FRESH INDEPENDENT CODEX +1 ON THE
+EXACT REVIEWED HEAD `7c4318e8`** — first review attempt on that head, no findings, and the
+trusted exact-head gate completed it directly. `open_pr` goes to `none` and `reviewed_merge`
+advances to the 4c-ii merge, so the hourly shepherd stops seeing `main` record a PR that is not
+live.
+
+The Now block takes the DIRECTIVE LANDING SHAPE (`task_state: correction_required`,
+`work_item: none`, `open_pr: none`, a named `blocking_directive`), NOT the terminal handoff shape,
+and that is the plan's own instruction rather than a choice made here. §D says it in terms:
+"4c-ii's own STATUS fold SETS `blocking_directive` naming the rollout prerequisite — the DRAIN
+CONFIRMATION ONLY … with `task_state: correction_required`", and it is a BOARD DECISION recorded
+as not re-litigable (2026-08-29, on PR #480). `assessRunnerState` therefore resolves to
+`directive:phase-6-4c-previous-release-drained` and CANNOT start 4c-iii or 4c-iv, nor hand off to
+4d, while the directive stands. `isDirectiveLandingShape` recognizes this landing, so the shepherd
+does not read its own `open_pr: none` as drift and does not instruct the loop to point `open_pr` at
+the landing PR itself (the #303 trap).
+
+**A first draft of this landing used the terminal handoff shape and was WRONG**, caught by Codex
+on head `4058c3f6`: `task_state: merged` with `blocking_directive: none` makes 4c-iii immediately
+executable, which contradicts the staging rule above and is not a cosmetic difference. §B names the
+concrete hazard: 4c-iii enables `consultation` for every project, and if a PRE-4c-ii worker is still
+serving when that happens it can claim a `decision.consultation_*` delivery — the projection
+consumer dispatches every `decision.*` event, so an old worker upserts with its old serializer and
+ADVANCES the generation while ERASING the thread and the widened audience; an old push worker
+recognizes no family and falls through to the unguarded targeted send, bypassing every §B.3 claim
+predicate. The outbox has ONE ordered delivery per consumer, so a claim by the wrong version is not
+retried by the right one. The gate has to be fail-closed BEFORE 4c-iii can start, not after.
+
+`task_state: correction_required` is not a claim that 4c-ii is defective — 4c-ii merged clean. It
+is the state from which STATUS schedules a directive, and the directive is the rollout prerequisite
+the plan attaches to this landing. THREE plan units remain after 4c-ii (4c-iii, 4c-iv, 4c-v);
+`next_task` records that 4c-iii is the ordering, and the directive is what decides WHEN it may
+open. The 30 August Board sequence authorized 4c-0 through 4c-v, so no unit of 4c waits on a fresh
+GO — this directive is a ROLLOUT ordering prerequisite, not a scope authorization, and it is
+cleared by a STATUS commit rather than by asking for permission to proceed. Contractor-capture
+units 1–6 stay Board-gated — a SEPARATE gate the 4c sequence does not lift.
+
+### Directive `phase-6-4c-previous-release-drained`
+
+**What it attests, and why a human declares it.** One fact, and only one: every previous-release
+serving process has drained — no worker predating 4c-ii can still claim a delivery. No code in this
+repository can observe that. `OutboxConsumerCatalog.catalogVersion` is a per-CONSUMER contract
+version and `syncConsumerCatalog` upserts one global row per consumer name; it cannot enumerate
+processes or releases. Review round 9 established that, round 16's call to automate it asked for the
+signal round 9 had already rejected as unimplementable, and the Board settled it on 2026-08-29
+(on #480): this stays an operator-declared directive and NO automated drain or backfill actor is
+invented for it.
+
+**Deliberately NOT "the all-project backfill executed"** (review round 20, correcting an earlier
+draft): once 4c-iii IS the backfill, requiring the backfill before 4c-iii may start is circular —
+the loop would wait forever, or an operator would mutate production outside a reviewed unit, which
+is the exact thing putting the backfill in a reviewed unit prevents. Everything mechanical belongs
+to 4c-iii. This directive carries the one fact code cannot see.
+
+**How to clear it.** Confirm the fleet is drained, then land a STATUS commit setting
+`blocking_directive: none` and `task_state` to the state the next unit opens from. That commit is
+the attributable, reviewable record of WHO declared the fleet drained — the same shape every other
+blocking directive in this loop uses. Nothing else clears it: not a Board call, not the handoff
+watchdog, not the drift shepherd, not a clean signal on any PR, and not a review finding asking for
+its removal.
+
+**What it blocks while it stands.** `assessRunnerState` returns `directive:` ahead of every other
+work source, so 4c-iii, 4c-iv and the §E handoff to 4d are all unreachable. The runner is not
+stranded: it continues every already-authorized duty — shepherding open PRs, fix-forward
+corrections, CI and the gate battery, and the Maintenance queue. 4c is not complete until 4c-v
+merges, so no unit's merge — 4c-ii's included — may be treated as the end of the task.
+
+**How #498 came to be, kept on the record rather than tidied away.** PR #497 carried this same
+unit, reached the two-finding-bearing-head review-round limit and is CLOSED UNMERGED carrying
+`review-replacement-required`; #498 was the gate-mandated close-and-replace, authorized by the
+Board's A/B rubric (2026-08-28 §3) Option 1 on 2026-08-31, from `main` `1d6c4ff1`. It carried the
+whole unit AS ALREADY FOLDED — every correction round plus the round-30 work on `196eeb92` — so no
+review budget was waived and no finding was treated as settled by the replacement: the unit
+re-entered review from a fresh head with its history intact, took ONE finding-bearing head
+(`b777c29a`, three findings), and cleared on the single batched correction that followed. The
+earlier "do not open a third 4c-ii PR" governed the PARALLEL DUPLICATES (#495, #496), which were
+closed as superseded while #497 remained the sole open work; it did not govern this replacement,
+and the Board said so when authorizing it. #499 — a second, parallel replacement opened before its
+author knew #498 existed — is CLOSED UNMERGED per the Board call, with nothing stranded.
 
 **4c-ii IS THE BEHAVIOUR UNIT**: the contracts, the two commands, `ROLE_POLICY` and the guarded
 routes, the visibility widening on BOTH sides, the P25c projection thread, the two push families
@@ -137,6 +204,50 @@ the evidence the replay works natively. RED-first by removal: dropping the stamp
 tests red (the three delivered 4a repair probes plus both new round-30 probes) and removing the
 one-line serve fence turns the serve-gate probe red; `upgrade-proof.sh` gains four arms exercising
 all of it on the FULLY MIGRATED database, which the pre-existing arms never reached.
+
+**THE REVIEW OF HEAD `b777c29a` RETURNED THREE FINDINGS; ALL THREE ARE CORRECTED IN ONE BATCHED
+HEAD (`7c4318e8`), WHICH THEN CLEARED WITH A FRESH CODEX +1.** That was the unit's FIRST
+finding-bearing head under the replacement, so the correction was the only one needed. Each was
+reproduced RED first. **F1 (P1)** a PRE-SEAL approval receipt was SPENDABLE: the one-use index is
+PARTIAL on `sourceCommandId IS NOT NULL` precisely so legacy NULL-provenance revisions coexist,
+which means a `succeeded` `decisions.approve` receipt that completed before the seal never consumed
+its uniqueness slot while every trigger predicate still passed for it — so a direct writer could
+spend one, inflate the frozen cycle and permanently 409 an open consultation, reached through the
+seal's own compatibility allowance. Backfilling provenance onto legacy revisions would INVENT it,
+which this migration refuses on a writer's behalf and must equally refuse on its own, so the install
+instant is recorded (`Phase6ApprovalSealWatermark`) and a receipt created at or before it cannot
+back a NEW revision — a claim about the past that is simply true and needs no guess. The precision
+arm matters as much as the refusal: a post-seal approval still records normally, so a watermark that
+refused everything could not have passed. **F2 (P2)** the answered state was read from a snapshot
+taken before the lock that decides it; it is now re-read under the exclusive membership lock both
+racers take on the same row. **F3 (P2)** the round-30 INHERITANCE rule was wrong and is REMOVED, not
+narrowed: it was justified by "the 4a repair COPIES its rows from the generation it retires", which
+holds for the copy branch and is FALSE of the missing-row branch, which synthesizes a projection row
+from hard-coded SQL predating this unit's serializer fields — so inheriting v2 made an incomplete
+row servable through the very gate meant to refuse it, and a BEFORE INSERT trigger cannot tell the
+branches apart because the rows it would judge do not exist when it fires. An un-versioned INSERT
+therefore always stamps 1, and the cost is stated rather than hidden: past v1 the 4a repair's
+replacement is not served until an ordinary `projection:rebuild` and reads fall back to the
+always-current live slice (the cutover rebuilds every projection anyway, so the window does not
+arise in this unit's own deployment sequence).
+
+**ONE DEFECT WAS FOUND WHILE CORRECTING AND IS REPORTED, NOT FIXED, ON PURPOSE.** Writing the F2
+concurrency probe showed that two SIMULTANEOUS answers to one consultation deadlock (`40P01`)
+rather than producing the misleading retry message — and it reproduces with none of 4c-ii's
+corrections applied. PostgreSQL named the first cycle: `isProjectOperable`'s `Project … FOR UPDATE`
+conflicts with the `KEY SHARE` taken on that row by EVERY insert of a row whose FK references it,
+and `executeCommand` reserves its `CommandExecution` receipt before `run()` takes the readiness key.
+`FOR SHARE` preserves the stated invariant and demonstrably changed the deadlock's shape, but a
+second cycle remained unidentified, so the change was reverted and the probe withheld: it touches an
+orgs-owned method every module uses, and a probe asserting today's behaviour would assert a bug. The
+Watch ruled it OUT of that correction head as new scope (comment 5473515967). It is not
+consultation-specific — the ingredients are shared by every command — and wants its own unit with a
+proper barrier harness. It is NOT scheduled here and is NOT a `blocking_directive`; 4c-iii is the
+named next task.
+
+**A SECOND, SMALLER FINDING IS RECORDED THE SAME WAY**: `apps/api/tsconfig.json` includes only
+`src`, so the integration tests are never typechecked and vitest transpiles without checking types
+— a `tsc` run after editing a test file is not evidence about that file.
 
 **4c-i IS MERGED (PR #493 at `main` `d4e2ddf5`) WITH A FRESH INDEPENDENT CODEX +1 ON THE
 EXACT REVIEWED HEAD `7650109`, AND THE REMOVAL-AND-REINSTATE BLOCKER IS CLEARED BY
