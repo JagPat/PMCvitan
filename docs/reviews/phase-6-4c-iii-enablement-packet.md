@@ -190,3 +190,49 @@ is the authority for these two gates. The exposure is low and checkable rather t
 unit changes no service, route, contract or UI file, and **no e2e spec in the repository references
 `capabilities` or `consultation`** (`grep` over `apps/web/tests/e2e-api/` returns zero files). If CI
 disagrees, that is this unit's to fix.
+
+## Round 1 — the two findings on head `9067d0cc`, corrected in one batched head
+
+**P1 — freeze the consultation attribution.** The seal fired on `UPDATE OF "capability"`, so
+`UPDATE … SET "enabledById" = …` rewrote the migration's `system:phase6-4c-iii` attribution
+unopposed. The finding is right and the framing matters: this migration writes that value to record
+that the DATABASE enabled the capability and no person did, so a writer able to overwrite it can
+dress a machine enablement up as an operator's act — or an operator's as the machine's. A seal that
+keeps a row present while letting its provenance be rewritten protects the wrong half of it.
+
+The trigger now fires on EVERY update and freezes three things on a `consultation` row: its key
+(re-key), its `projectId` (re-parent — the gate reads are per-project, so moving the row removes it
+from this one), and its attribution. Each arm is `IS DISTINCT FROM` per column, never the mere fact
+of an UPDATE, so the ordinary idempotent `capabilities.enable` upsert — whose update branch changes
+nothing — still succeeds. That precision arm is probed too.
+
+The completeness rule is extended by the same reasoning round 26 used for TRUNCATE: **a seal over a
+row that is EVIDENCE is complete only when it covers every column the evidence rests on, not merely
+the key that identifies it.**
+
+**P2 — race the migration behind an explicit barrier.** Also right, and the sharpest form of it:
+the first probe raced two ordinary creates *after* the migration had committed, so a migration that
+backfilled before installing the trigger would have passed it unchanged. Rewritten to drive the
+**shipped migration file, read from disk**, against a scratch database, with a writer held at the
+transition lock by an uncommitted `Project` insert — the migration's wait is *observed* in
+`pg_stat_activity`, never slept on.
+
+Two things that rewrite taught, both recorded because they change what the probe means:
+
+1. **Hoisting the backfill above the trigger is not the defect.** Step 1a adds the
+   `ProjectCapability → Project` FK, and adding an FK locks the referenced table, so the migration
+   already waits for any in-flight create before it reaches the trigger. The hazard is only
+   reachable by a backfill running before the transaction holds ANY `Project` lock, so the mutation
+   hoists it to the very front.
+2. **The broken order is caught by the migration itself.** Its closing DO block refuses to commit
+   when a project lacks the row, so the mutated arm asserts that refusal. That is the check earning
+   its place: the every-project guarantee is verified, not asserted.
+
+Both new P1 arms were **RED at `9067d0cc`** on a scratch database migrated to that exact head (the
+attribution rewrite and the re-parent both succeeded there), GREEN here.
+
+**Re-run gates on the correction head:** `pnpm check` EXIT 0 (web 985/985, API 804/804); full
+integration battery **102 files / 1385 tests, 0 failures** on a pristine migrated DB;
+`upgrade-proof.sh` PASSED. The browser e2e senders remain unrunnable in this sandbox and unclaimed,
+for the reason stated above.
+

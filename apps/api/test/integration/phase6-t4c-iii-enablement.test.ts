@@ -1,21 +1,73 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
 import { CONSULTATION_CAPABILITY } from '../../src/platform/capabilities.service';
 
-/**
- * Phase 6 unit 4c-iii — the ENABLEMENT TRANSITION (plan §D, rounds 18/20/21/24/26).
+/** The migration under test, read from disk so the race below drives the SHIPPED file rather than
+ *  a paraphrase of it — the difference the round-1 P2 finding turned on. */
+const MIGRATION_PATH = join(
+  __dirname, '../../prisma/migrations/20271120000000_phase6_t4c_iii_enablement/migration.sql');
+
+/** The connection this suite's DATABASE_URL points at, split so the race can create and drop its
+ *  own scratch database beside it. */
+const baseUrl = (process.env.DATABASE_URL ?? '').split('?')[0].replace(/\/[^/]*$/, '');
+const adminUrl = `${baseUrl}/postgres`;
+
+/** Split a migration into executable statements. Postgres dollar-quoted bodies (`$$ … $$`) contain
+ *  semicolons that are NOT statement terminators, so a naive split on ';' would tear every trigger
+ *  function in half — the migration is mostly such bodies. */
+export function splitSql(sql: string): string[] {
+  const out: string[] = [];
+  let buf = '';
+  let tag: string | null = null;   // open $$…$$ / $tag$…$tag$ body
+  let quoted = false;              // inside '…'
+  let lineComment = false;         // inside -- …
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    if (lineComment) { buf += ch; if (ch === '\n') lineComment = false; continue; }
+    if (quoted) { buf += ch; if (ch === "'") quoted = false; continue; }
+    if (tag !== null) {
+      if (sql.startsWith(tag, i)) { buf += tag; i += tag.length - 1; tag = null; continue; }
+      buf += ch; continue;
+    }
+    // …outside every quoting construct: only here is a ';' a terminator. This file's own header
+    // comments contain semicolons, which is how the first version of this splitter tore a comment
+    // in half and handed PostgreSQL the word "the" as a statement.
+    if (ch === '-' && sql[i + 1] === '-') { lineComment = true; buf += ch; continue; }
+    if (ch === "'") { quoted = true; buf += ch; continue; }
+    const open = /^\$[A-Za-z_]*\$/.exec(sql.slice(i));
+    if (open) { tag = open[0]; buf += open[0]; i += open[0].length - 1; continue; }
+    if (ch === ';') { if (buf.trim()) out.push(buf); buf = ''; continue; }
+    buf += ch;
+  }
+  if (buf.trim()) out.push(buf);
+  // a fragment that is only comments and whitespace is not a statement
+  return out.filter((s) => s.replace(/--[^\n]*/g, '').trim().length > 0);
+}
+
+/** The §D round-21 DEFECT, produced FROM the shipped file rather than hand-written: hoist the
+ *  backfill to the very front, ahead of every statement that takes a lock on `Project`.
  *
- * ONE migration, in ONE transaction, doing three inseparable things in a mandated order: replace
- * the reservation with a PRESERVATION seal, install the `AFTER INSERT` trigger on `Project`, and
- * THEN backfill every existing project. What is probed here is the TERMINAL STATE that ordering
- * exists to guarantee — every project has the row, whichever mechanism produced it — plus each
- * arm of the seal that replaces the reservation.
- *
- * Every probe below FAILS at `main` 2cec61f: there the reservation is still armed (so a
- * `consultation` row cannot exist at all), no `Project` trigger exists, and no seal does.
- */
+ *  Hoisting it merely above the `CREATE TRIGGER` is NOT enough, and finding that out is what this
+ *  comment exists for: step 1a adds the `ProjectCapability → Project` foreign key, and adding an
+ *  FK locks the REFERENCED table too, so the migration already waits for any in-flight create
+ *  before it reaches the trigger. The ordering hazard is only reachable by a backfill that runs
+ *  before the transaction holds any `Project` lock at all. */
+export function mutateToBackfillFirst(sql: string): string {
+  const stmts = splitSql(sql);
+  const backfill = stmts.findIndex((s) => s.includes(`SELECT p."id", 'consultation'`));
+  const trigger = stmts.findIndex((s) => s.includes('CREATE TRIGGER "Project_t4c_consultation_enabled"'));
+  if (backfill < 0 || trigger < 0 || backfill < trigger) {
+    throw new Error('the shipped migration no longer has trigger-before-backfill; this mutation is stale');
+  }
+  const [b] = stmts.splice(backfill, 1);
+  stmts.unshift(b);
+  return stmts.join(';\n') + ';';
+}
+
 describe('Phase 6 unit 4c-iii — the enablement transition (live PG)', () => {
   let t: TestApp;
   let raceDb: PrismaClient;
@@ -104,21 +156,121 @@ describe('Phase 6 unit 4c-iii — the enablement transition (live PG)', () => {
       .toBe('system:phase6-4c-iii');
   });
 
-  it('a concurrent create racing the transition still ends with its row — whichever side won', async () => {
-    // §D's barrier-controlled probe. The transition has already committed here, so what this
-    // asserts is the property that ordering bought: the trigger covers a create the backfill
-    // could never have seen, and the terminal state is the same either way. Two sessions create
-    // simultaneously on separate connections; both projects must hold the row.
-    const a = id('race-a');
-    const b = id('race-b');
-    made.push(a, b);
-    await Promise.all([
-      t.prisma.project.create({ data: projectData(a) }),
-      raceDb.project.create({ data: projectData(b) }),
-    ]);
-    expect(await capRow(a)).not.toBeNull();
-    expect(await capRow(b)).not.toBeNull();
-  });
+  it('a create racing the TRANSITION ITSELF still ends with its row — and the wrong order loses it', async () => {
+    // REWRITTEN after a review finding on head 9067d0cc (P2). The first version raced two ordinary
+    // creates AFTER the migration had already committed, which tests nothing about the ordering:
+    // a migration that backfilled BEFORE installing the trigger would have passed it unchanged,
+    // while a create committing in that installation gap would permanently lack the row.
+    //
+    // This runs the ACTUAL migration file, read from disk, against a scratch database, with a
+    // writer held at the transition lock by an explicit barrier — and then runs a MUTATED copy
+    // with the two steps swapped, to show the probe can actually fail. Without that second half
+    // "it passed" would again mean nothing.
+    const scratch = `pmcvitan_t4ciii_race_test_${run}`;
+    const admin = new PrismaClient({ datasources: { db: { url: adminUrl } } });
+    await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${scratch}"`);
+    await admin.$executeRawUnsafe(`CREATE DATABASE "${scratch}"`);
+    const url = `${baseUrl}/${scratch}?schema=public`;
+
+    /** The two tables the migration touches, in their delivered shape (the columns and constraints
+     *  it depends on). A scratch database with 2 tables instead of 134 is the only reduction. */
+    const seed = async (db: PrismaClient) => {
+      await db.$executeRawUnsafe(`CREATE TABLE "Project" ("id" TEXT PRIMARY KEY, "orgId" TEXT NOT NULL)`);
+      await db.$executeRawUnsafe(
+        `CREATE TABLE "ProjectCapability" (
+           "projectId" TEXT NOT NULL, "capability" TEXT NOT NULL,
+           "enabledAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "enabledById" TEXT NOT NULL,
+           CONSTRAINT "ProjectCapability_pkey" PRIMARY KEY ("projectId","capability"))`);
+      await db.$executeRawUnsafe(
+        `ALTER TABLE "ProjectCapability" ADD CONSTRAINT "ProjectCapability_projectId_fkey"
+           FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE RESTRICT ON UPDATE CASCADE`);
+      await db.$executeRawUnsafe(`INSERT INTO "Project" VALUES ('already-there','o1')`);
+    };
+
+    /** Hold an UNCOMMITTED project insert, then report when the migration session is blocked on it.
+     *  The insert takes ROW EXCLUSIVE on "Project", which `CREATE TRIGGER`'s ACCESS EXCLUSIVE
+     *  cannot take — so the migration WAITS here, which is the barrier. */
+    const raceOnce = async (sql: string): Promise<{ missing: string[]; failure: string | null }> => {
+      const holder = new PrismaClient({ datasources: { db: { url } } });
+      const runner = new PrismaClient({ datasources: { db: { url } } });
+      const probe = new PrismaClient({ datasources: { db: { url } } });
+      try {
+        let release!: () => void;
+        const held = new Promise<void>((r) => { release = r; });
+        let ready!: () => void;
+        const holding = new Promise<void>((r) => { ready = r; });
+
+        const holderTx = holder.$transaction(async (tx) => {
+          await tx.$executeRawUnsafe(`INSERT INTO "Project" VALUES ('racer','o1')`);
+          ready();
+          await held;
+        }, { timeout: 30_000, maxWait: 30_000 });
+        await holding;
+
+        let done = false;
+        let failure: unknown;
+        const migration = runner.$transaction(async (tx) => {
+          for (const stmt of splitSql(sql)) await tx.$executeRawUnsafe(stmt);
+        }, { timeout: 30_000, maxWait: 30_000 }).then(() => { done = true; }, (e) => { done = true; failure = e; });
+
+        // the barrier: observed, never slept on
+        const blocked = await (async () => {
+          const deadline = Date.now() + 10_000;
+          while (Date.now() < deadline) {
+            const rows = await probe.$queryRawUnsafe<Array<{ n: bigint }>>(
+              `SELECT count(*)::bigint AS n FROM pg_stat_activity
+                WHERE datname = $1 AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`, scratch);
+            if (Number(rows[0]?.n ?? 0) > 0) return true;
+            await new Promise((r) => setTimeout(r, 50));
+          }
+          return false;
+        })();
+        expect(blocked, `the migration must WAIT at the transition lock while a create is in flight (migration error: ${failure ? String(failure).slice(0, 400) : 'none'})`).toBe(true);
+        expect(done, 'and it cannot have finished while that create is uncommitted').toBe(false);
+
+        release();
+        await holderTx;
+        await migration;
+
+        const got = await probe.$queryRawUnsafe<Array<{ projectId: string }>>(
+          `SELECT p."id" AS "projectId" FROM "Project" p
+            WHERE NOT EXISTS (SELECT 1 FROM "ProjectCapability" c
+                               WHERE c."projectId" = p."id" AND c."capability" = 'consultation')
+            ORDER BY p."id"`);
+        return { missing: got.map((r) => r.projectId), failure: failure ? String(failure) : null };
+      } finally {
+        await holder.$disconnect(); await runner.$disconnect(); await probe.$disconnect();
+      }
+    };
+
+    const shipped = readFileSync(MIGRATION_PATH, 'utf8');
+    let scratchDb = new PrismaClient({ datasources: { db: { url } } });
+    await seed(scratchDb);
+    await scratchDb.$disconnect();
+
+    // (1) THE SHIPPED ORDER — trigger, then backfill. The racing create is covered whichever side
+    //     won: it committed before the backfill's snapshot, or the trigger was already installed.
+    const ok = await raceOnce(shipped);
+    expect(ok.failure, 'the shipped migration commits').toBeNull();
+    expect(ok.missing, 'no project may be left without the row').toEqual([]);
+
+    // (2) THE WRONG ORDER, to prove this probe has teeth — without it, "it passed" means nothing.
+    //     A backfill that runs before the transaction holds any `Project` lock cannot see the
+    //     in-flight create, so the project it strands is exactly the one §D round 21 describes.
+    //     The migration's own closing check then REFUSES TO COMMIT, which is the whole reason that
+    //     check exists: the every-project guarantee is verified, not asserted.
+    await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${scratch}"`);
+    await admin.$executeRawUnsafe(`CREATE DATABASE "${scratch}"`);
+    scratchDb = new PrismaClient({ datasources: { db: { url } } });
+    await seed(scratchDb);
+    await scratchDb.$disconnect();
+    const broken = await raceOnce(mutateToBackfillFirst(shipped));
+    expect(broken.failure ?? '', 'the broken order must be caught by the migration itself')
+      .toMatch(/still lack the `consultation` capability row/u);
+
+    await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${scratch}"`);
+    await admin.$disconnect();
+  }, 120_000);
 
   // ═══ THE RESERVATION IS GONE ═════════════════════════════════════════════════════════════════
 
@@ -164,6 +316,59 @@ describe('Phase 6 unit 4c-iii — the enablement transition (live PG)', () => {
       ),
     ).rejects.toThrow(/may not be RE-KEYED/u);
     expect(await capRow(pid)).not.toBeNull();
+  });
+
+  it('ARM 2b — RE-PARENTING the row to another project is REFUSED', async () => {
+    // Round-1 finding (P1) widened this seal from `UPDATE OF "capability"` to every UPDATE, which
+    // made two further removals-by-another-name reachable to test. Moving the row to another
+    // project removes it from THIS one, and the gate reads are per-project.
+    const a = await makeProject('reparent-a');
+    const b = await makeProject('reparent-b');
+    await expect(
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "ProjectCapability" SET "projectId" = $2 WHERE "projectId" = $1 AND "capability" = 'consultation'`,
+        a, b,
+      ),
+    ).rejects.toThrow(/may not be RE-PARENTED/u);
+    expect(await capRow(a), 'the row stays with the project it belongs to').not.toBeNull();
+  });
+
+  it('ARM 2c — REWRITING the attribution is REFUSED: the row is evidence, not just a flag', async () => {
+    // The round-1 P1 itself. The trigger fired only for `UPDATE OF "capability"`, so an alternate
+    // writer could rewrite `enabledById`/`enabledAt` unopposed — dressing a DATABASE enablement up
+    // as an operator's act, or the reverse. The row's presence was sealed; what it was evidence OF
+    // was not. RED at head 9067d0cc, where both statements below succeeded.
+    const pid = await makeProject('attrib');
+    await expect(
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "ProjectCapability" SET "enabledById" = 'some-user' WHERE "projectId" = $1 AND "capability" = 'consultation'`,
+        pid,
+      ),
+    ).rejects.toThrow(/carries the ATTRIBUTION/u);
+    await expect(
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "ProjectCapability" SET "enabledAt" = now() - interval '10 days' WHERE "projectId" = $1 AND "capability" = 'consultation'`,
+        pid,
+      ),
+    ).rejects.toThrow(/carries the ATTRIBUTION/u);
+    expect((await capRow(pid))!.enabledById, 'the recorded actor is unchanged').toBe('system:phase6-4c-iii');
+  });
+
+  it('…and a NO-OP upsert still succeeds — the seal refuses CHANGES, not the mere fact of an UPDATE', async () => {
+    // Widening the trigger to every UPDATE could have broken the ordinary idempotent enable, whose
+    // update branch changes nothing. The arms test IS DISTINCT FROM per column for exactly this.
+    const pid = await makeProject('noop');
+    const before = await capRow(pid);
+    await expect(
+      t.prisma.projectCapability.upsert({
+        where: { projectId_capability: { projectId: pid, capability: CONSULTATION_CAPABILITY } },
+        create: { projectId: pid, capability: CONSULTATION_CAPABILITY, enabledById: 'op' },
+        update: {},
+      }),
+    ).resolves.toBeTruthy();
+    const after = await capRow(pid);
+    expect(after!.enabledById).toBe(before!.enabledById);
+    expect(after!.enabledAt.getTime()).toBe(before!.enabledAt.getTime());
   });
 
   it('ARM 3 — TRUNCATE is REFUSED, because a row trigger never fires for it', async () => {

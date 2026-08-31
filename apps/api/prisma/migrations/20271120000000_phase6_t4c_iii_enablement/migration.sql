@@ -91,16 +91,48 @@ BEGIN
     END IF;
     RETURN OLD;
   END IF;
-  -- UPDATE: re-keying an existing row OFF `consultation` removes it by another name
-  IF OLD."capability" = 'consultation' AND NEW."capability" IS DISTINCT FROM 'consultation' THEN
-    RAISE EXCEPTION 'phase6-4c: the `consultation` capability row for project % may not be RE-KEYED off `consultation` — `capability` is a mutable key with no freeze trigger, so a DELETE-only seal leaves the same gate-closed state reachable by renaming the row', OLD."projectId";
+  -- UPDATE: the consultation row is FROZEN once it exists. Three distinct removals-by-another-name,
+  -- and the third was a review finding on head 9067d0cc (P1) rather than something this file
+  -- foresaw — recorded that way because the completeness rule below is what should have caught it.
+  --
+  --   (a) RE-KEYING it off `consultation` removes it under a different name;
+  --   (b) RE-PARENTING it to another project removes it from THIS project — the gate reads are
+  --       per-project, so moving the row is indistinguishable from deleting it here;
+  --   (c) REWRITING its attribution (`enabledById`/`enabledAt`) leaves the row in place but
+  --       destroys what it is EVIDENCE of. This migration writes `system:phase6-4c-iii` to record
+  --       that the DATABASE enabled the capability and no person did; an alternate writer that can
+  --       overwrite that can dress a machine enablement up as an operator's act, or an operator's
+  --       as the machine's. A seal that keeps a row present while letting its provenance be
+  --       rewritten protects the wrong half of it.
+  --
+  -- THE COMPLETENESS RULE, extended by the same reasoning round 26 used for TRUNCATE: a seal over a
+  -- row that is EVIDENCE is complete only when it covers every column whose value the evidence
+  -- rests on, not merely the key that identifies it.
+  --
+  -- A no-op UPDATE is permitted: the ordinary `capabilities.enable` writer is an upsert whose
+  -- update branch changes nothing, and refusing an update that alters nothing would break the
+  -- idempotent enable for no invariant's sake. So the test is IS DISTINCT FROM on each sealed
+  -- column, never the mere fact of an UPDATE.
+  IF OLD."capability" = 'consultation' THEN
+    IF NEW."capability" IS DISTINCT FROM OLD."capability" THEN
+      RAISE EXCEPTION 'phase6-4c: the `consultation` capability row for project % may not be RE-KEYED off `consultation` — `capability` is a mutable key with no freeze trigger, so a DELETE-only seal leaves the same gate-closed state reachable by renaming the row', OLD."projectId";
+    END IF;
+    IF NEW."projectId" IS DISTINCT FROM OLD."projectId" THEN
+      RAISE EXCEPTION 'phase6-4c: the `consultation` capability row for project % may not be RE-PARENTED to project % — the gate reads are per-project, so moving the row removes it from this one exactly as a delete would', OLD."projectId", NEW."projectId";
+    END IF;
+    IF NEW."enabledById" IS DISTINCT FROM OLD."enabledById"
+       OR NEW."enabledAt" IS DISTINCT FROM OLD."enabledAt" THEN
+      RAISE EXCEPTION 'phase6-4c: the `consultation` capability row for project % carries the ATTRIBUTION of who enabled it (% at %), which is evidence and is immutable — a writer that can rewrite it can present a database enablement as an operator''s act, or the reverse', OLD."projectId", OLD."enabledById", OLD."enabledAt";
+    END IF;
   END IF;
   RETURN NEW;
 END $$;
 
+-- Fires on EVERY update, not `UPDATE OF "capability"`: a column list narrows the trigger to the
+-- columns named, which is precisely how the attribution arm above was reachable on head 9067d0cc.
 DROP TRIGGER IF EXISTS "ProjectCapability_t4c_preserved" ON "ProjectCapability";
 CREATE TRIGGER "ProjectCapability_t4c_preserved"
-  BEFORE DELETE OR UPDATE OF "capability" ON "ProjectCapability"
+  BEFORE DELETE OR UPDATE ON "ProjectCapability"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4c_capability_preserved();
 
 CREATE OR REPLACE FUNCTION phase6_t4c_capability_no_truncate() RETURNS TRIGGER LANGUAGE plpgsql AS $$
