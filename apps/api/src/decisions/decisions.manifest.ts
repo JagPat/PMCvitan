@@ -12,11 +12,16 @@ export const decisionsManifest: ModuleManifest = {
   // (no application writer), owned and read-encapsulated here like every decision fact.
   // Phase 6 unit 4c-i — the two consultation facts are decisions-owned and DEPLOYED DARK: the
   // tables and their seals exist, and nothing reads or writes them until 4c-ii.
-  ownsModels: ['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionKindSelection', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'decisionConsultation', 'decisionConsultationResponse', 'changeRequest', 'decisionProjection'],
+  // Phase 6 unit 4c-ii (round 31) — `phase6ApprovalSealWatermark` records WHEN this module's
+  // approval-provenance seal was installed, so a receipt that predates it cannot back a new
+  // revision. It is written once by the migration and read only by that seal's trigger; no
+  // application code touches it. It is owned HERE because it is a fact about the decisions
+  // approval register, not about the platform that happens to store it.
+  ownsModels: ['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionKindSelection', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'decisionConsultation', 'decisionConsultationResponse', 'changeRequest', 'decisionProjection', 'phase6ApprovalSealWatermark'],
   // Task 8 — the FIRST fully-extracted backend module: its models are read-encapsulated, so no
   // other module reads decision persistence directly (the boundary check enforces it); every
   // cross-module read goes through the queries below (DecisionsQueryService).
-  readEncapsulated: ['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionKindSelection', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'decisionConsultation', 'decisionConsultationResponse', 'changeRequest', 'decisionProjection'],
+  readEncapsulated: ['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionKindSelection', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'decisionConsultation', 'decisionConsultationResponse', 'changeRequest', 'decisionProjection', 'phase6ApprovalSealWatermark'],
   dependsOn: [],
   // Phase 6 task 4a round 3 — the withdraw ATTRIBUTION question (does the actor hold an ACTIVE
   // membership here — the `withdrawnById` FK's target?) is answered by its owner through

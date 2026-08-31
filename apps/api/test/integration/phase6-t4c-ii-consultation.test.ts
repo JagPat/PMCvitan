@@ -546,35 +546,33 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
     await t.prisma.projectionGeneration.delete({ where: { id: `fence-${run}` } });
   });
 
-  it('round 30 (P2): the stamp INHERITS only inside the retiring transaction — a rebuild cannot', async () => {
-    // The 4a repair retires a generation and inserts its replacement in ONE transaction, copying
-    // the retired generation's rows — so the replacement's true version is the retired one's, and
-    // stamping it 1 would leave a correctly-repaired projection permanently unservable.
-    // A REBUILD inserts in one transaction and retires in a later one, so it must NOT inherit;
-    // otherwise the previous release's CLI would launder a v1 rebuild into a v2 stamp and walk
-    // straight through the serve gate. Both halves are asserted here, on the same fixture.
+  it('round 31: an un-versioned INSERT ALWAYS stamps 1 — the retiring transaction inherits nothing', async () => {
+    // Round 30 let an un-versioned INSERT inherit from a sibling retired in the SAME transaction,
+    // reasoning that the 4a repair copies its rows from the generation it retires. That is true of
+    // the repair's COPY branch and false of its missing-row branch, which SYNTHESIZES a row from
+    // hard-coded SQL predating this unit's serializer fields — so inheritance made an incomplete
+    // row servable through the very gate meant to refuse it. A BEFORE INSERT trigger cannot tell
+    // the branches apart (their rows do not exist yet), so the rule is removed, not narrowed.
     const mk = (id: string, generation: number, status: string, version?: number) =>
       t.prisma.$executeRawUnsafe(
         `INSERT INTO "ProjectionGeneration" ("id","consumer","projectId","generation","status","cursorStatus","createdAt","updatedAt"${version === undefined ? '' : ',"catalogVersion"'})
          VALUES ($1,'decisions.inbox',$2,$3,$4,'live',now(),now()${version === undefined ? '' : ',$5'})`,
         ...[id, projectId, generation, status, ...(version === undefined ? [] : [version])],
       );
+    const versionOf = async (id: string): Promise<number> =>
+      (await t.prisma.projectionGeneration.findUniqueOrThrow({ where: { id } })).catalogVersion;
 
-    // an incumbent at the CURRENT version, as a real deployment would have
     await mk(`inh-old-${run}`, 901, 'retired', 2);
 
-    // (1) the REBUILD shape: a separate transaction, un-versioned → 1, never the retired sibling's 2
+    // the REBUILD shape — a separate transaction beside an already-retired v2 sibling
     await mk(`inh-rebuild-${run}`, 902, 'building');
-    expect(
-      (await t.prisma.projectionGeneration.findUniqueOrThrow({ where: { id: `inh-rebuild-${run}` } })).catalogVersion,
-      'a rebuild inserting beside an already-retired sibling must NOT launder its version',
-    ).toBe(1);
+    expect(await versionOf(`inh-rebuild-${run}`), 'a rebuild never launders a sibling version').toBe(1);
 
-    // (2) the 4a-REPAIR shape: retire and insert in ONE transaction → inherits
+    // the 4a-REPAIR shape — retire and insert in ONE transaction. This is the case round 30
+    // inherited for, and it must now stamp 1 as well: the repair may synthesize rows this
+    // serializer would not produce, and the trigger cannot know whether it did.
     await t.prisma.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(`UPDATE "ProjectionGeneration" SET "status" = 'retired' WHERE "id" = $1`, `inh-rebuild-${run}`);
-      await tx.$executeRawUnsafe(
-        `UPDATE "ProjectionGeneration" SET "catalogVersion" = 2 WHERE "id" = $1`, `inh-rebuild-${run}`);
+      await tx.$executeRawUnsafe(`UPDATE "ProjectionGeneration" SET "status"='retired', "catalogVersion"=2 WHERE "id"=$1`, `inh-rebuild-${run}`);
       await tx.$executeRawUnsafe(
         `INSERT INTO "ProjectionGeneration" ("id","consumer","projectId","generation","status","cursorStatus","createdAt","updatedAt")
          VALUES ($1,'decisions.inbox',$2,903,'active','live',now(),now())`,
@@ -582,9 +580,9 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
       );
     });
     expect(
-      (await t.prisma.projectionGeneration.findUniqueOrThrow({ where: { id: `inh-repair-${run}` } })).catalogVersion,
-      'the repair copies the retired generation\u2019s rows, so it carries its version',
-    ).toBe(2);
+      await versionOf(`inh-repair-${run}`),
+      'the repair may synthesize rows an older serializer wrote, so it does not inherit either',
+    ).toBe(1);
 
     for (const id of [`inh-old-${run}`, `inh-rebuild-${run}`, `inh-repair-${run}`]) {
       await t.prisma.projectionGeneration.delete({ where: { id } });
@@ -801,6 +799,60 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
         await holder.$disconnect();
       }
     }
+  });
+
+  it('round 31: a receipt that pre-dates the seal is already SPENT — the partial index cannot see it', async () => {
+    // The hole the one-use index leaves open BY DESIGN. It is partial on `sourceCommandId IS NOT
+    // NULL` so legacy revisions with NULL provenance coexist — which means a `decisions.approve`
+    // receipt that completed BEFORE this seal has never consumed its uniqueness slot, even though
+    // it demonstrably backed an approval: the revision it backed carries the NULL that legacy rows
+    // are entitled to. Every predicate the trigger tests passes for such a receipt, so it was
+    // spendable exactly once on a NEW revision — enough to advance the frozen cycle and deny an
+    // open consultation permanently.
+    const decisionId = await issue();
+    await ask(decisionId, 'eng');
+    const consultationId = await consultationOf(decisionId);
+
+    // a receipt shaped exactly like a real pre-seal approval: succeeded, naming this decision, and
+    // created BEFORE the watermark. Minted reserved-then-completed in ONE transaction because the
+    // delivered receipt seal requires the completing UPDATE to come from the inserting transaction.
+    const [{ sealedAt }] = await t.prisma.$queryRawUnsafe<Array<{ sealedAt: Date }>>(
+      `SELECT "sealedAt" FROM "Phase6ApprovalSealWatermark" WHERE "id"`,
+    );
+    const before = new Date(sealedAt.getTime() - 60_000);
+    const cid = `pre-seal-${run}`;
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status","createdAt")
+         VALUES ($1,'project',$2,$3,$4,'decisions.approve',$5,$6,'reserved',$7)`,
+        cid, orgId, projectId, users.client, `k-${cid}`, `h-${cid}`, before,
+      );
+      await tx.$executeRawUnsafe(
+        `UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"=$2, "completedAt"=$3 WHERE "id"=$1`,
+        cid, decisionId, before,
+      );
+    });
+
+    await expect(
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
+         VALUES ($1,$2,$3,97,'a',now(),$4,$5)`,
+        `pre-seal-rev-${run}`, projectId, decisionId, users.pmc, cid,
+      ),
+    ).rejects.toThrow(/already existed when this seal was installed/);
+    expect(await t.prisma.decisionApprovalRevision.count({ where: { decisionId } }), 'the cycle did not move').toBe(0);
+    // …and the consultation the inflated cycle would have denied is still answerable, which is the point
+    expect((await answer(decisionId, consultationId, tokens.eng)).status).toBe(201);
+  });
+
+  it('round 31: a receipt minted AFTER the seal is still accepted — the watermark is not a blanket refusal', async () => {
+    // The precision arm. A watermark that refused every receipt would close the hole by breaking
+    // approval itself, and every other probe in this file would still pass.
+    const decisionId = await issue();
+    const res = await post(tokens.client)(`/projects/${projectId}/decisions/${decisionId}/approve`, { optionIndex: 0 }, randomUUID());
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const revision = await t.prisma.decisionApprovalRevision.findFirstOrThrow({ where: { decisionId } });
+    expect(revision.sourceCommandId).toBeTruthy();
   });
 
   it('F1 is PARTIAL: legacy revisions with no source command still coexist', async () => {

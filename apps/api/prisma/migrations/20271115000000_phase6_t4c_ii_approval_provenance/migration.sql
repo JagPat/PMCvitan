@@ -53,14 +53,45 @@
 --
 -- Every statement is retry-safe (the 20271015/20271101 discipline).
 
+-- ---------------------------------------------------------------------------
+-- THE SEAL WATERMARK: every approval receipt that already existed is already SPENT.
+--
+-- Review finding (round 31). The one-use index below is PARTIAL on `"sourceCommandId" IS NOT NULL`,
+-- because legacy revisions carry NULL by design and a total unique would make every existing
+-- database unmigratable. The consequence, which the partiality hides: a keyed approval completed
+-- BEFORE this seal has a `succeeded` `decisions.approve` receipt whose `resultRef` names its
+-- decision, while its own revision carries NULL — so that receipt has never consumed its
+-- uniqueness slot. Every predicate the trigger tests still passes for it. A direct writer could
+-- therefore spend a HISTORICAL receipt once on a new revision, advance the frozen cycle, and deny
+-- an open consultation permanently: precisely the denial this seal exists to refuse, reached
+-- through the seal's own backward-compatibility allowance.
+--
+-- The fix is NOT to backfill `sourceCommandId` onto legacy revisions. Choosing which historical
+-- receipt "belongs" to which legacy revision is inventing provenance, which is the forgery this
+-- file refuses to commit on a writer's behalf and must equally refuse to commit on its own.
+--
+-- Instead the install instant is RECORDED, and a receipt created at or before it is not available
+-- to back a new revision — because it already backed an approval that happened. That is a
+-- statement about the past which is simply true, and needs no guess about which approval.
+--
+-- `ON CONFLICT DO NOTHING` keeps the ORIGINAL instant across a re-run: a retry must not move the
+-- watermark forward and thereby release receipts minted between the two attempts.
+CREATE TABLE IF NOT EXISTS "Phase6ApprovalSealWatermark" (
+  "id"       BOOLEAN PRIMARY KEY DEFAULT TRUE,
+  "sealedAt" TIMESTAMPTZ NOT NULL,
+  CONSTRAINT "Phase6ApprovalSealWatermark_singleton" CHECK ("id")
+);
+INSERT INTO "Phase6ApprovalSealWatermark" ("id", "sealedAt") VALUES (TRUE, now())
+ON CONFLICT ("id") DO NOTHING;
+
 CREATE OR REPLACE FUNCTION phase6_t4c_approval_revision_provenance() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE c RECORD;
+DECLARE c RECORD; wm TIMESTAMPTZ;
 BEGIN
   IF NEW."sourceCommandId" IS NULL THEN
     RAISE EXCEPTION 'phase6-4c: approval revision % carries no source command — a revision is the product of an approval COMMAND, and its count is the cycle every open consultation is bound to', NEW."id";
   END IF;
 
-  SELECT "projectId", "commandType", "status", "resultRef" INTO c
+  SELECT "projectId", "commandType", "status", "resultRef", "createdAt" INTO c
     FROM "CommandExecution" WHERE "id" = NEW."sourceCommandId";
   IF NOT FOUND OR c."projectId" IS DISTINCT FROM NEW."projectId" THEN
     RAISE EXCEPTION 'phase6-4c: approval revision % cites command %, which is not a receipt of this project', NEW."id", NEW."sourceCommandId";
@@ -75,6 +106,13 @@ BEGIN
   -- …and its result must be THIS decision, so a receipt for some other command cannot be borrowed
   IF c."resultRef" IS DISTINCT FROM NEW."decisionId" THEN
     RAISE EXCEPTION 'phase6-4c: approval revision % cites command %, whose result is % — not the decision % it claims to have approved', NEW."id", NEW."sourceCommandId", COALESCE(c."resultRef", '<null>'), NEW."decisionId";
+  END IF;
+  -- …and it must post-date this seal. A receipt that already existed when the seal was installed
+  -- backed an approval that has already happened; the one-use index cannot see that, because the
+  -- revision it backed carries the NULL provenance legacy rows are entitled to.
+  SELECT "sealedAt" INTO wm FROM "Phase6ApprovalSealWatermark" WHERE "id";
+  IF wm IS NOT NULL AND c."createdAt" <= wm THEN
+    RAISE EXCEPTION 'phase6-4c: approval revision % cites command %, a receipt that already existed when this seal was installed — it backed an approval that has already happened, and a receipt records exactly ONE approval', NEW."id", NEW."sourceCommandId";
   END IF;
 
   RETURN NULL;

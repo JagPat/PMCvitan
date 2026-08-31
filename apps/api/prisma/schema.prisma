@@ -2230,6 +2230,19 @@ model DecisionOptionTouch {
 // onto (projectId, decisionId, version, optionKey): a spec can only ever reference an approval
 // that REALLY happened, for an option the decision REALLY has. `decisions.approvedRef` serves
 // provenance from the head row alone — never from event counts or label matching.
+/// Phase 6 unit 4c-ii — the instant the approval-provenance seal was installed.
+///
+/// A single row, guaranteed by the `id`-is-TRUE primary key plus its CHECK. The provenance trigger
+/// refuses a revision citing a `decisions.approve` receipt created at or before this instant: such
+/// a receipt already backed an approval that happened, and the one-use index cannot see that
+/// because the revision it backed carries the NULL provenance legacy rows are entitled to.
+/// Written once by the migration and never again — a re-run keeps the original instant, so a retry
+/// cannot move the watermark forward and release receipts minted between attempts.
+model Phase6ApprovalSealWatermark {
+  id       Boolean  @id @default(true)
+  sealedAt DateTime @db.Timestamptz(3)
+}
+
 model DecisionApprovalRevision {
   id           String         @id
   projectId    String

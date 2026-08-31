@@ -1471,13 +1471,28 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         const replacement = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
         expect(replacement.id).not.toBe(before.id);
         expect(replacement.appliedPosition).toBe(before.appliedPosition);
-        // the drift pin: the replacement generation SERVES truth equal to the live slice
+        // THE DRIFT PIN, restated for the generation-version fence (review round 31).
+        //
+        // The repair's replacement is written by the MIGRATION, which names no catalog version, so
+        // the stamp trigger marks it 1 — and once a consumer has moved past v1 the serve gate
+        // refuses it. That is deliberate and it is not a regression of this repair: the repair
+        // exists to stop a stale WITHDRAWN status being served, and refusing the generation stops
+        // it more completely than replacing it did. What must hold is that the READ is still
+        // correct, which it is, because every caller falls back to the canonical live slice.
+        //
+        // (The migration cannot be taught to stamp v2: its missing-row branch synthesizes DTOs
+        // from hard-coded SQL that predates this unit's serializer fields, so claiming the current
+        // version for its output is exactly the lie the fence exists to catch.)
+        expect(
+          (await query.projectionSlice(projW, 'pmc', f.memberUser.id)).generation,
+          'the migration-written replacement is not served — it was built by an older serializer',
+        ).toBeNull();
         for (const role of ['pmc', 'engineer'] as const) {
           const live = await query.snapshotSlice(projW, role, f.memberUser.id);
-          const proj = await query.projectionSlice(projW, role, f.memberUser.id);
-          expect(proj.decisions, `role=${role}`).toEqual(live.decisions);
+          expect(live.decisions.find((d) => d.id === id)?.status, `role=${role}: the live read carries the repair`).toBe(
+            role === 'pmc' ? 'withdrawn' : undefined,
+          );
         }
-        expect((await query.projectionSlice(projW, 'pmc', f.memberUser.id)).decisions.find((d) => d.id === id)?.status).toBe('withdrawn');
         // the WEDGE pin: the next delivery is CONTIGUOUS and APPLIES (at c2d3a1a it waited forever)
         const id2 = 'DL-t4a-r12w-2';
         await seedPublishedOn(projW, id2, 'Post-repair decision');
@@ -1489,6 +1504,15 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         expect(stuck, 'the post-migration delivery must APPLY, not wait forever').toBe(0);
         const after = await t.prisma.projectionGeneration.findUniqueOrThrow({ where: { id: replacement.id } });
         expect(after.appliedPosition! > replacement.appliedPosition!).toBe(true);
+
+        // …and the degradation is TEMPORARY. Asserted LAST, because the rebuild retires the
+        // replacement this test has been tracking: an ordinary `projection:rebuild` stamps a fresh
+        // generation at the current version, and projection serving comes back equal to live.
+        await rebuilder.rebuild('decisions.inbox', projW);
+        const reborn = await query.projectionSlice(projW, 'pmc', f.memberUser.id);
+        expect(reborn.generation, 'a rebuild restores projection serving').not.toBeNull();
+        expect(reborn.decisions).toEqual((await query.snapshotSlice(projW, 'pmc', f.memberUser.id)).decisions);
+        expect(reborn.decisions.find((d) => d.id === id)?.status).toBe('withdrawn');
       } finally {
         await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'DecisionProjection', 'CommandExecution'], { cascade: true });
         await t.prisma.notification.deleteMany({ where: { projectId: projW } });
@@ -1774,13 +1798,21 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         const normalized = stored.map((r) => ({ ...r, dto: { deciderKind: 'client', ...(r.dto as Record<string, unknown>) } }));
         expect(normalized).toEqual(canonical);
         expect(stored.map((r) => r.decisionId).sort()).toEqual([idK, idW].sort());
-        // the pmc register SERVES the withdrawal from the replacement generation
-        expect((await query.projectionSlice(projW, 'pmc', f.memberUser.id)).decisions.find((d) => d.id === idW)?.status).toBe('withdrawn');
-        for (const role of ['pmc', 'engineer'] as const) {
-          const live = await query.snapshotSlice(projW, role, f.memberUser.id);
-          const proj = await query.projectionSlice(projW, role, f.memberUser.id);
-          expect(proj.decisions, `role=${role}`).toEqual(live.decisions);
-        }
+        // THE SERVING RULE (review round 31), and this probe is the reason for it. The branch
+        // exercised here is the one that SYNTHESIZES a projection row from the migration's own
+        // hard-coded SQL rather than copying it. That SQL predates this unit's serializer fields,
+        // so its output is complete only for a decision with nothing in those fields — true of the
+        // fixture above, and NOT true in general. The replacement is therefore stamped 1 by the
+        // generation-version trigger and refused at the serve gate, and the read falls back to the
+        // canonical live slice, which is always current.
+        expect(
+          (await query.projectionSlice(projW, 'pmc', f.memberUser.id)).generation,
+          'a migration-synthesized generation is not served',
+        ).toBeNull();
+        expect(
+          (await query.snapshotSlice(projW, 'pmc', f.memberUser.id)).decisions.find((d) => d.id === idW)?.status,
+          'the live read carries the repaired withdrawal',
+        ).toBe('withdrawn');
         // and the consumer continues: the next delivery APPLIES against the copied checkpoint
         const id2 = 'DL-t4a-r13w-2';
         await seedPublishedOn(projW, id2, 'Post-repair decision');
@@ -1789,6 +1821,13 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         });
         await drain();
         expect(await t.prisma.outboxDelivery.count({ where: { consumer: 'decisions.inbox', projectId: projW, status: { in: ['pending', 'leased'] } } })).toBe(0);
+        // …and the ordinary rebuild restores projection serving at the current version. Asserted
+        // last, because it retires the replacement the assertions above track.
+        await rebuilder.rebuild('decisions.inbox', projW);
+        const reborn = await query.projectionSlice(projW, 'pmc', f.memberUser.id);
+        expect(reborn.generation, 'a rebuild restores projection serving').not.toBeNull();
+        expect(reborn.decisions).toEqual((await query.snapshotSlice(projW, 'pmc', f.memberUser.id)).decisions);
+        expect(reborn.decisions.find((d) => d.id === idW)?.status).toBe('withdrawn');
       } finally {
         await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'DecisionProjection', 'CommandExecution'], { cascade: true });
         await t.prisma.notification.deleteMany({ where: { projectId: projW } });

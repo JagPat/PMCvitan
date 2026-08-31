@@ -719,20 +719,46 @@ export class DecisionsService {
         if (!(await this.orgsParticipant.isProjectOperable(tx, projectId))) {
           throw new ConflictException('This project is archived — no advice can be recorded against it');
         }
+        // This unlocked read chooses WHICH membership to lock; it decides nothing. The answered
+        // state it returns is deliberately NOT trusted — see the re-read under the lock below.
         const consultation = await tx.decisionConsultation.findFirst({
           where: { id: input.consultationId, projectId, decisionId },
-          include: { response: { select: { id: true } } },
+          // `openCycle` and `requestedById` are frozen at request time on an append-only row, so
+          // reading them here rather than under the lock changes nothing; the ANSWERED state is
+          // the volatile field, and that one is re-read below.
+          select: { id: true, consulteeMembershipId: true, openCycle: true, requestedById: true },
         });
         if (!consultation) throw new NotFoundException('That consultation does not exist on this decision');
-        if (consultation.response) {
-          throw new ConflictException('This consultation has already been answered — advice is recorded once and never edited');
-        }
         // the consultee membership, RE-LOCKED and re-resolved: a consultee removed after their JWT
         // was minted cannot append immutable advice.
         const consultee = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, consultation.consulteeMembershipId);
         if (!consultee) throw new ConflictException('You are no longer an active member of this project');
         if (consultee.userId !== user.sub) {
           throw new ForbiddenException('Only the member who was asked can answer this consultation');
+        }
+        // THE ANSWERED STATE, re-read UNDER THE MEMBERSHIP LOCK (review round 31).
+        //
+        // Reading `response` on the unlocked row above and acting on it is a lost update: two
+        // answers submitted concurrently under DIFFERENT idempotency keys both observe no
+        // response, both proceed, and the loser reaches the `DecisionConsultationResponse`
+        // one-per-consultation unique index. `executeCommand` reads that `P2002` as an
+        // idempotency-reservation race and answers "concurrent command with this key … retry" —
+        // sending the consultee to retry something that can now only ever fail, when the true and
+        // useful answer is that the question has already been answered.
+        //
+        // This is a RE-READ rather than a new `FOR UPDATE` on the consultation, deliberately. The
+        // membership lock above is exclusive and both racers take the SAME row — only the named
+        // consultee may answer, enforced two lines up — so they are already serialized here, and
+        // a fresh read under READ COMMITTED sees the winner's committed response. Taking the
+        // consultation row itself would add a lock that the response INSERT's own foreign key
+        // (KEY SHARE on that row) conflicts with, which trades this defect for a deadlock; that
+        // was measured, not assumed.
+        const answered = await tx.decisionConsultationResponse.findFirst({
+          where: { consultationId: consultation.id },
+          select: { id: true },
+        });
+        if (answered) {
+          throw new ConflictException('This consultation has already been answered — advice is recorded once and never edited');
         }
         const d = await lockDecisionForConsultation(tx, projectId, decisionId);
         if (!d) throw new NotFoundException(`Decision ${decisionId} not found`);

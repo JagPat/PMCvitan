@@ -56,24 +56,17 @@
 --          projection. That migration is merged history and is not edited to accommodate this one.
 --
 --    So the column is NOT NULL and an un-versioned INSERT is STAMPED by a BEFORE INSERT trigger
---    rather than rejected. A plain `DEFAULT 1` would have been enough for (a), but not for (b): the
---    4a repair's replacement generation COPIES its rows from the generation it retires, so its true
---    version is that generation's, and stamping it `1` would leave a correctly-repaired projection
---    permanently unservable — turning a cleared, targeted operator repair into "repair, then run a
---    full rebuild as well". So the trigger inherits in exactly the case where inheriting is true:
+--    rather than rejected. The stamp is ALWAYS 1 — see the function below for what that costs and
+--    why the alternative was withdrawn.
 --
---      an INSERT that names no version, in a transaction that has ALREADY RETIRED a sibling
---      generation of the same (consumer, projectId), takes that sibling's version; every other
---      un-versioned INSERT takes 1.
---
---    That is structural rather than a guess about intent. `ProjectionRebuilder` — in this release
---    and the previous one, since the swap logic predates this unit — INSERTS its new generation in
---    ONE transaction and retires the incumbent in a LATER one, so a rebuild (old CLI included)
---    never satisfies the same-transaction condition and always stamps 1. The relay's lazy bootstrap
---    retires nothing and stamps 1. The 4a repair retires-then-inserts in a single transaction and
---    is the only writer that inherits. `xmin` is the right instrument for precisely this claim —
---    "written by the transaction that retired the predecessor" — unlike round 28's rejected use of
---    it, which asked it to prove a transition it cannot see.
+--    ROUND 31: an earlier shape of this trigger INHERITED. An un-versioned INSERT made in a
+--    transaction that had already retired a sibling generation took that sibling's version, on the
+--    reasoning that the 4a repair copies its rows from the generation it retires. The reasoning
+--    covered the repair's COPY branch and missed its missing-row branch, which SYNTHESIZES a row
+--    from hard-coded SQL that cannot emit this unit's new serializer fields — so inheritance made
+--    an incomplete row servable through the very gate meant to refuse it. The rule is removed
+--    rather than narrowed, because a BEFORE INSERT trigger cannot tell the two branches apart:
+--    the rows it would need to judge do not exist yet when it fires.
 --
 --    In THREE steps, not one: `ADD COLUMN ... NOT NULL` fails immediately on any deployment that
 --    already holds a `ProjectionGeneration` row, because every existing row would take NULL. The
@@ -113,25 +106,35 @@ UPDATE "ProjectionGeneration" g
 -- migration is mid-flight, and AFTER the 2b backfill so it never touches an existing row.
 CREATE OR REPLACE FUNCTION phase6_t4c_stamp_generation_version() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
-DECLARE inherited INTEGER;
 BEGIN
   IF NEW."catalogVersion" IS NOT NULL THEN
     RETURN NEW; -- the running code stamped it explicitly; never second-guess that
   END IF;
-  -- The 4a repair: this transaction has already retired the generation whose ROWS this one copies,
-  -- so that generation's version is this one's. `xmin` is what makes it the SAME transaction and
-  -- not merely some earlier retirement — a rebuild retires in a later transaction than it inserts,
-  -- so the previous release's CLI cannot reach this branch and always falls through to 1.
-  SELECT s."catalogVersion" INTO inherited
-    FROM "ProjectionGeneration" s
-   WHERE s."consumer" = NEW."consumer" AND s."projectId" = NEW."projectId"
-     AND s."status" = 'retired'
-     AND s.xmin::text::bigint = pg_current_xact_id()::text::bigint
-   ORDER BY s."generation" DESC
-   LIMIT 1;
-  -- Otherwise 1, which is the TRUTH about such a row: it was written by something that does not
-  -- know this unit's serializer exists, so version 1 is the only version its contents can have.
-  NEW."catalogVersion" := COALESCE(inherited, 1);
+  -- Otherwise 1, ALWAYS. That is the truth about such a row: it was written by something that
+  -- does not know this column exists, so version 1 is the only version its contents can have.
+  --
+  -- ROUND 31 REMOVED AN INHERITANCE RULE HERE, and the reason is worth stating because the rule
+  -- looked sound. It let an un-versioned INSERT made in a transaction that had ALREADY RETIRED a
+  -- sibling generation take that sibling's version, on the reasoning that the 4a repair COPIES its
+  -- rows from the generation it retires, so the replacement's true version is the retired one's.
+  --
+  -- That is true of the 4a repair's COPY branch and FALSE of its missing-row branch, which
+  -- SYNTHESIZES a `DecisionProjection` row from hard-coded SQL (20270810000000, the
+  -- `jsonb_build_object` construction) that cannot emit `consultations` or `approvalCycle` — it
+  -- predates them. A decision consulted while pending and then withdrawn therefore gets an
+  -- INCOMPLETE synthesized row, and inheriting v2 made that row servable: the serve gate, whose
+  -- whole job is to refuse rows an older serializer wrote, waved it through. A BEFORE INSERT
+  -- trigger cannot tell the two branches apart — the rows do not exist yet when it fires — so the
+  -- rule cannot be narrowed, only removed.
+  --
+  -- WHAT THIS COSTS, stated rather than hidden. On a database whose consumer has moved past v1,
+  -- the 4a repair's replacement is stamped 1 and is therefore NOT SERVED: reads fall back to the
+  -- canonical live slice until an ordinary `projection:rebuild` stamps a fresh generation. The
+  -- repair still does its job — the stale withdrawn status stops being served, which is what it
+  -- exists for — and the fallback is always current, so nothing incorrect is shown. The cutover
+  -- already rebuilds every projection (RUNBOOK step 3), so in the deployment sequence this unit
+  -- actually ships through, the window does not arise.
+  NEW."catalogVersion" := 1;
   RETURN NEW;
 END $$;
 

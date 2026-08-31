@@ -4440,8 +4440,11 @@ assert "4c-ii round 30: a rebuild inserting beside an already-retired v2 sibling
   "SELECT \"catalogVersion\"::text FROM \"ProjectionGeneration\" WHERE \"id\"='UP4CII-R30-REBUILD';" \
   "1"
 
-# the 4a repair shape: retire and insert in ONE transaction → inherits, so a correctly repaired
-# projection is not left permanently unservable by the serve-side version fence
+# the 4a repair shape: retire and insert in ONE transaction. Round 30 let this INHERIT the retired
+# generation's version; round 31 removed that, because the repair's missing-row branch SYNTHESIZES
+# rows from hard-coded SQL predating this unit's serializer fields — inheriting made an incomplete
+# row servable through the gate meant to refuse it, and a BEFORE INSERT trigger cannot tell that
+# branch from the copying one.
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-ii round 30: the 4a-repair-shaped retire-then-insert was rejected"; FAIL=1; }
 BEGIN;
 UPDATE "ProjectionGeneration" SET "status"='retired' WHERE "id"='UP4CII-R30-REBUILD';
@@ -4450,9 +4453,9 @@ INSERT INTO "ProjectionGeneration"("id","consumer","projectId","generation","sta
 VALUES ('UP4CII-R30-REPAIR','decisions.inbox','p1',9303,'building','live',now());
 COMMIT;
 SQL
-assert "4c-ii round 30: the same-transaction repair INHERITS the retired generation's version" \
+assert "4c-ii round 31: the same-transaction repair does NOT inherit — a synthesized row cannot claim the current version" \
   "SELECT \"catalogVersion\"::text FROM \"ProjectionGeneration\" WHERE \"id\"='UP4CII-R30-REPAIR';" \
-  "2"
+  "1"
 
 # and the documented replay itself: the 4a migration re-run against the MIGRATED database, which is
 # where the no-default fence would have broken it
