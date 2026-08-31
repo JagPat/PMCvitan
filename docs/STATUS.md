@@ -13,14 +13,63 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: merged
-work_item: none
+task_state: in_progress
+work_item: projection-generation-version
 reviewed_merge: d4e2ddf5
 open_pr: none
 next_task: phase-6-task-4c-ii
 blocking_directive: none
-updated: 2026-08-30
+updated: 2026-08-31
 ```
+
+**THE OPEN UNIT IS THE PROJECTION GENERATION VERSION FENCE** (branch
+`claude/phase6-generation-version-fence`, from `main` `1d6c4ff1`, `Replaces: #497`). It carries
+ONLY the two Codex findings that PR #497 never resolved, and none of that unit's consultation work.
+
+**#497 IS CLOSED UNMERGED.** It reached `review-replacement-required`: `enforceReviewConvergence`
+counts `codexFindingHeads` from the PR's comment history rather than the current head, so
+`d117f140` (5 findings) and `1c719152` (2 findings) are permanently two against
+`REVIEW_RESET_AFTER_FINDING_HEADS = 2`, and no further push could clear it. Recorded plainly: a
+third head (`196eeb92`) was pushed to that PR because `RESTRUCTURE_AFTER_FINDING_HEADS = 5` in
+`review-lifecycle.mjs` was misread as the governing limit; the gate in force is
+`autonomous-review-gate.mjs` with the constant above, which `CLAUDE.md` also states. JagPat then
+directed the closure and this replacement.
+
+**WHAT THIS UNIT IS.** `ProjectionGeneration` rows record no trace of the code that materialized
+them, so a read cannot tell a generation this release built from one an older release built with a
+different serializer. The standalone `projection-rebuild` CLI is the concrete hazard: it registers
+consumers DIRECTLY and never calls `syncConsumerCatalog`, so the startup contract assertion never
+runs for it, and a previous release's CLI can rebuild a projection with ITS serializer and ACTIVATE
+the result — a read-model missing whatever the newer serializer adds, swapped in by a SUPPORTED
+command. Every generation is therefore STAMPED with its builder's `catalogVersion`, and
+`readServableGeneration` refuses one stamped below the running code's, falling back to the
+canonical live read.
+
+**WHY NOT `NOT NULL` WITH NO DEFAULT** — the shape #497 shipped, and the two findings against it.
+**(P1)** `migrate.sh` applies migrations BEFORE the new processes start, so during that window the
+old `lockActiveGeneration` lazily bootstraps a generation with an INSERT naming no version; a
+no-default `NOT NULL` rejects it and STALLS that ordered projection while the previous release is
+still supposed to be serving (the backfill reaches only rows that already exist). **(P2)** the
+rerunnable 4a repair inserts its replacement with an EXPLICIT column list that cannot name a later
+column, so the documented operator replay FAILS instead of repairing. A plain `DEFAULT 1` fixes P1
+but not P2 — the repair COPIES its rows from the generation it retires, so stamping the replacement
+`1` leaves a correctly repaired projection permanently unservable. The column is therefore NOT NULL
+with NO default and a BEFORE INSERT trigger supplies the value: an un-versioned INSERT in a
+transaction that has ALREADY RETIRED a sibling of the same `(consumer, projectId)` inherits that
+sibling's version; every other un-versioned INSERT takes 1. That is structural and was CHECKED —
+`ProjectionRebuilder` inserts in one transaction and retires in a later one (logic predating this
+change, so the previous release's CLI has the same shape and can never inherit), and the relay
+bootstrap retires nothing.
+
+**IT ARMS NOTHING YET.** No consumer's `catalogVersion` is bumped, so the serve-side comparison is
+false for every generation on every deployed database and no read changes behaviour today. The
+first consumer to change its serializer arms the fence, in the migration that changes it.
+
+**EVIDENCE BY REMOVAL.** Dropping the stamp trigger turns FIVE tests red — the three DELIVERED 4a
+repair probes (P2 reproduced against `main`'s own tests) plus both new stamp probes; removing the
+one-line serve fence turns the serve-gate probe red. `upgrade-proof.sh` gains four arms on the
+FULLY MIGRATED database. The only tripwire this unit advances is the pg-parse corpus pin 93→94.
+Packet: `docs/reviews/projection-generation-version-packet.md`.
 
 **4c-i IS MERGED (PR #493 at `main` `d4e2ddf5`) WITH A FRESH INDEPENDENT CODEX +1 ON THE
 EXACT REVIEWED HEAD `7650109`, AND THE REMOVAL-AND-REINSTATE BLOCKER IS CLEARED BY

@@ -27,7 +27,7 @@ const pg = await loadParser();
 
 test('every migration in the corpus parses with PostgreSQL’s own grammar', () => {
   const names = migrationNames();
-  assert.equal(names.length, 93, 'the corpus size is pinned, so a new migration is a visible diff');
+  assert.equal(names.length, 94, 'the corpus size is pinned, so a new migration is a visible diff');
   for (const name of names) {
     // The file is NAMED here, because parseSql is handed text and cannot name it. A check whose
     // failure output does not say which of 93 files failed is not a usable check.

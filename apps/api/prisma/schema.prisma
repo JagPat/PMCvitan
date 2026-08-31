@@ -380,6 +380,19 @@ model ProjectionGeneration {
   projectId       String
   generation      Int // monotone per (consumer, projectId); the highest is the newest
   status          String    @default("building") // 'building' | 'active' | 'retired'
+  /// The consumer `catalogVersion` of the code that MATERIALIZED this generation's rows.
+  ///
+  /// `readServableGeneration` refuses a generation stamped below the running code's compiled
+  /// version — an older serializer's DTOs are not what this release would produce — and the caller
+  /// falls back to the canonical live read. That is the fence the standalone `projection-rebuild`
+  /// CLI would otherwise walk past entirely, since it registers consumers directly and never calls
+  /// `syncConsumerCatalog`.
+  ///
+  /// NOT NULL with NO DEFAULT in the schema, but never rejecting a writer: the
+  /// `ProjectionGeneration_stamp_version` BEFORE INSERT trigger supplies the value when the writer
+  /// names none, so the previous release's lazy bootstrap and the rerunnable 4a repair keep
+  /// working. Prisma cannot express that trigger, so the column reads as required here.
+  catalogVersion  Int
   appliedPosition BigInt? // contiguous checkpoint INTO THIS generation (NULL = none applied yet)
   cursorStatus    String    @default("live") // 'live' | 'blocked' (a dead earlier position blocks)
   activatedAt     DateTime? // when this generation became 'active' (the barrier commit)

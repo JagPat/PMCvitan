@@ -8,6 +8,7 @@ import { DrawingsService } from '../../src/drawings/drawings.service';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { serializeDecision } from '../../src/decisions/decision-serialize';
 import { DECISIONS_PROJECTION } from '../../src/decisions/decisions.projection';
+import { catalogVersionFor } from '../../src/platform/projections/generation';
 import { DAILY_LOG_PROJECTION } from '../../src/daily-log/daily-log.projection';
 import { DRAWINGS_PROJECTION } from '../../src/drawings/drawings.projection';
 import { INSPECTIONS_PROJECTION } from '../../src/inspections/inspections.projection';
@@ -185,7 +186,14 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
   const manufactureLegacyGeneration = async (projectId: string, storedIds: string[]): Promise<{ id: string }> => {
     const stream = await t.prisma.projectEventStream.findUniqueOrThrow({ where: { projectId }, select: { nextPosition: true } });
     const gen = await t.prisma.projectionGeneration.create({
-      data: { consumer: DECISIONS_PROJECTION, projectId, generation: 1, status: 'active', cursorStatus: 'live', appliedPosition: stream.nextPosition - 1n, activatedAt: new Date() },
+      // Stamped at the consumer's CURRENT compiled version, and written explicitly rather than
+      // left to the stamp trigger so the fixture states its own claim. What this probe is about is
+      // a COMPLETENESS defect — a caught-up generation holding a non-empty SUBSET of the register —
+      // which is orthogonal to which serializer wrote the rows, and (per the note above) these
+      // rows go through the REAL serializer. Stamping it lower would make the serve-side version
+      // fence refuse it before the subset was ever reached, quietly turning this into a test of
+      // something else.
+      data: { consumer: DECISIONS_PROJECTION, projectId, generation: 1, status: 'active', cursorStatus: 'live', appliedPosition: stream.nextPosition - 1n, activatedAt: new Date(), catalogVersion: catalogVersionFor(DECISIONS_PROJECTION) },
     });
     for (const id of storedIds) {
       const d = await t.prisma.decision.findUniqueOrThrow({

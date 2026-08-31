@@ -4429,6 +4429,51 @@ assert_rejects "4c-i retry: the re-armed request seal refuses the same hostile i
   "INSERT INTO \"DecisionConsultation\"(\"id\",\"projectId\",\"decisionId\",\"requestedById\",\"consulteeMembershipId\",\"consulteeUserId\",\"question\",\"openCycle\",\"sourceCommandId\") VALUES ('UP4CI-C2','p1','DL-1','USER-1','no-such-membership','USER-1','Which finish?',0,'no-such-command')" \
   "phase6-4c"
 
+# ── the GENERATION VERSION stamp keeps previous-release WRITERS working ───────────────────────────
+# The obvious shape for this fence — NOT NULL with NO DEFAULT — rejects every un-versioned INSERT,
+# and two of those are legitimate and documented: the already-running previous release's lazy
+# `lockActiveGeneration` bootstrap during the migrate-before-restart window, and the deliberately
+# rerunnable 4a repair. Both are exercised on the FULLY MIGRATED database, which is the state that
+# matters (the fixture's own generation insert far above happens before this column exists).
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  generation version: an un-versioned INSERT (the previous release's lazy bootstrap) was rejected on the migrated database"; FAIL=1; }
+INSERT INTO "ProjectionGeneration"("id","consumer","projectId","generation","status","cursorStatus","updatedAt")
+VALUES ('UPGV-BOOT','decisions.inbox','p1',9301,'building','live',now());
+SQL
+assert "generation version: the un-versioned bootstrap is STAMPED 1 — the only version its contents can have" \
+  "SELECT \"catalogVersion\"::text FROM \"ProjectionGeneration\" WHERE \"id\"='UPGV-BOOT';" \
+  "1"
+
+# …and the stamp does NOT launder a rebuild: an un-versioned INSERT beside an ALREADY-retired
+# sibling (a different transaction — the rebuilder's shape, the previous release's CLI included)
+# still takes 1. (`building` rather than `active` throughout: the fixture already holds the one
+# ACTIVE decisions.inbox generation a partial unique permits, and the stamp does not read status.)
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  generation version: could not stage the rebuild-shape probe"; FAIL=1; }
+UPDATE "ProjectionGeneration" SET "status"='retired', "catalogVersion"=2 WHERE "id"='UPGV-BOOT';
+INSERT INTO "ProjectionGeneration"("id","consumer","projectId","generation","status","cursorStatus","updatedAt")
+VALUES ('UPGV-REBUILD','decisions.inbox','p1',9302,'building','live',now());
+SQL
+assert "generation version: a rebuild inserting beside an already-retired v2 sibling does NOT inherit it" \
+  "SELECT \"catalogVersion\"::text FROM \"ProjectionGeneration\" WHERE \"id\"='UPGV-REBUILD';" \
+  "1"
+
+# the 4a-repair shape: retire and insert in ONE transaction → inherits, so a correctly repaired
+# projection is not left permanently unservable by the serve-side version fence
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  generation version: the 4a-repair-shaped retire-then-insert was rejected"; FAIL=1; }
+BEGIN;
+UPDATE "ProjectionGeneration" SET "status"='retired', "catalogVersion"=2 WHERE "id"='UPGV-REBUILD';
+INSERT INTO "ProjectionGeneration"("id","consumer","projectId","generation","status","cursorStatus","updatedAt")
+VALUES ('UPGV-REPAIR','decisions.inbox','p1',9303,'building','live',now());
+COMMIT;
+SQL
+assert "generation version: the same-transaction repair INHERITS the retired generation's version" \
+  "SELECT \"catalogVersion\"::text FROM \"ProjectionGeneration\" WHERE \"id\"='UPGV-REPAIR';" \
+  "2"
+
+# and the documented replay itself, run against the MIGRATED database — where a no-default fence
+# would have broken it rather than repairing the projection
+$PSQL -q -f "$MIG_DIR/20270810000000_phase6_t4a_withdraw/migration.sql" >/dev/null \
+  || { echo "FAILED  generation version: the rerunnable 4a repair does not replay against the migrated database"; FAIL=1; }
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller
