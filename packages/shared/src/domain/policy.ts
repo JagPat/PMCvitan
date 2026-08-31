@@ -39,6 +39,16 @@ export const ROLE_POLICY = {
   // Phase 6 task 4a — withdrawing a published decision retires a question the practice asked;
   // that is the practice's call alone (the client never had authority over the asking either).
   'decision.withdraw': ['pmc'],
+  // Phase 6 unit 4c-ii (§A) — CONSULTATION. Asking is the practice's call: `pmc` in 4c, with
+  // `architect` joining the requesting set in 4d WITH the role, the same staging rule the decider
+  // value followed.
+  'consultation.request': ['pmc'],
+  // The RESPOND ceiling admits EVERY role a consultee can hold — any active member in the
+  // existing project-role vocabulary — because the SERVICE narrows to the ONE named consultee
+  // (the delivered 4b widen-ceiling-narrow-in-service rule: a route ceiling tighter than the
+  // eligible set makes the guard reject a legitimately named consultee before the service's own
+  // check can admit them). 4c introduces NO role; any future role is its own staged unit.
+  'consultation.respond': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   // Phase 3 Task 1 — the ActivityRequirement demand contract is authored by the PMC (plan §H matrix)
   'requirement.manage': ['pmc'],
   // the full requirement register read (§H): pmc + engineer; the client sees only the readiness

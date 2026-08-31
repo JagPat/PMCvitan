@@ -1,7 +1,7 @@
 import { Controller, Get, Param, UseGuards } from '@nestjs/common';
 import { SnapshotService } from './snapshot.service';
 import { ModuleRegistryService } from '../platform/module-registry/module-registry.service';
-import { CapabilitiesService, MATERIALS_CAPABILITY, LABOUR_CAPABILITY, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
+import { CapabilitiesService, MATERIALS_CAPABILITY, LABOUR_CAPABILITY, COMMERCIAL_CAPABILITY, CONSULTATION_CAPABILITY } from '../platform/capabilities.service';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
 import type { ProjectShellDto } from './types';
@@ -28,16 +28,19 @@ export class ProjectController {
   @Get('shell')
   @RolesFor('project.read')
   async shell(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser): Promise<ProjectShellDto> {
-    const [summary, materials, labour, commercial] = await Promise.all([
+    const [summary, materials, labour, commercial, consultation] = await Promise.all([
       this.snapshot.shellSummary(projectId, user.role, user.sub),
       this.capabilities.isEnabled(projectId, MATERIALS_CAPABILITY),
       this.capabilities.isEnabled(projectId, LABOUR_CAPABILITY),
       this.capabilities.isEnabled(projectId, COMMERCIAL_CAPABILITY),
+      this.capabilities.isEnabled(projectId, CONSULTATION_CAPABILITY),
     ]);
     const capabilities = [
       ...(materials ? [MATERIALS_CAPABILITY] : []),
       ...(labour ? [LABOUR_CAPABILITY] : []),
       ...(commercial ? [COMMERCIAL_CAPABILITY] : []),
+      // 4c-ii — the client reads the SAME per-project gate the write surface and the emitter do
+      ...(consultation ? [CONSULTATION_CAPABILITY] : []),
     ];
     return { ...summary, enabledModules: this.registry.enabledModules, capabilities };
   }

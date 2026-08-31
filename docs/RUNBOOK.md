@@ -1122,6 +1122,59 @@ inside its transaction — a concurrent old-build role change or decision birth 
 before the audit observes the register or blocks until the guards exist to judge it, so run the
 deploy with the drain-first discipline of §P6-4a and no special quiescing is needed beyond it.
 
+## §P6-4C. Phase 6 unit 4c-ii — the provenance migration aborts: one approval receipt backs two revisions
+
+`20271115000000_phase6_t4c_ii_approval_provenance` makes `DecisionApprovalRevision` a PROVABLE
+register: every new revision must cite a SUCCEEDED `decisions.approve` receipt of its own project
+whose result is that decision, and — the F1 arm — each receipt may back **at most one** revision,
+enforced by the partial unique index `DecisionApprovalRevision_source_command_key` on
+`("projectId", "sourceCommandId") WHERE "sourceCommandId" IS NOT NULL`. A receipt records ONE
+approval; permitting reuse would let a single genuine receipt advance the approval COUNT
+arbitrarily, and that count is the cycle every open consultation is frozen against — so the
+inflation silently denies every standing consultee their answer (their response 409s permanently
+and its queued delivery cancels itself at the claim predicate).
+
+Before creating the index the migration NAMES any pre-existing duplicate, because PostgreSQL's own
+`could not create unique index` says nothing about which rows collided (the §T45 F3.1 defect):
+
+    phase6-4c F1: N approval command receipt(s) already back more than one revision
+    (first 20 — project/command: <projectId>/<commandId>, …)
+
+`N` is the TRUE total, not the sample size: the count is taken over every offending receipt and the
+listing is bounded separately, so the message never understates the scale of the repair.
+
+**This state cannot arise from delivered code.** `sourceCommandId` was staged nullable by the dark
+4c-i migration and has never had a writer: 4c-ii's `decisions.approve` is the first. Every historical
+revision therefore carries NULL, which the partial predicate excludes entirely. The abort exists so
+that claim is CHECKED at deploy time rather than asserted — if it ever fires, a writer outside the
+command path minted the rows, and that is what needs answering first.
+
+The migration wrote nothing at that point (the audit runs inside the one transaction), but Prisma
+records the migration as failed — after repairing, run
+`prisma migrate resolve --rolled-back 20271115000000_phase6_t4c_ii_approval_provenance`, then
+redeploy.
+
+**Repair. Never invent provenance, and never renumber a genuine approval.**
+
+1. **Identify which cited revision is real.** For each sampled `projectId/commandId`, the receipt's
+   `CommandExecution` row records ONE approval — its `createdAt`, `actorId` and `resultRef`. Match
+   it against the `decision.approved`/`decision.reapproved` `DecisionEvent` rows of that decision:
+   the revision whose `version` corresponds to an actual approval event is the genuine one. If no
+   event corresponds to a duplicate, that duplicate records an approval that never happened.
+2. **Remove only the unbacked duplicates**, through the sanctioned maintenance shape — the register
+   carries `DecisionApprovalRevision_append_only`, so the delete must run inside ONE transaction
+   that disables that trigger BY NAME, deletes the identified rows, re-enables it, and re-runs the
+   duplicate query before committing (the `sanctionedReset` discipline: a throw rolls the disable
+   back with the data). Do this only for rows step 1 proved unbacked.
+3. **If every duplicate looks genuine**, stop: two real approvals sharing one receipt means the
+   approval command itself wrote twice, which is a code defect, not a data one. Capture the rows and
+   the receipt and escalate rather than deleting either.
+
+Do NOT clear `sourceCommandId` to NULL to slip past the index. NULL is the honest value for a
+pre-4c approval and a lie for a post-4c one, and the provenance trigger judges only INSERTs — so a
+nulled row would keep its place in the count while becoming unprovable, which is the precise
+condition this seal exists to prevent.
+
 ## §B1. Schedule B1 — `prisma migrate deploy` aborts on `ActivityDependency`
 
 `20270930000000_schedule_dependency_graph` COMPLETES ITS OWN INSTALL of `ActivityDependency` and

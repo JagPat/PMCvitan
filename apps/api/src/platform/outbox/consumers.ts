@@ -11,8 +11,16 @@ import { EXTERNAL_EFFECTS, type ExternalEffectDef, type ExternalEffectKey } from
  * `markCancelled` records a claim-time drop on the delivery's own row (the 4a cancellation mark),
  * so a dropped demand is evidence, never a silent skip.
  */
+export type PushClaimVerdict = { actionable: false } | { actionable: true; roles?: string[]; targetUserId?: string };
+
 export interface PushClaimDeps {
-  deciderTarget(projectId: string, decisionId: string): Promise<{ actionable: false } | { actionable: true; roles?: string[]; targetUserId?: string }>;
+  deciderTarget(projectId: string, decisionId: string): Promise<PushClaimVerdict>;
+  /** Phase 6 unit 4c-ii (§B P38c/P40c) — the two consultation families. Both are TARGETED, so the
+   *  bound predicate is asked about the delivery's own target user: "is decision content about
+   *  this decision still warranted for THIS person?" Each re-checks project operability first,
+   *  then locks the decision before judging its status and cycle. */
+  consultationRequestedTarget(projectId: string, decisionId: string, targetUserId: string | null): Promise<PushClaimVerdict>;
+  consultationRespondedTarget(projectId: string, decisionId: string, targetUserId: string | null): Promise<PushClaimVerdict>;
   markCancelled(deliveryId: string): Promise<void>;
   /** round-1 Codex F5 — WHO currently holds a role's effective standing (orgs-owned answer):
    *  a role claim delivers to these users' valid links, never to a subscription's stored role. */
@@ -55,7 +63,17 @@ export function makePushConsumer(push: PushService, claims?: PushClaimDeps): Out
     name: PUSH_CONSUMER,
     kind: 'unordered',
     effect: 'external',
-    catalogVersion: 1,
+    // Phase 6 unit 4c-ii (§D) — BUMPED for the two consultation push families. `syncConsumerCatalog`
+    // asserts the compiled contract against the persisted row at every startup and THROWS on any
+    // difference, so from the moment this unit's catalog-data migration lands, a PREVIOUS-release
+    // process cannot take up service at all — it never reaches the claim path, where it would
+    // recognize neither family and fall through to the unguarded targeted send. That is what makes
+    // the drain DURABLE: a rolled-back or newly-scheduled old worker is fenced out on EVERY start,
+    // not merely at the one moment an operator looked.
+    //
+    // The SOCKET consumer is deliberately NOT bumped: it carries no consultation contract — it
+    // tells a room to refetch and has nothing new to understand.
+    catalogVersion: 2,
     // Dispatch only when the PERSISTED intent carries a push body; otherwise a recorded no-op. A
     // null-intent legacy event has no push, so it is always a no-op — the outbox never invents a
     // historical push from an old payload.
@@ -78,8 +96,13 @@ export function makePushConsumer(push: PushService, claims?: PushClaimDeps): Out
       // exists in 4b, and its subject is the decision id the 4a `subject` key already carries.
       const effectKey = ctx.meta.dispatchIntent?.effectKey as ExternalEffectKey | undefined;
       const family = effectKey ? (EXTERNAL_EFFECTS[effectKey] as ExternalEffectDef | undefined)?.pushFamily : undefined;
-      if (family === 'decider' && claims) {
-        const target = await claims.deciderTarget(ctx.meta.projectId, ctx.meta.entityId);
+      if (family && claims) {
+        const target =
+          family === 'decider'
+            ? await claims.deciderTarget(ctx.meta.projectId, ctx.meta.entityId)
+            : family === 'consultation_requested'
+              ? await claims.consultationRequestedTarget(ctx.meta.projectId, ctx.meta.entityId, p.targetUserId ?? null)
+              : await claims.consultationRespondedTarget(ctx.meta.projectId, ctx.meta.entityId, p.targetUserId ?? null);
         if (!target.actionable) {
           await claims.markCancelled(ctx.delivery.id);
           return;

@@ -13,14 +13,130 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: merged
-work_item: none
+task_state: in_progress
+work_item: phase-6-task-4c-ii
 reviewed_merge: d4e2ddf5
-open_pr: none
-next_task: phase-6-task-4c-ii
+open_pr: 498
+next_task: phase-6-task-4c-iii
 blocking_directive: none
-updated: 2026-08-30
+updated: 2026-08-31
 ```
+
+**UNIT 4c-ii IS OPEN AS PR #498** (branch `claude/phase6-4c-ii-replacement`, `Replaces: #497`),
+scheduled from `main` `1d6c4ff1`. PR #497 carried this same unit, reached the two-finding-bearing-
+head review-round limit and is CLOSED UNMERGED carrying `review-replacement-required`; #498 is the
+gate-mandated close-and-replace, authorized by the Board's A/B rubric (2026-08-28 §3) Option 1 on
+2026-08-31. It carries the whole unit AS ALREADY FOLDED — every correction round plus the round-30
+work on `196eeb92` — so no review budget is waived and no finding is treated as settled by the
+replacement: the unit re-enters review from a fresh head with its history intact. The earlier
+"do not open a third 4c-ii PR" governed the PARALLEL DUPLICATES (#495, #496), which were closed as
+superseded while #497 remained the sole open work; it does not govern this replacement, and the
+Board said so when authorizing it.** The 30 August sequence authorized 4c-0 through 4c-v, so this unit waits
+on no fresh GO and none is to be asked for. Contractor-capture units 1–6 stay Board-gated — a
+SEPARATE gate the 4c sequence does not lift.
+
+**4c-ii IS THE BEHAVIOUR UNIT**: the contracts, the two commands, `ROLE_POLICY` and the guarded
+routes, the visibility widening on BOTH sides, the P25c projection thread, the two push families
+with their claim-time predicates, the UI affordances, and the
+`DecisionApprovalRevision.sourceCommandId` writer with the constraint trigger 4c-i deliberately
+staged. It reads the `consultation` capability in all THREE places the plan requires — the write
+commands, the emitter and the CLIENT — because gating only the server would leave the upgraded
+bundle rendering request/respond controls during the whole window in which every project is still
+gate-off, and controls whose every request 404s are a visibly broken state, not an inert one. All
+three reads retire together in 4c-iv.
+
+Two things this unit had to reconcile with delivered reality rather than with the plan's prose:
+the command LEDGER types are `consultations.request` / `consultations.respond` (not the module's
+usual `decisions.*` prefix) because the merged 4c-i provenance seal checks those exact strings and
+that migration is immutable history; and 4c-i's own upgrade-proof compatibility arm — "a
+previous-release approval still records with no source command" — is DELIBERATELY SUPERSEDED here,
+since 4c-ii runs after the drain-first cutover, which is the one moment the plan guarantees no old
+writer exists. Both are recorded in the packet rather than quietly absorbed.
+
+**The 4c-i `ProjectCapability` gap is now CLOSED here, not merely flagged.** The merged 4c-i
+migration contains no `ProjectCapability` statement at all, so the reservation trigger and its
+diagnostic-first abort that §D (rounds 13/19/21/24) places in 4c-i were never installed — leaving
+the hole live on `main`, since the generic `capability:enable` CLI accepts any string. 4c-ii's
+whole compatibility story rests on that being shut, so this unit carries the obligation forward
+rather than leaving it to 4c-iii, which runs after the risk has already passed. Both halves land
+in the round-24 order (trigger created BEFORE the audit reads).
+
+**A PARALLEL 4c-ii, PR #496, was closed as superseded** on JagPat's direction (2026-08-31), and
+three things it held that PR #497 lacked have been PORTED rather than discarded: the capability
+reservation above; the ROLLOUT FENCE in both halves (the compiled `catalogVersion` bump on
+`decisions.inbox` and `webpush.notify` plus the catalog-data migration that arms it — since
+`syncConsumerCatalog` asserts and never updates, a code-only bump would point the fence the wrong
+way — and `ProjectionGeneration.catalogVersion` NOT NULL with NO DEFAULT, which is the only thing
+that can stop the standalone rebuild CLI, the one path that skips the startup fence entirely); and
+its objection that always emitting `consultations: []` breaks §D's byte-identity requirement for
+gate-OFF projects, which is right — the serializer now omits the thread when there is none, so a
+projection row written before this unit is byte-EQUAL to live rather than merely compatible.
+(That last one was NOT in head `d117f140`: JagPat's direction was to leave the dispute recorded
+for the reviewer rather than reshape the product surface unilaterally, so that head shipped the
+always-emit form with both positions written into the serializer. The reviewer settled it in
+#496's favour — F3 below — and the correction head implements it.)
+
+What was NOT taken from #496 is its approval-provenance seal, and deliberately: that one is a
+BEFORE INSERT null-check, while this PR already carries the strictly stronger DEFERRED commit-time
+binding review round 29 requires (the receipt must have SUCCEEDED with its `resultRef` naming this
+decision — a reserved-only receipt inserted in the same transaction would satisfy a null-check and
+still advance the cycle without approving anything). Two seals on one table would be a second
+answer to one question.
+
+**THE INDEPENDENT REVIEW OF HEAD `d117f140` RETURNED FIVE FINDINGS; ALL FIVE ARE CORRECTED IN
+ONE BATCHED HEAD** — this is the unit's FIRST finding-bearing head, so one further correction head
+remains before the replacement rule applies. Each was reproduced RED first. **F1 (P1)** an approval
+receipt was REUSABLE: the deferred provenance trigger's predicates all stay true however many times
+one receipt is cited, so a single genuine approval could mint arbitrarily many revisions and
+inflate the COUNT every open consultation is frozen against — closed by the one-use partial unique
+`DecisionApprovalRevision_source_command_key` on `("projectId","sourceCommandId") WHERE
+"sourceCommandId" IS NOT NULL`, the exact shape both consultation facts already carry, added to the
+unmerged `20271115000000` with a diagnostic-first abort naming any duplicate (unreachable today —
+nothing has ever written a non-NULL value) and operator repair at `docs/RUNBOOK.md §P6-4C`.
+**F2 (P1)** `ConsultationThread` imported `Button` from the `@/components` barrel that also exports
+it — an index cycle, now the leaf `./Button`. **F3 (P2)** the consultation keys were emitted
+unconditionally; both now travel TOGETHER and only when a thread exists, because `approvalCycle` is
+non-zero on any approved decision and would otherwise add a key to gate-OFF projects on its own —
+and `hydrateStoredDecisionDto` correspondingly STOPS backfilling them, since under absent-when-empty
+a stored pre-4c DTO already equals live and backfilling would invert the equality defect rather than
+fix it. **F4 (P1)** both consultation commands used `runRemoteOrQueue`, which persists nothing when
+online: a lost response stranded the command with its key and the only recovery appended a SECOND
+consultation to a permanent thread — both now take `runWriteAhead`. **F5 (P1)** both push-claim
+predicates read the `Decision` row `FOR SHARE` before locking `Membership`, inverting approval's
+own order, so when the push target is also the named decider PostgreSQL must abort one side — both
+now lock MEMBERSHIP before DECISION, with every verdict predicate re-read under the decision lock,
+proven by a deterministic AB-BA probe that yields `40P01 deadlock detected` against the reviewed
+head's order.
+
+**THE REVIEW OF THE CORRECTION HEAD `1c719152` RETURNED TWO FURTHER FINDINGS, BOTH ON THE ROLLOUT
+FENCE, AND BOTH ARE CORRECTED IN ONE HEAD.** The fence was `ProjectionGeneration.catalogVersion`
+NOT NULL with NO DEFAULT — every un-versioned INSERT rejected — and that is too blunt in two ways:
+**(P1)** `migrate.sh` applies the migration BEFORE the old processes stop, and inside that window
+the previous release's `lockActiveGeneration` lazily bootstraps a generation for any
+`(consumer, project)` that has none yet, with an INSERT naming no version; a no-default NOT NULL
+rejects it and STALLS that ordered projection while the old release is still supposed to be
+serving (the backfill reaches only generations that already exist). **(P2)** the merged, documented,
+deliberately rerunnable `20270810000000_phase6_t4a_withdraw` repair inserts a replacement generation
+with an explicit column list that cannot name a later column, so the operator replay would FAIL
+instead of repairing — and this PR's own test helper was MASKING that by installing a temporary
+default the operator does not have. The fence therefore MOVES to where the harm actually is: a
+generation stamped below the running code's compiled `catalogVersion` is not SERVABLE
+(`readServableGeneration`, the one serve gate every module read already crosses), and the caller
+falls back to the canonical live read — the same answer that function already gives a lagging or
+blocked generation, and one that still carries the consultation thread a v1 generation would omit.
+A plain `DEFAULT 1` fixes P1 but not P2 (the 4a repair COPIES its rows from the generation it
+retires, so stamping the replacement `1` leaves a correctly-repaired projection permanently
+unservable — two delivered round-12/13 probes failed on exactly that), so the column stays NOT NULL
+with NO default and a BEFORE INSERT trigger supplies the value: an un-versioned INSERT in a
+transaction that has ALREADY RETIRED a sibling of the same `(consumer, projectId)` inherits that
+sibling's version, and every other un-versioned INSERT takes 1. That is structural and was verified,
+not assumed — `ProjectionRebuilder` inserts in one transaction and retires in a later one (logic
+predating this unit, so the previous release's CLI has the same shape and can never inherit), while
+the relay bootstrap retires nothing. The test helper is now a bare `psql -f`, and its being bare is
+the evidence the replay works natively. RED-first by removal: dropping the stamp trigger turns FIVE
+tests red (the three delivered 4a repair probes plus both new round-30 probes) and removing the
+one-line serve fence turns the serve-gate probe red; `upgrade-proof.sh` gains four arms exercising
+all of it on the FULLY MIGRATED database, which the pre-existing arms never reached.
 
 **4c-i IS MERGED (PR #493 at `main` `d4e2ddf5`) WITH A FRESH INDEPENDENT CODEX +1 ON THE
 EXACT REVIEWED HEAD `7650109`, AND THE REMOVAL-AND-REINSTATE BLOCKER IS CLEARED BY

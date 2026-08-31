@@ -395,6 +395,13 @@ export interface AppActions {
   // decisions
   openApprove: (decId: string, optIdx: number) => void;
   confirmApprove: () => void;
+  /**
+   * Phase 6 unit 4c-ii — ask a named member for advice on an open decision (pmc), and answer as
+   * the named consultee. Both go through the durable outbox under ONE stable key, so a
+   * lost-response retry records the append-only fact exactly once.
+   */
+  requestConsultation: (decId: string, consulteeMembershipId: string, question: string) => void;
+  respondToConsultation: (decId: string, consultationId: string, response: string, recommendedOptionIndex?: number) => void;
   openChange: (decId: string) => void;
   submitChange: () => void;
   /** Withdraw the open change request — the decision re-locks (requester or PMC only). */
@@ -2009,6 +2016,52 @@ export const useStore = create<Store>()(
         s.modal = { type: null };
       });
       get().flash('Approved & locked — the Decision Log and PMC dashboard are updated.');
+    },
+    // Both consultation commands take the WRITE-AHEAD path (review finding F4), not
+    // `runRemoteOrQueue`. The distinction matters here precisely because a consultation is an
+    // append-only FACT: `runRemoteOrQueue` mints the idempotency key in memory and, when online,
+    // fires a bare call that persists nothing — so a lost or uncertain response strands the
+    // command with its key, and the only recovery available to the user is to ask again, which
+    // arrives under a DIFFERENT key and appends a SECOND consultation. Writing the op to the
+    // durable outbox first means the same key is replayed until the server confirms, and the
+    // ledger applies it exactly once however many times that takes.
+    requestConsultation: (decId, consulteeMembershipId, question) => {
+      const text = question.trim();
+      if (!text) return;
+      // ONE stable key for this question — persisted WITH the op, so the online flush, a retry
+      // after a lost response, and an offline replay all reach the server under it.
+      const key = newIdempotencyKey();
+      if (
+        runWriteAhead(
+          { t: 'consultationRequest', decisionId: decId, consulteeMembershipId, question: text, idempotencyKey: key },
+          'Consult ' + decId,
+          'Asked — they will see this decision and your question.',
+        )
+      ) {
+        set((s) => { s.modal = { type: null }; });
+        return;
+      }
+      // demo/offline-only fallback: the server is the authority on the thread, so nothing is
+      // fabricated locally beyond closing the sheet.
+      set((s) => { s.modal = { type: null }; });
+      get().flash('Asked — they will see this decision and your question.');
+    },
+    respondToConsultation: (decId, consultationId, response, recommendedOptionIndex) => {
+      const text = response.trim();
+      if (!text) return;
+      const key = newIdempotencyKey();
+      if (
+        runWriteAhead(
+          { t: 'consultationRespond', decisionId: decId, consultationId, response: text, ...(recommendedOptionIndex !== undefined ? { recommendedOptionIndex } : {}), idempotencyKey: key },
+          'Advise ' + decId,
+          'Advice recorded — the person who asked has been told.',
+        )
+      ) {
+        set((s) => { s.modal = { type: null }; });
+        return;
+      }
+      set((s) => { s.modal = { type: null }; });
+      get().flash('Advice recorded — the person who asked has been told.');
     },
     openChange: (decId) => {
       const d = get().decisions.find((x) => x.id === decId);

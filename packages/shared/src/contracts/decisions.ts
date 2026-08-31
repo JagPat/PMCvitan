@@ -27,6 +27,17 @@ export const DECISION_COMMANDS = [
   // (kind / named membership), convert to/from a record (`none` ⟺ `recorded` as one coherent
   // pair), or replace its options. Publication freezes the holder; this is the drafting door.
   'decisions.updateDraft',
+  // Phase 6 unit 4c (§A) — CONSULTATION: the PMC asks a named member a question about an open
+  // decision, and that member answers. Advice that INFORMS without gating: neither command moves
+  // a status or changes a gate verdict. Both are capability-gated on `consultation` per project.
+  //
+  // These two break this list's `decisions.*` prefix DELIBERATELY, and the reason is immutable
+  // history: the merged 4c-i migration's provenance seal checks `CommandExecution.commandType`
+  // against these exact strings, so the ledger type IS `consultations.request` /
+  // `consultations.respond`. A command whose manifest name and ledger type disagreed would be a
+  // second name for one fact, which is the drift the manifest exists to prevent.
+  'consultations.request',
+  'consultations.respond',
 ] as const;
 export type DecisionCommand = (typeof DECISION_COMMANDS)[number];
 
@@ -54,6 +65,10 @@ export const DECISION_QUERIES = [
   // Phase 6 task 4b (§A.3) — the decider push family's claim-time predicate (bound at bootstrap):
   // is a queued "decide this" push still actionable, and for whom?
   'decisions.deciderPushTarget',
+  // Phase 6 unit 4c-ii (§B.3 / P38c/P40c) — the two consultation push families' claim-time
+  // predicates, bound at bootstrap beside the decider family's.
+  'decisions.consultationRequestedPushTarget',
+  'decisions.consultationRespondedPushTarget',
 ] as const;
 export type DecisionQuery = (typeof DECISION_QUERIES)[number];
 
@@ -119,6 +134,36 @@ export interface RequestDecisionChangeInput {
  *  The reason is REQUIRED: a withdrawal without one is the silent delete this design refuses. */
 export interface WithdrawDecisionInput {
   readonly reason: string;
+}
+
+/**
+ * `consultations.request` — ask ONE named member for advice on an open decision.
+ *
+ * The consultee is named BY MEMBERSHIP, not by user: a membership id denotes one person for its
+ * lifetime (the delivered `Membership_t4b_identity_frozen` refuses any change to `userId` or
+ * `projectId`), and when external collaborators arrive they arrive as members, so this contract
+ * already names them.
+ */
+export interface RequestConsultationInput {
+  /** the ACTIVE membership of the person being asked */
+  readonly consulteeMembershipId: string;
+  /** what is being asked — user-supplied EVIDENCE, trimmed and non-empty at both layers */
+  readonly question: string;
+}
+
+/** `consultations.respond` — the NAMED consultee answers, once. */
+export interface RespondToConsultationInput {
+  /** the consultation being answered */
+  readonly consultationId: string;
+  /** the advice — user-supplied EVIDENCE, trimmed and non-empty at both layers */
+  readonly response: string;
+  /**
+   * An OPTIONAL recommendation, given as the option's INDEX in the decision's ordered options —
+   * resolved server-side to that option's id, because an index is evidence bound to nothing and
+   * survives reordering pointing elsewhere. The stored reference is a same-decision option id,
+   * which the delivered `(decisionId, id)` composite FK makes unforgeable.
+   */
+  readonly recommendedOptionIndex?: number;
 }
 
 /** `decisions.publish` and `decisions.withdrawChange` carry no request body — the decision id comes

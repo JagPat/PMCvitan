@@ -12,11 +12,16 @@ export const decisionsManifest: ModuleManifest = {
   // (no application writer), owned and read-encapsulated here like every decision fact.
   // Phase 6 unit 4c-i — the two consultation facts are decisions-owned and DEPLOYED DARK: the
   // tables and their seals exist, and nothing reads or writes them until 4c-ii.
-  ownsModels: ['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionKindSelection', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'decisionConsultation', 'decisionConsultationResponse', 'changeRequest', 'decisionProjection'],
+  // Phase 6 unit 4c-ii (round 31) — `phase6ApprovalSealWatermark` records WHEN this module's
+  // approval-provenance seal was installed, so a receipt that predates it cannot back a new
+  // revision. It is written once by the migration and read only by that seal's trigger; no
+  // application code touches it. It is owned HERE because it is a fact about the decisions
+  // approval register, not about the platform that happens to store it.
+  ownsModels: ['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionKindSelection', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'decisionConsultation', 'decisionConsultationResponse', 'changeRequest', 'decisionProjection', 'phase6ApprovalSealWatermark'],
   // Task 8 — the FIRST fully-extracted backend module: its models are read-encapsulated, so no
   // other module reads decision persistence directly (the boundary check enforces it); every
   // cross-module read goes through the queries below (DecisionsQueryService).
-  readEncapsulated: ['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionKindSelection', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'decisionConsultation', 'decisionConsultationResponse', 'changeRequest', 'decisionProjection'],
+  readEncapsulated: ['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionKindSelection', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'decisionConsultation', 'decisionConsultationResponse', 'changeRequest', 'decisionProjection', 'phase6ApprovalSealWatermark'],
   dependsOn: [],
   // Phase 6 task 4a round 3 — the withdraw ATTRIBUTION question (does the actor hold an ACTIVE
   // membership here — the `withdrawnById` FK's target?) is answered by its owner through
@@ -32,14 +37,17 @@ export const decisionsManifest: ModuleManifest = {
     'decision.change_requested',
     'decision.change_withdrawn',
     'decision.withdrawn',
+    // Phase 6 unit 4c-ii (§A) — consultation SIGNALS: advice that informs without gating.
+    'decision.consultation_requested',
+    'decision.consultation_responded',
   ],
   consumesEvents: [],
   // Phase 6 task 4b (§A.1/§A.2) — `decisions.updateDraft` re-points an UNPUBLISHED draft's
   // decider/kind/options as one coherent pair (the write-once holder freeze starts at publication).
-  commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange', 'decisions.withdraw', 'decisions.updateDraft'],
+  commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange', 'decisions.withdraw', 'decisions.updateDraft', 'consultations.request', 'consultations.respond'],
   // 4b adds: `statusAndDraftMap`/`statusAndDraftOf` (the recorded gate arm's draft flag),
   // `deciderPushTarget` (the decider push family's claim-time predicate, bound at bootstrap).
-  queries: ['decisions.snapshotSlice', 'decisions.projectionSlice', 'decisions.existsInProject', 'decisions.linkableInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending', 'decisions.approvedRef', 'decisions.statusAndDraftMap', 'decisions.statusAndDraftOf', 'decisions.deciderPushTarget'],
+  queries: ['decisions.snapshotSlice', 'decisions.projectionSlice', 'decisions.existsInProject', 'decisions.linkableInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending', 'decisions.approvedRef', 'decisions.statusAndDraftMap', 'decisions.statusAndDraftOf', 'decisions.deciderPushTarget', 'decisions.consultationRequestedPushTarget', 'decisions.consultationRespondedPushTarget'],
   routes: [
     'POST /projects/:projectId/decisions',
     'POST /projects/:projectId/decisions/:decisionId/publish',
@@ -48,6 +56,8 @@ export const decisionsManifest: ModuleManifest = {
     'POST /projects/:projectId/decisions/:decisionId/change/withdraw',
     'POST /projects/:projectId/decisions/:decisionId/withdraw',
     'PATCH /projects/:projectId/decisions/:decisionId/draft',
+    'POST /projects/:projectId/decisions/:decisionId/consultations',
+    'POST /projects/:projectId/decisions/:decisionId/consultations/respond',
   ],
   permissions: ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
 };

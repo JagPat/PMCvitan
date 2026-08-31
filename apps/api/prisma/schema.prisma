@@ -383,6 +383,21 @@ model ProjectionGeneration {
   appliedPosition BigInt? // contiguous checkpoint INTO THIS generation (NULL = none applied yet)
   cursorStatus    String    @default("live") // 'live' | 'blocked' (a dead earlier position blocks)
   activatedAt     DateTime? // when this generation became 'active' (the barrier commit)
+  /// Phase 6 unit 4c-ii (§D) — the CONSUMER CATALOG VERSION this generation was built at.
+  ///
+  /// The startup fence (`syncConsumerCatalog` throwing on a version difference) protects processes
+  /// that TAKE UP SERVICE. `projection-rebuild.cli.ts` is not one: it constructs the rebuilder and
+  /// registers consumers directly and never calls sync, so a PREVIOUS release's CLI run against a
+  /// migrated database would rebuild with the old serializer and ACTIVATE that generation — a
+  /// register missing the consultation thread and the widened audience, swapped in by a supported
+  /// command, and reached for precisely when something already looks wrong.
+  ///
+  /// The fence therefore lives at the one boundary every binary must cross. NOT NULL with NO
+  /// DEFAULT is the whole mechanism: the previous release does not know this column exists, so its
+  /// INSERT names no value and PostgreSQL rejects it before any generation is built or swapped. A
+  /// check inside the new CLI could not do this — that binary contains neither the check nor any
+  /// sync call.
+  catalogVersion  Int
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -2215,6 +2230,19 @@ model DecisionOptionTouch {
 // onto (projectId, decisionId, version, optionKey): a spec can only ever reference an approval
 // that REALLY happened, for an option the decision REALLY has. `decisions.approvedRef` serves
 // provenance from the head row alone — never from event counts or label matching.
+/// Phase 6 unit 4c-ii — the instant the approval-provenance seal was installed.
+///
+/// A single row, guaranteed by the `id`-is-TRUE primary key plus its CHECK. The provenance trigger
+/// refuses a revision citing a `decisions.approve` receipt created at or before this instant: such
+/// a receipt already backed an approval that happened, and the one-use index cannot see that
+/// because the revision it backed carries the NULL provenance legacy rows are entitled to.
+/// Written once by the migration and never again — a re-run keeps the original instant, so a retry
+/// cannot move the watermark forward and release receipts minted between attempts.
+model Phase6ApprovalSealWatermark {
+  id       Boolean  @id @default(true)
+  sealedAt DateTime @db.Timestamptz(3)
+}
+
 model DecisionApprovalRevision {
   id           String         @id
   projectId    String
@@ -2250,6 +2278,13 @@ model DecisionApprovalRevision {
   // the provenance FK target: version AND option bind together to one immutable approval fact
   // (explicit name — the generated one exceeds PostgreSQL's 63-char identifier limit)
   @@unique([projectId, decisionId, version, optionKey], map: "DecisionApprovalRevision_provenance_target_key")
+  // Phase 6 unit 4c-ii (review F1) — ONE-USE provenance, the shape the two consultation facts
+  // already carry: a completed `decisions.approve` receipt backs AT MOST ONE revision, so a single
+  // genuine receipt cannot be replayed to inflate the approval COUNT every open consultation is
+  // frozen against. Lives in SQL only (`DecisionApprovalRevision_source_command_key` in
+  // 20271115000000) because it is PARTIAL — `WHERE "sourceCommandId" IS NOT NULL`, so the legacy
+  // rows 4c-i staged the column nullable for stay out of it — and Prisma cannot express a
+  // predicate on `@@unique`.
 }
 
 // Append-only lifecycle + audit log for a decision.

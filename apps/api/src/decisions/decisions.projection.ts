@@ -36,6 +36,17 @@ const DECISION_INCLUDE = {
   // Phase 6 task 4b — the named holder's USER, resolved into the stored DTO by the ONE fold so
   // live == projection == rebuild carry the same decider designation (§A.3 round 3).
   deciderMembership: { select: { userId: true } },
+  // Phase 6 unit 4c-ii (§B P25c) — the consultation thread and the approval-register COUNT the
+  // audience predicate compares against. Both projection paths read ONE source: this include.
+  // The incremental fold upserts from the canonical rows it already loads, and `rebuildSeed`
+  // seeds from the same query — so a generation swap carries the audience with it.
+  //
+  // The audience is a canonical COLUMN, never an event payload. `rebuildSeed` replays no
+  // historical payloads, so an audience living only in a payload is dropped by every rebuild;
+  // and folding it from `Membership` here would be the cross-module read the module rules forbid
+  // — which is exactly why §A made `DecisionConsultation.consulteeUserId` decisions-owned.
+  consultations: { include: { response: true } },
+  approvalRevisions: { select: { version: true } },
 } satisfies Prisma.DecisionInclude;
 
 /** Upsert one decision's generation-scoped projection row from its canonical record. */
@@ -112,7 +123,13 @@ export function makeDecisionsProjectionConsumer(): OutboxConsumer {
     name: DECISIONS_PROJECTION,
     kind: 'ordered',
     effect: 'db',
-    catalogVersion: 1,
+    // Phase 6 unit 4c-ii (§D) — BUMPED for the consultation fold. `syncConsumerCatalog` asserts
+    // the compiled contract against the persisted row at every startup and THROWS on any
+    // difference, so from the moment this unit's catalog-data migration lands, a PREVIOUS-release
+    // process cannot take up service at all: it never reaches the claim path. That is what makes
+    // the drain durable — a rolled-back or newly-scheduled old worker is fenced out on EVERY
+    // start, not merely at the one moment an operator looked.
+    catalogVersion: 2,
     deliveryFor,
     projection: {
       // Seed the replacement generation from the CONSISTENT canonical snapshot. Read the max committed

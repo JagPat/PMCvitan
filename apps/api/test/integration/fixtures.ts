@@ -198,3 +198,45 @@ export async function seedPublishedDecision(
     return tx.decision.update({ where: { id: data.id }, data: { publishedAt: new Date() } });
   });
 }
+
+/**
+ * Plant a `DecisionApprovalRevision` the way HISTORY holds one — with no source command.
+ *
+ * Phase 6 unit 4c-ii seals the register: a NEW revision must name the `decisions.approve` receipt
+ * it is the product of, checked at DEFERRED COMMIT for a SUCCEEDED completion whose `resultRef`
+ * is this decision. That seal is why 4c can treat the register's COUNT as cycle evidence, and it
+ * is deliberately INSERT-scoped — every LEGACY revision carries a NULL there and keeps it, because
+ * backfilling one would invent provenance for an approval whose command was never recorded.
+ *
+ * A test fixture, though, CREATES those legacy-shaped rows fresh, and the trigger is right to
+ * refuse them: it cannot tell a simulated import from a forgery, and it should not try. So the
+ * fixture declares itself, by name, for exactly that one statement — the same contract
+ * `sanctionedReset` uses to bypass the append-only seals, and for the same reason: the bypass is
+ * the sanctioned path, and naming it is what keeps it visible.
+ *
+ * ONE transaction, so a throwing insert rolls the DISABLE back with it and no failure path can
+ * leave the seal off. Guarded on the trigger's existence, because a suite may run against a
+ * database migrated to an earlier point.
+ *
+ * Use this ONLY for rows standing in for history. A revision that is meant to be the product of
+ * an approval should go through `decisions.approve`, which now writes its own provenance.
+ */
+export async function plantLegacyApprovalRevision(
+  prisma: PrismaService,
+  data: { id: string; projectId: string; decisionId: string; version: number; optionKey: string; approvedById?: string | null; onBehalfOf?: string | null },
+): Promise<void> {
+  const toggle = (action: 'DISABLE' | 'ENABLE'): string =>
+    `DO $do$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionApprovalRevision_t4c_provenance') THEN `
+    + `EXECUTE 'ALTER TABLE "DecisionApprovalRevision" ${action} TRIGGER "DecisionApprovalRevision_t4c_provenance"'; END IF; END $do$`;
+  await prisma.$transaction([
+    prisma.$executeRawUnsafe(toggle('DISABLE')),
+    prisma.decisionApprovalRevision.create({
+      data: {
+        id: data.id, projectId: data.projectId, decisionId: data.decisionId, version: data.version,
+        optionKey: data.optionKey, approvedAt: new Date(),
+        approvedById: data.approvedById ?? null, onBehalfOf: data.onBehalfOf ?? null,
+      },
+    }),
+    prisma.$executeRawUnsafe(toggle('ENABLE')),
+  ]);
+}

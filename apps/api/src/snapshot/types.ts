@@ -76,6 +76,53 @@ export interface DecisionDto {
   /** the withdrawer's display identity, frozen at withdraw time (the `approver` precedent) */
   withdrawnBy?: string;
   withdrawReason?: string;
+  /**
+   * Phase 6 unit 4c-ii — the consultation thread: who was asked, what was asked, and what they
+   * answered.
+   *
+   * ALWAYS PRESENT from a 4c server — EMPTY, never absent, for a decision nobody was consulted on,
+   * including a DTO stored by a pre-4c generation, which the read path hydrates to this shape.
+   * Optional in the TYPE only so a stored legacy DTO can be typed before hydration.
+   *
+   * There is an OPEN DISPUTE about this shape, recorded for the reviewer rather than settled here
+   * (see `serializeDecision`): the closed parallel #496 argued absent-when-empty is required by
+   * §D's byte-identity rule for gate-OFF projects.
+   */
+  consultations?: ConsultationDto[];
+  /**
+   * The decision's CURRENT approval cycle — its `DecisionApprovalRevision` count. A consultation
+   * grants visibility only while its frozen `openCycle` still equals this, so every viewer
+   * predicate needs the pair. `0` before the first approval; an absent value reads as 0.
+   */
+  approvalCycle?: number;
+}
+
+/** One consultation and, once given, its single answer (Phase 6 unit 4c-ii §A). Both facts are
+ *  append-only: a question that was asked was asked, and advice that was given was given. */
+export interface ConsultationDto {
+  id: string;
+  /** the consultee BY MEMBERSHIP — one person for its lifetime (identity is DB-frozen) */
+  consulteeMembershipId: string;
+  /** the DECISIONS-OWNED canonical audience: the user this membership resolves to */
+  consulteeUserId: string;
+  /** who asked */
+  requestedById: string;
+  question: string;
+  /** the cycle this question was asked in — frozen at request time */
+  openCycle: number;
+  requestedAt: string;
+  /** the ONE answer, when it has been given */
+  response?: ConsultationResponseDto;
+}
+
+export interface ConsultationResponseDto {
+  id: string;
+  respondedById: string;
+  response: string;
+  /** the recommended option's stable KEY (never its index — an index survives reordering
+   *  pointing elsewhere), when the consultee named one */
+  recommendedOptionKey?: string;
+  respondedAt: string;
 }
 
 /** One derived gate value with its provenance (Phase 1 Task 6). */

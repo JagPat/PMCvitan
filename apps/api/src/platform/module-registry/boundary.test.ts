@@ -168,7 +168,7 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
     const declared = MODULE_MANIFESTS.flatMap((m) => m.routes);
     expect([...derived.keys()].sort()).toEqual([...declared].sort());
     expect(declared.length).toBe(new Set(declared).size); // globally unique
-    expect(declared.length).toBe(170); // the documented command inventory §4 (+1: Phase-6 task-4a decisions.withdraw)
+    expect(declared.length).toBe(172); // the documented command inventory §4 (+1: Phase-6 task-4a decisions.withdraw)
     // no route contributed by two controllers or two manifests, no missing/unexpected route
     expect(analysis.routeFindings).toEqual([]);
   });
@@ -208,7 +208,12 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
     // Phase 6 unit 4c-i — the two consultation facts join the encapsulated set the moment their
     // tables exist, DARK: a model owned but not read-encapsulated produces no cross-module-read
     // finding, which is exactly the gap that would let 4c-ii's first foreign read slip through.
-    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionKindSelection', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'decisionConsultation', 'decisionConsultationResponse', 'changeRequest', 'decisionProjection']);
+    // Phase 6 unit 4c-ii round 31 — `phase6ApprovalSealWatermark` records when the approval
+    // provenance seal was installed, so a receipt predating it cannot back a new revision. Written
+    // once by the migration, read only by that seal's trigger, and encapsulated for the same
+    // reason `decisionOptionKindSelection` is: a model owned but not read-encapsulated produces no
+    // cross-module-read finding, so forgetting it here would silently lose its boundary.
+    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionKindSelection', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'decisionConsultation', 'decisionConsultationResponse', 'changeRequest', 'decisionProjection', 'phase6ApprovalSealWatermark']);
     // it declares the queries other modules reach it through, and depends on nothing
     expect(decisions?.queries.length).toBeGreaterThan(0);
     // and every module that reads decisions now declares the dependency

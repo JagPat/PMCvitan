@@ -116,8 +116,14 @@ const EXPECT: Record<string, Spec> = {
     // Phase 6 task 4b — the DECIDER designation travels through the contract too: the kind, the
     // named membership, and the RESOLVED decider user every viewer/decider predicate compares.
     // `photoSwatch` becomes optional (a record-only issue has no option-sourced swatch).
-    keys: ['id', 'title', 'room', 'nodeId', 'status', 'ageDays', 'photoSwatch', 'deciderKind', 'deciderMembershipId', 'deciderUserId', 'options', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(),
-    optional: ['nodeId', 'ageDays', 'photoSwatch', 'deciderMembershipId', 'deciderUserId', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(), nullable: [],
+    // Phase 6 unit 4c-ii — the CONSULTATION thread and the approval CYCLE it is judged against.
+    // Both are OPTIONAL and travel TOGETHER: a decision with no thread emits neither, which is
+    // what keeps a gate-OFF project's response byte-identical to the previous release's (§D) —
+    // `approvalCycle` in particular is non-zero on any approved decision, so emitting it
+    // unconditionally would add a key to projects the feature does not exist for. Every consumer
+    // reads the absent case as the empty one (`viewerIsConsultee`: no standing, cycle `0`).
+    keys: ['id', 'title', 'room', 'nodeId', 'status', 'ageDays', 'photoSwatch', 'deciderKind', 'deciderMembershipId', 'deciderUserId', 'options', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'consultations', 'approvalCycle'].sort(),
+    optional: ['nodeId', 'ageDays', 'photoSwatch', 'deciderMembershipId', 'deciderUserId', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason', 'consultations', 'approvalCycle'].sort(), nullable: [],
   },
   OptionDto: { keys: ['label', 'key', 'material', 'delta', 'swatch', 'photoUrl', 'recommended'].sort(), optional: ['photoUrl'], nullable: [] },
   ActivityDto: {

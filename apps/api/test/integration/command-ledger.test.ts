@@ -254,11 +254,17 @@ describe('Phase 2 Task 5 — decision pillar is idempotent end-to-end (live PG)'
     return id;
   };
   const cleanupDecision = async (id: string) => {
+    // Phase 6 unit 4c-ii — the approval register now CITES the command receipt that produced it
+    // (`DecisionApprovalRevision.sourceCommandId`, the FK 4c-i staged and this unit populates), so
+    // the register has to go BEFORE the receipts it references. Deleting the receipts first is a
+    // foreign-key violation, and because this teardown is not transactional the throw left the
+    // decision rows behind — which then surfaced on the NEXT run as a duplicate-id failure in
+    // seeding, several steps away from the real cause.
+    await sanctionedReset(t.prisma, ['LabourDemandSlice', 'LabourRequirementSpec', 'MaterialRequirementSpec', 'DecisionApprovalRevision'], { cascade: true });
     await t.prisma.commandExecution.deleteMany({ where: { projectId: f.projectA.id } });
     await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
     await t.prisma.auditLog.deleteMany({ where: { entityId: id } });
     await t.prisma.notification.deleteMany({ where: { projectId: f.projectA.id } });
-    await sanctionedReset(t.prisma, ['LabourDemandSlice', 'LabourRequirementSpec', 'MaterialRequirementSpec', 'DecisionApprovalRevision'], { cascade: true });
     await t.prisma.changeRequest.deleteMany({ where: { decisionId: id } });
     await wipeDecisionEvents(t.prisma, { decisionId: id });
     await wipeDecisionsVia(t.prisma, async (tx) => {

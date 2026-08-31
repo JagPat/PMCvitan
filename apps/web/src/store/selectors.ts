@@ -8,7 +8,7 @@
  * surface for the core loop.
  */
 
-import { deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsDecider, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type ScreenKey } from '@vitan/shared';
+import { deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, viewerIsConsultee, viewerIsDecider, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
@@ -54,7 +54,7 @@ export function selectLogDecisions(s: AppState): Decision[] {
       (d) =>
         !d.draft &&
         d.status !== 'withdrawn' &&
-        (d.status !== 'pending' || viewerIsDecider(d, s.role, s.sessionUserId)),
+        (d.status !== 'pending' || viewerIsDecider(d, s.role, s.sessionUserId) || viewerIsConsultee(d.consultations, d.approvalCycle, s.sessionUserId)),
     );
   }
   return s.decisions.filter((d) => !d.draft);
@@ -80,7 +80,7 @@ export function selectVisibleDecisions(s: AppState): Decision[] {
       (d) =>
         !d.draft &&
         d.status !== 'withdrawn' &&
-        (d.status !== 'pending' || viewerIsDecider(d, s.role, s.sessionUserId)),
+        (d.status !== 'pending' || viewerIsDecider(d, s.role, s.sessionUserId) || viewerIsConsultee(d.consultations, d.approvalCycle, s.sessionUserId)),
     );
   }
   return s.decisions.filter((d) => !d.draft);

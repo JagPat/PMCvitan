@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, plantLegacyApprovalRevision } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import { MembersService } from '../../src/orgs/members.service';
@@ -160,12 +160,13 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
       });
       await tx.decision.update({ where: { id }, data: { publishedAt: new Date() } });
     });
-    // the register head: version = the recorded approval count, pinning the selected option
-    await t.prisma.decisionApprovalRevision.create({
-      data: {
-        id: `dar-${id}-v${approvals.length}`, projectId, decisionId: id, version: approvals.length,
-        optionKey: 'opt-a', approvedAt: new Date(), approvedById: f.memberUser.id,
-      },
+    // the register head: version = the recorded approval count, pinning the selected option.
+    // Planted through the named bypass (Phase 6 unit 4c-ii): this row stands in for an approval
+    // that already happened, and the provenance seal is right to refuse a fresh one with no
+    // command behind it.
+    await plantLegacyApprovalRevision(t.prisma, {
+      id: `dar-${id}-v${approvals.length}`, projectId, decisionId: id, version: approvals.length,
+      optionKey: 'opt-a', approvedById: f.memberUser.id,
     });
   };
 

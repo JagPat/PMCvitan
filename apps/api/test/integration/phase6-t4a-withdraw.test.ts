@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import request from 'supertest';
 import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, wipeDecisionEvents, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, wipeDecisionEvents, type TwoProjectFixture, plantLegacyApprovalRevision } from './fixtures';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { ActivitiesService } from '../../src/activities/activities.service';
@@ -50,6 +50,25 @@ import { sanctionedReset } from '../../prisma/sanctioned-reset';
  *   P13 projection: live == projection == rebuild across a withdraw; a rebuild emits zero events
  */
 describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
+  /**
+   * Replay a HISTORICAL migration file against the CURRENT schema — exactly as the operator does.
+   *
+   * NO accommodation of any kind, and that is the point (review round 30, finding P2). An earlier
+   * version of this helper installed a temporary `catalogVersion` default around the replay,
+   * because unit 4c-ii had made that column NOT NULL with NO DEFAULT and the 4a repair inserts a
+   * generation with an explicit column list that cannot name a column added later. That helper was
+   * MASKING a real defect: the operator running the documented, deliberately rerunnable 4a repair
+   * has no such accommodation, so for them the replay would simply fail.
+   *
+   * The fence was moved instead — the column now carries `DEFAULT 1` and the refusal happens at
+   * the serve gate (`readServableGeneration`) — so this replay works natively, and this helper
+   * being a bare `psql -f` is the evidence that it does.
+   */
+  const replayHistoricalMigration = async (dbUrl: string, migrationPath: string, env?: NodeJS.ProcessEnv): Promise<void> => {
+    const { execFileSync } = await import('node:child_process');
+    execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], env ? { stdio: 'pipe', env } : { stdio: 'pipe' });
+  };
+
   let t: TestApp;
   let f: TwoProjectFixture;
   let svc: DecisionsService;
@@ -403,8 +422,11 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     it('never-approved (forward): a decision beside an approval revision refuses; a LEGACY approved row with an EMPTY register refuses by SOURCE STATE', async () => {
       // a pending decision that hostile SQL gave a register row — the belt arm refuses
       const id = await seed();
-      await t.prisma.decisionApprovalRevision.create({
-        data: { id: `dar-${id}-v1`, projectId: f.projectA.id, decisionId: id, version: 1, optionKey: 'a', approvedAt: new Date(), approvedById: f.memberUser.id },
+      // Phase 6 unit 4c-ii — the register row is SETUP here (what the withdraw seal must refuse to
+      // step over), not the assertion, so it is planted through the fixture's named bypass. The
+      // provenance seal would otherwise refuse it, and the probe would pass for the wrong reason.
+      await plantLegacyApprovalRevision(t.prisma, {
+        id: `dar-${id}-v1`, projectId: f.projectA.id, decisionId: id, version: 1, optionKey: 'a', approvedById: f.memberUser.id,
       });
       await expect(
         raw(`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=$2, "withdrawnByName"='X', "withdrawReason"='r' WHERE "id"=$1`, id, f.memberUser.id),
@@ -501,16 +523,38 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       const gate = new Promise<void>((r) => (release = r));
       let inserted!: () => void;
       const insertedP = new Promise<void>((r) => (inserted = r));
-      // Session A: the hostile revision INSERT (its trigger takes FOR UPDATE on the decision
-      // row), held open — `inserted` resolves once the statement holds the lock.
+      // Session A: a revision INSERT (its trigger takes FOR UPDATE on the decision row), held
+      // open — `inserted` resolves once the statement holds the lock.
+      //
+      // Phase 6 unit 4c-ii: this insert must genuinely COMMIT, because the whole point of this
+      // ordering is that the withdrawal then sees a committed register row. So it carries a REAL
+      // approval receipt rather than the fixture bypass — reserved, cited, and completed in the
+      // same transaction, exactly as `executeCommand` does it. That makes this arm a faithful
+      // "an approval is committing concurrently with a withdrawal" race, which is a truer
+      // statement of the hazard than a bare unsourced insert ever was.
+      const receiptId = `cmd-${id}-race-b`;
       const a = raceDb.$transaction(
         async (tx) => {
           await tx.$executeRawUnsafe(
-            `INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById") VALUES ($1,$2,$3,1,'a',now(),$4)`,
+            `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+             VALUES ($1,'project',$2,$3,$4,'decisions.approve',$1,$1,'reserved')`,
+            receiptId,
+            f.orgA.id,
+            f.projectA.id,
+            f.memberUser.id,
+          );
+          await tx.$executeRawUnsafe(
+            `INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId") VALUES ($1,$2,$3,1,'a',now(),$4,$5)`,
             `dar-${id}-race-b`,
             f.projectA.id,
             id,
             f.memberUser.id,
+            receiptId,
+          );
+          await tx.$executeRawUnsafe(
+            `UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"=$2, "completedAt"=now() WHERE "id"=$1`,
+            receiptId,
+            id,
           );
           inserted();
           await gate;
@@ -1073,8 +1117,12 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       const withdrawn = await seed({ title: 'Repoint target' });
       await svc.withdraw(f.projectA.id, withdrawn, { reason: 'sealed register' }, pmc());
       const dummy = await seed({ title: 'Dummy approved' });
-      await t.prisma.$executeRaw`INSERT INTO "DecisionApprovalRevision"("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
-        VALUES ('r8-rev', ${f.projectA.id}, ${dummy}, 1, 'a', now(), ${f.memberUser.id})`;
+      // planted through the 4c-ii bypass: minting this row is the attack's SETUP, and the
+      // assertion below is that the RE-POINT update is refused — routing the setup through the
+      // provenance seal would make the probe fail before reaching what it is about
+      await plantLegacyApprovalRevision(t.prisma, {
+        id: 'r8-rev', projectId: f.projectA.id, decisionId: dummy, version: 1, optionKey: 'a', approvedById: f.memberUser.id,
+      });
       await expect(
         t.prisma.$executeRaw`UPDATE "DecisionApprovalRevision" SET "decisionId" = ${withdrawn} WHERE "id" = 'r8-rev'`,
       ).rejects.toThrow(/append-only/);
@@ -1416,20 +1464,35 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         // that emits NO event — exactly the partial/manual-apply state the migration accepts
         await t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='Manual PMC', "withdrawReason"='partial apply' WHERE "id"=${id}`;
         // the migration file is rerunnable BY DESIGN — run it as the operator would
-        execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe' });
+        await replayHistoricalMigration(dbUrl, migrationPath);
         await restore4bWidenedBodies();
         const retired = await t.prisma.projectionGeneration.findUniqueOrThrow({ where: { id: before.id } });
         expect(retired.status).toBe('retired');
         const replacement = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
         expect(replacement.id).not.toBe(before.id);
         expect(replacement.appliedPosition).toBe(before.appliedPosition);
-        // the drift pin: the replacement generation SERVES truth equal to the live slice
+        // THE DRIFT PIN, restated for the generation-version fence (review round 31).
+        //
+        // The repair's replacement is written by the MIGRATION, which names no catalog version, so
+        // the stamp trigger marks it 1 — and once a consumer has moved past v1 the serve gate
+        // refuses it. That is deliberate and it is not a regression of this repair: the repair
+        // exists to stop a stale WITHDRAWN status being served, and refusing the generation stops
+        // it more completely than replacing it did. What must hold is that the READ is still
+        // correct, which it is, because every caller falls back to the canonical live slice.
+        //
+        // (The migration cannot be taught to stamp v2: its missing-row branch synthesizes DTOs
+        // from hard-coded SQL that predates this unit's serializer fields, so claiming the current
+        // version for its output is exactly the lie the fence exists to catch.)
+        expect(
+          (await query.projectionSlice(projW, 'pmc', f.memberUser.id)).generation,
+          'the migration-written replacement is not served — it was built by an older serializer',
+        ).toBeNull();
         for (const role of ['pmc', 'engineer'] as const) {
           const live = await query.snapshotSlice(projW, role, f.memberUser.id);
-          const proj = await query.projectionSlice(projW, role, f.memberUser.id);
-          expect(proj.decisions, `role=${role}`).toEqual(live.decisions);
+          expect(live.decisions.find((d) => d.id === id)?.status, `role=${role}: the live read carries the repair`).toBe(
+            role === 'pmc' ? 'withdrawn' : undefined,
+          );
         }
-        expect((await query.projectionSlice(projW, 'pmc', f.memberUser.id)).decisions.find((d) => d.id === id)?.status).toBe('withdrawn');
         // the WEDGE pin: the next delivery is CONTIGUOUS and APPLIES (at c2d3a1a it waited forever)
         const id2 = 'DL-t4a-r12w-2';
         await seedPublishedOn(projW, id2, 'Post-repair decision');
@@ -1441,6 +1504,15 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         expect(stuck, 'the post-migration delivery must APPLY, not wait forever').toBe(0);
         const after = await t.prisma.projectionGeneration.findUniqueOrThrow({ where: { id: replacement.id } });
         expect(after.appliedPosition! > replacement.appliedPosition!).toBe(true);
+
+        // …and the degradation is TEMPORARY. Asserted LAST, because the rebuild retires the
+        // replacement this test has been tracking: an ordinary `projection:rebuild` stamps a fresh
+        // generation at the current version, and projection serving comes back equal to live.
+        await rebuilder.rebuild('decisions.inbox', projW);
+        const reborn = await query.projectionSlice(projW, 'pmc', f.memberUser.id);
+        expect(reborn.generation, 'a rebuild restores projection serving').not.toBeNull();
+        expect(reborn.decisions).toEqual((await query.snapshotSlice(projW, 'pmc', f.memberUser.id)).decisions);
+        expect(reborn.decisions.find((d) => d.id === id)?.status).toBe('withdrawn');
       } finally {
         await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'DecisionProjection', 'CommandExecution'], { cascade: true });
         await t.prisma.notification.deleteMany({ where: { projectId: projW } });
@@ -1708,7 +1780,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         // generation's row for it removed entirely (the partial apply that never reached idW)
         await t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='Manual PMC', "withdrawReason"='partial apply, no row' WHERE "id"=${idW}`;
         await t.prisma.decisionProjection.deleteMany({ where: { generationId: before.id, decisionId: idW } });
-        execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe' });
+        await replayHistoricalMigration(dbUrl, migrationPath);
         await restore4bWidenedBodies();
         const replacement = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
         expect(replacement.id).not.toBe(before.id);
@@ -1720,16 +1792,27 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         const canonical = await computeDecisionRows(t.prisma, projW);
         // a 4a-migration-seeded dto predates the 4b decider fields; its semantic IS the column
         // backfill's (`client`), and the read path normalizes it exactly so — compare normalized
+        // Phase 6 unit 4c-ii needs NO such normalization: the serializer omits the consultation
+        // thread and its cycle when the thread is empty, so a migration-seeded dto and a freshly
+        // computed one already agree by both carrying neither key.
         const normalized = stored.map((r) => ({ ...r, dto: { deciderKind: 'client', ...(r.dto as Record<string, unknown>) } }));
         expect(normalized).toEqual(canonical);
         expect(stored.map((r) => r.decisionId).sort()).toEqual([idK, idW].sort());
-        // the pmc register SERVES the withdrawal from the replacement generation
-        expect((await query.projectionSlice(projW, 'pmc', f.memberUser.id)).decisions.find((d) => d.id === idW)?.status).toBe('withdrawn');
-        for (const role of ['pmc', 'engineer'] as const) {
-          const live = await query.snapshotSlice(projW, role, f.memberUser.id);
-          const proj = await query.projectionSlice(projW, role, f.memberUser.id);
-          expect(proj.decisions, `role=${role}`).toEqual(live.decisions);
-        }
+        // THE SERVING RULE (review round 31), and this probe is the reason for it. The branch
+        // exercised here is the one that SYNTHESIZES a projection row from the migration's own
+        // hard-coded SQL rather than copying it. That SQL predates this unit's serializer fields,
+        // so its output is complete only for a decision with nothing in those fields — true of the
+        // fixture above, and NOT true in general. The replacement is therefore stamped 1 by the
+        // generation-version trigger and refused at the serve gate, and the read falls back to the
+        // canonical live slice, which is always current.
+        expect(
+          (await query.projectionSlice(projW, 'pmc', f.memberUser.id)).generation,
+          'a migration-synthesized generation is not served',
+        ).toBeNull();
+        expect(
+          (await query.snapshotSlice(projW, 'pmc', f.memberUser.id)).decisions.find((d) => d.id === idW)?.status,
+          'the live read carries the repaired withdrawal',
+        ).toBe('withdrawn');
         // and the consumer continues: the next delivery APPLIES against the copied checkpoint
         const id2 = 'DL-t4a-r13w-2';
         await seedPublishedOn(projW, id2, 'Post-repair decision');
@@ -1738,6 +1821,13 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         });
         await drain();
         expect(await t.prisma.outboxDelivery.count({ where: { consumer: 'decisions.inbox', projectId: projW, status: { in: ['pending', 'leased'] } } })).toBe(0);
+        // …and the ordinary rebuild restores projection serving at the current version. Asserted
+        // last, because it retires the replacement the assertions above track.
+        await rebuilder.rebuild('decisions.inbox', projW);
+        const reborn = await query.projectionSlice(projW, 'pmc', f.memberUser.id);
+        expect(reborn.generation, 'a rebuild restores projection serving').not.toBeNull();
+        expect(reborn.decisions).toEqual((await query.snapshotSlice(projW, 'pmc', f.memberUser.id)).decisions);
+        expect(reborn.decisions.find((d) => d.id === idW)?.status).toBe('withdrawn');
       } finally {
         await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'DecisionProjection', 'CommandExecution'], { cascade: true });
         await t.prisma.notification.deleteMany({ where: { projectId: projW } });
@@ -1812,7 +1902,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       await t.prisma.notification.create({
         data: { projectId: f.projectA.id, decisionId: id, text: 'Decision awaiting approval: Rerun survivor', color: '#C08A2D', time: '2d ago' },
       });
-      execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe' });
+      await replayHistoricalMigration(dbUrl, migrationPath);
       await restore4bWidenedBodies();
       const after = await t.prisma.notification.findMany({ where: { decisionId: id } });
       expect(after.map((n) => n.text.split(':')[0])).toEqual(['Decision withdrawn']);
@@ -1894,13 +1984,16 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         // the two stale shapes: idMissing has NO row (seed arm); idStale keeps its pending row (correction arm)
         await t.prisma.decisionProjection.deleteMany({ where: { generationId: gen.id, decisionId: idMissing } });
         // the operator's psql session is NOT UTC — the repair must not care
-        execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe', env: { ...process.env, PGTZ: 'Asia/Kolkata' } });
+        await replayHistoricalMigration(dbUrl, migrationPath, { ...process.env, PGTZ: 'Asia/Kolkata' });
         await restore4bWidenedBodies();
         const replacement = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
         const stored = await storedDecisionRows(t.prisma, replacement.id);
         const canonical = await computeDecisionRows(t.prisma, projW);
         // a 4a-migration-seeded dto predates the 4b decider fields; its semantic IS the column
         // backfill's (`client`), and the read path normalizes it exactly so — compare normalized
+        // Phase 6 unit 4c-ii needs NO such normalization: the serializer omits the consultation
+        // thread and its cycle when the thread is empty, so a migration-seeded dto and a freshly
+        // computed one already agree by both carrying neither key.
         const normalized = stored.map((r) => ({ ...r, dto: { deciderKind: 'client', ...(r.dto as Record<string, unknown>) } }));
         expect(normalized).toEqual(canonical);
       } finally {

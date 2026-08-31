@@ -6,7 +6,7 @@ import type { DecisionStatus } from '../domain/transitions';
 import type { DeciderKind } from '@vitan/shared';
 import type { Role } from '../common/auth';
 import type { DecisionDto } from '../snapshot/types';
-import { serializeDecision, decisionVisibleToViewer } from './decision-serialize';
+import { serializeDecision, decisionVisibleToViewer, hydrateStoredDecisionDto } from './decision-serialize';
 import { DECISIONS_PROJECTION } from './decisions.projection';
 import { readServableGeneration } from '../platform/projections/generation';
 
@@ -48,7 +48,16 @@ export class DecisionsQueryService {
     const rows = await this.prisma.decision.findMany({
       where: { projectId },
       // the OPEN change request travels with a reopened decision (Phase 1 Task 2)
-      include: { options: { orderBy: { order: 'asc' } }, changeRequests: { where: { status: 'open' }, take: 1 }, deciderMembership: { select: { userId: true } } },
+      // Phase 6 unit 4c-ii — the LIVE slice reads exactly what the projection's `DECISION_INCLUDE`
+      // reads, because both hand the SAME `serializeDecision` its row: a live/projection drift in
+      // the consultation thread would otherwise be invisible until a rebuild.
+      include: {
+        options: { orderBy: { order: 'asc' } },
+        changeRequests: { where: { status: 'open' }, take: 1 },
+        deciderMembership: { select: { userId: true } },
+        consultations: { include: { response: true } },
+        approvalRevisions: { select: { version: true } },
+      },
       orderBy: { id: 'desc' },
     });
 
@@ -169,10 +178,7 @@ export class DecisionsQueryService {
     // the client nor serves a dto the web's shared predicate cannot judge; the next applied event
     // or rebuild re-serializes the row with the fields stored.
     const decisions = rows
-      .map((r) => {
-        const raw = r.dto as unknown as DecisionDto;
-        return { row: r, dto: raw.deciderKind === undefined ? ({ ...raw, deciderKind: 'client' } as DecisionDto) : raw };
-      })
+      .map((r) => ({ row: r, dto: hydrateStoredDecisionDto(r.dto as unknown as DecisionDto) }))
       .filter(({ row, dto }) =>
         decisionVisibleToViewer(
           {
@@ -181,6 +187,11 @@ export class DecisionsQueryService {
             status: row.status,
             deciderKind: dto.deciderKind,
             deciderUserId: dto.deciderUserId ?? null,
+            // Phase 6 unit 4c-ii — the widened audience is judged from the SAME stored dto the
+            // live path derives, so a projection read admits exactly the consultees a live read
+            // admits and no more.
+            consultations: dto.consultations,
+            approvalCycle: dto.approvalCycle,
           },
           role,
           userId,
@@ -249,6 +260,141 @@ export class DecisionsQueryService {
         return { actionable: true, targetUserId: m.userId };
       }
       return { actionable: false };
+    });
+  }
+
+  /**
+   * Phase 6 unit 4c-ii (§B P38c) — the `decision.consultation_requested` family's claim-time
+   * predicate: is a queued "you were asked" push still worth sending to THIS user?
+   *
+   * The target is the consultee, so the question is answered from the decision plus that user:
+   * does a consultation on this decision still STAND for them? Every arm below is a state that
+   * can change between enqueue and claim, and each one would otherwise deliver decision content
+   * to someone who must not receive it, or invite an action the server now refuses.
+   *
+   * The lock order is the canonical 4c one — `Project` first, then `Decision` — for the reason
+   * §A gives: `decisions.approve` locks a membership before the decision row, so a
+   * decision-first claim would complete an AB-BA cycle against it.
+   */
+  async consultationRequestedPushTarget(
+    projectId: string,
+    decisionId: string,
+    targetUserId: string | null,
+  ): Promise<{ actionable: false } | { actionable: true; roles?: string[]; targetUserId?: string }> {
+    return this.prisma.$transaction(async (tx) => {
+      // (1) PROJECT OPERABILITY FIRST. A push queued before the project was archived would
+      // otherwise still deliver decision content after project authorization refuses access: the
+      // decision stays open, the consultation stands, and memberships can stay active, so no
+      // other arm catches it.
+      if (!(await this.orgsParticipant.isProjectOperable(tx, projectId))) return { actionable: false };
+      if (!targetUserId) return { actionable: false };
+
+      // (2) MEMBERSHIP BEFORE DECISION — the canonical 4c order, and the reason it exists.
+      // `decisions.approve` takes the readiness key, then the named decider's membership, and
+      // only then updates the `Decision` row. When the push target IS that decider — ordinary,
+      // since the person best placed to advise is often the one deciding — a claim holding
+      // `Decision` and waiting for `Membership` completes an AB-BA cycle against a concurrent
+      // approval holding `Membership` and waiting for `Decision`, and PostgreSQL aborts one of
+      // them: either the approval or this delivery fails.
+      //
+      // The unlocked lookup below chooses WHICH membership to lock; it decides nothing. Every
+      // predicate the verdict rests on is re-read under the decision lock in (4).
+      //
+      // ONE row is enough, and that is a schema fact rather than an assumption: `Membership` is
+      // `@@unique([projectId, userId])`, so a user holds at most one membership per project for
+      // its whole life — a removal and re-add flips `status` on the SAME row. Every consultation
+      // naming this user on this decision therefore names the same `consulteeMembershipId`, and
+      // there is no second row a `findFirst` could pick wrongly.
+      const candidate = await tx.decisionConsultation.findFirst({
+        where: { projectId, decisionId, consulteeUserId: targetUserId },
+        select: { consulteeMembershipId: true },
+      });
+      if (!candidate) return { actionable: false };
+      // the consultee's membership must still be ACTIVE at claim time: the intent names a USER,
+      // and a membership removed between enqueue and claim would otherwise still deliver decision
+      // content to that user's still-linked subscription after they lost standing
+      const member = await this.orgsParticipant.lockActiveMembershipById(tx, projectId, candidate.consulteeMembershipId);
+      if (!member || member.userId !== targetUserId) return { actionable: false };
+
+      // (3) the DECISION row, locked BEFORE its status and cycle are judged. The project lock
+      // serializes ARCHIVAL and nothing else, so a claim that then read the decision plainly could
+      // see `pending`, lose the race to an approval committing on the `Decision` row, and still
+      // send a request-to-respond push for a consultation that approval just closed.
+      const rows = await tx.$queryRaw<Array<{ status: string; publishedAt: Date | null }>>`
+        SELECT "status"::text AS status, "publishedAt" FROM "Decision"
+         WHERE "projectId" = ${projectId} AND "id" = ${decisionId}
+         FOR SHARE`;
+      const d = rows[0];
+      // The SAME published-and-open predicate the write path uses — not merely "not withdrawn".
+      // An APPROVE committing between enqueue and claim leaves the project operable, the
+      // membership active, the consultation unanswered and the decision un-withdrawn, so a
+      // not-withdrawn test would send a request-to-respond push for a question the respond
+      // command now answers with a 409: a push inviting an action the server refuses.
+      if (!d || d.publishedAt === null || (d.status !== 'pending' && d.status !== 'change')) return { actionable: false };
+
+      // (4) …and NOW the standing consultation, re-read under that lock: the frozen cycle must
+      // still be current (a `requestChange` reopen would otherwise resurrect a delivery the
+      // approval cancelled), and the consultee who saw the in-app thread and ANSWERED before the
+      // delivery was claimed must not be pushed to do what they have already done.
+      const cycle = await tx.decisionApprovalRevision.count({ where: { decisionId } });
+      const standing = await tx.decisionConsultation.findFirst({
+        where: {
+          projectId, decisionId, consulteeUserId: targetUserId,
+          consulteeMembershipId: candidate.consulteeMembershipId,
+          openCycle: cycle,
+          response: { is: null },
+        },
+        select: { id: true },
+      });
+      if (!standing) return { actionable: false };
+      return { actionable: true, targetUserId };
+    });
+  }
+
+  /**
+   * Phase 6 unit 4c-ii (§B P40c) — the `decision.consultation_responded` family's claim-time
+   * predicate: the answer went to whoever ASKED, and the push is still warranted only while that
+   * person still holds the standing that let them ask.
+   *
+   * A requester may be an org-admin USER with no membership row on this project, which is why the
+   * target is user-keyed and the standing question goes to the orgs-owned answer rather than to a
+   * membership lookup.
+   */
+  async consultationRespondedPushTarget(
+    projectId: string,
+    decisionId: string,
+    targetUserId: string | null,
+  ): Promise<{ actionable: false } | { actionable: true; roles?: string[]; targetUserId?: string }> {
+    return this.prisma.$transaction(async (tx) => {
+      if (!(await this.orgsParticipant.isProjectOperable(tx, projectId))) return { actionable: false };
+      if (!targetUserId) return { actionable: false };
+
+      // MEMBERSHIP BEFORE DECISION, for the same AB-BA reason as the requested family:
+      // `hasProjectRoleStanding(forUpdate)` locks the requester's membership row, and a
+      // concurrent approval holds a membership while waiting to update the decision. The
+      // requester must STILL hold requesting standing — a demoted requester is dropped with the
+      // recorded cancellation mark rather than told about advice they can no longer act on.
+      const standing = await this.orgsParticipant.hasProjectRoleStanding(tx, projectId, targetUserId, ['pmc'], { forUpdate: true });
+      if (!standing) return { actionable: false };
+
+      const rows = await tx.$queryRaw<Array<{ status: string; publishedAt: Date | null }>>`
+        SELECT "status"::text AS status, "publishedAt" FROM "Decision"
+         WHERE "projectId" = ${projectId} AND "id" = ${decisionId}
+         FOR SHARE`;
+      const d = rows[0];
+      if (!d || d.publishedAt === null) return { actionable: false };
+      // Deliberately NO open-status arm here, and the difference from the `requested` family is
+      // the point. That family invites an ACTION, so a decision that has left the open set makes
+      // the invitation false. This one reports that advice was GIVEN — which stays true after an
+      // approval, and is exactly what the person who asked wants to know. What must still be
+      // re-judged is whether this user may see decision content at all, which the standing arm
+      // above covers; a withdrawn decision is pmc-only and the requesting set is pmc.
+      const asked = await tx.decisionConsultation.findFirst({
+        where: { projectId, decisionId, requestedById: targetUserId, response: { isNot: null } },
+        select: { id: true },
+      });
+      if (!asked) return { actionable: false };
+      return { actionable: true, targetUserId };
     });
   }
 

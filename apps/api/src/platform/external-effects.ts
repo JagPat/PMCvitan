@@ -35,7 +35,7 @@ export interface ExternalEffectDef {
    *  own). `'decider'`: the target must still be the decision's holder AND the status must still
    *  demand their decision — re-judged at claim through the decisions-owned answer, re-targeting
    *  a changed holder or dropping with the cancellation mark. Absent = no claim-time predicate. */
-  readonly pushFamily?: 'decider';
+  readonly pushFamily?: 'decider' | 'consultation_requested' | 'consultation_responded';
 }
 
 /**
@@ -56,6 +56,18 @@ export const EXTERNAL_EFFECTS = {
   // Phase 6 task 4a — surfaces refresh; no push (`change_requested`/`change_withdrawn` set the
   // precedent for lifecycle corrections, and the pmc who acted needs no announcement).
   'decision.withdrawn': { eventType: 'decision.withdrawn', invalidate: true, push: null },
+  // Phase 6 unit 4c-ii (§A, §B P38c/P40c) — the two consultation families. Both are TARGETED at
+  // one user, so the `push` list here is only the CEILING of roles a target can hold; the
+  // dispatch site names the user and the claim-time predicate re-judges the whole demand.
+  //
+  // The `requested` ceiling is every role a consultee can hold — 4c introduces no role. The
+  // `responded` ceiling is the requesting set (`pmc` in 4c; `architect` joins in 4d with the
+  // role). Both re-check PROJECT OPERABILITY first at claim: a push queued before the project was
+  // archived would otherwise still deliver decision content after project authorization refuses
+  // access, since the decision stays open, the consultation stands, and memberships can stay
+  // active.
+  'decision.consultation_requested': { eventType: 'decision.consultation_requested', invalidate: true, push: ['pmc', 'client', 'contractor', 'engineer', 'consultant'], pushFamily: 'consultation_requested' },
+  'decision.consultation_responded': { eventType: 'decision.consultation_responded', invalidate: true, push: ['pmc'], pushFamily: 'consultation_responded' },
   // ── activities ─────────────────────────────────────────────────────────────────────────────
   'activity.created': { eventType: 'activity.created', invalidate: true, push: ['engineer', 'contractor'] },
   'activity.updated': { eventType: 'activity.updated', invalidate: true, push: null },

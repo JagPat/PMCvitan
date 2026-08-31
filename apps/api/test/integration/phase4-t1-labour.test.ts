@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, seedPublishedDecision } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, seedPublishedDecision, plantLegacyApprovalRevision } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { LabourService } from '../../src/labour/labour.service';
 import { CapabilitiesService, MATERIALS_CAPABILITY, LABOUR_CAPABILITY } from '../../src/platform/capabilities.service';
@@ -117,8 +117,10 @@ describe('Phase 4 Task 1 — labour capability + type-routed demand + workforce 
       { label: 'Option A', optionKey: 'opt-a', material: 'Skilled', delta: 0, swatch: 'sw-a', order: 1 },
       { label: 'Option B', optionKey: 'opt-b', material: 'Unskilled', delta: 100, swatch: 'sw-b', order: 2 },
     ]);
-    await t.prisma.decisionApprovalRevision.create({
-      data: { id: `dar-${id}-v1`, projectId, decisionId: id, version: 1, optionKey: 'opt-a', approvedAt: new Date(), approvedById: f.memberUser.id },
+    // Phase 6 unit 4c-ii — planted through the named bypass: this stands in for an approval that
+    // already happened, not one this fixture is performing.
+    await plantLegacyApprovalRevision(t.prisma, {
+      id: `dar-${id}-v1`, projectId, decisionId: id, version: 1, optionKey: 'opt-a', approvedById: f.memberUser.id,
     });
   };
 
