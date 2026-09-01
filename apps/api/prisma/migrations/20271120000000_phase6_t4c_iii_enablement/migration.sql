@@ -1,9 +1,23 @@
 -- Phase 6 unit 4c-iii — the ENABLEMENT TRANSITION
 -- (docs/superpowers/plans/2026-08-29-decision-workflow-4c.md §D, review rounds 18/20/21/24/26).
 --
--- Landing AFTER the drain is confirmed (the `phase-6-4c-previous-release-drained` directive,
--- cleared on the operator's Coolify inspection at `main` 2cec61f), this performs in ONE
--- transaction the three things §D says must not be separable, IN THIS ORDER:
+-- THIS MIGRATION MAY LAND ONLY AFTER A VALID EXPLICIT OPERATOR ATTESTATION THAT THE PREVIOUS
+-- RELEASE HAS DRAINED. The `phase-6-4c-previous-release-drained` directive is ACTIVE and
+-- FAIL-CLOSED. An earlier draft of this header recorded the directive as already cleared "on the
+-- operator's Coolify inspection at `main` 2cec61f"; that attribution was WITHDRAWN as
+-- unattributable (an inspection performed by someone other than the operator, recorded as the
+-- operator's own declaration) and the directive was restored on `main` 1b107a1. It must not ship
+-- in an immutable migration, so it does not.
+--
+-- What clears it is one thing and nothing else: an explicit operator statement that every API,
+-- projection/relay, web-push and delivery-worker process older than 5fcc2a58 is stopped or
+-- drained and only 5fcc2a58 or later is claiming deliveries, landed as a STATUS commit. No agent
+-- inspection, PR comment, review signal or green check is that statement.
+--
+-- The ordering below is why the drain matters: until every previous-release instance is gone, a
+-- gate-blind and a gate-reading instance can disagree about the same project. Once the attestation
+-- exists, this performs in ONE transaction the three things §D says must not be separable, IN
+-- THIS ORDER:
 --
 --   1. REPLACE the 4c-i/4c-ii reservation with a PRESERVATION seal (round 24);
 --   2. install an `AFTER INSERT` trigger on `Project` so every project created from now on

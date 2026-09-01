@@ -35,8 +35,8 @@ already atomic under `prisma migrate deploy`, verified rather than argued). Neit
 
 The unit was originally scheduled from `main` `2cec61f` on the strength of the drain clearance
 recorded there. **That premise is withdrawn** — the clearance was not attributable (see the
-directive's record below), it was restored on `main` `1b107a1` (PR #504), and this branch now
-carries that restoration by merge. Nothing about the unit's CONTENT changed; what changed is that
+directive's record below), it was restored on `main` `1b107a1` (PR #504), and this unit is now
+built FROM that corrected base rather than the withdrawn one. Nothing about the unit's CONTENT changed; what changed is that
 its landing prerequisite is unmet again, so the work stays complete-and-waiting rather than
 advancing. `assessRunnerState` resolves `directive:phase-6-4c-previous-release-drained` ahead of
 `open_pr: 505`, which is the intended held shape and not drift.

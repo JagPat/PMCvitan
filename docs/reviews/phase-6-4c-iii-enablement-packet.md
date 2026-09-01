@@ -1,6 +1,21 @@
 # Phase 6 unit 4c-iii — the enablement transition: review packet
 
-**Base:** `main` `2cec61f` (the drain-directive clearance)
+**Base:** `main` `1b107a1` — the FAIL-CLOSED state, in which the
+`phase-6-4c-previous-release-drained` directive is ACTIVE. This unit is HELD: it may land only
+after an explicit operator attestation that every API, projection/relay, web-push and
+delivery-worker process older than `5fcc2a58` is stopped or drained and only `5fcc2a58`+ is
+claiming deliveries.
+
+**Provenance of that base, stated because an earlier draft of this packet got it wrong.** This unit
+was first opened as PR #503 from `main` `2cec61f`, which recorded the directive as CLEARED on an
+operator Coolify inspection. That attribution was withdrawn as unattributable and the directive was
+restored on `main` `1b107a1` (PR #504). PR #503 later closed unmerged at the review-round limit and
+this unit was replaced from the corrected base. Where `2cec61f` still appears below it is
+HISTORICAL — it names the commit the reproduce-first probes were run RED against, which is a fact
+about where the probes were demonstrated and not a claim about this unit's base or its
+prerequisite.
+
+**Review lineage:** PR #503 (closed unmerged at the round limit) → this unit. `Replaces: #503`.
 **Plan:** `docs/superpowers/plans/2026-08-29-decision-workflow-4c.md` §D, review rounds 18/20/21/24/26
 **Unit:** ONE migration + the reset-contract entry it obliges + probes. No service change, no contract change, no route change.
 
@@ -82,7 +97,7 @@ sealed set and therefore into the reset contract. That obligation is discharged 
 "A seal whose only artifact is its migration is not finished" is the plan's own rule for 4c-0; it
 applies here for the same reason.
 
-## Probes that were RED at `2cec61f`
+## Probes that were RED at `2cec61f` (HISTORICAL — the commit they were demonstrated against)
 
 `apps/api/test/integration/phase6-t4c-iii-enablement.test.ts` — **8 of 9 fail at base**, verified on
 a scratch database migrated to the base head. The ninth is the precision control, which must pass on
@@ -136,7 +151,8 @@ delete cascades them, which is the seal's permitted arm.
   hostile-probed in the integration suite and again in upgrade-proof on the migrated legacy DB.
 - **authorization-tenancy** — no read or write path changes. The row is per-project and produced
   per-project; no cross-tenant surface is touched.
-- **ci-reproduce-first** — 8/9 RED at `2cec61f`, GREEN here; the ninth is the stated control.
+- **ci-reproduce-first** — 8/9 RED at `2cec61f` (historical: the commit the probes were
+  demonstrated against, not this unit's base), GREEN here; the ninth is the stated control.
 
 ## Invariant matrix
 
@@ -153,17 +169,18 @@ delete cascades them, which is the seal's permitted arm.
 
 Recorded per head, and stating what did NOT run as plainly as what did.
 
-**Head `<this head>`** (base `2cec61f`):
+**Head `<this head>`** (base `main` `1b107a1`, the fail-closed state):
 
 - `pnpm check` — **EXIT 0**. Web 985/985 across 62 files; API 804/804 across 58 files; both builds clean.
-- Full integration battery — **102 files / 1382 tests, 0 failures, 0 skipped**, on a database
+- Full integration battery — **102 files / 1387 tests, 0 failures, 0 skipped**, on a database
   dropped and re-migrated from this branch's own migrations immediately beforehand.
 - `scripts/upgrade-proof.sh` — **PASSED**, including all nine new 4c-iii arms. The load-bearing one
   is `the backfill reached EVERY pre-existing legacy project`: `p1`/`p2` were inserted into the
   legacy fixture before any migration ran, so they are the only projects in the repository that can
   evidence a backfill rather than the trigger.
-- Focused reproduce-first — **8 of 9 RED at `2cec61f`** on a scratch database migrated to the base
-  head, 9/9 GREEN here. The ninth is the stated precision control.
+- Focused reproduce-first — **8 of 9 RED at `2cec61f`** (historical: a scratch database migrated to
+  that commit, which is where the probes were demonstrated — not this unit's base), 9/9 GREEN here.
+  The ninth is the stated precision control.
 - Automation suite — 296/296.
 
 **Two tripwires this unit had to advance, both deliberate and both caught by CI-equivalent checks
