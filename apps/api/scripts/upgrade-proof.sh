@@ -4480,9 +4480,20 @@ assert_rejects "4c-i: TRUNCATE of the approval register whose COUNT 4c turns int
 assert "4c-i: both owned ORGS primitives are installed" \
   "SELECT COUNT(*)::text FROM pg_proc WHERE proname IN ('phase6_membership_active_user','phase6_project_operable');" \
   "2"
-assert "4c-i: the nine seals of this unit are armed, plus 4c-ii's provenance, capability and generation-stamp seals" \
-  "SELECT COUNT(*)::text FROM pg_trigger WHERE tgname LIKE '%t4c%';" \
-  "12"
+# NAMED rather than counted (Phase 6 unit 4c-iii, applying the lesson this file already recorded
+# for the retry probe below). A bare `LIKE '%t4c%'` count was correct while the family was closed,
+# but it fails whenever a LATER unit adds or removes a trigger — which is a reason that has nothing
+# to do with whether these seals are armed. 4c-iii is exactly that case: it drops the reservation
+# and adds three of its own. Naming is strictly more precise in both directions — a MISSING seal
+# still fails, and a RENAMED one now fails too, where a count would have silently absorbed it.
+assert "4c-i/4c-ii/4c-iii: every seal of the consultation family is armed, by name" \
+  "SELECT string_agg(tgname, ',' ORDER BY tgname) FROM pg_trigger WHERE tgname LIKE '%t4c%';" \
+  "DecisionApprovalRevision_t4c_no_truncate,DecisionApprovalRevision_t4c_provenance,DecisionConsultationResponse_t4c_append_only,DecisionConsultationResponse_t4c_no_truncate,DecisionConsultationResponse_t4c_provenance_bound,DecisionConsultationResponse_t4c_response_seal,DecisionConsultation_t4c_append_only,DecisionConsultation_t4c_no_truncate,DecisionConsultation_t4c_provenance_bound,DecisionConsultation_t4c_request_seal,ProjectCapability_t4c_no_truncate,ProjectCapability_t4c_preserved,Project_t4c_consultation_enabled,Project_t4c_deleting,ProjectionGeneration_t4c_stamp_version"
+# …and the 4c-i RESERVATION is gone, replaced rather than merely dropped: 4c-iii removes it in the
+# same transaction that installs the preservation seal named above.
+assert "4c-iii: the reservation is REPLACED — dropped, with the preservation seal in its place" \
+  "SELECT COUNT(*)::text FROM pg_trigger WHERE tgname = 'ProjectCapability_t4c_reserved';" \
+  "0"
 
 # ── the PARTIAL-APPLY RETRY, executed rather than asserted ───────────────────────────────────────
 # A deploy that dies part-way must COMPLETE on retry, not stop at the objects it already made. The
@@ -4516,6 +4527,68 @@ assert "4c-i retry: re-running the same file COMPLETES the deployment" \
 assert_rejects "4c-i retry: the re-armed request seal refuses the same hostile insert" \
   "INSERT INTO \"DecisionConsultation\"(\"id\",\"projectId\",\"decisionId\",\"requestedById\",\"consulteeMembershipId\",\"consulteeUserId\",\"question\",\"openCycle\",\"sourceCommandId\") VALUES ('UP4CI-C2','p1','DL-1','USER-1','no-such-membership','USER-1','Which finish?',0,'no-such-command')" \
   "phase6-4c"
+
+# ── Phase 6 unit 4c-iii — the ENABLEMENT TRANSITION ────────────────────────────────────────────
+#
+# THIS IS THE BACKFILL'S OWN EVIDENCE, and the only place it can be produced. `p1` and `p2` were
+# inserted into the legacy fixture BEFORE any migration ran, so they are projects that existed
+# before the transition — exactly what the integration suite cannot create, since it runs after
+# the migration and its projects are covered by the trigger instead. If the backfill did not run,
+# or ran over a snapshot that missed rows, these assertions fail and nothing else in the battery
+# would have noticed.
+assert "4c-iii: the backfill reached EVERY pre-existing legacy project" \
+  "SELECT COUNT(*)::text FROM \"Project\" p WHERE NOT EXISTS (SELECT 1 FROM \"ProjectCapability\" c WHERE c.\"projectId\" = p.\"id\" AND c.\"capability\" = 'consultation');" \
+  "0"
+assert "4c-iii: and it recorded ITSELF as the actor, not a borrowed human identity" \
+  "SELECT DISTINCT \"enabledById\" FROM \"ProjectCapability\" WHERE \"capability\" = 'consultation';" \
+  "system:phase6-4c-iii"
+
+# The trigger half: a project created AFTER the migration, by a writer that names no capability.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-iii: could not create the post-transition project"; FAIL=1; }
+INSERT INTO "Project"("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+VALUES ('up4ciii-new','org-legacy','Post Transition','PT','','Planning','PT-01','01 Jan 2026','31 Dec 2026',0,0,0);
+SQL
+assert "4c-iii: a project created after the transition carries the row with no application involvement" \
+  "SELECT COUNT(*)::text FROM \"ProjectCapability\" WHERE \"projectId\" = 'up4ciii-new' AND \"capability\" = 'consultation';" \
+  "1"
+
+# The PRESERVATION seal, all three arms of the completeness rule (row DELETE, row UPDATE of the
+# sealed key, statement TRUNCATE) — run here on the FULLY MIGRATED legacy database, which is the
+# state an operator actually upgrades into.
+assert_rejects "4c-iii: a direct DELETE of a live project's consultation row is refused" \
+  "DELETE FROM \"ProjectCapability\" WHERE \"projectId\" = 'p1' AND \"capability\" = 'consultation'" \
+  "may not be DELETED"
+assert_rejects "4c-iii: re-keying the row off consultation is refused" \
+  "UPDATE \"ProjectCapability\" SET \"capability\" = 'materials' WHERE \"projectId\" = 'p1' AND \"capability\" = 'consultation'" \
+  "may not be RE-KEYED"
+assert_rejects "4c-iii: TRUNCATE is refused, because a row trigger never fires for it" \
+  "TRUNCATE \"ProjectCapability\"" \
+  "never truncated"
+assert "4c-iii: and the row survived every one of those attempts" \
+  "SELECT COUNT(*)::text FROM \"ProjectCapability\" WHERE \"projectId\" = 'p1' AND \"capability\" = 'consultation';" \
+  "1"
+
+# The seal is SCOPED TO A LIVE PROJECT — the deliberate deviation from §D's "every way", argued in
+# the packet. Deleting the project itself cascades the row away, because a project that no longer
+# exists has no gate-on/gate-off state for the seal to protect. This is the arm that keeps a
+# `Project` row deletable at all once every project carries a consultation row.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-iii: the project delete was refused"; FAIL=1; }
+DELETE FROM "Project" WHERE "id" = 'up4ciii-new';
+SQL
+assert "4c-iii: deleting the project cascaded its consultation row away" \
+  "SELECT COUNT(*)::text FROM \"ProjectCapability\" WHERE \"projectId\" = 'up4ciii-new';" \
+  "0"
+
+# …and the seal is PRECISE: the Board pin that `capability` stays free text is not quietly
+# reversed. Every other value remains fully mutable and deletable.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-iii: could not stage the precision row"; FAIL=1; }
+INSERT INTO "ProjectCapability"("projectId","capability","enabledById") VALUES ('p2','up4ciii-anything','op');
+UPDATE "ProjectCapability" SET "capability" = 'up4ciii-renamed' WHERE "projectId" = 'p2' AND "capability" = 'up4ciii-anything';
+DELETE FROM "ProjectCapability" WHERE "projectId" = 'p2' AND "capability" = 'up4ciii-renamed';
+SQL
+assert "4c-iii: every other capability value still inserts, re-keys and deletes freely" \
+  "SELECT COUNT(*)::text FROM \"ProjectCapability\" WHERE \"projectId\" = 'p2' AND \"capability\" LIKE 'up4ciii-%';" \
+  "0"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it

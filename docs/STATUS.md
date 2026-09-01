@@ -16,11 +16,58 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4c-iii
 reviewed_merge: 5fcc2a58
-open_pr: 503
+open_pr: 506
 next_task: phase-6-task-4c-iv
 blocking_directive: phase-6-4c-previous-release-drained
 updated: 2026-08-31
 ```
+
+**UNIT 4c-iii IS OPEN AS PR #506 (branch `claude/phase6-4c-iii-enablement-3`) AND IS HELD.** It is
+a DRAFT and does not merge: the `phase-6-4c-previous-release-drained` directive stands, and §D
+attaches that prerequisite to this unit.
+
+PR #506 REPLACES #505, which in turn replaced #503 — each closed unmerged at the
+two-finding-bearing-head review-round limit, per the review protocol — not because the unit was wrong. #503's second review
+raised two P1s: one REAL (the P3005 baseline path would have resolved this migration as applied,
+skipping every raw object in it) and now fixed here; one whose premise did not hold (the file is
+already atomic under `prisma migrate deploy`, verified rather than argued). Neither reopens 4c-0,
+4c-i or 4c-ii.
+
+The unit was originally scheduled from `main` `2cec61f` on the strength of the drain clearance
+recorded there. **That premise is withdrawn** — the clearance was not attributable (see the
+directive's record below), it was restored on `main` `1b107a1` (PR #504), and this unit is now
+built FROM that corrected base rather than the withdrawn one. Nothing about the unit's CONTENT changed; what changed is that
+its landing prerequisite is unmet again, so the work stays complete-and-waiting rather than
+advancing. `assessRunnerState` resolves `directive:phase-6-4c-previous-release-drained` ahead of
+`open_pr: 506`, which is the intended held shape and not drift.
+
+**4c-iii IS THE ENABLEMENT TRANSITION**: ONE migration doing three inseparable things in ONE
+transaction, in the order §D mandates — the reservation gives way to a PRESERVATION seal (round
+24), an `AFTER INSERT` trigger on `Project` covers every future create, and THEN the backfill
+covers every existing project (round 21: the trigger takes ACCESS EXCLUSIVE on `Project` inside the
+transaction, so a concurrent create is covered by one mechanism or the other; backfilling first
+would leave a project visible to neither). The migration CHECKS its own claim and refuses to commit
+if any project still lacks the row. Behaviour does not change: the gate reads stay in place and
+authoritative, they simply always find a row — which is what keeps this unit separately revertible
+and 4c-iv a pure service change.
+
+**ONE DELIBERATE DEVIATION from §D, argued in the packet rather than taken silently.** §D says the
+seal rejects every way PostgreSQL offers to remove the row. Taken literally, combined with this
+unit's own backfill and the delivered `ON DELETE RESTRICT`, that makes a `Project` row undeletable
+FOREVER — inert in production (nothing in `src/` deletes a project; they are archived) but not in
+the repository, where 36 test files plus the shared fixture teardown delete the projects they
+create, while §D declares this unit migration-only. So the FK becomes `ON DELETE CASCADE` and the
+seal is SCOPED TO A LIVE PROJECT: every removal that could produce the split brain the seal exists
+for is refused, and the project's own deletion — which has no such state to protect — is permitted.
+The discriminator is exact rather than heuristic, and probed from both sides.
+
+THREE delivered probes asserting a GATE-OFF project are REWRITTEN, not deleted: this unit abolishes
+that state, and a probe left asserting it would be testing something the product no longer has.
+
+**4c is NOT complete until 4c-v merges.** `next_task` names 4c-iv (the gate-read removal, a pure
+service unit carrying NO migration — round 25), after which 4c-v retires the preservation seal
+behind its own operator attestation. Contractor-capture units 1–6 stay under their separate
+per-unit Board gate.
 
 **UNIT 4c-ii IS MERGED (PR #498 at `main` `5fcc2a58`) WITH A FRESH INDEPENDENT CODEX +1 ON THE
 EXACT REVIEWED HEAD `7c4318e8`** — first review attempt on that head, no findings, and the

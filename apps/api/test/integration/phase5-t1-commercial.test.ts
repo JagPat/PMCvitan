@@ -733,12 +733,17 @@ describe('Phase 5 Task 1 — commercial capability + §C commitment attribution 
       const controller = t.app.get(ProjectController);
       return (await controller.shell(projectId, pmc(projectId))).capabilities;
     };
-    expect(await shellOf()).toEqual([]);
+    // Phase 6 unit 4c-iii — a fresh project is no longer capability-EMPTY: the enablement
+    // transition gives every project a `consultation` row at creation, by database trigger. What
+    // this probe is about is the COMMERCIAL capability's presence, so it asserts that this project
+    // does not yet report it rather than that it reports nothing at all — the same assertion,
+    // scoped to the thing it was written for.
+    expect(await shellOf()).not.toContain('commercial');
     await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
     await enableCommercial(projectId);
     // A capability that gates server behaviour but is absent here is worse than one that does not
     // exist: the client would omit `costHeads` on PO issue and meet the refusal on every project.
-    expect(await shellOf()).toEqual(['materials', 'commercial']);
+    expect(await shellOf()).toEqual(expect.arrayContaining(['materials', 'commercial']));
   });
 
   // ── Codex round 2 — the two findings on head `42fc16c`, each reproduced RED first ────────────

@@ -1310,7 +1310,13 @@ model ProjectNode {
 // when its capability row exists — non-pilot projects keep today's behavior byte-for-byte
 // (routes 404, no Phase-3 events, stored gateMaterial semantics unchanged). Platform-owned.
 model ProjectCapability {
-  project     Project  @relation(fields: [projectId], references: [id])
+  /// Phase 6 unit 4c-iii — `onDelete: Cascade` (was the delivered RESTRICT). After this unit's
+  /// backfill EVERY project carries a `consultation` row, and the preservation seal refuses to
+  /// delete one while its project exists — under RESTRICT that combination would make a Project
+  /// row undeletable forever. CASCADE is also what makes the seal's discriminator exact: the
+  /// child delete runs in a later command than the parent's, so the trigger can tell a cascade
+  /// (parent already invisible) from a direct delete (parent plainly there).
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId   String
   capability  String // 'materials' (Stage 1)
   enabledAt   DateTime @default(now())
