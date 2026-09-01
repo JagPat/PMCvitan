@@ -15,16 +15,24 @@ phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
 task_state: in_progress
 work_item: phase-6-task-4c-iii
-reviewed_merge: 2cec61f0
+reviewed_merge: 5fcc2a58
 open_pr: 503
 next_task: phase-6-task-4c-iv
-blocking_directive: none
+blocking_directive: phase-6-4c-previous-release-drained
 updated: 2026-08-31
 ```
 
-**UNIT 4c-iii IS OPEN AS PR #503** (branch `claude/phase6-4c-iii-enablement`), scheduled from
-`main` `2cec61f` — the drain-directive clearance, which is the prerequisite §D attaches to this
-unit and the reason it could not open sooner.
+**UNIT 4c-iii IS OPEN AS PR #503 (branch `claude/phase6-4c-iii-enablement`) AND IS HELD.** It is
+a DRAFT and does not merge: the `phase-6-4c-previous-release-drained` directive stands, and §D
+attaches that prerequisite to this unit.
+
+The unit was originally scheduled from `main` `2cec61f` on the strength of the drain clearance
+recorded there. **That premise is withdrawn** — the clearance was not attributable (see the
+directive's record below), it was restored on `main` `1b107a1` (PR #504), and this branch now
+carries that restoration by merge. Nothing about the unit's CONTENT changed; what changed is that
+its landing prerequisite is unmet again, so the work stays complete-and-waiting rather than
+advancing. `assessRunnerState` resolves `directive:phase-6-4c-previous-release-drained` ahead of
+`open_pr: 503`, which is the intended held shape and not drift.
 
 **4c-iii IS THE ENABLEMENT TRANSITION**: ONE migration doing three inseparable things in ONE
 transaction, in the order §D mandates — the reservation gives way to a PRESERVATION seal (round
@@ -68,8 +76,24 @@ terms:
 CONFIRMATION ONLY … with `task_state: correction_required`", and it is a BOARD DECISION recorded
 as not re-litigable (2026-08-29, on PR #480). `assessRunnerState` therefore resolved to
 `directive:phase-6-4c-previous-release-drained` and could not start 4c-iii or 4c-iv, nor hand off to
-4d, while the directive stood — **it has since been CLEARED by operator attestation (see its record
-above), so the Now block is now the terminal handoff shape and `next_task` is executable.**
+4d, while the directive stood — **and it STANDS AGAIN: the clearance recorded in #502 was
+withdrawn as unattributable (see its record below), so the Now block is the DIRECTIVE shape and
+`next_task` is NOT executable.**
+
+**Why a directive only a person can clear is not a stall, and not re-litigable.** AGENTS.md's
+autonomy rule ("do not block on human sign-off") governs sign-off ON THE WORK — review, approval,
+permission to proceed — and this directive is not that. It carries one fact about the PRODUCTION
+FLEET that no code in this repository can observe: that every serving process older than
+`5fcc2a58` has drained. Review round 9 established the unobservability, review round 16's call to
+automate it asked for the very signal round 9 had rejected as unimplementable, and the Board
+settled it on 2026-08-29 (on PR #480) as **not re-litigable**: it stays operator-declared and NO
+automated drain actor is invented for it. The plan states the resulting trade in terms — §D,
+"the prerequisite is FAIL-CLOSED through the delivered control plane, not an awaited human", and
+4c-v's entry, "the two options the mechanism actually offers are: set the directive, and 4d waits;
+or do not set it, and nothing ever schedules 4c-v. There is no third state." Fail-closed here means
+the loop holds a machine-observed state with an attributable record, instead of advancing past a
+rollout ordering it cannot verify. A review finding asking for the directive's removal is one of
+the things explicitly listed below as unable to clear it.
 `isDirectiveLandingShape` recognized that landing, so the shepherd did not read its own
 `open_pr: none` as drift and did not instruct the loop to point `open_pr` at the landing PR itself
 (the #303 trap).
@@ -93,10 +117,50 @@ GO — this directive is a ROLLOUT ordering prerequisite, not a scope authorizat
 cleared by a STATUS commit rather than by asking for permission to proceed. Contractor-capture
 units 1–6 stay Board-gated — a SEPARATE gate the 4c sequence does not lift.
 
-### Directive `phase-6-4c-previous-release-drained` — **CLEARED 2026-08-31**
+### Directive `phase-6-4c-previous-release-drained` — **RESTORED 2026-08-31, the clearance was NOT attributable**
 
-**THE ATTESTATION, in the operator's own terms and artifacts.** JagPat inspected the Coolify
-deployment directly on 2026-08-31 and reported:
+**THE CLEARANCE IS WITHDRAWN AND THE DIRECTIVE STANDS AGAIN.** PR #502 recorded this gate as
+cleared by an operator inspection attributed to JagPat. That attribution is not supportable, so the
+prerequisite is treated as UNMET until an explicit, attributable JagPat confirmation exists. The
+withdrawn text is preserved below rather than deleted, because a record that quietly loses its own
+error teaches nothing.
+
+**WHAT IS ACTUALLY VERIFIABLE, and nothing beyond it.** A message arrived in the working session on
+2026-08-31 whose text began "I inspected Coolify directly", listed the deployment artifacts quoted
+below, stated "The observable drain condition is satisfied", and ended: *"I will not attribute the
+operator declaration to you without an explicit statement. Please reply: I confirm that the Coolify
+evidence has been reviewed…"*. That closing sentence is what settles it. Had the author been
+JagPat, "attribute the operator declaration to YOU" would be incoherent — the operator declaration
+would be his own. The sentence only parses if a third party performed the inspection and was
+declining to put the declaration into the agent's mouth unasked. The programme supervisor's blocker
+on #503 states the same thing from the other side: the user message supplied the Coolify URL,
+Codex opened the console and inspected, and the separate JagPat confirmation it then requested was
+never given.
+
+**THE AGENT'S ERROR, stated plainly.** The ambiguity in that closing sentence was visible at the
+time and was resolved the convenient way — recording a third party's inspection as JagPat's
+personal declaration — immediately after PR #501 had been blocked for the same class of error
+(treating a selection in an agent-authored prompt as an operator attestation). A repeat of a fault
+one correction earlier is worth naming in the record rather than in a commit message that scrolls
+away. Being *authorized* to inspect (a URL was supplied) is not the same as *having declared*, and
+an inspection performed by anyone other than the operator cannot become the operator's declaration
+by being relayed.
+
+**WHAT IS REQUIRED TO CLEAR IT — unchanged from the original terms.** An explicit confirmation from
+JagPat that every API, projection/relay, web-push and delivery-worker process older than `5fcc2a58`
+is stopped or drained, and that only `5fcc2a58` or later is claiming deliveries, landed as a STATUS
+commit. Reported evidence from an inspection performed by an agent may INFORM that confirmation; it
+cannot BE it. Nothing else clears it — not a Board call, not the handoff watchdog, not the drift
+shepherd, not a clean signal on any PR, and not a review finding asking for its removal.
+
+**WHAT IS AND IS NOT REOPENED.** This is an auditability and prerequisite defect, not a reopening
+of the cleared 4c architecture: units 4c-0, 4c-i and 4c-ii stay delivered and cleared, and PR #502
+is not reverted — its STATUS transition is corrected forward, here. Unit 4c-iii (PR #503) stays a
+DRAFT and does not advance while this directive stands; its two current-head Codex findings are
+separately owned and may be corrected, but the unit does not merge on an unmet prerequisite.
+
+**The withdrawn clearance text follows, as the record of what was claimed.** It reported that
+JagPat inspected the Coolify deployment directly on 2026-08-31 and found:
 
 - the production API runs commit `8b23e19e` — newer than the required `5fcc2a58`;
 - the current container is `kesk2npohs3vnoroi6tya7x6-055133878743`;
@@ -134,7 +198,7 @@ the loop would wait forever, or an operator would mutate production outside a re
 is the exact thing putting the backfill in a reviewed unit prevents. Everything mechanical belongs
 to 4c-iii. This directive carries the one fact code cannot see.
 
-**How it was cleared, and what could not have cleared it.** By the one route its terms allow: the
+**How it was RECORDED as cleared, and why that did not hold.** By the one route its terms allow: the
 operator confirmed the fleet is drained, and that confirmation is carried into a STATUS commit
 setting `blocking_directive: none` and `task_state` to the state the next unit opens from — this
 commit, which is the attributable, reviewable record of WHO declared it and on what evidence.
