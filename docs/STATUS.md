@@ -40,14 +40,35 @@ merge is an authoritative decision to land the unit and is not reversed here. It
 attestation and is not recorded as one: merging a pull request says nothing about which processes
 are serving production, and the directive's terms are unchanged.
 
-**Why 4c-iii landing early is survivable, and why 4c-iv would not be.** This unit is deliberately
-behaviour-neutral: the gate reads stay in place and authoritative, and the capability row is
-produced by the DATABASE, so a still-serving previous-release instance creates projects with the row
-exactly as a new one does and reads the gate exactly as before. Every instance now finds a row for
-every project, so old and new agree — there is no split brain to have. **4c-iv is the opposite
-case**: it REMOVES the gate reads, so a 4c-iv instance would accept a consultation write for a
-project that a still-serving 4c-ii/4c-iii instance refuses. That is the hazard the drain exists for,
-and it is why the directive stays in force for `next_task`.
+**4c-iii IS the behaviour-changing transition, and this landing does NOT call its early arrival
+survivable.** An earlier draft of this fold did, and that was wrong — it contradicted §B as recorded
+in this same file, which names the hazard in terms: 4c-iii ENABLES `consultation` for every project,
+and a still-running PRE-4c-ii worker can then claim a `decision.consultation_*` delivery. The
+projection consumer dispatches every `decision.*` event, so that worker upserts with its v1
+serializer and ADVANCES the generation while ERASING the thread and the widened audience; an old
+push worker recognizes no family and falls through to the unguarded targeted send, bypassing every
+§B.3 claim predicate. The outbox has ONE ordered delivery per consumer, so **a claim by the wrong
+version is never retried by the right one** — the loss does not heal. §B's conclusion stands
+unamended: the gate has to be fail-closed BEFORE 4c-iii starts, not after. It was not.
+
+**What bounds the exposure, stated exactly and not as reassurance.** The 4c-ii rollout fence bumped
+the persisted consumer `catalogVersion` to v2, and `syncConsumerCatalog` ASSERTS that version at
+startup rather than updating it — so a previous-release process **aborts at bootstrap and cannot
+take up service**. The generation half is fenced too: every generation is stamped with the catalog
+version of the code that built it, and the new release REFUSES TO SERVE one stamped below its own
+compiled version, so even a previous-release `projection-rebuild` CLI cannot get a thread-less
+register served. What neither fence reaches is a v1 process that was ALREADY RUNNING when 4c-ii
+deployed: it re-syncs only at startup, so it keeps serving until it stops.
+
+**The exposure is therefore exactly one question** — is any process older than `5fcc2a58` still
+running? — **which is the question the directive asks.** That is why the directive is not retired by
+this landing.
+
+**The forward remedy, which needs no attestation about history.** Restarting every PMC Vitan
+process is sufficient on its own: the fence guarantees a pre-4c-ii process cannot come back, so
+after a full restart the hazard is closed whether or not anyone can say what was running before.
+Confirming the drain and restarting the fleet reach the same safe state; the directive accepts
+either, recorded as an operator statement.
 
 **What still clears it.** An explicit operator statement that every PMC Vitan API,
 projection/relay, web-push and delivery-worker process older than `5fcc2a58` is stopped or drained,
