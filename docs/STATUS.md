@@ -64,11 +64,35 @@ deployed: it re-syncs only at startup, so it keeps serving until it stops.
 running? — **which is the question the directive asks.** That is why the directive is not retired by
 this landing.
 
-**The forward remedy, which needs no attestation about history.** Restarting every PMC Vitan
-process is sufficient on its own: the fence guarantees a pre-4c-ii process cannot come back, so
-after a full restart the hazard is closed whether or not anyone can say what was running before.
-Confirming the drain and restarting the fleet reach the same safe state; the directive accepts
-either, recorded as an operator statement.
+**THE EXPOSURE IS ONGOING, NOT A CLOSED WINDOW.** The directive blocks 4c-iv; it does NOT block
+production consultation writes. The capability is live on every project right now, so every new
+consultation thread is a further `decision.consultation_*` delivery that a still-running v1 worker
+could claim. Waiting for an operator statement is therefore not a neutral hold — it is continued
+accrual. This is recorded as an open operational hazard, not as a resolved one.
+
+**A restart is NECESSARY BUT NOT SUFFICIENT.** It closes the window forward, because the fence
+guarantees a pre-4c-ii process cannot come back. It does not replay a delivery already claimed by
+the wrong version (the outbox has one ordered delivery per consumer, so nothing retries it), it does
+not repair a v1 payload written into a generation already stamped v2, and it does not undo a push
+already sent through the old unguarded path. Any clearance must therefore establish BOTH that no
+pre-4c-ii process is running AND that no consultation delivery was claimed by one during the
+exposure window — or, where one was, that the affected generation has been rebuilt and the register
+reconciled.
+
+**The exposure window** opens when `94cf3af` deployed (the migration that enabled the capability)
+and closes when the last pre-4c-ii process stopped. Deliveries claimed inside it are what must be
+checked; `ProjectionGeneration`'s catalog-version stamp and the outbox's per-consumer claim record
+are where that evidence lives.
+
+**The immediate technical remedy, and why it is not taken unilaterally here.** A gate-off fence —
+additive, refusing new consultation threads until the fleet is confirmed fenced — would stop the
+accrual without waiting for anyone, and it is the right immediate action. 4c-iii's preservation seal
+refuses deleting or re-keying the capability row, so it cannot be a withdrawal; it must be a new
+refusal on the consultation write path. It is NOT shipped in this fold because it would reverse a
+capability the repository owner deliberately enabled hours earlier — and because the PR body they
+merged asserted, in this agent's words, that the unit was behaviour-neutral. **That assertion was
+wrong**, and correcting it is a precondition for anyone deciding whether to fence: the decision to
+enable was made against a description that understated what enabling did.
 
 **What still clears it.** An explicit operator statement that every PMC Vitan API,
 projection/relay, web-push and delivery-worker process older than `5fcc2a58` is stopped or drained,
