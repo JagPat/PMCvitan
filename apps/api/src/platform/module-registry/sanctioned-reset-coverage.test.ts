@@ -120,6 +120,11 @@ describe('Phase 6 unit 4c-0 — sanctioned resets route through the shared helpe
       // each asserted to REFUSE its statement. Routing these through the helper would disable the
       // very seals under test and leave three vacuous green assertions.
       'phase6-t4c-i-consultation.test.ts': 3,
+      // Phase 6 unit 4c-iii: ARM 3 of the capability PRESERVATION seal — the statement-level
+      // `BEFORE TRUNCATE` that keeps the consultation row PRESENT. Asserted to REFUSE its
+      // statement, so it must NOT go through the helper: the helper disables that very seal
+      // (it is now an entry in TRUNCATE_SEALS), which would leave the assertion vacuous and green.
+      'phase6-t4c-iii-enablement.test.ts': 1,
     };
 
     const offenders: string[] = [];
