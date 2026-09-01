@@ -253,9 +253,23 @@ if echo "$out" | grep -q "P3005"; then
   # before each CREATE TRIGGER, and a backfill with ON CONFLICT DO NOTHING — so leaving it pending
   # costs nothing when it has somehow already run, and its closing DO block still refuses to commit
   # unless every project carries the row.
+  #
+  # The three 4c PREREQUISITES are here for the same reason, and adding 20271120 without them
+  # would have been worse than adding neither (review finding on #505 head 636d38e, P1). A
+  # db-push baseline has their modeled tables and columns but NONE of their raw CHECK,
+  # append-only, eligibility or provenance triggers — and 20271120 then backfills the capability
+  # and opens consultation FOR EVERY PROJECT against exactly those unsealed evidence tables, so a
+  # direct writer could update or delete responses, or forge cycle provenance, on a database the
+  # ledger calls fully migrated. The enablement may not outrun the seals it assumes. All three are
+  # re-runnable (CREATE TABLE IF NOT EXISTS, DROP TRIGGER IF EXISTS before each CREATE TRIGGER,
+  # CREATE OR REPLACE FUNCTION, guarded constraints and indexes), verified by re-applying each
+  # against an already-migrated database.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
+20271101000000_phase6_t4c_i_consultation
+20271115000000_phase6_t4c_ii_approval_provenance
+20271116000000_phase6_t4c_ii_rollout_fence
 20271120000000_phase6_t4c_iii_enablement"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)

@@ -301,7 +301,7 @@ describe('Phase 6 unit 4c-iii — the enablement transition (live PG)', () => {
       t.prisma.projectCapability.delete({
         where: { projectId_capability: { projectId: pid, capability: CONSULTATION_CAPABILITY } },
       }),
-    ).rejects.toThrow(/may not be DELETED while that project exists/u);
+    ).rejects.toThrow(/may not be DELETED directly/u);
     expect(await capRow(pid), 'the row survives the attempt').not.toBeNull();
   });
 
@@ -429,6 +429,13 @@ describe('Phase 6 unit 4c-iii — the enablement transition (live PG)', () => {
     expect(m, 'migrate.sh must declare ALWAYS_EXECUTE').not.toBeNull();
     const entries = m![1].split('\n').map((s) => s.trim());
     expect(entries).toContain('20271120000000_phase6_t4c_iii_enablement');
+    // …and so are the three 4c PREREQUISITES whose seals this unit's enablement assumes. Adding
+    // 20271120 alone would have been worse than adding none of them (round-2 F2): the capability
+    // would be opened for EVERY project against evidence tables a db-push baseline left without
+    // their append-only, CHECK, eligibility and provenance triggers.
+    expect(entries).toContain('20271101000000_phase6_t4c_i_consultation');
+    expect(entries).toContain('20271115000000_phase6_t4c_ii_approval_provenance');
+    expect(entries).toContain('20271116000000_phase6_t4c_ii_rollout_fence');
     // …and the baseline loop consults that set to leave its members pending for the deploy
     expect(sh).toContain('printf \'%s\\n\' "$ALWAYS_EXECUTE" | grep -qx "$name"');
   });
@@ -455,6 +462,70 @@ describe('Phase 6 unit 4c-iii — the enablement transition (live PG)', () => {
     const after = await capRow(pid);
     expect(after?.enabledAt?.toISOString()).toBe(before?.enabledAt?.toISOString());
     expect(after?.enabledById).toBe(before?.enabledById);
+  });
+
+  it('F2: the seal discriminates a cascade from a direct delete WITHOUT reading the orgs-owned Project table', async () => {
+    // Round-2 F1: the DELETE arm asked `EXISTS (SELECT 1 FROM "Project" ...)`, a synchronous read
+    // of another module's table from a platform-owned trigger. The replacement is two local facts
+    // — pg_trigger_depth() > 1, and a transaction-local flag published by the orgs-owned
+    // `Project_t4c_deleting` trigger. This pins the SHIPPED seal body: no foreign read remains.
+    const fnBody = await t.prisma.$queryRawUnsafe<Array<{ src: string }>>(
+      `SELECT prosrc AS src FROM pg_proc WHERE proname = 'phase6_t4c_capability_preserved'`,
+    );
+    expect(fnBody).toHaveLength(1);
+    // Strip SQL line comments first: the body DOCUMENTS the removed read in prose, and asserting
+    // over the commentary would pass or fail on how the rationale is worded rather than on what
+    // the function executes.
+    const executable = fnBody[0].src
+      .split('\n')
+      .map((line) => line.replace(/--.*$/, ''))
+      .join('\n');
+    expect(executable, 'the seal executes no read of the orgs-owned Project table').not.toMatch(
+      /FROM\s+"?Project"?/i,
+    );
+    expect(executable).toContain('pg_trigger_depth()');
+    expect(executable).toContain('phase6.t4c_project_delete');
+    // and the orgs-owned primitive that authorizes the cascade is installed on Project
+    const trg = await t.prisma.$queryRawUnsafe<Array<{ tgname: string }>>(
+      `SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgname = 'Project_t4c_deleting'`,
+    );
+    expect(trg).toHaveLength(1);
+  });
+
+  it('F2: a MULTI-ROW project delete cascades every consultation row away — the shape a scalar id-flag would have broken', async () => {
+    // The design note this probe defends: PostgreSQL queues FK cascades as AFTER-statement
+    // actions, so a flag carrying the deleting project's ID would hold only the LAST row's id by
+    // the time the cascades fire, and every earlier project's cascade would be wrongly refused.
+    // That is precisely the shape the shared fixture teardown uses, so it is tested rather than
+    // reasoned about.
+    const a = await makeProject('multi-a');
+    const b = await makeProject('multi-b');
+    const c = await makeProject('multi-c');
+    for (const pid of [a, b, c]) expect(await capRow(pid)).not.toBeNull();
+
+    await t.prisma.project.deleteMany({ where: { id: { in: [a, b, c] } } });
+
+    for (const pid of [a, b, c]) {
+      expect(await capRow(pid), 'every cascaded row went, not just the last').toBeNull();
+      expect(await t.prisma.project.findUnique({ where: { id: pid } })).toBeNull();
+    }
+  });
+
+  it('F2: a direct delete is STILL refused inside a transaction that already deleted another project', async () => {
+    // The flag is transaction-local and stays set once any project delete has run, so the flag
+    // alone would leave a hole for the rest of that transaction. Both conditions are required:
+    // this delete is at depth 1, so it is refused regardless of the flag.
+    const victim = await makeProject('flag-victim');
+    const target = await makeProject('flag-target');
+    await expect(
+      t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`DELETE FROM "Project" WHERE "id" = '${victim}'`);
+        await tx.$executeRawUnsafe(
+          `DELETE FROM "ProjectCapability" WHERE "projectId" = '${target}' AND "capability" = 'consultation'`,
+        );
+      }),
+    ).rejects.toThrow(/may not be DELETED directly/i);
+    expect(await capRow(target), 'the target row survived').not.toBeNull();
     // the seals are still installed and still named the same
     const trigs = await t.prisma.$queryRawUnsafe<Array<{ tgname: string }>>(
       `SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgname IN

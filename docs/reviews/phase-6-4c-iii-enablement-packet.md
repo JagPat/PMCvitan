@@ -16,6 +16,36 @@ about where the probes were demonstrated and not a claim about this unit's base 
 prerequisite.
 
 **Review lineage:** PR #503 (closed unmerged at the round limit) → this unit. `Replaces: #503`.
+
+## The round-2 review of head `636d38e` — two P1s, both fixed
+
+**F1 — the seal took a cross-module read.** The DELETE arm asked
+`EXISTS (SELECT 1 FROM "Project" ...)`, so a platform-owned trigger read the orgs-owned `Project`
+table synchronously and the capability invariant depended on orgs' physical schema. Replaced by two
+LOCAL facts, both required: `pg_trigger_depth() > 1` (a direct `DELETE FROM "ProjectCapability"`
+runs at depth 1; an FK cascade runs the child delete at depth 2) AND a transaction-local flag
+published by a new orgs-owned `Project_t4c_deleting` BEFORE DELETE trigger on `Project` — the
+orgs-owned primitive that authorizes the cascade. The seal reads the flag, never the table.
+
+Requiring both is what closes the hole either leaves alone. Depth alone would permit any other
+trigger that deletes the row; the flag alone would leave the rest of the transaction open after any
+project delete — and that case is probed, because such a delete is still at depth 1 and still
+refused.
+
+The flag is a BOOLEAN, not the deleting project's id, and that was measured rather than assumed.
+Under a multi-row `DELETE FROM "Project" WHERE ...` PostgreSQL queues the RI cascades as
+AFTER-statement actions, so an id-valued flag holds only the LAST row's id by the time they fire
+and every earlier project's cascade is wrongly refused. A three-project probe demonstrated exactly
+that, and it is the shape the shared fixture teardown uses.
+
+**F2 — the enablement outran the seals it assumes.** Adding only `20271120` to `ALWAYS_EXECUTE`
+would have been worse than adding none of it: on the P3005 path the baseline loop would still
+resolve `20271101` (4c-i), `20271115` and `20271116` (4c-ii) as applied, and a `prisma db push`
+database has their modeled tables but none of their raw CHECK, append-only, eligibility or
+provenance triggers — while `20271120` then opens consultation FOR EVERY PROJECT against exactly
+those unsealed evidence tables. All three join the set. Their re-runnability, which membership
+requires, was verified by re-applying each against an already-migrated database rather than
+inferred from reading their guards.
 **Plan:** `docs/superpowers/plans/2026-08-29-decision-workflow-4c.md` §D, review rounds 18/20/21/24/26
 **Unit:** ONE migration + the reset-contract entry it obliges + probes. No service change, no contract change, no route change.
 
@@ -172,7 +202,7 @@ Recorded per head, and stating what did NOT run as plainly as what did.
 **Head `<this head>`** (base `main` `1b107a1`, the fail-closed state):
 
 - `pnpm check` — **EXIT 0**. Web 985/985 across 62 files; API 804/804 across 58 files; both builds clean.
-- Full integration battery — **102 files / 1387 tests, 0 failures, 0 skipped**, on a database
+- Full integration battery — **102 files / 1390 tests, 0 failures, 0 skipped**, on a database
   dropped and re-migrated from this branch's own migrations immediately beforehand.
 - `scripts/upgrade-proof.sh` — **PASSED**, including all nine new 4c-iii arms. The load-bearing one
   is `the backfill reached EVERY pre-existing legacy project`: `p1`/`p2` were inserted into the

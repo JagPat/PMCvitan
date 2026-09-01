@@ -110,9 +110,32 @@ END $$;
 CREATE OR REPLACE FUNCTION phase6_t4c_capability_preserved() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
+    -- The discriminator reads NO foreign table. An earlier draft asked `EXISTS (SELECT 1 FROM
+    -- "Project" ...)`, which made this platform-owned seal take a synchronous read of the
+    -- orgs-owned `Project` table and coupled the capability invariant to orgs' physical schema
+    -- (review finding on head 636d38e, P1). It is replaced by two local facts:
+    --
+    --   * `pg_trigger_depth() > 1` — this DELETE did not come from a client statement. A direct
+    --     `DELETE FROM "ProjectCapability"` runs at depth 1; an FK cascade runs the child delete
+    --     at depth 2. Verified on PostgreSQL 16, including the multi-row parent delete.
+    --   * the orgs-owned `Project_t4c_deleting` BEFORE DELETE trigger below, which sets a
+    --     TRANSACTION-LOCAL flag saying a `Project` delete is under way. That is the orgs-owned
+    --     primitive authorizing the cascade; this seal only reads the flag.
+    --
+    -- BOTH are required, and that is what closes the hole either alone would leave. Depth alone
+    -- would permit any other trigger that deletes the row; the flag alone is not enough because a
+    -- direct delete later in the same transaction would still see it set — which the probe
+    -- confirms is refused, because such a delete is at depth 1.
+    --
+    -- The flag is deliberately a BOOLEAN and not the deleting project's id. Under a multi-row
+    -- `DELETE FROM "Project" WHERE ...` PostgreSQL queues the RI cascades as AFTER-statement
+    -- actions, so by the time they fire an id-valued flag holds only the LAST row's id and every
+    -- earlier project's cascade would be wrongly refused — which is exactly the shape the shared
+    -- fixture teardown uses. Measured, not assumed.
     IF OLD."capability" = 'consultation'
-       AND EXISTS (SELECT 1 FROM "Project" WHERE "id" = OLD."projectId") THEN
-      RAISE EXCEPTION 'phase6-4c: the `consultation` capability row for project % may not be DELETED while that project exists — between 4c-iii and 4c-v the gate reads are still authoritative, and a missing row makes a gate-reading instance refuse a project a gate-blind instance accepts. (A cascade from the project''s own deletion is permitted; this is a direct delete.)', OLD."projectId";
+       AND NOT (pg_trigger_depth() > 1
+                AND coalesce(current_setting('phase6.t4c_project_delete', true), '') = 'on') THEN
+      RAISE EXCEPTION 'phase6-4c: the `consultation` capability row for project % may not be DELETED directly — between 4c-iii and 4c-v the gate reads are still authoritative, and a missing row makes a gate-reading instance refuse a project a gate-blind instance accepts. (A cascade from the project''s own deletion is permitted; this is a direct delete.)', OLD."projectId";
     END IF;
     RETURN OLD;
   END IF;
@@ -155,6 +178,21 @@ END $$;
 
 -- Fires on EVERY update, not `UPDATE OF "capability"`: a column list narrows the trigger to the
 -- columns named, which is precisely how the attribution arm above was reachable on head 9067d0cc.
+-- The orgs-owned primitive that AUTHORIZES the cascade. It lives on `Project` — orgs' own table,
+-- where the fact "this project is being deleted" belongs — and publishes it as a
+-- transaction-local flag. The seal above consults only that flag, never the table, so the
+-- capability invariant no longer depends on orgs' physical schema.
+CREATE OR REPLACE FUNCTION phase6_t4c_project_deleting() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM set_config('phase6.t4c_project_delete', 'on', true);
+  RETURN OLD;
+END $$;
+
+DROP TRIGGER IF EXISTS "Project_t4c_deleting" ON "Project";
+CREATE TRIGGER "Project_t4c_deleting"
+  BEFORE DELETE ON "Project"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4c_project_deleting();
+
 DROP TRIGGER IF EXISTS "ProjectCapability_t4c_preserved" ON "ProjectCapability";
 CREATE TRIGGER "ProjectCapability_t4c_preserved"
   BEFORE DELETE OR UPDATE ON "ProjectCapability"

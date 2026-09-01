@@ -4488,7 +4488,7 @@ assert "4c-i: both owned ORGS primitives are installed" \
 # still fails, and a RENAMED one now fails too, where a count would have silently absorbed it.
 assert "4c-i/4c-ii/4c-iii: every seal of the consultation family is armed, by name" \
   "SELECT string_agg(tgname, ',' ORDER BY tgname) FROM pg_trigger WHERE tgname LIKE '%t4c%';" \
-  "DecisionApprovalRevision_t4c_no_truncate,DecisionApprovalRevision_t4c_provenance,DecisionConsultationResponse_t4c_append_only,DecisionConsultationResponse_t4c_no_truncate,DecisionConsultationResponse_t4c_provenance_bound,DecisionConsultationResponse_t4c_response_seal,DecisionConsultation_t4c_append_only,DecisionConsultation_t4c_no_truncate,DecisionConsultation_t4c_provenance_bound,DecisionConsultation_t4c_request_seal,ProjectCapability_t4c_no_truncate,ProjectCapability_t4c_preserved,Project_t4c_consultation_enabled,ProjectionGeneration_t4c_stamp_version"
+  "DecisionApprovalRevision_t4c_no_truncate,DecisionApprovalRevision_t4c_provenance,DecisionConsultationResponse_t4c_append_only,DecisionConsultationResponse_t4c_no_truncate,DecisionConsultationResponse_t4c_provenance_bound,DecisionConsultationResponse_t4c_response_seal,DecisionConsultation_t4c_append_only,DecisionConsultation_t4c_no_truncate,DecisionConsultation_t4c_provenance_bound,DecisionConsultation_t4c_request_seal,ProjectCapability_t4c_no_truncate,ProjectCapability_t4c_preserved,Project_t4c_consultation_enabled,Project_t4c_deleting,ProjectionGeneration_t4c_stamp_version"
 # …and the 4c-i RESERVATION is gone, replaced rather than merely dropped: 4c-iii removes it in the
 # same transaction that installs the preservation seal named above.
 assert "4c-iii: the reservation is REPLACED — dropped, with the preservation seal in its place" \
