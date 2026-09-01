@@ -22,6 +22,96 @@ blocking_directive: phase-6-4c-previous-release-drained
 updated: 2026-09-01
 ```
 
+### The drain directive STANDS. JagPat's reported observation narrows it but does not discharge it.
+
+**THIS SECTION WAS FIRST WRITTEN AS A CLEARANCE AND IS WITHDRAWN BEFORE MERGING.** The withdrawal
+is the record, not a tidied-away draft: the same PR proposed `blocking_directive: none` on the
+reasoning below, an exact-head review found the reasoning incomplete, and the reasoning WAS
+incomplete. Two attempts to clear this directive have now failed for the same underlying reason —
+evidence that establishes something adjacent to the enumerated condition being accepted as
+establishing the condition — and the third attempt is recorded here rather than deleted so the
+pattern is visible to whoever writes the fourth.
+
+**THE OPERATOR'S STATEMENT, QUOTED VERBATIM.** On 2026-09-01, in the working session, JagPat
+reported:
+
+> Coolify shows API deployment h13xhn… successfully deployed 94cf3af, followed by mug9y2x…
+> deploying adddb20d; at 14:06:06 UTC the new API container started, and by 14:06:36 UTC the
+> previous container was stopped and removed.
+
+**Its provenance is sound, and that is worth stating separately from its sufficiency.** This is the
+operator reporting what the deployment console shows, in his own message. It is not an agent's
+inspection relayed as his declaration — the fault that cost #501 and #502 — and it is not a
+selection in an agent-authored prompt. Nothing below questions WHO said it. What follows is only
+about WHAT it says.
+
+**WHAT IT ESTABLISHES.** For the one Coolify application it names: its previous container was
+stopped and removed at 14:06:36 UTC, thirty seconds after the new one started, and a removed
+container claims nothing.
+
+**THE ANCESTRY IS VERIFIED FOR THE COMMIT THAT STARTED, NOT ONLY FOR THE ONE BEFORE IT.** The
+statement is ambiguous about which of the two deployments its timestamps belong to — `94cf3af`
+finished, then `adddb20d` was "deploying", and "the new API container started" could name either.
+**That ambiguity is harmless here only because BOTH commits were checked, and the record says so
+rather than leaning on the reading that suits it:**
+
+```
+git merge-base --is-ancestor 5fcc2a58 94cf3af   # exit 0
+git merge-base --is-ancestor 5fcc2a58 adddb20   # exit 0
+```
+
+`adddb20`'s sole parent is `94cf3af`, which IS the 4c-iii merge, so whichever deployment the
+timestamps describe, the code that started is past the fence. **The check has to be on the commit
+that STARTED**: a container started from a branch not containing `5fcc2a58` would be pre-fence and
+able to claim the deliveries §B describes, and verifying only its stopped predecessor would let a
+later uniqueness attestation clear the directive over a live pre-fence process. An earlier head of
+this PR asserted both commits and cited the command for one; the commands above are both run.
+
+**WHAT IT DOES NOT ESTABLISH, stated as the gap it is.** The directive's condition is that EVERY
+API, projection/relay, web-push and delivery-worker process older than `5fcc2a58` is stopped or
+drained and that ONLY `5fcc2a58` or later is claiming deliveries. The statement is about ONE
+application's container lineage. It does not say that this application is the only place a PMC
+Vitan process runs — no second application, no scaled replica, no long-lived process outside the
+one whose container was replaced. That is the unenumerated remainder, and it is exactly the
+remainder the directive exists to close.
+
+**THE ERROR THIS SECTION FIRST MADE, named because it is the reason the directive still stands.**
+The first draft closed that gap with "the four classes all run inside the one API process, and no
+separate scheduled tasks or worker applications are configured" — and sourced it from the
+**WITHDRAWN #502 inspection**, an inspection this same file records as unattributable. Using
+withdrawn evidence to complete a live attestation is the #501/#502 fault in a quieter form: the
+attestation's weakest link was a claim the record had already refused, and citing it "as unchanged
+since" did not make it usable. It was refused for who made it, and that does not expire.
+
+**ONE HALF OF THAT PREMISE IS PROVABLE HERE, AND IS NOW SOURCED PROPERLY.** The repository
+establishes, without any inspection, that the four process classes are ONE process class in code:
+`node dist/main.js` is the only long-running server entrypoint (`apps/api/package.json` `start`;
+every other script is a one-shot operator CLI); `OutboxRelay` is a Nest provider registered in
+`app.module.ts` and started by `outbox.bootstrap.ts` on a `setInterval` INSIDE that process; and
+the push and projection consumers are registered into that same relay (`consumers.ts`). There is
+no separate worker entrypoint to deploy. This is a strictly better source than the inspection ever
+was, and it survives the withdrawal.
+
+**THE HALF THAT REMAINS IS A DEPLOYMENT FACT, AND NO CODE CAN SEE IT.** How many instances of that
+one process the deployment runs — one application or several, one replica or many — is a property
+of the production environment, not of this repository. That is the same unobservability review
+round 9 established and the Board settled on 2026-08-29 as not re-litigable, arriving one level
+down: the code can prove there is nothing ELSE to run, and cannot prove how many copies of the one
+thing ARE running.
+
+**THE EXACT SENTENCE THAT CLOSES IT.** An explicit statement from JagPat, landed as a STATUS
+commit, that **the API application whose container was replaced is the only place a PMC Vitan
+process runs — no other application, no additional replica — so no process older than `5fcc2a58`
+is running or claiming deliveries.** One sentence, and the observation above supplies everything
+else. Anything short of it leaves the enumerated condition partly unattested, and this file has
+twice recorded a clearance that turned out to rest on the unattested part.
+
+**THE REMEDY BELOW IS UNCHANGED AND STILL STANDS.** A draft of this section demoted the
+`decisions.inbox` rebuild to optional on the grounds that no v1 worker could have been live. That
+conclusion depended on the very gap above, so it is withdrawn with it: the rebuild remains part of
+the remedy, in the order given, and the hazard analysis in the paragraphs that follow is not
+weakened by anything here.
+
 **UNIT 4c-iii IS MERGED (PR #506 at `main` `94cf3af`)** with a fresh independent Codex +1 on the
 exact reviewed head `50a5321` — first review attempt on that head, no findings. `open_pr` goes to
 `none` and `reviewed_merge` advances to the 4c-iii merge, so the hourly shepherd stops seeing `main`
@@ -195,7 +285,15 @@ GO — this directive is a ROLLOUT ordering prerequisite, not a scope authorizat
 cleared by a STATUS commit rather than by asking for permission to proceed. Contractor-capture
 units 1–6 stay Board-gated — a SEPARATE gate the 4c sequence does not lift.
 
-### Directive `phase-6-4c-previous-release-drained` — **RESTORED 2026-08-31, the clearance was NOT attributable**
+### Directive `phase-6-4c-previous-release-drained` — **STANDS; narrowed 2026-09-01, not cleared**
+
+**STILL SET.** A third clearance attempt is recorded in the Now section above and WITHDRAWN before
+merging: JagPat's own reported observation of the deployment establishes the container lineage of
+one application, and the remainder of the enumerated condition was completed from the WITHDRAWN
+#502 inspection. The one sentence that would close it is written out there. The 2026-08-31
+restoration history follows in full.
+
+#### The 2026-08-31 restoration, kept as the record
 
 **THE CLEARANCE IS WITHDRAWN AND THE DIRECTIVE STANDS AGAIN.** PR #502 recorded this gate as
 cleared by an operator inspection attributed to JagPat. That attribution is not supportable, so the
