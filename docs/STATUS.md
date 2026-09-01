@@ -71,18 +71,37 @@ could claim. Waiting for an operator statement is therefore not a neutral hold �
 accrual. This is recorded as an open operational hazard, not as a resolved one.
 
 **A restart is NECESSARY BUT NOT SUFFICIENT.** It closes the window forward, because the fence
-guarantees a pre-4c-ii process cannot come back. It does not replay a delivery already claimed by
-the wrong version (the outbox has one ordered delivery per consumer, so nothing retries it), it does
-not repair a v1 payload written into a generation already stamped v2, and it does not undo a push
-already sent through the old unguarded path. Any clearance must therefore establish BOTH that no
-pre-4c-ii process is running AND that no consultation delivery was claimed by one during the
-exposure window — or, where one was, that the affected generation has been rebuilt and the register
-reconciled.
+guarantees a pre-4c-ii process cannot come back. It does not undo what a v1 worker already did.
 
-**The exposure window** opens when `94cf3af` deployed (the migration that enabled the capability)
-and closes when the last pre-4c-ii process stopped. Deliveries claimed inside it are what must be
-checked; `ProjectionGeneration`'s catalog-version stamp and the outbox's per-consumer claim record
-are where that evidence lives.
+**WHAT THE DAMAGE ACTUALLY IS, checked in the code rather than inferred from §B's phrasing.** The
+projection consumer writes NO canonical row: `decisions.projection.ts` reads
+`tx.decision.findMany(...)` and upserts `DecisionProjection` only. So a v1 worker does not erase the
+consultation thread or the widened audience from the record — it writes a v1-serialized DTO into the
+DERIVED register, which is rebuilt from canonical truth by
+`pnpm --filter api projection:rebuild`. `decisions.inbox` is one of the rebuildable projections and
+that command is the documented operator repair. The corruption is therefore REPAIRABLE, and §B's
+"erasing" is exact about the served register rather than about the canonical thread.
+
+**The one part that is NOT repairable** is a notification already delivered through the old
+unguarded targeted send: a push cannot be recalled. That is a mis-scoped delivery rather than lost
+data, and it is the residue any remediation has to accept.
+
+**A CLAIMANT AUDIT IS NOT PERFORMABLE, so the remediation must not depend on one.** An earlier
+draft of this fold told the operator to identify deliveries claimed by an old worker from the outbox
+claim record and the generation stamp. Neither can carry that: `OutboxDelivery` has no
+claimant-version column and every success path in `relay.service.ts` sets `leaseOwner = null`, so a
+delivery handled by v1 is indistinguishable afterwards from one handled by v2; and a v1 worker
+applying into an EXISTING generation leaves that generation still stamped v2. Scoping the audit to
+`decision.consultation_*` was wrong for a second reason: the consumer dispatches EVERY `decision.*`
+event and re-serializes the project's whole decision set, so a v1 worker claiming `decision.approved`
+after a consultation exists corrupts the same register without any consultation delivery being
+involved.
+
+**The remediation is therefore CONSERVATIVE AND UNCONDITIONAL, not investigative:** once the fleet
+is confirmed on `5fcc2a58` or later, rebuild `decisions.inbox`. A rebuild derives every row from
+canonical rows with the current serializer, so it repairs whatever a v1 worker wrote without anyone
+having to establish what that was — which is the only sound approach when the evidence to
+investigate does not exist.
 
 **The immediate technical remedy, and why it is not taken unilaterally here.** A gate-off fence —
 additive, refusing new consultation threads until the fleet is confirmed fenced — would stop the
