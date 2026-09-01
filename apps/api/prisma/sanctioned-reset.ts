@@ -60,6 +60,12 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   { table: 'DecisionConsultation', trigger: 'DecisionConsultation_t4c_no_truncate' },
   { table: 'DecisionConsultationResponse', trigger: 'DecisionConsultationResponse_t4c_no_truncate' },
   { table: 'OrgMembership', trigger: 'OrgMembership_t4b2_no_truncate' },
+  // Phase 6 unit 4c-iii — the consultation PRESERVATION seal's statement-level arm. Between
+  // 4c-iii and 4c-v the capability row must EXIST for every project (the gate reads are still
+  // authoritative), so removing it by TRUNCATE is sealed exactly as removing it by DELETE is.
+  // Round 29 foresaw this entry: a dozen-plus suites reach `ProjectCapability` directly or
+  // through a cascade list, and a statement trigger fires even on an empty table.
+  { table: 'ProjectCapability', trigger: 'ProjectCapability_t4c_no_truncate' },
 ];
 
 /**

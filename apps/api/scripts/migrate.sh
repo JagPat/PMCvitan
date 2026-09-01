@@ -239,9 +239,24 @@ if echo "$out" | grep -q "P3005"; then
   # CREATE, and a DROP NOT NULL that no-ops), so leaving it pending costs nothing when it has
   # somehow already run; its audit DO block aborts only over a register already in the
   # zero-holder state — exactly the diagnostic-first refusal this path must keep.
+  #
+  # 20271120000000_phase6_t4c_iii_enablement is here for the same reason. `schema.prisma` models
+  # only ONE of its objects — the `ProjectCapability.project` cascade FK. The three trigger
+  # functions, the three triggers and the every-project backfill are raw, so a `prisma db push`
+  # baseline produces a database with the modeled FK and NONE of the transition. Resolving it as
+  # applied would skip them permanently: existing and future projects would carry no `consultation`
+  # row (the enablement this unit exists to establish), and any attribution that did appear would
+  # stay freely rewritable, because the preservation seal that freezes it was never installed. The
+  # generic enforcement verifier deliberately keeps no expected-object list, so nothing downstream
+  # would notice. Every statement in the file is re-runnable — DROP ... IF EXISTS, a
+  # DROP CONSTRAINT IF EXISTS before the ADD, CREATE OR REPLACE FUNCTION, DROP TRIGGER IF EXISTS
+  # before each CREATE TRIGGER, and a backfill with ON CONFLICT DO NOTHING — so leaving it pending
+  # costs nothing when it has somehow already run, and its closing DO block still refuses to commit
+  # unless every project carries the row.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
-20271015000000_phase6_t4b_decider"
+20271015000000_phase6_t4b_decider
+20271120000000_phase6_t4c_iii_enablement"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
