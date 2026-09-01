@@ -36,8 +36,24 @@ terms:
 CONFIRMATION ONLY … with `task_state: correction_required`", and it is a BOARD DECISION recorded
 as not re-litigable (2026-08-29, on PR #480). `assessRunnerState` therefore resolved to
 `directive:phase-6-4c-previous-release-drained` and could not start 4c-iii or 4c-iv, nor hand off to
-4d, while the directive stood — **it has since been CLEARED by operator attestation (see its record
-above), so the Now block is now the terminal handoff shape and `next_task` is executable.**
+4d, while the directive stood — **and it STANDS AGAIN: the clearance recorded in #502 was
+withdrawn as unattributable (see its record below), so the Now block is the DIRECTIVE shape and
+`next_task` is NOT executable.**
+
+**Why a directive only a person can clear is not a stall, and not re-litigable.** AGENTS.md's
+autonomy rule ("do not block on human sign-off") governs sign-off ON THE WORK — review, approval,
+permission to proceed — and this directive is not that. It carries one fact about the PRODUCTION
+FLEET that no code in this repository can observe: that every serving process older than
+`5fcc2a58` has drained. Review round 9 established the unobservability, review round 16's call to
+automate it asked for the very signal round 9 had rejected as unimplementable, and the Board
+settled it on 2026-08-29 (on PR #480) as **not re-litigable**: it stays operator-declared and NO
+automated drain actor is invented for it. The plan states the resulting trade in terms — §D,
+"the prerequisite is FAIL-CLOSED through the delivered control plane, not an awaited human", and
+4c-v's entry, "the two options the mechanism actually offers are: set the directive, and 4d waits;
+or do not set it, and nothing ever schedules 4c-v. There is no third state." Fail-closed here means
+the loop holds a machine-observed state with an attributable record, instead of advancing past a
+rollout ordering it cannot verify. A review finding asking for the directive's removal is one of
+the things explicitly listed below as unable to clear it.
 `isDirectiveLandingShape` recognized that landing, so the shepherd did not read its own
 `open_pr: none` as drift and did not instruct the loop to point `open_pr` at the landing PR itself
 (the #303 trap).
