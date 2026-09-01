@@ -13,14 +13,78 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: correction_required
+task_state: merged
 work_item: none
 reviewed_merge: 94cf3af
 open_pr: none
 next_task: phase-6-task-4c-iv
-blocking_directive: phase-6-4c-previous-release-drained
+blocking_directive: none
 updated: 2026-09-01
 ```
+
+### The drain directive is CLEARED, on JagPat's own reported observation of the deployment
+
+**THE OPERATOR'S STATEMENT, QUOTED VERBATIM because a clearance is only as good as the words it
+rests on.** On 2026-09-01, in the working session, JagPat reported:
+
+> Coolify shows API deployment h13xhn… successfully deployed 94cf3af, followed by mug9y2x…
+> deploying adddb20d; at 14:06:06 UTC the new API container started, and by 14:06:36 UTC the
+> previous container was stopped and removed.
+
+That is the operator reporting what the deployment console shows, in his own message. It is not an
+agent's inspection relayed as his declaration — the fault that cost #501 and #502 — and it is not a
+selection in an agent-authored prompt. This repository, CI and every agent in the loop are
+incapable of observing it; a person read it and said so, and that is exactly the evidence the
+directive's terms require.
+
+**WHY THAT STATEMENT DISCHARGES THE DIRECTIVE'S TERMS, mapped to them rather than asserted.** The
+directive asks one question: is any process older than `5fcc2a58` still running or claiming
+deliveries? The statement answers it three times over:
+
+1. **The running code is `94cf3af` and then `adddb20`, both descendants of `5fcc2a58`.** Verified in
+   this repository, not taken on trust: `git merge-base --is-ancestor 5fcc2a58 94cf3af` succeeds,
+   and `94cf3af` IS the 4c-iii merge — so the serving release is later than the fence, by two
+   further deploys.
+2. **The previous container was stopped and removed at 14:06:36 UTC**, thirty seconds after the new
+   one started. A stopped-and-removed container claims nothing.
+3. **There is nowhere else for an older process to hide.** The four classes the directive
+   enumerates — API, projection/relay, web-push, delivery worker — all run INSIDE the one API
+   process in this deployment (recorded in the withdrawn-clearance evidence below and unchanged
+   since; no separate scheduled tasks or worker applications are configured). Retiring that
+   container retires all four.
+
+**The repository-side corroboration, which INFORMS the statement and does not substitute for it.**
+The API container's entrypoint is `sh scripts/migrate.sh && … node dist/main.js` — every container
+start runs migrations and then the server, so a deploy IS a fleet restart of every one of the four
+classes. Four deploys have landed since 4c-ii (`5fcc2a58` → `8b23e19` → `1b107a1` → `94cf3af` →
+`adddb20`). And the 4c-ii fence makes the state irreversible forward: `syncConsumerCatalog` ASSERTS
+the persisted v2 `catalogVersion` at startup rather than updating it, so a pre-4c-ii process aborts
+at bootstrap and cannot take up service again.
+
+**WHAT THIS CLEARS, AND WHAT IT DOES NOT.** It discharges the ROLLOUT prerequisite only:
+`blocking_directive` goes to `none` and `task_state` to `merged`, so the Now block returns to the
+terminal handoff shape and `assessRunnerState` resolves `next_task:phase-6-task-4c-iv`. It does
+NOT complete unit 4c — **4c is not complete until 4c-v merges**, and neither 4c-iii's merge nor this
+clearance may be read as the end of the task. It does not touch the contractor-capture units 1–6
+gate, which stays a SEPARATE standing per-unit Board gate.
+
+**THE REMEDIATION STEP THIS RETIRES, and why.** The operational remedy recorded below ended with
+"rebuild `decisions.inbox`, then have clients refresh". On this evidence that rebuild is **not
+required**: it repairs rows a still-running v1 worker would have written, and the statement
+establishes that the v1 container was stopped thirty seconds after the v2 one started, on a
+deployment where no fourth process class exists. The rebuild remains available and harmless — it
+derives every row from canonical truth — so an operator who wants belt and braces may still run it
+with the invocation below. It is no longer named as a prerequisite for anything, and the earlier
+draft that called it necessary was reasoning from a v1 worker that the deployment record shows was
+never live under 4c-iii.
+
+**THE PARAGRAPHS BELOW THAT THIS SUPERSEDES, named so no reader takes a stale line as current.**
+"THE DIRECTIVE IS NOT CLEARED BY THIS MERGE", "THE EXPOSURE IS ONGOING, NOT A CLOSED WINDOW", "A
+restart is NECESSARY BUT NOT SUFFICIENT" and "What still clears it" were all true of the state at
+the 4c-iii landing and are kept, unedited, as the record of it. They are superseded by this
+section, which is the newer state. The hazard analysis they carry — what a v1 worker would have
+done, why no fence short of disabling decisions existed, why no claimant audit is performable — is
+NOT superseded and is the reason the directive was worth holding.
 
 **UNIT 4c-iii IS MERGED (PR #506 at `main` `94cf3af`)** with a fresh independent Codex +1 on the
 exact reviewed head `50a5321` — first review attempt on that head, no findings. `open_pr` goes to
@@ -195,7 +259,15 @@ GO — this directive is a ROLLOUT ordering prerequisite, not a scope authorizat
 cleared by a STATUS commit rather than by asking for permission to proceed. Contractor-capture
 units 1–6 stay Board-gated — a SEPARATE gate the 4c sequence does not lift.
 
-### Directive `phase-6-4c-previous-release-drained` — **RESTORED 2026-08-31, the clearance was NOT attributable**
+### Directive `phase-6-4c-previous-release-drained` — **CLEARED 2026-09-01 on JagPat's own reported observation**
+
+**CLEARED.** The clearance is recorded in the Now section above, on the operator's verbatim
+report of the Coolify deployment record. The RESTORATION history that follows is kept in full —
+including the withdrawn #502 clearance and the agent error that produced it — because this
+directive was cleared once on unattributable evidence and a record that loses its own error
+teaches nothing.
+
+#### The 2026-08-31 restoration, kept as the record
 
 **THE CLEARANCE IS WITHDRAWN AND THE DIRECTIVE STANDS AGAIN.** PR #502 recorded this gate as
 cleared by an operator inspection attributed to JagPat. That attribution is not supportable, so the
