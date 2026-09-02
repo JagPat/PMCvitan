@@ -18,11 +18,157 @@ work_item: none
 reviewed_merge: 94cf3af
 open_pr: none
 next_task: phase-6-task-4c-iv
-blocking_directive: phase-6-4c-previous-release-drained
-updated: 2026-09-01
+blocking_directive: phase-6-4c-iv-post-drain-remediation
+updated: 2026-09-02
 ```
 
-### The drain directive STANDS. JagPat's reported observation narrows it but does not discharge it.
+### The drain directive is CLEARED — on JagPat's DIRECT fleet-drain attestation, 2026-09-02
+
+**THE ATTESTATION, QUOTED VERBATIM.** On 2026-09-02, in the working session, JagPat stated:
+
+> The API application whose container was replaced is the only place a PMC Vitan process
+> runs—there is no other application or additional replica—so no process older than 5fcc2a58 is
+> running or claiming deliveries.
+
+**This is the enumerated condition itself, stated directly by the operator, and nothing else is
+load-bearing.** It is not an inspection relayed as a declaration (the #502 fault), not a selection
+in an agent-authored prompt (the #501 fault), and not an observation of something adjacent to the
+condition from which the condition is inferred (the #510 fault, twice). It names the one fact this
+repository cannot see — that the replaced application is the only place a PMC Vitan process runs —
+and draws the conclusion the directive requires in its own terms. The repository-side facts recorded
+below (the four process classes are ONE process class in code; `syncConsumerCatalog` asserts the v2
+catalog so a pre-4c-ii process cannot restart) remain true and remain INFORMATIVE; they are not
+what clears the directive and are not cited as if they were.
+
+**A FALSE ATTRIBUTION IN THE #511 RECORD IS CORRECTED HERE, on JagPat's instruction.** The section
+that follows this one — merged as #511 — quoted an earlier Coolify observation ("Coolify shows API
+deployment h13xhn… successfully deployed 94cf3af … the previous container was stopped and
+removed") and attributed it to JagPat as his own report, adding that "its provenance is sound".
+**That attribution was false and is withdrawn.** The observation's author is NOT established as the
+operator, and this record does not now assert who authored it. The text is retained in that section
+as the record of what was relayed, marked as no longer attributed and no longer load-bearing. The
+ancestry verification that section performed on the commits the observation named
+(`git merge-base --is-ancestor 5fcc2a58 94cf3af` and `… adddb20`, both exit 0) is a repository
+fact and stands on its own; it never depended on who reported the deployment. This is the THIRD
+time an agent has recorded a Coolify observation as the operator's own — #502, then #510/#511 — and
+the file now says so in plain terms rather than letting the correction hide in a diff.
+
+**WHAT THIS CLEARS.** `phase-6-4c-previous-release-drained` is cleared: it no longer appears in the
+Now block, its record below is marked CLEARED, and no drain question remains open. It discharges
+the ROLLOUT prerequisite only. **4c is not complete until 4c-v merges**, and neither 4c-iii's merge
+nor this clearance is the end of the task. Contractor-capture units 1–6 stay behind their own
+standing per-unit Board gate, untouched.
+
+**WHAT THE NOW BLOCK NAMES INSTEAD, and why it is not the terminal handoff shape.** The
+`blocking_directive` field now carries `phase-6-4c-iv-post-drain-remediation` — the operational
+remediation below — with `task_state: correction_required`, so `assessRunnerState` resolves
+`directive:phase-6-4c-iv-post-drain-remediation` AHEAD of `next_task` and 4c-iv is unreachable until
+that directive is cleared. **A first head of this landing set `blocking_directive: none` with
+`task_state: merged` and recorded the remediation as a prose "standing gate" that "binds regardless
+of resolver output". The exact-head review found that wrong, and it was wrong**: the runner parses
+ONLY the Now YAML and the Maintenance queue, no code reads the standing-gate section, and the
+terminal handoff shape resolves straight to `next_task:phase-6-task-4c-iv` — the autonomous handoff
+would have opened 4c-iv before the rebuild or the refresh had happened. A gate the resolver cannot
+see is a promise, not a gate. The remediation is therefore encoded in the one field the runner
+actually observes, in the same fail-closed shape the drain directive used and the Board settled as
+not a stall (2026-08-29, on #480): the loop holds a machine-observed state with an attributable
+record instead of advancing past an ordering it cannot verify.
+
+**WHAT MUST HAPPEN BEFORE 4c-iv OPENS — the remediation is MANDATORY and comes FIRST.** The drain
+attestation closes the exposure window forward. It does not undo what a pre-4c-ii worker may have
+written during the window in which 4c-iii's enablement ran with the prerequisite unmet, and no
+claimant audit can establish what that was (see the record below). So the remedy recorded at the
+4c-iii landing stands unchanged and is the NEXT operational work, in order, before any unit opens:
+
+1. **Rebuild `decisions.inbox` SUCCESSFULLY, for EVERY project** with the documented invocation
+   (`--operator` and `--reason` are mandatory; the CLI exits without rebuilding if either is
+   missing; NO `--project` filter, so every project's generation is covered):
+
+   ```
+   pnpm --filter api projection:rebuild \
+     --operator <you@example.com> \
+     --reason "post-4c-iii: repair any generation a pre-4c-ii worker may have written" \
+     --consumer decisions.inbox
+   ```
+
+   **"Ran" is not the criterion; "succeeded" is** (review of #512, round 2). `rebuild-operations.ts`
+   catches a failure per `(project, consumer)` pair and CONTINUES to the next, then reports
+   `ok: corruptAfter === 0 && failures === 0`, and the CLI sets exit code 1 when `ok` is false. So
+   an operator can truthfully say the command "ran" while one project's register is still
+   unrepaired. The step is complete only when the process exited **0** and the printed report
+   shows **`ok: true`, `corruptAfter: 0`, `failures: 0`**. A non-zero exit means: read the
+   per-pair errors in the report, fix the cause, run it again — the rebuild is idempotent.
+
+2. **Have connected clients refresh** — a reload or reconnect — because the rebuild swaps
+   `ProjectionGeneration` rows and emits no domain event and no socket invalidation, so a client
+   already holding a stale view keeps it until it reloads.
+
+This ordering is enforced as the Now-block directive `phase-6-4c-iv-post-drain-remediation`
+(its record follows this section), cleared ONLY by JagPat's explicit confirmation that BOTH steps
+ran, carried into a STATUS commit that sets `blocking_directive: none` and `task_state: merged`.
+Until then `assessRunnerState` returns the directive, not `next_task`. **4c-iv does not open on
+`next_task` alone, and the resolver now enforces that rather than a paragraph promising it.**
+
+**THE LEDGER.** This landing declares `Replaces: #507`, the last pending replacement obligation
+(#503 was discharged by #511; #510 was never labelled and carries none). Once this merges the ledger
+is clean and 4c-iv may declare `Replaces: none`.
+
+### Directive `phase-6-4c-iv-post-drain-remediation` — SET 2026-09-02, operator-cleared
+
+**What it attests when cleared.** Two operational facts, both AFTER the fleet drain attested
+above: (1) `projection:rebuild --consumer decisions.inbox`, with NO `--project` filter, **exited 0
+and its report shows `ok: true`, `corruptAfter: 0`, `failures: 0`** — a run that exited non-zero,
+or a report with any failed or still-corrupt pair, does NOT satisfy this, because the CLI continues
+past a failed project and reports it rather than aborting (review of #512, round 2); and (2)
+connected clients were refreshed after that successful rebuild. Neither fact is observable from
+this repository: the rebuild runs against the production database and the refresh happens in
+browsers.
+
+**Why it exists.** 4c-iii's enablement ran while the drain prerequisite was unmet. A pre-4c-ii
+worker in that window would have written a v1-serialized DTO into the DERIVED `decisions.inbox`
+register, and no claimant audit can establish whether one did (the record below). The remedy is
+therefore unconditional: rebuild, then refresh. The drain attestation closes the window FORWARD; it
+does not repair what may already be in the register, and a client holding the stale view keeps it
+until it reloads because a rebuild emits no invalidation.
+
+**A MACHINE-EXECUTABLE ALTERNATIVE EXISTS, AND CHOOSING IT IS THE OPERATOR'S, NOT A CORRECTION
+PUSH'S** (review of #512, round 2, which asked that the loop not be parked behind work it cannot
+complete). The directive as written is operator-cleared for the same reason the drain directive
+was — both facts are about production and unobservable here — and AGENTS.md's never-wait rule
+governs sign-off ON THE WORK, not facts about the fleet (the Board settled that reading on
+2026-08-29, on #480). But unlike the drain, this remediation IS automatable, and the record says
+so rather than hiding behind the precedent: a ONE-SHOT deploy-time step in `scripts/migrate.sh`
+running the COMPILED rebuild CLI (`node dist/platform/projections/projection-rebuild.cli.js
+--consumer decisions.inbox`, `--operator deploy`, a fixed reason) BEFORE the server starts, guarded
+by a durable marker so it runs once, failing the deploy closed on a non-`ok` report — and because
+every container start reconnects every client and `useApiSync` refreshes on `connect`
+(`apps/web/src/data/useApiSync.ts`), the restart that carries the rebuild IS the client refresh.
+Under that design both facts become structural, no directive is needed, and 4c-iv's ordering is
+guaranteed by `main` ordering alone. It is a CODE unit with its own review (a boot-time rebuild
+that blocks serving until the register is clean has hazards of its own — duration, a failure
+holding the deploy), and it CONTRADICTS the operator's explicit instruction of 2026-09-02 that the
+rebuild and refresh are operational steps he verifies. A scope decision of that kind routes to the
+operator, never to a correction push, so this unit keeps the operator-cleared directive and puts
+the alternative to JagPat in terms. If he chooses it, the directive is retired BY that unit's
+merge, not by a confirmation.
+
+**What it blocks.** `assessRunnerState` returns `directive:phase-6-4c-iv-post-drain-remediation`
+ahead of every other work source, so 4c-iv, 4c-v and the §E handoff to 4d are unreachable, and
+STATUS's own definition of the Maintenance queue excludes that queue too. This is the same
+fail-closed shape the drain directive held and is not a stall for the same reason (AGENTS.md's
+never-wait rule governs sign-off ON THE WORK; this carries facts about production no code can see).
+
+**Cleared by.** JagPat's explicit confirmation, in the session or repository, that BOTH facts hold
+— **quoting the rebuild's printed report** (at minimum its `ok`, `corruptAfter` and `failures`
+fields and the exit status) so the clearance carries the evidence rather than a summary of it —
+carried into a STATUS commit that sets `blocking_directive: none` and `task_state: merged` (the
+terminal handoff shape), which is the commit that opens 4c-iv. 4c-iv's PR quotes the confirmation
+and the report. Not a Board call, not the handoff
+watchdog, not the drift shepherd, not a clean signal on any PR, not a review finding asking for its
+removal, and — the lesson of #501, #502 and #510 — not an agent's observation or a picker selection
+recorded as the operator's statement.
+
+### The #511 record — the directive STOOD at that landing; the observation's attribution is WITHDRAWN
 
 **THIS SECTION WAS FIRST WRITTEN AS A CLEARANCE AND IS WITHDRAWN BEFORE MERGING.** The withdrawal
 is the record, not a tidied-away draft: the same PR proposed `blocking_directive: none` on the
@@ -32,18 +178,21 @@ evidence that establishes something adjacent to the enumerated condition being a
 establishing the condition — and the third attempt is recorded here rather than deleted so the
 pattern is visible to whoever writes the fourth.
 
-**THE OPERATOR'S STATEMENT, QUOTED VERBATIM.** On 2026-09-01, in the working session, JagPat
-reported:
+**THE OBSERVATION THIS SECTION WAS BUILT ON — ATTRIBUTION WITHDRAWN 2026-09-02.** As merged in
+#511, this paragraph read "On 2026-09-01, in the working session, JagPat reported:" and the one after
+it asserted "Its provenance is sound … This is the operator reporting what the deployment console
+shows, in his own message. It is not an agent's inspection relayed as his declaration." **JagPat has
+instructed that this attribution was false, and it is withdrawn.** The observation's author is not
+established as the operator and is not asserted here. The text is kept only as the record of what
+was relayed and what this section reasoned from:
 
 > Coolify shows API deployment h13xhn… successfully deployed 94cf3af, followed by mug9y2x…
 > deploying adddb20d; at 14:06:06 UTC the new API container started, and by 14:06:36 UTC the
 > previous container was stopped and removed.
 
-**Its provenance is sound, and that is worth stating separately from its sufficiency.** This is the
-operator reporting what the deployment console shows, in his own message. It is not an agent's
-inspection relayed as his declaration — the fault that cost #501 and #502 — and it is not a
-selection in an agent-authored prompt. Nothing below questions WHO said it. What follows is only
-about WHAT it says.
+Nothing in the clearance above depends on it. What follows in this section is the analysis as it
+was merged, retained because its repository-side conclusions (the ancestry checks, the one-process
+proof, the gap it correctly identified) are true independently of who reported the deployment.
 
 **WHAT IT ESTABLISHES.** For the one Coolify application it names: its previous container was
 stopped and removed at 14:06:36 UTC, thirty seconds after the new one started, and a removed
@@ -285,13 +434,14 @@ GO — this directive is a ROLLOUT ordering prerequisite, not a scope authorizat
 cleared by a STATUS commit rather than by asking for permission to proceed. Contractor-capture
 units 1–6 stay Board-gated — a SEPARATE gate the 4c sequence does not lift.
 
-### Directive `phase-6-4c-previous-release-drained` — **STANDS; narrowed 2026-09-01, not cleared**
+### Directive `phase-6-4c-previous-release-drained` — **CLEARED 2026-09-02 on JagPat's direct attestation**
 
-**STILL SET.** A third clearance attempt is recorded in the Now section above and WITHDRAWN before
-merging: JagPat's own reported observation of the deployment establishes the container lineage of
-one application, and the remainder of the enumerated condition was completed from the WITHDRAWN
-#502 inspection. The one sentence that would close it is written out there. The 2026-08-31
-restoration history follows in full.
+**CLEARED.** The clearance and its verbatim attestation are recorded at the top of the Now section.
+It was cleared by the one route its terms allow — the operator stating the enumerated condition
+directly, carried into a STATUS commit — after two withdrawn attempts (#502; #510/#511) had each
+rested on a Coolify observation recorded as the operator's own when it was not. The full history is
+kept below: the 2026-08-31 restoration, the withdrawn #502 text, and the #511 section above with
+its attribution withdrawn in place.
 
 #### The 2026-08-31 restoration, kept as the record
 
