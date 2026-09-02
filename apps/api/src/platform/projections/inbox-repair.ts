@@ -157,12 +157,14 @@ export type RefusalCode =
   | 'identity-unconfigured'
   | 'minimum-invalid'
   | 'system-identity-invalid'
+  | 'system-identity-unreadable'
   | 'system-identity-mismatch'
   | 'database-identity-invalid'
   | 'database-identity-mismatch'
   | 'anchor-absent'
   | 'below-minimum'
-  | 'rebuild-not-verified';
+  | 'rebuild-not-verified'
+  | 'concurrent-corruption';
 
 export interface Refusal {
   code: RefusalCode;
@@ -310,6 +312,65 @@ export function readIdentityConfig(
   };
 }
 
+/** The minimum a client needs to answer the identity question — so it can be exercised directly. */
+export interface IdentityReadable {
+  $queryRaw<T = unknown>(query: TemplateStringsArray, ...values: unknown[]): Promise<T>;
+}
+
+/**
+ * The connected database's own identity: which CLUSTER, and which DATABASE within it.
+ *
+ * MEASURED, not assumed: on PostgreSQL 16.13 all four `pg_control_*` functions carry a NULL
+ * `proacl` — the default, which is EXECUTE to PUBLIC — and a login role with no superuser attribute
+ * and no role memberships reads `system_identifier` successfully; `pg_database` is world-readable in
+ * any case. (Codex F3 on `42a1903` reported this as superuser/pg_monitor-only; the catalog says
+ * otherwise on this version, and the test suite asserts it against the live server so a future
+ * version that DOES restrict it fails there rather than in production.)
+ *
+ * A DEPLOYMENT may still revoke it, so that failure is CAUGHT and NAMED with the exact one-line
+ * remedy instead of surfacing as an opaque crash on the deploy path. It is never swallowed: the
+ * refusal still exits non-zero and writes no marker, because a permission this check cannot obtain
+ * must not become a way to skip the check.
+ *
+ * Separated from the step so the refusal path can be exercised over a stub that simply throws — the
+ * alternative, wrapping the real client, reaches through Prisma's proxy and was MEASURED to break
+ * the step's session advisory lock and cascade into unrelated probes.
+ */
+export async function readDatabaseIdentity(
+  prisma: IdentityReadable,
+): Promise<
+  | { ok: true; systemIdentifier: string; database: string; databaseOid: string }
+  | { ok: false; refusal: Refusal }
+> {
+  try {
+    const rows = await prisma.$queryRaw<Array<{ system_identifier: bigint; current_database: string; database_oid: number }>>`
+      SELECT c.system_identifier,
+             current_database() AS current_database,
+             (SELECT d.oid FROM pg_database d WHERE d.datname = current_database()) AS database_oid
+        FROM pg_control_system() c`;
+    const row = rows[0];
+    return {
+      ok: true,
+      systemIdentifier: String(row.system_identifier),
+      database: row.current_database,
+      databaseOid: String(row.database_oid),
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      refusal: {
+        code: 'system-identity-unreadable',
+        message:
+          "this deployment's database role cannot read the cluster identity (pg_control_system()): "
+          + `${(e as Error).message.split('\n')[0]}. The identity check is not optional — a role that `
+          + 'cannot make the check must not be allowed to skip it. Grant exactly this, as a '
+          + 'superuser, and redeploy: GRANT EXECUTE ON FUNCTION pg_control_system() TO <the '
+          + 'DATABASE_URL role>; See docs/RUNBOOK.md §P64CIIIR.',
+      },
+    };
+  }
+}
+
 /**
  * The full success criterion for one run. Every clause is necessary: `ok` alone tolerates a run that
  * covered no project, and `projects` alone tolerates a run whose pairs all threw.
@@ -408,12 +469,20 @@ export async function runInboxRepairStep(
       // filesystem clone, a physical replica) reproduces the control file too, so it carries the
       // same identifier and this check cannot see it. Nothing readable from inside the database
       // can. What it does close is the copy that ordinary tooling makes.
-      const [{ system_identifier: liveSystemIdentifier, current_database: liveDatabase, database_oid: liveDatabaseOid }] =
-        await prisma.$queryRaw<Array<{ system_identifier: bigint; current_database: string; database_oid: number }>>`
-          SELECT c.system_identifier,
-                 current_database() AS current_database,
-                 (SELECT d.oid FROM pg_database d WHERE d.datname = current_database()) AS database_oid
-            FROM pg_control_system() c`;
+      // MEASURED, not assumed: on PostgreSQL 16.13 all four `pg_control_*` functions carry a NULL
+      // `proacl` — the default, which is EXECUTE to PUBLIC — and an unprivileged role with no role
+      // memberships reads `system_identifier` successfully. (Codex F3 on `42a1903` reported this as
+      // superuser/pg_monitor-only; the catalog says otherwise on this version, and `pg_database` is
+      // world-readable in any case.) A DEPLOYMENT may still revoke it, so the failure is CAUGHT and
+      // NAMED with the exact one-line remedy instead of surfacing as an opaque crash on the deploy
+      // path. It is never swallowed: a refusal still exits non-zero and writes no marker, because a
+      // permission this check cannot obtain must not become a way to skip the check.
+      const identity = await readDatabaseIdentity(prisma);
+      if (!identity.ok) {
+        log(`[4c-iii-r] REFUSED (${identity.refusal.code}): ${identity.refusal.message}`);
+        return { ...base, ok: false, action: 'refused', projectCount, refusal: identity.refusal };
+      }
+      const { systemIdentifier: liveSystemIdentifier, database: liveDatabase, databaseOid: liveDatabaseOid } = identity;
       if (String(liveSystemIdentifier) !== config.expectedSystemIdentifier) {
         const refusal: Refusal = {
           code: 'system-identity-mismatch',
@@ -529,11 +598,34 @@ export async function runInboxRepairStep(
       return { ...base, ok: false, action: 'refused', projectCount, refusal, report };
     }
 
-    // The marker is written only after the VERIFIED report, still under the lock, so a marker can
-    // never stand for a repair that did not succeed — and inside ONE transaction that first sets
-    // the transaction-local flag the DB creation gate requires. `SET LOCAL` disappears at COMMIT,
-    // so no later statement on this connection inherits the right to write a marker.
+    // THE MARKER IS COMMITTED UNDER THE WRITERS' OWN LOCK, NOT MERELY AFTER A GOOD REPORT.
+    //
+    // `report` describes the register as it was DURING `ops.run`. The marker is permanent and every
+    // later start skips on it, so writing it in a separate, later transaction leaves a window in
+    // which a writer this step's advisory lock does not fence — a pre-4c-ii relay is the case this
+    // whole unit exists for — could rewrite the freshly rebuilt generation with its v1 serializer
+    // and advance its checkpoint. The generation would still be stamped current and caught up, the
+    // read path would serve stale-shaped rows, and the marker would permanently skip the repair
+    // that fixes it (Codex F2 on `42a1903`).
+    //
+    // So the re-check and the marker write are ONE transaction, and it holds the lock those writers
+    // DO obey: `ProjectEventStream … FOR UPDATE` per project, which `emitEvent` takes to allocate
+    // stream positions and which `diagnoseIn`'s own comment records as covering every writer of
+    // every projection. Taken in ascending project id — a stable global order, so two of these can
+    // never deadlock against each other.
+    //
+    // What is refused is CORRUPTION specifically, not activity: a concurrent post-4c-ii relay that
+    // legitimately appends leaves the projection `lagging` (correct, behind) or `current-match`,
+    // and neither is a reason to withhold the marker. Only a generation whose stored rows no longer
+    // match canonical — the exact damage a v1 serializer does — refuses. A refusal writes NO marker
+    // and exits non-zero, so the next start (with the old release gone) repairs and marks.
+    const concurrent: string[] = [];
     await prisma.$transaction(async (tx) => {
+      for (const projectId of [...projectIds].sort()) {
+        const again = await ops.diagnoseIn(tx as never, DECISIONS_PROJECTION, projectId);
+        if (again.state === 'corrupt') concurrent.push(`${projectId}/${DECISIONS_PROJECTION}`);
+      }
+      if (concurrent.length > 0) return;                       // leave the transaction without a marker
       await tx.$executeRaw`SELECT set_config('vitan.phase6_4c_iiir_repair', 'on', true)`;
       await tx.outboxOperatorAction.create({
         data: {
@@ -546,6 +638,19 @@ export async function runInboxRepairStep(
         },
       });
     });
+    if (concurrent.length > 0) {
+      const refusal: Refusal = {
+        code: 'concurrent-corruption',
+        message:
+          `the rebuild succeeded, but re-checking under the event-stream lock found ${concurrent.length} `
+          + `generation(s) corrupt again before the marker could be committed: ${concurrent.join(', ')}. `
+          + 'Something wrote this register between the rebuild and the marker — the pre-4c-ii relay '
+          + 'the drain prerequisite exists to eliminate is the expected cause. NO marker was written; '
+          + 'stop every process older than the drain fence and redeploy. See docs/RUNBOOK.md §P64CIIIR.',
+      };
+      log(`[4c-iii-r] REFUSED (${refusal.code}): ${refusal.message}`);
+      return { ...base, ok: false, action: 'refused', projectCount, refusal, report };
+    }
     log(`[4c-iii-r] repaired and marked: ${report.projects} project(s), corruptBefore=${report.corruptBefore}`);
     return { ...base, ok: true, action: 'repaired', projectCount, markerWritten: true, report };
   } finally {

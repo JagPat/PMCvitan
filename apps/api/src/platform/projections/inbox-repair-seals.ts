@@ -53,21 +53,34 @@ import { PHASE6_4C_IIIR_MARKER_ACTION } from './inbox-repair';
 export const MARKER_SEAL_MIGRATION = '20271125000000_phase6_4c_iiir_marker_seal';
 export const MARKER_SEAL_TABLE = 'OutboxOperatorAction';
 
-/** trigger name → the function it must execute. */
-export const MARKER_SEAL_TRIGGERS: ReadonlyArray<{ trigger: string; fn: string; expects: string }> = [
+/**
+ * `pg_trigger.tgtype` is a bitmask: ROW=1, BEFORE=2, INSERT=4, DELETE=8, UPDATE=16, TRUNCATE=32.
+ *
+ * The EXACT value is pinned, not a subset of its bits (Codex F1 on `42a1903`). An earlier draft
+ * asked only BEFORE and row-vs-statement, which says nothing about WHICH events fire the trigger —
+ * so a partial restore that recreated the insert gate under the same name, function, body, owner
+ * and enablement but as `BEFORE UPDATE` (tgtype 19) passed the verifier while direct marker
+ * INSERTs were once again accepted. Each expected value is the one the migration's own
+ * `CREATE TRIGGER` produces, and is asserted against a live database by the test suite rather than
+ * trusted to this arithmetic.
+ */
+export const MARKER_SEAL_TRIGGERS: ReadonlyArray<{ trigger: string; fn: string; tgtype: number; expects: string }> = [
   {
     trigger: 'OutboxOperatorAction_4c_iiir_marker_insert_gated',
     fn: 'phase6_4c_iiir_marker_insert_gated',
+    tgtype: 1 + 2 + 4,
     expects: 'BEFORE INSERT, per row',
   },
   {
     trigger: 'OutboxOperatorAction_4c_iiir_marker_sealed',
     fn: 'phase6_4c_iiir_marker_sealed',
+    tgtype: 1 + 2 + 8 + 16,
     expects: 'BEFORE UPDATE OR DELETE, per row',
   },
   {
     trigger: 'OutboxOperatorAction_4c_iiir_no_truncate',
     fn: 'phase6_4c_iiir_no_truncate',
+    tgtype: 2 + 32,
     expects: 'BEFORE TRUNCATE, per statement',
   },
 ];
@@ -170,7 +183,7 @@ export async function verifyMarkerSeals(prisma: PrismaService): Promise<MarkerSe
   const byName = new Map(rows.map((r) => [r.tgname, r]));
 
   const findings: MarkerSealFinding[] = [];
-  for (const { trigger, fn, expects } of MARKER_SEAL_TRIGGERS) {
+  for (const { trigger, fn, tgtype, expects } of MARKER_SEAL_TRIGGERS) {
     const row = byName.get(trigger);
     if (!row) {
       findings.push({ trigger, fn, problem: 'absent', detail: `no such trigger on public."${MARKER_SEAL_TABLE}" (expected ${expects})` });
@@ -185,13 +198,14 @@ export async function verifyMarkerSeals(prisma: PrismaService): Promise<MarkerSe
       findings.push({ trigger, fn, problem: 'wrong-function', detail: `executes ${row.proname}, not ${fn}` });
       continue;
     }
-    // tgtype bit 0 is BEFORE-vs-AFTER; bit 1 is FOR EACH ROW. Both are set by the migration for the
-    // two row seals and the row bit is deliberately clear for the statement-level TRUNCATE seal.
-    const isBefore = (row.tgtype & 2) !== 0;
-    const isRow = (row.tgtype & 1) !== 0;
-    const wantRow = fn !== 'phase6_4c_iiir_no_truncate';
-    if (!isBefore || isRow !== wantRow) {
-      findings.push({ trigger, fn, problem: 'wrong-timing', detail: `tgtype=${row.tgtype} is not "${expects}"` });
+    // The WHOLE mask, so the EVENTS are pinned along with the timing — see MARKER_SEAL_TRIGGERS.
+    if (row.tgtype !== tgtype) {
+      findings.push({
+        trigger,
+        fn,
+        problem: 'wrong-timing',
+        detail: `tgtype=${row.tgtype} is not ${tgtype} ("${expects}") — the timing or the events it fires on have changed`,
+      });
     }
     const want = canonical.get(fn);
     if (want !== undefined && row.prosrc !== want) {

@@ -246,7 +246,41 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    from the migration file itself, and owned by the table's owner — the pattern `b1 seals` and
    `t3c seals` already establish, applied to the one table they do not cover.
 
-10. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (25 probes):
+10. **CODEX ROUND 5 (three P1s on `42a1903`) — two correct and fixed, one contested with evidence
+   and its failure mode handled anyway.**
+
+   **(a) THE SEAL VERIFIER READ TWO BITS OF `tgtype`, NOT THE MASK.** It asked BEFORE-vs-AFTER and
+   row-vs-statement but not WHICH events fire the trigger, so a restore that recreated the insert
+   gate under the same name, function, body, owner and enablement but as `BEFORE UPDATE` passed
+   while direct marker INSERTs were accepted again. The exact value is now pinned (7 / 27 / 34) and
+   asserted against a live database rather than trusted to arithmetic.
+
+   **(b) THE MARKER WAS COMMITTED OUTSIDE THE VERIFICATION'S BOUNDARY.** The report describes the
+   register during `ops.run`; the marker was written in a later, separate transaction. The step's
+   advisory lock fences other copies of ITSELF, not an old release's relay — the very writer this
+   unit exists because of. In that window a pre-4c-ii relay could rewrite the freshly rebuilt
+   generation with its v1 serializer and advance its checkpoint, leaving it stamped current and
+   caught-up while the read path served stale-shaped rows, and the PERMANENT marker would skip the
+   repair that fixes it forever. The re-check and the marker write are now ONE transaction holding
+   the lock those writers DO take (`ProjectEventStream … FOR UPDATE` per project, ascending id so
+   two cannot deadlock) from the re-check through COMMIT. It refuses CORRUPTION, not activity: a
+   concurrent post-4c-ii relay leaves the projection `lagging` or `current-match` and the marker is
+   written, so an ordinary rolling deploy is unaffected; only wrong-shaped rows refuse, as
+   `concurrent-corruption`, with no marker and a non-zero exit so the next start repairs.
+
+   **(c) `pg_control_system()` WAS REPORTED AS SUPERUSER/pg_monitor-ONLY. IT IS NOT, ON THIS
+   POSTGRESQL — MEASURED.** All four `pg_control_*` functions carry a NULL `proacl` (the default,
+   `EXECUTE` to `PUBLIC`) on 16.13, `has_function_privilege('public', …)` is true, and a login role
+   with no superuser attribute and no role memberships reads `system_identifier` successfully; the
+   documentation's "restricted to superusers" note does not match the catalog on this version, and
+   `pg_database` is world-readable regardless. The premise is contested with that evidence, pinned
+   by a probe that asserts it against the live server so a future version that DOES restrict it
+   fails there. The failure mode it describes is nevertheless HANDLED rather than left to crash: a
+   deployment that deliberately revokes the privilege now gets the named `system-identity-unreadable`
+   refusal carrying the exact one-line GRANT — never a swallowed check, because a permission this
+   step cannot obtain must not become a way to skip it.
+
+11. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (28 probes):
    the vacuity itself (a zero-project report satisfies every success field), each identity refusal,
    the verified repair, marker idempotence, identity enforced WITH the marker set, a non-verified
    report leaving NO marker and the next start succeeding, the unserialized generation collision

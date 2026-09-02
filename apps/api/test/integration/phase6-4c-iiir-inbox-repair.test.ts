@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { PrismaClient } from '@prisma/client';
@@ -18,6 +18,7 @@ import {
   readIdentityConfig,
   runInboxRepairStep,
   SYSTEM_IDENTITY_ENV,
+  readDatabaseIdentity,
   singleConnectionUrl,
   verifyReport,
 } from '../../src/platform/projections/inbox-repair';
@@ -65,6 +66,8 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
   let liveDatabaseOid: string;
 
   const API_DIR = resolve(__dirname, '../..');
+  /** A throwaway login role for the deployment-role probe — created and dropped by that test. */
+  const UNPRIV_ROLE = 'phase6_4c_iiir_probe_role';
 
   beforeAll(async () => {
     t = await createTestApp();
@@ -99,6 +102,15 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
   });
   beforeEach(async () => {
     await clearMarkers();
+  });
+  /**
+   * Two probes here deliberately UNSEAL the shared database (that is what they are for). A failure
+   * inside one used to leave it unsealed, and every later probe in the file then failed for a
+   * reason that had nothing to do with it — one honest failure reported as five. The seals are
+   * therefore restored after EVERY probe, unconditionally, so each starts from the sealed state.
+   */
+  afterEach(async () => {
+    if (!(await verifyMarkerSeals(single as never)).sealed) await restoreMarkerSeals();
   });
 
   /** The marker is DB-sealed against DELETE, so a probe reset cannot simply delete it — that is the
@@ -139,7 +151,11 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     ];
     for (const pattern of groups) {
       const statements = [...sql.matchAll(pattern)].map((m) => m[0].replace(/;$/u, ''));
-      expect(statements.length).toBe(MARKER_SEAL_TRIGGERS.length);   // never a silently partial restore
+      // A plain throw, never `expect`: this runs in cleanup, and an assertion failure here would
+      // abandon the restore half-done and leave the shared database unsealed for every later probe.
+      if (statements.length !== MARKER_SEAL_TRIGGERS.length) {
+        throw new Error(`4c-iii-r restore: matched ${statements.length} of ${MARKER_SEAL_TRIGGERS.length} statements for ${pattern}`);
+      }
       for (const statement of statements) await single.$executeRawUnsafe(statement);
     }
   };
@@ -461,6 +477,156 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
       await restoreMarkerSeals();
       await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
     }
+  });
+
+  // ── The three Codex findings on `42a1903` ────────────────────────────────────────────────────
+
+  it('R5-F1 — the seal verifier pins the EXACT tgtype, so a same-name trigger on the wrong EVENT is caught', async () => {
+    // The expected masks are asserted against the LIVE database rather than trusted to arithmetic:
+    // if a future migration changes a trigger's events, this fails here rather than silently
+    // pinning the wrong number.
+    const live = await single.$queryRaw<Array<{ tgname: string; tgtype: number }>>`
+      SELECT t.tgname, t.tgtype FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+       WHERE c.relname = 'OutboxOperatorAction' AND NOT t.tgisinternal`;
+    for (const { trigger, tgtype } of MARKER_SEAL_TRIGGERS) {
+      expect(live.find((r) => r.tgname === trigger)?.tgtype).toBe(tgtype);
+    }
+    expect((await verifyMarkerSeals(single as never)).sealed).toBe(true);
+
+    // The forgery the previous check could not see: the insert gate recreated with the same name,
+    // the same function, the same body, the same owner and enabled — but firing on UPDATE. Direct
+    // marker INSERTs are accepted again, and the old BEFORE/row-bit test passed it.
+    const [gate] = MARKER_SEAL_TRIGGERS;
+    try {
+      await single.$executeRawUnsafe(`DROP TRIGGER "${gate.trigger}" ON "OutboxOperatorAction"`);
+      await single.$executeRawUnsafe(
+        `CREATE TRIGGER "${gate.trigger}" BEFORE UPDATE ON "OutboxOperatorAction" FOR EACH ROW EXECUTE FUNCTION ${gate.fn}()`,
+      );
+      const wrongEvent = await verifyMarkerSeals(single as never);
+      expect(wrongEvent.sealed).toBe(false);
+      expect(wrongEvent.findings.map((x) => x.problem)).toContain('wrong-timing');
+      // and the seal really is off — the marker is insertable again
+      await single.$executeRawUnsafe(
+        `INSERT INTO "OutboxOperatorAction" ("id","action","operatorIdentity","reason") VALUES ('r5f1-forged',$1,'attacker','forged')`,
+        PHASE6_4C_IIIR_MARKER_ACTION,
+      );
+      expect(await markerCount()).toBe(1);
+    } finally {
+      await restoreMarkerSeals();
+      await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
+    }
+    expect((await verifyMarkerSeals(single as never)).sealed).toBe(true);
+  });
+
+  it('R5-F2 — a generation corrupted between the rebuild and the marker REFUSES, and writes no marker', async () => {
+    // The window the advisory lock cannot fence: a writer this step does not control — a pre-4c-ii
+    // relay is the case the whole unit exists for — rewrites the freshly rebuilt generation before
+    // the marker commits. The generation stays stamped current and caught-up, so nothing in the
+    // report notices, and the permanent marker would skip the repair that fixes it forever.
+    //
+    // Injected at exactly that seam through the `ops` the step is given: a real run, then damage.
+    // A fresh id per run, removed before the retry below: a fixed id makes a second consecutive run
+    // collide on the primary key, and a row left behind keeps that generation corrupt for every
+    // later probe in the file — one probe's litter becoming four probes' failures.
+    const staleRowId = `r5f2-stale-${Date.now()}`;
+    const sabotaged: ProjectionRebuildOperations = Object.create(ops);
+    sabotaged.run = async (params: Parameters<ProjectionRebuildOperations['run']>[0]) => {
+      const report = await ops.run(params);
+      const gen = await single.projectionGeneration.findFirst({
+        where: { consumer: DECISIONS_PROJECTION, projectId: f.projectA.id, status: 'active' },
+        select: { id: true },
+      });
+      // A stale-shaped row of the kind a v1 serializer leaves behind: present in the generation,
+      // absent from canonical. Written directly rather than by deleting, because the fixture's
+      // canonical set for this project may itself be empty — deleting from an empty set still
+      // MATCHES canonical, which is not the damage being modelled.
+      await single.$executeRawUnsafe(
+        `INSERT INTO "DecisionProjection" ("id","generationId","projectId","decisionId","status","dto","updatedAt")
+         VALUES ($3, $1, $2, $4, 'pending', '{"shape":"v1"}'::jsonb, now())`,
+        gen!.id, f.projectA.id, staleRowId, `${staleRowId}-decision`);
+      return report;
+    };
+
+    const outcome = await runInboxRepairStep(single, sabotaged, env);
+    expect(outcome.ok).toBe(false);
+    expect(outcome.action).toBe('refused');
+    expect(outcome.refusal?.code).toBe('concurrent-corruption');
+    expect(outcome.refusal?.message).toContain(f.projectA.id);
+    expect(await markerCount()).toBe(0);          // …and NOTHING was marked
+
+    // the next start, with the interfering writer gone, repairs and marks
+    await single.$executeRawUnsafe(`DELETE FROM "DecisionProjection" WHERE "id" = $1`, staleRowId);
+    const retry = await runInboxRepairStep(single, ops, env);
+    expect(retry.ok).toBe(true);
+    expect(retry.action).toBe('repaired');
+    expect(await markerCount()).toBe(1);
+  });
+
+  it('R5-F3 — the ordinary deployment role CAN read the cluster identity, and an unreadable one is NAMED not crashed', async () => {
+    // Codex reported pg_control_system() as superuser/pg_monitor-only. On this PostgreSQL it is
+    // not. Asserted as the OPERATIVE property — PUBLIC holds EXECUTE — rather than as
+    // `proacl IS NULL`: both the default ACL and an explicit grant satisfy it, so this states what
+    // actually decides the outcome and cannot pass merely because a database is pristine.
+    const [{ public_exec: publicExec }] = await single.$queryRaw<Array<{ public_exec: boolean }>>`
+      SELECT has_function_privilege('public', oid, 'EXECUTE') AS public_exec
+        FROM pg_proc WHERE proname = 'pg_control_system'`;
+    expect(publicExec).toBe(true);
+
+    // …and proven by USE, not only by the catalog: a login role with no superuser attribute and no
+    // role memberships reads the identity the step reads. Read-only — this probe never revokes a
+    // cluster-wide privilege, because that mutates catalog state every other suite shares and
+    // cannot be restored to its default afterwards.
+    await single.$executeRawUnsafe(`DROP ROLE IF EXISTS ${UNPRIV_ROLE}`);
+    await single.$executeRawUnsafe(`CREATE ROLE ${UNPRIV_ROLE} LOGIN PASSWORD 'probe'`);
+    try {
+      const [{ rolsuper }] = await single.$queryRawUnsafe<Array<{ rolsuper: boolean }>>(
+        `SELECT rolsuper FROM pg_roles WHERE rolname = $1`, UNPRIV_ROLE);
+      expect(rolsuper).toBe(false);
+      const members = await single.$queryRawUnsafe<Array<{ n: bigint }>>(
+        `SELECT count(*) AS n FROM pg_auth_members m JOIN pg_roles u ON u.oid = m.member WHERE u.rolname = $1`,
+        UNPRIV_ROLE);
+      expect(Number(members[0].n)).toBe(0);
+
+      const url = new URL(process.env.DATABASE_URL!);
+      url.username = UNPRIV_ROLE;
+      url.password = 'probe';
+      const asRole = new PrismaClient({ datasourceUrl: singleConnectionUrl(url.toString()) });
+      try {
+        const [{ system_identifier: seen }] = await asRole.$queryRaw<Array<{ system_identifier: bigint }>>`
+          SELECT system_identifier FROM pg_control_system()`;
+        expect(String(seen)).toBe(liveSystemIdentifier);
+      } finally {
+        await asRole.$disconnect();
+      }
+    } finally {
+      await single.$executeRawUnsafe(`DROP ROLE IF EXISTS ${UNPRIV_ROLE}`);
+    }
+
+    // The failure mode the finding describes is HANDLED rather than left to crash, for the
+    // deployment that DOES revoke it. Exercised over `readDatabaseIdentity` directly with a stub
+    // that simply throws: no catalog change, and no wrapping of the real Prisma client — wrapping
+    // it reaches through the proxy and was measured to break the step's session advisory lock and
+    // cascade into unrelated probes.
+    const denied = await readDatabaseIdentity({
+      $queryRaw: () => Promise.reject(new Error('permission denied for function pg_control_system')),
+    } as never);
+    expect(denied.ok).toBe(false);
+    if (denied.ok) throw new Error('unreachable');
+    expect(denied.refusal.code).toBe('system-identity-unreadable');
+    expect(denied.refusal.message).toMatch(/GRANT EXECUTE ON FUNCTION pg_control_system\(\)/u);
+    expect(denied.refusal.message).toContain('permission denied for function');
+    expect(denied.refusal.message).toContain('not optional');
+
+    // …and the real client reads it, through the same function the step uses
+    const live = await readDatabaseIdentity(single as never);
+    expect(live.ok).toBe(true);
+    if (!live.ok) throw new Error('unreachable');
+    expect(live.systemIdentifier).toBe(liveSystemIdentifier);
+    expect(live.databaseOid).toBe(liveDatabaseOid);
+
+    // and the real client on the same database still succeeds
+    const restored = await runInboxRepairStep(single, ops, env);
+    expect(restored.ok).toBe(true);
   });
 
   it('PROBE 3 — an anchor that names no project in the connected database ABORTS, and writes no marker', async () => {

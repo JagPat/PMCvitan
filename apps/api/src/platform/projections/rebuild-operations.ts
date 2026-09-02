@@ -194,9 +194,25 @@ export class ProjectionRebuildOperations {
    * path would actually serve can be 'corrupt'.
    */
   async diagnose(consumer: string, projectId: string): Promise<ConsumerDiagnosis> {
+    return this.prisma.$transaction((tx) => this.diagnoseIn(tx as Parameters<typeof this.diagnoseIn>[0], consumer, projectId));
+  }
+
+  /**
+   * The diagnosis, inside a transaction the CALLER owns.
+   *
+   * Extracted so a caller that must hold the freeze across more than one project — the deploy-time
+   * 4c-iii-r repair, which re-checks every project and writes its permanent marker in ONE
+   * transaction — can take those locks itself and keep them to the commit. `diagnose` above is
+   * unchanged in behaviour: it is this, in a transaction of its own.
+   */
+  async diagnoseIn(
+    tx: Prisma.TransactionClient,
+    consumer: string,
+    projectId: string,
+  ): Promise<ConsumerDiagnosis> {
     const spec = REBUILDABLE_PROJECTIONS[consumer];
     if (!spec) throw new Error(`${consumer} is not an operator-rebuildable projection`);
-    return this.prisma.$transaction(async (tx) => {
+    {
       // Freeze event allocation for this project (emitEvent locks this row FOR UPDATE to assign
       // stream positions). A project with no stream row has no events — nothing can race either.
       // Every projection's inputs are announced by an event, so this ONE lock covers every writer
@@ -220,7 +236,7 @@ export class ProjectionRebuildOperations {
       const expected = await spec.canonical(tx, projectId);
       const match = stableJson(stored) === stableJson(expected);
       return { state: match ? ('current-match' as const) : ('corrupt' as const), generation: gen.generation, ...positions };
-    });
+    }
   }
 
   /**

@@ -1263,6 +1263,8 @@ minimum below 1 is refused as a misconfiguration rather than honoured as an allo
 | `anchor-absent` | `…ANCHOR_PROJECT_ID` names no project here | **this is not the database this deploy is configured for** — check `DATABASE_URL` before changing the anchor |
 | `below-minimum` | fewer projects than configured | if projects were legitimately removed, lower the minimum; otherwise treat it as a wrong-database signal |
 | `rebuild-not-verified` | the rebuild ran but did not succeed for every project | the message NAMES the offending `project/consumer` pairs and their errors; fix the underlying cause and redeploy |
+| `concurrent-corruption` | the rebuild succeeded, but re-checking under the event-stream lock found a generation corrupt **again** before the marker could be committed | **something is still writing this register** — a process older than the drain fence is the expected cause. No marker was written. Stop every pre-4c-ii process and redeploy; the next start repairs and marks |
+| `system-identity-unreadable` | this deployment's role cannot execute `pg_control_system()` | grant exactly `GRANT EXECUTE ON FUNCTION pg_control_system() TO <role>;` as a superuser and redeploy. On PostgreSQL 16 the default already permits it (the function's ACL is the default `EXECUTE` to `PUBLIC`), so this means the privilege was deliberately revoked |
 
 Every refusal exits non-zero, so **the server does not start** and **no marker is written** — the
 next start retries. There is no state in which a failed repair records itself as done.
@@ -1273,6 +1275,19 @@ The step takes a session-level `pg_advisory_lock(640303041)` on its own single c
 reading the marker and holds it across check-marker → rebuild → verify → write-marker. Two
 replacement containers starting together are therefore exactly-once: the loser blocks, re-reads the
 marker under the lock, and skips. Rolling deploys and scaled replicas need no operator coordination.
+
+**That lock fences other copies of THIS step; it does not fence an old release's relay,** which
+knows nothing about it. So the marker is not written on the strength of a report describing an
+earlier moment: the re-check and the marker write are ONE transaction, and it holds the lock those
+writers *do* take — `ProjectEventStream … FOR UPDATE` per project, which `emitEvent` uses to
+allocate stream positions — from the re-check through to COMMIT, in ascending project id so two
+such transactions cannot deadlock. A generation found corrupt again there refuses as
+`concurrent-corruption` and writes no marker.
+
+What this refuses is corruption, not activity: a concurrent **post**-4c-ii relay that legitimately
+appends leaves the projection `lagging` or `current-match`, and neither withholds the marker — so
+an ordinary rolling deploy is unaffected. Only wrong-shaped rows, which is what a pre-4c-ii
+serializer writes, stop it.
 
 ### The marker is sealed — you cannot clear it by hand, and that is deliberate
 
@@ -1296,6 +1311,11 @@ makes PostgreSQL refuse all five ways of manufacturing or tampering with one:
 repair, on both success paths. It re-reads the three triggers and requires each to be PRESENT,
 ENABLED, executing its own canonical function body (read from the migration file itself, so the
 verifier cannot drift from what was installed) and owned by the table's owner.
+
+Each trigger's `pg_trigger.tgtype` is pinned to its **exact** value (7 / 27 / 34), not merely to its
+BEFORE and row/statement bits: a restore that recreated the insert gate under the same name,
+function, body, owner and enablement but as `BEFORE UPDATE` would otherwise pass while direct
+marker `INSERT`s were accepted again.
 
 This is here because installing the seals is a one-time event while trusting the marker happens on
 every start. `prisma migrate deploy` proves the LEDGER is complete, not that the guards enforce:
