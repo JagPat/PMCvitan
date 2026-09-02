@@ -13,10 +13,10 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: in_review
-work_item: phase-6-task-4c-iii-r
+task_state: merged
+work_item: none
 reviewed_merge: 94cf3af
-open_pr: OPEN_PR_PLACEHOLDER
+open_pr: none
 next_task: phase-6-task-4c-iv
 blocking_directive: none
 updated: 2026-09-02
@@ -144,11 +144,26 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    refusals come from THIS step), and is wired into the required `api` job and pinned by
    `scripts/ci-baseline-proof-wiring.test.mjs`. Operator documentation: `docs/RUNBOOK.md` §P64CIIIR.
 
-**WHAT THE NOW BLOCK SAYS, and why.** `task_state: in_review` with `open_pr` naming this PR and
-`blocking_directive: none` — `assessRunnerState` resolves `pr:<this PR>`, which is exactly true: the
-remediation is the open work item. Recording a directive here would be false twice over (the
-resolver refuses a directive from `in_review`, and there is nothing parked). On merge the STATUS fold
-of the NEXT landing advances `reviewed_merge` and opens 4c-iv on `next_task`.
+**WHAT THE NOW BLOCK SAYS, and why it is the TERMINAL HANDOFF SHAPE rather than `in_review`.** The
+committed block is written while this PR is open and read again the instant it merges, and two
+executable invariants decide the shape between them. `assessPostMergeRunnerState` simulates the
+merge — the one thing merging changes for certain is that this PR stops being open — and REFUSES a
+block that leaves the runner no move, which rules out `in_review`/`open_pr: <this PR>`: that state
+is DEFINED by its open PR and strands the loop the moment the PR is gone. And a `merged` state may
+not carry an `open_pr` at all, because `assessRunnerState` consults `open_pr` ahead of `next_task`,
+so a merged handoff pointing at its own finished PR sends the runner to a closed PR — the #303 trap.
+
+So this lands `task_state: merged`, `work_item: none`, `open_pr: none`, `blocking_directive: none`,
+`next_task: phase-6-task-4c-iv`: the handoff shape, resolving `next_task:phase-6-task-4c-iv` both
+now and after the merge, so the loop opens 4c-iv and nothing re-enters the unit that just landed.
+`isHandoffShape` recognises a head PROPOSING this state as the landing it is, which is what keeps
+the hourly drift shepherd from reading `open_pr: none` on a live PR as drift — the same mechanism
+every folded landing before this one used.
+
+Recording a `blocking_directive` here would be false twice over — there is nothing parked, and the
+resolver schedules a directive only from `correction_required` or `in_progress`. `reviewed_merge`
+still names `94cf3af`, the 4c-iii merge: this landing's own merge SHA cannot be known while it is
+being written, and the next landing advances it.
 
 **THE LEDGER.** `Replaces: #514`, which is closed unmerged along with #513 — both were STATUS-only
 and neither carried the correction. #507 and #512 remain pending and must each be named by a later
