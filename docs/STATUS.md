@@ -182,14 +182,14 @@ resolver schedules a directive only from `correction_required` or `in_progress`.
 still names `94cf3af`, the 4c-iii merge: this landing's own merge SHA cannot be known while it is
 being written, and the next landing advances it.
 
-**THE LEDGER, READ FROM THE LABEL RATHER THAN FROM PROSE.** This unit declares `Replaces: none`.
-The replacement obligation the gate enforces is the repository-wide `review-replacement-required`
-LABEL, and no pull request currently carries it — so there is no outstanding obligation for this
-unit to name, and a declaration of `#514` was refused with exactly that verdict
-(`Replaces: #514 does not name a review unit awaiting replacement`). This corrects a claim carried
-forward from #514's own body: #507, #512, #513 and #514 are recorded there as pending, and the
-label ledger says otherwise. #513 and #514 were closed unmerged without the label — the same shape
-as #510, which the record already notes "was never labelled and carries none".
+**THE LEDGER, READ FROM THE LABEL RATHER THAN FROM PROSE.** This unit declares `Replaces: #513`,
+and it took two refusals to get there because the obligation is a repository-wide
+`review-replacement-required` LABEL, not the prose lineage a PR body carries. `Replaces: #514` was
+refused — `#514 does not name a review unit awaiting replacement` — because #514 was a CLAIMANT of
+that obligation, not a source of one, and closing it unmerged returned the obligation to **#513**,
+which the gate then named directly. The lesson is recorded rather than tidied away: a replacement
+declaration must be read off the label ledger, and #514's own body listing "#507 and #512 remain
+pending" is prose that no gate confirmed.
 
 **THE DUPLICATE.** #515 opened the same unit in parallel from the same base and is **closed** rather
 than left live: two claimants for one unit is the state the orchestrator forbids, and they conflict
