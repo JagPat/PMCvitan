@@ -13,16 +13,310 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: correction_required
+task_state: merged
 work_item: none
 reviewed_merge: 94cf3af
 open_pr: none
 next_task: phase-6-task-4c-iv
-blocking_directive: phase-6-4c-previous-release-drained
-updated: 2026-09-01
+blocking_directive: none
+updated: 2026-09-02
 ```
 
-### The drain directive STANDS. JagPat's reported observation narrows it but does not discharge it.
+### The drain directive is CLEARED — on JagPat's DIRECT fleet-drain attestation, 2026-09-02
+
+**THE ATTESTATION, QUOTED VERBATIM.** On 2026-09-02, in the working session, JagPat stated:
+
+> The API application whose container was replaced is the only place a PMC Vitan process
+> runs—there is no other application or additional replica—so no process older than 5fcc2a58 is
+> running or claiming deliveries.
+
+**This is the enumerated condition itself, stated directly by the operator, and nothing else is
+load-bearing.** It is not an inspection relayed as a declaration (the #502 fault), not a selection
+in an agent-authored prompt (the #501 fault), and not an observation of something adjacent to the
+condition from which the condition is inferred (the #510 fault, twice). It names the one fact this
+repository cannot see — that the replaced application is the only place a PMC Vitan process runs —
+and draws the conclusion the directive requires in its own terms. The repository-side facts recorded
+below (the four process classes are ONE process class in code; `syncConsumerCatalog` asserts the v2
+catalog so a pre-4c-ii process cannot restart) remain true and remain INFORMATIVE; they are not what
+clears the directive and are not cited as if they were.
+
+**A FALSE ATTRIBUTION IN THE #511 RECORD IS CORRECTED HERE, on JagPat's instruction.** The section
+that follows this one — merged as #511 — quoted an earlier Coolify observation ("Coolify shows API
+deployment h13xhn… successfully deployed 94cf3af … the previous container was stopped and
+removed") and attributed it to JagPat as his own report, adding that "its provenance is sound".
+**That attribution was false and is withdrawn.** The observation's author is NOT established as the
+operator, and this record does not now assert who authored it. The text is retained in that section
+as the record of what was relayed, marked as no longer attributed and no longer load-bearing. The
+ancestry verification that section performed on the commits the observation named
+(`git merge-base --is-ancestor 5fcc2a58 94cf3af` and `… adddb20`, both exit 0) is a repository fact
+and stands on its own; it never depended on who reported the deployment. This is the THIRD time an
+agent has recorded a Coolify observation as the operator's own — #502, then #510/#511 — and the file
+now says so in plain terms rather than letting the correction hide in a diff.
+
+**WHAT THIS CLEARS.** `phase-6-4c-previous-release-drained` is cleared: it no longer appears in the
+Now block, its record below is marked CLEARED, and no drain question remains open. It discharges the
+ROLLOUT prerequisite only. **4c is not complete until 4c-v merges**, and neither 4c-iii's merge nor
+this clearance is the end of the task. Contractor-capture units 1–6 stay behind their own standing
+per-unit Board gate, untouched.
+
+**AND WHAT IT DOES NOT UNDO.** The attestation closes the exposure window FORWARD. It does not undo
+what a pre-4c-ii worker may have written during the window in which 4c-iii's enablement ran with the
+prerequisite unmet, and no claimant audit can establish what that was. So the remedy recorded at the
+4c-iii landing — rebuild `decisions.inbox` successfully for EVERY project, then have connected
+clients refresh — is still owed. **It is owed as WORK, and this PR is that work**, which is why the
+Now block names no directive: the correction is not parked waiting for anyone.
+
+### Unit 4c-iii-r — the post-drain remediation, DELIVERED HERE rather than recorded as a directive
+
+**WHY THIS IS A UNIT AND NOT A `blocking_directive`.** Two earlier landings tried to carry the
+remediation as a Now-block directive and both were refused, for the same reason each time. #512
+round 1: a prose "standing gate" cannot bind a resolver that parses only the Now YAML. #512 round 2
+and #513 round 1: a directive only the OPERATOR can clear parks the loop behind a human-only
+transition, which AGENTS.md's autonomy rule forbids — and the record itself had already named the
+machine-executable path, so calling it an "alternative" while keeping the human transition was not a
+resolution. The correct answer to "the loop must be able to clear this itself" is not a better
+directive. It is to DO THE WORK, and a directive whose whole content is one small correction the
+runner can perform is that correction wearing a hat. #513 and #514 were both STATUS-only paper and
+both closed unmerged; this landing carries the STATUS **and the code**, in one unit, so there is
+nothing left to hand off.
+
+**WHAT SHIPS.** A one-shot, deploy-time rebuild of `decisions.inbox` in `scripts/migrate.sh`, on
+BOTH success paths, after `prisma migrate deploy` and its seal verifications and before
+`node dist/main.js` starts — the COMPILED artifact
+`dist/platform/projections/inbox-repair.cli.js`, the same fail-closed pattern the preflights use
+(a missing artifact refuses the deploy).
+
+1. **EXACTLY ONCE ACROSS CONCURRENT REPLICA STARTS, by a lock, not by reading a marker** (#513
+   round 2, P1). Two replacement containers starting together can both read a marker as absent
+   before either writes it, and `ProjectionRebuilder` allocates `generation = max + 1` per
+   `(consumer, projectId)` inside its own transaction with NO cross-process serialization — so the
+   second insert violates `@@unique([consumer, projectId, generation])`, and across several projects
+   the failures can split so BOTH reports are non-`ok` and NEITHER start writes the marker. The step
+   therefore takes a SESSION-LEVEL `pg_advisory_lock(640303041)` on its own single connection
+   (`connection_limit=1`, so the session that takes the lock is the session that runs the rebuild)
+   BEFORE reading the marker, and holds it across check-marker → rebuild → verify → write-marker.
+   The loser blocks, re-reads under the lock, and skips. A failure leaves NO marker and exits
+   non-zero; the next start retries.
+
+2. **"SUCCEEDED", NOT "RAN"** (#512 round 2). `ProjectionRebuildOperations.run` catches per
+   `(project, consumer)` and CONTINUES, so a run can finish with one project's register unrepaired.
+   The criterion is the whole of it: exit 0, `ok: true`, `corruptAfter: 0`, `failures: 0`,
+   `results.length === projects`, and `projects` equal to the live `Project` count read under the
+   same lock. A refusal NAMES the offending pairs.
+
+3. **IDENTITY FROM OUTSIDE THE CONNECTION** (#513 rounds 1 and 2). Every success field is derived
+   from the result set, so an empty or wrong database returns `projects: 0, ok: true` and exits 0
+   having rebuilt nothing — the self-count compares two numbers from one connection. Two
+   deploy-configured variables close it: `PHASE6_4C_IIIR_ANCHOR_PROJECT_ID`, a production
+   `Project.id` that MUST exist in the connected database (ids are unguessable), and
+   `PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS`, a whole number ≥ 1 that `count(Project)` must meet. Both
+   are checked on EVERY start, marker or not, so a deploy later re-pointed cannot serve.
+
+   **APPLICABILITY IS THE DEFECT'S OWN PRECONDITION, READ FROM THE DATABASE.** The record made both
+   variables unconditionally required. Taken literally that refuses the FIRST deploy of a new
+   environment, whose database has no anchor id to configure — a gate that cannot be cleared — and
+   it equally refuses every harness that drives the real `migrate.sh` over a synthetic database. So
+   the step is schema-aware in the same way every other preflight in `migrate.sh` already is, and
+   asks the one question that decides whether the defect can exist here at all: **does this database
+   have any `decisions.inbox` projection generation?** NONE means nothing has ever served this
+   register (`DecisionProjection` rows are generation-scoped, and no migration creates a generation
+   on a fresh database — `20270810000000`'s repair inserts only inside a loop over generations that
+   already exist), so there is nothing a pre-4c-ii worker could have left: `not-applicable`, NO
+   marker, NO claimed repair, and a later start over a database that HAS been in service still
+   repairs in full. ONE OR MORE is a database in service, the only kind that can carry the defect:
+   both variables REQUIRED, an unset one ABORTS.
+
+   **That distinction is the load-bearing one, and it is why there is no allowance VALUE.** An
+   "explicit fresh-install allowance" expressed as a configured minimum of 0 would put the step's
+   own bypass back inside the configuration the identity check exists to distrust: a production
+   deploy carrying it would pass while repairing nothing, which is exactly the vacuity #513 round 2
+   refused. Nothing this step reads can be set to make it skip a database that has served the
+   register, and a minimum below 1 is refused as `minimum-invalid` rather than honoured.
+
+   **And it is why no sibling proof carries this step's configuration.** An earlier head here used
+   "does the database hold any project" as the discriminator, which is not the defect's precondition
+   (a project that has never been read has no generation to corrupt) and which forced the four
+   proofs that drive `migrate.sh` over a populated fixture to each export an anchor. That coupling
+   does not even work — `schedule-b1-baseline-proof.sh` plants `b1-proj` in some states and
+   `b1e-proj` in others, so one exported anchor is `anchor-absent` on the rest — and it would grow
+   with every future proof. Those four scripts are byte-identical to `main` again.
+
+4. **THE CLIENT REFRESH IS STRUCTURAL, not a step.** The rebuild finishes before the server accepts
+   connections; the container restart disconnects every client and `useApiSync` refreshes on socket
+   `connect`. No invalidation and no operator action.
+
+5. **THE MARKER IS SEALED AT POSTGRESQL** (Codex F2 on `44b2ad8`). The marker row AUTHORIZES every
+   later start to skip the repair, and `OutboxOperatorAction` carried no seal of any kind — no
+   append-only trigger, no truncate guard. The additive `20271125000000_phase6_4c_iiir_marker_seal`
+   refuses all four vectors: PROMOTION (`UPDATE … SET action = <the marker>` over any audit row,
+   the dangerous one — it needs no delete rights and yields a row indistinguishable from the real
+   thing, so the next deploy skips an UNREPAIRED database), MUTATION of a genuine marker,
+   DELETION, and TRUNCATE, which no row trigger sees. The seal is SCOPED: every other row in that
+   general audit table keeps its lifecycle, proven both ways. Its statement arm is registered in
+   `TRUNCATE_SEALS`, so no suite's sanctioned reset breaks. Operator guidance in §P64CIIIR: the
+   marker is not clearable by hand; re-run `projection:rebuild`, which is idempotent and needs no
+   marker.
+
+6. **IDENTITY IS ASSERTED BEFORE APPLICABILITY** (Codex F1 on `44b2ad8`). An earlier head asked
+   applicability first, so a CONFIGURED production deploy accidentally repointed at an empty or
+   never-served database created the schema, saw zero generations, and returned SUCCESS without
+   ever checking its anchor — `migrate.sh` then started the API against the wrong database, which
+   contradicted this step's own stated guarantee. Identity now runs first and costs nothing the
+   not-applicable branch exists to protect: a fresh environment and every `migrate.sh` harness are
+   UNCONFIGURED, so nothing is asserted for them. Only a deploy that has declared which database it
+   serves is held to that declaration.
+
+7. **CODEX ROUND 2 (three P1s on `bdf5d03`), all correct and all fixed.** **(a) FORGED CREATION.**
+   The seal handled only `UPDATE OR DELETE`, so an alternate writer on the application's own
+   database role could simply INSERT a marker row and the next start would skip the repair on an
+   unrepaired database — the cheapest forgery of all, and the one a mutation-only seal misses
+   completely. A BEFORE INSERT gate now admits a marker only inside a transaction that has set
+   `vitan.phase6_4c_iiir_repair` (a `SET LOCAL`, so it dies at COMMIT), which is what the step does
+   after its verified report. Stated honestly as a NAMED boundary rather than unforgeability: a
+   writer that sets the flag on purpose can still write one, exactly as the sanctioned reset
+   deliberately disables named seals — it converts forgery from an ordinary INSERT into an
+   explicit, auditable act. **(b) THE BASELINE PATH.** `20271125000000` was missing from
+   `migrate.sh`'s `ALWAYS_EXECUTE`, so on a P3005 `prisma db push` database the loop would resolve
+   it as applied WITHOUT running it — its whole content is raw SQL that db-push cannot reproduce —
+   and the repair, which runs at the end of that same path, would write a trusted marker onto a
+   database carrying none of the seals, with the generic enforcement verifier unable to notice
+   because it judges only triggers that EXIST. It is now left pending so the retried deploy really
+   executes it. **(c) THE MODULE BOUNDARY.** The step read the orgs-owned `Project` table directly
+   for both the population count and the anchor lookup. `OrgsParticipant`'s own contract states the
+   rule — not being read-encapsulated makes such a read representable, not legitimate — so both
+   facts now come from one owner-side `deploymentProjectIdentity`, over the cycle-exempt
+   participant channel `platform` ALREADY declares in its manifest. It counts every project row and
+   asks only that the anchor EXISTS, because this is an identity question, not an authority one:
+   archiving a project must not look like a wrong-database misconfiguration.
+
+8. **CODEX ROUND 3 (one P1 on `00e655f`), correct and fixed: THE ANCHOR IDENTIFIES THE DATASET,
+   NOT THE DATABASE.** A project id and a project count travel WITH the data, so a clone or a
+   `pg_dump`/`pg_restore` of production contains the same anchor project and at least the same
+   number of projects — every dataset check passes and the runner lets the API start against the
+   wrong database, which is precisely the realistic misconfiguration the guarantee claimed to
+   catch. A third required variable, `PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER`, is now checked
+   FIRST, against `pg_control_system().system_identifier`: that value is generated by `initdb`,
+   lives in the control file rather than in any table, and `pg_dump` does not carry it, so a
+   logical restore into another cluster has a different one and is refused where the anchor cannot
+   refuse it. **The residual limit is stated rather than implied** in the code, the runbook and
+   here: a BLOCK-LEVEL copy (snapshot restore, filesystem clone, physical replica) reproduces the
+   control file too and is not distinguishable from inside the database by anything readable. What
+   the check closes is the copy ordinary tooling makes. PROBE 2f simulates the clone exactly — the
+   anchor present and the count met, configured for another cluster — and is RED at `00e655f`
+   (`expected true to be false`: it passed); PROBE 2g proves the cluster check still runs with the
+   marker set; runner state F4 drives both through the real `migrate.sh`.
+
+9. **CODEX ROUND 4 (four P1s on `bee2ed9`), all correct and all fixed.** The head that carried
+   round 3's fix drew four further findings, and #517 reached the two-finding-bearing-head limit;
+   this landing is the gate-mandated replacement, carrying the whole unit with all four folded in.
+
+   **(a) A PARTIAL IDENTITY TUPLE WAS TREATED AS NO IDENTITY.** The not-applicable exit discarded
+   whatever identity WAS supplied, so a production deploy that kept its anchor and minimum but lost
+   the cluster identifier — with `DATABASE_URL` repointed at a fresh, empty, wrong database —
+   reported `not-applicable` and started the API against it. "Looks not-applicable" is exactly what
+   a wrong database looks like, so it cannot be what waives the checks. Nothing-set remains the
+   fresh-install exemption every harness relies on; anything-set is now a declaration honoured in
+   full, whatever the connected database looks like.
+
+   **(b) THE CLUSTER IS NOT THE DATABASE.** `system_identifier` is shared by every database in one
+   PostgreSQL cluster, so a `pg_restore` of production into a SIBLING database beside it carries the
+   same anchor, the same count AND the same identifier. The round-3 code selected
+   `current_database()` alongside the identifier and then never compared it — the claim was
+   cluster-scoped while the guarantee was database-scoped, and the runbook's "closes the copy
+   ordinary tooling makes" was overstated, since a sibling restore is exactly ordinary tooling. A
+   fourth required variable, `PHASE6_4C_IIIR_EXPECTED_DATABASE_OID`, is now compared against
+   `pg_database.oid` — the OID rather than the name, so restore-then-rename cannot impersonate the
+   original either. The BLOCK-LEVEL limit is unchanged and still stated: a snapshot or filesystem
+   clone of the whole cluster reproduces the control file and the catalog alike.
+
+   **(c) THE REBUILD STILL READ `Project` FROM PLATFORM.** Round 2 routed the identity COUNT through
+   `OrgsParticipant`, but `ProjectionRebuildOperations.run` then enumerated the same orgs-owned
+   table with its own `prisma.project.findMany` — the smaller read moved and the larger one stayed.
+   `run` now accepts owner-supplied ids; the deploy path reads `Project` exactly once, through its
+   owner, and the set the verification counts is provably the set the rebuild walks.
+
+   **(d) THE SEALS THEMSELVES WERE NEVER VERIFIED.** The repair SKIPS on a marker, and the marker
+   means something only because of `20271125000000`'s three triggers — but installing them is a
+   one-time event while trusting the marker happens on every start. A partial restore can drop one,
+   or hollow one with a `CREATE OR REPLACE FUNCTION` that keeps its identity, with every migration
+   still recorded and nothing for `migrate deploy` to re-run; the generic enforcement check reports
+   triggers it finds DISABLED, not triggers simply ABSENT, and `OutboxOperatorAction` carries no
+   constraints for it to notice. `migrate.sh` now runs `inbox-repair.cli.js seals` before the repair
+   on both success paths, requiring each trigger present, enabled, carrying the canonical body read
+   from the migration file itself, and owned by the table's owner — the pattern `b1 seals` and
+   `t3c seals` already establish, applied to the one table they do not cover.
+
+10. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (25 probes):
+   the vacuity itself (a zero-project report satisfies every success field), each identity refusal,
+   the verified repair, marker idempotence, identity enforced WITH the marker set, a non-verified
+   report leaving NO marker and the next start succeeding, the unserialized generation collision
+   released together under an explicit barrier, and the BARRIER-CONTROLLED CONCURRENT START of two
+   REAL processes — this suite takes the step's advisory lock itself, waits (condition-based, on
+   `pg_locks`, never a sleep) until BOTH children are observed WAITING on that exact lock, then
+   releases them together and asserts the terminal invariant: one `repaired` and one
+   `skipped-marker-present`, exactly one `projection.rebuild` invocation row, exactly ONE newly
+   activated generation per project, both exit 0. `scripts/phase6-4c-iiir-production-runner-proof.sh`
+   drives the REAL `migrate.sh` over SEVENTEEN states (fresh/empty · populated-but-never-served ·
+   in-service-and-unconfigured · wrong database · below minimum · minimum of zero ·
+   configured-and-correct · re-run · re-run re-pointed · a failed attempt that writes no marker and
+   is then retried · configured-but-never-served · the marker seals under hostile writes · a clone
+   in another CLUSTER · a restore into a SIBLING DATABASE on this one · a PARTIAL identity
+   declaration · a MISSING marker seal, with the same runner deploying once it is reinstalled ·
+   and a COUPLING mutation proving the refusals come from THIS step), and is wired into the
+   required `api` job and pinned by `scripts/ci-baseline-proof-wiring.test.mjs`. Each round-4
+   finding was reproduced RED by mutating its own fix back before it was accepted. Operator
+   documentation: `docs/RUNBOOK.md` §P64CIIIR.
+
+**WHAT THE NOW BLOCK SAYS, and why it is the TERMINAL HANDOFF SHAPE rather than `in_review`.** The
+committed block is written while this PR is open and read again the instant it merges, and two
+executable invariants decide the shape between them. `assessPostMergeRunnerState` simulates the
+merge — the one thing merging changes for certain is that this PR stops being open — and REFUSES a
+block that leaves the runner no move, which rules out `in_review`/`open_pr: <this PR>`: that state
+is DEFINED by its open PR and strands the loop the moment the PR is gone. And a `merged` state may
+not carry an `open_pr` at all, because `assessRunnerState` consults `open_pr` ahead of `next_task`,
+so a merged handoff pointing at its own finished PR sends the runner to a closed PR — the #303 trap.
+
+So this lands `task_state: merged`, `work_item: none`, `open_pr: none`, `blocking_directive: none`,
+`next_task: phase-6-task-4c-iv`: the handoff shape, resolving `next_task:phase-6-task-4c-iv` both
+now and after the merge, so the loop opens 4c-iv and nothing re-enters the unit that just landed.
+`isHandoffShape` recognises a head PROPOSING this state as the landing it is, which is what keeps
+the hourly drift shepherd from reading `open_pr: none` on a live PR as drift — the same mechanism
+every folded landing before this one used.
+
+Recording a `blocking_directive` here would be false twice over — there is nothing parked, and the
+resolver schedules a directive only from `correction_required` or `in_progress`. `reviewed_merge`
+still names `94cf3af`, the 4c-iii merge: this landing's own merge SHA cannot be known while it is
+being written, and the next landing advances it.
+
+**THE LEDGER — THIS UNIT REPLACES #516, THE HEAD THAT REACHED THE REVIEW-ROUND LIMIT.** #516
+carried this same unit and took two finding-bearing Codex heads (round 1: identity ordering + the
+unsealed marker; round 2: forged marker creation, the missing baseline-path install, and the orgs
+read boundary). At the limit the protocol closes the PR rather than pushing a third correction
+head, so #516 is closed unmerged and this is its replacement from current `main`, carrying the
+WHOLE unit with all five findings fixed. Nothing merged from #516, so "only the unresolved scope"
+is the entire unit. Its own ledger note is kept below because the lesson still applies.
+
+**THE EARLIER LEDGER LESSON, KEPT.** #516 declared `Replaces: #513`,
+and it took two refusals to get there because the obligation is a repository-wide
+`review-replacement-required` LABEL, not the prose lineage a PR body carries. `Replaces: #514` was
+refused — `#514 does not name a review unit awaiting replacement` — because #514 was a CLAIMANT of
+that obligation, not a source of one, and closing it unmerged returned the obligation to **#513**,
+which the gate then named directly. The lesson is recorded rather than tidied away: a replacement
+declaration must be read off the label ledger, and #514's own body listing "#507 and #512 remain
+pending" is prose that no gate confirmed.
+
+**THE DUPLICATE.** #515 opened the same unit in parallel from the same base and is **closed** rather
+than left live: two claimants for one unit is the state the orchestrator forbids, and they conflict
+directly (both add a step to `migrate.sh`). The difference that decided it is recorded on #515 and
+repeated here because it is the substance of the round-2 finding: #515 made the fresh-install case a
+CONFIGURED value (`EXPECTED_MIN_PROJECTS=0`, skipping the anchor), which is a bypass a production
+deploy can carry, and its five sibling proofs set it, so the step was never exercised there.
+Applicability decided from the database has no such value. #515's one real finding — that proofs
+which drive the real `migrate.sh` plant projects, so an unconfigured step would refuse them — IS
+carried here, and fixed at the root instead: the discriminator is the register's own service
+history, so those four scripts need no configuration and are byte-identical to `main`.
+
+### The #511 record — the directive STOOD at that landing; the observation's attribution is WITHDRAWN
 
 **THIS SECTION WAS FIRST WRITTEN AS A CLEARANCE AND IS WITHDRAWN BEFORE MERGING.** The withdrawal
 is the record, not a tidied-away draft: the same PR proposed `blocking_directive: none` on the
@@ -32,18 +326,20 @@ evidence that establishes something adjacent to the enumerated condition being a
 establishing the condition — and the third attempt is recorded here rather than deleted so the
 pattern is visible to whoever writes the fourth.
 
-**THE OPERATOR'S STATEMENT, QUOTED VERBATIM.** On 2026-09-01, in the working session, JagPat
-reported:
+**THE OBSERVATION THIS SECTION WAS BUILT ON — ATTRIBUTION WITHDRAWN 2026-09-02.** As merged in
+#511, this paragraph read "On 2026-09-01, in the working session, JagPat reported:" and the one
+after it asserted "Its provenance is sound … This is the operator reporting what the deployment
+console shows, in his own message." **JagPat has instructed that this attribution was false, and it
+is withdrawn.** The observation's author is not established as the operator and is not asserted
+here. The text is kept only as the record of what was relayed and what this section reasoned from:
 
 > Coolify shows API deployment h13xhn… successfully deployed 94cf3af, followed by mug9y2x…
 > deploying adddb20d; at 14:06:06 UTC the new API container started, and by 14:06:36 UTC the
 > previous container was stopped and removed.
 
-**Its provenance is sound, and that is worth stating separately from its sufficiency.** This is the
-operator reporting what the deployment console shows, in his own message. It is not an agent's
-inspection relayed as his declaration — the fault that cost #501 and #502 — and it is not a
-selection in an agent-authored prompt. Nothing below questions WHO said it. What follows is only
-about WHAT it says.
+Nothing in the clearance above depends on it. What follows in this section is the analysis as it was
+merged, retained because its repository-side conclusions (the ancestry checks, the one-process proof,
+the gap it correctly identified) are true independently of who reported the deployment.
 
 **WHAT IT ESTABLISHES.** For the one Coolify application it names: its previous container was
 stopped and removed at 14:06:36 UTC, thirty seconds after the new one started, and a removed
@@ -285,13 +581,15 @@ GO — this directive is a ROLLOUT ordering prerequisite, not a scope authorizat
 cleared by a STATUS commit rather than by asking for permission to proceed. Contractor-capture
 units 1–6 stay Board-gated — a SEPARATE gate the 4c sequence does not lift.
 
-### Directive `phase-6-4c-previous-release-drained` — **STANDS; narrowed 2026-09-01, not cleared**
+### Directive `phase-6-4c-previous-release-drained` — **CLEARED 2026-09-02 on JagPat's direct attestation**
 
-**STILL SET.** A third clearance attempt is recorded in the Now section above and WITHDRAWN before
-merging: JagPat's own reported observation of the deployment establishes the container lineage of
-one application, and the remainder of the enumerated condition was completed from the WITHDRAWN
-#502 inspection. The one sentence that would close it is written out there. The 2026-08-31
-restoration history follows in full.
+**CLEARED.** The clearance and its verbatim attestation are recorded at the top of the Now section.
+It was cleared by the one route its terms allow — the operator stating the enumerated condition
+directly, carried into a STATUS commit — after two withdrawn attempts (#502; #510/#511) had each
+rested on a Coolify observation recorded as the operator's own when it was not. The post-drain
+remediation the clearance does NOT discharge ships as unit 4c-iii-r in this same landing. The full
+history is kept below: the 2026-08-31 restoration, the withdrawn #502 text, and the #511 section
+above with its attribution withdrawn in place.
 
 #### The 2026-08-31 restoration, kept as the record
 

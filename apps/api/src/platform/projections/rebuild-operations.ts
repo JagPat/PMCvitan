@@ -233,6 +233,16 @@ export class ProjectionRebuildOperations {
     reason: string;
     projectId?: string;
     consumers?: string[];
+    /**
+     * The projects to rebuild, supplied by the module that OWNS `Project` (Codex F3 on `bee2ed9`).
+     *
+     * The operator CLI omits this and keeps the enumeration below, which is the pre-existing
+     * behaviour and is unchanged. The deploy-time 4c-iii-r step passes ids it obtained from
+     * `OrgsParticipant.deploymentProjectIdentity`, so that path reads the orgs-owned table once,
+     * through its owner, instead of routing the identity count through the participant and then
+     * re-reading the same table from platform a moment later.
+     */
+    projectIds?: readonly string[];
   }): Promise<RebuildRunReport> {
     const consumers = params.consumers ?? Object.keys(REBUILDABLE_PROJECTIONS);
     for (const c of consumers) {
@@ -240,9 +250,14 @@ export class ProjectionRebuildOperations {
         throw new Error(`unknown consumer ${c} (rebuildable: ${Object.keys(REBUILDABLE_PROJECTIONS).join(', ')})`);
       }
     }
-    const projects = params.projectId
-      ? await this.prisma.project.findMany({ where: { id: params.projectId }, select: { id: true } })
-      : await this.prisma.project.findMany({ select: { id: true }, orderBy: { id: 'asc' } });
+    if (params.projectIds && params.projectId) {
+      throw new Error('projectIds and projectId are alternatives; pass one or neither.');
+    }
+    const projects = params.projectIds
+      ? params.projectIds.map((id) => ({ id }))
+      : params.projectId
+        ? await this.prisma.project.findMany({ where: { id: params.projectId }, select: { id: true } })
+        : await this.prisma.project.findMany({ select: { id: true }, orderBy: { id: 'asc' } });
     if (params.projectId && projects.length === 0) throw new Error(`unknown project ${params.projectId}`);
 
     // The invocation record — BEFORE any rebuild work, so an interrupted run is still attributable.
