@@ -39,6 +39,9 @@
 #   F3. THE MARKER IS SEALED — the marker authorizes every later start to skip the repair, so
 #      FORGED CREATION, promotion, mutation, deletion and TRUNCATE are each refused by PostgreSQL,
 #      and the general audit table keeps its lifecycle.
+#   F4. A CLONE OF PRODUCTION — the dataset checks all PASS (the same anchor project, the same
+#      count, because those travel with the data) and the deploy is refused anyway, on the cluster
+#      `system_identifier` that `pg_dump` does not carry.
 #   G. COUPLING — with the step removed from a COPY of migrate.sh, state B is ACCEPTED. So a
 #      mutation that unwires the step fails this script.
 #
@@ -54,6 +57,9 @@ URL="$BARE?schema=public"
 PSQL="psql -v ON_ERROR_STOP=1 -X -q $BARE"
 API="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ANCHOR="p64ciiir-anchor"
+# The cluster this proof's scratch database lives on. Read live, so the CORRECT configuration is
+# always true here and the mismatch state can supply a deliberately wrong one.
+sysid() { $PSQL -tAc "SELECT system_identifier FROM pg_control_system()" | tr -d '[:space:]'; }
 FAIL=0
 
 cd "$API" || exit 1
@@ -150,7 +156,7 @@ printf '%s\n' "$OUT" | grep -q 'docs/RUNBOOK.md' && ok "and points at the runboo
 # ══ C. WRONG DATABASE ═════════════════════════════════════════════════════════════════════════
 say "C. configured for a DIFFERENT database — the anchor names no project here"
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID=some-other-production-project \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=1 sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=1 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — identity comes from OUTSIDE the connection" \
                  || { bad "migrate.sh accepted a wrong database"; printf '%s\n' "$OUT" | tail -25; }
 printf '%s\n' "$OUT" | grep -q 'anchor-absent' && ok "the refusal NAMES the absent anchor" || bad "the refusal did not name anchor-absent"
@@ -158,7 +164,7 @@ printf '%s\n' "$OUT" | grep -q 'anchor-absent' && ok "the refusal NAMES the abse
 
 say "C2. configured with a minimum the database cannot meet"
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=99 sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=99 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — a database missing most of its projects aborts" \
                  || bad "migrate.sh accepted a database below the configured minimum"
 printf '%s\n' "$OUT" | grep -q 'below-minimum' && ok "the refusal NAMES the clause" || bad "the refusal did not name below-minimum"
@@ -166,7 +172,7 @@ printf '%s\n' "$OUT" | grep -q 'below-minimum' && ok "the refusal NAMES the clau
 
 say "C3. configured with a minimum of ZERO — the vacuity, re-opened through configuration"
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=0 sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=0 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — a minimum an empty database satisfies is a misconfiguration" \
                  || bad "migrate.sh accepted a minimum of zero"
 printf '%s\n' "$OUT" | grep -q 'minimum-invalid' && ok "the refusal NAMES the clause" || bad "the refusal did not name minimum-invalid"
@@ -174,7 +180,7 @@ printf '%s\n' "$OUT" | grep -q 'minimum-invalid' && ok "the refusal NAMES the cl
 # ══ D. CONFIGURED AND CORRECT ═════════════════════════════════════════════════════════════════
 say "D. configured correctly — the repair RUNS, is verified, and the deploy proceeds"
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" = "0" ] && ok "migrate.sh exited 0 — the gate can be cleared" \
                 || { bad "migrate.sh refused a correctly configured repair (exit $RC)"; printf '%s\n' "$OUT" | tail -30; }
 printf '%s\n' "$OUT" | grep -q '"action": "repaired"' && ok "and the step reports REPAIRED" || bad "the step did not report repaired"
@@ -185,7 +191,7 @@ printf '%s\n' "$OUT" | grep -q '"action": "repaired"' && ok "and the step report
 # ══ E. RE-RUN ═════════════════════════════════════════════════════════════════════════════════
 say "E. the same runner again — the marker makes it a no-op"
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" = "0" ] && ok "migrate.sh exited 0" || { bad "the re-run exited $RC"; printf '%s\n' "$OUT" | tail -25; }
 printf '%s\n' "$OUT" | grep -q '"action": "skipped-marker-present"' && ok "and SKIPPED on the marker" || bad "the re-run did not skip"
 [ "$(rebuilds)" = "1" ] && ok "no second rebuild ran" || bad "a second rebuild ran despite the marker ($(rebuilds))"
@@ -193,7 +199,7 @@ printf '%s\n' "$OUT" | grep -q '"action": "skipped-marker-present"' && ok "and S
 
 say "E2. the marker does NOT excuse identity — the same repaired database, re-pointed"
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID=another-production-project \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=1 sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=1 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — a later misconfiguration cannot serve" \
                  || bad "a re-pointed deploy was accepted because the marker was already set"
 printf '%s\n' "$OUT" | grep -q 'anchor-absent' && ok "the refusal NAMES the absent anchor" || bad "the refusal did not name anchor-absent"
@@ -220,7 +226,7 @@ CREATE TRIGGER p64ciiir_fail BEFORE INSERT ON "ProjectionGeneration"
   FOR EACH ROW EXECUTE FUNCTION p64ciiir_fail();
 SQL
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — 'ran' is not 'succeeded'" \
                  || { bad "migrate.sh accepted a repair that failed for a project"; printf '%s\n' "$OUT" | tail -30; }
 printf '%s\n' "$OUT" | grep -q 'rebuild-not-verified' && ok "the refusal NAMES the criterion" || bad "the refusal did not name rebuild-not-verified"
@@ -232,7 +238,7 @@ DROP TRIGGER p64ciiir_fail ON "ProjectionGeneration";
 DROP FUNCTION p64ciiir_fail();
 SQL
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" = "0" ] && ok "the NEXT run succeeded — a failed attempt is retried, never skipped" \
                 || { bad "the retry after the repair still failed (exit $RC)"; printf '%s\n' "$OUT" | tail -30; }
 [ "$(markers)" = "1" ] && ok "and the marker is now set" || bad "the successful retry did not write the marker"
@@ -244,7 +250,7 @@ OUT="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)" || bad "could not re-est
 plant || exit 1
 # deliberately NOT `serve` — projects exist, the register never has
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID=some-other-production-project \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=1 sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=1 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — identity is asserted BEFORE applicability" \
                  || { bad "a configured deploy passed as not-applicable without checking its anchor"; printf '%s\n' "$OUT" | tail -20; }
 printf '%s\n' "$OUT" | grep -q 'anchor-absent' && ok "the refusal NAMES the absent anchor" || bad "the refusal did not name anchor-absent"
@@ -258,7 +264,7 @@ OUT="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)"; RC=$?
 say "F3. the repair marker is immutable at PostgreSQL — forge, edit, delete, truncate"
 serve || exit 1
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" = "0" ] && [ "$(markers)" = "1" ] && ok "the repair ran and wrote its marker" \
                 || { bad "could not establish a marker for state F3 (rc=$RC, markers=$(markers))"; printf '%s\n' "$OUT" | tail -20; }
 $PSQL >/dev/null 2>&1 <<SQL
@@ -291,6 +297,23 @@ SQL
   && ok "and the seal is PRECISE — the general audit table keeps its lifecycle" \
   || bad "an ordinary audit row could not be edited and deleted; the seal is too broad"
 [ "$(markers)" = "1" ] && ok "the marker survived every attempt" || bad "the marker did not survive ($(markers))"
+
+# ══ F4. A CLONE OF PRODUCTION ═════════════════════════════════════════════════════════════════
+say "F4. every DATASET check passes but the cluster is a different one — must ABORT"
+OTHER=$(( $(sysid) + 1 ))
+OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$OTHER" \
+       sh scripts/migrate.sh 2>&1)"; RC=$?
+[ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — a restore of production carries the anchor, not the cluster identity" \
+                 || { bad "a deploy configured for another cluster was accepted"; printf '%s\n' "$OUT" | tail -20; }
+printf '%s\n' "$OUT" | grep -q 'system-identity-mismatch' && ok "the refusal NAMES the clause" || bad "the refusal did not name system-identity-mismatch"
+printf '%s\n' "$OUT" | grep -q 'different PostgreSQL cluster' && ok "and says plainly that this is a different cluster" || bad "the refusal did not explain the cause"
+# …and it is PRECISE, not merely strict: the true identifier is accepted on the same database.
+OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" \
+       sh scripts/migrate.sh 2>&1)"; RC=$?
+[ "$RC" = "0" ] && ok "the SAME database with its true cluster identity is accepted" \
+                || { bad "the correct cluster identity was refused (exit $RC)"; printf '%s\n' "$OUT" | tail -20; }
 
 # ══ G. COUPLING ═══════════════════════════════════════════════════════════════════════════════
 say "G. coupling — with the step removed from a COPY, the unconfigured database is ACCEPTED"

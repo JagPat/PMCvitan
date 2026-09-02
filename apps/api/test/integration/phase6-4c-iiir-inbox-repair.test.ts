@@ -16,6 +16,7 @@ import {
   PHASE6_4C_IIIR_OPERATOR,
   readIdentityConfig,
   runInboxRepairStep,
+  SYSTEM_IDENTITY_ENV,
   singleConnectionUrl,
   verifyReport,
 } from '../../src/platform/projections/inbox-repair';
@@ -54,6 +55,7 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
   let single: PrismaClient;
   let ops: ProjectionRebuildOperations;
   let env: Record<string, string | undefined>;
+  let liveSystemIdentifier: string;
 
   const API_DIR = resolve(__dirname, '../..');
 
@@ -62,7 +64,16 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     f = await createTwoProjectFixture(t.prisma);
     single = new PrismaClient({ datasourceUrl: singleConnectionUrl(process.env.DATABASE_URL!) });
     ops = new ProjectionRebuildOperations(single as never, new ProjectionRebuilder(single as never));
-    env = { [ANCHOR_ENV]: f.projectA.id, [MINIMUM_ENV]: '1' };
+    // The cluster this suite is actually connected to — read once, so every configured probe
+    // carries a TRUE database identity and the mismatch probe can supply a false one deliberately.
+    const [{ system_identifier: live }] = await t.prisma.$queryRaw<Array<{ system_identifier: bigint }>>`
+      SELECT system_identifier FROM pg_control_system()`;
+    liveSystemIdentifier = String(live);
+    env = {
+      [ANCHOR_ENV]: f.projectA.id,
+      [MINIMUM_ENV]: '1',
+      [SYSTEM_IDENTITY_ENV]: liveSystemIdentifier,
+    };
     // Put the database in the IN-SERVICE shape the step's applicability turns on: a
     // `decisions.inbox` generation exists, which is the defect's precondition. Without this every
     // live probe below would correctly report `not-applicable` and prove nothing.
@@ -145,11 +156,19 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     expect(readIdentityConfig({}, true)).toMatchObject({ ok: false, refusal: { code: 'identity-unconfigured' } });
     const both = readIdentityConfig({}, true);
     expect(both.ok).toBe(false);
-    if (!both.ok) expect(both.refusal.message).toMatch(new RegExp(`${ANCHOR_ENV} and ${MINIMUM_ENV}`, 'u'));
+    if (!both.ok) {
+      // all three are named, so an operator sees the whole configuration in one refusal
+      for (const v of [ANCHOR_ENV, MINIMUM_ENV, SYSTEM_IDENTITY_ENV]) {
+        expect(both.refusal.message).toContain(v);
+      }
+    }
     expect(readIdentityConfig({ [MINIMUM_ENV]: '1' }, true)).toMatchObject({ ok: false, refusal: { code: 'identity-unconfigured' } });
     expect(readIdentityConfig({ [ANCHOR_ENV]: 'p' }, true)).toMatchObject({ ok: false, refusal: { code: 'identity-unconfigured' } });
+    // the DATABASE identity is required too — two of three is still unconfigured
+    expect(readIdentityConfig({ [ANCHOR_ENV]: 'p', [MINIMUM_ENV]: '1' }, true))
+      .toMatchObject({ ok: false, refusal: { code: 'identity-unconfigured' } });
     // blank is unset, not configured
-    expect(readIdentityConfig({ [ANCHOR_ENV]: '  ', [MINIMUM_ENV]: '1' }, true)).toMatchObject({ ok: false });
+    expect(readIdentityConfig({ [ANCHOR_ENV]: '  ', [MINIMUM_ENV]: '1', [SYSTEM_IDENTITY_ENV]: '1' }, true)).toMatchObject({ ok: false });
     // a database that never served the register has nothing to repair, so an unconfigured deploy is
     // not refused there — which is what keeps every migrate.sh harness free of this configuration
     expect(readIdentityConfig({}, false)).toEqual({ ok: true, config: null });
@@ -157,11 +176,16 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
 
   it('PROBE 2b — the minimum must be a whole number >= 1, so no configured value can become a skip', () => {
     for (const bad of ['0', 'x', '1.0', '1e9', '2 or 3', '-1']) {
-      expect(readIdentityConfig({ [ANCHOR_ENV]: 'p', [MINIMUM_ENV]: bad }, true))
+      expect(readIdentityConfig({ [ANCHOR_ENV]: 'p', [MINIMUM_ENV]: bad, [SYSTEM_IDENTITY_ENV]: '7' }, true))
         .toMatchObject({ ok: false, refusal: { code: 'minimum-invalid' } });
     }
-    expect(readIdentityConfig({ [ANCHOR_ENV]: 'p', [MINIMUM_ENV]: '3' }, true))
-      .toEqual({ ok: true, config: { anchorProjectId: 'p', expectedMinProjects: 3 } });
+    // and the database identity is validated with the same strictness
+    for (const bad of ['x', '7.0', '7e9', 'not-an-id']) {
+      expect(readIdentityConfig({ [ANCHOR_ENV]: 'p', [MINIMUM_ENV]: '1', [SYSTEM_IDENTITY_ENV]: bad }, true))
+        .toMatchObject({ ok: false, refusal: { code: 'system-identity-invalid' } });
+    }
+    expect(readIdentityConfig({ [ANCHOR_ENV]: 'p', [MINIMUM_ENV]: '3', [SYSTEM_IDENTITY_ENV]: '7' }, true))
+      .toEqual({ ok: true, config: { anchorProjectId: 'p', expectedMinProjects: 3, expectedSystemIdentifier: '7' } });
   });
 
   it('PROBE 2c — applicability comes from the DATABASE, not the configuration: a projectless database is not-applicable even when configured', async () => {
@@ -169,10 +193,10 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     // generation count, and it is consulted BEFORE the anchor, so a configured deploy over a
     // never-served database ends `not-applicable` — never a success it could hide behind. A
     // malformed value is still named there rather than ignored.
-    expect(readIdentityConfig({ [ANCHOR_ENV]: 'anywhere', [MINIMUM_ENV]: '5' }, false))
-      .toEqual({ ok: true, config: { anchorProjectId: 'anywhere', expectedMinProjects: 5 } });
+    expect(readIdentityConfig({ [ANCHOR_ENV]: 'anywhere', [MINIMUM_ENV]: '5', [SYSTEM_IDENTITY_ENV]: '7' }, false))
+      .toEqual({ ok: true, config: { anchorProjectId: 'anywhere', expectedMinProjects: 5, expectedSystemIdentifier: '7' } });
     // and a malformed value is still NAMED there rather than ignored
-    expect(readIdentityConfig({ [ANCHOR_ENV]: 'anywhere', [MINIMUM_ENV]: '0' }, false))
+    expect(readIdentityConfig({ [ANCHOR_ENV]: 'anywhere', [MINIMUM_ENV]: '0', [SYSTEM_IDENTITY_ENV]: '7' }, false))
       .toMatchObject({ ok: false, refusal: { code: 'minimum-invalid' } });
   });
 
@@ -201,8 +225,43 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     expect(await markerCount()).toBe(1);
   });
 
+  it('PROBE 2f — a CLONE of production is refused: the anchor and the count are copied with the data, the cluster identity is not', async () => {
+    // The realistic misconfiguration the anchor alone cannot catch: `DATABASE_URL` points at a
+    // restore of production, so the SAME anchor project exists and the count is met — every
+    // dataset check passes. Simulated exactly by keeping this database (anchor present, count met)
+    // and configuring the identifier of a DIFFERENT cluster, which is what a logical restore into
+    // another cluster produces: `system_identifier` is made by initdb, lives in the control file,
+    // and `pg_dump` does not carry it.
+    const anchorPresent = await t.prisma.project.findUnique({ where: { id: f.projectA.id }, select: { id: true } });
+    expect(anchorPresent).not.toBeNull();                       // the dataset checks WOULD pass…
+    expect(await liveProjects()).toBeGreaterThanOrEqual(1);
+
+    const otherCluster = String(BigInt(liveSystemIdentifier) + 1n);
+    const outcome = await runInboxRepairStep(single, ops, { ...env, [SYSTEM_IDENTITY_ENV]: otherCluster });
+    expect(outcome.ok).toBe(false);                             // …and it is refused anyway
+    expect(outcome.action).toBe('refused');
+    expect(outcome.refusal?.code).toBe('system-identity-mismatch');
+    expect(outcome.refusal?.message).toMatch(/different PostgreSQL cluster/u);
+    expect(await markerCount()).toBe(0);
+
+    // and the check is not merely strict: the TRUE identifier is accepted
+    const correct = await runInboxRepairStep(single, ops, env);
+    expect(correct.ok).toBe(true);
+    expect(correct.action).toBe('repaired');
+  });
+
+  it('PROBE 2g — the cluster identity is re-checked WITH the marker set, so a later repoint cannot serve', async () => {
+    await runInboxRepairStep(single, ops, env);
+    expect(await markerCount()).toBe(1);
+    const repointed = await runInboxRepairStep(single, ops, {
+      ...env, [SYSTEM_IDENTITY_ENV]: String(BigInt(liveSystemIdentifier) + 1n),
+    });
+    expect(repointed.ok).toBe(false);
+    expect(repointed.refusal?.code).toBe('system-identity-mismatch');
+  });
+
   it('PROBE 3 — an anchor that names no project in the connected database ABORTS, and writes no marker', async () => {
-    const outcome = await runInboxRepairStep(single, ops, { [ANCHOR_ENV]: 'no-such-project', [MINIMUM_ENV]: '1' });
+    const outcome = await runInboxRepairStep(single, ops, { ...env, [ANCHOR_ENV]: 'no-such-project' });
     expect(outcome.ok).toBe(false);
     expect(outcome.action).toBe('refused');
     expect(outcome.refusal?.code).toBe('anchor-absent');
@@ -212,7 +271,7 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
 
   it('PROBE 4 — a live project count below the configured minimum ABORTS, and writes no marker', async () => {
     const outcome = await runInboxRepairStep(single, ops, {
-      [ANCHOR_ENV]: f.projectA.id,
+      ...env,
       [MINIMUM_ENV]: String((await liveProjects()) + 1),
     });
     expect(outcome.ok).toBe(false);
@@ -237,7 +296,7 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     await t.prisma.projectionGeneration.deleteMany({ where: { consumer: DECISIONS_PROJECTION } });
     expect(await servedGenerations()).toBe(0);
 
-    const repointed = await runInboxRepairStep(single, ops, { [ANCHOR_ENV]: 'some-other-database', [MINIMUM_ENV]: '1' });
+    const repointed = await runInboxRepairStep(single, ops, { ...env, [ANCHOR_ENV]: 'some-other-database' });
     expect(repointed.ok).toBe(false);
     expect(repointed.action).toBe('refused');
     expect(repointed.refusal?.code).toBe('anchor-absent');
@@ -338,7 +397,7 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
   it('PROBE 6b — the identity check still runs WITH the marker set, so a re-pointed deploy cannot serve', async () => {
     await runInboxRepairStep(single, ops, env);
     expect(await markerCount()).toBe(1);
-    const repointed = await runInboxRepairStep(single, ops, { [ANCHOR_ENV]: 'another-database', [MINIMUM_ENV]: '1' });
+    const repointed = await runInboxRepairStep(single, ops, { ...env, [ANCHOR_ENV]: 'another-database' });
     expect(repointed.ok).toBe(false);
     expect(repointed.action).toBe('refused');
     expect(repointed.refusal?.code).toBe('anchor-absent');
@@ -435,7 +494,12 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
         new Promise<{ code: number; out: string }>((res, rej) => {
           const p = spawn(resolve(API_DIR, 'node_modules/.bin/tsx'), ['src/platform/projections/inbox-repair.cli.ts'], {
             cwd: API_DIR,
-            env: { ...process.env, [ANCHOR_ENV]: f.projectA.id, [MINIMUM_ENV]: '1' },
+            env: {
+              ...process.env,
+              [ANCHOR_ENV]: f.projectA.id,
+              [MINIMUM_ENV]: '1',
+              [SYSTEM_IDENTITY_ENV]: liveSystemIdentifier,
+            },
           });
           let out = '';
           p.stdout.on('data', (d) => { out += d; });
