@@ -64,7 +64,8 @@ const PINNED_PROOFS = [
     // excuses identity · F. a failed attempt writes no marker and is retried · G. coupling.
     states: ['A. FRESH/EMPTY', 'A2. POPULATED BUT NEVER SERVED', 'B. IN SERVICE + UNCONFIGURED',
              'C. WRONG DATABASE', 'C2.', 'C3.', 'D. CONFIGURED AND CORRECT', 'E. RE-RUN', 'E2.',
-             'F. A FAILED ATTEMPT', 'G. COUPLING'],
+             'F. A FAILED ATTEMPT', 'F2. CONFIGURED + NEVER SERVED', 'F3. THE MARKER IS SEALED',
+             'G. COUPLING'],
   },
 ];
 

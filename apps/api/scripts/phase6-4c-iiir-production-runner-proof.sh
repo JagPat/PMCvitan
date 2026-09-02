@@ -32,6 +32,13 @@
 #   F. FAILED ATTEMPT — a deliberately broken repair (the marker table made unwritable) must ABORT
 #      the deploy, leave NO marker, and the NEXT run must succeed. A failure that recorded itself
 #      would silently skip the repair forever.
+#   F2. CONFIGURED + NEVER SERVED — the Codex F1 case. A deploy that HAS declared which database it
+#      serves, pointed at one that never served the register, must ABORT on the anchor rather than
+#      pass as not-applicable: identity is checked on every start, and state A2 above is the branch
+#      for an UNCONFIGURED deploy only.
+#   F3. THE MARKER IS SEALED — the Codex F2 case. The marker authorizes every later start to skip
+#      the repair, so promotion, mutation, deletion and TRUNCATE are each refused by PostgreSQL, and
+#      the general audit table keeps its lifecycle.
 #   G. COUPLING — with the step removed from a COPY of migrate.sh, state B is ACCEPTED. So a
 #      mutation that unwires the step fails this script.
 #
@@ -229,6 +236,58 @@ OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
 [ "$RC" = "0" ] && ok "the NEXT run succeeded — a failed attempt is retried, never skipped" \
                 || { bad "the retry after the repair still failed (exit $RC)"; printf '%s\n' "$OUT" | tail -30; }
 [ "$(markers)" = "1" ] && ok "and the marker is now set" || bad "the successful retry did not write the marker"
+
+# ══ F2. CONFIGURED + NEVER SERVED ═════════════════════════════════════════════════════════════
+say "F2. a CONFIGURED deploy pointed at a database that never served the register — must ABORT"
+recreate
+OUT="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)" || bad "could not re-establish the schema for state F2"
+plant || exit 1
+# deliberately NOT `serve` — projects exist, the register never has
+OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID=some-other-production-project \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=1 sh scripts/migrate.sh 2>&1)"; RC=$?
+[ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — identity is asserted BEFORE applicability" \
+                 || { bad "a configured deploy passed as not-applicable without checking its anchor"; printf '%s\n' "$OUT" | tail -20; }
+printf '%s\n' "$OUT" | grep -q 'anchor-absent' && ok "the refusal NAMES the absent anchor" || bad "the refusal did not name anchor-absent"
+[ "$(markers)" = "0" ] && ok "and no marker was written" || bad "a marker was written despite the refusal"
+# …and the branch it guards still works for the case it exists for
+OUT="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)"; RC=$?
+[ "$RC" = "0" ] && ok "the same database UNCONFIGURED is still not-applicable — a first deploy is not walled off" \
+                || bad "an unconfigured deploy over a never-served database was refused"
+
+# ══ F3. THE MARKER IS SEALED ══════════════════════════════════════════════════════════════════
+say "F3. the repair marker is immutable at PostgreSQL — forge, edit, delete, truncate"
+serve || exit 1
+OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 sh scripts/migrate.sh 2>&1)"; RC=$?
+[ "$RC" = "0" ] && [ "$(markers)" = "1" ] && ok "the repair ran and wrote its marker" \
+                || { bad "could not establish a marker for state F3 (rc=$RC, markers=$(markers))"; printf '%s\n' "$OUT" | tail -20; }
+$PSQL >/dev/null 2>&1 <<SQL
+INSERT INTO "OutboxOperatorAction"("id","action","operatorIdentity","reason") VALUES ('p64-ordinary','retry','op','ordinary');
+SQL
+refused() { # $1 = label, $2 = SQL that must be rejected, $3 = expected message fragment
+  out=$($PSQL -c "$2" 2>&1)
+  case "$out" in *"$3"*) ok "$1" ;; *) bad "$1 — got: $(printf '%s' "$out" | head -1)" ;; esac
+}
+refused "an ordinary audit row cannot be PROMOTED into the marker" \
+  "UPDATE \"OutboxOperatorAction\" SET action='projection.rebuild.phase6-4c-iii-r' WHERE id='p64-ordinary'" \
+  "cannot be re-keyed into the 4c-iii-r repair marker"
+refused "the genuine marker cannot be EDITED" \
+  "UPDATE \"OutboxOperatorAction\" SET reason='forged' WHERE action='projection.rebuild.phase6-4c-iii-r'" \
+  "repair marker is immutable"
+refused "the marker cannot be DELETED" \
+  "DELETE FROM \"OutboxOperatorAction\" WHERE action='projection.rebuild.phase6-4c-iii-r'" \
+  "never deleted"
+refused "TRUNCATE, which no row trigger sees, is refused" \
+  "TRUNCATE \"OutboxOperatorAction\"" \
+  "never truncated"
+$PSQL >/dev/null 2>&1 <<SQL
+UPDATE "OutboxOperatorAction" SET reason='edited' WHERE id='p64-ordinary';
+DELETE FROM "OutboxOperatorAction" WHERE id='p64-ordinary';
+SQL
+[ "$($PSQL -tAc "SELECT count(*) FROM \"OutboxOperatorAction\" WHERE id='p64-ordinary'" | tr -d '[:space:]')" = "0" ] \
+  && ok "and the seal is PRECISE — the general audit table keeps its lifecycle" \
+  || bad "an ordinary audit row could not be edited and deleted; the seal is too broad"
+[ "$(markers)" = "1" ] && ok "the marker survived every attempt" || bad "the marker did not survive ($(markers))"
 
 # ══ G. COUPLING ═══════════════════════════════════════════════════════════════════════════════
 say "G. coupling — with the step removed from a COPY, the unconfigured database is ACCEPTED"

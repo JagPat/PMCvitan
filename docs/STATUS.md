@@ -145,7 +145,28 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    connections; the container restart disconnects every client and `useApiSync` refreshes on socket
    `connect`. No invalidation and no operator action.
 
-5. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (13 probes):
+5. **THE MARKER IS SEALED AT POSTGRESQL** (Codex F2 on `44b2ad8`). The marker row AUTHORIZES every
+   later start to skip the repair, and `OutboxOperatorAction` carried no seal of any kind — no
+   append-only trigger, no truncate guard. The additive `20271125000000_phase6_4c_iiir_marker_seal`
+   refuses all four vectors: PROMOTION (`UPDATE … SET action = <the marker>` over any audit row,
+   the dangerous one — it needs no delete rights and yields a row indistinguishable from the real
+   thing, so the next deploy skips an UNREPAIRED database), MUTATION of a genuine marker,
+   DELETION, and TRUNCATE, which no row trigger sees. The seal is SCOPED: every other row in that
+   general audit table keeps its lifecycle, proven both ways. Its statement arm is registered in
+   `TRUNCATE_SEALS`, so no suite's sanctioned reset breaks. Operator guidance in §P64CIIIR: the
+   marker is not clearable by hand; re-run `projection:rebuild`, which is idempotent and needs no
+   marker.
+
+6. **IDENTITY IS ASSERTED BEFORE APPLICABILITY** (Codex F1 on `44b2ad8`). An earlier head asked
+   applicability first, so a CONFIGURED production deploy accidentally repointed at an empty or
+   never-served database created the schema, saw zero generations, and returned SUCCESS without
+   ever checking its anchor — `migrate.sh` then started the API against the wrong database, which
+   contradicted this step's own stated guarantee. Identity now runs first and costs nothing the
+   not-applicable branch exists to protect: a fresh environment and every `migrate.sh` harness are
+   UNCONFIGURED, so nothing is asserted for them. Only a deploy that has declared which database it
+   serves is held to that declaration.
+
+7. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (13 probes):
    the vacuity itself (a zero-project report satisfies every success field), each identity refusal,
    the verified repair, marker idempotence, identity enforced WITH the marker set, a non-verified
    report leaving NO marker and the next start succeeding, the unserialized generation collision

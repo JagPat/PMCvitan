@@ -1236,6 +1236,27 @@ reading the marker and holds it across check-marker → rebuild → verify → w
 replacement containers starting together are therefore exactly-once: the loser blocks, re-reads the
 marker under the lock, and skips. Rolling deploys and scaled replicas need no operator coordination.
 
+### The marker is sealed — you cannot clear it by hand, and that is deliberate
+
+Success is recorded as one `OutboxOperatorAction` row with
+`action = 'projection.rebuild.phase6-4c-iii-r'`, and every later start SKIPS the repair when it is
+present. That row is authorization, not audit trail, so `20271125000000_phase6_4c_iiir_marker_seal`
+makes PostgreSQL refuse all four ways of tampering with it: promoting another audit row into a
+marker (the dangerous one — it needs no delete rights and yields a row that looks genuine, so the
+next deploy skips an unrepaired database), editing a real marker, deleting one, and `TRUNCATE`,
+which no row trigger sees. Every other row in that table keeps the lifecycle it had.
+
+**If you genuinely need the repair to run again** — say a restore brought back a pre-repair
+register — do not try to delete the marker. Run the rebuild directly, which is idempotent and needs
+no marker:
+
+```
+pnpm --filter api projection:rebuild \
+  --operator <you@example.com> \
+  --reason "<why>" \
+  --consumer decisions.inbox
+```
+
 ### Running it by hand
 
 Only useful when investigating; the deploy already does it.

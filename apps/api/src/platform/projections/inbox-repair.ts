@@ -269,26 +269,18 @@ export async function runInboxRepairStep(
     base.anchorProjectId = config?.anchorProjectId ?? null;
     base.expectedMinProjects = config?.expectedMinProjects ?? null;
 
-    if (servedGenerations === 0) {
-      // NOT APPLICABLE, and decided from the DATABASE rather than from configuration — which is what
-      // keeps it out of reach of a misconfiguration. With no generation, nothing has ever served
-      // this register here: `DecisionProjection` rows are generation-scoped, so there is nothing the
-      // read path would serve and nothing a pre-4c-ii worker could have left behind. Not a vacuous
-      // success either — NO marker is written and no repair is claimed, so a later start over a
-      // database that HAS been in service still runs the repair in full.
-      //
-      // Asked BEFORE the identity assertions deliberately. A first deploy of a new environment has
-      // no project to anchor to, and a step that demanded one there would be a gate nothing could
-      // clear. The case this ordering gives up — a CONFIGURED deploy pointed at a database that has
-      // never served the register — ends with no marker and no claimed repair either way.
-      log('[4c-iii-r] not applicable: no decisions.inbox generation exists, so this database has '
-        + 'never served the register and carries nothing to repair');
-      return { ...base, ok: true, action: 'not-applicable', projectCount };
-    }
-
     if (config) {
-      // The identity assertions run on EVERY start, marker or not: a deploy later re-pointed at a
-      // different database must not serve just because the first one recorded a repair.
+      // THE IDENTITY ASSERTIONS RUN ON EVERY START — marker or not, applicable or not, and BEFORE
+      // the not-applicable exit below (Codex F1 on 44b2ad8). An earlier head asked applicability
+      // first, so a CONFIGURED production deploy accidentally repointed at an empty or never-served
+      // database returned success without ever checking the anchor: `migrate deploy` creates the
+      // schema, `servedGenerations` is 0, the step reports not-applicable, and `migrate.sh` starts
+      // the API against the wrong database. That contradicted this step's own stated guarantee.
+      //
+      // Ordering identity first costs nothing that the not-applicable branch exists to protect: a
+      // fresh environment and every `migrate.sh` harness are UNCONFIGURED, so `config` is null here
+      // and nothing is asserted. Only a deploy that HAS declared which database it serves is held
+      // to that declaration — which is exactly who should be.
       const anchor = await prisma.project.findUnique({
         where: { id: config.anchorProjectId },
         select: { id: true },
@@ -317,6 +309,23 @@ export async function runInboxRepairStep(
         `[4c-iii-r] identity ok: anchor ${config.anchorProjectId} present; `
         + `${projectCount} project(s) >= minimum ${config.expectedMinProjects}`,
       );
+    }
+
+    if (servedGenerations === 0) {
+      // NOT APPLICABLE, and decided from the DATABASE rather than from configuration — which is what
+      // keeps it out of reach of a misconfiguration. With no generation, nothing has ever served
+      // this register here: `DecisionProjection` rows are generation-scoped, so there is nothing the
+      // read path would serve and nothing a pre-4c-ii worker could have left behind. Not a vacuous
+      // success either — NO marker is written and no repair is claimed, so a later start over a
+      // database that HAS been in service still runs the repair in full.
+      //
+      // Reached only AFTER the identity assertions above, so a configured deploy pointed at a
+      // database it did not declare has already been refused. A first deploy of a new environment
+      // is unconfigured, has no project to anchor to, and passes here — which is the whole reason
+      // this branch exists.
+      log('[4c-iii-r] not applicable: no decisions.inbox generation exists, so this database has '
+        + 'never served the register and carries nothing to repair');
+      return { ...base, ok: true, action: 'not-applicable', projectCount };
     }
 
     const marker = await prisma.outboxOperatorAction.findFirst({

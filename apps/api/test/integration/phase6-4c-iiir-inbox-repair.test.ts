@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
+import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
 import { ProjectionRebuildOperations, type RebuildRunReport } from '../../src/platform/projections/rebuild-operations';
@@ -77,10 +78,11 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     await clearMarkers();
   });
 
-  /** Only this step writes with `operatorIdentity: 'deploy'`, so its rows are addressable without
-   *  disturbing any other suite's audit trail on the shared database. */
+  /** The marker is DB-sealed against DELETE, so a probe reset cannot simply delete it — that is the
+   *  point of the seal. It goes through the sanctioned reset, which disables the registered
+   *  statement seal for exactly that wipe and restores it in the same transaction. */
   const clearMarkers = async () => {
-    await t.prisma.outboxOperatorAction.deleteMany({ where: { operatorIdentity: PHASE6_4C_IIIR_OPERATOR } });
+    await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
   };
   /** A real rebuild, so the database carries a `decisions.inbox` generation exactly as one in
    *  service does — built through the production rebuilder, never a hand-written row. */
@@ -223,6 +225,77 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     expect(outcome.ok).toBe(false);
     expect(outcome.refusal?.code).toBe('identity-unconfigured');
     expect(await markerCount()).toBe(0);
+  });
+
+  // ── PROBE 2e: identity is asserted BEFORE applicability (Codex F1 on 44b2ad8) ────────────────
+  it('PROBE 2e — a CONFIGURED deploy pointed at a never-served database ABORTS rather than passing as not-applicable', async () => {
+    // The defect: with applicability asked first, a production deploy accidentally repointed at an
+    // empty or never-served database created the schema, saw zero generations, and returned SUCCESS
+    // without ever checking its configured anchor — so `migrate.sh` started the API against the
+    // wrong database while this step claimed identity is verified on every start.
+    await t.prisma.decisionProjection.deleteMany({});
+    await t.prisma.projectionGeneration.deleteMany({ where: { consumer: DECISIONS_PROJECTION } });
+    expect(await servedGenerations()).toBe(0);
+
+    const repointed = await runInboxRepairStep(single, ops, { [ANCHOR_ENV]: 'some-other-database', [MINIMUM_ENV]: '1' });
+    expect(repointed.ok).toBe(false);
+    expect(repointed.action).toBe('refused');
+    expect(repointed.refusal?.code).toBe('anchor-absent');
+    expect(await markerCount()).toBe(0);
+
+    // …and the branch it guards still works for the case it exists for: an UNCONFIGURED deploy over
+    // the same never-served database is not-applicable, so a first deploy is never walled off.
+    const fresh = await runInboxRepairStep(single, ops, {});
+    expect(fresh.ok).toBe(true);
+    expect(fresh.action).toBe('not-applicable');
+    expect(await markerCount()).toBe(0);
+
+    await putInService();
+  });
+
+  // ── PROBE 9: the marker is DATABASE-sealed (Codex F2 on 44b2ad8) ─────────────────────────────
+  it('PROBE 9 — the repair marker cannot be forged, edited, deleted or truncated away', async () => {
+    // The marker AUTHORIZES every later start to skip the repair, so it is not audit trail — and
+    // `OutboxOperatorAction` carried no seal at all. Each vector is asserted against live PG.
+    await runInboxRepairStep(single, ops, env);
+    expect(await markerCount()).toBe(1);
+    const marker = await t.prisma.outboxOperatorAction.findFirstOrThrow({
+      where: { action: PHASE6_4C_IIIR_MARKER_ACTION }, select: { id: true, reason: true },
+    });
+    const ordinary = await t.prisma.outboxOperatorAction.create({
+      data: { action: 'retry', operatorIdentity: 'someone', reason: 'an ordinary audit row' },
+      select: { id: true },
+    });
+
+    // 1. PROMOTION — the dangerous one: it needs no delete rights and yields a row that looks real,
+    //    so the next deploy would skip an UNREPAIRED database.
+    await expect(t.prisma.outboxOperatorAction.update({
+      where: { id: ordinary.id }, data: { action: PHASE6_4C_IIIR_MARKER_ACTION },
+    })).rejects.toThrow(/cannot be re-keyed into the 4c-iii-r repair marker/u);
+
+    // 2. MUTATION of a genuine marker.
+    await expect(t.prisma.outboxOperatorAction.update({
+      where: { id: marker.id }, data: { reason: 'rewritten' },
+    })).rejects.toThrow(/repair marker is immutable/u);
+
+    // 3. DESTRUCTION.
+    await expect(t.prisma.outboxOperatorAction.delete({ where: { id: marker.id } }))
+      .rejects.toThrow(/never deleted/u);
+
+    // 4. TRUNCATE, which no row trigger sees. Raw on purpose: routing it through the sanctioned
+    //    reset would disable the very seal under assertion.
+    await expect(t.prisma.$executeRawUnsafe('TRUNCATE TABLE "OutboxOperatorAction"'))
+      .rejects.toThrow(/never truncated/u);
+
+    // …and the seal is PRECISE, not merely strict: the general audit table keeps its lifecycle.
+    await t.prisma.outboxOperatorAction.update({ where: { id: ordinary.id }, data: { reason: 'edited' } });
+    await t.prisma.outboxOperatorAction.delete({ where: { id: ordinary.id } });
+
+    // the marker survived every attempt, byte for byte
+    const after = await t.prisma.outboxOperatorAction.findFirstOrThrow({
+      where: { action: PHASE6_4C_IIIR_MARKER_ACTION }, select: { id: true, reason: true },
+    });
+    expect(after).toEqual(marker);
   });
 
   // ── PROBE 5: the successful repair, its marker, and idempotence ──────────────────────────────

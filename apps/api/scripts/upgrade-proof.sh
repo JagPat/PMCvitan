@@ -4590,6 +4590,39 @@ assert "4c-iii: every other capability value still inserts, re-keys and deletes 
   "SELECT COUNT(*)::text FROM \"ProjectCapability\" WHERE \"projectId\" = 'p2' AND \"capability\" LIKE 'up4ciii-%';" \
   "0"
 
+# ── Phase 6 unit 4c-iii-r — the repair MARKER is sealed at PostgreSQL, over the migrated legacy DB ──
+# The marker AUTHORIZES every later start to skip the decisions.inbox repair, so it is not audit
+# trail: a forged one skips an UNREPAIRED database. `OutboxOperatorAction` carried no seal at all
+# before this unit, so each vector is executed here rather than assumed.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-iii-r: could not plant the marker fixture"; FAIL=1; }
+INSERT INTO "OutboxOperatorAction"("id","action","operatorIdentity","reason")
+VALUES ('up4ciiir-marker','projection.rebuild.phase6-4c-iii-r','deploy','a genuine verified repair'),
+       ('up4ciiir-plain','retry','op','an ordinary audit row');
+SQL
+assert_rejects "4c-iii-r: an ordinary audit row cannot be PROMOTED into the repair marker" \
+  "UPDATE \"OutboxOperatorAction\" SET action = 'projection.rebuild.phase6-4c-iii-r' WHERE id = 'up4ciiir-plain'" \
+  "cannot be re-keyed into the 4c-iii-r repair marker"
+assert_rejects "4c-iii-r: a genuine marker cannot be EDITED" \
+  "UPDATE \"OutboxOperatorAction\" SET reason = 'forged' WHERE id = 'up4ciiir-marker'" \
+  "repair marker is immutable"
+assert_rejects "4c-iii-r: a marker cannot be DELETED" \
+  "DELETE FROM \"OutboxOperatorAction\" WHERE id = 'up4ciiir-marker'" \
+  "never deleted"
+assert_rejects "4c-iii-r: TRUNCATE is refused, because a row trigger never fires for it" \
+  "TRUNCATE \"OutboxOperatorAction\"" \
+  "never truncated"
+assert "4c-iii-r: and the marker survived every one of those attempts, unedited" \
+  "SELECT reason FROM \"OutboxOperatorAction\" WHERE id = 'up4ciiir-marker';" \
+  "a genuine verified repair"
+# …and the seal is PRECISE: the general operator audit table keeps the lifecycle it had.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-iii-r: an ordinary audit row could not be edited/deleted"; FAIL=1; }
+UPDATE "OutboxOperatorAction" SET reason = 'edited' WHERE id = 'up4ciiir-plain';
+DELETE FROM "OutboxOperatorAction" WHERE id = 'up4ciiir-plain';
+SQL
+assert "4c-iii-r: every other operator action still updates and deletes freely" \
+  "SELECT COUNT(*)::text FROM \"OutboxOperatorAction\" WHERE id = 'up4ciiir-plain';" \
+  "0"
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller
