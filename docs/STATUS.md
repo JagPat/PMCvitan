@@ -182,19 +182,25 @@ resolver schedules a directive only from `correction_required` or `in_progress`.
 still names `94cf3af`, the 4c-iii merge: this landing's own merge SHA cannot be known while it is
 being written, and the next landing advances it.
 
-**THE LEDGER, AND THE DUPLICATE.** `Replaces: #514`, which is closed unmerged along with #513 —
-both were STATUS-only and neither carried the correction. #515 opened the same unit in parallel from
-the same base and is **closed** rather than left live: two claimants for one unit is the state the
-orchestrator forbids, and they conflict directly (both add a step to `migrate.sh`). The difference
-that decided it is recorded on #515 and repeated here because it is the substance of the round-2
-finding: #515 made the fresh-install case a CONFIGURED value (`EXPECTED_MIN_PROJECTS=0`, skipping
-the anchor), which is a bypass a production deploy can carry, and its five sibling proofs set it, so
-the step was never exercised there. Applicability decided from the database has no such value.
-#515's one real finding — that proofs which drive the real `migrate.sh` plant projects, so an
-unconfigured step would refuse them — IS carried here, and fixed at the root instead: the
-discriminator is the register's own service history, so those four scripts need no configuration and
-are byte-identical to `main`. #507, #512 and #513 remain pending and must each be named by a later
-merged unit.
+**THE LEDGER, READ FROM THE LABEL RATHER THAN FROM PROSE.** This unit declares `Replaces: none`.
+The replacement obligation the gate enforces is the repository-wide `review-replacement-required`
+LABEL, and no pull request currently carries it — so there is no outstanding obligation for this
+unit to name, and a declaration of `#514` was refused with exactly that verdict
+(`Replaces: #514 does not name a review unit awaiting replacement`). This corrects a claim carried
+forward from #514's own body: #507, #512, #513 and #514 are recorded there as pending, and the
+label ledger says otherwise. #513 and #514 were closed unmerged without the label — the same shape
+as #510, which the record already notes "was never labelled and carries none".
+
+**THE DUPLICATE.** #515 opened the same unit in parallel from the same base and is **closed** rather
+than left live: two claimants for one unit is the state the orchestrator forbids, and they conflict
+directly (both add a step to `migrate.sh`). The difference that decided it is recorded on #515 and
+repeated here because it is the substance of the round-2 finding: #515 made the fresh-install case a
+CONFIGURED value (`EXPECTED_MIN_PROJECTS=0`, skipping the anchor), which is a bypass a production
+deploy can carry, and its five sibling proofs set it, so the step was never exercised there.
+Applicability decided from the database has no such value. #515's one real finding — that proofs
+which drive the real `migrate.sh` plant projects, so an unconfigured step would refuse them — IS
+carried here, and fixed at the root instead: the discriminator is the register's own service
+history, so those four scripts need no configuration and are byte-identical to `main`.
 
 ### The #511 record — the directive STOOD at that landing; the observation's attribution is WITHDRAWN
 
