@@ -43,6 +43,12 @@ import { PHASE6_4C_IIIR_MARKER_ACTION } from './inbox-repair';
  *              by a role the table's owner does not control is not a seal. `pg_restore` sets
  *              ownership, which is precisely the event this verifier is for. Compared RELATIVELY
  *              to the table's own owner, as the B1 verifier does.
+ *   NO `WHEN`.  `pg_trigger.tgqual` is NULL. A `WHEN` predicate is not part of `tgtype`, the body,
+ *              the owner or the enablement, so `BEFORE INSERT … WHEN (false)` matches EVERY other
+ *              check here while the trigger never fires — measured, and the forged marker was
+ *              accepted while this verifier reported `sealed: true` (Codex round 11, P1). The
+ *              canonical triggers carry no predicate at all, so the expected value is exact rather
+ *              than a comparison: any predicate is a deviation.
  *
  * WHAT IS DELIBERATELY NOT ASKED. Nothing about rows: this verifies the guards, and the guards'
  * whole job is that the rows are already what they claim. In particular the presence or absence of
@@ -151,7 +157,7 @@ export function extractCanonicalMarkerBodies(migrationSql: string): Map<string, 
 export interface MarkerSealFinding {
   trigger: string;
   fn: string;
-  problem: 'absent' | 'disabled' | 'wrong-function' | 'wrong-timing' | 'body-replaced' | 'foreign-owner';
+  problem: 'absent' | 'disabled' | 'wrong-function' | 'wrong-timing' | 'conditional' | 'body-replaced' | 'foreign-owner';
   detail: string;
 }
 
@@ -178,6 +184,7 @@ export interface MarkerSealReport {
 
 interface TriggerRow {
   tgname: string;
+  has_when: boolean;
   tgenabled: string;
   proname: string;
   prosrc: string;
@@ -200,6 +207,7 @@ export async function verifyMarkerSeals(prisma: SealCatalogReader): Promise<Mark
     SELECT t.tgname,
            t.tgenabled,
            t.tgtype,
+           t.tgqual IS NOT NULL AS has_when,
            p.proname,
            p.prosrc,
            pg_get_userbyid(p.proowner) AS fn_owner,
@@ -236,6 +244,20 @@ export async function verifyMarkerSeals(prisma: SealCatalogReader): Promise<Mark
         fn,
         problem: 'wrong-timing',
         detail: `tgtype=${row.tgtype} is not ${tgtype} ("${expects}") — the timing or the events it fires on have changed`,
+      });
+    }
+    // A `WHEN` predicate is invisible to every check above — it lives in `tgqual`, not in `tgtype`,
+    // the function, the body, the owner or the enablement. `BEFORE INSERT … WHEN (false)` therefore
+    // reads as perfectly sealed while the trigger never fires once, which is worse than an absent
+    // trigger because it is silent. The canonical triggers carry no predicate, so this is exact.
+    if (row.has_when) {
+      findings.push({
+        trigger,
+        fn,
+        problem: 'conditional',
+        detail:
+          'the trigger carries a WHEN predicate, which this migration never installs — a predicate that '
+          + 'excludes the marker leaves every other property identical while the trigger never fires',
       });
     }
     const want = canonical.get(fn);

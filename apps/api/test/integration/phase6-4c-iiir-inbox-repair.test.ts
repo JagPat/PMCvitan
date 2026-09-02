@@ -1200,6 +1200,96 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     }
   });
 
+  // ── Codex round 11 — one P1, one P2 ──────────────────────────────────────────────────────────
+
+  const conditionalGate = async () => {
+    await single.$executeRawUnsafe(
+      `DROP TRIGGER "OutboxOperatorAction_4c_iiir_marker_insert_gated" ON "OutboxOperatorAction"`);
+    // Same name, same function, same body, same owner, same tgtype (7 — a WHEN clause is NOT part
+    // of the mask), enabled. The ONLY difference is a predicate that is never true.
+    await single.$executeRawUnsafe(
+      `CREATE TRIGGER "OutboxOperatorAction_4c_iiir_marker_insert_gated" BEFORE INSERT
+         ON "OutboxOperatorAction" FOR EACH ROW WHEN (false)
+         EXECUTE FUNCTION phase6_4c_iiir_marker_insert_gated()`);
+  };
+
+  it('R11-1 — a seal carrying a WHEN predicate is NOT sealed, and the gate it bypasses is real', async () => {
+    // The predicate lives in `pg_trigger.tgqual`, which no earlier check read. So this trigger
+    // matched the whole inventory — presence, enablement, function, body, owner AND the exact
+    // tgtype the round-5 finding pinned — while never firing once.
+    try {
+      await conditionalGate();
+
+      // the mask really is identical, so tgtype cannot be what catches this
+      const [row] = await single.$queryRaw<Array<{ tgtype: number; tgenabled: string; has_when: boolean }>>`
+        SELECT t.tgtype::int AS tgtype, t.tgenabled::text AS tgenabled, t.tgqual IS NOT NULL AS has_when
+          FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+         WHERE c.relname = 'OutboxOperatorAction'
+           AND t.tgname = 'OutboxOperatorAction_4c_iiir_marker_insert_gated'`;
+      expect(row).toMatchObject({ tgtype: 7, tgenabled: 'O', has_when: true });
+
+      // WHAT IT COSTS, demonstrated rather than asserted: the plain INSERT the gate exists to
+      // refuse is accepted, so a later start would skip the rebuild on a marker nothing wrote.
+      await single.$executeRawUnsafe(
+        `INSERT INTO "OutboxOperatorAction" ("id","action","operatorIdentity","reason")
+         VALUES ('r11-when-forged',$1,'attacker','forged through a WHEN(false) gate')`,
+        PHASE6_4C_IIIR_MARKER_ACTION);
+      expect(await markerCount()).toBe(1);
+
+      const report = await verifyMarkerSeals(single as never);
+      expect(report.sealed).toBe(false);
+      expect(report.findings).toEqual([expect.objectContaining({
+        trigger: 'OutboxOperatorAction_4c_iiir_marker_insert_gated',
+        problem: 'conditional',
+      })]);
+
+      // …and because the insert gate is forgery-relevant, the repair INVALIDATES what it found
+      const repaired = await repairMarkerSeals(single as never);
+      expect(repaired.sealed).toBe(true);
+      expect(repaired.markersInvalidated).toBe(1);
+      expect(await markerCount()).toBe(0);
+    } finally {
+      await restoreMarkerSeals();
+      await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
+    }
+  });
+
+  it('R11-2 — the migration REFUSES to adopt a marker whose seal carries a WHEN predicate', async () => {
+    const sql = readMarkerSealMigrationSql();
+    const guard = sql.slice(sql.indexOf('-- ── 0. DIAGNOSTIC-FIRST'), sql.indexOf('-- ── 1.'));
+    await runInboxRepairStep(single, ops, env);
+    expect(await markerCount()).toBe(1);
+    try {
+      await expect(single.$executeRawUnsafe(guard)).resolves.toBeDefined();   // baseline: adopted
+      await conditionalGate();
+      await expect(single.$executeRawUnsafe(guard))
+        .rejects.toThrow(/marker_insert_gated: the trigger carries a WHEN predicate/u);
+    } finally {
+      await restoreMarkerSeals();
+      await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
+    }
+  });
+
+  it('R11-3 — the seal migration is ONE explicit transaction, so a partial apply is unrepresentable', () => {
+    // Prisma DOCUMENTS that it does not wrap a migration in a transaction. Without an explicit
+    // one, a process dying between a DROP TRIGGER and its CREATE TRIGGER leaves the marker with its
+    // gate gone — a state the adoption test (correctly) refuses, so the retry cannot clear itself.
+    const sql = readMarkerSealMigrationSql();
+    const begin = sql.search(/^BEGIN;$/mu);
+    const commit = sql.search(/^COMMIT;$/mu);
+    expect(begin).toBeGreaterThan(-1);
+    expect(commit).toBeGreaterThan(begin);
+    // everything that MATTERS is inside it: the diagnostic and all three DROP/CREATE pairs
+    expect(sql.indexOf('-- ── 0. DIAGNOSTIC-FIRST')).toBeGreaterThan(begin);
+    for (const marker of ['\nCREATE OR REPLACE FUNCTION phase6_4c_iiir_', '\nDROP TRIGGER IF EXISTS "', '\nCREATE TRIGGER "']) {
+      expect(sql.indexOf(marker)).toBeGreaterThan(begin);
+      expect(sql.indexOf(marker)).toBeLessThan(commit);
+    }
+    expect(sql.lastIndexOf('EXECUTE FUNCTION phase6_4c_iiir_')).toBeLessThan(commit);
+    // and nothing follows the commit but whitespace
+    expect(sql.slice(commit + 'COMMIT;'.length).trim()).toBe('');
+  });
+
   it('PROBE 3 — an anchor that names no project in the connected database ABORTS, and writes no marker', async () => {
     const outcome = await runInboxRepairStep(single, ops, { ...env, [ANCHOR_ENV]: 'no-such-project' });
     expect(outcome.ok).toBe(false);

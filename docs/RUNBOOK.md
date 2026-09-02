@@ -1343,6 +1343,15 @@ BEFORE and row/statement bits: a restore that recreated the insert gate under th
 function, body, owner and enablement but as `BEFORE UPDATE` would otherwise pass while direct
 marker `INSERT`s were accepted again.
 
+**And `pg_trigger.tgqual` must be NULL** — no `WHEN` predicate. This is the least visible member of
+the inventory and the reason it is checked at all: a predicate is not part of `tgtype`, the
+function, the body, the owner or the enablement, so a trigger recreated as
+`BEFORE INSERT … WHEN (false)` matches *every* other check while never firing once. Measured on this
+schema, a forged marker was accepted through exactly such a gate while the verifier reported
+`sealed: true`. The canonical triggers carry no predicate, so the expected value is exact rather
+than a comparison: **any** predicate is a finding (`conditional`), in the runtime verifier and in
+the migration's adoption test alike.
+
 This is here because installing the seals is a one-time event while trusting the marker happens on
 every start. `prisma migrate deploy` proves the LEDGER is complete, not that the guards enforce:
 a database that has since been through a partial restore can be missing a trigger, or carry one
@@ -1397,6 +1406,8 @@ the table above:
 
 - PRESENT, and **`tgenabled = 'O'`** — `ALTER TABLE … DISABLE TRIGGER` leaves the row in place.
 - executing **its own** function, at the **exact** `tgtype` (7 for the gate, 27 for the row seal).
+- with **no `WHEN` predicate** (`tgqual IS NULL`) — see above; a predicate leaves every other
+  property identical while the trigger never fires.
 - with the function body's **MD5 matching the literal this migration installs** — `CREATE OR
   REPLACE FUNCTION` keeps the OID, name and signature while replacing what the function DOES. (The
   digests are pinned in the migration and recomputed from those same literals by
@@ -1409,6 +1420,13 @@ and bless it **permanently**. So it ABORTS instead, naming the rows it found AND
 how. A marker with no seals at all — one that predates this migration entirely — is the same
 refusal: it was gated by nothing, and the only legitimate writer of a marker is the repair step
 that ships with this file.
+
+**The migration is ONE explicit transaction** (`BEGIN` … `COMMIT`), so this abort is the only way
+it can leave a database changed — there is no partial apply to recover from. Prisma documents that
+it does not wrap a migration in a transaction, and without an explicit one a process dying between a
+`DROP TRIGGER` and its `CREATE TRIGGER` would leave a marker with its gate gone: a state the
+adoption test correctly refuses, which would strand the deployment behind a manual repair instead of
+letting it simply retry. (`20271120000000` records the same reasoning for the same reason.)
 
 **To clear that abort:** run `seals repair` (above). It reinstalls the seals and, because a
 forgery-relevant seal is failing, invalidates the markers in the same transaction — which is why an

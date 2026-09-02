@@ -32,6 +32,24 @@
 -- database that has already run the repair keeps its marker and simply becomes unable to lose or
 -- forge one.
 
+-- ONE TRANSACTION, EXPLICITLY (Codex round 11, P2). Prisma DOCUMENTS that it does not wrap a
+-- migration in a transaction, so without this the three DROP/CREATE pairs below commit one at a
+-- time. A process that dies between a `DROP TRIGGER` and its `CREATE TRIGGER` would then leave the
+-- marker present with its gate GONE — and the next deploy re-runs this file, whose adoption test
+-- now correctly refuses exactly that state, so the deployment would be stuck behind a manual
+-- `seals repair` rather than simply retrying. Wrapping it makes a partial apply unrepresentable:
+-- the retry either finds the seals as they were, or finds them whole.
+--
+-- This is this repository's own convention rather than a new idea — `20271120000000` records the
+-- same reasoning ("a seal whose indivisibility depends on undocumented behaviour loses it silently
+-- at the next upgrade, with no test failing") and two other migrations already do it. Measuring
+-- that the current Prisma happens to roll back is the wrong KIND of evidence; the file states the
+-- boundary it needs instead of inferring it.
+--
+-- The diagnostic stays FIRST inside that transaction, and still runs before any DDL: it reads the
+-- seals AS FOUND, and installing canonical ones first would destroy the very evidence it weighs.
+BEGIN;
+
 -- ── 0. DIAGNOSTIC-FIRST: a marker is evidence only if the seal was ENFORCING when it was written ──
 -- The gates BELOW gate future writes. A marker row already present when this migration runs was
 -- gated by whatever was installed at the time — which, on the first install, is nothing at all: such
@@ -81,8 +99,15 @@ BEGIN
   -- application's own database role, and this file would then replace the triggers with canonical
   -- versions and bless it permanently.
   --
+  -- A `WHEN` predicate is part of that inventory and is the least visible member of it (Codex
+  -- round 11, P1): it lives in `tgqual`, not in `tgtype`, the function, the body, the owner or the
+  -- enablement, so `BEFORE INSERT … WHEN (false)` matches every other check while the trigger never
+  -- fires once. Measured on this schema, a forged marker was accepted through exactly that gate
+  -- while the runtime verifier reported `sealed: true`. The canonical triggers carry no predicate,
+  -- so the expected value is exact rather than a comparison: any predicate is a deviation.
+  --
   -- So the test below is the WHOLE inventory the runtime verifier asks — present, enabled, right
-  -- function, exact tgtype, canonical body, owner matching the table's — over the two seals that
+  -- function, exact tgtype, NO WHEN predicate, canonical body, owner matching the table's — over the two seals that
   -- can be a forgery's route in. `phase6_4c_iiir_no_truncate` is deliberately excluded: it can only
   -- DESTROY markers, never manufacture one, so a marker that outlived a missing truncate guard is
   -- exactly as trustworthy as one that never met it, and refusing here would demand operator work
@@ -111,6 +136,10 @@ BEGIN
                WHEN t.tgtype::int <> e.tgtype
                  THEN e.fn || ': tgtype=' || t.tgtype::int || ' is not ' || e.tgtype
                         || ' - the timing or the events it fires on have changed'
+               WHEN t.tgqual IS NOT NULL
+                 THEN e.fn || ': the trigger carries a WHEN predicate, which this migration never'
+                        || ' installs - a predicate excluding the marker leaves every other property'
+                        || ' identical while the trigger never fires'
                WHEN md5(p.prosrc) <> e.body_md5
                  THEN e.fn || ': the function body is not the one this migration installs'
                WHEN pg_get_userbyid(p.proowner) <> pg_get_userbyid(c.relowner)
@@ -237,3 +266,5 @@ DROP TRIGGER IF EXISTS "OutboxOperatorAction_4c_iiir_no_truncate" ON "OutboxOper
 CREATE TRIGGER "OutboxOperatorAction_4c_iiir_no_truncate"
   BEFORE TRUNCATE ON "OutboxOperatorAction"
   FOR EACH STATEMENT EXECUTE FUNCTION phase6_4c_iiir_no_truncate();
+
+COMMIT;

@@ -394,7 +394,28 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    row seal, restoring the name-only test adopts a marker written through a disabled gate, and
    folding the truncate guard into the adoption set breaks the deliberate exclusion.
 
-16. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (45 probes):
+16. **CODEX ROUND 11 (one P1, one P2 on `cdf2af0`) — both correct.** **(a) P1: a `WHEN` predicate
+   defeated the whole seal inventory.** `pg_trigger.tgqual` is not part of `tgtype`, the function,
+   the body, the owner or the enablement, so a trigger recreated as `BEFORE INSERT … WHEN (false)`
+   matched EVERY check the verifier made while never firing once — the same class as the round-5
+   `tgtype` finding, one property further down. Measured before fixing: a forged marker was
+   INSERTED through such a gate while `verifyMarkerSeals` reported `sealed: true, findings: []`, so
+   a deploy would have skipped the rebuild on an unrepaired database. The canonical triggers carry
+   no predicate, so the expected value is exact rather than a comparison: any predicate is a
+   `conditional` finding, in the runtime verifier AND in the migration's adoption test, which had
+   the identical omission. Because the insert gate is forgery-relevant, `seals repair` invalidates
+   what it finds there without further change. **(b) P2: the migration was not one transaction.**
+   Prisma DOCUMENTS that it does not wrap a migration, so the three `DROP`/`CREATE` pairs committed
+   one at a time and a process dying between a drop and its create would leave a marker with its
+   gate gone — a state the round-10 adoption test now correctly refuses, which would strand the
+   deployment behind a manual `seals repair` instead of letting it retry. It is now an explicit
+   `BEGIN`/`COMMIT`, which is this repository's own recorded convention rather than a new idea:
+   `20271120000000` argues exactly this ("a seal whose indivisibility depends on undocumented
+   behaviour loses it silently at the next upgrade, with no test failing"), and two other migrations
+   already do it. Each fix was mutated back and RED-proven separately, reddening exactly its own
+   probe.
+
+17. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (48 probes):
    the vacuity itself (a zero-project report satisfies every success field), each identity refusal,
    the verified repair, marker idempotence, identity enforced WITH the marker set, a non-verified
    report leaving NO marker and the next start succeeding, the unserialized generation collision
