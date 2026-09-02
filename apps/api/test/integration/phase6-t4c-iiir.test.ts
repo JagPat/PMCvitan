@@ -74,6 +74,9 @@ describe('phase 6 unit 4c-iii-r — the deploy-time decisions.inbox rebuild (liv
   });
 
   it('refuses BEFORE any database access when either identity variable is unset', async () => {
+    // The shared integration database carries other suites' operator-action rows; what this probe
+    // asserts is that THIS step wrote none — a delta, never a global zero.
+    const before = await prisma.outboxOperatorAction.count();
     let touched = false;
     const rebuild = async (): Promise<RebuildRunReport> => { touched = true; throw new Error('must not be reached'); };
     for (const env of [
@@ -87,7 +90,7 @@ describe('phase 6 unit 4c-iii-r — the deploy-time decisions.inbox rebuild (liv
     const bad = await refusal(runPhase6T4cIiirStep(prisma, { env: { anchorProjectId: f.projectA.id, expectedMinProjects: 'one' }, rebuild }));
     expect(bad.code).toBe('identity-env-invalid');
     expect(touched).toBe(false);
-    expect(await prisma.outboxOperatorAction.count()).toBe(0);
+    expect(await prisma.outboxOperatorAction.count()).toBe(before);
   });
 
   it('refuses under the lock, with NO marker, when the anchor is absent or the floor exceeds the live count', async () => {
