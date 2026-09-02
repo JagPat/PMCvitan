@@ -105,7 +105,7 @@ by merging, which is the autonomy rule as written.
   `migrate.sh` over scratch databases.
 - Sibling proofs that run `migrate.sh`, each re-run alone after the change: schema-enforcement
   production-runner proof — PASSED; T45 production-runner proof — PASSED; schedule B1 baseline
-  proof — re-run ALONE after the change, its verdict appended to this packet in the head that opens the PR (an earlier run of all three IN PARALLEL failed two of them: this
+  proof — **PASSED** (re-run ALONE after the change; an earlier run of all three IN PARALLEL failed two of them: this
   unit's own proof holds the compiled artifact aside in STATE I, and the proofs share `dist/` —
   a parallel-run artefact, not a defect; every proof passes run alone).
 - `pnpm -s test:automation` — **299/299** (the CI wiring pin now covers the new proof step).

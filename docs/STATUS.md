@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4c-iii-r
 reviewed_merge: 94cf3af
-open_pr: none
+open_pr: 515
 next_task: phase-6-task-4c-iv
 blocking_directive: phase-6-4c-iv-post-drain-remediation
 updated: 2026-09-02
