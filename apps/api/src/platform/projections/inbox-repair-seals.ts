@@ -136,6 +136,11 @@ export interface MarkerSealFinding {
   detail: string;
 }
 
+export interface MarkerSealRepairReport extends MarkerSealReport {
+  /** markers removed because they could not be trusted through the window the seal was missing. */
+  markersInvalidated: number;
+}
+
 export interface MarkerSealReport {
   sealed: boolean;
   /** false when the table itself does not exist — on a deploy path that is a FAILURE, not a pass. */
@@ -262,7 +267,7 @@ export function summarizeMarkerSeals(report: MarkerSealReport): string {
  * `CREATE TRIGGER` — and it VERIFIES afterwards rather than assuming: a repair that cannot reach
  * a sealed state reports so and exits non-zero.
  */
-export async function repairMarkerSeals(prisma: PrismaService): Promise<MarkerSealReport> {
+export async function repairMarkerSeals(prisma: PrismaService): Promise<MarkerSealRepairReport> {
   const sql = readMarkerSealMigrationSql();
   // Only the seal DDL, never the migration's diagnostic: this deliberately does NOT re-ask the
   // install-time question, and one statement per call because PostgreSQL refuses multiple commands
@@ -272,6 +277,31 @@ export async function repairMarkerSeals(prisma: PrismaService): Promise<MarkerSe
     /DROP TRIGGER IF EXISTS "[^"]+" ON "OutboxOperatorAction";/gu,
     /CREATE TRIGGER "[^"]+"[\s\S]*?EXECUTE FUNCTION phase6_4c_iiir_\w+\(\);/gu,
   ];
+  // THE MARKER GOES FIRST (Codex on `8eea3ca`). This runs precisely because a seal was missing, and
+  // while it was missing any marker on this database could have been inserted, promoted or
+  // rewritten by anyone with the application's role. Restoring the seal AROUND such a row would
+  // make an unverifiable marker permanent evidence, and the next deploy would skip the rebuild on
+  // its word. So the marker is removed as part of the repair, and the next start must earn a new
+  // one by running the repair and verifying it. Nothing is lost: the marker is not the repair, and
+  // a rebuild is recompute-only.
+  //
+  // WHICH markers cannot be vouched for is decided by WHICH seal is broken, not by the fact that
+  // this command was run. A marker is untrustworthy exactly when the ROW SEAL — the trigger that
+  // makes it immutable and unforgeable-by-promotion — was missing, disabled or hollowed: that is
+  // the window in which it could have been inserted, promoted or rewritten. When the row seal is
+  // intact and some OTHER seal was lost (the TRUNCATE guard, say), the marker was written and held
+  // under a working seal throughout, and there is nothing to distrust.
+  //
+  // This distinction is not cosmetic: with the row seal intact PostgreSQL REFUSES the delete, so
+  // attempting it unconditionally makes the repair throw on exactly the databases it is meant to
+  // fix. Measured, by the production-runner proof's state F7.
+  const before = await verifyMarkerSeals(prisma);
+  const rowSealBroken = before.findings.some((f) => f.fn === 'phase6_4c_iiir_marker_sealed');
+  const removed = rowSealBroken
+    ? await prisma.$executeRawUnsafe(
+      `DELETE FROM "${MARKER_SEAL_TABLE}" WHERE "action" = $1`, PHASE6_4C_IIIR_MARKER_ACTION)
+    : 0;
+
   for (const pattern of groups) {
     const statements = [...sql.matchAll(pattern)].map((m) => m[0].replace(/;$/u, ''));
     if (statements.length !== MARKER_SEAL_TRIGGERS.length) {
@@ -283,5 +313,5 @@ export async function repairMarkerSeals(prisma: PrismaService): Promise<MarkerSe
     }
     for (const statement of statements) await prisma.$executeRawUnsafe(statement);
   }
-  return verifyMarkerSeals(prisma);
+  return { ...(await verifyMarkerSeals(prisma)), markersInvalidated: Number(removed) };
 }

@@ -350,7 +350,26 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    restore, and the project-set probe created its project before the step began, so no snapshot
    could have missed it. Both now prove the difference they claim.
 
-14. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (38 probes):
+14. **CODEX ROUND 9 (three P1s on `8eea3ca`) — all correct; the first overturns a judgment call
+   round 8 made deliberately.** **(a)** Round 8 allowed `lagging`/`blocked` to pass on the
+   MARKER-PRESENT path, reasoning that refusing would block healthy deploys. The reasoning about
+   refusing was right; treating them as a PASS was not. Both states are returned before a single row
+   is compared, so a legacy relay's rewrite plus one undelivered position reads as `lagging`, the
+   start skips, and the current relay then advances the checkpoint past that position as a `noop`
+   without refreshing the rows. The step now takes the third option: it REPAIRS. The rebuild is
+   recompute-only and idempotent, makes the generation `current-match` by construction, and writes
+   no second marker — so nothing is skipped on absent evidence and no deploy is deadlocked waiting
+   for a relay in the container being replaced. **(b)** `seals repair` preserved rows, so a marker
+   that lived through the window with no seal — insertable, promotable and rewritable by anyone
+   holding the app's role — was sealed around and then trusted. It now REMOVES any marker it cannot
+   vouch for; the next start earns a new one by repairing and verifying. **(c)** The migration's
+   pre-seal diagnostic aborted on ANY existing marker, so a restore or ledger repair that lost its
+   `_prisma_migrations` row while the triggers and a genuine marker survived would abort forever —
+   and the `DELETE` the message suggests is refused by the seal still installed. It now aborts only
+   when the marker exists AND the row seal does not, which is exactly the pre-migration state,
+   leaving the completed migration safely re-runnable.
+
+15. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (41 probes):
    the vacuity itself (a zero-project report satisfies every success field), each identity refusal,
    the verified repair, marker idempotence, identity enforced WITH the marker set, a non-verified
    report leaving NO marker and the next start succeeding, the unserialized generation collision

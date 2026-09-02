@@ -52,13 +52,28 @@
 DO $$
 DECLARE
   v_count BIGINT;
+  v_sealed BIGINT;
   v_sample TEXT;
 BEGIN
+  -- AND ONLY WHEN THE SEAL IS NOT ALREADY THERE (Codex on 8eea3ca). A marker that exists ALONGSIDE
+  -- an installed row seal was necessarily written under it — by the repair step, inside the
+  -- transaction that set the flag — so it is genuine and this file has nothing to object to. If
+  -- a restore or a ledger repair loses this migration's `_prisma_migrations` row while the triggers
+  -- and that marker survive, `migrate deploy` re-runs this file; without this test it would abort
+  -- forever, and the DELETE the message below suggests would itself be refused by the very seal
+  -- still installed. Asking about the seal makes the completed migration safely re-runnable, which
+  -- is what restore and partial-apply recovery need, while still refusing the pre-seal marker this
+  -- check exists for.
+  SELECT count(*) INTO v_sealed
+    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+   WHERE c.relname = 'OutboxOperatorAction' AND NOT t.tgisinternal
+     AND t.tgname = 'OutboxOperatorAction_4c_iiir_marker_sealed';
+
   SELECT count(*), COALESCE(string_agg("id" || ' @ ' || "at", ', ' ORDER BY "at"), '')
     INTO v_count, v_sample
     FROM (SELECT "id", "at" FROM "OutboxOperatorAction"
            WHERE "action" = 'projection.rebuild.phase6-4c-iii-r' LIMIT 5) AS s;
-  IF v_count > 0 THEN
+  IF v_count > 0 AND v_sealed = 0 THEN
     RAISE EXCEPTION
       'phase6-4c-iii-r: this database already carries % repair marker row(s) BEFORE the seal that '
       'makes a marker mean anything was installed (%). No legitimate marker can predate this '

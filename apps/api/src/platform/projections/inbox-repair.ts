@@ -444,11 +444,13 @@ export const VERIFY_TX_OPTIONS = { timeout: 120_000, maxWait: 60_000 } as const;
  * `snapshot` exists ONLY so a test can pass a deliberately stale set and show the difference; the
  * production caller never passes it.
  *
- * `corrupt` only. Unlike the post-rebuild check, `lagging` is ORDINARY here: this is a live system
- * between deploys, the previous release may have emitted events the relay has not applied, and a
- * lagging generation cannot be content-compared against a canonical set that already includes them.
- * Refusing on it would block healthy deploys. The stated limit: a generation lagging at this moment
- * is not verified this start, and is checked on the next one once the relay has caught it up.
+ * Two lists, because they mean different things. `corrupt` is a generation whose stored rows were
+ * COMPARED and did not match canonical. `unverified` is one `diagnoseIn` returned `lagging` or
+ * `blocked` for — states it reports before comparing anything, so they are the absence of evidence
+ * rather than evidence of soundness. An earlier head treated `unverified` as a pass on the
+ * marker-present path, which let a legacy relay's rewrite ride through: the rewrite plus one
+ * undelivered position reads as `lagging`, the start skips, and the current relay then advances the
+ * checkpoint past that position as a `noop` without refreshing the rows (Codex on `8eea3ca`).
  */
 export async function diagnoseCurrentProjects(
   prisma: PrismaClient,
@@ -456,18 +458,26 @@ export async function diagnoseCurrentProjects(
   orgs: Pick<OrgsParticipant, 'deploymentProjectIdentity'>,
   anchorProjectId: string,
   snapshot?: readonly string[],
-): Promise<string[]> {
-  const regressed: string[] = [];
+): Promise<{ corrupt: string[]; unverified: string[] }> {
+  const corrupt: string[] = [];
+  const unverified: string[] = [];
   await prisma.$transaction(async (tx) => {
     const ids = snapshot
       ?? (await orgs.deploymentProjectIdentity(tx as never, anchorProjectId)).projectIds;
     await lockActiveGenerationsForVerify(tx, DECISIONS_PROJECTION, ids);
     for (const projectId of [...ids].sort()) {
       const state = await ops.diagnoseIn(tx as never, DECISIONS_PROJECTION, projectId);
-      if (state.state === 'corrupt') regressed.push(`${projectId}/${DECISIONS_PROJECTION}`);
+      const named = `${projectId}/${DECISIONS_PROJECTION}`;
+      if (state.state === 'corrupt') corrupt.push(named);
+      // `lagging` and `blocked` are returned BEFORE a single stored row is compared, so neither is
+      // evidence that the register is sound — they are the ABSENCE of evidence, and the caller must
+      // not read them as a pass (Codex on `8eea3ca`).
+      else if (state.state !== 'current-match' && state.state !== 'none') {
+        unverified.push(`${named} (${state.state})`);
+      }
     }
   }, VERIFY_TX_OPTIONS);
-  return regressed;
+  return { corrupt, unverified };
 }
 
 /**
@@ -692,14 +702,14 @@ export async function runInboxRepairStep(
       // deploy's repair — so diagnosing the ids read at the top of THIS start is not enough: those
       // are a snapshot too. The set is re-read through its owner inside the transaction, and the
       // locks are taken over what it returns.
-      const regressed = await diagnoseCurrentProjects(
+      const { corrupt, unverified } = await diagnoseCurrentProjects(
         prisma, ops, orgs, (env[ANCHOR_ENV] ?? '').trim());
-      if (regressed.length > 0) {
+      if (corrupt.length > 0) {
         const refusal: Refusal = {
           code: 'marked-but-corrupt',
           message:
             `this database carries the 4c-iii-r marker (written ${marker.at.toISOString()}), but `
-            + `${regressed.length} generation(s) are corrupt again: ${regressed.join(', ')}. A `
+            + `${corrupt.length} generation(s) are corrupt again: ${corrupt.join(', ')}. A `
             + 'verified repair does not regress on its own — something is still writing this '
             + 'register, and a process older than the drain fence is the expected cause. The repair '
             + 'is NOT re-run here, because repairing underneath that writer would only mark the same '
@@ -709,9 +719,26 @@ export async function runInboxRepairStep(
         log(`[4c-iii-r] REFUSED (${refusal.code}): ${refusal.message}`);
         return { ...base, ok: false, action: 'refused', projectCount, refusal };
       }
-      log(`[4c-iii-r] already repaired on ${marker.at.toISOString()}, and every generation still `
-        + 'matches canonical — skipping');
-      return { ...base, ok: true, action: 'skipped-marker-present', projectCount };
+      if (unverified.length === 0) {
+        log(`[4c-iii-r] already repaired on ${marker.at.toISOString()}, and every generation still `
+          + 'matches canonical — skipping');
+        return { ...base, ok: true, action: 'skipped-marker-present', projectCount };
+      }
+      // UNVERIFIABLE IS NOT A PASS — AND NOT A REFUSAL EITHER. `lagging`/`blocked` come back before
+      // any row is compared, so this start cannot say the register is sound. Skipping on it is the
+      // hole (Codex on `8eea3ca`). Refusing on it would be worse than the hole: a lagging projection
+      // is ordinary between deploys, and the process that would catch it up is the container this
+      // deploy is replacing — on a recreate strategy nothing ever advances it, so the deploy could
+      // never succeed.
+      //
+      // So the step does the one thing that resolves the ambiguity instead of guessing about it: it
+      // REPAIRS. The rebuild is recompute-only and idempotent, it makes the generation
+      // `current-match` by construction, and the post-rebuild verification below then holds it to
+      // the strict criterion. The cost is one extra rebuild on a deploy that finds the register
+      // lagging; the alternative is serving rows nothing checked.
+      log(`[4c-iii-r] marked, but ${unverified.length} generation(s) could not be verified `
+        + `(${unverified.join(', ')}) — these states are reported before any row is compared, so `
+        + 'the repair is re-run rather than skipped');
     }
 
     log(`[4c-iii-r] rebuilding ${DECISIONS_PROJECTION} for all ${projectCount} project(s)`);
@@ -806,6 +833,7 @@ export async function runInboxRepairStep(
         }
       }
       if (concurrent.length > 0) return;                       // leave the transaction without a marker
+      if (marker) return;                                      // re-verified an existing marker; one is enough
       await tx.$executeRaw`SELECT set_config('vitan.phase6_4c_iiir_repair', 'on', true)`;
       await tx.outboxOperatorAction.create({
         data: {

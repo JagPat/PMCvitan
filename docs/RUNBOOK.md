@@ -1292,6 +1292,16 @@ marker.
 did not fence the writer it was aimed at. Event allocation and projection application are different
 writers with different locks.)*
 
+**An unverifiable generation is repaired, not skipped and not refused.** `diagnoseIn` reports
+`lagging` and `blocked` *before* it compares a single stored row, so neither says the register is
+sound — they are the absence of evidence. Skipping on them is a hole: a legacy relay's rewrite plus
+one undelivered position reads as `lagging`, and the current relay can then advance the checkpoint
+past that position as a `noop` without refreshing the rows. Refusing on them would be worse — a
+lagging projection is ordinary between deploys, and the process that would catch it up is the
+container this deploy is replacing, so on a recreate strategy the deploy could never succeed. So the
+step re-runs the repair, which is recompute-only, idempotent, and makes the generation
+`current-match` by construction. It writes no second marker.
+
 **And the marker is not a promise about the future.** No lock can stop a process older than the
 drain fence from applying its serializer AFTER the marker commits — it takes
 `lockActiveGeneration`, and this step cannot hold that forever. What the step does instead is keep
@@ -1349,14 +1359,24 @@ compiled repair command —
 DATABASE_URL=... node dist/platform/projections/inbox-repair.cli.js seals repair
 ```
 
-— which reinstalls the three canonical seals from the migration's own statements, touches no row,
-verifies the result and exits non-zero if it could not reach a sealed state. **Do not re-run the
+— which reinstalls the three canonical seals from the migration's own statements, **removes any
+marker it cannot vouch for**, verifies the result and exits non-zero if it could not reach a sealed
+state. The marker is removed deliberately: this command runs *because* a seal was missing, and
+through that window any marker could have been inserted, promoted or rewritten by anyone holding
+the application's role. Restoring the seal around such a row would make an unverifiable marker
+permanent evidence and the next deploy would skip the rebuild on its word. Nothing is lost — the
+marker is not the repair, and the next start earns a new one by repairing and verifying. **Do not re-run the
 migration for this.** The database that needs repairing is one that HAS a genuine marker and has
 lost a trigger, and the migration's first act is to refuse any marker that predates its seal — so
 re-running it on exactly that database aborts. The repair command asks the narrower question ("put
 the canonical seals back"), which is safe whether or not a marker exists.
 
-**The migration refuses to seal a marker that predates it.** A marker row already present when
+**The migration refuses to seal a marker that predates it — and only then.** A marker that exists
+alongside an installed row seal was necessarily written under it, by the repair step, so the
+migration is **safely re-runnable**: if a restore or ledger repair loses its `_prisma_migrations`
+row while the triggers and a genuine marker survive, `migrate deploy` re-runs the file and it
+passes. Without that distinction it would abort forever, and the `DELETE` its message suggests
+would itself be refused by the seal still installed. A marker row already present when
 `20271125000000` runs was gated by nothing — it can only have arrived through a partial restore, or
 from a writer that planted it, because the only legitimate writer of one is the repair step that
 ships with this migration. Sealing it would make an unverified row permanent authorization to skip

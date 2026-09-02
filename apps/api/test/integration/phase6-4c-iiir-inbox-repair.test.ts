@@ -743,17 +743,19 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     await expect(single.$executeRawUnsafe(guard)).resolves.toBeDefined();
 
     // a planted marker → it ABORTS and names what it found
-    await single.$executeRawUnsafe(
-      `ALTER TABLE "OutboxOperatorAction" DISABLE TRIGGER "${MARKER_SEAL_TRIGGERS[0].trigger}"`);
+    // The genuine pre-migration state has NO seals at all, which is also what now distinguishes a
+    // pre-seal marker from one written under a working seal (see R9-3).
+    for (const { trigger } of MARKER_SEAL_TRIGGERS) {
+      await single.$executeRawUnsafe(`DROP TRIGGER "${trigger}" ON "OutboxOperatorAction"`);
+    }
     await single.$executeRawUnsafe(
       `INSERT INTO "OutboxOperatorAction" ("id","action","operatorIdentity","reason")
        VALUES ('r7a-predates', $1, 'attacker', 'planted before the seal')`,
       PHASE6_4C_IIIR_MARKER_ACTION);
-    await single.$executeRawUnsafe(
-      `ALTER TABLE "OutboxOperatorAction" ENABLE TRIGGER "${MARKER_SEAL_TRIGGERS[0].trigger}"`);
     try {
       await expect(single.$executeRawUnsafe(guard)).rejects.toThrow(/already carries 1 repair marker row/u);
     } finally {
+      await restoreMarkerSeals();
       await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
     }
   });
@@ -900,9 +902,9 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
       const stale = (await single.project.findMany({
         where: { id: { not: lateId } }, select: { id: true }, orderBy: { id: 'asc' },
       })).map((r) => r.id);
-      expect(await diagnoseCurrentProjects(single as never, ops, orgsParticipant, f.projectA.id, stale))
+      expect((await diagnoseCurrentProjects(single as never, ops, orgsParticipant, f.projectA.id, stale)).corrupt)
         .toEqual([]);                                   // the snapshot cannot see it…
-      expect(await diagnoseCurrentProjects(single as never, ops, orgsParticipant, f.projectA.id))
+      expect((await diagnoseCurrentProjects(single as never, ops, orgsParticipant, f.projectA.id)).corrupt)
         .toContain(`${lateId}/${DECISIONS_PROJECTION}`); // …and the live re-read does
 
       // and end to end, on the marker-present skip path
@@ -937,18 +939,115 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
       const repaired = await repairMarkerSeals(single as never);
       expect(repaired.sealed).toBe(true);
       expect(repaired.findings).toEqual([]);
-      expect(await markerCount()).toBe(1);          // rows untouched — the genuine marker survives
+      // the marker is INVALIDATED, not preserved: it lived through a window with no seal, so it
+      // cannot be vouched for (R9-2). The next start earns a new one.
+      expect(repaired.markersInvalidated).toBe(1);
+      expect(await markerCount()).toBe(0);
 
-      // and it is idempotent: running it on an already-sealed database is still sealed
-      expect((await repairMarkerSeals(single as never)).sealed).toBe(true);
-      expect(await markerCount()).toBe(1);
+      // and it is idempotent: running it on an already-sealed database is still sealed, and now
+      // finds no marker to invalidate
+      const again = await repairMarkerSeals(single as never);
+      expect(again.sealed).toBe(true);
+      expect(again.markersInvalidated).toBe(0);
     } finally {
       await restoreMarkerSeals();
     }
-    // the same database now deploys: the repair really restored the seals the step demands
+    // the same database now deploys — and REPAIRS, because the invalidated marker must be earned
     const after = await runInboxRepairStep(single, ops, env);
     expect(after.ok).toBe(true);
-    expect(after.action).toBe('skipped-marker-present');
+    expect(after.action).toBe('repaired');
+  });
+
+  // ── Codex on `8eea3ca` — three findings ──────────────────────────────────────────────────────
+
+  it('R9-1 — a MARKED start that cannot verify a generation REPAIRS rather than skipping', async () => {
+    // `lagging`/`blocked` come back before a single row is compared, so they are the absence of
+    // evidence. Skipping on them let a legacy relay's rewrite ride through: the rewrite plus one
+    // undelivered position reads as `lagging`, the start skips, and the current relay then advances
+    // the checkpoint past that position as a noop without refreshing the rows.
+    //
+    // Refusing would be worse than the hole — a lagging projection is ordinary between deploys and
+    // the process that would catch it up is the container being replaced — so the step repairs.
+    await runInboxRepairStep(single, ops, env);
+    expect(await markerCount()).toBe(1);
+
+    let rebuilds = 0;
+    const laggy: ProjectionRebuildOperations = Object.create(ops);
+    laggy.diagnoseIn = async (tx: never, consumer: string, projectId: string) => {
+      const real = await ops.diagnoseIn(tx, consumer, projectId);
+      // report `lagging` for projectA only until the repair has run, so the post-rebuild check
+      // sees the honest state and the marker path sees the unverifiable one.
+      return projectId === f.projectA.id && rebuilds === 0 ? { ...real, state: 'lagging' as const } : real;
+    };
+    laggy.run = async (params: Parameters<ProjectionRebuildOperations['run']>[0]) => {
+      rebuilds += 1;
+      return ops.run(params);
+    };
+
+    const outcome = await runInboxRepairStep(single, laggy, env);
+    expect(rebuilds).toBe(1);                       // it REPAIRED instead of skipping…
+    expect(outcome.ok).toBe(true);
+    expect(outcome.action).toBe('repaired');
+    expect(await markerCount()).toBe(1);            // …and did not write a second marker
+  });
+
+  it('R9-2 — `seals repair` INVALIDATES a marker it cannot vouch for, so the next start must earn a new one', async () => {
+    // The repair runs because a seal was missing — and while it was missing, any marker on this
+    // database could have been inserted, promoted or rewritten by anyone holding the app's role.
+    // Restoring the seal AROUND such a row would make an unverifiable marker permanent evidence.
+    await runInboxRepairStep(single, ops, env);
+    expect(await markerCount()).toBe(1);
+    try {
+      for (const { trigger } of MARKER_SEAL_TRIGGERS) {
+        await single.$executeRawUnsafe(`DROP TRIGGER "${trigger}" ON "OutboxOperatorAction"`);
+      }
+      const repaired = await repairMarkerSeals(single as never);
+      expect(repaired.sealed).toBe(true);
+      expect(repaired.markersInvalidated).toBe(1);
+      expect(await markerCount()).toBe(0);          // the untrustworthy marker is gone
+
+      // …so the next start REPAIRS and writes a fresh, verified marker rather than skipping
+      const next = await runInboxRepairStep(single, ops, env);
+      expect(next.ok).toBe(true);
+      expect(next.action).toBe('repaired');
+      expect(await markerCount()).toBe(1);
+      // …and it is PRECISE, not merely destructive: when the ROW SEAL survived and some other seal
+      // was lost, the marker was held under a working seal throughout and is KEPT. Attempting the
+      // delete there would also be refused by that seal and throw — which is how the
+      // production-runner proof caught the first version of this fix.
+      expect(await markerCount()).toBe(1);          // the fresh marker `next` just earned
+      await single.$executeRawUnsafe(
+        `DROP TRIGGER "OutboxOperatorAction_4c_iiir_no_truncate" ON "OutboxOperatorAction"`);
+      const partial = await repairMarkerSeals(single as never);
+      expect(partial.sealed).toBe(true);
+      expect(partial.markersInvalidated).toBe(0);
+      expect(await markerCount()).toBe(1);          // the genuine marker survives
+    } finally {
+      await restoreMarkerSeals();
+    }
+  });
+
+  it('R9-3 — the completed migration RE-RUNS over a sealed database, and still refuses a pre-seal marker', async () => {
+    // A restore or ledger repair can lose this migration's `_prisma_migrations` row while the
+    // triggers and a genuine marker survive; `migrate deploy` then re-runs the file. Without the
+    // seal test it aborts forever, and the DELETE its message suggests is refused by the very seal
+    // still installed.
+    const sql = readMarkerSealMigrationSql();
+    const guard = sql.slice(sql.indexOf('-- ── 0. DIAGNOSTIC-FIRST'), sql.indexOf('-- ── 1.'));
+
+    await runInboxRepairStep(single, ops, env);     // a GENUINE marker, written under the seal
+    expect(await markerCount()).toBe(1);
+    await expect(single.$executeRawUnsafe(guard)).resolves.toBeDefined();   // re-runnable
+
+    // and with the seal ABSENT the same marker is refused — the check it exists for still bites
+    try {
+      await single.$executeRawUnsafe(
+        `DROP TRIGGER "OutboxOperatorAction_4c_iiir_marker_sealed" ON "OutboxOperatorAction"`);
+      await expect(single.$executeRawUnsafe(guard)).rejects.toThrow(/already carries 1 repair marker row/u);
+    } finally {
+      await restoreMarkerSeals();
+      await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
+    }
   });
 
   it('PROBE 3 — an anchor that names no project in the connected database ABORTS, and writes no marker', async () => {
