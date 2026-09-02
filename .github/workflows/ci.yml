@@ -241,16 +241,26 @@ jobs:
     needs: [review-scope, battery-plan]
     if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
-    # Budget arithmetic, not a round number. This job carries the whole API battery AND every
-    # production-runner proof: setup + unit + the ~100-file integration battery over real
-    # PostgreSQL (observed ~48 min on a slow runner) + typecheck + build, then THREE runner proofs
-    # each bounded at 25 min of their own (schedule B1, schema enforcement, Phase 6 4c-iii-r),
-    # observed at ~10 min each. A 60-minute job budget could not hold that: the run on
-    # deb9b2f finished the battery and the first proof, then the JOB timeout cancelled the second
-    # proof mid-flight and skipped the third — reported as a failure that no test caused. 100
-    # minutes covers the observed worst case (~78 min) with headroom for a slow runner, and each
-    # proof still has its own 25-minute step bound so a genuinely hung proof fails fast rather
-    # than consuming the job.
+    # Budget arithmetic, not a round number, and the dominant term is RUNNER VARIANCE.
+    #
+    # This job carries the whole API battery AND every production-runner proof: setup + unit + the
+    # ~100-file integration battery over real PostgreSQL + typecheck + build, then three runner
+    # proofs (schedule B1, schema enforcement, Phase 6 4c-iii-r). Two heads of the same PR, two
+    # hours apart, differing only in this file and a test -- so what moved is the runner:
+    #
+    #   deb9b2f  battery 48 min, B1 10 min  -> CANCELLED at 60, mid schema-enforcement proof
+    #   97b72e4  battery 14 min, B1 14 min, schema 1 min, 4c-iii-r 2 min -> whole job 32 min
+    #
+    # The battery alone swings better than 3x between runners, so a budget sized to a fast runner
+    # is a coin flip. On deb9b2f the 60-minute JOB timeout cancelled the second proof mid-flight
+    # and skipped the third: a red required job that no test caused, and nothing in it names a
+    # budget. 100 covers the slow-runner shape (~48 + ~10 + the two short proofs + ~5 of setup,
+    # build and typecheck) with room for a worse one, while each proof keeps its own 25-minute
+    # step bound so a genuinely hung proof still fails fast rather than eating the job.
+    #
+    # `scripts/ci-workflow-timeouts.test.mjs` holds the floor this violated: a job's budget must
+    # at least cover the budgets of the steps inside it (75 here). That is a necessary condition,
+    # not a sufficient one -- it ignores the battery, which is most of the wall clock.
     timeout-minutes: 100
     services:
       postgres:
