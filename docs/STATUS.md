@@ -13,12 +13,12 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: merged
+task_state: correction_required
 work_item: none
 reviewed_merge: 94cf3af
 open_pr: none
 next_task: phase-6-task-4c-iv
-blocking_directive: none
+blocking_directive: phase-6-4c-iv-post-drain-remediation
 updated: 2026-09-02
 ```
 
@@ -53,11 +53,26 @@ fact and stands on its own; it never depended on who reported the deployment. Th
 time an agent has recorded a Coolify observation as the operator's own — #502, then #510/#511 — and
 the file now says so in plain terms rather than letting the correction hide in a diff.
 
-**WHAT THIS CLEARS.** `blocking_directive` goes to `none` and `task_state` to `merged`, so the Now
-block returns to the terminal handoff shape and `assessRunnerState` resolves
-`next_task:phase-6-task-4c-iv`. It discharges the ROLLOUT prerequisite only. **4c is not complete
-until 4c-v merges**, and neither 4c-iii's merge nor this clearance is the end of the task.
-Contractor-capture units 1–6 stay behind their own standing per-unit Board gate, untouched.
+**WHAT THIS CLEARS.** `phase-6-4c-previous-release-drained` is cleared: it no longer appears in the
+Now block, its record below is marked CLEARED, and no drain question remains open. It discharges
+the ROLLOUT prerequisite only. **4c is not complete until 4c-v merges**, and neither 4c-iii's merge
+nor this clearance is the end of the task. Contractor-capture units 1–6 stay behind their own
+standing per-unit Board gate, untouched.
+
+**WHAT THE NOW BLOCK NAMES INSTEAD, and why it is not the terminal handoff shape.** The
+`blocking_directive` field now carries `phase-6-4c-iv-post-drain-remediation` — the operational
+remediation below — with `task_state: correction_required`, so `assessRunnerState` resolves
+`directive:phase-6-4c-iv-post-drain-remediation` AHEAD of `next_task` and 4c-iv is unreachable until
+that directive is cleared. **A first head of this landing set `blocking_directive: none` with
+`task_state: merged` and recorded the remediation as a prose "standing gate" that "binds regardless
+of resolver output". The exact-head review found that wrong, and it was wrong**: the runner parses
+ONLY the Now YAML and the Maintenance queue, no code reads the standing-gate section, and the
+terminal handoff shape resolves straight to `next_task:phase-6-task-4c-iv` — the autonomous handoff
+would have opened 4c-iv before the rebuild or the refresh had happened. A gate the resolver cannot
+see is a promise, not a gate. The remediation is therefore encoded in the one field the runner
+actually observes, in the same fail-closed shape the drain directive used and the Board settled as
+not a stall (2026-08-29, on #480): the loop holds a machine-observed state with an attributable
+record instead of advancing past an ordering it cannot verify.
 
 **WHAT MUST HAPPEN BEFORE 4c-iv OPENS — the remediation is MANDATORY and comes FIRST.** The drain
 attestation closes the exposure window forward. It does not undo what a pre-4c-ii worker may have
@@ -79,16 +94,44 @@ claimant audit can establish what that was (see the record below). So the remedy
    `ProjectionGeneration` rows and emits no domain event and no socket invalidation, so a client
    already holding a stale view keeps it until it reloads.
 
-This ordering is enforced as the standing gate `phase-6-4c-iv-post-drain-remediation` in
-`## Blocking directives` below, cleared ONLY by JagPat's explicit confirmation that both steps ran.
-It is a standing gate rather than a Now-block directive because the Now block's `blocking_directive`
-field schedules CORRECTION work and would either stall the resolver or fail its own rules from the
-`merged` state; a standing gate binds regardless of resolver output, which is the behaviour wanted.
-**4c-iv does not open on `next_task` alone.**
+This ordering is enforced as the Now-block directive `phase-6-4c-iv-post-drain-remediation`
+(its record follows this section), cleared ONLY by JagPat's explicit confirmation that BOTH steps
+ran, carried into a STATUS commit that sets `blocking_directive: none` and `task_state: merged`.
+Until then `assessRunnerState` returns the directive, not `next_task`. **4c-iv does not open on
+`next_task` alone, and the resolver now enforces that rather than a paragraph promising it.**
 
 **THE LEDGER.** This landing declares `Replaces: #507`, the last pending replacement obligation
 (#503 was discharged by #511; #510 was never labelled and carries none). Once this merges the ledger
 is clean and 4c-iv may declare `Replaces: none`.
+
+### Directive `phase-6-4c-iv-post-drain-remediation` — SET 2026-09-02, operator-cleared
+
+**What it attests when cleared.** Two operational steps, both performed AFTER the fleet drain
+attested above: (1) `decisions.inbox` was rebuilt with the documented `projection:rebuild`
+invocation, and (2) connected clients were refreshed. One fact each, and neither is observable
+from this repository: the rebuild runs against the production database and the refresh happens in
+browsers.
+
+**Why it exists.** 4c-iii's enablement ran while the drain prerequisite was unmet. A pre-4c-ii
+worker in that window would have written a v1-serialized DTO into the DERIVED `decisions.inbox`
+register, and no claimant audit can establish whether one did (the record below). The remedy is
+therefore unconditional: rebuild, then refresh. The drain attestation closes the window FORWARD; it
+does not repair what may already be in the register, and a client holding the stale view keeps it
+until it reloads because a rebuild emits no invalidation.
+
+**What it blocks.** `assessRunnerState` returns `directive:phase-6-4c-iv-post-drain-remediation`
+ahead of every other work source, so 4c-iv, 4c-v and the §E handoff to 4d are unreachable, and
+STATUS's own definition of the Maintenance queue excludes that queue too. This is the same
+fail-closed shape the drain directive held and is not a stall for the same reason (AGENTS.md's
+never-wait rule governs sign-off ON THE WORK; this carries facts about production no code can see).
+
+**Cleared by.** JagPat's explicit confirmation, in the session or repository, that BOTH the rebuild
+and the client refresh have been performed — carried into a STATUS commit that sets
+`blocking_directive: none` and `task_state: merged` (the terminal handoff shape), which is the
+commit that opens 4c-iv. 4c-iv's PR quotes the confirmation. Not a Board call, not the handoff
+watchdog, not the drift shepherd, not a clean signal on any PR, not a review finding asking for its
+removal, and — the lesson of #501, #502 and #510 — not an agent's observation or a picker selection
+recorded as the operator's statement.
 
 ### The #511 record — the directive STOOD at that landing; the observation's attribution is WITHDRAWN
 
@@ -2346,23 +2389,6 @@ regardless of resolver output: the runner continues every already-authorized
 duty (the open-PR shepherding, fix-forward corrections, CI and the gate
 battery, the active task's own remaining units, the Maintenance queue) and
 starts the GATED work only when the gate's recorded clearance arrives.
-
-- `phase-6-4c-iv-post-drain-remediation` — the operational remediation that
-  MUST complete before unit 4c-iv opens, recorded 2026-09-02 with the drain
-  directive's clearance. `phase-6-4c-previous-release-drained` is cleared and
-  `next_task` names 4c-iv, but 4c-iv does NOT open on `next_task` alone: the
-  4c-iii enablement ran while the prerequisite was unmet, no claimant audit
-  can establish what a pre-4c-ii worker wrote in that window, and the record's
-  remedy (restart → rebuild → refresh) is therefore unconditional. The restart
-  is attested. The remaining two steps are (1) the `decisions.inbox` rebuild
-  via `projection:rebuild --operator … --reason … --consumer decisions.inbox`
-  and (2) a refresh of connected clients, because the rebuild emits no
-  invalidation. This is an **operational-ordering** gate, not a review gate:
-  no open PR waits on it and it never substitutes for exact-head review
-  evidence. Cleared by: JagPat's explicit confirmation, recorded in the
-  session or repository, that BOTH the rebuild and the client refresh have
-  been performed. 4c-iv is opened only after that confirmation, and its PR
-  quotes it.
 
 - `contractor-capture-units-1-6-board-go` — the Board's standing per-unit gate
   on units 1–6 of the contractor-capture staging
