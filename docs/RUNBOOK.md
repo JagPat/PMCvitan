@@ -1175,6 +1175,67 @@ pre-4c approval and a lie for a post-4c one, and the provenance trigger judges o
 nulled row would keep its place in the count while becoming unprovable, which is the precise
 condition this seal exists to prevent.
 
+## §P64CIIIR. Phase 6 unit 4c-iii-r — the deploy-time `decisions.inbox` repair
+
+`scripts/migrate.sh` runs `dist/platform/projections/inbox-repair.cli.js` after `prisma migrate
+deploy` and its seal verifications, and BEFORE `node dist/main.js` starts. It rebuilds
+`decisions.inbox` from canonical for EVERY project ONCE, because 4c-iii's enablement transition ran
+while the previous-release drain prerequisite was unmet and a pre-4c-ii worker may have left a
+generation holding a non-empty SUBSET of the canonical register while presenting as caught-up.
+
+**Nothing is asked of the operator during a normal deploy.** The client refresh is structural: the
+step finishes before the server accepts connections, the container restart disconnects every client,
+and `useApiSync` refreshes on socket `connect`.
+
+### Configuration — two variables, both required on a database in service
+
+| Variable | Value |
+| --- | --- |
+| `PHASE6_4C_IIIR_ANCHOR_PROJECT_ID` | a production `Project.id` that MUST exist in the database this deployment serves |
+| `PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS` | a whole number ≥ 1 that `count(Project)` must meet |
+
+They exist because every field of a rebuild report is derived from its own result set: an empty or
+wrong database reports `projects: 0, ok: true` and exits 0 having rebuilt nothing. Identity has to
+come from outside the connection, and project ids are unguessable, so a wrong database does not
+contain the anchor. Both are checked on EVERY start, marker or not, so a deploy later re-pointed at
+another database still aborts.
+
+A database holding ZERO projects is reported `not-applicable` and the deploy proceeds — a
+`decisions.inbox` generation exists per project, so such a database provably has nothing to repair,
+and no marker is written. That is what keeps a first deploy of a new environment possible; every
+database in service refuses an unset variable.
+
+### What each refusal means, and what to do
+
+| In the log | Meaning | Action |
+| --- | --- | --- |
+| `identity-unconfigured` | the database holds projects and one or both variables are unset | set both in the deployment's environment and redeploy |
+| `minimum-invalid` | `…EXPECTED_MIN_PROJECTS` is not a whole number ≥ 1 | correct it; `0` is refused because an empty database satisfies it |
+| `anchor-absent` | `…ANCHOR_PROJECT_ID` names no project here | **this is not the database this deploy is configured for** — check `DATABASE_URL` before changing the anchor |
+| `below-minimum` | fewer projects than configured | if projects were legitimately removed, lower the minimum; otherwise treat it as a wrong-database signal |
+| `rebuild-not-verified` | the rebuild ran but did not succeed for every project | the message NAMES the offending `project/consumer` pairs and their errors; fix the underlying cause and redeploy |
+
+Every refusal exits non-zero, so **the server does not start** and **no marker is written** — the
+next start retries. There is no state in which a failed repair records itself as done.
+
+### Concurrency, and why there is nothing to serialize by hand
+
+The step takes a session-level `pg_advisory_lock(640303041)` on its own single connection BEFORE
+reading the marker and holds it across check-marker → rebuild → verify → write-marker. Two
+replacement containers starting together are therefore exactly-once: the loser blocks, re-reads the
+marker under the lock, and skips. Rolling deploys and scaled replicas need no operator coordination.
+
+### Running it by hand
+
+Only useful when investigating; the deploy already does it.
+
+```
+pnpm --filter api phase6:4c-iii-r
+```
+
+It reads the same two variables and honours the same marker, so a hand run on a repaired database
+prints `skipped-marker-present` and changes nothing.
+
 ## §B1. Schedule B1 — `prisma migrate deploy` aborts on `ActivityDependency`
 
 `20270930000000_schedule_dependency_graph` COMPLETES ITS OWN INSTALL of `ActivityDependency` and

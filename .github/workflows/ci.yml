@@ -327,6 +327,21 @@ jobs:
         timeout-minutes: 25
         run: bash apps/api/scripts/schema-enforcement-production-runner-proof.sh
 
+      # Phase 6 unit 4c-iii-r — the only execution of the production `migrate.sh` over a database
+      # that needs (or has already had) the one-shot `decisions.inbox` repair. The step's identity
+      # refusals and its exactly-once marker are unreachable from every other job: the integration
+      # suite exercises the STEP, this exercises the RUNNER, including that an unconfigured deploy
+      # over a database in service is refused before the server starts.
+      #
+      # Here for the same reasons as the two above: this job already has the toolchain and the
+      # PostgreSQL service, and the proof builds its own scratch database, never touching
+      # `pmcvitan_test`. Its state G mutates a COPY of migrate.sh to prove the RUNNER is coupled to
+      # the step; that says nothing about whether THIS STEP still exists, so it is pinned by
+      # `scripts/ci-baseline-proof-wiring.test.mjs` in the required `automation` job.
+      - name: Phase 6 4c-iii-r production-runner proof (the real migrate.sh over the inbox repair)
+        timeout-minutes: 25
+        run: bash apps/api/scripts/phase6-4c-iiir-production-runner-proof.sh
+
   # The ONE required status.
   #
   # `always()` is load-bearing: without it a failing job would SKIP this gate,

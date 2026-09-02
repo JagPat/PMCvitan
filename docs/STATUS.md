@@ -13,16 +13,148 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: correction_required
-work_item: none
+task_state: in_review
+work_item: phase-6-task-4c-iii-r
 reviewed_merge: 94cf3af
-open_pr: none
+open_pr: OPEN_PR_PLACEHOLDER
 next_task: phase-6-task-4c-iv
-blocking_directive: phase-6-4c-previous-release-drained
-updated: 2026-09-01
+blocking_directive: none
+updated: 2026-09-02
 ```
 
-### The drain directive STANDS. JagPat's reported observation narrows it but does not discharge it.
+### The drain directive is CLEARED — on JagPat's DIRECT fleet-drain attestation, 2026-09-02
+
+**THE ATTESTATION, QUOTED VERBATIM.** On 2026-09-02, in the working session, JagPat stated:
+
+> The API application whose container was replaced is the only place a PMC Vitan process
+> runs—there is no other application or additional replica—so no process older than 5fcc2a58 is
+> running or claiming deliveries.
+
+**This is the enumerated condition itself, stated directly by the operator, and nothing else is
+load-bearing.** It is not an inspection relayed as a declaration (the #502 fault), not a selection
+in an agent-authored prompt (the #501 fault), and not an observation of something adjacent to the
+condition from which the condition is inferred (the #510 fault, twice). It names the one fact this
+repository cannot see — that the replaced application is the only place a PMC Vitan process runs —
+and draws the conclusion the directive requires in its own terms. The repository-side facts recorded
+below (the four process classes are ONE process class in code; `syncConsumerCatalog` asserts the v2
+catalog so a pre-4c-ii process cannot restart) remain true and remain INFORMATIVE; they are not what
+clears the directive and are not cited as if they were.
+
+**A FALSE ATTRIBUTION IN THE #511 RECORD IS CORRECTED HERE, on JagPat's instruction.** The section
+that follows this one — merged as #511 — quoted an earlier Coolify observation ("Coolify shows API
+deployment h13xhn… successfully deployed 94cf3af … the previous container was stopped and
+removed") and attributed it to JagPat as his own report, adding that "its provenance is sound".
+**That attribution was false and is withdrawn.** The observation's author is NOT established as the
+operator, and this record does not now assert who authored it. The text is retained in that section
+as the record of what was relayed, marked as no longer attributed and no longer load-bearing. The
+ancestry verification that section performed on the commits the observation named
+(`git merge-base --is-ancestor 5fcc2a58 94cf3af` and `… adddb20`, both exit 0) is a repository fact
+and stands on its own; it never depended on who reported the deployment. This is the THIRD time an
+agent has recorded a Coolify observation as the operator's own — #502, then #510/#511 — and the file
+now says so in plain terms rather than letting the correction hide in a diff.
+
+**WHAT THIS CLEARS.** `phase-6-4c-previous-release-drained` is cleared: it no longer appears in the
+Now block, its record below is marked CLEARED, and no drain question remains open. It discharges the
+ROLLOUT prerequisite only. **4c is not complete until 4c-v merges**, and neither 4c-iii's merge nor
+this clearance is the end of the task. Contractor-capture units 1–6 stay behind their own standing
+per-unit Board gate, untouched.
+
+**AND WHAT IT DOES NOT UNDO.** The attestation closes the exposure window FORWARD. It does not undo
+what a pre-4c-ii worker may have written during the window in which 4c-iii's enablement ran with the
+prerequisite unmet, and no claimant audit can establish what that was. So the remedy recorded at the
+4c-iii landing — rebuild `decisions.inbox` successfully for EVERY project, then have connected
+clients refresh — is still owed. **It is owed as WORK, and this PR is that work**, which is why the
+Now block names no directive: the correction is not parked waiting for anyone.
+
+### Unit 4c-iii-r — the post-drain remediation, DELIVERED HERE rather than recorded as a directive
+
+**WHY THIS IS A UNIT AND NOT A `blocking_directive`.** Two earlier landings tried to carry the
+remediation as a Now-block directive and both were refused, for the same reason each time. #512
+round 1: a prose "standing gate" cannot bind a resolver that parses only the Now YAML. #512 round 2
+and #513 round 1: a directive only the OPERATOR can clear parks the loop behind a human-only
+transition, which AGENTS.md's autonomy rule forbids — and the record itself had already named the
+machine-executable path, so calling it an "alternative" while keeping the human transition was not a
+resolution. The correct answer to "the loop must be able to clear this itself" is not a better
+directive. It is to DO THE WORK, and a directive whose whole content is one small correction the
+runner can perform is that correction wearing a hat. #513 and #514 were both STATUS-only paper and
+both closed unmerged; this landing carries the STATUS **and the code**, in one unit, so there is
+nothing left to hand off.
+
+**WHAT SHIPS.** A one-shot, deploy-time rebuild of `decisions.inbox` in `scripts/migrate.sh`, on
+BOTH success paths, after `prisma migrate deploy` and its seal verifications and before
+`node dist/main.js` starts — the COMPILED artifact
+`dist/platform/projections/inbox-repair.cli.js`, the same fail-closed pattern the preflights use
+(a missing artifact refuses the deploy).
+
+1. **EXACTLY ONCE ACROSS CONCURRENT REPLICA STARTS, by a lock, not by reading a marker** (#513
+   round 2, P1). Two replacement containers starting together can both read a marker as absent
+   before either writes it, and `ProjectionRebuilder` allocates `generation = max + 1` per
+   `(consumer, projectId)` inside its own transaction with NO cross-process serialization — so the
+   second insert violates `@@unique([consumer, projectId, generation])`, and across several projects
+   the failures can split so BOTH reports are non-`ok` and NEITHER start writes the marker. The step
+   therefore takes a SESSION-LEVEL `pg_advisory_lock(640303041)` on its own single connection
+   (`connection_limit=1`, so the session that takes the lock is the session that runs the rebuild)
+   BEFORE reading the marker, and holds it across check-marker → rebuild → verify → write-marker.
+   The loser blocks, re-reads under the lock, and skips. A failure leaves NO marker and exits
+   non-zero; the next start retries.
+
+2. **"SUCCEEDED", NOT "RAN"** (#512 round 2). `ProjectionRebuildOperations.run` catches per
+   `(project, consumer)` and CONTINUES, so a run can finish with one project's register unrepaired.
+   The criterion is the whole of it: exit 0, `ok: true`, `corruptAfter: 0`, `failures: 0`,
+   `results.length === projects`, and `projects` equal to the live `Project` count read under the
+   same lock. A refusal NAMES the offending pairs.
+
+3. **IDENTITY FROM OUTSIDE THE CONNECTION** (#513 rounds 1 and 2). Every success field is derived
+   from the result set, so an empty or wrong database returns `projects: 0, ok: true` and exits 0
+   having rebuilt nothing — the self-count compares two numbers from one connection. Two
+   deploy-configured variables close it: `PHASE6_4C_IIIR_ANCHOR_PROJECT_ID`, a production
+   `Project.id` that MUST exist in the connected database (ids are unguessable), and
+   `PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS`, a whole number ≥ 1 that `count(Project)` must meet. Both
+   are checked on EVERY start, marker or not, so a deploy later re-pointed cannot serve.
+
+   **ONE DELIBERATE DEVIATION FROM THE RECORDED WORDING, stated as one.** The record made both
+   variables unconditionally required. Taken literally that also refuses the FIRST deploy of a new
+   environment, whose database has no projects and therefore no anchor id to configure — a gate that
+   cannot be cleared. The requirement is therefore scoped to the state where it carries meaning, in
+   the same schema-aware shape every other preflight in `migrate.sh` already uses: on a database
+   holding one or more projects — which every database in service is — an unset variable ABORTS.
+   Only a ZERO-project database is `not-applicable`, and that is not a vacuous success: generations
+   are per project, so such a database provably has nothing to repair, no marker is written, and the
+   next start over a populated database still repairs. When the variables ARE set they are enforced
+   in full regardless of the row count, so a CONFIGURED deploy pointed at an empty or wrong database
+   still aborts on the anchor.
+
+4. **THE CLIENT REFRESH IS STRUCTURAL, not a step.** The rebuild finishes before the server accepts
+   connections; the container restart disconnects every client and `useApiSync` refreshes on socket
+   `connect`. No invalidation and no operator action.
+
+5. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (13 probes):
+   the vacuity itself (a zero-project report satisfies every success field), each identity refusal,
+   the verified repair, marker idempotence, identity enforced WITH the marker set, a non-verified
+   report leaving NO marker and the next start succeeding, the unserialized generation collision
+   released together under an explicit barrier, and the BARRIER-CONTROLLED CONCURRENT START of two
+   REAL processes — this suite takes the step's advisory lock itself, waits (condition-based, on
+   `pg_locks`, never a sleep) until BOTH children are observed WAITING on that exact lock, then
+   releases them together and asserts the terminal invariant: one `repaired` and one
+   `skipped-marker-present`, exactly one `projection.rebuild` invocation row, exactly ONE newly
+   activated generation per project, both exit 0. `scripts/phase6-4c-iiir-production-runner-proof.sh`
+   drives the REAL `migrate.sh` over ten states (fresh/empty · populated-and-unconfigured · wrong
+   database · below minimum · minimum of zero · configured-and-correct · re-run · re-run re-pointed ·
+   a failed attempt that writes no marker and is then retried · and a COUPLING mutation proving the
+   refusals come from THIS step), and is wired into the required `api` job and pinned by
+   `scripts/ci-baseline-proof-wiring.test.mjs`. Operator documentation: `docs/RUNBOOK.md` §P64CIIIR.
+
+**WHAT THE NOW BLOCK SAYS, and why.** `task_state: in_review` with `open_pr` naming this PR and
+`blocking_directive: none` — `assessRunnerState` resolves `pr:<this PR>`, which is exactly true: the
+remediation is the open work item. Recording a directive here would be false twice over (the
+resolver refuses a directive from `in_review`, and there is nothing parked). On merge the STATUS fold
+of the NEXT landing advances `reviewed_merge` and opens 4c-iv on `next_task`.
+
+**THE LEDGER.** `Replaces: #514`, which is closed unmerged along with #513 — both were STATUS-only
+and neither carried the correction. #507 and #512 remain pending and must each be named by a later
+merged unit.
+
+### The #511 record — the directive STOOD at that landing; the observation's attribution is WITHDRAWN
 
 **THIS SECTION WAS FIRST WRITTEN AS A CLEARANCE AND IS WITHDRAWN BEFORE MERGING.** The withdrawal
 is the record, not a tidied-away draft: the same PR proposed `blocking_directive: none` on the
@@ -32,18 +164,20 @@ evidence that establishes something adjacent to the enumerated condition being a
 establishing the condition — and the third attempt is recorded here rather than deleted so the
 pattern is visible to whoever writes the fourth.
 
-**THE OPERATOR'S STATEMENT, QUOTED VERBATIM.** On 2026-09-01, in the working session, JagPat
-reported:
+**THE OBSERVATION THIS SECTION WAS BUILT ON — ATTRIBUTION WITHDRAWN 2026-09-02.** As merged in
+#511, this paragraph read "On 2026-09-01, in the working session, JagPat reported:" and the one
+after it asserted "Its provenance is sound … This is the operator reporting what the deployment
+console shows, in his own message." **JagPat has instructed that this attribution was false, and it
+is withdrawn.** The observation's author is not established as the operator and is not asserted
+here. The text is kept only as the record of what was relayed and what this section reasoned from:
 
 > Coolify shows API deployment h13xhn… successfully deployed 94cf3af, followed by mug9y2x…
 > deploying adddb20d; at 14:06:06 UTC the new API container started, and by 14:06:36 UTC the
 > previous container was stopped and removed.
 
-**Its provenance is sound, and that is worth stating separately from its sufficiency.** This is the
-operator reporting what the deployment console shows, in his own message. It is not an agent's
-inspection relayed as his declaration — the fault that cost #501 and #502 — and it is not a
-selection in an agent-authored prompt. Nothing below questions WHO said it. What follows is only
-about WHAT it says.
+Nothing in the clearance above depends on it. What follows in this section is the analysis as it was
+merged, retained because its repository-side conclusions (the ancestry checks, the one-process proof,
+the gap it correctly identified) are true independently of who reported the deployment.
 
 **WHAT IT ESTABLISHES.** For the one Coolify application it names: its previous container was
 stopped and removed at 14:06:36 UTC, thirty seconds after the new one started, and a removed
@@ -285,13 +419,15 @@ GO — this directive is a ROLLOUT ordering prerequisite, not a scope authorizat
 cleared by a STATUS commit rather than by asking for permission to proceed. Contractor-capture
 units 1–6 stay Board-gated — a SEPARATE gate the 4c sequence does not lift.
 
-### Directive `phase-6-4c-previous-release-drained` — **STANDS; narrowed 2026-09-01, not cleared**
+### Directive `phase-6-4c-previous-release-drained` — **CLEARED 2026-09-02 on JagPat's direct attestation**
 
-**STILL SET.** A third clearance attempt is recorded in the Now section above and WITHDRAWN before
-merging: JagPat's own reported observation of the deployment establishes the container lineage of
-one application, and the remainder of the enumerated condition was completed from the WITHDRAWN
-#502 inspection. The one sentence that would close it is written out there. The 2026-08-31
-restoration history follows in full.
+**CLEARED.** The clearance and its verbatim attestation are recorded at the top of the Now section.
+It was cleared by the one route its terms allow — the operator stating the enumerated condition
+directly, carried into a STATUS commit — after two withdrawn attempts (#502; #510/#511) had each
+rested on a Coolify observation recorded as the operator's own when it was not. The post-drain
+remediation the clearance does NOT discharge ships as unit 4c-iii-r in this same landing. The full
+history is kept below: the 2026-08-31 restoration, the withdrawn #502 text, and the #511 section
+above with its attribution withdrawn in place.
 
 #### The 2026-08-31 restoration, kept as the record
 
