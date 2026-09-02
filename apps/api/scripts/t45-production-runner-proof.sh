@@ -23,6 +23,11 @@ export PGHOST="${PGHOST:-localhost}"
 export PGPORT="${PGPORT:-5432}"
 export PGUSER="${PGUSER:-postgres}"
 export PGPASSWORD="${PGPASSWORD:-postgres}"
+# Phase 6 unit 4c-iii-r — migrate.sh now runs the deploy-time decisions.inbox rebuild as its last
+# step, and that step REFUSES to run unconfigured. These scratch databases are fresh installs, so
+# the EXPLICIT 0 allowance is what a real first deploy would set; it is never a production value.
+export PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="${PHASE6_4C_IIIR_ANCHOR_PROJECT_ID:-scratch-anchor}"
+export PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS="${PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS:-0}"
 
 API_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$API_DIR" || exit 1

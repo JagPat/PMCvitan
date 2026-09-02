@@ -51,6 +51,17 @@ const PINNED_PROOFS = [
     states: ['A. FRESH', 'B. ALREADY-CLEAN', 'C. DIRTY', 'D. DIRTY', 'E. REPAIRED',
              'F. ALREADY-CHECKED', 'G. THE POST-DEPLOY SEAM', 'H. COUPLING', 'I. THE POST-DEPLOY SEAM'],
   },
+  {
+    script: 'apps/api/scripts/phase6-t4c-iiir-production-runner-proof.sh',
+    // The only execution of the production `migrate.sh` INTO the phase-6 4c-iii-r deploy-time
+    // decisions.inbox rebuild — the step that repairs the register a pre-4c-ii worker may have
+    // written, once, identity-checked from outside the connection, fail-closed.
+    verdicts: [/phase6 4c-iii-r production-runner proof: PASSED/u, /phase6 4c-iii-r production-runner proof: FAILED/u],
+    // A. unconfigured · B. fresh (explicit allowance) · C. populated · D. re-run · E. wrong anchor ·
+    // F. floor above count · G. corrupt generation · H. two processes · I. artifact missing ·
+    // J. coupling.
+    states: ['STATE A', 'STATE B', 'STATE C', 'STATE D', 'STATE E', 'STATE F', 'STATE G', 'STATE H', 'STATE I', 'STATE J'],
+  },
 ];
 
 /** The `jobs:` block, split per job, preserving each job's own lines. */

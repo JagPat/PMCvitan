@@ -1394,6 +1394,68 @@ LEDGER-COMPLETE database whose guards were switched off afterwards, in three sha
 seal, a lost internal foreign-key trigger, a hollowed function body), each of which the runner must
 refuse and then accept again once repaired. CI runs that script in the required `api` job.
 
+## §P6-4C-IIIR. Phase 6 unit 4c-iii-r — the deploy-time `decisions.inbox` rebuild refused, and the server did not start
+
+`scripts/migrate.sh` printed **`the phase-6 4c-iii-r deploy-time rebuild REFUSED or FAILED — the
+server will NOT start`** after a successful `prisma migrate deploy`, with a one-line JSON verdict
+above it. The migrations ARE applied; what did not happen is the start of the server.
+
+### What was asked
+
+4c-iii enabled `consultation` for every project while the `phase-6-4c-previous-release-drained`
+prerequisite was unmet. A pre-4c-ii worker still serving in that window could have claimed a
+`decision.*` delivery and written the project's whole decision set into the DERIVED
+`decisions.inbox` register with its v1 serializer — the served view losing the consultation thread
+and the widened audience while the canonical rows stayed intact. Nothing can establish afterwards
+whether that happened, so the register is rebuilt from canonical truth ONCE, at deploy, by the
+compiled `dist/platform/projections/phase6-t4c-iiir.cli.js`, which `migrate.sh` runs as its LAST
+step on both success paths. It holds four properties:
+
+1. **Identity from outside the connection.** Two environment variables, BOTH required:
+   `PHASE6_4C_IIIR_ANCHOR_PROJECT_ID` — a production `Project.id` that must exist in the connected
+   database — and `PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS` — a floor the live `count("Project")` must
+   meet. **Production sets the floor to 1 or more.** Exactly `0` is the explicit fresh-install
+   allowance (an empty database passes with no rebuild and no marker, and the anchor is not
+   consulted); it is logged as a warning and is never a production value. The check runs on EVERY
+   start, marker or not.
+2. **Once, across concurrent replica starts.** A transaction-level advisory lock
+   (`pg_advisory_xact_lock(hashtext('phase6-t4c-iiir'))`) on one pinned connection is held across
+   marker-check → rebuild → verify → marker-write; the loser blocks on it, then re-reads the marker.
+3. **Fail closed.** The rebuild's report must be `ok` with `corruptAfter: 0`, `failures: 0`, one
+   result per project and `projects` equal to the live count. Anything else refuses, rolls back,
+   writes no marker, and exits non-zero.
+4. **The marker is a row in `OutboxOperatorAction`** (`action = 'phase6.t4c-iiir.rebuild-completed'`,
+   `operatorIdentity = 'deploy'`, the verified report summary in `reason`). No new table, no
+   migration. The rebuild's own invocation and per-pair rows sit beside it in the same ledger.
+
+### The verdicts, and what each one means
+
+| `code` | What it says | What to do |
+| --- | --- | --- |
+| `identity-env-missing` | One or both variables are unset. The step refused BEFORE touching the database. | Set both in the deployment's environment (Coolify → the API application's environment variables). Pick the anchor from the production register: `SELECT id FROM "Project" ORDER BY "createdAt" LIMIT 1` on the production database. Set the floor to a value the production count comfortably exceeds today (it is a floor, not an exact count). Redeploy. |
+| `identity-env-invalid` | The floor is not a non-negative integer. | Fix the value. Redeploy. |
+| `anchor-absent` | The connected database has projects but not the anchor. **This deploy is connected to the wrong database, or the anchor was mistyped.** | Verify `DATABASE_URL` first — this is the signal the check exists for. Only if the database is right, correct the anchor. Redeploy. |
+| `count-below-minimum` | The live count is below the floor. An empty or partial database, or a floor set too high. | Same as above: verify `DATABASE_URL` before touching the floor. |
+| `report-not-ok` | The rebuild threw, or one or more `(project, decisions.inbox)` pairs failed or stayed corrupt. The verdict names the offending pairs. | Read the pairs. Run `pnpm --filter api projection:rebuild --operator <you> --reason "<why>" --consumer decisions.inbox --project <id>` against the named project to see the underlying error. Fix the cause. Redeploy — the step retries from scratch (no marker was written). |
+| `report-count-mismatch` | The rebuild covered fewer projects than the database holds. A project was created mid-run, or a pair was silently skipped. | Redeploy. If it recurs, run the operator rebuild above without `--project` and compare its `projects` to the live count. |
+
+**A missing artifact** (`compiled phase-6 4c-iii-r deploy-time rebuild (…) is missing`) is refused
+BEFORE Prisma, like every other compiled runner artifact: the image build is incomplete. Rebuild
+the image.
+
+### To see whether it has run
+
+```
+SELECT id, "at", reason FROM "OutboxOperatorAction"
+ WHERE action = 'phase6.t4c-iiir.rebuild-completed' ORDER BY "at";
+```
+
+One row, with the verified report summary. The rebuild it marks is the `projection.rebuild` row
+just before it (and one `projection.rebuild.result` row per project). To force a re-run — only if
+you have a reason to believe the register was written to again by a stale process, which the
+catalog fence makes impossible for any process that started after 4c-ii — delete that one marker
+row and redeploy; the step will rebuild again under the same lock and identity checks.
+
 ## §ENF. Schema enforcement — the deploy aborts because a guard does not fire
 
 `scripts/migrate.sh` refused with **`schema enforcement preflight FAILED`**, or a successful deploy

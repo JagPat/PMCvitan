@@ -327,6 +327,17 @@ jobs:
         timeout-minutes: 25
         run: bash apps/api/scripts/schema-enforcement-production-runner-proof.sh
 
+      # Phase 6 unit 4c-iii-r — migrate.sh now runs the deploy-time decisions.inbox rebuild as its
+      # last step. This proof drives the REAL runner over scratch databases: unconfigured (refused
+      # after Prisma, no marker), fresh with the explicit allowance, populated (rebuilt once, marker
+      # set), re-run (no-op), wrong anchor and low floor (refused, no marker), a corrupt generation
+      # (repaired), two real processes started together (exactly one rebuild), the artifact missing
+      # (refused before Prisma) and the coupling (a runner with the step removed accepts the
+      # unconfigured state). Pinned by `scripts/ci-baseline-proof-wiring.test.mjs` like the two above.
+      - name: Phase 6 4c-iii-r production-runner proof (the real migrate.sh runs the deploy-time rebuild)
+        timeout-minutes: 25
+        run: bash apps/api/scripts/phase6-t4c-iiir-production-runner-proof.sh
+
   # The ONE required status.
   #
   # `always()` is load-bearing: without it a failing job would SKIP this gate,

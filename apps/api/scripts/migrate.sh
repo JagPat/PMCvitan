@@ -138,6 +138,39 @@ if [ ! -f "$B1_SEALS" ]; then
   exit 1
 fi
 
+# ── Phase 6 unit 4c-iii-r — the post-enablement decisions.inbox rebuild, ONCE, at deploy ───────
+# 4c-iii enabled `consultation` for every project while the drain prerequisite was unmet; a
+# pre-4c-ii worker in that window could have written a v1-serialized DTO into the DERIVED
+# `decisions.inbox` register, and no claimant audit can establish whether one did. So the register
+# is rebuilt from canonical truth ONCE, here, after Prisma and the seal verifiers and BEFORE the
+# server starts — the container restart that carries it reconnects every client, and the client
+# refreshes on connect, so the restart IS the client refresh. The compiled step (never tsx):
+#   - refuses to run UNCONFIGURED: PHASE6_4C_IIIR_ANCHOR_PROJECT_ID (a production Project.id that
+#     must exist in the connected database) and PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS (a floor the
+#     live project count must meet; 1 or more in production, exactly 0 only as the explicit
+#     fresh-install allowance) must BOTH be set — identity from OUTSIDE the connection, so an empty
+#     or wrong database can never pass on its own zeros;
+#   - runs exactly once across concurrent replica starts, by an advisory lock held across
+#     check → rebuild → verify → marker, the marker being an attributable OutboxOperatorAction row;
+#   - fails this deploy CLOSED on any report that is not ok over EVERY project the database holds.
+# It runs on BOTH success paths below (ordinary and P3005 baseline) as the LAST step before exit 0.
+# A missing artifact means a broken build — fail closed, before Prisma, like every other artifact.
+# Repair per docs/RUNBOOK.md §P6-4C-IIIR.
+IIIR="dist/platform/projections/phase6-t4c-iiir.cli.js"
+if [ ! -f "$IIIR" ]; then
+  echo "[migrate] ERROR: compiled phase-6 4c-iii-r deploy-time rebuild ($IIIR) is missing — the build is incomplete; refusing to deploy."
+  exit 1
+fi
+run_iiir() {
+  echo "[migrate] phase 6 4c-iii-r deploy-time decisions.inbox rebuild (compiled artifact): node $IIIR"
+  if ! node "$IIIR"; then
+    echo "[migrate] ERROR: the phase-6 4c-iii-r deploy-time rebuild REFUSED or FAILED — the server will NOT start."
+    echo "[migrate] Read the JSON verdict above (identity-env-missing / identity-env-invalid / anchor-absent / count-below-minimum / report-not-ok / report-count-mismatch) and repair per docs/RUNBOOK.md §P6-4C-IIIR, then redeploy."
+    return 1
+  fi
+  return 0
+}
+
 out=$(npx prisma migrate deploy 2>&1)
 code=$?
 echo "$out"
@@ -172,6 +205,7 @@ if [ $code -eq 0 ]; then
     echo "[migrate] This deploy is NOT good. Repair per docs/RUNBOOK.md §ENF, then redeploy."
     exit 1
   fi
+  run_iiir || exit 1
   exit 0
 fi
 
@@ -388,6 +422,7 @@ if echo "$out" | grep -q "P3005"; then
     echo "[migrate] See docs/RUNBOOK.md §ENF."
     exit 1
   fi
+  run_iiir || exit 1
   exit 0
 fi
 
