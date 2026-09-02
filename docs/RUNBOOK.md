@@ -1175,6 +1175,115 @@ pre-4c approval and a lie for a post-4c one, and the provenance trigger judges o
 nulled row would keep its place in the count while becoming unprovable, which is the precise
 condition this seal exists to prevent.
 
+## §P64CIIIR. Phase 6 unit 4c-iii-r — the deploy-time `decisions.inbox` repair
+
+`scripts/migrate.sh` runs `dist/platform/projections/inbox-repair.cli.js` after `prisma migrate
+deploy` and its seal verifications, and BEFORE `node dist/main.js` starts. It rebuilds
+`decisions.inbox` from canonical for EVERY project ONCE, because 4c-iii's enablement transition ran
+while the previous-release drain prerequisite was unmet and a pre-4c-ii worker may have left a
+generation holding a non-empty SUBSET of the canonical register while presenting as caught-up.
+
+**Nothing is asked of the operator during a normal deploy.** The client refresh is structural: the
+step finishes before the server accepts connections, the container restart disconnects every client,
+and `useApiSync` refreshes on socket `connect`.
+
+### Configuration — two variables, both required on a database in service
+
+| Variable | Value |
+| --- | --- |
+| `PHASE6_4C_IIIR_ANCHOR_PROJECT_ID` | a production `Project.id` that MUST exist in the database this deployment serves |
+| `PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS` | a whole number ≥ 1 that `count(Project)` must meet |
+
+They exist because every field of a rebuild report is derived from its own result set: an empty or
+wrong database reports `projects: 0, ok: true` and exits 0 having rebuilt nothing. Identity has to
+come from outside the connection, and project ids are unguessable, so a wrong database does not
+contain the anchor. Both are checked on EVERY start, marker or not, so a deploy later re-pointed at
+another database still aborts.
+
+**Applicability is the defect's own precondition, read from the DATABASE and never from
+configuration.** The step asks whether this database has any `decisions.inbox` projection
+generation:
+
+- **None** — nothing has ever served this register here. `DecisionProjection` rows are
+  generation-scoped, so there is nothing the read path would serve and nothing a pre-4c-ii worker
+  could have left behind. Reported `not-applicable`; the deploy proceeds and **no marker is
+  written**, so a later start over a database that has been in service still repairs in full. This
+  is the fresh-install shape, and also the shape of every test harness that drives `migrate.sh` over
+  a psql-planted fixture — which is why none of them carry this step's configuration.
+- **One or more** — a database in service, the only kind that can carry the defect. Both variables
+  are required and an unset one aborts.
+
+There is no value you can set that makes the step skip a database that has served the register: a
+minimum below 1 is refused as a misconfiguration rather than honoured as an allowance.
+
+### What each refusal means, and what to do
+
+| In the log | Meaning | Action |
+| --- | --- | --- |
+| `identity-unconfigured` | the database holds projects and one or both variables are unset | set both in the deployment's environment and redeploy |
+| `minimum-invalid` | `…EXPECTED_MIN_PROJECTS` is not a whole number ≥ 1 | correct it; `0` is refused because an empty database satisfies it |
+| `anchor-absent` | `…ANCHOR_PROJECT_ID` names no project here | **this is not the database this deploy is configured for** — check `DATABASE_URL` before changing the anchor |
+| `below-minimum` | fewer projects than configured | if projects were legitimately removed, lower the minimum; otherwise treat it as a wrong-database signal |
+| `rebuild-not-verified` | the rebuild ran but did not succeed for every project | the message NAMES the offending `project/consumer` pairs and their errors; fix the underlying cause and redeploy |
+
+Every refusal exits non-zero, so **the server does not start** and **no marker is written** — the
+next start retries. There is no state in which a failed repair records itself as done.
+
+### Concurrency, and why there is nothing to serialize by hand
+
+The step takes a session-level `pg_advisory_lock(640303041)` on its own single connection BEFORE
+reading the marker and holds it across check-marker → rebuild → verify → write-marker. Two
+replacement containers starting together are therefore exactly-once: the loser blocks, re-reads the
+marker under the lock, and skips. Rolling deploys and scaled replicas need no operator coordination.
+
+### The marker is sealed — you cannot clear it by hand, and that is deliberate
+
+Success is recorded as one `OutboxOperatorAction` row with
+`action = 'projection.rebuild.phase6-4c-iii-r'`, and every later start SKIPS the repair when it is
+present. That row is authorization, not audit trail, so `20271125000000_phase6_4c_iiir_marker_seal`
+makes PostgreSQL refuse all five ways of manufacturing or tampering with one:
+
+1. **Creating** a marker outside the repair. The step writes its marker inside a transaction that
+   first sets `vitan.phase6_4c_iiir_repair = 'on'` (a `SET LOCAL`, so it dies at COMMIT), and only
+   after a verified report. A plain `INSERT` — from psql, a maintenance script, or any other
+   service on the same database role — is refused. This is the cheapest forgery and the one a
+   mutation-only seal misses entirely.
+2. **Promoting** another audit row into a marker: it needs no delete rights and yields a row that
+   looks genuine, so the next deploy would skip an unrepaired database.
+3. **Editing** a real marker. 4. **Deleting** one. 5. **`TRUNCATE`**, which no row trigger sees.
+
+Every other row in that table keeps the lifecycle it had. The gate is a NAMED boundary, not a claim
+of unforgeability: a writer that deliberately sets the flag can still write a marker, exactly as the
+sanctioned reset deliberately disables named seals. It makes forgery an explicit, auditable act
+instead of an ordinary INSERT.
+
+**On the P3005 baseline path**, the seal migration is listed in `ALWAYS_EXECUTE` and left PENDING
+rather than resolved-as-applied, so the retried deploy really executes it. Its whole content is raw
+SQL that `prisma db push` cannot reproduce, and the repair runs at the end of that same path — so
+without this the deploy would write a trusted marker onto a database carrying none of the seals.
+
+**If you genuinely need the repair to run again** — say a restore brought back a pre-repair
+register — do not try to delete the marker. Run the rebuild directly, which is idempotent and needs
+no marker:
+
+```
+pnpm --filter api projection:rebuild \
+  --operator <you@example.com> \
+  --reason "<why>" \
+  --consumer decisions.inbox
+```
+
+### Running it by hand
+
+Only useful when investigating; the deploy already does it.
+
+```
+pnpm --filter api phase6:4c-iii-r
+```
+
+It reads the same two variables and honours the same marker, so a hand run on a repaired database
+prints `skipped-marker-present` and changes nothing.
+
 ## §B1. Schedule B1 — `prisma migrate deploy` aborts on `ActivityDependency`
 
 `20270930000000_schedule_dependency_graph` COMPLETES ITS OWN INSTALL of `ActivityDependency` and

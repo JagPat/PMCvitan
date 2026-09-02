@@ -57,6 +57,45 @@ export class OrgsParticipant {
   }
 
   /**
+   * The two facts a DEPLOYMENT guard needs about this database's project population: how many
+   * projects it holds, and whether a named anchor project is one of them.
+   *
+   * Phase 6 unit 4c-iii-r, Codex round 2 (P1). The deploy-time `decisions.inbox` repair proves it
+   * is connected to the database it was configured for before it trusts any repair it performs,
+   * and it did that by reading `Project` directly from the platform projections module. `Project`
+   * is orgs-owned, and the rule at the top of this file applies without exception: not being
+   * read-encapsulated makes such a read representable, not legitimate. A future change to how this
+   * module scopes or hides projects — archival, tenancy, soft-deletion — would silently stop
+   * reaching a guard that decides whether a production deploy may serve.
+   *
+   * So the question is asked here, of the owner, in ONE round trip against the caller's own
+   * connection: the repair holds a session advisory lock across its whole body, and two separate
+   * reads would be two more places for that connection contract to be got wrong.
+   *
+   * Deliberately COUNTS EVERY project row, archived included, and asks only that the anchor EXISTS.
+   * This is an identity question — "is this the database I was configured for" — not an authority
+   * question, and archiving a project does not make a database a different database. The narrower
+   * predicates above are for deciding what may be WRITTEN; borrowing one here would make a routine
+   * archival look like a wrong-database misconfiguration and refuse the deploy.
+   */
+  async deploymentProjectIdentity(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    anchorProjectId: string,
+  ): Promise<{ projectCount: number; anchorPresent: boolean }> {
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<
+      Array<{ total: bigint; anchor: bigint }>
+    >(
+      `SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE "id" = $1) AS anchor FROM "Project"`,
+      anchorProjectId,
+    );
+    const row = rows[0];
+    return {
+      projectCount: Number(row?.total ?? 0),
+      anchorPresent: Number(row?.anchor ?? 0) > 0,
+    };
+  }
+
+  /**
    * Everyone on this project who WOULD satisfy `hasProjectRoleStanding` for `roles`.
    *
    * §I's authorisation form needs to offer candidates, and the alternative was a client-side
