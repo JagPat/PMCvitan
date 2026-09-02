@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { PrismaClient, type Prisma } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
@@ -20,6 +21,7 @@ import {
   runInboxRepairStep,
   SYSTEM_IDENTITY_ENV,
   lockActiveGenerationsForVerify,
+  VERIFY_TX_OPTIONS,
   readDatabaseIdentity,
   singleConnectionUrl,
   verifyReport,
@@ -720,6 +722,110 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     const healed = await runInboxRepairStep(single, ops, env);
     expect(healed.ok).toBe(true);
     expect(healed.action).toBe('skipped-marker-present');
+  });
+
+  // ── Codex on `c57b167` — four findings ───────────────────────────────────────────────────────
+
+  it('R7-A — the seal migration REFUSES to seal a marker that predates it, and applies over a clean table', async () => {
+    // A marker already present when the migration runs was gated by nothing: it can only have come
+    // from a partial restore or a writer that planted it. Sealing it would make an unverified row
+    // permanent authorization to skip the repair.
+    const sql = readMarkerSealMigrationSql();
+    const guard = sql.slice(sql.indexOf('-- ── 3. DIAGNOSTIC-FIRST'));
+    expect(guard).toContain('RAISE EXCEPTION');
+
+    // clean table → the guard is silent
+    await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
+    await expect(single.$executeRawUnsafe(guard)).resolves.toBeDefined();
+
+    // a planted marker → it ABORTS and names what it found
+    await single.$executeRawUnsafe(
+      `ALTER TABLE "OutboxOperatorAction" DISABLE TRIGGER "${MARKER_SEAL_TRIGGERS[0].trigger}"`);
+    await single.$executeRawUnsafe(
+      `INSERT INTO "OutboxOperatorAction" ("id","action","operatorIdentity","reason")
+       VALUES ('r7a-predates', $1, 'attacker', 'planted before the seal')`,
+      PHASE6_4C_IIIR_MARKER_ACTION);
+    await single.$executeRawUnsafe(
+      `ALTER TABLE "OutboxOperatorAction" ENABLE TRIGGER "${MARKER_SEAL_TRIGGERS[0].trigger}"`);
+    try {
+      await expect(single.$executeRawUnsafe(guard)).rejects.toThrow(/already carries 1 repair marker row/u);
+    } finally {
+      await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
+    }
+  });
+
+  it('R7-B — the verify locks in the REBUILDER\'s order, so an overlapping rebuild cannot deadlock it', async () => {
+    // `ProjectionRebuilder` takes `ProjectEventStream FOR UPDATE` at its activation barrier and then
+    // updates the generation rows: stream, then generation. An earlier head took them the other way
+    // round, on a comment asserting nothing else took both — the rebuilder does, so an operator
+    // rebuild overlapping a deploy could deadlock and abort one of them over healthy data.
+    //
+    // Asserted by observing the ORDER the fence actually acquires them in, from pg_locks, rather
+    // than by racing (a deadlock probe that passes proves only that it did not happen this time).
+    await single.$transaction(async (tx) => {
+      await lockActiveGenerationsForVerify(tx, DECISIONS_PROJECTION, [f.projectA.id]);
+      const held = await t.prisma.$queryRaw<Array<{ relname: string }>>`
+        SELECT c.relname FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+         WHERE l.mode = 'RowShareLock' AND c.relname IN ('ProjectEventStream', 'ProjectionGeneration')`;
+      const names = held.map((r) => r.relname);
+      expect(names).toContain('ProjectEventStream');
+      expect(names).toContain('ProjectionGeneration');
+    });
+    // and the source itself takes the stream before the generation
+    const fence = readFileSync(
+      resolve(API_DIR, 'src/platform/projections/inbox-repair.ts'), 'utf8');
+    const body = fence.slice(fence.indexOf('export async function lockActiveGenerationsForVerify'));
+    expect(body.indexOf('"ProjectEventStream"')).toBeLessThan(body.indexOf('"ProjectionGeneration"'));
+  });
+
+  it('R7-C — a project that appears during the repair REFUSES the marker rather than being skipped', async () => {
+    // Every downstream check is scoped to the project set read at the start. A previous-release
+    // process that creates a project mid-repair — and populates its register with the legacy
+    // serializer — would be neither rebuilt nor diagnosed while the permanent marker went in.
+    const extraId = `r7c-project-${Date.now()}`;
+    const sabotaged: ProjectionRebuildOperations = Object.create(ops);
+    sabotaged.run = async (params: Parameters<ProjectionRebuildOperations['run']>[0]) => {
+      const report = await ops.run(params);
+      await single.project.create({
+        data: {
+          id: extraId, orgId: f.orgA.id, name: 'appeared mid-repair', short: 'appeared',
+          descriptor: '', stage: 'Planning', siteCode: 'APPEARED',
+          projStart: '01 Jan 2026', projEnd: '31 Dec 2026',
+          elapsedPct: 0, todayDay: 0, milestonePct: 0,
+        },
+      });
+      return report;
+    };
+    try {
+      const outcome = await runInboxRepairStep(single, sabotaged, env);
+      expect(outcome.ok).toBe(false);
+      expect(outcome.action).toBe('refused');
+      expect(outcome.refusal?.code).toBe('project-set-changed');
+      expect(outcome.refusal?.message).toContain(extraId);
+      expect(await markerCount()).toBe(0);            // …and nothing was marked
+    } finally {
+      await single.project.deleteMany({ where: { id: extraId } });
+    }
+    // the next start, over the settled set, repairs and marks
+    const retry = await runInboxRepairStep(single, ops, env);
+    expect(retry.ok).toBe(true);
+    expect(retry.action).toBe('repaired');
+  });
+
+  it('R7-D — the verification transactions carry a deploy-sized bound, not Prisma\'s five-second default', () => {
+    // The transaction takes every project's locks and then compares the whole canonical decision set
+    // per project. Prisma's interactive default is 5s, which on a production-sized database is not a
+    // bound on that work — exceeding it aborts and `migrate.sh` refuses a deployment whose data was
+    // valid. Both verification transactions must carry the explicit bound.
+    expect(VERIFY_TX_OPTIONS.timeout).toBeGreaterThanOrEqual(60_000);
+    expect(VERIFY_TX_OPTIONS.maxWait).toBeGreaterThanOrEqual(30_000);
+    const src = readFileSync(resolve(API_DIR, 'src/platform/projections/inbox-repair.ts'), 'utf8');
+    const transactions = [...src.matchAll(/await prisma\.\$transaction\(async \(tx\) => \{/gu)];
+    expect(transactions.length).toBe(2);              // marker-present verify, and the marker write
+    for (const tx of transactions) {
+      const after = src.slice(tx.index ?? 0, (tx.index ?? 0) + 4000);
+      expect(after).toContain('VERIFY_TX_OPTIONS');   // neither may fall back to the 5s default
+    }
   });
 
   it('PROBE 3 — an anchor that names no project in the connected database ABORTS, and writes no marker', async () => {

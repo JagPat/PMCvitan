@@ -120,3 +120,35 @@ DROP TRIGGER IF EXISTS "OutboxOperatorAction_4c_iiir_no_truncate" ON "OutboxOper
 CREATE TRIGGER "OutboxOperatorAction_4c_iiir_no_truncate"
   BEFORE TRUNCATE ON "OutboxOperatorAction"
   FOR EACH STATEMENT EXECUTE FUNCTION phase6_4c_iiir_no_truncate();
+
+-- ── 3. DIAGNOSTIC-FIRST: a marker that predates this seal is not evidence of anything ──────────
+-- The gates above gate FUTURE writes. A marker row already present when this migration runs was
+-- never gated by anything: it can only have arrived by a partial restore, or by a writer planting
+-- it before this deployment. Sealing it would make an unverified row permanent authorization to
+-- skip the repair — the exact outcome the whole file exists to prevent (Codex on c57b167).
+--
+-- No legitimate marker can predate this migration, because the only writer of one is the repair
+-- step that ships with it and that step sets `vitan.phase6_4c_iiir_repair` inside its own
+-- transaction. So this is unambiguous, and it FAILS CLOSED rather than sealing and trusting it,
+-- in the diagnostic-first style every other migration in this tree uses: the deploy stops, the
+-- operator is told exactly what was found and how to clear it, and nothing is silently accepted.
+DO $$
+DECLARE
+  v_count BIGINT;
+  v_sample TEXT;
+BEGIN
+  SELECT count(*), COALESCE(string_agg("id" || ' @ ' || "at", ', ' ORDER BY "at"), '')
+    INTO v_count, v_sample
+    FROM (SELECT "id", "at" FROM "OutboxOperatorAction"
+           WHERE "action" = 'projection.rebuild.phase6-4c-iii-r' LIMIT 5) AS s;
+  IF v_count > 0 THEN
+    RAISE EXCEPTION
+      'phase6-4c-iii-r: this database already carries % repair marker row(s) BEFORE the seal that '
+      'makes a marker mean anything was installed (%). No legitimate marker can predate this '
+      'migration — the only writer of one is the repair step that ships with it. Sealing these '
+      'would make unverified rows permanent authorization to skip the repair. Establish where they '
+      'came from, delete them (the seal is not yet installed, so an ordinary DELETE still works), '
+      'and redeploy. See docs/RUNBOOK.md section P64CIIIR.',
+      v_count, v_sample;
+  END IF;
+END $$;

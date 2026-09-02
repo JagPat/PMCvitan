@@ -1263,6 +1263,7 @@ minimum below 1 is refused as a misconfiguration rather than honoured as an allo
 | `anchor-absent` | `…ANCHOR_PROJECT_ID` names no project here | **this is not the database this deploy is configured for** — check `DATABASE_URL` before changing the anchor |
 | `below-minimum` | fewer projects than configured | if projects were legitimately removed, lower the minimum; otherwise treat it as a wrong-database signal |
 | `rebuild-not-verified` | the rebuild ran but did not succeed for every project | the message NAMES the offending `project/consumer` pairs and their errors; fix the underlying cause and redeploy |
+| `project-set-changed` | a project appeared (or vanished) between the start of the repair and the marker | the rebuild, its verification and its locks are all scoped to the set read at the start, so a project that appeared since was neither rebuilt nor diagnosed. No marker was written; the next start covers the full set. If projects are being created by something other than the API, that is the thing to look at |
 | `marked-but-corrupt` | the marker is present, but a generation is corrupt **again** — the register regressed after a verified repair | **something is still writing this register.** The repair is deliberately NOT re-run: repairing underneath that writer would only mark the same damage twice. Stop every pre-4c-ii process, then rebuild with the operator command and redeploy |
 | `concurrent-corruption` | the rebuild succeeded, but re-checking under the relay's own generation lock found a generation corrupt **again** before the marker could be committed | **something is still writing this register** — a process older than the drain fence is the expected cause. No marker was written. Stop every pre-4c-ii process and redeploy; the next start repairs and marks |
 | `system-identity-unreadable` | this deployment's role cannot execute `pg_control_system()` | grant exactly `GRANT EXECUTE ON FUNCTION pg_control_system() TO <role>;` as a superuser and redeploy. On PostgreSQL 16 the default already permits it (the function's ACL is the default `EXECUTE` to `PUBLIC`), so this means the privilege was deliberately revoked |
@@ -1348,6 +1349,14 @@ re-running that migration's SQL against the database —
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f prisma/migrations/20271125000000_phase6_4c_iiir_marker_seal/migration.sql
 ```
+
+**The migration refuses to seal a marker that predates it.** A marker row already present when
+`20271125000000` runs was gated by nothing — it can only have arrived through a partial restore, or
+from a writer that planted it, because the only legitimate writer of one is the repair step that
+ships with this migration. Sealing it would make an unverified row permanent authorization to skip
+the repair, so the migration ABORTS instead, naming the rows it found. The seal is not installed at
+that point, so an ordinary `DELETE` still clears them once you have established where they came
+from; then redeploy.
 
 — which is idempotent by construction (`CREATE OR REPLACE FUNCTION`, `DROP TRIGGER IF EXISTS`,
 `CREATE TRIGGER`), then redeploy. If a marker row is ALREADY present on a database whose seals were

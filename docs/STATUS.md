@@ -305,7 +305,27 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    the generation fence refuses the relay's own call, and holding the stream fence provably does
    not. The contrast IS the reproduction.
 
-12. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (30 probes):
+12. **CODEX ROUND 7 (three P1 + one P2 on `c57b167`) — all four correct; two are consequences of
+   round 6's own fix.** **(a)** The seal migration gated FUTURE inserts only, so a marker already
+   present when it ran was sealed and then trusted as permanent authorization to skip the repair;
+   no legitimate marker can predate the migration, so it now ABORTS diagnostic-first and names what
+   it found (the seal is not yet installed at that point, so an ordinary DELETE clears it).
+   **(b)** The round-6 fence took the generation lock then the stream lock, on a comment asserting
+   nothing else in the codebase took both — `ProjectionRebuilder` takes both, stream first, at its
+   activation barrier, so an operator rebuild overlapping a deploy could deadlock and abort one of
+   them over healthy data. The fence now uses the rebuilder's order; the generation lock is still
+   what fences the relay, so nothing is lost. **(c)** Every downstream check was scoped to the
+   project set read at the start, so a project created mid-repair by a previous-release process
+   would be neither rebuilt nor diagnosed while the permanent marker went in; the set is re-read
+   through the owning module inside the marker transaction, which now runs SERIALIZABLE so a
+   phantom insert is a serialization failure rather than something the check cannot see.
+   **(d)** Prisma's interactive `$transaction` defaults to FIVE SECONDS, and that transaction takes
+   every project's locks and then compares the whole canonical decision set per project — on a
+   production-sized database that is not a bound on the work, and exceeding it would refuse a
+   deployment whose data was valid. Both verification transactions now carry an explicit
+   deploy-sized bound.
+
+13. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (34 probes):
    the vacuity itself (a zero-project report satisfies every success field), each identity refusal,
    the verified repair, marker idempotence, identity enforced WITH the marker set, a non-verified
    report leaving NO marker and the next start succeeding, the unserialized generation collision

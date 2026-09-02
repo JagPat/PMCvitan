@@ -165,7 +165,8 @@ export type RefusalCode =
   | 'below-minimum'
   | 'rebuild-not-verified'
   | 'concurrent-corruption'
-  | 'marked-but-corrupt';
+  | 'marked-but-corrupt'
+  | 'project-set-changed';
 
 export interface Refusal {
   code: RefusalCode;
@@ -398,12 +399,40 @@ export async function lockActiveGenerationsForVerify(
   projectIds: readonly string[],
 ): Promise<void> {
   for (const projectId of [...projectIds].sort()) {
+    // STREAM FIRST, THEN GENERATION — the order `ProjectionRebuilder` uses at its activation
+    // barrier (it takes `ProjectEventStream … FOR UPDATE`, then updates the generation rows).
+    // An earlier head took them the other way round and asserted in a comment that nothing else
+    // in the codebase took both, so the pair could not cycle. That was simply wrong: the rebuilder
+    // takes both, and an operator rebuild overlapping a deploy could deadlock, aborting one of them
+    // on a database where nothing was actually wrong. Matching its order removes the cycle
+    // (Codex on `c57b167`).
+    //
+    // The GENERATION lock is still what fences the relay — `dispatchProjection` takes only that —
+    // so taking the stream lock first costs nothing and fences `emitEvent` as well.
+    await tx.$queryRaw`
+      SELECT "projectId" FROM "ProjectEventStream" WHERE "projectId" = ${projectId} FOR UPDATE`;
     await tx.$queryRaw`
       SELECT "id" FROM "ProjectionGeneration"
        WHERE "consumer" = ${consumer} AND "projectId" = ${projectId} AND "status" = 'active'
        FOR UPDATE`;
   }
 }
+
+/**
+ * How long the all-project verification transaction may take, and how long it may wait to start.
+ *
+ * Prisma's interactive `$transaction` defaults to a FIVE SECOND timeout. This transaction takes
+ * every project's locks and then loads and compares the whole canonical decision set for each one,
+ * so on a production-sized database — or whenever one of those locks is briefly held by a relay —
+ * five seconds is not a bound on the work, it is a coin flip. Exceeding it aborts with an expired
+ * transaction and `migrate.sh` then refuses a deployment whose data was perfectly valid
+ * (Codex on `c57b167`).
+ *
+ * Sized for a deploy step rather than a request: this runs once per start, before the server
+ * accepts connections, and failing it costs a whole deployment. It is still a BOUND — a genuinely
+ * stuck lock fails the deploy rather than hanging it forever.
+ */
+export const VERIFY_TX_OPTIONS = { timeout: 120_000, maxWait: 60_000 } as const;
 
 /**
  * The full success criterion for one run. Every clause is necessary: `ok` alone tolerates a run that
@@ -629,7 +658,7 @@ export async function runInboxRepairStep(
           const state = await ops.diagnoseIn(tx as never, DECISIONS_PROJECTION, projectId);
           if (state.state === 'corrupt') regressed.push(`${projectId}/${DECISIONS_PROJECTION}`);
         }
-      });
+      }, VERIFY_TX_OPTIONS);
       if (regressed.length > 0) {
         const refusal: Refusal = {
           code: 'marked-but-corrupt',
@@ -691,11 +720,27 @@ export async function runInboxRepairStep(
     // match canonical — the exact damage a v1 serializer does — refuses. A refusal writes NO marker
     // and exits non-zero, so the next start (with the old release gone) repairs and marks.
     const concurrent: string[] = [];
+    let appeared: string[] = [];
     await prisma.$transaction(async (tx) => {
-      // The RELAY's own lock first, held to COMMIT, then the diagnosis. Taking the generation row
-      // before the stream row also matches `dispatchProjection`'s order (it takes the generation
-      // and never the stream), so the pair cannot cycle.
+      // The locks the writers obey, held to COMMIT, then the diagnosis.
       await lockActiveGenerationsForVerify(tx, DECISIONS_PROJECTION, projectIds);
+
+      // THE PROJECT SET IS RE-READ HERE, NOT TRUSTED FROM THE SNAPSHOT (Codex on `c57b167`).
+      // `projectIds` was read at the top of the step. A previous-release process can CREATE a
+      // project after that — and populate its `decisions.inbox` generation with the legacy
+      // serializer — and every downstream check (the rebuild, the report's project count, the locks
+      // above) is scoped to the old set, so the new project is neither rebuilt nor diagnosed while
+      // the permanent marker is written over it. Asked through the owning module, as the first read
+      // was. The transaction is SERIALIZABLE, so a project inserted between this re-read and COMMIT
+      // is a serialization failure rather than a phantom this check cannot see.
+      const now = await orgs.deploymentProjectIdentity(tx as never, (env[ANCHOR_ENV] ?? '').trim());
+      appeared = now.projectIds.filter((id) => !projectIds.includes(id));
+      const vanished = projectIds.filter((id) => !now.projectIds.includes(id));
+      if (appeared.length > 0 || vanished.length > 0) {
+        appeared = [...appeared, ...vanished.map((id) => `${id} (gone)`)];
+        return;                                                // leave the transaction without a marker
+      }
+
       for (const projectId of [...projectIds].sort()) {
         const again = await ops.diagnoseIn(tx as never, DECISIONS_PROJECTION, projectId);
         if (again.state === 'corrupt') concurrent.push(`${projectId}/${DECISIONS_PROJECTION}`);
@@ -712,7 +757,21 @@ export async function runInboxRepairStep(
             + `anchor ${config?.anchorProjectId ?? 'n/a'}`,
         },
       });
-    });
+    }, { ...VERIFY_TX_OPTIONS, isolationLevel: 'Serializable' });
+    if (appeared.length > 0) {
+      const refusal: Refusal = {
+        code: 'project-set-changed',
+        message:
+          'the project set changed while the repair was running: '
+          + `${appeared.join(', ')}. The rebuild, its verification and the locks above are all `
+          + 'scoped to the set read at the start, so a project that appeared since has been neither '
+          + 'rebuilt nor diagnosed — and a previous-release process is exactly what would create one '
+          + 'and populate its register with the legacy serializer. NO marker was written; the next '
+          + 'start covers the full set. See docs/RUNBOOK.md §P64CIIIR.',
+      };
+      log(`[4c-iii-r] REFUSED (${refusal.code}): ${refusal.message}`);
+      return { ...base, ok: false, action: 'refused', projectCount, refusal, report };
+    }
     if (concurrent.length > 0) {
       const refusal: Refusal = {
         code: 'concurrent-corruption',
