@@ -6,11 +6,17 @@
 #
 # The states, and what each one is FOR:
 #
-#   A. FRESH/EMPTY — a first deploy. The database holds no projects, so there is no `decisions.inbox`
-#      generation to repair (generations are per project). The step must report NOT APPLICABLE, write
-#      NO marker, and let the deploy proceed: a gate a first deploy cannot clear is a wall.
-#   B. POPULATED + UNCONFIGURED — the vacuity refusal. A database in service with the two identity
-#      variables unset must ABORT, so an unconfigured step can never pass while claiming a repair.
+#   A. FRESH/EMPTY — a first deploy. Nothing has ever served `decisions.inbox` here, so the defect's
+#      precondition is absent. The step must report NOT APPLICABLE, write NO marker, and let the
+#      deploy proceed: a gate a first deploy cannot clear is a wall.
+#   A2. POPULATED BUT NEVER SERVED — projects exist, but no `decisions.inbox` generation does. This
+#      is every test harness that drives the real migrate.sh over a psql-planted fixture, and it is
+#      also a real deployment that has never read the register. Still NOT APPLICABLE, still no
+#      marker — and this is the state that keeps this step from coupling every other proof to its
+#      configuration.
+#   B. IN SERVICE + UNCONFIGURED — the vacuity refusal. A database that HAS served the register,
+#      with the two identity variables unset, must ABORT, so an unconfigured step can never pass
+#      while claiming a repair.
 #   C. POPULATED + WRONG DATABASE — the anchor names no project here. Must ABORT. This is the state
 #      a self-count cannot see: `projects === count(Project)` holds on any database.
 #   C2. POPULATED + BELOW THE MINIMUM — the second identity clause, ABORTing on a database missing
@@ -62,13 +68,27 @@ mutated() { if cmp -s "$1" scripts/migrate.sh; then
             fi; return 0; }
 
 # Two projects, one of them the configured anchor. Written with psql rather than the seed so the
-# proof depends on nothing but the migrated schema.
+# proof depends on nothing but the migrated schema. This is the HARNESS shape: rows exist, but no
+# application has run, so `decisions.inbox` has never been served here.
 plant() {
   $PSQL >/dev/null <<SQL || { bad "could not plant the fixture"; return 1; }
 INSERT INTO "Org"("id","name","slug") VALUES ('p64ciiir-org','Proof Org','p64ciiir-org') ON CONFLICT DO NOTHING;
 INSERT INTO "Project"("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
 VALUES ('$ANCHOR','p64ciiir-org','Anchor','ANC','','Planning','ANC-01','01 Jan 2026','31 Dec 2026',0,0,0),
        ('p64ciiir-second','p64ciiir-org','Second','SEC','','Planning','SEC-01','01 Jan 2026','31 Dec 2026',0,0,0)
+ON CONFLICT DO NOTHING;
+SQL
+  return 0
+}
+
+# The IN-SERVICE shape: a database that has actually served the register carries a `decisions.inbox`
+# generation per project it has read. That — not the presence of projects — is the defect's
+# precondition, and it is what makes the step applicable.
+serve() {
+  $PSQL >/dev/null <<SQL || { bad "could not put the fixture in service"; return 1; }
+INSERT INTO "ProjectionGeneration"("id","consumer","projectId","generation","status","cursorStatus","catalogVersion","updatedAt")
+VALUES ('p64ciiir-g1','decisions.inbox','$ANCHOR',1,'active','live',1,now()),
+       ('p64ciiir-g2','decisions.inbox','p64ciiir-second',1,'active','live',1,now())
 ON CONFLICT DO NOTHING;
 SQL
   return 0
@@ -92,14 +112,26 @@ OUT="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" = "0" ] && ok "migrate.sh exited 0 — a first deploy is not walled off by a gate it cannot clear" \
                 || { bad "migrate.sh exited $RC on a fresh database"; printf '%s\n' "$OUT" | tail -25; }
 printf '%s\n' "$OUT" | grep -q '"action": "not-applicable"' \
-  && ok "and the step reported NOT APPLICABLE: no project, so no register to repair" \
+  && ok "and the step reported NOT APPLICABLE: nothing has ever served the register here" \
   || bad "the step did not report not-applicable on an empty database"
 [ "$(markers)" = "0" ] && ok "NO marker was written, so a later populated start still repairs" \
                        || bad "a marker was written on a database with nothing to repair"
 
-# ══ B. POPULATED + UNCONFIGURED ═══════════════════════════════════════════════════════════════
-say "B. the same database, now holding projects, with the step still UNCONFIGURED"
+# ══ A2. POPULATED BUT NEVER SERVED ════════════════════════════════════════════════════════════
+say "A2. the same database with PROJECTS planted, but the register never served — the harness shape"
 plant || exit 1
+OUT="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)"; RC=$?
+[ "$RC" = "0" ] && ok "migrate.sh exited 0 — a fixture-planted database needs no configuration for this step" \
+                || { bad "migrate.sh exited $RC over a planted-but-never-served database"; printf '%s\n' "$OUT" | tail -25; }
+printf '%s\n' "$OUT" | grep -q '"action": "not-applicable"' \
+  && ok "and it is STILL not-applicable: projects alone are not the defect's precondition" \
+  || bad "a database that never served the register was not reported not-applicable"
+[ "$(markers)" = "0" ] && ok "no marker was written, so a later in-service start still repairs" \
+                       || bad "a marker was written for a database with nothing to repair"
+
+# ══ B. IN SERVICE + UNCONFIGURED ══════════════════════════════════════════════════════════════
+say "B. the same database, now IN SERVICE (a decisions.inbox generation exists), still UNCONFIGURED"
+serve || exit 1
 OUT="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — an unconfigured step cannot pass vacuously" \
                  || { bad "migrate.sh accepted an unconfigured repair on a database in service"; printf '%s\n' "$OUT" | tail -25; }
@@ -168,6 +200,7 @@ say "F. a repair that FAILS aborts the deploy, records nothing, and the next run
 recreate
 OUT="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)" || { bad "could not re-establish the schema"; printf '%s\n' "$OUT" | tail -20; }
 plant || exit 1
+serve || exit 1
 $PSQL >/dev/null <<SQL || bad "could not install the failure probe"
 CREATE FUNCTION p64ciiir_fail() RETURNS trigger LANGUAGE plpgsql AS \$\$
 BEGIN
@@ -202,6 +235,7 @@ say "G. coupling — with the step removed from a COPY, the unconfigured databas
 recreate
 OUT="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)" || bad "could not re-establish the schema for state G"
 plant || exit 1
+serve || exit 1
 COPY="$(mktemp)"
 awk '/^  if ! node "\$INBOX_REPAIR"; then$/ {skip=5} skip>0 {skip--; next} {print}' scripts/migrate.sh > "$COPY"
 if mutated "$COPY"; then

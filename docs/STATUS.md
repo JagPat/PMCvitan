@@ -112,25 +112,34 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    `PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS`, a whole number ≥ 1 that `count(Project)` must meet. Both
    are checked on EVERY start, marker or not, so a deploy later re-pointed cannot serve.
 
-   **ONE DELIBERATE DEVIATION FROM THE RECORDED WORDING, stated as one.** The record made both
-   variables unconditionally required. Taken literally that also refuses the FIRST deploy of a new
-   environment, whose database has no projects and therefore no anchor id to configure — a gate that
-   cannot be cleared. So APPLICABILITY IS DECIDED BY THE DATABASE, in the same schema-aware shape
-   every other preflight in `migrate.sh` already uses, and never by configuration: a ZERO-project
-   database is `not-applicable` (generations are per project, so it provably carries nothing to
-   repair — and it writes NO marker and claims NO repair, so the next start over a populated
-   database still repairs in full), and a database holding one or more — which every database in
-   service is — REQUIRES both variables and ABORTS without them.
+   **APPLICABILITY IS THE DEFECT'S OWN PRECONDITION, READ FROM THE DATABASE.** The record made both
+   variables unconditionally required. Taken literally that refuses the FIRST deploy of a new
+   environment, whose database has no anchor id to configure — a gate that cannot be cleared — and
+   it equally refuses every harness that drives the real `migrate.sh` over a synthetic database. So
+   the step is schema-aware in the same way every other preflight in `migrate.sh` already is, and
+   asks the one question that decides whether the defect can exist here at all: **does this database
+   have any `decisions.inbox` projection generation?** NONE means nothing has ever served this
+   register (`DecisionProjection` rows are generation-scoped, and no migration creates a generation
+   on a fresh database — `20270810000000`'s repair inserts only inside a loop over generations that
+   already exist), so there is nothing a pre-4c-ii worker could have left: `not-applicable`, NO
+   marker, NO claimed repair, and a later start over a database that HAS been in service still
+   repairs in full. ONE OR MORE is a database in service, the only kind that can carry the defect:
+   both variables REQUIRED, an unset one ABORTS.
 
    **That distinction is the load-bearing one, and it is why there is no allowance VALUE.** An
    "explicit fresh-install allowance" expressed as a configured minimum of 0 would put the step's
    own bypass back inside the configuration the identity check exists to distrust: a production
    deploy carrying it would pass while repairing nothing, which is exactly the vacuity #513 round 2
-   refused. Nothing this step reads can be set to make it skip a database that has projects, and a
-   minimum below 1 is refused as `minimum-invalid` rather than honoured. The five sibling proofs
-   that drive the real `migrate.sh` are therefore CONFIGURED like a deployment — anchored to the
-   project each one actually plants — rather than given a skip value, so 4c-iii-r stays enforced
-   throughout them.
+   refused. Nothing this step reads can be set to make it skip a database that has served the
+   register, and a minimum below 1 is refused as `minimum-invalid` rather than honoured.
+
+   **And it is why no sibling proof carries this step's configuration.** An earlier head here used
+   "does the database hold any project" as the discriminator, which is not the defect's precondition
+   (a project that has never been read has no generation to corrupt) and which forced the four
+   proofs that drive `migrate.sh` over a populated fixture to each export an anchor. That coupling
+   does not even work — `schedule-b1-baseline-proof.sh` plants `b1-proj` in some states and
+   `b1e-proj` in others, so one exported anchor is `anchor-absent` on the rest — and it would grow
+   with every future proof. Those four scripts are byte-identical to `main` again.
 
 4. **THE CLIENT REFRESH IS STRUCTURAL, not a step.** The rebuild finishes before the server accepts
    connections; the container restart disconnects every client and `useApiSync` refreshes on socket
@@ -181,10 +190,11 @@ that decided it is recorded on #515 and repeated here because it is the substanc
 finding: #515 made the fresh-install case a CONFIGURED value (`EXPECTED_MIN_PROJECTS=0`, skipping
 the anchor), which is a bypass a production deploy can carry, and its five sibling proofs set it, so
 the step was never exercised there. Applicability decided from the database has no such value.
-#515's one real finding — that four sibling proofs which drive the real `migrate.sh` plant projects,
-so an unconfigured step would refuse them — IS carried here, fixed by configuring each of them like
-a deployment rather than switching the step off. #507, #512 and #513 remain pending and must each be
-named by a later merged unit.
+#515's one real finding — that proofs which drive the real `migrate.sh` plant projects, so an
+unconfigured step would refuse them — IS carried here, and fixed at the root instead: the
+discriminator is the register's own service history, so those four scripts need no configuration and
+are byte-identical to `main`. #507, #512 and #513 remain pending and must each be named by a later
+merged unit.
 
 ### The #511 record — the directive STOOD at that landing; the observation's attribution is WITHDRAWN
 

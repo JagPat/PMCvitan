@@ -62,6 +62,10 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     single = new PrismaClient({ datasourceUrl: singleConnectionUrl(process.env.DATABASE_URL!) });
     ops = new ProjectionRebuildOperations(single as never, new ProjectionRebuilder(single as never));
     env = { [ANCHOR_ENV]: f.projectA.id, [MINIMUM_ENV]: '1' };
+    // Put the database in the IN-SERVICE shape the step's applicability turns on: a
+    // `decisions.inbox` generation exists, which is the defect's precondition. Without this every
+    // live probe below would correctly report `not-applicable` and prove nothing.
+    await putInService();
   });
   afterAll(async () => {
     await clearMarkers();
@@ -78,6 +82,16 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
   const clearMarkers = async () => {
     await t.prisma.outboxOperatorAction.deleteMany({ where: { operatorIdentity: PHASE6_4C_IIIR_OPERATOR } });
   };
+  /** A real rebuild, so the database carries a `decisions.inbox` generation exactly as one in
+   *  service does — built through the production rebuilder, never a hand-written row. */
+  const putInService = async () => {
+    const rebuilder = new ProjectionRebuilder(single as never);
+    for (const p of await t.prisma.project.findMany({ select: { id: true } })) {
+      await rebuilder.rebuild(DECISIONS_PROJECTION, p.id);
+    }
+  };
+  const servedGenerations = () =>
+    t.prisma.projectionGeneration.count({ where: { consumer: DECISIONS_PROJECTION } });
   const markerCount = () =>
     t.prisma.outboxOperatorAction.count({ where: { action: PHASE6_4C_IIIR_MARKER_ACTION } });
   const invocationCount = () =>
@@ -125,7 +139,7 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
   });
 
   // ── PROBE 2: every identity refusal ─────────────────────────────────────────────────────────
-  it('PROBE 2 — an unset variable is a refusal on a database that holds projects, and not on one that does not', () => {
+  it('PROBE 2 — an unset variable is a refusal on a database that has served the register, and not on one that has not', () => {
     expect(readIdentityConfig({}, true)).toMatchObject({ ok: false, refusal: { code: 'identity-unconfigured' } });
     const both = readIdentityConfig({}, true);
     expect(both.ok).toBe(false);
@@ -134,7 +148,8 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     expect(readIdentityConfig({ [ANCHOR_ENV]: 'p' }, true)).toMatchObject({ ok: false, refusal: { code: 'identity-unconfigured' } });
     // blank is unset, not configured
     expect(readIdentityConfig({ [ANCHOR_ENV]: '  ', [MINIMUM_ENV]: '1' }, true)).toMatchObject({ ok: false });
-    // a projectless database has nothing to repair, so an unconfigured deploy is not refused there
+    // a database that never served the register has nothing to repair, so an unconfigured deploy is
+    // not refused there — which is what keeps every migrate.sh harness free of this configuration
     expect(readIdentityConfig({}, false)).toEqual({ ok: true, config: null });
   });
 
@@ -148,15 +163,40 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
   });
 
   it('PROBE 2c — applicability comes from the DATABASE, not the configuration: a projectless database is not-applicable even when configured', async () => {
-    // Asserted on the pure reader, because the live database this suite runs against always holds
-    // the fixture's projects: `applicable` is what the step derives from `count(Project)`, and the
-    // step consults it BEFORE the anchor. A configured deploy over an empty database therefore ends
-    // `not-applicable` with no marker and no claimed repair — never a success it could hide behind.
+    // The pure reader's half of PROBE 2d: `applicable` is what the step derives from the served
+    // generation count, and it is consulted BEFORE the anchor, so a configured deploy over a
+    // never-served database ends `not-applicable` — never a success it could hide behind. A
+    // malformed value is still named there rather than ignored.
     expect(readIdentityConfig({ [ANCHOR_ENV]: 'anywhere', [MINIMUM_ENV]: '5' }, false))
       .toEqual({ ok: true, config: { anchorProjectId: 'anywhere', expectedMinProjects: 5 } });
     // and a malformed value is still NAMED there rather than ignored
     expect(readIdentityConfig({ [ANCHOR_ENV]: 'anywhere', [MINIMUM_ENV]: '0' }, false))
       .toMatchObject({ ok: false, refusal: { code: 'minimum-invalid' } });
+  });
+
+  it('PROBE 2d — a database that has NEVER served the register is not-applicable even when CONFIGURED, and writes no marker', async () => {
+    // The discriminator is the defect's own precondition, read from the database: with no
+    // `decisions.inbox` generation, `DecisionProjection` rows are unreachable (they are
+    // generation-scoped), so there is nothing the read path would serve and nothing a pre-4c-ii
+    // worker could have left. This is also the shape of every test harness that drives the real
+    // `migrate.sh` over a psql-planted fixture — which is why those harnesses need no configuration.
+    await t.prisma.decisionProjection.deleteMany({});
+    await t.prisma.projectionGeneration.deleteMany({ where: { consumer: DECISIONS_PROJECTION } });
+    expect(await servedGenerations()).toBe(0);
+
+    const outcome = await runInboxRepairStep(single, ops, env);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.action).toBe('not-applicable');
+    expect(outcome.markerWritten).toBe(false);
+    expect(await markerCount()).toBe(0);
+    // and it claimed no repair, so a later in-service start still repairs in full
+    expect(outcome.report).toBeUndefined();
+
+    await putInService();
+    expect(await servedGenerations()).toBeGreaterThan(0);
+    const inService = await runInboxRepairStep(single, ops, env);
+    expect(inService.action).toBe('repaired');
+    expect(await markerCount()).toBe(1);
   });
 
   it('PROBE 3 — an anchor that names no project in the connected database ABORTS, and writes no marker', async () => {
@@ -178,7 +218,7 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     expect(await markerCount()).toBe(0);
   });
 
-  it('PROBE 4b — an unconfigured step ABORTS on a database that holds projects', async () => {
+  it('PROBE 4b — an unconfigured step ABORTS on a database that has served the register', async () => {
     const outcome = await runInboxRepairStep(single, ops, {});
     expect(outcome.ok).toBe(false);
     expect(outcome.refusal?.code).toBe('identity-unconfigured');

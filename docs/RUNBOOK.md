@@ -1200,13 +1200,21 @@ come from outside the connection, and project ids are unguessable, so a wrong da
 contain the anchor. Both are checked on EVERY start, marker or not, so a deploy later re-pointed at
 another database still aborts.
 
-**Applicability is decided by the DATABASE, never by configuration.** A database holding ZERO
-projects is reported `not-applicable` and the deploy proceeds — a `decisions.inbox` generation
-exists per project, so such a database provably has nothing to repair, and no marker is written.
-That is what keeps a first deploy of a new environment possible. Every database that HOLDS projects
-requires both variables and refuses an unset one, and there is no value you can set that makes the
-step skip such a database: a minimum below 1 is refused as a misconfiguration rather than honoured
-as an allowance.
+**Applicability is the defect's own precondition, read from the DATABASE and never from
+configuration.** The step asks whether this database has any `decisions.inbox` projection
+generation:
+
+- **None** — nothing has ever served this register here. `DecisionProjection` rows are
+  generation-scoped, so there is nothing the read path would serve and nothing a pre-4c-ii worker
+  could have left behind. Reported `not-applicable`; the deploy proceeds and **no marker is
+  written**, so a later start over a database that has been in service still repairs in full. This
+  is the fresh-install shape, and also the shape of every test harness that drives `migrate.sh` over
+  a psql-planted fixture — which is why none of them carry this step's configuration.
+- **One or more** — a database in service, the only kind that can carry the defect. Both variables
+  are required and an unset one aborts.
+
+There is no value you can set that makes the step skip a database that has served the register: a
+minimum below 1 is refused as a misconfiguration rather than honoured as an allowance.
 
 ### What each refusal means, and what to do
 

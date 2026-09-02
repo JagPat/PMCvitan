@@ -52,22 +52,34 @@ import type { ProjectionRebuildOperations, RebuildRunReport } from './rebuild-op
  *    contain it) and {@link MINIMUM_ENV} (an integer >= 1 that `count(Project)` must meet). The
  *    identity check runs on EVERY start, marker or not, so a later misconfiguration cannot serve.
  *
- * ONE DELIBERATE DEVIATION FROM THE RECORDED SPEC, stated as one. The record makes both variables
- * unconditionally required ("an unset one aborts the deploy"). Taken literally that also refuses
- * the FIRST deploy of a brand-new environment, whose database has no projects and therefore no
- * anchor id to configure — a gate that cannot be cleared. So APPLICABILITY IS DECIDED BY THE
- * DATABASE, in the same schema-aware shape every other preflight in `migrate.sh` already uses, and
- * never by configuration: a database holding ZERO projects is NOT APPLICABLE (generations are per
- * project, so it provably carries none to repair), and a database holding one or more — which every
- * database in service is — REQUIRES both variables and ABORTS without them.
+ * APPLICABILITY IS THE DEFECT'S OWN PRECONDITION, READ FROM THE DATABASE. The record makes both
+ * variables unconditionally required ("an unset one aborts the deploy"). Taken literally that
+ * refuses the FIRST deploy of a brand-new environment, whose database has no anchor id to configure
+ * — a gate that cannot be cleared — and it would equally refuse every test harness that drives the
+ * real `migrate.sh` over a synthetic database. So the step is schema-aware in the same way every
+ * other preflight in `migrate.sh` already is, and asks the one question that decides whether the
+ * defect can exist here at all: DOES THIS DATABASE HAVE ANY `decisions.inbox` PROJECTION GENERATION?
+ *
+ *   - NONE — nothing has ever served this register here. `DecisionProjection` rows are
+ *     generation-scoped, so with no generation there is nothing the read path would serve and
+ *     nothing a pre-4c-ii worker could have left behind. No migration creates a generation on a
+ *     fresh database (`20270810000000`'s repair inserts only INSIDE a loop over generations that
+ *     already exist), so this is exactly the fresh-install and test-harness shape. NOT APPLICABLE:
+ *     no marker is written and no repair is claimed, so a later start over a database that HAS been
+ *     in service still runs the repair in full.
+ *   - ONE OR MORE — a database in service, which is the only kind that can carry the defect. Both
+ *     identity variables are REQUIRED and an unset one ABORTS.
  *
  * Deciding it from the database rather than from a settable value is the point, not an accident. An
  * "allowance" variable — a configured minimum of 0, say — would put the step's own bypass back
  * inside the very configuration the identity check exists to distrust, and a production deploy
  * carrying it would pass while repairing nothing. Nothing this step reads can be set to make it
- * skip a database that has projects; a minimum below 1 is refused outright. And the not-applicable
- * branch is not a vacuous success either: it writes NO marker and claims NO repair, so the next
- * start over a populated database still runs the repair in full.
+ * skip a database that has served this register; a minimum below 1 is refused outright.
+ *
+ * The earlier discriminator here was "does the database hold any project", and it is worse in both
+ * directions: it is not the defect's precondition (a project that has never been read has no
+ * generation to corrupt), and it forces every harness that drives `migrate.sh` over a populated
+ * fixture to carry this step's configuration — a coupling that grows with every future proof.
  */
 
 /** The deploy-configured production `Project.id` that must exist in the connected database. */
@@ -150,8 +162,9 @@ export function readIdentityConfig(
         code: 'identity-unconfigured',
         message:
           `${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} unset while this database `
-          + 'holds projects. Both are required so the repair can never report success against an '
-          + 'empty or wrong database. Set them per docs/RUNBOOK.md §P64CIIIR and redeploy.',
+          + 'has served the decisions.inbox register. Both are required so the repair can never '
+          + 'report success against an empty or wrong database. Set them per docs/RUNBOOK.md '
+          + '§P64CIIIR and redeploy.',
       },
     };
   }
@@ -243,7 +256,11 @@ export async function runInboxRepairStep(
   await prisma.$executeRaw`SELECT pg_advisory_lock(${PHASE6_4C_IIIR_LOCK_KEY}::bigint)`;
   try {
     const projectCount = await prisma.project.count();
-    const identity = readIdentityConfig(env, projectCount > 0);
+    // The defect's precondition, asked directly: has this database ever served the register?
+    const servedGenerations = await prisma.projectionGeneration.count({
+      where: { consumer: DECISIONS_PROJECTION },
+    });
+    const identity = readIdentityConfig(env, servedGenerations > 0);
     if (!identity.ok) {
       log(`[4c-iii-r] REFUSED (${identity.refusal.code}): ${identity.refusal.message}`);
       return { ...base, ok: false, action: 'refused', projectCount, refusal: identity.refusal };
@@ -252,20 +269,20 @@ export async function runInboxRepairStep(
     base.anchorProjectId = config?.anchorProjectId ?? null;
     base.expectedMinProjects = config?.expectedMinProjects ?? null;
 
-    if (projectCount === 0) {
-      // NOT APPLICABLE, and decided from the DATABASE rather than from configuration — which is
-      // what keeps it out of reach of a misconfiguration. A `decisions.inbox` generation exists PER
-      // PROJECT, so a projectless database provably carries none to repair. This is not a vacuous
-      // success: NO marker is written and no repair is claimed, so the next start over a populated
-      // database still runs the repair in full.
+    if (servedGenerations === 0) {
+      // NOT APPLICABLE, and decided from the DATABASE rather than from configuration — which is what
+      // keeps it out of reach of a misconfiguration. With no generation, nothing has ever served
+      // this register here: `DecisionProjection` rows are generation-scoped, so there is nothing the
+      // read path would serve and nothing a pre-4c-ii worker could have left behind. Not a vacuous
+      // success either — NO marker is written and no repair is claimed, so a later start over a
+      // database that HAS been in service still runs the repair in full.
       //
       // Asked BEFORE the identity assertions deliberately. A first deploy of a new environment has
       // no project to anchor to, and a step that demanded one there would be a gate nothing could
-      // clear. The case this ordering gives up — a CONFIGURED deploy pointed at an EMPTY database —
-      // is one this step could not usefully guard anyway: it ends with no marker and no claimed
-      // repair either way, and an application serving an empty database is not a defect a register
-      // check is the right place to catch.
-      log('[4c-iii-r] not applicable: the database holds no projects, so there is no register to repair');
+      // clear. The case this ordering gives up — a CONFIGURED deploy pointed at a database that has
+      // never served the register — ends with no marker and no claimed repair either way.
+      log('[4c-iii-r] not applicable: no decisions.inbox generation exists, so this database has '
+        + 'never served the register and carries nothing to repair');
       return { ...base, ok: true, action: 'not-applicable', projectCount };
     }
 

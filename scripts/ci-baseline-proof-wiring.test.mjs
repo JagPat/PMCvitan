@@ -57,12 +57,14 @@ const PINNED_PROOFS = [
     // already had — the Phase 6 4c-iii-r one-shot `decisions.inbox` repair. The integration suite
     // exercises the STEP; only this exercises the RUNNER.
     verdicts: [/4c-iii-r production-runner proof: PASSED/u, /4c-iii-r production-runner proof: FAILED/u],
-    // A. fresh/empty (a first deploy is not walled off) · B. populated + unconfigured (the vacuity
-    // refusal) · C/C2/C3. the three identity refusals · D. the repair runs and is verified ·
-    // E/E2. the marker skips, but never excuses identity · F. a failed attempt writes no marker and
-    // is retried · G. coupling.
-    states: ['A. FRESH/EMPTY', 'B. POPULATED + UNCONFIGURED', 'C. WRONG DATABASE', 'C2.', 'C3.',
-             'D. CONFIGURED AND CORRECT', 'E. RE-RUN', 'E2.', 'F. A FAILED ATTEMPT', 'G. COUPLING'],
+    // A. fresh/empty (a first deploy is not walled off) · A2. populated but never served (the
+    // harness shape — no configuration needed, which is what keeps this step from coupling every
+    // other proof) · B. in service + unconfigured (the vacuity refusal) · C/C2/C3. the three
+    // identity refusals · D. the repair runs and is verified · E/E2. the marker skips, but never
+    // excuses identity · F. a failed attempt writes no marker and is retried · G. coupling.
+    states: ['A. FRESH/EMPTY', 'A2. POPULATED BUT NEVER SERVED', 'B. IN SERVICE + UNCONFIGURED',
+             'C. WRONG DATABASE', 'C2.', 'C3.', 'D. CONFIGURED AND CORRECT', 'E. RE-RUN', 'E2.',
+             'F. A FAILED ATTEMPT', 'G. COUPLING'],
   },
 ];
 
