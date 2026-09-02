@@ -241,7 +241,17 @@ jobs:
     needs: [review-scope, battery-plan]
     if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Budget arithmetic, not a round number. This job carries the whole API battery AND every
+    # production-runner proof: setup + unit + the ~100-file integration battery over real
+    # PostgreSQL (observed ~48 min on a slow runner) + typecheck + build, then THREE runner proofs
+    # each bounded at 25 min of their own (schedule B1, schema enforcement, Phase 6 4c-iii-r),
+    # observed at ~10 min each. A 60-minute job budget could not hold that: the run on
+    # deb9b2f finished the battery and the first proof, then the JOB timeout cancelled the second
+    # proof mid-flight and skipped the third — reported as a failure that no test caused. 100
+    # minutes covers the observed worst case (~78 min) with headroom for a slow runner, and each
+    # proof still has its own 25-minute step bound so a genuinely hung proof fails fast rather
+    # than consuming the job.
+    timeout-minutes: 100
     services:
       postgres:
         image: postgres:16
