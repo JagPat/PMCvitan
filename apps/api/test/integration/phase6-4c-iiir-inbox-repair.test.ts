@@ -90,6 +90,11 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
       where: { consumer: DECISIONS_PROJECTION, projectId, status: 'active' },
       select: { generation: true },
     });
+  /** Every generation row for a project, whatever its status — the count a rebuild moves by one. */
+  const generationRows = (projectId: string) =>
+    t.prisma.projectionGeneration.count({ where: { consumer: DECISIONS_PROJECTION, projectId } });
+  const activeGenerations = (projectId: string) =>
+    t.prisma.projectionGeneration.count({ where: { consumer: DECISIONS_PROJECTION, projectId, status: 'active' } });
 
   // ── PROBE 1: the vacuity the identity check exists to refuse ────────────────────────────────
   it('PROBE 1 — a report over ZERO projects satisfies every success field, so the self-count alone is not identity', () => {
@@ -133,13 +138,25 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     expect(readIdentityConfig({}, false)).toEqual({ ok: true, config: null });
   });
 
-  it('PROBE 2b — the minimum must be a whole number >= 1, so a zero or a rounded literal cannot re-open the vacuity', () => {
+  it('PROBE 2b — the minimum must be a whole number >= 1, so no configured value can become a skip', () => {
     for (const bad of ['0', 'x', '1.0', '1e9', '2 or 3', '-1']) {
       expect(readIdentityConfig({ [ANCHOR_ENV]: 'p', [MINIMUM_ENV]: bad }, true))
         .toMatchObject({ ok: false, refusal: { code: 'minimum-invalid' } });
     }
     expect(readIdentityConfig({ [ANCHOR_ENV]: 'p', [MINIMUM_ENV]: '3' }, true))
       .toEqual({ ok: true, config: { anchorProjectId: 'p', expectedMinProjects: 3 } });
+  });
+
+  it('PROBE 2c — applicability comes from the DATABASE, not the configuration: a projectless database is not-applicable even when configured', async () => {
+    // Asserted on the pure reader, because the live database this suite runs against always holds
+    // the fixture's projects: `applicable` is what the step derives from `count(Project)`, and the
+    // step consults it BEFORE the anchor. A configured deploy over an empty database therefore ends
+    // `not-applicable` with no marker and no claimed repair — never a success it could hide behind.
+    expect(readIdentityConfig({ [ANCHOR_ENV]: 'anywhere', [MINIMUM_ENV]: '5' }, false))
+      .toEqual({ ok: true, config: { anchorProjectId: 'anywhere', expectedMinProjects: 5 } });
+    // and a malformed value is still NAMED there rather than ignored
+    expect(readIdentityConfig({ [ANCHOR_ENV]: 'anywhere', [MINIMUM_ENV]: '0' }, false))
+      .toMatchObject({ ok: false, refusal: { code: 'minimum-invalid' } });
   });
 
   it('PROBE 3 — an anchor that names no project in the connected database ABORTS, and writes no marker', async () => {
@@ -278,9 +295,12 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
   // ── PROBE 8: the barrier-controlled concurrent start of two REAL processes ───────────────────
   it('PROBE 8 — two processes released together run the repair EXACTLY once, and both exit 0', async () => {
     const projects = await liveProjects();
-    const genBefore = new Map<string, number | undefined>([
-      [f.projectA.id, (await activeGeneration(f.projectA.id))?.generation],
-      [f.projectB.id, (await activeGeneration(f.projectB.id))?.generation],
+    // Counted rather than compared by generation NUMBER: numbering is `max + 1` across every
+    // status, so an earlier probe's building row shifts it. The claim is "exactly ONE new
+    // generation, and exactly one serving", and that is what is measured.
+    const rowsBefore = new Map<string, number>([
+      [f.projectA.id, await generationRows(f.projectA.id)],
+      [f.projectB.id, await generationRows(f.projectB.id)],
     ]);
 
     // THE BARRIER. This suite's own single connection takes the step's advisory lock, so neither
@@ -338,9 +358,9 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
       expect(actions).toEqual(['repaired', 'skipped-marker-present']);
       expect(await markerCount()).toBe(1);
       expect(await invocationCount()).toBe(1);
-      for (const [projectId, before] of genBefore) {
-        const after = (await activeGeneration(projectId))?.generation;
-        expect(after).toBe((before ?? 0) + 1); // exactly ONE new activated generation per project
+      for (const [projectId, before] of rowsBefore) {
+        expect(await generationRows(projectId)).toBe(before + 1); // exactly ONE new generation
+        expect(await activeGenerations(projectId)).toBe(1); // and exactly one of them serves
       }
       expect(await liveProjects()).toBe(projects);
     } finally {

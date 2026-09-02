@@ -115,14 +115,22 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    **ONE DELIBERATE DEVIATION FROM THE RECORDED WORDING, stated as one.** The record made both
    variables unconditionally required. Taken literally that also refuses the FIRST deploy of a new
    environment, whose database has no projects and therefore no anchor id to configure — a gate that
-   cannot be cleared. The requirement is therefore scoped to the state where it carries meaning, in
-   the same schema-aware shape every other preflight in `migrate.sh` already uses: on a database
-   holding one or more projects — which every database in service is — an unset variable ABORTS.
-   Only a ZERO-project database is `not-applicable`, and that is not a vacuous success: generations
-   are per project, so such a database provably has nothing to repair, no marker is written, and the
-   next start over a populated database still repairs. When the variables ARE set they are enforced
-   in full regardless of the row count, so a CONFIGURED deploy pointed at an empty or wrong database
-   still aborts on the anchor.
+   cannot be cleared. So APPLICABILITY IS DECIDED BY THE DATABASE, in the same schema-aware shape
+   every other preflight in `migrate.sh` already uses, and never by configuration: a ZERO-project
+   database is `not-applicable` (generations are per project, so it provably carries nothing to
+   repair — and it writes NO marker and claims NO repair, so the next start over a populated
+   database still repairs in full), and a database holding one or more — which every database in
+   service is — REQUIRES both variables and ABORTS without them.
+
+   **That distinction is the load-bearing one, and it is why there is no allowance VALUE.** An
+   "explicit fresh-install allowance" expressed as a configured minimum of 0 would put the step's
+   own bypass back inside the configuration the identity check exists to distrust: a production
+   deploy carrying it would pass while repairing nothing, which is exactly the vacuity #513 round 2
+   refused. Nothing this step reads can be set to make it skip a database that has projects, and a
+   minimum below 1 is refused as `minimum-invalid` rather than honoured. The five sibling proofs
+   that drive the real `migrate.sh` are therefore CONFIGURED like a deployment — anchored to the
+   project each one actually plants — rather than given a skip value, so 4c-iii-r stays enforced
+   throughout them.
 
 4. **THE CLIENT REFRESH IS STRUCTURAL, not a step.** The rebuild finishes before the server accepts
    connections; the container restart disconnects every client and `useApiSync` refreshes on socket
@@ -165,9 +173,18 @@ resolver schedules a directive only from `correction_required` or `in_progress`.
 still names `94cf3af`, the 4c-iii merge: this landing's own merge SHA cannot be known while it is
 being written, and the next landing advances it.
 
-**THE LEDGER.** `Replaces: #514`, which is closed unmerged along with #513 — both were STATUS-only
-and neither carried the correction. #507 and #512 remain pending and must each be named by a later
-merged unit.
+**THE LEDGER, AND THE DUPLICATE.** `Replaces: #514`, which is closed unmerged along with #513 —
+both were STATUS-only and neither carried the correction. #515 opened the same unit in parallel from
+the same base and is **closed** rather than left live: two claimants for one unit is the state the
+orchestrator forbids, and they conflict directly (both add a step to `migrate.sh`). The difference
+that decided it is recorded on #515 and repeated here because it is the substance of the round-2
+finding: #515 made the fresh-install case a CONFIGURED value (`EXPECTED_MIN_PROJECTS=0`, skipping
+the anchor), which is a bypass a production deploy can carry, and its five sibling proofs set it, so
+the step was never exercised there. Applicability decided from the database has no such value.
+#515's one real finding — that four sibling proofs which drive the real `migrate.sh` plant projects,
+so an unconfigured step would refuse them — IS carried here, fixed by configuring each of them like
+a deployment rather than switching the step off. #507, #512 and #513 remain pending and must each be
+named by a later merged unit.
 
 ### The #511 record — the directive STOOD at that landing; the observation's attribution is WITHDRAWN
 

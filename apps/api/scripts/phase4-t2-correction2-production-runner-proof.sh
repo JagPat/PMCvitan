@@ -37,6 +37,21 @@ PLANDIR="$(mktemp -d)"
 FPD="encode(digest('lsf.v1'||chr(31)||'trade:mason'||chr(31)||'skill:bar-bending'||chr(31)||'shift:day','sha256'),'hex')"
 FAIL=0
 
+# Phase 6 unit 4c-iii-r — this proof drives the REAL `scripts/migrate.sh`, whose last step on every
+# success path is the one-shot `decisions.inbox` repair. That step REQUIRES its two identity
+# variables on any database that holds projects, and this proof plants projects, so it is configured
+# here exactly as a deployment is: the anchor is the project this script actually plants
+# ('p1'), and the minimum is 1.
+#
+# Deliberately NOT a bypass value. The step decides "nothing to repair" from the DATABASE (zero
+# projects) and never from configuration, so there is no setting that skips it here — the empty
+# states below pass as not-applicable on their own, and the populated states really run the repair.
+# Configuring it this way keeps THIS proof measuring what it is about while leaving 4c-iii-r
+# enforced throughout, which a skip value would not.
+export PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="p1"
+export PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=1
+
+
 PSQL_ADMIN="psql -X -q -v ON_ERROR_STOP=1 -d postgres"
 T2C_ARTIFACT="dist/labour/t2c/t2c.cli.js"
 

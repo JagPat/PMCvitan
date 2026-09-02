@@ -55,15 +55,19 @@ import type { ProjectionRebuildOperations, RebuildRunReport } from './rebuild-op
  * ONE DELIBERATE DEVIATION FROM THE RECORDED SPEC, stated as one. The record makes both variables
  * unconditionally required ("an unset one aborts the deploy"). Taken literally that also refuses
  * the FIRST deploy of a brand-new environment, whose database has no projects and therefore no
- * anchor id to configure — a gate that cannot be cleared. So the requirement is scoped to the state
- * where it carries meaning, in the same schema-aware shape every other preflight in `migrate.sh`
- * already uses: on a database holding one or more projects — which every database in service is —
- * an unset variable ABORTS, and the step can never pass vacuously. Only a database with ZERO
- * projects is reported NOT APPLICABLE, and that is not a vacuous success: a `decisions.inbox`
- * generation exists per project, so a projectless database provably has nothing to repair, no
- * marker is written, and the next start over a populated database still runs the repair. When the
- * variables ARE set they are enforced in full regardless of the row count, so a CONFIGURED
- * production deploy pointed at an empty or wrong database still aborts on the anchor check.
+ * anchor id to configure — a gate that cannot be cleared. So APPLICABILITY IS DECIDED BY THE
+ * DATABASE, in the same schema-aware shape every other preflight in `migrate.sh` already uses, and
+ * never by configuration: a database holding ZERO projects is NOT APPLICABLE (generations are per
+ * project, so it provably carries none to repair), and a database holding one or more — which every
+ * database in service is — REQUIRES both variables and ABORTS without them.
+ *
+ * Deciding it from the database rather than from a settable value is the point, not an accident. An
+ * "allowance" variable — a configured minimum of 0, say — would put the step's own bypass back
+ * inside the very configuration the identity check exists to distrust, and a production deploy
+ * carrying it would pass while repairing nothing. Nothing this step reads can be set to make it
+ * skip a database that has projects; a minimum below 1 is refused outright. And the not-applicable
+ * branch is not a vacuous success either: it writes NO marker and claims NO repair, so the next
+ * start over a populated database still runs the repair in full.
  */
 
 /** The deploy-configured production `Project.id` that must exist in the connected database. */
@@ -248,6 +252,23 @@ export async function runInboxRepairStep(
     base.anchorProjectId = config?.anchorProjectId ?? null;
     base.expectedMinProjects = config?.expectedMinProjects ?? null;
 
+    if (projectCount === 0) {
+      // NOT APPLICABLE, and decided from the DATABASE rather than from configuration — which is
+      // what keeps it out of reach of a misconfiguration. A `decisions.inbox` generation exists PER
+      // PROJECT, so a projectless database provably carries none to repair. This is not a vacuous
+      // success: NO marker is written and no repair is claimed, so the next start over a populated
+      // database still runs the repair in full.
+      //
+      // Asked BEFORE the identity assertions deliberately. A first deploy of a new environment has
+      // no project to anchor to, and a step that demanded one there would be a gate nothing could
+      // clear. The case this ordering gives up — a CONFIGURED deploy pointed at an EMPTY database —
+      // is one this step could not usefully guard anyway: it ends with no marker and no claimed
+      // repair either way, and an application serving an empty database is not a defect a register
+      // check is the right place to catch.
+      log('[4c-iii-r] not applicable: the database holds no projects, so there is no register to repair');
+      return { ...base, ok: true, action: 'not-applicable', projectCount };
+    }
+
     if (config) {
       // The identity assertions run on EVERY start, marker or not: a deploy later re-pointed at a
       // different database must not serve just because the first one recorded a repair.
@@ -279,14 +300,6 @@ export async function runInboxRepairStep(
         `[4c-iii-r] identity ok: anchor ${config.anchorProjectId} present; `
         + `${projectCount} project(s) >= minimum ${config.expectedMinProjects}`,
       );
-    }
-
-    if (projectCount === 0) {
-      // Not a vacuous success: a `decisions.inbox` generation exists PER PROJECT, so a projectless
-      // database provably carries none to repair. No marker is written, so a later start over a
-      // populated database still runs the repair.
-      log('[4c-iii-r] not applicable: the database holds no projects, so there is no register to repair');
-      return { ...base, ok: true, action: 'not-applicable', projectCount };
     }
 
     const marker = await prisma.outboxOperatorAction.findFirst({

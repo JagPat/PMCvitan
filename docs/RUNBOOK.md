@@ -1200,10 +1200,13 @@ come from outside the connection, and project ids are unguessable, so a wrong da
 contain the anchor. Both are checked on EVERY start, marker or not, so a deploy later re-pointed at
 another database still aborts.
 
-A database holding ZERO projects is reported `not-applicable` and the deploy proceeds — a
-`decisions.inbox` generation exists per project, so such a database provably has nothing to repair,
-and no marker is written. That is what keeps a first deploy of a new environment possible; every
-database in service refuses an unset variable.
+**Applicability is decided by the DATABASE, never by configuration.** A database holding ZERO
+projects is reported `not-applicable` and the deploy proceeds — a `decisions.inbox` generation
+exists per project, so such a database provably has nothing to repair, and no marker is written.
+That is what keeps a first deploy of a new environment possible. Every database that HOLDS projects
+requires both variables and refuses an unset one, and there is no value you can set that makes the
+step skip such a database: a minimum below 1 is refused as a misconfiguration rather than honoured
+as an allowance.
 
 ### What each refusal means, and what to do
 
