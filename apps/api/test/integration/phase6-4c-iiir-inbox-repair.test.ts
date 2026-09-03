@@ -23,6 +23,10 @@ import {
   readIdentityConfig,
   runInboxRepairStep,
   summarizeForDeployLog,
+  resolveCatchUpBudgetMs,
+  CATCH_UP_BUDGET_MS,
+  CATCH_UP_BUDGET_DEFAULT_MS,
+  CATCH_UP_BUDGET_MAX_MS,
   SYSTEM_IDENTITY_ENV,
   diagnoseCurrentProjects,
   lockActiveGenerationsForVerify,
@@ -1601,16 +1605,16 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     expect(await markerCount()).toBe(1);
   });
 
-  it('R17-2 — a generation still UNVERIFIABLE after the re-ask is reported, not fatal', async () => {
-    // Rounds 8 and 9 settled that absence of evidence does not fail a deployment, and that rule
-    // survives the catch-up: a generation that is still unverifiable when re-asked cannot be
-    // judged, so the marker stands and the next start re-diagnoses under it.
+  it('R19-1 — a generation that never catches up REFUSES the deployment', async () => {
+    // Codex on `e7550f5`, reversing what R17-2 asserted one round earlier. Rounds 8 and 9 settled
+    // that absence of evidence must not fail a deployment — true at DIAGNOSIS time, and wrong here,
+    // because of what happens NEXT: an old relay rewrites v1 rows, a later non-decision event moves
+    // the stream head, and the relay stops before consuming it. The poll times out on `lagging`, the
+    // new API starts, and ITS relay consumes that event as a no-op — advancing the checkpoint
+    // without touching the rows, so `readServableGeneration` then serves the corrupted generation as
+    // current. Reporting is not enough when the next thing that happens hides the damage.
     //
-    // STATED HONESTLY: this exercises the re-ask returning `lagging` again, NOT the catch-up budget
-    // expiring. The budget poll reads the real checkpoint with its own SQL, which a `diagnoseIn`
-    // stub cannot stall — so this database, which is genuinely caught up, always resolves the wait
-    // immediately. The timeout branch is covered by inspection of the same code path, not here; a
-    // probe that claimed otherwise would be the round-17 mistake again.
+    // The budget is shortened through the env so this does not wait the production 30s.
     const stuck: ProjectionRebuildOperations = Object.create(ops);
     stuck.diagnoseIn = async (tx: never, consumer: string, projectId: string) => {
       const real = await ops.diagnoseIn(tx, consumer, projectId);
@@ -1618,10 +1622,72 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
       return { ...real, state: 'lagging' as const };            // unverifiable on every look
     };
 
-    const outcome = await runInboxRepairStep(single, stuck, env);
-    expect(outcome.ok).toBe(true);                              // reported, never fatal
-    expect(await markerCount()).toBe(1);
+    const outcome = await runInboxRepairStep(single, stuck, { ...env, PHASE6_4C_IIIR_CATCH_UP_MS: '1000' });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.action).toBe('refused');
+    expect(outcome.refusal?.code).toBe('concurrent-corruption');
+    expect(outcome.refusal?.message).toContain(f.projectA.id);
   }, 60_000);
+
+  it('R19-2 — the marker-present SKIP path is verified after its locks are released too', async () => {
+    // Codex on `e7550f5`. `diagnoseCurrentProjects` commits and releases its generation locks before
+    // the caller returns, so a pre-4c-ii relay WAITING on one takes it at that instant and rewrites
+    // the generation. An earlier head guarded only the rebuild path — while the marker-present skip
+    // returned success straight out of that same window, and that is the path EVERY start after the
+    // first takes.
+    await runInboxRepairStep(single, ops, env);                 // establish the marker
+    expect(await markerCount()).toBe(1);
+
+    // corrupt only on the SECOND look: the marker-present diagnosis passes, then the post-commit
+    // verification sees what the waiting writer did.
+    let looks = 0;
+    const afterRelease: ProjectionRebuildOperations = Object.create(ops);
+    afterRelease.diagnoseIn = async (tx: never, consumer: string, projectId: string) => {
+      const real = await ops.diagnoseIn(tx, consumer, projectId);
+      if (projectId !== f.projectA.id) return real;
+      looks += 1;
+      return looks === 1 ? real : { ...real, state: 'corrupt' as const };
+    };
+
+    const outcome = await runInboxRepairStep(single, afterRelease, env);
+    expect(outcome.action).toBe('refused');                     // NOT 'skipped-marker-present'
+    expect(outcome.ok).toBe(false);
+    expect(outcome.refusal?.code).toBe('concurrent-corruption');
+    expect(outcome.refusal?.message).toContain('NO rebuild was run');
+    expect(await markerCount()).toBe(1);                        // …and the marker is untouched
+  });
+
+  it('R19-3 — a non-finite catch-up budget cannot become an unbounded deadline', () => {
+    // Codex on `e7550f5`. `Number('Infinity')`, and `1e309` which overflows to it, would make the
+    // polling deadline infinite; a blocked generation then keeps the loop alive forever and
+    // `migrate.sh` has no outer timeout, so the deployment HANGS instead of refusing retryably.
+    for (const hostile of ['Infinity', '-Infinity', '1e309', 'NaN', 'not-a-number', '0', '-5']) {
+      expect(resolveCatchUpBudgetMs(hostile)).toBe(CATCH_UP_BUDGET_DEFAULT_MS);
+    }
+    expect(resolveCatchUpBudgetMs(undefined)).toBe(CATCH_UP_BUDGET_DEFAULT_MS);
+    expect(resolveCatchUpBudgetMs('   ')).toBe(CATCH_UP_BUDGET_DEFAULT_MS);
+    expect(resolveCatchUpBudgetMs(String(CATCH_UP_BUDGET_MAX_MS + 1))).toBe(CATCH_UP_BUDGET_DEFAULT_MS);
+    // …and a sane value is honoured
+    expect(resolveCatchUpBudgetMs('5000')).toBe(5_000);
+    expect(Number.isFinite(CATCH_UP_BUDGET_MS)).toBe(true);
+  });
+
+  it('R19-4 — migrate.sh tells the operator the truth on a path that already wrote a marker', () => {
+    // Codex on `e7550f5`. The post-commit refusal happens AFTER the marker commits, so "no marker
+    // was written, the next start retries" sends the operator into a loop: the next start finds the
+    // immutable marker, takes `marked-but-corrupt`, and refuses without rebuilding. BOTH invocation
+    // sites carry the fix — the ordinary path and the P3005 path — because either can hit it.
+    const sh = readFileSync(resolve(API_DIR, 'scripts/migrate.sh'), 'utf8');
+    const guarded = [...sh.matchAll(/markerWritten": true/gu)];
+    expect(guarded.length).toBe(2);
+    expect([...sh.matchAll(/A MARKER WAS WRITTEN before this failure/gu)].length).toBe(2);
+    expect([...sh.matchAll(/projection rebuild recovery/gu)].length).toBe(2);
+    // the unconditional claim is gone: it now lives only in the else-branch
+    for (const m of sh.matchAll(/No marker was written, so the next start retries/gu)) {
+      const before = sh.slice(Math.max(0, (m.index ?? 0) - 400), m.index ?? 0);
+      expect(before).toContain('else');
+    }
+  });
 
   it('R17-3 — the deploy log carries every field the evidence lease names', async () => {
     // Codex on `5f0d382`. `docs/STATUS.md` holds 4c-iv closed until runtime evidence names complete

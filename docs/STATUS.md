@@ -602,7 +602,31 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    included, so spreading `base` told the operator no marker was written and the next start would
    retry — while that start finds the marker and takes the `marked-but-corrupt` path.
 
-24. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (66 probes):
+24. **CODEX ROUND 19 (two P1s, two P2s on `e7550f5`) — all four correct.** **(a) P1: the
+   marker-present SKIP path returned success out of a released-lock window.** `diagnoseCurrentProjects`
+   commits and releases its generation locks before the caller returns, so a pre-4c-ii relay WAITING
+   on one takes it at that instant and rewrites the generation. Round 18 guarded only the rebuild
+   path with the post-commit verification — while the skip is the path EVERY start after the first
+   takes, so the hole was in the more travelled branch. The verification is now one helper used by
+   both exits. **(b) P1: an unresolved catch-up returned success.** Round 18 logged that case on the
+   rounds 8/9 rule that absence of evidence must not fail a deployment. That rule is right at
+   DIAGNOSIS time and wrong after the commit, because of what happens NEXT: an old relay rewrites v1
+   rows, a later non-decision event moves the stream head, the relay stops before consuming it, the
+   poll times out on `lagging`, the new API starts, and ITS relay consumes that event as a no-op —
+   advancing the checkpoint without touching the rows, so the corrupted generation is then served as
+   current. `R19-1` reverses what `R17-2` asserted one round earlier, deliberately. **(c) P2: the
+   catch-up budget could be made infinite.** `Number('Infinity')`, and `1e309` which overflows to it,
+   made the polling deadline unbounded; a blocked generation then keeps the loop alive forever and
+   `migrate.sh` has no outer timeout, so the deployment HANGS rather than refusing retryably.
+   `resolveCatchUpBudgetMs` now takes only a finite value inside `[1s, 300s]`. **(d) P2: `migrate.sh`
+   told the operator to redeploy on a path that had already written a marker** — the next start finds
+   the immutable marker, takes `marked-but-corrupt`, and refuses without rebuilding, so the operator
+   loops. The message is now derived from the step's own `markerWritten`, at BOTH invocation sites
+   (the ordinary path and the P3005 path — fixing one would have left the same trap on the other).
+   The production-runner proof's coupling mutation was pinned to the old one-line invocation and
+   caught the change, as designed; it now matches the new block.
+
+25. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (69 probes):
    the vacuity itself (a zero-project report satisfies every success field), each identity refusal,
    the verified repair, marker idempotence, identity enforced WITH the marker set, a non-verified
    report leaving NO marker and the next start succeeding, the unserialized generation collision

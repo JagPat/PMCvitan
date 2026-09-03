@@ -534,8 +534,28 @@ export async function diagnoseCurrentProjects(
   return { corrupt, unverified, unverifiedProjectIds };
 }
 
-/** How long the post-commit recheck lets a lagging relay finish before giving up on an answer. */
-export const CATCH_UP_BUDGET_MS = Number(process.env.PHASE6_4C_IIIR_CATCH_UP_MS ?? 30_000);
+/**
+ * How long the post-commit recheck lets a lagging relay finish before giving up on an answer.
+ *
+ * BOUNDED, because this is a DEADLINE (Codex on `e7550f5`). `Number('Infinity')` — and `1e309`,
+ * which overflows to it — would make the polling loop's deadline infinite, and a blocked or
+ * permanently lagging generation would then keep it alive forever. `migrate.sh` has no outer
+ * timeout, so that is a HUNG deployment, which needs a human, rather than a refused one, which
+ * retries itself. Anything not finite and inside the range falls back to the default instead.
+ */
+export const CATCH_UP_BUDGET_MIN_MS = 1_000;
+export const CATCH_UP_BUDGET_MAX_MS = 300_000;
+export const CATCH_UP_BUDGET_DEFAULT_MS = 30_000;
+
+export function resolveCatchUpBudgetMs(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return CATCH_UP_BUDGET_DEFAULT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return CATCH_UP_BUDGET_DEFAULT_MS;
+  if (parsed < CATCH_UP_BUDGET_MIN_MS || parsed > CATCH_UP_BUDGET_MAX_MS) return CATCH_UP_BUDGET_DEFAULT_MS;
+  return Math.trunc(parsed);
+}
+
+export const CATCH_UP_BUDGET_MS = resolveCatchUpBudgetMs(process.env.PHASE6_4C_IIIR_CATCH_UP_MS);
 
 /**
  * Wait, OUT OF THE LOCK, for the named generations to catch up — then re-ask.
@@ -618,6 +638,31 @@ export function summarizeForDeployLog(outcome: InboxRepairOutcome): Record<strin
       resultCount: report.results.length,
     },
   };
+}
+
+/**
+ * The post-commit verification, shared by BOTH paths that return success (Codex on `e7550f5`).
+ *
+ * `diagnoseCurrentProjects` commits and releases its generation locks before its caller returns, so
+ * a pre-4c-ii relay WAITING on one of those locks takes it at that instant, rewrites the generation
+ * with its legacy serializer, and commits — and `migrate.sh` then starts the API over corruption.
+ * An earlier head guarded only the rebuild path with this; the marker-present SKIP returned success
+ * straight out of that same released-lock window, which is the far more common path in production
+ * because every start after the first takes it.
+ *
+ * Returns the generations that must fail the deployment: corrupt on the re-ask, or still
+ * unverifiable when the catch-up budget expires.
+ */
+async function verifyAfterCommit(
+  prisma: PrismaClient,
+  ops: ProjectionRebuildOperations,
+  orgs: Pick<OrgsParticipant, 'deploymentProjectIdentity'>,
+  anchorProjectId: string,
+  log: (line: string) => void,
+): Promise<string[]> {
+  const after = await diagnoseCurrentProjects(prisma, ops, orgs, anchorProjectId);
+  const settled = await resolveLaggingGenerations(prisma, ops, orgs, anchorProjectId, after.unverifiedProjectIds, log);
+  return [...after.corrupt, ...settled.corrupt, ...settled.unresolved];
 }
 
 /**
@@ -874,6 +919,25 @@ export async function runInboxRepairStep(
         return { ...base, ok: false, action: 'refused', projectCount, refusal };
       }
       if (unverified.length === 0) {
+        // …and the SAME released-lock window applies here (Codex on `e7550f5`). The diagnosis above
+        // has committed, so a relay waiting on one of its generation locks takes it now. Returning
+        // straight out of that window is how the most-travelled path in production — every start
+        // after the first — could hand `migrate.sh` a green light over a register being rewritten.
+        const movedAfterSkip = await verifyAfterCommit(prisma, ops, orgs, config?.anchorProjectId ?? '', log);
+        if (movedAfterSkip.length > 0) {
+          const refusal: Refusal = {
+            code: 'concurrent-corruption',
+            message:
+              `the marker is present and the register verified, but re-reading immediately `
+              + `afterwards found ${movedAfterSkip.length} generation(s) no longer verifiably `
+              + `current: ${movedAfterSkip.join(', ')}. Something is writing this register — a `
+              + 'process older than the drain fence is the expected cause. NO rebuild was run and '
+              + 'the marker is unchanged. Stop every pre-4c-ii process, then rebuild with the '
+              + 'operator command. See docs/RUNBOOK.md §P64CIIIR.',
+          };
+          log(`[4c-iii-r] REFUSED (${refusal.code}): ${refusal.message}`);
+          return { ...base, ok: false, action: 'refused', projectCount, refusal };
+        }
         log(`[4c-iii-r] already repaired on ${marker.at.toISOString()}, and every generation still `
           + 'matches canonical — skipping');
         return { ...base, ok: true, action: 'skipped-marker-present', projectCount };
@@ -1079,9 +1143,17 @@ export async function runInboxRepairStep(
     // question becomes answerable: benign lag resolves to `current-match`, and a rewrite resolves to
     // `corrupt` — the relay applies events, it does not repair v1-shaped rows. So this waits, out of
     // the lock (holding it would stop the very relay it waits for), and then re-asks through the
-    // properly fenced path. A generation that never catches up is still unverifiable, and rounds 8
-    // and 9 settled that absence of evidence does not fail a deployment: it is logged, and the next
-    // start re-diagnoses under the marker.
+    // properly fenced path.
+    //
+    // AND A GENERATION THAT NEVER CATCHES UP REFUSES (Codex on `e7550f5`). An earlier head logged
+    // that case and returned success, on the rounds 8/9 rule that absence of evidence must not fail
+    // a deployment. That rule is right at DIAGNOSIS time and wrong HERE, and the difference is what
+    // happens next: an old relay can rewrite v1 rows, a later non-decision event moves the stream
+    // head, and the relay stops before consuming it. This poll then times out on `lagging`, the new
+    // API starts, and ITS relay consumes that event as a no-op — advancing the checkpoint without
+    // touching the rows, so `readServableGeneration` goes on to serve the corrupted generation as
+    // current. Reporting is not enough when the very next thing that happens makes the damage
+    // invisible.
     // THE PROJECT SET IS RE-ENUMERATED HERE, NOT TAKEN FROM THE SNAPSHOT (Codex on `84d819d`).
     // A previous-release process can CREATE a project after the in-transaction set check above and
     // populate its `decisions.inbox` generation with the legacy serializer before this runs. Passing
@@ -1089,9 +1161,7 @@ export async function runInboxRepairStep(
     // invisible: the marker stays committed, the deployment returns success, and the API serves the
     // corrupt generation until some later deploy happens to notice. Re-enumerating is the whole
     // point of a check that runs AFTER the commit — it exists to see what changed.
-    const after = await diagnoseCurrentProjects(prisma, ops, orgs, config?.anchorProjectId ?? '');
-    const settled = await resolveLaggingGenerations(prisma, ops, orgs, config?.anchorProjectId ?? '', after.unverifiedProjectIds, log);
-    const moved = [...after.corrupt, ...settled.corrupt];
+    const moved = await verifyAfterCommit(prisma, ops, orgs, config?.anchorProjectId ?? '', log);
     if (moved.length > 0) {
       const refusal: Refusal = {
         code: 'concurrent-corruption',

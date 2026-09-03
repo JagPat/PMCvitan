@@ -418,7 +418,7 @@ OUT="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)" || bad "could not re-est
 plant || exit 1
 serve || exit 1
 COPY="$(mktemp)"
-awk '/^  if ! node "\$INBOX_REPAIR"; then$/ {skip=5} skip>0 {skip--; next} {print}' scripts/migrate.sh > "$COPY"
+awk '/^  if ! repair_out="\$\(node "\$INBOX_REPAIR"\)"; then$/ {skip=13} skip>0 {skip--; next} {print}' scripts/migrate.sh > "$COPY"
 if mutated "$COPY"; then
   OUT="$(DATABASE_URL="$URL" sh "$COPY" 2>&1)"; RC=$?
   [ "$RC" = "0" ] && ok "the unwired runner accepted it — so the refusal in state B came from THIS step and nothing else" \

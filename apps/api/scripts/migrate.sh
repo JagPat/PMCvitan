@@ -211,11 +211,25 @@ if [ $code -eq 0 ]; then
     echo "[migrate] Refusing to run the repair against an unsealed marker. Repair per docs/RUNBOOK.md §P64CIIIR, then redeploy."
     exit 1
   fi
-  if ! node "$INBOX_REPAIR"; then
+  # The recovery depends on WHETHER A MARKER LANDED, so read it rather than assuming (Codex on
+  # `e7550f5`). Most refusals write no marker and the next start simply retries — but the
+  # post-commit one happens AFTER the verification transaction, marker insert included, has
+  # committed. Telling that operator to redeploy sends them into a loop: the next start finds the
+  # immutable marker, takes the `marked-but-corrupt` path, and refuses again without rebuilding.
+  # `markerWritten` is in the step's own JSON, so the message is derived from it, never guessed.
+  if ! repair_out="$(node "$INBOX_REPAIR")"; then
+    echo "$repair_out"
     echo "[migrate] ERROR: the 4c-iii-r decisions.inbox repair did not succeed — refusing to start."
-    echo "[migrate] No marker was written, so the next start retries. See docs/RUNBOOK.md §P64CIIIR."
+    if echo "$repair_out" | grep -q '"markerWritten": true'; then
+      echo "[migrate] A MARKER WAS WRITTEN before this failure, so redeploying will NOT retry the repair:"
+      echo "[migrate] the next start finds the marker and refuses as 'marked-but-corrupt' without rebuilding."
+      echo "[migrate] Stop every pre-4c-ii process, then run the projection rebuild recovery in docs/RUNBOOK.md §P64CIIIR."
+    else
+      echo "[migrate] No marker was written, so the next start retries. See docs/RUNBOOK.md §P64CIIIR."
+    fi
     exit 1
   fi
+  echo "$repair_out"
   exit 0
 fi
 
@@ -460,11 +474,25 @@ if echo "$out" | grep -q "P3005"; then
     echo "[migrate] Refusing to run the repair against an unsealed marker. Repair per docs/RUNBOOK.md §P64CIIIR, then redeploy."
     exit 1
   fi
-  if ! node "$INBOX_REPAIR"; then
+  # The recovery depends on WHETHER A MARKER LANDED, so read it rather than assuming (Codex on
+  # `e7550f5`). Most refusals write no marker and the next start simply retries — but the
+  # post-commit one happens AFTER the verification transaction, marker insert included, has
+  # committed. Telling that operator to redeploy sends them into a loop: the next start finds the
+  # immutable marker, takes the `marked-but-corrupt` path, and refuses again without rebuilding.
+  # `markerWritten` is in the step's own JSON, so the message is derived from it, never guessed.
+  if ! repair_out="$(node "$INBOX_REPAIR")"; then
+    echo "$repair_out"
     echo "[migrate] ERROR: the 4c-iii-r decisions.inbox repair did not succeed — refusing to start."
-    echo "[migrate] No marker was written, so the next start retries. See docs/RUNBOOK.md §P64CIIIR."
+    if echo "$repair_out" | grep -q '"markerWritten": true'; then
+      echo "[migrate] A MARKER WAS WRITTEN before this failure, so redeploying will NOT retry the repair:"
+      echo "[migrate] the next start finds the marker and refuses as 'marked-but-corrupt' without rebuilding."
+      echo "[migrate] Stop every pre-4c-ii process, then run the projection rebuild recovery in docs/RUNBOOK.md §P64CIIIR."
+    else
+      echo "[migrate] No marker was written, so the next start retries. See docs/RUNBOOK.md §P64CIIIR."
+    fi
     exit 1
   fi
+  echo "$repair_out"
   exit 0
 fi
 
