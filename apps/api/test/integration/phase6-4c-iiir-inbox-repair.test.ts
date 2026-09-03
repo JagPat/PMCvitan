@@ -22,6 +22,7 @@ import {
   PHASE6_4C_IIIR_OPERATOR,
   readIdentityConfig,
   runInboxRepairStep,
+  summarizeForDeployLog,
   SYSTEM_IDENTITY_ENV,
   diagnoseCurrentProjects,
   lockActiveGenerationsForVerify,
@@ -828,12 +829,15 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     // The transaction takes every project's locks and then compares the whole canonical decision set
     // per project. Prisma's interactive default is 5s, which on a production-sized database is not a
     // bound on that work — exceeding it aborts and `migrate.sh` refuses a deployment whose data was
-    // valid. Both verification transactions must carry the explicit bound.
+    // valid. EVERY verification transaction must carry the explicit bound, and the count is pinned
+    // so a new one cannot be added without this probe noticing (it caught the row-comparison
+    // transaction round 17 added).
     expect(VERIFY_TX_OPTIONS.timeout).toBeGreaterThanOrEqual(60_000);
     expect(VERIFY_TX_OPTIONS.maxWait).toBeGreaterThanOrEqual(30_000);
     const src = readFileSync(resolve(API_DIR, 'src/platform/projections/inbox-repair.ts'), 'utf8');
     const transactions = [...src.matchAll(/await prisma\.\$transaction\(async \(tx\) => \{/gu)];
-    expect(transactions.length).toBe(2);              // marker-present verify, and the marker write
+    // marker-present verify · the marker write · the post-commit row comparison (round 17)
+    expect(transactions.length).toBe(3);
     for (const tx of transactions) {
       // to the END of that call, not a fixed window: the bodies grow, and a probe that silently
       // stopped scanning before the options would pass while the bound was gone.
@@ -1494,17 +1498,15 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     expect(outcome.refusal?.message).toContain('re-reading immediately afterwards');
   });
 
-  it('R14-2 — a post-commit generation that is merely UNVERIFIABLE also fails the deploy closed', async () => {
-    // Codex on `b5f7c1f`. The post-commit recheck tested `after.corrupt` alone, which made it
-    // strictly weaker than the in-transaction check that already treats anything but
-    // `current-match`/`none` as something having moved. `diagnoseIn` returns `lagging` BEFORE it
-    // compares a single stored row, so a relay that rewrote the generation AND advanced the stream
-    // head lands in `unverified` — and the deployment reported success over it.
+  it('R14-2 — a post-commit generation whose ROWS were rewritten fails the deploy closed', async () => {
+    // Codex on `b5f7c1f`: the post-commit recheck tested `after.corrupt` alone, so a relay that
+    // rewrote a generation AND advanced the stream head landed in `unverified` — `diagnoseIn`
+    // returns `lagging` BEFORE it compares a single stored row — and the deployment reported
+    // success over it.
     //
-    // Rounds 8 and 9 settled that `lagging` must not fail a deploy on the DIAGNOSIS path, where it
-    // is the ordinary state of a projection that is merely behind. This is the other side of the
-    // commit: the rebuild has just seeded every generation through the stream head under the
-    // generation locks, so `current-match`/`none` is the only state a successful commit can leave.
+    // Codex on `5f0d382` then showed the first fix was too coarse: BENIGN lag lands on that same
+    // label (R17-1 below). So the refusal turns on the ROWS, not the label. This probe is the
+    // corrupt half: lag AND a row mismatch.
     //
     // Same discriminator as R13-4 — the marker is written inside the verification transaction, so a
     // separate connection sees it only after that transaction commits. Reporting only once it is
@@ -1516,27 +1518,95 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
       const committed = await markerCount();
       return committed > 0 ? { ...real, state: 'lagging' as const } : real;
     };
+    sabotage.rowsMatchIn = async (tx: never, consumer: string, projectId: string) => {
+      const real = await ops.rowsMatchIn(tx, consumer, projectId);
+      return projectId === f.projectA.id ? { compared: true, match: false } : real;
+    };
 
     const outcome = await runInboxRepairStep(single, sabotage, env);
     expect(outcome.ok).toBe(false);
     expect(outcome.action).toBe('refused');
     expect(outcome.refusal?.code).toBe('concurrent-corruption');
-    expect(outcome.refusal?.message).toContain('no longer verifiably current');
-    expect(outcome.refusal?.message).toContain('lagging');
+    expect(outcome.refusal?.message).toContain('no longer match canonical');
+    expect(outcome.refusal?.message).toContain(f.projectA.id);
+  });
 
-    // …and the settled rule still holds where it applies: `lagging` at DIAGNOSIS time, under an
-    // existing marker, still repairs rather than refusing (R13-2 covers the marker accounting).
-    await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
-    await runInboxRepairStep(single, ops, env);
-    const laggyDiagnosis: ProjectionRebuildOperations = Object.create(ops);
-    laggyDiagnosis.diagnoseIn = async (tx: never, consumer: string, projectId: string) => {
+  it('R17-1 — ordinary post-commit LAG with correct rows does NOT fail the deploy', async () => {
+    // Codex on `5f0d382`. During a rolling deployment the still-serving old container handles an
+    // ordinary request and commits an event; until the relay applies it the generation reads
+    // `lagging`, the rows are correct, and the read path falls back to canonical for the un-applied
+    // tail. Nothing is wrong — but an earlier head added every `unverified` entry to `moved`, so
+    // the new container failed its deployment on ordinary traffic.
+    //
+    // Only `diagnoseIn` is sabotaged here: the REAL `rowsMatchIn` runs and finds the rows correct,
+    // which is exactly the benign case. RED at `5f0d382`, where this refused.
+    const laggy: ProjectionRebuildOperations = Object.create(ops);
+    laggy.diagnoseIn = async (tx: never, consumer: string, projectId: string) => {
       const real = await ops.diagnoseIn(tx, consumer, projectId);
+      if (projectId !== f.projectA.id) return real;
       const committed = await markerCount();
-      return projectId === f.projectA.id && committed > 0 && real.state !== 'current-match'
-        ? { ...real, state: 'lagging' as const } : real;
+      return committed > 0 ? { ...real, state: 'lagging' as const } : real;
     };
-    const tolerated = await runInboxRepairStep(single, laggyDiagnosis, env);
-    expect(tolerated.ok).toBe(true);
+
+    const outcome = await runInboxRepairStep(single, laggy, env);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.action).toBe('repaired');
+    expect(await markerCount()).toBe(1);
+  });
+
+  it('R17-3 — the deploy log carries every field the evidence lease names', async () => {
+    // Codex on `5f0d382`. `docs/STATUS.md` holds 4c-iv closed until runtime evidence names complete
+    // project coverage, `ok: true`, `corruptAfter: 0` and `failures: 0`, and states that every one
+    // of those is a field this step emits. An earlier head dropped `report` wholesale from the
+    // printed JSON to keep the deploy log readable — and those counts live in `report`, so even a
+    // perfect production run could not produce the evidence that clears the gate.
+    const outcome = await runInboxRepairStep(single, ops, env);
+    expect(outcome.ok).toBe(true);
+
+    const printed = JSON.parse(JSON.stringify(summarizeForDeployLog(outcome)));
+    // the lease's own named fields, present and readable
+    expect(printed.ok).toBe(true);
+    expect(printed.report.projects).toBe(outcome.report!.projects);
+    expect(printed.report.corruptAfter).toBe(0);
+    expect(printed.report.failures).toBe(0);
+    expect(printed.report.corruptBefore).toBe(outcome.report!.corruptBefore);
+    expect(printed.report.consumers).toEqual([DECISIONS_PROJECTION]);
+    // …and the verbose part is a count, not one entry per project
+    expect(printed.report.resultCount).toBe(outcome.report!.results.length);
+    expect(printed.report.results).toBeUndefined();
+
+    await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
+  });
+
+  it('R17-2 — `rowsMatchIn` compares the REAL rows, whatever the checkpoint says', async () => {
+    // The discrimination above is only as good as the comparison behind it, so this exercises the
+    // real thing rather than a stub: a generation that matches canonical, then the same generation
+    // carrying one stale v1-shaped row that canonical does not have.
+    await runInboxRepairStep(single, ops, env);
+    const gen = await single.projectionGeneration.findFirst({
+      where: { consumer: DECISIONS_PROJECTION, projectId: f.projectA.id, status: 'active' },
+      select: { id: true },
+    });
+
+    const clean = await single.$transaction((tx) =>
+      ops.rowsMatchIn(tx as never, DECISIONS_PROJECTION, f.projectA.id));
+    expect(clean).toEqual({ compared: true, match: true });
+
+    const staleRowId = `r17-2-stale-${Date.now()}`;
+    try {
+      // present in the generation, absent from canonical — what a v1 serializer leaves behind
+      await single.$executeRawUnsafe(
+        `INSERT INTO "DecisionProjection" ("id","generationId","projectId","decisionId","status","dto","updatedAt")
+         VALUES ($3, $1, $2, $4, 'pending', '{"shape":"v1"}'::jsonb, now())`,
+        gen!.id, f.projectA.id, staleRowId, `${staleRowId}-decision`);
+
+      const dirty = await single.$transaction((tx) =>
+        ops.rowsMatchIn(tx as never, DECISIONS_PROJECTION, f.projectA.id));
+      expect(dirty).toEqual({ compared: true, match: false });
+    } finally {
+      await single.$executeRawUnsafe(`DELETE FROM "DecisionProjection" WHERE "id" = $1`, staleRowId);
+      await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
+    }
   });
 
   it('R14-3 — a v1-shaped write is INDISTINGUISHABLE from canonical, so no database fence can reject it', async () => {

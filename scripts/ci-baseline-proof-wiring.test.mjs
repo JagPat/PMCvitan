@@ -66,7 +66,12 @@ const PINNED_PROOFS = [
              'C. WRONG DATABASE', 'C2.', 'C3.', 'D. CONFIGURED AND CORRECT', 'E. RE-RUN', 'E2.',
              'F. A FAILED ATTEMPT', 'F2. CONFIGURED + NEVER SERVED', 'F3. THE MARKER IS SEALED',
              'F4. A CLONE OF PRODUCTION', 'F5. A RESTORE INTO A SIBLING DATABASE',
-             'F6. A PARTIAL IDENTITY CONFIGURATION', 'F7. AN UNSEALED MARKER', 'G. COUPLING'],
+             'F6. A PARTIAL IDENTITY CONFIGURATION', 'F7. AN UNSEALED MARKER',
+             // F8 closes the inventory (Codex on `5f0d382`): it is the only real-`migrate.sh`
+             // exercise of a LOST ledger row over a database that still has both the triggers and a
+             // genuine marker, and without it here the proof could drop that state while this
+             // required test stayed green — which is precisely what this test exists to prevent.
+             'F8. THE COMPLETED SEAL MIGRATION RE-RUNS', 'G. COUPLING'],
   },
 ];
 

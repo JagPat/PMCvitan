@@ -508,9 +508,12 @@ export async function diagnoseCurrentProjects(
   orgs: Pick<OrgsParticipant, 'deploymentProjectIdentity'>,
   anchorProjectId: string,
   snapshot?: readonly string[],
-): Promise<{ corrupt: string[]; unverified: string[] }> {
+): Promise<{ corrupt: string[]; unverified: string[]; unverifiedProjectIds: string[] }> {
   const corrupt: string[] = [];
   const unverified: string[] = [];
+  // The IDS behind `unverified`, so a caller can ask the row question about them rather than
+  // reading the label (Codex on `5f0d382`). Labels are for humans; these are for the follow-up.
+  const unverifiedProjectIds: string[] = [];
   await prisma.$transaction(async (tx) => {
     const ids = snapshot
       ?? (await orgs.deploymentProjectIdentity(tx as never, anchorProjectId)).projectIds;
@@ -524,10 +527,68 @@ export async function diagnoseCurrentProjects(
       // not read them as a pass (Codex on `8eea3ca`).
       else if (state.state !== 'current-match' && state.state !== 'none') {
         unverified.push(`${named} (${state.state})`);
+        unverifiedProjectIds.push(projectId);
       }
     }
   }, VERIFY_TX_OPTIONS);
-  return { corrupt, unverified };
+  return { corrupt, unverified, unverifiedProjectIds };
+}
+
+/**
+ * Of the generations that could not be VERIFIED, which are actually WRONG?
+ *
+ * The distinction the post-commit recheck turns on. `lagging`/`blocked` are returned before a
+ * single stored row is compared, so they cover both an ordinary un-applied event during a rolling
+ * deployment (rows correct — the read path falls back for the un-applied tail) and a pre-4c-ii
+ * relay's rewrite (rows wrong). Comparing the rows is the only thing that tells them apart, and a
+ * deployment must fail on the second without failing on the first.
+ */
+async function rowMismatchesAmong(
+  prisma: PrismaClient,
+  ops: Pick<ProjectionRebuildOperations, 'rowsMatchIn'>,
+  projectIds: readonly string[],
+): Promise<string[]> {
+  if (projectIds.length === 0) return [];
+  const mismatched: string[] = [];
+  await prisma.$transaction(async (tx) => {
+    for (const projectId of [...projectIds].sort()) {
+      const { compared, match } = await ops.rowsMatchIn(tx as never, DECISIONS_PROJECTION, projectId);
+      if (compared && !match) {
+        mismatched.push(`${projectId}/${DECISIONS_PROJECTION} (rows differ from canonical)`);
+      }
+    }
+  }, VERIFY_TX_OPTIONS);
+  return mismatched;
+}
+
+/**
+ * What the deploy log prints — and specifically, what the POST-DEPLOYMENT EVIDENCE LEASE needs.
+ *
+ * `docs/STATUS.md` holds 4c-iv closed until attributable runtime evidence names complete project
+ * coverage, `exit 0`, `ok: true`, `corruptAfter: 0` and `failures: 0`, and says every one of those
+ * is a field this step emits. An earlier head dropped `report` wholesale to keep the log readable
+ * (Codex on `5f0d382`) — and those counts live in `report`, so a perfect production run could not
+ * produce the evidence that clears the gate. The packet claimed one thing and the CLI did another.
+ *
+ * So the COUNTS stay and only `results` — one entry per project, the genuinely verbose part — is
+ * reduced to its length. A refusal still names its offending pairs in `refusal.message`.
+ */
+export function summarizeForDeployLog(outcome: InboxRepairOutcome): Record<string, unknown> {
+  const { report, ...rest } = outcome;
+  if (!report) return { ...rest };
+  return {
+    ...rest,
+    report: {
+      action: report.action,
+      projects: report.projects,
+      consumers: report.consumers,
+      corruptBefore: report.corruptBefore,
+      laggingBefore: report.laggingBefore,
+      corruptAfter: report.corruptAfter,
+      failures: report.failures,
+      resultCount: report.results.length,
+    },
+  };
 }
 
 /**
@@ -970,12 +1031,17 @@ export async function runInboxRepairStep(
     // rewrote the generation and advanced the stream head lands in `unverified`, not `corrupt`,
     // and the deployment reported success over it.
     //
-    // Why the opposite rule is right on the marker-present path: THERE `lagging` is an ordinary
-    // state of a database nobody has just rebuilt, and refusing on it would park deployments on a
-    // projection that is merely behind. HERE the rebuild has just seeded every generation through
-    // the stream head under the generation locks, so `current-match`/`none` is the only state a
-    // successful commit can leave. Anything else means something wrote after the commit — which is
-    // precisely the finding.
+    // …but the LABEL is not the question, the ROWS are (Codex on `5f0d382`). An earlier head added
+    // every `unverified` entry to `moved`, and that was too coarse: during a rolling deployment the
+    // still-serving old container handles an ordinary request and commits an event, and until the
+    // relay applies it the generation reads `lagging` — correct rows, read path safely falling back,
+    // nothing wrong. Failing the new container on that turns ordinary traffic into a transient
+    // deployment failure.
+    //
+    // Both findings are right, and they are separated by asking the question `diagnoseIn` skips:
+    // `lagging` is returned BEFORE any stored row is compared, so it means "no evidence", not
+    // "bad". `rowsMatchIn` compares the rows regardless of where the checkpoint sits — benign lag
+    // MATCHES canonical, a legacy rewrite does NOT — and only a mismatch fails the deployment.
     // THE PROJECT SET IS RE-ENUMERATED HERE, NOT TAKEN FROM THE SNAPSHOT (Codex on `84d819d`).
     // A previous-release process can CREATE a project after the in-transaction set check above and
     // populate its `decisions.inbox` generation with the legacy serializer before this runs. Passing
@@ -984,13 +1050,15 @@ export async function runInboxRepairStep(
     // corrupt generation until some later deploy happens to notice. Re-enumerating is the whole
     // point of a check that runs AFTER the commit — it exists to see what changed.
     const after = await diagnoseCurrentProjects(prisma, ops, orgs, config?.anchorProjectId ?? '');
-    const moved = [...after.corrupt, ...after.unverified];
+    const rewritten = await rowMismatchesAmong(prisma, ops, after.unverifiedProjectIds);
+    const moved = [...after.corrupt, ...rewritten];
     if (moved.length > 0) {
       const refusal: Refusal = {
         code: 'concurrent-corruption',
         message:
           `the repair verified and committed, but re-reading immediately afterwards found `
-          + `${moved.length} generation(s) no longer verifiably current: ${moved.join(', ')}. `
+          + `${moved.length} generation(s) whose stored rows no longer match canonical: `
+          + `${moved.join(', ')}. `
           + 'Committing releases the generation locks, and a process older than the drain fence that '
           + 'was waiting on one takes it at that moment — which is exactly what the drain '
           + 'prerequisite exists to eliminate. The deployment FAILS CLOSED rather than starting the '

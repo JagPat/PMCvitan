@@ -548,7 +548,30 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    minimum-projects gate and never reaches the question under test. RED at `84d819d` with
    `ok: true`.
 
-22. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (62 probes):
+22. **CODEX ROUND 17 (one P1, two P2s on `5f0d382`) — all three correct.** **(a) P1: the deploy log
+   could not carry the evidence its own lease demands.** The CLI dropped `report` wholesale from the
+   printed JSON to keep the log readable — but the POST-DEPLOYMENT EVIDENCE LEASE below holds 4c-iv
+   closed until runtime evidence names complete project coverage, `corruptAfter: 0` and
+   `failures: 0`, and says every one of those is a field this step emits. They live in `report`, so
+   even a perfect production run could not produce the evidence that clears the gate: the packet
+   claimed one thing and the CLI did another. `summarizeForDeployLog` now keeps every count and
+   reduces only `results` — one entry per project, the genuinely verbose part — to its length.
+   **(b) P2: the round-14 fix was too coarse, and this is its correction.** Adding EVERY `unverified`
+   entry to `moved` turned ordinary rolling-deployment lag into a transient deployment failure: the
+   still-serving old container commits an event, and until the relay applies it the generation reads
+   `lagging` with CORRECT rows while the read path falls back to canonical. Round 14 was right that a
+   legacy rewrite lands in `unverified`; round 17 is right that benign lag does too. Both are
+   answered by asking the question `diagnoseIn` SKIPS — it returns `lagging` before comparing a
+   single stored row, so the label means "no evidence", not "bad". The new `rowsMatchIn` compares the
+   rows regardless of checkpoint position, and only a MISMATCH fails the deployment. `R14-2` is the
+   corrupt half (lag + mismatch refuses), `R17-1` the benign half (lag + correct rows deploys — RED
+   at `5f0d382`), and `R17-2` exercises the real comparison against a genuinely stale v1-shaped row.
+   **(c) P2: the F8 state was not pinned.** `ci-baseline-proof-wiring.test.mjs` closed its inventory
+   after F7 and G, so deleting the runner proof's only real-`migrate.sh` exercise of a LOST ledger
+   row would have left that required test green — exactly what it exists to prevent. F8 is now in the
+   inventory, and renaming the heading in the proof turns the test RED (verified, then restored).
+
+23. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (65 probes):
    the vacuity itself (a zero-project report satisfies every success field), each identity refusal,
    the verified repair, marker idempotence, identity enforced WITH the marker set, a non-verified
    report leaving NO marker and the next start succeeding, the unserialized generation collision

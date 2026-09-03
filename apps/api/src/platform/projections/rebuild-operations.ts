@@ -240,6 +240,46 @@ export class ProjectionRebuildOperations {
   }
 
   /**
+   * Do the STORED rows still equal canonical, regardless of where the checkpoint sits?
+   *
+   * `diagnoseIn` answers a different question. It returns `lagging` the moment the checkpoint
+   * trails the stream head — BEFORE it compares a single stored row — so `lagging` is the absence
+   * of evidence, not evidence either way. Two very different situations land on that same label:
+   *
+   *   BENIGN.  A rolling deployment's still-serving old container handles an ordinary request and
+   *            commits an event; the relay has not applied it yet. The rows are correct, the read
+   *            path falls back to canonical for the un-applied tail, and nothing is wrong.
+   *   CORRUPT. A process older than the drain fence rewrote the generation with its v1 serializer
+   *            and advanced the head. The rows are WRONG and the label hides it.
+   *
+   * Only a row comparison separates them, so the caller that must not fail a deployment over the
+   * first while still catching the second asks THIS instead of reading the label (Codex on
+   * `5f0d382`; the label-only reading was Codex's own remedy on `b5f7c1f`, and it was too coarse
+   * in exactly this way).
+   *
+   * Takes the same event-allocation freeze `diagnoseIn` takes, for the same reason: the comparison
+   * must describe one state rather than a moving one.
+   */
+  async rowsMatchIn(
+    tx: Prisma.TransactionClient,
+    consumer: string,
+    projectId: string,
+  ): Promise<{ compared: boolean; match: boolean }> {
+    const spec = REBUILDABLE_PROJECTIONS[consumer];
+    if (!spec) throw new Error(`${consumer} is not an operator-rebuildable projection`);
+    await tx.$queryRaw`SELECT "projectId" FROM "ProjectEventStream" WHERE "projectId" = ${projectId} FOR UPDATE`;
+    const gen = await tx.projectionGeneration.findFirst({
+      where: { consumer, projectId, status: 'active' },
+      select: { id: true },
+    });
+    // No active generation is nothing to compare — and nothing being served either.
+    if (!gen) return { compared: false, match: true };
+    const stored = await spec.stored(tx, gen.id, projectId);
+    const expected = await spec.canonical(tx, projectId);
+    return { compared: true, match: stableJson(stored) === stableJson(expected) };
+  }
+
+  /**
    * Rebuild the given consumers for the given projects (all projects when none named), with
    * before/after diagnosis per pair. The invocation is audited BEFORE work begins; every pair
    * records its own success/failure outcome, and one pair's failure never aborts the rest.

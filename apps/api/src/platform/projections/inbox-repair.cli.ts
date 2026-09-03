@@ -3,7 +3,7 @@ import { registerConsumer, getConsumer } from '../outbox/registry';
 import { ProjectionRebuilder } from './rebuilder.service';
 import { ProjectionRebuildOperations } from './rebuild-operations';
 import { makeDecisionsProjectionConsumer, DECISIONS_PROJECTION } from '../../decisions/decisions.projection';
-import { runInboxRepairStep, singleConnectionUrl } from './inbox-repair';
+import { runInboxRepairStep, singleConnectionUrl, summarizeForDeployLog } from './inbox-repair';
 import { MARKER_SEAL_TABLE, repairMarkerSeals, summarizeMarkerSeals, verifyMarkerSeals } from './inbox-repair-seals';
 
 /**
@@ -83,10 +83,8 @@ async function main(): Promise<void> {
     if (!getConsumer(DECISIONS_PROJECTION)) registerConsumer(makeDecisionsProjectionConsumer());
     const outcome = await runInboxRepairStep(prisma, new ProjectionRebuildOperations(prisma, new ProjectionRebuilder(prisma)), process.env, (line) =>
       process.stdout.write(`${line}\n`));
-    // The report is deliberately omitted from the printed summary: it carries one entry per
-    // project, and a deploy log should stay readable. Every fact the operator needs on a refusal is
-    // already in `refusal.message`, which names the offending pairs.
-    const { report: _report, ...summary } = outcome;
+    // The lease's own fields must survive this; see `summarizeForDeployLog`.
+    const summary = summarizeForDeployLog(outcome);
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
     if (!outcome.ok) process.exitCode = 1;
   } catch (e) {
