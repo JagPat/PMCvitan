@@ -51,6 +51,44 @@ const PINNED_PROOFS = [
     states: ['A. FRESH', 'B. ALREADY-CLEAN', 'C. DIRTY', 'D. DIRTY', 'E. REPAIRED',
              'F. ALREADY-CHECKED', 'G. THE POST-DEPLOY SEAM', 'H. COUPLING', 'I. THE POST-DEPLOY SEAM'],
   },
+  {
+    script: 'apps/api/scripts/phase6-4c-iiir-production-runner-proof.sh',
+    // The only execution of the production `migrate.sh` over a database that needs — or has
+    // already had — the Phase 6 4c-iii-r one-shot `decisions.inbox` repair. The integration suite
+    // exercises the STEP; only this exercises the RUNNER.
+    verdicts: [/4c-iii-r production-runner proof: PASSED/u, /4c-iii-r production-runner proof: FAILED/u],
+    // A. fresh/empty (a first deploy is not walled off) · A2. populated but never served (the
+    // harness shape — no configuration needed, which is what keeps this step from coupling every
+    // other proof) · B. in service + unconfigured (the vacuity refusal) · C/C2/C3. the three
+    // identity refusals · D. the repair runs and is verified · E/E2. the marker skips, but never
+    // excuses identity · F. a failed attempt writes no marker and is retried · G. coupling.
+    states: ['A. FRESH/EMPTY', 'A2. POPULATED BUT NEVER SERVED', 'B. IN SERVICE + UNCONFIGURED',
+             'C. WRONG DATABASE', 'C2.', 'C3.', 'D. CONFIGURED AND CORRECT', 'E. RE-RUN', 'E2.',
+             'F. A FAILED ATTEMPT', 'F2. CONFIGURED + NEVER SERVED', 'F3. THE MARKER IS SEALED',
+             'F4. A CLONE OF PRODUCTION', 'F5. A RESTORE INTO A SIBLING DATABASE',
+             'F6. A PARTIAL IDENTITY CONFIGURATION', 'F7. AN UNSEALED MARKER',
+             // F8 closes the inventory (Codex on `5f0d382`): it is the only real-`migrate.sh`
+             // exercise of a LOST ledger row over a database that still has both the triggers and a
+             // genuine marker, and without it here the proof could drop that state while this
+             // required test stayed green — which is precisely what this test exists to prevent.
+             'F8. THE COMPLETED SEAL MIGRATION RE-RUNS',
+             // F9 is pinned by strings from its EXECUTION, not by its banner (Codex on `88ea82c`).
+             // The state list is a substring search over the whole file, and `F9.` also appears in
+             // the header comment — so a bare state name would keep this required test green while
+             // the executable block was deleted, silently dropping the ONLY end-to-end proof that
+             // the documented recovery escapes Prisma's P3009 failed-migration state. These two
+             // strings exist only inside the block that runs it: the `say` heading, and the
+             // assertion that the runner surfaces the resolve step the migration cannot.
+             'say "F9. the adoption test ABORTS, and the documented recovery actually recovers"',
+             "grep -q 'migrate resolve --rolled-back 20271125000000'",
+             // F10 is the runner-level half of the drain declaration (Codex P1 on `88ea82c`):
+             // the step's own probe proves the refusal, this proves the real `migrate.sh` refuses to
+             // start on it. Pinned by execution strings for the same reason F9 is.
+             'say "F10. the legacy-worker drain is not declared — must ABORT, even with a marker present"',
+             'say "F10b. the drain is declared to the WRONG release — must ABORT rather than be interpreted"',
+             'say "F11. the decisions.inbox writer fence is dropped — the deploy must ABORT"',
+             'G. COUPLING'],
+  },
 ];
 
 /** The `jobs:` block, split per job, preserving each job's own lines. */

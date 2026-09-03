@@ -117,6 +117,24 @@ export async function storedDecisionRows(tx: Prisma.TransactionClient, generatio
   );
 }
 
+/**
+ * Phase 6 unit 4c-iii-r — DECLARE this release's serializer to the writer fence.
+ *
+ * `20271126000000` puts a row trigger on `DecisionProjection` that stamps `ProjectionGeneration
+ * .fencedAt` whenever the writing session has NOT set this GUC. Only this release's writer sets it,
+ * so a previous-release relay that was already running when the migration landed marks the
+ * generation unservable the moment it writes v1 rows into it — the read path falls back to canonical
+ * and the next deploy's repair rebuilds. `set_config(..., true)` is transaction-LOCAL, so the
+ * declaration cannot leak into another session's write.
+ *
+ * Declared at each write path's entry rather than inside `upsertRow`, which runs once per decision.
+ * A future write path that forgets it fails SAFE: the generation is fenced (reads fall back to
+ * canonical, which is always current), never corrupt.
+ */
+async function declareSerializer(tx: Prisma.TransactionClient): Promise<void> {
+  await tx.$executeRaw`SELECT set_config('vitan.decisions_inbox_catalog_version', '2', true)`;
+}
+
 /** Build the `decisions.inbox` projection consumer (reads canonical decisions to refresh its rows). */
 export function makeDecisionsProjectionConsumer(): OutboxConsumer {
   return {
@@ -137,6 +155,7 @@ export function makeDecisionsProjectionConsumer(): OutboxConsumer {
       // max — so the barrier's replay covers (max .. H] with no gap and the overlap re-applies
       // idempotently.
       rebuildSeed: async (tx, target) => {
+        await declareSerializer(tx);
         const max = await tx.domainEvent.aggregate({ where: { projectId: target.projectId }, _max: { streamPosition: true } });
         const seededThrough = max._max.streamPosition ?? null;
         const rows = await tx.decision.findMany({ where: { projectId: target.projectId }, include: DECISION_INCLUDE });
@@ -150,6 +169,7 @@ export function makeDecisionsProjectionConsumer(): OutboxConsumer {
     handle: async (ctx) => {
       if (!ctx.tx) throw new Error('decisions projection needs a transaction');
       if (!ctx.projection) throw new Error('decisions projection needs a target generation');
+      await declareSerializer(ctx.tx);
       // Task 10 finalization — refresh the WHOLE project's decision set, not just the event's
       // decision (the discipline every later module consumer adopted). A generation that lazily
       // bootstraps MID-LIFE (its first applied event arriving over rows that predate the event

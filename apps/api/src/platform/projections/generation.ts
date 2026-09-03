@@ -93,9 +93,17 @@ export async function readServableGeneration(
 ): Promise<ServableGenerationRow | null> {
   const gen = await client.projectionGeneration.findFirst({
     where: { consumer, projectId, status: 'active' },
-    select: { id: true, generation: true, appliedPosition: true, cursorStatus: true, catalogVersion: true },
+    select: { id: true, generation: true, appliedPosition: true, cursorStatus: true, catalogVersion: true, fencedAt: true },
   });
   if (!gen) return null; // no active generation — never rebuilt / no deliveries yet
+  // Phase 6 unit 4c-iii-r — TOUCHED BY AN UNDECLARED WRITER. `20271126000000`'s row trigger stamps
+  // this when a session that has not declared this release's serializer writes into the generation,
+  // which is what an already-running previous-release relay does. Its rows may now be v1-shaped and
+  // nothing can tell from the rows themselves (a threadless decision is byte-identical under both
+  // serializers), so the generation stops being servable and every read falls back to the canonical
+  // live read, which is always current. Cleared only by building a new generation — the repair, or
+  // the ordinary `projection:rebuild`.
+  if (gen.fencedAt !== null) return null;
   if (gen.cursorStatus !== 'live') return null; // blocked on a dead earlier position — stale
   if (gen.appliedPosition === null) return null; // bootstrapped only, nothing applied
   // Phase 6 unit 4c-ii (§D, review round 30) — CONTENTS OLDER THAN THIS SERIALIZER.
