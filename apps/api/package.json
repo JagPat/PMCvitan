@@ -35,7 +35,8 @@
     "t3c:repair": "tsx src/labour/t3c/t3c.cli.ts repair",
     "b1:seals": "tsx src/activities/b1/b1.cli.ts seals",
     "enforcement:preflight": "tsx src/platform/enforcement/enforcement.cli.ts preflight",
-    "enforcement:verify": "tsx src/platform/enforcement/enforcement.cli.ts verify"
+    "enforcement:verify": "tsx src/platform/enforcement/enforcement.cli.ts verify",
+    "phase6:4c-iii-r": "tsx src/platform/projections/inbox-repair.cli.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

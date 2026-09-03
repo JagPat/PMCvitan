@@ -4590,6 +4590,88 @@ assert "4c-iii: every other capability value still inserts, re-keys and deletes 
   "SELECT COUNT(*)::text FROM \"ProjectCapability\" WHERE \"projectId\" = 'p2' AND \"capability\" LIKE 'up4ciii-%';" \
   "0"
 
+# ── Phase 6 unit 4c-iii-r — the repair MARKER is sealed at PostgreSQL, over the migrated legacy DB ──
+# The marker AUTHORIZES every later start to skip the decisions.inbox repair, so it is not audit
+# trail: a forged one skips an UNREPAIRED database. `OutboxOperatorAction` carried no seal at all
+# before this unit, so each vector is executed here rather than assumed.
+# The FORGED-CREATION arm first: a bare INSERT of a marker row is the cheapest forgery there is,
+# and a mutation-only seal misses it completely.
+assert_rejects "4c-iii-r: a marker row cannot be INSERTED outside the repair transaction" \
+  "INSERT INTO \"OutboxOperatorAction\"(\"id\",\"action\",\"operatorIdentity\",\"reason\") VALUES ('up4ciiir-forged','projection.rebuild.phase6-4c-iii-r','someone','forged')" \
+  "written only by the repair step"
+assert "4c-iii-r: and the forged marker did not land" \
+  "SELECT COUNT(*)::text FROM \"OutboxOperatorAction\" WHERE \"id\" = 'up4ciiir-forged';" \
+  "0"
+# The genuine marker is planted the ONLY way the seal admits — inside a transaction that sets the
+# repair flag, exactly as `runInboxRepairStep` does after a verified report.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-iii-r: could not plant the marker fixture"; FAIL=1; }
+BEGIN;
+SELECT set_config('vitan.phase6_4c_iiir_repair', 'on', true);
+INSERT INTO "OutboxOperatorAction"("id","action","operatorIdentity","reason")
+VALUES ('up4ciiir-marker','projection.rebuild.phase6-4c-iii-r','deploy','a genuine verified repair');
+COMMIT;
+INSERT INTO "OutboxOperatorAction"("id","action","operatorIdentity","reason")
+VALUES ('up4ciiir-plain','retry','op','an ordinary audit row');
+SQL
+assert_rejects "4c-iii-r: an ordinary audit row cannot be PROMOTED into the repair marker" \
+  "UPDATE \"OutboxOperatorAction\" SET action = 'projection.rebuild.phase6-4c-iii-r' WHERE id = 'up4ciiir-plain'" \
+  "cannot be re-keyed into the 4c-iii-r repair marker"
+assert_rejects "4c-iii-r: a genuine marker cannot be EDITED" \
+  "UPDATE \"OutboxOperatorAction\" SET reason = 'forged' WHERE id = 'up4ciiir-marker'" \
+  "repair marker is immutable"
+assert_rejects "4c-iii-r: a marker cannot be DELETED" \
+  "DELETE FROM \"OutboxOperatorAction\" WHERE id = 'up4ciiir-marker'" \
+  "never deleted"
+assert_rejects "4c-iii-r: TRUNCATE is refused, because a row trigger never fires for it" \
+  "TRUNCATE \"OutboxOperatorAction\"" \
+  "never truncated"
+assert "4c-iii-r: and the marker survived every one of those attempts, unedited" \
+  "SELECT reason FROM \"OutboxOperatorAction\" WHERE id = 'up4ciiir-marker';" \
+  "a genuine verified repair"
+# …and the seal is PRECISE: the general operator audit table keeps the lifecycle it had.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-iii-r: an ordinary audit row could not be edited/deleted"; FAIL=1; }
+UPDATE "OutboxOperatorAction" SET reason = 'edited' WHERE id = 'up4ciiir-plain';
+DELETE FROM "OutboxOperatorAction" WHERE id = 'up4ciiir-plain';
+SQL
+assert "4c-iii-r: every other operator action still updates and deletes freely" \
+  "SELECT COUNT(*)::text FROM \"OutboxOperatorAction\" WHERE id = 'up4ciiir-plain';" \
+  "0"
+
+# …and the SEAL VERIFIER agrees, over this upgraded legacy database. The hostile inserts above prove
+# the seals behave; this proves the check that `migrate.sh` runs before trusting a marker can SEE
+# them here — the two are different claims, and a verifier that reported "sealed" on an unsealed
+# database would let the repair skip on exactly the database this whole section is about.
+assert "4c-iii-r: all three marker seals are present, enabled and canonical on the upgraded database" \
+  "SELECT COUNT(*)::text FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_proc p ON p.oid = t.tgfoid WHERE c.relname = 'OutboxOperatorAction' AND NOT t.tgisinternal AND t.tgenabled = 'O' AND p.proname LIKE 'phase6_4c_iiir_%';" \
+  "3"
+
+# …and the migration's own RE-RUN ADOPTION TEST, executed against this upgraded database with the
+# genuine marker planted above still in place. A restore or a ledger repair can lose the migration's
+# `_prisma_migrations` row while the triggers and the marker survive, so `migrate deploy` re-runs the
+# file — it must ADOPT a marker written under a working seal, and REFUSE one it cannot show was.
+# Both halves are asserted here rather than only the permissive one, because a test that always
+# adopts and a test that always refuses are equally wrong and look identical from the passing side.
+MARKER_GUARD="$(awk '/^-- ── 0\. DIAGNOSTIC-FIRST/{p=1} /^-- ── 1\./{p=0} p' \
+  "$MIG_DIR/20271125000000_phase6_4c_iiir_marker_seal/migration.sql")"
+if [ -z "$MARKER_GUARD" ]; then
+  echo "FAILED  4c-iii-r: could not read the seal migration's adoption test"; FAIL=1
+elif printf '%s' "$MARKER_GUARD" | $PSQL -q -v ON_ERROR_STOP=1 >/dev/null 2>&1; then
+  echo "ok      4c-iii-r: the seal migration RE-RUNS over a sealed database carrying a genuine marker"
+else
+  echo "FAILED  4c-iii-r: the seal migration refused to re-run over a correctly sealed, correctly marked database"; FAIL=1
+fi
+# the same test, with the INSERT GATE disabled — present under its own name, so a name-only check
+# adopts. Through that window a plain INSERT manufactures a marker, so this must refuse.
+$PSQL -q -c 'ALTER TABLE "OutboxOperatorAction" DISABLE TRIGGER "OutboxOperatorAction_4c_iiir_marker_insert_gated"' >/dev/null 2>&1
+if MARKER_ERR="$(printf '%s' "$MARKER_GUARD" | $PSQL -q -v ON_ERROR_STOP=1 2>&1 >/dev/null)"; then
+  echo "FAILED  4c-iii-r: a marker was ADOPTED although the insert gate was not enforcing"; FAIL=1
+elif printf '%s' "$MARKER_ERR" | grep -q "marker_insert_gated: tgenabled='D'"; then
+  echo "ok      4c-iii-r: a marker is REFUSED when the insert gate was disabled, and the refusal names it (rejected by PostgreSQL)"
+else
+  printf 'FAILED  4c-iii-r: refused, but by the WRONG rule: %s\n' "$(printf '%s' "$MARKER_ERR" | tr '\n' ' ' | cut -c1-200)"; FAIL=1
+fi
+$PSQL -q -c 'ALTER TABLE "OutboxOperatorAction" ENABLE TRIGGER "OutboxOperatorAction_4c_iiir_marker_insert_gated"' >/dev/null 2>&1
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller
