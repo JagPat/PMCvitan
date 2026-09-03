@@ -1409,6 +1409,144 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     }
   });
 
+  // ── Codex round 13 — three P1s, one P2 (the fourth is routed, not faked) ─────────────────────
+
+  it('R13-1 — the seal migration LOCKS the marker table before it reads it, and that lock excludes writers', async () => {
+    // The adoption test is a plain SELECT and the first write-conflicting statement is the DROP
+    // TRIGGER further down. Between them a writer can insert or promote a marker and the file would
+    // seal AROUND it. Reading a row and acting on it two statements later is not a check.
+    const sql = readMarkerSealMigrationSql();
+    const lock = sql.search(/^LOCK TABLE "OutboxOperatorAction" IN SHARE ROW EXCLUSIVE MODE;$/mu);
+    expect(lock).toBeGreaterThan(-1);
+    expect(sql.search(/^BEGIN;$/mu)).toBeLessThan(lock);                  // inside the transaction…
+    expect(lock).toBeLessThan(sql.indexOf('-- ── 0. DIAGNOSTIC-FIRST'));  // …before the marker read
+    expect(lock).toBeLessThan(sql.indexOf('\nDROP TRIGGER IF EXISTS "')); // …and before any DDL
+
+    // AND THE MODE REALLY EXCLUDES A WRITER — asserted against PostgreSQL, not from the manual.
+    // One session holds SHARE ROW EXCLUSIVE; a second session's INSERT must block on it.
+    const writer = new PrismaClient({ datasourceUrl: singleConnectionUrl(process.env.DATABASE_URL!) });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const holder = single.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('LOCK TABLE "OutboxOperatorAction" IN SHARE ROW EXCLUSIVE MODE');
+      await held;
+    }, { timeout: 30_000 });
+    try {
+      const insert = writer.$executeRawUnsafe(
+        `INSERT INTO "OutboxOperatorAction" ("id","action","operatorIdentity","reason")
+         VALUES ('r13-blocked','some.ordinary.action','someone','should block on the table lock')`);
+      let settled = false;
+      void insert.then(() => { settled = true; }, () => { settled = true; });
+
+      // CONDITION-BASED: wait until PostgreSQL reports that writer genuinely waiting on a lock.
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const [row] = await t.prisma.$queryRaw<Array<{ waiting: bigint }>>`
+          SELECT count(*)::bigint AS waiting FROM pg_locks l
+           JOIN pg_class c ON c.oid = l.relation
+          WHERE c.relname = 'OutboxOperatorAction' AND NOT l.granted`;
+        if (Number(row.waiting) > 0) break;
+        if (Date.now() > deadline) throw new Error('the INSERT never blocked on the table lock');
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(settled).toBe(false);                 // still blocked while the lock is held
+      release();
+      await holder;
+      await insert;                                // …and it completes once the lock is released
+    } finally {
+      release();
+      await holder.catch(() => {});
+      await writer.$disconnect();
+      await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
+    }
+  });
+
+  it('R13-4 — corruption landing AFTER the marker commits fails the deploy closed', async () => {
+    // Committing releases the generation locks, and a pre-4c-ii relay waiting on one takes it at
+    // that instant. Before this, the step returned success into that window and migrate.sh started
+    // the API over a register something was still rewriting.
+    //
+    // This NARROWS the window rather than closing it — a writer acting after the recheck is still
+    // unseen, and no check inside this process can be the last word about a process it cannot fence.
+    // Closing it needs the drain itself. What it changes is the outcome in the realistic case:
+    // failing the deployment instead of serving corrupt data silently.
+    // THE DISCRIMINATOR IS THE MARKER ITSELF. It is written inside the verification transaction, so
+    // a SEPARATE connection cannot see it until that transaction commits. Reporting corruption only
+    // once it is visible therefore reproduces exactly the window this fix is about — after the
+    // commit, after the locks were released — and not the pre-existing in-transaction check, which
+    // would otherwise catch the sabotage first and refuse on the older path.
+    const sabotage: ProjectionRebuildOperations = Object.create(ops);
+    sabotage.diagnoseIn = async (tx: never, consumer: string, projectId: string) => {
+      const real = await ops.diagnoseIn(tx, consumer, projectId);
+      if (projectId !== f.projectA.id) return real;
+      // `corrupt` specifically — that is what a legacy serializer's rewrite produces, and it is the
+      // only state the post-commit check refuses on. `lagging`/`blocked` are the ABSENCE of
+      // evidence and must NOT fail a deploy (settled in rounds 8 and 9), so they are not used here.
+      const committed = await markerCount();
+      return committed > 0 ? { ...real, state: 'corrupt' as const } : real;
+    };
+
+    const outcome = await runInboxRepairStep(single, sabotage, env);
+    expect(outcome.ok).toBe(false);
+    expect(outcome.action).toBe('refused');
+    expect(outcome.refusal?.code).toBe('concurrent-corruption');
+    expect(outcome.refusal?.message).toContain('re-reading immediately afterwards');
+  });
+
+  it('R13-2 — a repair under an EXISTING marker reports markerWritten:false', async () => {
+    // `markerWritten` says what THIS deployment did. On the marker-present repair path the insert is
+    // deliberately skipped — one marker is enough — so reporting true claims a write that never
+    // happened, in the CLI output an operator reads.
+    await runInboxRepairStep(single, ops, env);
+    expect(await markerCount()).toBe(1);
+
+    let rebuilds = 0;
+    const laggy: ProjectionRebuildOperations = Object.create(ops);
+    laggy.diagnoseIn = async (tx: never, consumer: string, projectId: string) => {
+      const real = await ops.diagnoseIn(tx, consumer, projectId);
+      return projectId === f.projectA.id && rebuilds === 0 ? { ...real, state: 'lagging' as const } : real;
+    };
+    laggy.run = async (params: Parameters<ProjectionRebuildOperations['run']>[0]) => {
+      rebuilds += 1;
+      return ops.run(params);
+    };
+
+    const outcome = await runInboxRepairStep(single, laggy, env);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.action).toBe('repaired');
+    expect(rebuilds).toBe(1);                     // it really did repair…
+    expect(outcome.markerWritten).toBe(false);    // …without writing a marker
+    expect(await markerCount()).toBe(1);          // the pre-existing one, unchanged
+
+    // and the ordinary first repair still reports the write it genuinely made
+    await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
+    const fresh = await runInboxRepairStep(single, ops, env);
+    expect(fresh.markerWritten).toBe(true);
+  });
+
+  it('R13-3 — `seals repair` RE-OWNS a foreign-owned seal function, which CREATE OR REPLACE cannot', async () => {
+    // `foreign-owner` is a supported finding, and PostgreSQL PRESERVES a function's owner across
+    // CREATE OR REPLACE — so without an explicit ALTER the documented recovery could never repair
+    // the one state it exists for, and the post-verify would keep failing forever.
+    const role = 'zz_seal_foreign_owner';
+    try {
+      await single.$executeRawUnsafe(`DROP ROLE IF EXISTS ${role}`);
+      await single.$executeRawUnsafe(`CREATE ROLE ${role}`);
+      await single.$executeRawUnsafe(`ALTER FUNCTION phase6_4c_iiir_marker_sealed() OWNER TO ${role}`);
+
+      const broken = await verifyMarkerSeals(single as never);
+      expect(broken.findings.map((x) => x.problem)).toContain('foreign-owner');
+
+      const repaired = await repairMarkerSeals(single as never);
+      expect(repaired.sealed).toBe(true);
+      expect(repaired.findings).toEqual([]);
+    } finally {
+      await restoreMarkerSeals();
+      await single.$executeRawUnsafe(`DROP ROLE IF EXISTS ${role}`);
+      await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
+    }
+  });
+
   it('PROBE 3 — an anchor that names no project in the connected database ABORTS, and writes no marker', async () => {
     const outcome = await runInboxRepairStep(single, ops, { ...env, [ANCHOR_ENV]: 'no-such-project' });
     expect(outcome.ok).toBe(false);

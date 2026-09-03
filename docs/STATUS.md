@@ -444,7 +444,32 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    `phase-6-4c-previous-release-drained` gates — so it is not fixable inside this unit, and a fence
    this code cannot build must not be claimed. It stands as a stated limit carried by the directive.
 
-18. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (48 probes):
+18. **CODEX ROUND 13 (three P1s, one P2) — all four correct; three fixed, the fourth NARROWED and
+   its remaining half ROUTED.** **(a)** The seal migration read the marker with a plain `SELECT` and
+   did not conflict with a writer until the `DROP TRIGGER` two statements later, so a marker could be
+   inserted or promoted in between and the file would install every canonical seal AROUND it.
+   `LOCK TABLE … IN SHARE ROW EXCLUSIVE MODE` now runs immediately after `BEGIN` and is held to
+   `COMMIT`; the probe proves the mode really excludes a writer by blocking a second session's
+   `INSERT` on it, condition-based via `pg_locks`. **(b)** `markerWritten: true` was returned even on
+   the marker-present repair path, where the insert is deliberately skipped — the CLI output claimed
+   a write that never happened. It is now `!marker`, with the log distinguishing reuse from creation.
+   **(c)** `seals repair` could never clear a `foreign-owner` finding: PostgreSQL PRESERVES a
+   function's owner across `CREATE OR REPLACE` (measured — a superuser replacement left the foreign
+   owner in place), so the post-verify would fail forever and the documented recovery had no way back
+   to a deployable database. It now `ALTER FUNCTION … OWNER TO` the TABLE's owner — the role the
+   verifier compares against, not the connected role, which would have left the finding standing
+   whenever they differ. **(d) The legacy-writer window, restated precisely and answered honestly.**
+   Committing the verification transaction releases the generation locks, and a relay already waiting
+   on one takes it at that instant; the step then returned success and `migrate.sh` started the API
+   over a register being rewritten. A post-commit recheck now REFUSES on corruption, which flips the
+   realistic case from "serve corrupt data silently" to "fail the deployment closed". **It narrows
+   the window; it does not close it**, and the code says so rather than claiming a fence: a writer
+   acting after the recheck is still unseen, and no check inside this process can be the last word
+   about a process it cannot fence. Closing it needs the drain — which is what
+   `phase-6-4c-previous-release-drained` gates. Codex's other suggested remedy, enforcing that drain
+   at deploy time, is a change to production deploy behaviour and is ROUTED rather than taken.
+
+19. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (48 probes):
    the vacuity itself (a zero-project report satisfies every success field), each identity refusal,
    the verified repair, marker idempotence, identity enforced WITH the marker set, a non-verified
    report leaving NO marker and the next start succeeding, the unserialized generation collision

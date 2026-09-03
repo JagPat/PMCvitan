@@ -435,6 +435,25 @@ export async function repairMarkerSeals(prisma: PrismaService): Promise<MarkerSe
         `DELETE FROM "${MARKER_SEAL_TABLE}" WHERE "action" = $1`, PHASE6_4C_IIIR_MARKER_ACTION));
     }
     for (const statement of creates) await tx.$executeRawUnsafe(statement);
+    // RE-OWN (Codex round 13, P1). `foreign-owner` is a supported finding, and `CREATE OR REPLACE
+    // FUNCTION` cannot clear it: PostgreSQL PRESERVES an existing function's owner — measured, a
+    // superuser replacement left the foreign owner in place. So without this the documented
+    // recovery could never repair the very state it exists for; the post-verify would keep failing
+    // and the operator would have no way back to a deployable database. Ownership is the standing
+    // right to replace the body, which is why the verifier asks about it in the first place.
+    // To the TABLE's owner specifically — that is what the verifier compares against, so
+    // `OWNER TO CURRENT_USER` would silently leave the finding in place whenever the connected role
+    // is not itself the table owner.
+    const [owner] = await tx.$queryRaw<Array<{ table_owner: string }>>`
+      SELECT pg_get_userbyid(c.relowner) AS table_owner
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public' AND c.relname = ${MARKER_SEAL_TABLE}`;
+    if (owner?.table_owner) {
+      for (const { fn } of MARKER_SEAL_TRIGGERS) {
+        await tx.$executeRawUnsafe(
+          `ALTER FUNCTION ${fn}() OWNER TO "${owner.table_owner.replace(/"/gu, '""')}"`);
+      }
+    }
   }, { timeout: 60_000, maxWait: 30_000 });
 
   return { ...(await verifyMarkerSeals(prisma)), markersInvalidated: removed };

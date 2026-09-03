@@ -1266,6 +1266,7 @@ minimum below 1 is refused as a misconfiguration rather than honoured as an allo
 | `project-set-changed` | a project appeared (or vanished) between the start of the repair and the marker | the rebuild, its verification and its locks are all scoped to the set read at the start, so a project that appeared since was neither rebuilt nor diagnosed. No marker was written; the next start covers the full set. If projects are being created by something other than the API, that is the thing to look at |
 | `marked-but-corrupt` | the marker is present, but a generation is corrupt **again** — the register regressed after a verified repair | **something is still writing this register.** The repair is deliberately NOT re-run: repairing underneath that writer would only mark the same damage twice. Stop every pre-4c-ii process, then rebuild with the operator command and redeploy |
 | `concurrent-corruption` | the rebuild succeeded, but re-checking under the relay's own generation lock found a generation corrupt **again** before the marker could be committed | **something is still writing this register** — a process older than the drain fence is the expected cause. No marker was written. Stop every pre-4c-ii process and redeploy; the next start repairs and marks |
+| `concurrent-corruption` (post-commit) | the repair verified and committed, and re-reading **immediately afterwards** found a generation corrupt again. Committing releases the generation locks, and a process older than the drain fence that was WAITING on one takes it at that moment | stop every pre-4c-ii process and redeploy. The deployment fails closed rather than starting the API over a register something is still rewriting. **This narrows the window; it does not close it** — a writer acting after the recheck is still unseen, and no check inside this process can be the last word about a process it cannot fence. Closing it requires the drain itself, which `phase-6-4c-previous-release-drained` gates |
 | `lock-unavailable` | another start held the advisory lock past the wait budget (15 min). A healthy repair finishes well inside it, so the holder is not making progress | find it by joining `pg_locks` (locktype `advisory`, `objid = 640303041`) to `pg_stat_activity`; the holder is a container that started and stalled. No marker was written and the deploy failed closed, so the next start retries once the holder is gone. This bound exists because `pg_advisory_lock` otherwise blocks forever and `migrate.sh` has no outer deadline — a hung deploy needs a human, a failed one retries itself |
 | `system-identity-unreadable` | this deployment's role cannot execute `pg_control_system()` | grant exactly `GRANT EXECUTE ON FUNCTION pg_control_system() TO <role>;` as a superuser and redeploy. On PostgreSQL 16 the default already permits it (the function's ACL is the default `EXECUTE` to `PUBLIC`), so this means the privilege was deliberately revoked |
 
@@ -1373,6 +1374,13 @@ still recorded and nothing to re-run. The generic `§ENF` check cannot see it ei
 triggers it finds DISABLED, not triggers that are simply absent, and `OutboxOperatorAction` has no
 constraints of its own for it to notice. Without this the repair would skip on a marker that
 nothing protected.
+
+**A `foreign-owner` finding needs an ownership transfer, not a replacement.** PostgreSQL PRESERVES
+an existing function's owner across `CREATE OR REPLACE FUNCTION` — measured: a superuser replacement
+left the foreign owner in place. So `seals repair` explicitly `ALTER FUNCTION … OWNER TO` the
+table's owner (the role the verifier compares against, not the connected role) inside the same
+transaction. Without that the documented recovery could never repair the one state it exists for,
+and the post-verify would keep failing with no way back to a deployable database.
 
 **If it fails:** the log names each trigger and what is wrong with it. Reinstall the seals with the
 compiled repair command —

@@ -50,6 +50,17 @@
 -- seals AS FOUND, and installing canonical ones first would destroy the very evidence it weighs.
 BEGIN;
 
+-- THE TABLE IS LOCKED BEFORE THE MARKER IS READ (Codex round 13, P1). The adoption test below is a
+-- plain SELECT, and the first statement that would conflict with a writer is the `DROP TRIGGER`
+-- further down. Between those two an alternate writer can INSERT a marker, or promote an ordinary
+-- audit row into one, and this file would then install every canonical seal AROUND that unverified
+-- row and commit — after which the verifier reports the database sealed and the forgery is
+-- permanent evidence. Reading a row and acting on it two statements later is not a check.
+--
+-- SHARE ROW EXCLUSIVE conflicts with the ROW EXCLUSIVE that INSERT/UPDATE/DELETE take, and is held
+-- until COMMIT, so the state this file inspects is the state it seals. It does not block readers.
+LOCK TABLE "OutboxOperatorAction" IN SHARE ROW EXCLUSIVE MODE;
+
 -- ── 0. DIAGNOSTIC-FIRST: a marker is evidence only if the seal was ENFORCING when it was written ──
 -- The gates BELOW gate future writes. A marker row already present when this migration runs was
 -- gated by whatever was installed at the time — which, on the first install, is nothing at all: such

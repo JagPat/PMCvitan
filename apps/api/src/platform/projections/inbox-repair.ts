@@ -937,8 +937,51 @@ export async function runInboxRepairStep(
       log(`[4c-iii-r] REFUSED (${refusal.code}): ${refusal.message}`);
       return { ...base, ok: false, action: 'refused', projectCount, refusal, report };
     }
-    log(`[4c-iii-r] repaired and marked: ${report.projects} project(s), corruptBefore=${report.corruptBefore}`);
-    return { ...base, ok: true, action: 'repaired', projectCount, markerWritten: true, report };
+    // markerWritten says what THIS deployment DID, not what the database now has (Codex round 13,
+    // P2). On the marker-present repair path the insert is deliberately skipped — one marker is
+    // enough — so reporting `true` claims a write that never happened, and the CLI output is the
+    // record an operator reads.
+    // ── THE POST-COMMIT RECHECK (Codex round 13, P1) ────────────────────────────────────────────
+    //
+    // Committing the transaction above RELEASES the generation locks, and a pre-4c-ii relay that was
+    // waiting on one takes it immediately and rewrites the generation with the legacy serializer.
+    // Until now the step returned success into exactly that window: `migrate.sh` started the API and
+    // the corrupted generation could be served until some LATER deployment happened to notice.
+    //
+    // WHAT THIS IS, STATED HONESTLY. It NARROWS the window; it does not close it. A writer that acts
+    // after this read is still not seen, and no check placed inside this process can be the last
+    // word about a process it cannot fence. What it does buy is the realistic case: a relay that was
+    // already WAITING on the lock acquires it the moment the commit lands, so it has almost always
+    // acted by the time this runs — and the outcome flips from "serve corrupt data silently" to
+    // "fail the deployment closed". The marker stays; the next start reads it, re-diagnoses under
+    // the lock, and refuses `marked-but-corrupt`, which is the correct terminal state for a register
+    // something is still writing.
+    //
+    // CLOSING the window needs the drain itself — no process older than the fence running at all —
+    // which is what `phase-6-4c-previous-release-drained` gates and what this code cannot establish.
+    // Enforcing that gate at deploy time is a change to production deploy behaviour, so it is routed
+    // rather than taken here.
+    const after = await diagnoseCurrentProjects(prisma, ops, orgs, config?.anchorProjectId ?? '', projectIds);
+    if (after.corrupt.length > 0) {
+      const refusal: Refusal = {
+        code: 'concurrent-corruption',
+        message:
+          `the repair verified and committed, but re-reading immediately afterwards found `
+          + `${after.corrupt.length} generation(s) corrupt again: ${after.corrupt.join(', ')}. `
+          + 'Committing releases the generation locks, and a process older than the drain fence that '
+          + 'was waiting on one takes it at that moment — which is exactly what the drain '
+          + 'prerequisite exists to eliminate. The deployment FAILS CLOSED rather than starting the '
+          + 'API over a register something is still rewriting. Stop every pre-4c-ii process and '
+          + 'redeploy. See docs/RUNBOOK.md §P64CIIIR.',
+      };
+      log(`[4c-iii-r] REFUSED (${refusal.code}): ${refusal.message}`);
+      return { ...base, ok: false, action: 'refused', projectCount, refusal, report };
+    }
+
+    log(marker
+      ? `[4c-iii-r] repaired under an EXISTING marker (none written): ${report.projects} project(s), corruptBefore=${report.corruptBefore}`
+      : `[4c-iii-r] repaired and marked: ${report.projects} project(s), corruptBefore=${report.corruptBefore}`);
+    return { ...base, ok: true, action: 'repaired', projectCount, markerWritten: !marker, report };
   } finally {
     await prisma.$executeRaw`SELECT pg_advisory_unlock(${PHASE6_4C_IIIR_LOCK_KEY}::bigint)`;
   }
