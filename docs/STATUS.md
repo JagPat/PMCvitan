@@ -506,7 +506,33 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    operational drain, which `phase-6-4c-previous-release-drained` gates and which no code in this
    unit can establish.
 
-20. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (59 probes):
+20. **CODEX ROUND 15 (one P1, one P2 on `9e187be`) — both correct, and both are consequences of
+   round 14's own fix.** **(a) P1: the repair ASSESSED the seals before it locked the table.**
+   `verifyMarkerSeals` is a catalog READ and takes no lock, while the first statement that does —
+   `DROP TRIGGER` — is several statements later. In that window another session can drop the insert
+   gate, INSERT a forged marker and commit; the repair then reinstalls the canonical seals AROUND
+   that row while its stale assessment says there was nothing to invalidate, and the forgery becomes
+   permanent, sealed evidence while the command reports success. The window is widest in the most
+   ROUTINE runs — an idempotent call on an intact table, or one where only the truncate guard is
+   broken — because those are exactly the runs whose assessment says "nothing to invalidate". The
+   table is now locked `IN SHARE ROW EXCLUSIVE MODE` as the transaction's first table statement and
+   held to `COMMIT` — the migration's own choice for the same question in round 13, now stated once
+   and used in both places. `R15-1` is DISCRIMINATING rather than merely "does it block": without
+   the lock the repair still blocks eventually, at `DROP TRIGGER`, so waiting proves nothing on its
+   own — the probe reads the blocked backend's CURRENT statement out of `pg_stat_activity` and at
+   `9e187be` finds `DROP TRIGGER … marker_insert_gated`, which is proof the assessment had already
+   happened. **(b) P2: a seal function the repair RECREATED was owned by the connected role.**
+   Round 14 moved the ownership realignment BEFORE the `CREATE OR REPLACE` loop, and it skips any
+   function that is ABSENT — so on the documented recovery where a function is missing and the
+   operator connects as a superuser or role member rather than as the table owner, the function was
+   created under the CONNECTED role, the post-verify reported `foreign-owner`, and the CLI exited 3
+   with the deployment still blocked until someone ran the recovery a second time. The realignment
+   now runs AFTER the creates, covering both populations at once. The earlier ordering was justified
+   as protecting the end state "under a partial failure", which was simply WRONG: this is ONE
+   transaction, so a throw anywhere rolls the whole thing back and there is no partial state to
+   protect. `R15-2` is RED at `9e187be` with `sealed: false`.
+
+21. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (61 probes):
    the vacuity itself (a zero-project report satisfies every success field), each identity refusal,
    the verified repair, marker idempotence, identity enforced WITH the marker set, a non-verified
    report leaving NO marker and the next start succeeding, the unserialized generation collision

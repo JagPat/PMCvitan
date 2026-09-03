@@ -518,16 +518,29 @@ export async function repairMarkerSeals(prisma: PrismaService): Promise<MarkerSe
   // longer exists — and this command's whole job is to act on what it found.
   let removed = 0;
   await prisma.$transaction(async (tx) => {
+    const tableOwner = await readTableOwner(tx);
+
+    // THE LOCK COMES BEFORE THE ASSESSMENT (Codex on `9e187be`). `verifyMarkerSeals` is a catalog
+    // READ and takes no lock on the table, while the first statement that does — `DROP TRIGGER` —
+    // is several statements later. In between, another session can drop the insert gate, INSERT a
+    // forged marker and commit. This transaction would then invalidate nothing (its `untrustworthy`
+    // answer describes a database that no longer exists), reinstall the canonical seals AROUND the
+    // forged row, and report success: the forgery becomes permanent, sealed evidence.
+    //
+    // The window is widest in exactly the cases the repair is most routine — an idempotent call on
+    // an intact table, or one where only the truncate guard is broken — because those are the runs
+    // whose assessment says "nothing to invalidate".
+    //
+    // `SHARE ROW EXCLUSIVE` is the migration's own choice for the same question (round 13), stated
+    // once and used in both places: it excludes every writer and conflicts with itself, so no
+    // concurrent INSERT and no concurrent repair can interleave, while the `ACCESS EXCLUSIVE` the
+    // later `DROP TRIGGER` needs conflicts with everything and cannot be taken around it either.
+    // Held to COMMIT, so the assessment and the act it decides describe one state.
+    await tx.$executeRawUnsafe(`LOCK TABLE "${MARKER_SEAL_TABLE}" IN SHARE ROW EXCLUSIVE MODE`);
+
     const before = await verifyMarkerSeals(tx);
     const untrustworthy = before.findings.some(opensForgeryWindow);
-    const tableOwner = await readTableOwner(tx);
     await assertOwnershipCapability(tx, tableOwner);
-    // OWNERSHIP FIRST, THEN THE BODY (Codex on `b5f7c1f`). Both statements need the same right, and
-    // `assertOwnershipCapability` has just proven this connection holds it, so the order cannot
-    // decide success any more. It is still this way round because it makes the END STATE correct
-    // under a partial failure: if anything later in this transaction throws, the seal functions are
-    // already owned by the role the verifier compares against.
-    await realignFunctionOwners(tx, tableOwner);
     for (const statement of functions) await tx.$executeRawUnsafe(statement);
     for (const statement of drops) await tx.$executeRawUnsafe(statement);
     if (untrustworthy) {
@@ -535,6 +548,21 @@ export async function repairMarkerSeals(prisma: PrismaService): Promise<MarkerSe
         `DELETE FROM "${MARKER_SEAL_TABLE}" WHERE "action" = $1`, PHASE6_4C_IIIR_MARKER_ACTION));
     }
     for (const statement of creates) await tx.$executeRawUnsafe(statement);
+
+    // RE-OWN AFTER THE BODIES EXIST, NOT BEFORE (Codex on `9e187be`). An earlier head aligned
+    // ownership first and skipped any function that was ABSENT — so on the documented recovery
+    // where a seal function is missing and the operator connects as a superuser or role member
+    // rather than as the table owner, `CREATE OR REPLACE FUNCTION` created it owned by the
+    // CONNECTED role, the post-verify reported `foreign-owner`, and the CLI exited 3 with the
+    // deployment still blocked until someone ran the recovery a second time.
+    //
+    // Running it here covers both populations at once — functions that already existed under a
+    // foreign owner, and functions this transaction has just created. The earlier ordering was
+    // justified as protecting the end state "under a partial failure", which was simply WRONG:
+    // this is ONE transaction, so a throw anywhere rolls the whole thing back and there is no
+    // partial state to protect. `assertOwnershipCapability` above has already established that
+    // this connection may perform every one of these transfers.
+    await realignFunctionOwners(tx, tableOwner);
   }, { timeout: 60_000, maxWait: 30_000 });
 
   return { ...(await verifyMarkerSeals(prisma)), markersInvalidated: removed };

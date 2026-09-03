@@ -1607,6 +1607,118 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     }
   });
 
+  it('R15-1 — `seals repair` takes the table lock BEFORE it assesses the seals', async () => {
+    // Codex on `9e187be`. `verifyMarkerSeals` is a catalog READ and takes no lock on the table; the
+    // first statement that does is the `DROP TRIGGER` several statements later. In between another
+    // session can drop the insert gate, INSERT a forged marker and commit — and the repair then
+    // reinstalls the canonical seals AROUND that row while its stale assessment says there was
+    // nothing to invalidate, making the forgery permanent, sealed evidence.
+    //
+    // DISCRIMINATING, not merely "does it block". Without the lock the repair still blocks
+    // eventually — at `DROP TRIGGER` — so waiting proves nothing on its own. What distinguishes the
+    // two versions is WHERE it waits, and therefore whether the assessment already happened:
+    // holding a conflicting lock and reading the repair backend's CURRENT statement out of
+    // `pg_stat_activity` shows `LOCK TABLE` with the fix and `DROP TRIGGER` without it.
+    const holder = new PrismaClient({ datasourceUrl: singleConnectionUrl(process.env.DATABASE_URL!) });
+    const worker = new PrismaClient({ datasourceUrl: singleConnectionUrl(process.env.DATABASE_URL!) });
+    let release: () => void = () => {};
+    let holding: Promise<unknown> = Promise.resolve();
+    let repairing: Promise<unknown> = Promise.resolve();
+    try {
+      const [{ pid: workerPid }] = await worker.$queryRaw<Array<{ pid: number }>>`
+        SELECT pg_backend_pid() AS pid`;
+
+      // session A holds a lock that conflicts with the repair's own SHARE ROW EXCLUSIVE
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      holding = holder.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`LOCK TABLE "OutboxOperatorAction" IN SHARE ROW EXCLUSIVE MODE`);
+        await held;
+      }, { timeout: 120_000, maxWait: 30_000 }).catch(() => undefined);
+
+      // …and is CONFIRMED to hold it before B starts. Without this barrier the repair can run to
+      // completion before the holder's lock lands, and the probe observes nothing at all.
+      for (let i = 0; i < 400; i += 1) {
+        const [got] = await single.$queryRaw<Array<{ n: bigint }>>`
+          SELECT count(*) AS n FROM pg_locks
+           WHERE relation = '"OutboxOperatorAction"'::regclass
+             AND mode = 'ShareRowExclusiveLock' AND granted`;
+        if (Number(got.n) > 0) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+
+      // session B runs the repair and must park on its very first table statement
+      repairing = repairMarkerSeals(worker as never).catch(() => undefined);
+
+      // condition-based, never a sleep: wait until B is genuinely WAITING on a lock
+      let seen = '';
+      for (let i = 0; i < 400 && !seen; i += 1) {
+        const [row] = await single.$queryRaw<Array<{ query: string }>>`
+          SELECT query FROM pg_stat_activity
+           WHERE pid = ${workerPid} AND wait_event_type = 'Lock'`;
+        if (row?.query) seen = row.query;
+        else await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(seen).not.toBe('');                          // it really is blocked, not just slow
+      expect(seen).toMatch(/LOCK TABLE/iu);               // …on the lock, BEFORE assessing
+      expect(seen).not.toMatch(/DROP TRIGGER/iu);         // …not after already reading the catalog
+    } finally {
+      // the holder goes FIRST and unconditionally: everything below needs the table.
+      release();
+      await holding;
+      await repairing;
+      await worker.$disconnect();
+      await holder.$disconnect();
+      await restoreMarkerSeals();
+      await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
+    }
+    expect((await verifyMarkerSeals(single as never)).sealed).toBe(true);
+  }, 120_000);
+
+  it('R15-2 — a seal function RECREATED by the repair is owned by the table owner, not the connected role', async () => {
+    // Codex on `9e187be`. `realignFunctionOwners` ran BEFORE the `CREATE OR REPLACE` loop and
+    // skipped any function that was ABSENT — so on the documented recovery where a seal function is
+    // missing and the operator connects as a superuser or role member rather than as the table
+    // owner, the function was created under the CONNECTED role, the post-verify reported
+    // `foreign-owner`, and the CLI exited 3 with the deployment still blocked.
+    const owner = 'zz_seal_tableowner';
+    const [{ o: originalOwner }] = await single.$queryRawUnsafe<Array<{ o: string }>>(
+      `SELECT pg_get_userbyid(c.relowner) AS o FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relname = 'OutboxOperatorAction'`);
+    try {
+      await single.$executeRawUnsafe(`DROP ROLE IF EXISTS ${owner}`);
+      await single.$executeRawUnsafe(`CREATE ROLE ${owner}`);
+      // the table belongs to a role the CONNECTED superuser is not
+      await single.$executeRawUnsafe(`ALTER TABLE "OutboxOperatorAction" OWNER TO ${owner}`);
+      for (const { fn } of MARKER_SEAL_TRIGGERS) {
+        await single.$executeRawUnsafe(`ALTER FUNCTION ${fn}() OWNER TO ${owner}`);
+      }
+      // …and one canonical function is MISSING, the state the recovery exists for
+      await single.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS "OutboxOperatorAction_4c_iiir_no_truncate" ON "OutboxOperatorAction"`);
+      await single.$executeRawUnsafe(`DROP FUNCTION phase6_4c_iiir_no_truncate()`);
+
+      const repaired = await repairMarkerSeals(single as never);
+      expect(repaired.sealed).toBe(true);
+      expect(repaired.findings).toEqual([]);              // RED before the fix: `foreign-owner`
+
+      const rows = await single.$queryRawUnsafe<Array<{ fn: string; owner: string }>>(
+        `SELECT p.proname AS fn, pg_get_userbyid(p.proowner) AS owner FROM pg_proc p
+           JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'public' AND p.proname LIKE 'phase6_4c_iiir_%' ORDER BY p.proname`);
+      expect(rows.length).toBe(MARKER_SEAL_TRIGGERS.length);
+      for (const r of rows) expect(r.owner).toBe(owner);  // the RECREATED one included
+    } finally {
+      await single.$executeRawUnsafe(`ALTER TABLE "OutboxOperatorAction" OWNER TO ${originalOwner}`);
+      await restoreMarkerSeals();
+      for (const { fn } of MARKER_SEAL_TRIGGERS) {
+        await single.$executeRawUnsafe(`ALTER FUNCTION ${fn}() OWNER TO ${originalOwner}`).catch(() => 0);
+      }
+      await single.$executeRawUnsafe(`DROP ROLE IF EXISTS ${owner}`);
+      await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
+    }
+  });
+
   it('R13-2 — a repair under an EXISTING marker reports markerWritten:false', async () => {
     // `markerWritten` says what THIS deployment did. On the marker-present repair path the insert is
     // deliberately skipped — one marker is enough — so reporting true claims a write that never
