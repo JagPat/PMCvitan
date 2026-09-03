@@ -138,6 +138,30 @@ if [ ! -f "$B1_SEALS" ]; then
   exit 1
 fi
 
+# ── Phase 6 unit 4c-iii-r — the deploy-time `decisions.inbox` repair — declared here, RUN AFTER
+#    the deploy ────────────────────────────────────────────────────────────────────────────────
+# Not a preflight. 4c-iii's enablement transition ran while the previous-release drain prerequisite
+# was unmet, so a pre-4c-ii worker may have left a `decisions.inbox` generation holding a non-empty
+# SUBSET of the canonical register while presenting as caught-up — which the read path serves as
+# authoritative until the next decision event. No audit can establish which projects it touched, so
+# the register is rebuilt from canonical for EVERY project, ONCE, at deploy time. It must run AFTER
+# Prisma (it rebuilds through the current schema) and BEFORE `node dist/main.js` accepts
+# connections — which is also what makes the client refresh structural rather than an operator step:
+# the container restart disconnects every client and `useApiSync` refreshes on socket `connect`.
+#
+# It is exactly-once ACROSS CONCURRENT REPLICA STARTS by a session-level advisory lock held across
+# check-marker -> rebuild -> verify -> write-marker, not by reading a marker two replicas can both
+# see as absent. A failed attempt writes NO marker and exits non-zero, so the deploy fails closed
+# and the next start retries. See docs/RUNBOOK.md §P64CIIIR for the two required environment
+# variables and for what each refusal means.
+# The compiled artifact is produced by the image build; a missing artifact means a broken build —
+# fail closed, exactly as with the preflights above.
+INBOX_REPAIR="dist/platform/projections/inbox-repair.cli.js"
+if [ ! -f "$INBOX_REPAIR" ]; then
+  echo "[migrate] ERROR: compiled 4c-iii-r inbox repair ($INBOX_REPAIR) is missing — the build is incomplete; refusing to deploy."
+  exit 1
+fi
+
 out=$(npx prisma migrate deploy 2>&1)
 code=$?
 echo "$out"
@@ -170,6 +194,26 @@ if [ $code -eq 0 ]; then
   if ! node "$ENF_CHECK" verify; then
     echo "[migrate] ERROR: 'prisma migrate deploy' succeeded but schema enforcement verification FAILED — the ledger is complete while a trigger does not fire or a foreign key is unvalidated."
     echo "[migrate] This deploy is NOT good. Repair per docs/RUNBOOK.md §ENF, then redeploy."
+    exit 1
+  fi
+  # Phase 6 unit 4c-iii-r — the one-shot `decisions.inbox` repair, on the ordinary success path.
+  # The marker seal, verified BEFORE the repair is allowed to trust a marker (Codex F4 on
+  # `bee2ed9`). The repair SKIPS itself when it finds the marker row, and `20271125000000` is the
+  # only thing that makes that row mean anything: without its three triggers a marker is freely
+  # insertable, rewritable and deletable, so "the marker is there" stops being evidence that the
+  # rebuild ever ran. A partial restore can drop or hollow those triggers with every migration
+  # still recorded, and `migrate deploy` has nothing to re-run. The generic $ENF_CHECK above
+  # cannot see it either: it reports triggers it finds DISABLED, not triggers that are simply
+  # absent from the inventory, and "OutboxOperatorAction" carries no constraints of its own.
+  # Exit 4 (the table is gone) is a failure here too, for the reason the B1 verifier documents.
+  if ! node "$INBOX_REPAIR" seals; then
+    echo "[migrate] ERROR: the 4c-iii-r marker seals are not intact — a repair marker on this database would not be evidence that the rebuild ran."
+    echo "[migrate] Refusing to run the repair against an unsealed marker. Repair per docs/RUNBOOK.md §P64CIIIR, then redeploy."
+    exit 1
+  fi
+  if ! node "$INBOX_REPAIR"; then
+    echo "[migrate] ERROR: the 4c-iii-r decisions.inbox repair did not succeed — refusing to start."
+    echo "[migrate] No marker was written, so the next start retries. See docs/RUNBOOK.md §P64CIIIR."
     exit 1
   fi
   exit 0
@@ -254,6 +298,18 @@ if echo "$out" | grep -q "P3005"; then
   # costs nothing when it has somehow already run, and its closing DO block still refuses to commit
   # unless every project carries the row.
   #
+  # 20271125000000_phase6_4c_iiir_marker_seal is here for the same reason, and leaving it out
+  # would have been the worst version of this mistake (Codex round 2, P1). Its entire content is
+  # raw SQL — three functions, three triggers — so `prisma db push` reproduces NONE of it, and
+  # resolving it as applied would record a seal that does not exist. The 4c-iii-r repair step runs
+  # at the END of this very path and writes a TRUSTED marker that every later start reads to skip
+  # the repair; with the seals absent that marker is freely insertable, rewritable and deletable,
+  # and the generic enforcement verifier cannot notice because it judges only triggers that EXIST.
+  # Left pending, the retried deploy below really executes it, so the seals are installed before
+  # the repair is ever invoked. Every statement in the file is re-runnable (CREATE OR REPLACE
+  # FUNCTION, DROP TRIGGER IF EXISTS before each CREATE TRIGGER), so leaving it pending costs
+  # nothing when it has somehow already run.
+  #
   # The three 4c PREREQUISITES are here for the same reason, and adding 20271120 without them
   # would have been worse than adding neither (review finding on #505 head 636d38e, P1). A
   # db-push baseline has their modeled tables and columns but NONE of their raw CHECK,
@@ -270,7 +326,8 @@ if echo "$out" | grep -q "P3005"; then
 20271101000000_phase6_t4c_i_consultation
 20271115000000_phase6_t4c_ii_approval_provenance
 20271116000000_phase6_t4c_ii_rollout_fence
-20271120000000_phase6_t4c_iii_enablement"
+20271120000000_phase6_t4c_iii_enablement
+20271125000000_phase6_4c_iiir_marker_seal"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
@@ -386,6 +443,26 @@ if echo "$out" | grep -q "P3005"; then
   if ! node "$ENF_CHECK" verify; then
     echo "[migrate] ERROR: schema enforcement is not intact after baseline + deploy — refusing to start."
     echo "[migrate] See docs/RUNBOOK.md §ENF."
+    exit 1
+  fi
+  # Phase 6 unit 4c-iii-r — the one-shot `decisions.inbox` repair, on the P3005 baseline success path.
+  # The marker seal, verified BEFORE the repair is allowed to trust a marker (Codex F4 on
+  # `bee2ed9`). The repair SKIPS itself when it finds the marker row, and `20271125000000` is the
+  # only thing that makes that row mean anything: without its three triggers a marker is freely
+  # insertable, rewritable and deletable, so "the marker is there" stops being evidence that the
+  # rebuild ever ran. A partial restore can drop or hollow those triggers with every migration
+  # still recorded, and `migrate deploy` has nothing to re-run. The generic $ENF_CHECK above
+  # cannot see it either: it reports triggers it finds DISABLED, not triggers that are simply
+  # absent from the inventory, and "OutboxOperatorAction" carries no constraints of its own.
+  # Exit 4 (the table is gone) is a failure here too, for the reason the B1 verifier documents.
+  if ! node "$INBOX_REPAIR" seals; then
+    echo "[migrate] ERROR: the 4c-iii-r marker seals are not intact — a repair marker on this database would not be evidence that the rebuild ran."
+    echo "[migrate] Refusing to run the repair against an unsealed marker. Repair per docs/RUNBOOK.md §P64CIIIR, then redeploy."
+    exit 1
+  fi
+  if ! node "$INBOX_REPAIR"; then
+    echo "[migrate] ERROR: the 4c-iii-r decisions.inbox repair did not succeed — refusing to start."
+    echo "[migrate] No marker was written, so the next start retries. See docs/RUNBOOK.md §P64CIIIR."
     exit 1
   fi
   exit 0

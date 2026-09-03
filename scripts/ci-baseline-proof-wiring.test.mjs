@@ -51,6 +51,23 @@ const PINNED_PROOFS = [
     states: ['A. FRESH', 'B. ALREADY-CLEAN', 'C. DIRTY', 'D. DIRTY', 'E. REPAIRED',
              'F. ALREADY-CHECKED', 'G. THE POST-DEPLOY SEAM', 'H. COUPLING', 'I. THE POST-DEPLOY SEAM'],
   },
+  {
+    script: 'apps/api/scripts/phase6-4c-iiir-production-runner-proof.sh',
+    // The only execution of the production `migrate.sh` over a database that needs — or has
+    // already had — the Phase 6 4c-iii-r one-shot `decisions.inbox` repair. The integration suite
+    // exercises the STEP; only this exercises the RUNNER.
+    verdicts: [/4c-iii-r production-runner proof: PASSED/u, /4c-iii-r production-runner proof: FAILED/u],
+    // A. fresh/empty (a first deploy is not walled off) · A2. populated but never served (the
+    // harness shape — no configuration needed, which is what keeps this step from coupling every
+    // other proof) · B. in service + unconfigured (the vacuity refusal) · C/C2/C3. the three
+    // identity refusals · D. the repair runs and is verified · E/E2. the marker skips, but never
+    // excuses identity · F. a failed attempt writes no marker and is retried · G. coupling.
+    states: ['A. FRESH/EMPTY', 'A2. POPULATED BUT NEVER SERVED', 'B. IN SERVICE + UNCONFIGURED',
+             'C. WRONG DATABASE', 'C2.', 'C3.', 'D. CONFIGURED AND CORRECT', 'E. RE-RUN', 'E2.',
+             'F. A FAILED ATTEMPT', 'F2. CONFIGURED + NEVER SERVED', 'F3. THE MARKER IS SEALED',
+             'F4. A CLONE OF PRODUCTION', 'F5. A RESTORE INTO A SIBLING DATABASE',
+             'F6. A PARTIAL IDENTITY CONFIGURATION', 'F7. AN UNSEALED MARKER', 'G. COUPLING'],
+  },
 ];
 
 /** The `jobs:` block, split per job, preserving each job's own lines. */
