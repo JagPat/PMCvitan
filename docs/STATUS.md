@@ -16,7 +16,7 @@ task: 4
 task_state: correction_required
 work_item: none
 reviewed_merge: 94cf3af
-open_pr: 526
+open_pr: 527
 next_task: phase-6-task-4c-iv
 blocking_directive: phase-6-4c-previous-release-drained
 updated: 2026-09-03
@@ -755,7 +755,7 @@ this unit is not finished, because the production gate it depends on has never b
 shape reasoning is kept above only so the next writer does not re-derive it and reach the same wrong
 conclusion.
 
-So this lands `task_state: correction_required`, `open_pr: 526`, and
+So this lands `task_state: correction_required`, `open_pr: 527`, and
 `blocking_directive: phase-6-4c-previous-release-drained`. The directive is what stops 4c-iv from
 being exposed: `next_task` still names it, exactly as on `main`, and the resolver schedules the
 DIRECTIVE ahead of `next_task` while one is set. Merging this PR therefore lands the code and
