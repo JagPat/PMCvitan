@@ -132,6 +132,61 @@ export const SYSTEM_IDENTITY_ENV = 'PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER';
 export const DATABASE_IDENTITY_ENV = 'PHASE6_4C_IIIR_EXPECTED_DATABASE_OID';
 
 /**
+ * The commit at which the 4c-ii serializer landed — the release floor the fleet must be drained TO.
+ *
+ * Compiled in rather than configured, because it is a property of THIS code, not of a deployment:
+ * every process older than it writes the v1 `decisions.inbox` register this step exists to repair.
+ */
+export const PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE = '5fcc2a58';
+
+/**
+ * The deploy-configured declaration that the legacy-worker drain has been performed.
+ *
+ * WHY A DECLARATION AND NOT A MEASUREMENT (Codex P1 on `88ea82c`).
+ *
+ * The hazard this step's post-commit recheck can only DETECT is a pre-4c-ii relay that waits on a
+ * generation lock, takes it the instant the repair's verification transaction commits, and rewrites
+ * the register with the v1 serializer. Codex is right that detection after the fact is not the same
+ * as preventing it, and that returning success on a best-effort recheck understates what is being
+ * relied on. What it relies on is the drain, so the drain must be a PRECONDITION OF SUCCESS rather
+ * than a line in a runbook — which is what this variable makes it: unset, the step refuses and the
+ * deployment does not start.
+ *
+ * Two things it deliberately is NOT:
+ *
+ *   It is not a measurement. Nothing readable from inside the database identifies the release a
+ *   connection belongs to: no `application_name` is set anywhere in this codebase, and `R14-3` pins
+ *   the reason a row-shape fence cannot stand in — `serializeDecision` emits the 4c-ii keys only for
+ *   a non-empty consultation thread, so a threadless decision is byte-identical under both
+ *   serializers and no predicate PostgreSQL can evaluate separates them.
+ *
+ *   It is not a WRITE fence either, and this is a deliberate choice rather than a missing feature.
+ *   A trigger rejecting writes from a session that has not declared its catalog version WOULD stop
+ *   the legacy relay, because that relay does not declare one — but it stops it by making its
+ *   delivery transaction raise, and the outbox's own failure path then decides what that costs.
+ *   Read it: `OutboxRelay.onFailure` retries with backoff and dead-letters at `MAX_ATTEMPTS` (5);
+ *   `dispatchProjection` then finds that dead row as the blocker of the next position and sets the
+ *   generation `cursorStatus = 'blocked'`; and `readServableGeneration` refuses a blocked generation,
+ *   so the read path falls back to canonical for as long as it stays that way — which is until an
+ *   operator rebuilds. That is the trade a write fence actually makes: not corruption prevented, but
+ *   corruption exchanged for a projection that needs an operator after a rolling deploy. This is
+ *   reasoning from those three functions, NOT a measurement — no probe here installs such a fence.
+ *   `generation.ts` records the same conclusion, reached independently for the generation-CREATE
+ *   path: "a write-side fence cannot close this without collateral".
+ *
+ * So this is an explicit, fail-closed, deploy-time declaration by the operator performing the deploy,
+ * held to the release floor this code requires and RECORDED VERBATIM IN THE MARKER ROW, so what was
+ * claimed at the moment of repair remains auditable afterwards. It is the same shape as
+ * {@link ANCHOR_ENV}: outside-DB truth the database cannot supply, supplied by the deployment and
+ * then held to.
+ *
+ * Set it to the commit this fleet has been drained to, which must be exactly
+ * {@link PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE}: a declaration naming any other release is refused
+ * rather than interpreted, so a value carried forward from an older runbook cannot pass.
+ */
+export const DRAIN_DECLARATION_ENV = 'PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE';
+
+/**
  * The session-level advisory lock this step serializes on. An arbitrary but FIXED key, unique in
  * this codebase (no other advisory lock is taken anywhere) and distinct from Prisma Migrate's own
  * (72707369), so a concurrent `migrate deploy` never contends with it.
@@ -200,6 +255,8 @@ export interface IdentityConfig {
   expectedSystemIdentifier: string;
   /** The `pg_database.oid` of the database within that cluster this deployment is configured to serve. */
   expectedDatabaseOid: string;
+  /** The release floor this deployment DECLARES every process has been drained to. */
+  drainedMinimumRelease: string;
 }
 
 export type RefusalCode =
@@ -210,6 +267,7 @@ export type RefusalCode =
   | 'system-identity-mismatch'
   | 'database-identity-invalid'
   | 'database-identity-mismatch'
+  | 'drain-release-mismatch'
   | 'anchor-absent'
   | 'below-minimum'
   | 'rebuild-not-verified'
@@ -274,9 +332,10 @@ export function readIdentityConfig(
   const minimumRaw = (env[MINIMUM_ENV] ?? '').trim();
   const systemIdentifier = (env[SYSTEM_IDENTITY_ENV] ?? '').trim();
   const databaseOid = (env[DATABASE_IDENTITY_ENV] ?? '').trim();
+  const drainDeclaration = (env[DRAIN_DECLARATION_ENV] ?? '').trim();
 
-  const present = [anchor, minimumRaw, systemIdentifier, databaseOid].filter(Boolean).length;
-  if (present < 4) {
+  const present = [anchor, minimumRaw, systemIdentifier, databaseOid, drainDeclaration].filter(Boolean).length;
+  if (present < 5) {
     // NOTHING SET is the fresh-install exemption. SOMETHING SET IS A DECLARATION (Codex F1 on
     // `bee2ed9`). The exemption exists for a database that has never served this register and for
     // the harnesses that drive the real `migrate.sh` over synthetic databases -- neither of which
@@ -295,19 +354,22 @@ export function readIdentityConfig(
       !minimumRaw ? MINIMUM_ENV : null,
       !systemIdentifier ? SYSTEM_IDENTITY_ENV : null,
       !databaseOid ? DATABASE_IDENTITY_ENV : null,
+      !drainDeclaration ? DRAIN_DECLARATION_ENV : null,
     ].filter(Boolean);
     const because = present > 0
-      ? `${present} of the 4 identity variables are set, so this deployment has declared which `
-        + 'database it serves; the declaration is then honoured in full, whatever the connected '
-        + 'database looks like. A partial declaration is never treated as no declaration.'
-      : 'this database has served the decisions.inbox register, so all 4 are required.';
+      ? `${present} of the 5 deployment declarations are set, so this deployment has declared which `
+        + 'database it serves and what it has drained; the declaration is then honoured in full, '
+        + 'whatever the connected database looks like. A partial declaration is never treated as no '
+        + 'declaration.'
+      : 'this database has served the decisions.inbox register, so all 5 are required.';
     return {
       ok: false,
       refusal: {
         code: 'identity-unconfigured',
         message:
           `${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} unset: ${because} They exist `
-          + 'so the repair can never report success against an empty or wrong database. Set them '
+          + 'so the repair can never report success against an empty or wrong database, nor while a '
+          + 'process that writes the register this repair is fixing may still be running. Set them '
           + 'per docs/RUNBOOK.md §P64CIIIR and redeploy.',
       },
     };
@@ -352,6 +414,25 @@ export function readIdentityConfig(
       },
     };
   }
+  // THE DRAIN DECLARATION IS HELD TO THIS CODE'S OWN FLOOR, not merely to being non-empty. A
+  // deployment that carries forward a declaration naming some earlier release has not declared what
+  // this repair requires, and interpreting it charitably is how a stale runbook line becomes a
+  // clearance. Refused by name instead.
+  if (drainDeclaration !== PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE) {
+    return {
+      ok: false,
+      refusal: {
+        code: 'drain-release-mismatch',
+        message:
+          `${DRAIN_DECLARATION_ENV}='${drainDeclaration}' does not name the release this repair `
+          + `requires ('${PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE}'). Set it only once every API, `
+          + 'projection/relay, web-push and delivery-worker process older than that commit is '
+          + 'stopped or drained: a process older than it writes the v1 register this step repairs, '
+          + 'and can rewrite the repaired one the moment this step releases its locks. See '
+          + 'docs/RUNBOOK.md §P64CIIIR.',
+      },
+    };
+  }
   const expectedMinProjects = Number(minimumRaw);
   if (expectedMinProjects < 1) {
     return {
@@ -371,6 +452,7 @@ export function readIdentityConfig(
       expectedMinProjects,
       expectedSystemIdentifier: systemIdentifier,
       expectedDatabaseOid: databaseOid,
+      drainedMinimumRelease: drainDeclaration,
     },
   };
 }
@@ -869,7 +951,8 @@ export async function runInboxRepairStep(
       }
       log(
         `[4c-iii-r] identity ok: anchor ${config.anchorProjectId} present; `
-        + `${projectCount} project(s) >= minimum ${config.expectedMinProjects}`,
+        + `${projectCount} project(s) >= minimum ${config.expectedMinProjects}; `
+        + `drain declared to ${config.drainedMinimumRelease}`,
       );
     }
 
@@ -1070,9 +1153,14 @@ export async function runInboxRepairStep(
           action: PHASE6_4C_IIIR_MARKER_ACTION,
           consumer: DECISIONS_PROJECTION,
           operatorIdentity: PHASE6_4C_IIIR_OPERATOR,
+          // THE DECLARATION IS RECORDED, NOT JUST CHECKED (Codex P1 on `88ea82c`). A precondition
+          // that leaves no trace is indistinguishable afterwards from one that was never applied.
+          // The marker row is append-only and immutable under `20271125000000`, so what this
+          // deployment claimed to have drained is readable for as long as the marker itself is.
           reason:
             `${PHASE6_4C_IIIR_REASON} — verified over ${report.projects} project(s); `
-            + `anchor ${config?.anchorProjectId ?? 'n/a'}`,
+            + `anchor ${config?.anchorProjectId ?? 'n/a'}; `
+            + `drained-minimum-release ${config?.drainedMinimumRelease ?? 'n/a'}`,
         },
       });
     }, VERIFY_TX_OPTIONS);
@@ -1182,9 +1270,12 @@ export async function runInboxRepairStep(
           + `${moved.length} generation(s) whose stored rows no longer match canonical: `
           + `${moved.join(', ')}. `
           + 'Committing releases the generation locks, and a process older than the drain fence that '
-          + 'was waiting on one takes it at that moment — which is exactly what the drain '
-          + 'prerequisite exists to eliminate. The deployment FAILS CLOSED rather than starting the '
-          + 'API over a register something is still rewriting. Stop every pre-4c-ii process and '
+          + 'was waiting on one takes it at that moment. THIS DEPLOYMENT DECLARED THAT DRAIN DONE '
+          + `(${DRAIN_DECLARATION_ENV}='${PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE}'), so the `
+          + 'declaration was not true of this fleet: something older than that release is still '
+          + 'running and still writing. The deployment FAILS CLOSED rather than starting the API '
+          + 'over a register something is still rewriting. Find and stop that process — every '
+          + 'projection/relay, web-push and delivery worker, not only the API containers — then '
           + 'redeploy. See docs/RUNBOOK.md §P64CIIIR.',
       };
       log(`[4c-iii-r] REFUSED (${refusal.code}): ${refusal.message}`);

@@ -1187,7 +1187,7 @@ generation holding a non-empty SUBSET of the canonical register while presenting
 step finishes before the server accepts connections, the container restart disconnects every client,
 and `useApiSync` refreshes on socket `connect`.
 
-### Configuration — four variables, ALL required once any one of them is set
+### Configuration — five variables, ALL required once any one of them is set
 
 | Variable | Value | Obtain it with |
 | --- | --- | --- |
@@ -1195,8 +1195,9 @@ and `useApiSync` refreshes on socket `connect`.
 | `PHASE6_4C_IIIR_EXPECTED_DATABASE_OID` | the OID of the DATABASE within that cluster | `SELECT oid FROM pg_database WHERE datname = current_database();` |
 | `PHASE6_4C_IIIR_ANCHOR_PROJECT_ID` | a production `Project.id` that MUST exist in that database | any production project id |
 | `PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS` | a whole number ≥ 1 that `count(Project)` must meet | `SELECT count(*) FROM "Project";` |
+| `PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE` | exactly `5fcc2a58` — your declaration that every process older than that commit is stopped or drained | **perform the drain, then set it.** It is not read from anywhere |
 
-**The first two identify the DATABASE; the other two identify the DATASET, and that distinction is
+**The first two identify the DATABASE; the next two identify the DATASET, and that distinction is
 the point.** A project id and a project count travel with the data: a clone or a
 `pg_dump`/`pg_restore` of production contains the same anchor project and at least the same number
 of projects, so a deployment misconfigured to point at that copy satisfies both — the realistic
@@ -1210,7 +1211,22 @@ of production into a SIBLING database beside it — which is the most ordinary r
 separates those two. The OID rather than the name deliberately: a name is re-usable, and restoring
 into `pmcvitan_copy` and then renaming it to `pmcvitan` would defeat a name check.
 
-**ALL FOUR, or none.** Setting none of them is the fresh-install exemption — a database that has
+**The fifth is a declaration about your FLEET, and the repair refuses without it.** Every process
+older than `5fcc2a58` writes the v1 `decisions.inbox` register this step exists to repair, and can
+rewrite the repaired one the moment the step releases its generation locks. The step's post-commit
+re-read detects that; it cannot prevent it, and nothing inside this process can fence a process it
+does not control. So the drain is a **precondition of success** rather than a line in this runbook:
+set `PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE=5fcc2a58` only once every API, projection/relay,
+web-push and delivery-worker process older than that commit is stopped or drained. The value is
+recorded verbatim in the marker row, so what a deployment claimed stays auditable afterwards.
+
+A declaration naming any other release is refused (`drain-release-mismatch`) rather than
+interpreted, so a value copied forward from an older procedure cannot pass. And be clear about what
+setting it does and does not do: it does not measure anything — it commits you to the statement. If
+it is set while something older is still running, the post-commit re-read is what stands between
+that process and a register served as repaired, and its refusal then says exactly that.
+
+**ALL FIVE, or none.** Setting none of them is the fresh-install exemption — a database that has
 never served this register asserts nothing, which is what keeps a first deploy from being walled
 off and every sibling runner proof free of this configuration. Setting SOME of them is a
 declaration of which database this deployment serves, and it is then honoured in full whatever the
@@ -1244,8 +1260,8 @@ generation:
   written**, so a later start over a database that has been in service still repairs in full. This
   is the fresh-install shape, and also the shape of every test harness that drives `migrate.sh` over
   a psql-planted fixture — which is why none of them carry this step's configuration.
-- **One or more** — a database in service, the only kind that can carry the defect. Both variables
-  are required and an unset one aborts.
+- **One or more** — a database in service, the only kind that can carry the defect. All five
+  variables are required and an unset one aborts.
 
 There is no value you can set that makes the step skip a database that has served the register: a
 minimum below 1 is refused as a misconfiguration rather than honoured as an allowance.
@@ -1254,12 +1270,13 @@ minimum below 1 is refused as a misconfiguration rather than honoured as an allo
 
 | In the log | Meaning | Action |
 | --- | --- | --- |
-| `identity-unconfigured` | either the database has served the register and nothing is set, or SOME of the four are set and the rest are not (a partial declaration) | the message names each missing variable; set all four and redeploy |
+| `identity-unconfigured` | either the database has served the register and nothing is set, or SOME of the five are set and the rest are not (a partial declaration) | the message names each missing variable; set all five and redeploy |
 | `minimum-invalid` | `…EXPECTED_MIN_PROJECTS` is not a whole number ≥ 1 | correct it; `0` is refused because an empty database satisfies it |
 | `system-identity-invalid` | `…EXPECTED_SYSTEM_IDENTIFIER` is not a bare integer | read it from the cluster with the query above |
 | `system-identity-mismatch` | the connected **cluster** is a different one — a restore into another cluster, or the wrong `DATABASE_URL` | check `DATABASE_URL` first; only change the configured identifier when the deployment has genuinely moved clusters |
 | `database-identity-invalid` | `…EXPECTED_DATABASE_OID` is not a bare integer | read it from the database with the query above |
 | `database-identity-mismatch` | the cluster is right but the **database within it** is not — a restore into a sibling database, or a `DATABASE_URL` pointing at the wrong database on the right server | check `DATABASE_URL` first; only re-read the OID when the deployment has genuinely moved database |
+| `drain-release-mismatch` | `…DRAINED_MINIMUM_RELEASE` is set, but does not name the release this repair requires (`5fcc2a58`) | set it to exactly that commit, and only once the drain is genuinely done. A value carried forward from an older runbook is refused rather than interpreted |
 | `anchor-absent` | `…ANCHOR_PROJECT_ID` names no project here | **this is not the database this deploy is configured for** — check `DATABASE_URL` before changing the anchor |
 | `below-minimum` | fewer projects than configured | if projects were legitimately removed, lower the minimum; otherwise treat it as a wrong-database signal |
 | `rebuild-not-verified` | the rebuild ran but did not succeed for every project | the message NAMES the offending `project/consumer` pairs and their errors; fix the underlying cause and redeploy |
@@ -1270,8 +1287,22 @@ minimum below 1 is refused as a misconfiguration rather than honoured as an allo
 | `lock-unavailable` | another start held the advisory lock past the wait budget (15 min). A healthy repair finishes well inside it, so the holder is not making progress | find it by joining `pg_locks` (locktype `advisory`, `objid = 640303041`) to `pg_stat_activity`; the holder is a container that started and stalled. No marker was written and the deploy failed closed, so the next start retries once the holder is gone. This bound exists because `pg_advisory_lock` otherwise blocks forever and `migrate.sh` has no outer deadline — a hung deploy needs a human, a failed one retries itself |
 | `system-identity-unreadable` | this deployment's role cannot execute `pg_control_system()` | grant exactly `GRANT EXECUTE ON FUNCTION pg_control_system() TO <role>;` as a superuser and redeploy. On PostgreSQL 16 the default already permits it (the function's ACL is the default `EXECUTE` to `PUBLIC`), so this means the privilege was deliberately revoked |
 
-Every refusal exits non-zero, so **the server does not start** and **no marker is written** — the
-next start retries. There is no state in which a failed repair records itself as done.
+Every refusal exits non-zero, so **the server does not start**, and no refusal ever records a
+FAILED repair as a successful one — the marker is written only inside the transaction that verified
+the register.
+
+**Whether redeploying retries the repair depends on whether a marker is on the database**, and the
+blanket "no marker is written, the next start retries" that stood here was false in two of the rows
+above (Codex on `88ea82c`). Read the step's own JSON, which reports `markerPresent` for exactly this
+purpose — `migrate.sh` branches on the same field and prints the applicable paragraph:
+
+- **`"markerPresent": false`** — no marker exists. The next start runs the repair again, so fix the
+  named cause and redeploy.
+- **`"markerPresent": true`** — a marker is on this database, either because it was already there or
+  because this run's verification transaction committed one before the post-commit re-read refused.
+  **Redeploying will NOT retry the repair**: the next start finds the immutable marker, diagnoses,
+  and refuses as `marked-but-corrupt` without rebuilding. Stop every pre-4c-ii process first, then
+  run the operator rebuild below — a redeploy alone is a loop.
 
 ### Concurrency, and why there is nothing to serialize by hand
 

@@ -15,7 +15,9 @@ import { lockActiveGeneration } from '../../src/platform/projections/generation'
 import {
   ANCHOR_ENV,
   DATABASE_IDENTITY_ENV,
+  DRAIN_DECLARATION_ENV,
   MINIMUM_ENV,
+  PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE,
   PHASE6_4C_IIIR_LOCK_KEY,
   acquireRepairLock,
   PHASE6_4C_IIIR_MARKER_ACTION,
@@ -107,6 +109,7 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
       [MINIMUM_ENV]: '1',
       [SYSTEM_IDENTITY_ENV]: liveSystemIdentifier,
       [DATABASE_IDENTITY_ENV]: liveDatabaseOid,
+      [DRAIN_DECLARATION_ENV]: PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE,
     };
     // Put the database in the IN-SERVICE shape the step's applicability turns on: a
     // `decisions.inbox` generation exists, which is the defect's precondition. Without this every
@@ -223,18 +226,18 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     const both = readIdentityConfig({}, true);
     expect(both.ok).toBe(false);
     if (!both.ok) {
-      // all four are named, so an operator sees the whole configuration in one refusal
-      for (const v of [ANCHOR_ENV, MINIMUM_ENV, SYSTEM_IDENTITY_ENV, DATABASE_IDENTITY_ENV]) {
+      // all five are named, so an operator sees the whole configuration in one refusal
+      for (const v of [ANCHOR_ENV, MINIMUM_ENV, SYSTEM_IDENTITY_ENV, DATABASE_IDENTITY_ENV, DRAIN_DECLARATION_ENV]) {
         expect(both.refusal.message).toContain(v);
       }
     }
     expect(readIdentityConfig({ [MINIMUM_ENV]: '1' }, true)).toMatchObject({ ok: false, refusal: { code: 'identity-unconfigured' } });
     expect(readIdentityConfig({ [ANCHOR_ENV]: 'p' }, true)).toMatchObject({ ok: false, refusal: { code: 'identity-unconfigured' } });
-    // a partial tuple is still unconfigured — two of the four is not a configuration
+    // a partial tuple is still unconfigured — two of the five is not a configuration
     expect(readIdentityConfig({ [ANCHOR_ENV]: 'p', [MINIMUM_ENV]: '1' }, true))
       .toMatchObject({ ok: false, refusal: { code: 'identity-unconfigured' } });
     // blank is unset, not configured
-    expect(readIdentityConfig({ [ANCHOR_ENV]: '  ', [MINIMUM_ENV]: '1', [SYSTEM_IDENTITY_ENV]: '1', [DATABASE_IDENTITY_ENV]: '16384' }, true)).toMatchObject({ ok: false });
+    expect(readIdentityConfig({ [ANCHOR_ENV]: '  ', [MINIMUM_ENV]: '1', [SYSTEM_IDENTITY_ENV]: '1', [DATABASE_IDENTITY_ENV]: '16384', [DRAIN_DECLARATION_ENV]: PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE }, true)).toMatchObject({ ok: false });
     // a database that never served the register has nothing to repair, so an unconfigured deploy is
     // not refused there — which is what keeps every migrate.sh harness free of this configuration
     expect(readIdentityConfig({}, false)).toEqual({ ok: true, config: null });
@@ -242,17 +245,17 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
 
   it('PROBE 2b — the minimum must be a whole number >= 1, so no configured value can become a skip', () => {
     for (const bad of ['0', 'x', '1.0', '1e9', '2 or 3', '-1']) {
-      expect(readIdentityConfig({ [ANCHOR_ENV]: 'p', [MINIMUM_ENV]: bad, [SYSTEM_IDENTITY_ENV]: '7', [DATABASE_IDENTITY_ENV]: '16384' }, true))
+      expect(readIdentityConfig({ [ANCHOR_ENV]: 'p', [MINIMUM_ENV]: bad, [SYSTEM_IDENTITY_ENV]: '7', [DATABASE_IDENTITY_ENV]: '16384', [DRAIN_DECLARATION_ENV]: PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE }, true))
         .toMatchObject({ ok: false, refusal: { code: 'minimum-invalid' } });
     }
     // and the database identity is validated with the same strictness
     for (const bad of ['x', '7.0', '7e9', 'not-an-id']) {
-      expect(readIdentityConfig({ [ANCHOR_ENV]: 'p', [MINIMUM_ENV]: '1', [SYSTEM_IDENTITY_ENV]: bad, [DATABASE_IDENTITY_ENV]: '16384' }, true))
+      expect(readIdentityConfig({ [ANCHOR_ENV]: 'p', [MINIMUM_ENV]: '1', [SYSTEM_IDENTITY_ENV]: bad, [DATABASE_IDENTITY_ENV]: '16384', [DRAIN_DECLARATION_ENV]: PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE }, true))
         .toMatchObject({ ok: false, refusal: { code: 'system-identity-invalid' } });
     }
     expect(readIdentityConfig(
-      { [ANCHOR_ENV]: 'p', [MINIMUM_ENV]: '3', [SYSTEM_IDENTITY_ENV]: '7', [DATABASE_IDENTITY_ENV]: '16384' }, true))
-      .toEqual({ ok: true, config: { anchorProjectId: 'p', expectedMinProjects: 3, expectedSystemIdentifier: '7', expectedDatabaseOid: '16384' } });
+      { [ANCHOR_ENV]: 'p', [MINIMUM_ENV]: '3', [SYSTEM_IDENTITY_ENV]: '7', [DATABASE_IDENTITY_ENV]: '16384', [DRAIN_DECLARATION_ENV]: PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE }, true))
+      .toEqual({ ok: true, config: { anchorProjectId: 'p', expectedMinProjects: 3, expectedSystemIdentifier: '7', expectedDatabaseOid: '16384', drainedMinimumRelease: PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE } });
   });
 
   it('PROBE 2c — applicability comes from the DATABASE, not the configuration: a projectless database is not-applicable even when configured', async () => {
@@ -261,10 +264,10 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     // never-served database ends `not-applicable` — never a success it could hide behind. A
     // malformed value is still named there rather than ignored.
     expect(readIdentityConfig(
-      { [ANCHOR_ENV]: 'anywhere', [MINIMUM_ENV]: '5', [SYSTEM_IDENTITY_ENV]: '7', [DATABASE_IDENTITY_ENV]: '16384' }, false))
-      .toEqual({ ok: true, config: { anchorProjectId: 'anywhere', expectedMinProjects: 5, expectedSystemIdentifier: '7', expectedDatabaseOid: '16384' } });
+      { [ANCHOR_ENV]: 'anywhere', [MINIMUM_ENV]: '5', [SYSTEM_IDENTITY_ENV]: '7', [DATABASE_IDENTITY_ENV]: '16384', [DRAIN_DECLARATION_ENV]: PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE }, false))
+      .toEqual({ ok: true, config: { anchorProjectId: 'anywhere', expectedMinProjects: 5, expectedSystemIdentifier: '7', expectedDatabaseOid: '16384', drainedMinimumRelease: PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE } });
     // and a malformed value is still NAMED there rather than ignored
-    expect(readIdentityConfig({ [ANCHOR_ENV]: 'anywhere', [MINIMUM_ENV]: '0', [SYSTEM_IDENTITY_ENV]: '7', [DATABASE_IDENTITY_ENV]: '16384' }, false))
+    expect(readIdentityConfig({ [ANCHOR_ENV]: 'anywhere', [MINIMUM_ENV]: '0', [SYSTEM_IDENTITY_ENV]: '7', [DATABASE_IDENTITY_ENV]: '16384', [DRAIN_DECLARATION_ENV]: PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE }, false))
       .toMatchObject({ ok: false, refusal: { code: 'minimum-invalid' } });
   });
 
@@ -2130,6 +2133,55 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     expect(await markerCount()).toBe(0);
   });
 
+  // ── R21-1: the drain is a PRECONDITION OF SUCCESS, not a runbook line (Codex P1 on 88ea82c) ──
+  it('R21-1 — a deployment that does not DECLARE the legacy-worker drain cannot succeed', async () => {
+    // THE FINDING. The step returned success on the strength of an immediate post-commit re-read,
+    // while the one thing that actually closes the window — every pre-4c-ii process stopped — lived
+    // only in the runbook. A deploy that had done none of it satisfied every check and started the
+    // API. RED at `88ea82c`: with the drain variable simply absent from `env`, the step below
+    // repaired and returned `ok: true`.
+    //
+    // Nothing here measures a drain; nothing can (see `R14-3`, and `DRAIN_DECLARATION_ENV`). What is
+    // enforceable is that the deployment must SAY it, in this database's own deploy environment,
+    // naming the release this code requires — and that the claim is then recorded where it can be
+    // read back.
+    const { [DRAIN_DECLARATION_ENV]: _declared, ...undeclared } = env;
+    const refused = await runInboxRepairStep(single, ops, undeclared);
+    expect(refused.ok).toBe(false);
+    expect(refused.action).toBe('refused');
+    expect(refused.refusal?.code).toBe('identity-unconfigured');
+    expect(refused.refusal?.message).toContain(DRAIN_DECLARATION_ENV);
+    expect(refused.markerWritten).toBe(false);
+    expect(refused.markerPresent).toBe(false);
+    expect(await markerCount()).toBe(0);
+
+    // A DECLARATION NAMING SOME OTHER RELEASE IS REFUSED, NOT INTERPRETED. This is the shape a stale
+    // procedure produces: the variable is set, so nothing looks missing, but it commits the operator
+    // to a floor below the one that matters. `5fcc2a58` is where the 4c-ii serializer landed, so a
+    // fleet drained only to something older still contains v1 writers.
+    for (const stale of ['5fcc2a5', '5fcc2a58x', 'main', 'yes', 'true', '0000000']) {
+      const wrong = await runInboxRepairStep(single, ops, { ...env, [DRAIN_DECLARATION_ENV]: stale });
+      expect(wrong.ok).toBe(false);
+      expect(wrong.refusal?.code).toBe('drain-release-mismatch');
+      expect(wrong.refusal?.message).toContain(PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE);
+      expect(await markerCount()).toBe(0);
+    }
+
+    // …and WITH the declaration the step proceeds, and the claim is RECORDED VERBATIM in the marker
+    // row — which `20271125000000` makes append-only and immutable, so what this deployment asserted
+    // at the moment of repair stays readable for as long as the marker does. A precondition that
+    // leaves no trace cannot be audited afterwards.
+    const declared = await runInboxRepairStep(single, ops, env);
+    expect(declared.ok).toBe(true);
+    expect(declared.action).toBe('repaired');
+    const marker = await t.prisma.outboxOperatorAction.findFirst({
+      where: { action: PHASE6_4C_IIIR_MARKER_ACTION },
+      select: { reason: true },
+    });
+    expect(marker?.reason).toContain(`drained-minimum-release ${PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE}`);
+    await clearMarkers();
+  });
+
   it('PROBE 4b — an unconfigured step ABORTS on a database that has served the register', async () => {
     const outcome = await runInboxRepairStep(single, ops, {});
     expect(outcome.ok).toBe(false);
@@ -2351,6 +2403,7 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
               [MINIMUM_ENV]: '1',
               [SYSTEM_IDENTITY_ENV]: liveSystemIdentifier,
               [DATABASE_IDENTITY_ENV]: liveDatabaseOid,
+              [DRAIN_DECLARATION_ENV]: PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE,
             },
           });
           let out = '';

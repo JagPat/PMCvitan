@@ -162,6 +162,30 @@ if [ ! -f "$INBOX_REPAIR" ]; then
   exit 1
 fi
 
+# THE 4c-iii-r ADOPTION ABORT CANNOT SPEAK FOR ITSELF (found by the production-runner proof's state
+# F9; routed through BOTH deploy paths after Codex on `88ea82c`). `20271125000000` is one explicit
+# BEGIN/COMMIT, so when its diagnostic RAISEs, the transaction aborts and every later statement in
+# the file fails with `current transaction is aborted` — which is the error Prisma surfaces. The
+# carefully written message naming the recovery never reaches the operator. So the recovery is
+# printed HERE, where the operator is actually looking, whenever a failed deploy names it.
+#
+# It is a FUNCTION rather than a block at the bottom because there are TWO `migrate deploy`
+# invocations: the ordinary one, and the P3005 baseline one. `20271125000000` is in
+# `ALWAYS_EXECUTE`, so the baseline path leaves it PENDING and its adoption diagnostic runs on that
+# second deploy too — where the invocation's own `|| exit 1` used to end the script before any
+# recovery could be printed, leaving that operator with Prisma's swallowed error alone.
+report_4c_iiir_migration_failure() {
+  printf '%s\n' "$1" | grep -q '20271125000000_phase6_4c_iiir_marker_seal' || return 0
+  echo "[migrate] That failure is the 4c-iii-r marker-seal migration. Its own message is swallowed by"
+  echo "[migrate] the aborted transaction, so the recovery is repeated here:"
+  echo "[migrate]   1. node dist/platform/projections/inbox-repair.cli.js seals repair"
+  echo "[migrate]   2. prisma migrate resolve --rolled-back 20271125000000_phase6_4c_iiir_marker_seal"
+  echo "[migrate]      (without this the next deploy stops at P3009 — the schema rolled back, but the"
+  echo "[migrate]       failed attempt is still recorded)"
+  echo "[migrate]   3. redeploy, and let the repair earn a fresh marker"
+  echo "[migrate] Full detail: docs/RUNBOOK.md §P64CIIIR."
+}
+
 out=$(npx prisma migrate deploy 2>&1)
 code=$?
 echo "$out"
@@ -442,7 +466,17 @@ if echo "$out" | grep -q "P3005"; then
     npx prisma migrate resolve --applied "$name" || exit 1
   done
 
-  npx prisma migrate deploy || exit 1
+  # CAPTURED, not `|| exit 1` (Codex on `88ea82c`). `20271125000000` is left PENDING by the resolve
+  # loop above, so its adoption diagnostic runs HERE on a restored database that still carries a
+  # marker and a broken seal — and an unrouted exit sent that operator away with Prisma's
+  # swallowed `current transaction is aborted` and no recovery at all.
+  if ! baseline_out=$(npx prisma migrate deploy 2>&1); then
+    printf '%s\n' "$baseline_out"
+    echo "[migrate] migrate deploy failed on the P3005 baseline path — refusing to start."
+    report_4c_iiir_migration_failure "$baseline_out"
+    exit 1
+  fi
+  printf '%s\n' "$baseline_out"
 
   # Fail closed if the seals STILL are not there: Prisma now considers every migration applied, so a
   # missing object at this point would go unnoticed forever. Exit 4 ("no §C schema") is a failure
@@ -508,20 +542,5 @@ fi
 
 echo "[migrate] migrate deploy failed — refusing to start (no db push fallback in production)"
 
-# THE 4c-iii-r ADOPTION ABORT CANNOT SPEAK FOR ITSELF (found by the production-runner proof's state
-# F9). `20271125000000` is one explicit BEGIN/COMMIT, so when its diagnostic RAISEs, the transaction
-# aborts and every later statement in the file fails with `current transaction is aborted` — which
-# is the error Prisma surfaces. The carefully written message naming the recovery never reaches the
-# operator. So the recovery is printed HERE, where the operator is actually looking, whenever the
-# failure names that migration.
-if echo "$out" | grep -q '20271125000000_phase6_4c_iiir_marker_seal'; then
-  echo "[migrate] That failure is the 4c-iii-r marker-seal migration. Its own message is swallowed by"
-  echo "[migrate] the aborted transaction, so the recovery is repeated here:"
-  echo "[migrate]   1. node dist/platform/projections/inbox-repair.cli.js seals repair"
-  echo "[migrate]   2. prisma migrate resolve --rolled-back 20271125000000_phase6_4c_iiir_marker_seal"
-  echo "[migrate]      (without this the next deploy stops at P3009 — the schema rolled back, but the"
-  echo "[migrate]       failed attempt is still recorded)"
-  echo "[migrate]   3. redeploy, and let the repair earn a fresh marker"
-  echo "[migrate] Full detail: docs/RUNBOOK.md §P64CIIIR."
-fi
+report_4c_iiir_migration_failure "$out"
 exit $code

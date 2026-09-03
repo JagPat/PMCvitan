@@ -651,7 +651,39 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    leaving a dangling `fi`); it is now structural, deleting from the invocation through its trailing
    echo whatever the block grows into.
 
-26. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (69 probes):
+26. **CODEX ROUND 21 (one P1, three P2s on `88ea82c`) — all four correct; this is #526's FIRST
+   finding-bearing head.** **(a) P1: the drain was a runbook line, not a precondition.** The step
+   returned success on the strength of an immediate post-commit re-read, so a deployment that had
+   drained NOTHING satisfied every check and started the API — the recheck detects the pre-4c-ii
+   relay that takes a generation lock the instant the repair commits, but detection is not
+   prevention. The repair now REFUSES unless the deployment declares the drain:
+   `PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE` joins the identity tuple, must name exactly `5fcc2a58`
+   (a value carried forward from an older procedure is refused as `drain-release-mismatch` rather
+   than interpreted), and is RECORDED VERBATIM in the append-only marker row so what a deployment
+   claimed stays auditable. **This is a declaration, and the code says so rather than dressing it
+   up.** It measures nothing: `R14-3` pins why no row-shape fence exists, and a write-side fence —
+   a trigger rejecting sessions that do not declare their catalog version — is refused for a reason
+   read out of the outbox's own failure path (`onFailure` dead-letters at `MAX_ATTEMPTS`,
+   `dispatchProjection` then blocks the generation on that dead row, `readServableGeneration`
+   refuses a blocked generation until an operator rebuilds): it would trade silent corruption for a
+   projection needing an operator after every rolling deploy. That reasoning is labelled as
+   reasoning from those three functions, NOT as a measurement, because no probe here installs such
+   a fence. **(b) P2: the `migrate.sh` recovery was unreachable on the P3005 path.** `20271125000000`
+   is in `ALWAYS_EXECUTE`, so the baseline path leaves it PENDING and its adoption diagnostic runs
+   on that second `migrate deploy` — whose `|| exit 1` ended the script before the recovery block at
+   the bottom, leaving the operator with Prisma's swallowed `current transaction is aborted` and no
+   recovery at all. Both invocations now route their failure through ONE
+   `report_4c_iiir_migration_failure` function. **(c) P2: the RUNBOOK contradicted its own table.**
+   "Every refusal … no marker is written — the next start retries" is false for a post-commit
+   `concurrent-corruption` (the marker committed) and for any refusal reached with a marker already
+   present; it is replaced by the `markerPresent` branch `migrate.sh` itself prints. **(d) P2: the
+   F9 pin was a banner, not an execution.** The wiring inventory searches the whole file and `F9.`
+   also appears in the header comment, so the executable block could be deleted with the required
+   test still green — REPRODUCED: with the block structurally removed, the round-20 inventory passes
+   11/11 and the new pin fails. F9 and the new F10/F10b are pinned by strings that exist only inside
+   the blocks that run them.
+
+27. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (70 probes):
    the vacuity itself (a zero-project report satisfies every success field), each identity refusal,
    the verified repair, marker idempotence, identity enforced WITH the marker set, a non-verified
    report leaving NO marker and the next start succeeding, the unserialized generation collision

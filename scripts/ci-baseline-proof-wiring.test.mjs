@@ -71,7 +71,22 @@ const PINNED_PROOFS = [
              // exercise of a LOST ledger row over a database that still has both the triggers and a
              // genuine marker, and without it here the proof could drop that state while this
              // required test stayed green — which is precisely what this test exists to prevent.
-             'F8. THE COMPLETED SEAL MIGRATION RE-RUNS', 'G. COUPLING'],
+             'F8. THE COMPLETED SEAL MIGRATION RE-RUNS',
+             // F9 is pinned by strings from its EXECUTION, not by its banner (Codex on `88ea82c`).
+             // The state list is a substring search over the whole file, and `F9.` also appears in
+             // the header comment — so a bare state name would keep this required test green while
+             // the executable block was deleted, silently dropping the ONLY end-to-end proof that
+             // the documented recovery escapes Prisma's P3009 failed-migration state. These two
+             // strings exist only inside the block that runs it: the `say` heading, and the
+             // assertion that the runner surfaces the resolve step the migration cannot.
+             'say "F9. the adoption test ABORTS, and the documented recovery actually recovers"',
+             "grep -q 'migrate resolve --rolled-back 20271125000000'",
+             // F10 is the runner-level half of the drain declaration (Codex P1 on `88ea82c`):
+             // the step's own probe proves the refusal, this proves the real `migrate.sh` refuses to
+             // start on it. Pinned by execution strings for the same reason F9 is.
+             'say "F10. the legacy-worker drain is not declared — must ABORT, even with a marker present"',
+             'say "F10b. the drain is declared to the WRONG release — must ABORT rather than be interpreted"',
+             'G. COUPLING'],
   },
 ];
 

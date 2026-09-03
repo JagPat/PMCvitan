@@ -50,6 +50,10 @@
 #       --rolled-back` step without which the redeploy dead-ends at P3009.
 #   F8. A LOST LEDGER ROW — the seal migration re-runs over a database whose seals and marker are
 #      both intact and must ADOPT that marker, so restore recovery is not an eternal abort.
+#   F10. THE DRAIN IS NOT DECLARED — the deploy has not stated that every process older than the
+#       4c-ii serializer is stopped, or has stated it against the wrong release. Both must ABORT,
+#       and both must abort with a marker ALREADY present: the declaration is required on every
+#       start, not only on the one that repairs.
 #   G. COUPLING — with the step removed from a COPY of migrate.sh, state B is ACCEPTED. So a
 #      mutation that unwires the step fails this script.
 #
@@ -65,6 +69,11 @@ URL="$BARE?schema=public"
 PSQL="psql -v ON_ERROR_STOP=1 -X -q $BARE"
 API="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ANCHOR="p64ciiir-anchor"
+# The release floor the repair requires a deployment to DECLARE it has drained to. Compiled into the
+# step, so this is the ONE correct value and any other is refused rather than interpreted; every
+# invocation below that declares an identity declares this too, because a deploy that does not is
+# refused before it reaches whatever that state is actually probing.
+DRAIN="5fcc2a58"
 # The cluster this proof's scratch database lives on. Read live, so the CORRECT configuration is
 # always true here and the mismatch state can supply a deliberately wrong one.
 sysid() { $PSQL -tAc "SELECT system_identifier FROM pg_control_system()" | tr -d '[:space:]'; }
@@ -167,7 +176,7 @@ printf '%s\n' "$OUT" | grep -q 'docs/RUNBOOK.md' && ok "and points at the runboo
 # ══ C. WRONG DATABASE ═════════════════════════════════════════════════════════════════════════
 say "C. configured for a DIFFERENT database — the anchor names no project here"
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID=some-other-production-project \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=1 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=1 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — identity comes from OUTSIDE the connection" \
                  || { bad "migrate.sh accepted a wrong database"; printf '%s\n' "$OUT" | tail -25; }
 printf '%s\n' "$OUT" | grep -q 'anchor-absent' && ok "the refusal NAMES the absent anchor" || bad "the refusal did not name anchor-absent"
@@ -175,7 +184,7 @@ printf '%s\n' "$OUT" | grep -q 'anchor-absent' && ok "the refusal NAMES the abse
 
 say "C2. configured with a minimum the database cannot meet"
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=99 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=99 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — a database missing most of its projects aborts" \
                  || bad "migrate.sh accepted a database below the configured minimum"
 printf '%s\n' "$OUT" | grep -q 'below-minimum' && ok "the refusal NAMES the clause" || bad "the refusal did not name below-minimum"
@@ -183,7 +192,7 @@ printf '%s\n' "$OUT" | grep -q 'below-minimum' && ok "the refusal NAMES the clau
 
 say "C3. configured with a minimum of ZERO — the vacuity, re-opened through configuration"
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=0 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=0 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — a minimum an empty database satisfies is a misconfiguration" \
                  || bad "migrate.sh accepted a minimum of zero"
 printf '%s\n' "$OUT" | grep -q 'minimum-invalid' && ok "the refusal NAMES the clause" || bad "the refusal did not name minimum-invalid"
@@ -191,7 +200,7 @@ printf '%s\n' "$OUT" | grep -q 'minimum-invalid' && ok "the refusal NAMES the cl
 # ══ D. CONFIGURED AND CORRECT ═════════════════════════════════════════════════════════════════
 say "D. configured correctly — the repair RUNS, is verified, and the deploy proceeds"
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" = "0" ] && ok "migrate.sh exited 0 — the gate can be cleared" \
                 || { bad "migrate.sh refused a correctly configured repair (exit $RC)"; printf '%s\n' "$OUT" | tail -30; }
 printf '%s\n' "$OUT" | grep -q '"action": "repaired"' && ok "and the step reports REPAIRED" || bad "the step did not report repaired"
@@ -202,7 +211,7 @@ printf '%s\n' "$OUT" | grep -q '"action": "repaired"' && ok "and the step report
 # ══ E. RE-RUN ═════════════════════════════════════════════════════════════════════════════════
 say "E. the same runner again — the marker makes it a no-op"
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" = "0" ] && ok "migrate.sh exited 0" || { bad "the re-run exited $RC"; printf '%s\n' "$OUT" | tail -25; }
 printf '%s\n' "$OUT" | grep -q '"action": "skipped-marker-present"' && ok "and SKIPPED on the marker" || bad "the re-run did not skip"
 [ "$(rebuilds)" = "1" ] && ok "no second rebuild ran" || bad "a second rebuild ran despite the marker ($(rebuilds))"
@@ -210,7 +219,7 @@ printf '%s\n' "$OUT" | grep -q '"action": "skipped-marker-present"' && ok "and S
 
 say "E2. the marker does NOT excuse identity — the same repaired database, re-pointed"
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID=another-production-project \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=1 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=1 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — a later misconfiguration cannot serve" \
                  || bad "a re-pointed deploy was accepted because the marker was already set"
 printf '%s\n' "$OUT" | grep -q 'anchor-absent' && ok "the refusal NAMES the absent anchor" || bad "the refusal did not name anchor-absent"
@@ -237,7 +246,7 @@ CREATE TRIGGER p64ciiir_fail BEFORE INSERT ON "ProjectionGeneration"
   FOR EACH ROW EXECUTE FUNCTION p64ciiir_fail();
 SQL
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — 'ran' is not 'succeeded'" \
                  || { bad "migrate.sh accepted a repair that failed for a project"; printf '%s\n' "$OUT" | tail -30; }
 printf '%s\n' "$OUT" | grep -q 'rebuild-not-verified' && ok "the refusal NAMES the criterion" || bad "the refusal did not name rebuild-not-verified"
@@ -249,7 +258,7 @@ DROP TRIGGER p64ciiir_fail ON "ProjectionGeneration";
 DROP FUNCTION p64ciiir_fail();
 SQL
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" = "0" ] && ok "the NEXT run succeeded — a failed attempt is retried, never skipped" \
                 || { bad "the retry after the repair still failed (exit $RC)"; printf '%s\n' "$OUT" | tail -30; }
 [ "$(markers)" = "1" ] && ok "and the marker is now set" || bad "the successful retry did not write the marker"
@@ -261,7 +270,7 @@ OUT="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)" || bad "could not re-est
 plant || exit 1
 # deliberately NOT `serve` — projects exist, the register never has
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID=some-other-production-project \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=1 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=1 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — identity is asserted BEFORE applicability" \
                  || { bad "a configured deploy passed as not-applicable without checking its anchor"; printf '%s\n' "$OUT" | tail -20; }
 printf '%s\n' "$OUT" | grep -q 'anchor-absent' && ok "the refusal NAMES the absent anchor" || bad "the refusal did not name anchor-absent"
@@ -275,7 +284,7 @@ OUT="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)"; RC=$?
 say "F3. the repair marker is immutable at PostgreSQL — forge, edit, delete, truncate"
 serve || exit 1
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" = "0" ] && [ "$(markers)" = "1" ] && ok "the repair ran and wrote its marker" \
                 || { bad "could not establish a marker for state F3 (rc=$RC, markers=$(markers))"; printf '%s\n' "$OUT" | tail -20; }
 $PSQL >/dev/null 2>&1 <<SQL
@@ -313,7 +322,7 @@ SQL
 say "F4. every DATASET check passes but the cluster is a different one — must ABORT"
 OTHER=$(( $(sysid) + 1 ))
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$OTHER" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$OTHER" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
        sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — a restore of production carries the anchor, not the cluster identity" \
                  || { bad "a deploy configured for another cluster was accepted"; printf '%s\n' "$OUT" | tail -20; }
@@ -321,7 +330,7 @@ printf '%s\n' "$OUT" | grep -q 'system-identity-mismatch' && ok "the refusal NAM
 printf '%s\n' "$OUT" | grep -q 'different PostgreSQL cluster' && ok "and says plainly that this is a different cluster" || bad "the refusal did not explain the cause"
 # …and it is PRECISE, not merely strict: the true identifier is accepted on the same database.
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
        sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" = "0" ] && ok "the SAME database with its true cluster identity is accepted" \
                 || { bad "the correct cluster identity was refused (exit $RC)"; printf '%s\n' "$OUT" | tail -20; }
@@ -334,7 +343,7 @@ OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
 say "F5. every check up to the CLUSTER passes but the DATABASE within it is another one — must ABORT"
 OTHER_DB=$(( $(dboid) + 1 ))
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" \
        PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$OTHER_DB" \
        sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — a sibling restore shares the cluster identity, not the database" \
@@ -345,9 +354,9 @@ printf '%s\n' "$OUT" | grep -q 'the DATABASE within it is not' && ok "and distin
 # ══ F6. A PARTIAL IDENTITY CONFIGURATION ══════════════════════════════════════════════════════
 # The deploy that keeps most of its identity and loses one variable. Nothing-set is the fresh-install
 # exemption every other harness relies on; SOMETHING-set is a declaration and is honoured in full.
-say "F6. three of the four identity variables set — a partial declaration must ABORT, not fall back to unconfigured"
+say "F6. four of the five deployment declarations set — a partial declaration must ABORT, not fall back to unconfigured"
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" \
        sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — a partial declaration is never treated as no declaration" \
                  || { bad "a partially configured deploy was accepted"; printf '%s\n' "$OUT" | tail -20; }
@@ -362,7 +371,7 @@ printf '%s\n' "$OUT" | grep -q 'PHASE6_4C_IIIR_EXPECTED_DATABASE_OID' && ok "and
 say "F7. a marker seal is MISSING — the repair must refuse before it trusts any marker"
 $PSQL -q -c 'DROP TRIGGER "OutboxOperatorAction_4c_iiir_marker_insert_gated" ON "OutboxOperatorAction"' >/dev/null
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
        sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — a complete ledger is not a working seal" \
                  || { bad "a deploy over an unsealed marker was accepted"; printf '%s\n' "$OUT" | tail -20; }
@@ -389,7 +398,7 @@ printf '%s\n' "$REPAIR_OUT" | grep -q '"markersInvalidated": 1' && ok "and it RE
 [ "$(markers)" = "0" ] && ok "the marker is INVALIDATED — the insert gate was the seal that was gone, so a marker could have been inserted freely" \
                        || bad "a marker that lived through an insert-gate gap was preserved ($(markers))"
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
        sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" = "0" ] && ok "with the seal reinstalled the SAME runner deploys — the check is precise, not merely strict" \
                 || { bad "a correctly sealed database was refused (exit $RC)"; printf '%s\n' "$OUT" | tail -20; }
@@ -407,7 +416,7 @@ say "F8. the completed seal migration RE-RUNS over a sealed database carrying a 
 [ "$(markers)" = "1" ] || bad "state F8 needs the genuine marker state F7 left behind"
 $PSQL -q -c "DELETE FROM \"_prisma_migrations\" WHERE migration_name = '20271125000000_phase6_4c_iiir_marker_seal'" >/dev/null
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
        sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" = "0" ] && ok "migrate.sh re-applied the seal migration and deployed (exit 0)" \
                 || { bad "a re-run over a correctly sealed, correctly marked database was refused (exit $RC)"; printf '%s\n' "$OUT" | tail -30; }
@@ -429,7 +438,7 @@ say "F9. the adoption test ABORTS, and the documented recovery actually recovers
 $PSQL -q -c "DELETE FROM \"_prisma_migrations\" WHERE migration_name = '20271125000000_phase6_4c_iiir_marker_seal'" >/dev/null
 $PSQL -q -c 'DROP TRIGGER "OutboxOperatorAction_4c_iiir_marker_insert_gated" ON "OutboxOperatorAction"' >/dev/null
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
        sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — an unvouchable marker is not adopted" \
                  || { bad "the adoption test accepted a marker written through an insert-gate gap"; printf '%s\n' "$OUT" | tail -20; }
@@ -448,7 +457,7 @@ REPAIR_OUT="$(DATABASE_URL="$URL" node dist/platform/projections/inbox-repair.cl
 # …and WITHOUT the resolve, the redeploy dead-ends at P3009. This is the step whose omission the
 # repository has already paid for once, so it is asserted rather than described.
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
        sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" != "0" ] && ok "redeploying WITHOUT the resolve is still refused — the failed record blocks it" \
                  || { bad "a redeploy without the documented resolve unexpectedly succeeded"; printf '%s\n' "$OUT" | tail -20; }
@@ -460,12 +469,42 @@ RESOLVE_OUT="$(DATABASE_URL="$URL" npx --no-install prisma migrate resolve --rol
 [ "$RC" = "0" ] && ok "the documented 'migrate resolve --rolled-back' SUCCEEDED (exit 0)" \
                 || { bad "the documented resolve failed (exit $RC)"; printf '%s\n' "$RESOLVE_OUT" | tail -20; }
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
-       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
        sh scripts/migrate.sh 2>&1)"; RC=$?
 [ "$RC" = "0" ] && ok "and THEN the same runner deploys — the documented recovery is complete end to end" \
                 || { bad "the fully documented recovery still could not deploy (exit $RC)"; printf '%s\n' "$OUT" | tail -30; }
 printf '%s\n' "$OUT" | grep -q '"action": "repaired"' && ok "and it EARNED a fresh marker rather than skipping on the invalidated one" \
                                                        || { bad "the deploy did not repair after the recovery"; printf '%s\n' "$OUT" | tail -20; }
+
+# ══ F10. THE DRAIN IS NOT DECLARED ════════════════════════════════════════════════════════════
+# The state Codex named on `88ea82c`: the repair returned success on the strength of an immediate
+# post-commit re-read, while the drain that actually closes the window lived only in the runbook. It
+# is a PRECONDITION now, so a deploy that has not declared it cannot start — proven here through the
+# real runner rather than the step in isolation, and proven with a marker ALREADY on the database
+# (F9 left one), because the declaration is required on every start, not only the one that repairs.
+say "F10. the legacy-worker drain is not declared — must ABORT, even with a marker present"
+[ "$(markers)" = "1" ] || bad "state F10 expects the marker state F9 left behind"
+OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
+       sh scripts/migrate.sh 2>&1)"; RC=$?
+[ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — an undeclared drain is not a deployable state" \
+                 || { bad "a deploy that never declared the drain was accepted"; printf '%s\n' "$OUT" | tail -20; }
+printf '%s\n' "$OUT" | grep -q 'PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE' && ok "and NAMES the declaration it is missing" \
+                                                                        || { bad "the refusal did not name the drain declaration"; printf '%s\n' "$OUT" | tail -20; }
+
+# A declaration naming SOME OTHER release is the shape a stale procedure produces: nothing looks
+# missing, but the floor it commits to is below the one that matters. Refused by name.
+say "F10b. the drain is declared to the WRONG release — must ABORT rather than be interpreted"
+OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
+       PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
+       PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="0000000" \
+       sh scripts/migrate.sh 2>&1)"; RC=$?
+[ "$RC" != "0" ] && ok "migrate.sh REFUSED (exit $RC) — a declaration below the required floor is not a drain" \
+                 || { bad "a declaration naming another release was accepted"; printf '%s\n' "$OUT" | tail -20; }
+printf '%s\n' "$OUT" | grep -q 'drain-release-mismatch' && ok "the refusal NAMES the clause" \
+                                                         || { bad "the refusal did not name drain-release-mismatch"; printf '%s\n' "$OUT" | tail -20; }
+[ "$(markers)" = "1" ] && ok "and neither refusal wrote a marker — the one on the database is still F9's" \
+                       || bad "a refusing start changed the marker count"
 
 # ══ G. COUPLING ═══════════════════════════════════════════════════════════════════════════════
 say "G. coupling — with the step removed from a COPY, the unconfigured database is ACCEPTED"
