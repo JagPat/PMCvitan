@@ -89,6 +89,43 @@ export function unboundedJobs(yaml) {
     .map((job) => job.name);
 }
 
+/** The minutes in a budget belonging to THIS scope, or null when the scope carries none. */
+export const budgetMinutes = (lines, indent) => {
+  const pattern = new RegExp(`^ {${indent}}timeout-minutes:\\s*(\\d+)\\s*$`, 'u');
+  for (const line of lines) {
+    const found = pattern.exec(line);
+    if (found) return Number(found[1]);
+  }
+  return null;
+};
+
+/**
+ * Jobs whose own budget cannot even cover the budgets of the steps inside them.
+ *
+ * A job budget is not a formality once its steps carry bounds of their own: it is the outer
+ * bound, and it must be able to hold them. On PR #517 head deb9b2f the `api` job carried 60
+ * minutes while three production-runner proofs inside it were bounded at 25 each. The battery
+ * and the first proof passed, then the JOB timeout cancelled the second proof mid-flight and
+ * skipped the third. GitHub reports that as a red required job, and nothing in it names a
+ * budget — the failure looks like a broken proof. Each step bound was individually reasonable;
+ * only their sum against the job's was wrong, and no check looked at the sum.
+ *
+ * The comparison is deliberately the weakest necessary one — the sum of the STEP bounds alone,
+ * ignoring every unbounded step (install, build, the batteries) that also consumes the job. A
+ * job passing this is not proven to fit; a job failing it is proven not to.
+ */
+export function jobsBudgetedBelowTheirSteps(yaml) {
+  return [...parseJobs(yaml).values()].flatMap((job) => {
+    const budget = budgetMinutes(job.lines, JOB_INDENT);
+    if (budget === null) return [];
+    const steps = parseSteps(job.lines)
+      .map((step) => budgetMinutes(step, STEP_INDENT))
+      .filter((minutes) => minutes !== null);
+    const required = steps.reduce((total, minutes) => total + minutes, 0);
+    return required > budget ? [{ job: job.name, budget, required }] : [];
+  });
+}
+
 /** Playwright install steps, with the job each belongs to. */
 export function playwrightInstalls(yaml) {
   return [...parseJobs(yaml).values()].flatMap((job) =>
@@ -164,4 +201,60 @@ test('the checks fail on a violation rather than passing over it', () => {
   const added = `${bounded}  beta:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n`;
   assert.equal(parseJobs(added).size, 2);
   assert.deepEqual(unboundedJobs(added), ['beta']);
+});
+
+test('a job budget covers the budgets of the steps inside it', async () => {
+  const yaml = await readFile(WORKFLOW, 'utf8');
+
+  // The `api` job is the one that carries bounded steps; if it ever stops, this has stopped
+  // checking anything real.
+  const withStepBudgets = [...parseJobs(yaml).values()].filter(
+    (job) => parseSteps(job.lines).some((step) => budgetMinutes(step, STEP_INDENT) !== null));
+  assert.ok(
+    withStepBudgets.length >= 1,
+    `expected at least one job with bounded steps; found ${withStepBudgets.length}`);
+
+  const under = jobsBudgetedBelowTheirSteps(yaml);
+  assert.deepEqual(
+    under, [],
+    `these ci.yml jobs are budgeted below the steps they contain, so the job timeout cancels a step that was still inside its own bound: ${under
+      .map(({ job, budget, required }) => `${job} (${budget} < ${required})`)
+      .join(', ')}`,
+  );
+});
+
+test('the job-covers-its-steps check fails on a violation rather than passing over it', () => {
+  const job = (jobMinutes) => [
+    'jobs:',
+    '  alpha:',
+    '    runs-on: ubuntu-latest',
+    `    timeout-minutes: ${jobMinutes}`,
+    '    steps:',
+    '      - name: One long proof',
+    '        timeout-minutes: 25',
+    '        run: bash proof-one.sh',
+    '      - name: Another long proof',
+    '        timeout-minutes: 25',
+    '        run: bash proof-two.sh',
+    '',
+  ].join('\n');
+
+  // This is the shape of the deb9b2f failure: 50 minutes of bounded steps under a 40-minute job.
+  assert.deepEqual(
+    jobsBudgetedBelowTheirSteps(job(40)),
+    [{ job: 'alpha', budget: 40, required: 50 }],
+  );
+
+  // Exactly covering is not a violation; the step bounds are a lower bound on the job, not a
+  // recommendation for it.
+  assert.deepEqual(jobsBudgetedBelowTheirSteps(job(50)), []);
+  assert.deepEqual(jobsBudgetedBelowTheirSteps(job(90)), []);
+
+  // A job with no bounded steps has nothing to cover, and an unbounded job is the other test's
+  // finding — neither is reported here, so the two checks stay independent.
+  const noStepBudgets = 'jobs:\n  beta:\n    runs-on: ubuntu-latest\n    timeout-minutes: 1\n    steps:\n      - run: echo hi\n';
+  assert.deepEqual(jobsBudgetedBelowTheirSteps(noStepBudgets), []);
+  const unboundedJob = job(40).replace('    timeout-minutes: 40\n', '');
+  assert.deepEqual(jobsBudgetedBelowTheirSteps(unboundedJob), []);
+  assert.deepEqual(unboundedJobs(unboundedJob), ['alpha']);
 });

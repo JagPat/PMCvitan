@@ -194,9 +194,25 @@ export class ProjectionRebuildOperations {
    * path would actually serve can be 'corrupt'.
    */
   async diagnose(consumer: string, projectId: string): Promise<ConsumerDiagnosis> {
+    return this.prisma.$transaction((tx) => this.diagnoseIn(tx as Parameters<typeof this.diagnoseIn>[0], consumer, projectId));
+  }
+
+  /**
+   * The diagnosis, inside a transaction the CALLER owns.
+   *
+   * Extracted so a caller that must hold the freeze across more than one project — the deploy-time
+   * 4c-iii-r repair, which re-checks every project and writes its permanent marker in ONE
+   * transaction — can take those locks itself and keep them to the commit. `diagnose` above is
+   * unchanged in behaviour: it is this, in a transaction of its own.
+   */
+  async diagnoseIn(
+    tx: Prisma.TransactionClient,
+    consumer: string,
+    projectId: string,
+  ): Promise<ConsumerDiagnosis> {
     const spec = REBUILDABLE_PROJECTIONS[consumer];
     if (!spec) throw new Error(`${consumer} is not an operator-rebuildable projection`);
-    return this.prisma.$transaction(async (tx) => {
+    {
       // Freeze event allocation for this project (emitEvent locks this row FOR UPDATE to assign
       // stream positions). A project with no stream row has no events — nothing can race either.
       // Every projection's inputs are announced by an event, so this ONE lock covers every writer
@@ -220,7 +236,7 @@ export class ProjectionRebuildOperations {
       const expected = await spec.canonical(tx, projectId);
       const match = stableJson(stored) === stableJson(expected);
       return { state: match ? ('current-match' as const) : ('corrupt' as const), generation: gen.generation, ...positions };
-    });
+    }
   }
 
   /**
@@ -233,6 +249,16 @@ export class ProjectionRebuildOperations {
     reason: string;
     projectId?: string;
     consumers?: string[];
+    /**
+     * The projects to rebuild, supplied by the module that OWNS `Project` (Codex F3 on `bee2ed9`).
+     *
+     * The operator CLI omits this and keeps the enumeration below, which is the pre-existing
+     * behaviour and is unchanged. The deploy-time 4c-iii-r step passes ids it obtained from
+     * `OrgsParticipant.deploymentProjectIdentity`, so that path reads the orgs-owned table once,
+     * through its owner, instead of routing the identity count through the participant and then
+     * re-reading the same table from platform a moment later.
+     */
+    projectIds?: readonly string[];
   }): Promise<RebuildRunReport> {
     const consumers = params.consumers ?? Object.keys(REBUILDABLE_PROJECTIONS);
     for (const c of consumers) {
@@ -240,9 +266,14 @@ export class ProjectionRebuildOperations {
         throw new Error(`unknown consumer ${c} (rebuildable: ${Object.keys(REBUILDABLE_PROJECTIONS).join(', ')})`);
       }
     }
-    const projects = params.projectId
-      ? await this.prisma.project.findMany({ where: { id: params.projectId }, select: { id: true } })
-      : await this.prisma.project.findMany({ select: { id: true }, orderBy: { id: 'asc' } });
+    if (params.projectIds && params.projectId) {
+      throw new Error('projectIds and projectId are alternatives; pass one or neither.');
+    }
+    const projects = params.projectIds
+      ? params.projectIds.map((id) => ({ id }))
+      : params.projectId
+        ? await this.prisma.project.findMany({ where: { id: params.projectId }, select: { id: true } })
+        : await this.prisma.project.findMany({ select: { id: true }, orderBy: { id: 'asc' } });
     if (params.projectId && projects.length === 0) throw new Error(`unknown project ${params.projectId}`);
 
     // The invocation record — BEFORE any rebuild work, so an interrupted run is still attributable.
