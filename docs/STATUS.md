@@ -458,7 +458,9 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    owner in place), so the post-verify would fail forever and the documented recovery had no way back
    to a deployable database. It now `ALTER FUNCTION … OWNER TO` the TABLE's owner — the role the
    verifier compares against, not the connected role, which would have left the finding standing
-   whenever they differ. **(d) The legacy-writer window, restated precisely and answered honestly.**
+   whenever they differ. **This fix was INSUFFICIENT and round 14 below supersedes it** — the
+   transfer needs the same right it was meant to confer, so an ordinary connection could run neither
+   statement. **(d) The legacy-writer window, restated precisely and answered honestly.**
    Committing the verification transaction releases the generation locks, and a relay already waiting
    on one takes it at that instant; the step then returned success and `migrate.sh` started the API
    over a register being rewritten. A post-commit recheck now REFUSES on corruption, which flips the
@@ -468,8 +470,43 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    about a process it cannot fence. Closing it needs the drain — which is what
    `phase-6-4c-previous-release-drained` gates. Codex's other suggested remedy, enforcing that drain
    at deploy time, is a change to production deploy behaviour and is ROUTED rather than taken.
+   **Round 14 below extends the recheck to unverifiable generations and answers the routed remedy.**
 
-19. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (48 probes):
+19. **CODEX ROUND 14 (two P1s on `b5f7c1f`) — both correct, both fixed; #522 closed at the
+   two-finding-bearing-head limit and REPLACED by #523 from current `main`.** **(a) The seal repair
+   could not clear a `foreign-owner` finding, and round 13's fix did not help.** The
+   `ALTER FUNCTION … OWNER TO` ran AFTER the `CREATE OR REPLACE FUNCTION` loop, so the repair failed
+   at the first statement and rolled back. MEASURED on a live database as a non-superuser owning the
+   TABLE but not the FUNCTION: BOTH statements fail with `must be owner of function`. The transfer is
+   not a way to ACQUIRE the right — it needs the same right it was meant to confer — so the ORDERING
+   was never the defect, and simply moving it earlier would not have worked either. The repair now
+   asks `pg_has_role(current_user, proowner, 'USAGE')` for every seal function BEFORE its first
+   statement and REFUSES, naming the function, its owner, the connected role and the `GRANT` that
+   fixes it, with nothing attempted and the database unchanged. Round 13's probe passed only because
+   it connected as the SUPERUSER, for whom every ownership check passes vacuously; `R14-1` connects
+   as an ordinary role and is RED at `b5f7c1f` with the production error `42501`.
+   **(b) The post-commit recheck ignored unverifiable generations.** It tested `after.corrupt` alone,
+   which made it strictly WEAKER than the in-transaction check that already treats anything but
+   `current-match`/`none` as something having moved — and `diagnoseIn` returns `lagging` BEFORE it
+   compares a single stored row, so a relay that rewrote a generation AND advanced the stream head
+   landed in `unverified` and the deployment reported success over it. Both now refuse. The opposite
+   rule still holds where rounds 8–9 settled it: at DIAGNOSIS time `lagging` is the ordinary state of
+   a projection that is merely behind, and that rule does not reach across the commit.
+   **(c) The routed remedy is now ANSWERED, and the answer is that one half of it is impossible.**
+   Codex asked for the drain to be enforced OR a fence to stop legacy writers. The FENCE is
+   unavailable on this schema, demonstrated rather than asserted: `serializeDecision` emits the 4c-ii
+   keys only when the consultation thread is non-empty (a deliberate §D byte-identity decision, so a
+   project without the feature carries exactly the pre-4c key set), which means that for any
+   THREADLESS decision the old and new serializers produce BYTE-IDENTICAL rows and no predicate
+   PostgreSQL can evaluate separates them — a fence keyed on the missing keys would reject every
+   legitimate threadless decision instead. `R14-3` pins this against real stored projection rows.
+   There is also no `application_name` or release identity anywhere in this repository, so the fleet
+   is not observable from the database either and a "deploy-time drain check" would be the
+   attestation wearing an environment variable. NONE was invented. The remaining remedy is the
+   operational drain, which `phase-6-4c-previous-release-drained` gates and which no code in this
+   unit can establish.
+
+20. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (59 probes):
    the vacuity itself (a zero-project report satisfies every success field), each identity refusal,
    the verified repair, marker idempotence, identity enforced WITH the marker set, a non-verified
    report leaving NO marker and the next start succeeding, the unserialized generation collision
