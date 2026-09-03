@@ -110,6 +110,17 @@ export const MARKER_FORGERY_SEALS: ReadonlySet<string> = new Set([
   'phase6_4c_iiir_marker_sealed',
 ]);
 
+/**
+ * Does this finding mean a marker on the database could have been MANUFACTURED?
+ *
+ * Two ways: one of the forgery-relevant seals was not enforcing, or an unexpected BEFORE row
+ * trigger could rewrite an ordinary row into a marker (round 12). Either opens the window, so
+ * either invalidates. A truncate-guard finding does not — it can only destroy.
+ */
+export function opensForgeryWindow(finding: MarkerSealFinding): boolean {
+  return finding.problem === 'unexpected-writer' || MARKER_FORGERY_SEALS.has(finding.fn);
+}
+
 /** `dist/platform/projections` and `src/platform/projections` are both three levels under `apps/api`. */
 function migrationSqlPath(): string {
   return join(__dirname, '..', '..', '..', 'prisma', 'migrations', MARKER_SEAL_MIGRATION, 'migration.sql');
@@ -157,7 +168,7 @@ export function extractCanonicalMarkerBodies(migrationSql: string): Map<string, 
 export interface MarkerSealFinding {
   trigger: string;
   fn: string;
-  problem: 'absent' | 'disabled' | 'wrong-function' | 'wrong-timing' | 'conditional' | 'body-replaced' | 'foreign-owner';
+  problem: 'absent' | 'disabled' | 'wrong-function' | 'wrong-timing' | 'conditional' | 'body-replaced' | 'foreign-owner' | 'unexpected-writer';
   detail: string;
 }
 
@@ -281,6 +292,45 @@ export async function verifyMarkerSeals(prisma: SealCatalogReader): Promise<Mark
     }
   }
 
+  // ── THE INVENTORY IS CLOSED (Codex round 12, P1) ────────────────────────────────────────────
+  //
+  // Everything above asks "are OUR three triggers intact?". That is the wrong question, and asking
+  // it four different ways is why this surface produced a finding in rounds 5, 10, 11 and 12: the
+  // question is whether ANYTHING on this table can produce a marker row.
+  //
+  // PostgreSQL fires same-event BEFORE row triggers in NAME ORDER, each handing its `NEW` to the
+  // next. So a trigger sorting after `OutboxOperatorAction_4c_iiir_marker_insert_gated` can rewrite
+  // `NEW."action"` into the marker action AFTER the gate has already approved an ordinary row —
+  // measured, and the forged marker committed while this verifier reported `sealed: true`. The same
+  // trick defeats the row seal's promotion arm on UPDATE.
+  //
+  // Name order is NOT the test. A trigger sorting BEFORE the gate happens to be caught (the gate
+  // then sees the marker action without the flag and refuses), but resting the seal on collation of
+  // trigger names is exactly the kind of incidental property that produces the next finding. Any
+  // unexpected BEFORE row trigger on INSERT or UPDATE is rejected, wherever it sorts.
+  //
+  // This table legitimately carries NOTHING but these three triggers — it is the operator audit
+  // table, created by `20261026000000` with no triggers of its own — so a closed inventory costs
+  // nothing real and a future trigger here is a deliberate decision that must come past this check.
+  const expected = new Set(MARKER_SEAL_TRIGGERS.map((t) => t.trigger));
+  for (const row of rows) {
+    if (expected.has(row.tgname)) continue;
+    const rewritesRows = (row.tgtype & 1) !== 0            // FOR EACH ROW
+      && (row.tgtype & 2) !== 0                            // BEFORE
+      && ((row.tgtype & 4) !== 0 || (row.tgtype & 16) !== 0); // INSERT or UPDATE
+    if (!rewritesRows) continue;
+    findings.push({
+      trigger: row.tgname,
+      fn: row.proname,
+      problem: 'unexpected-writer',
+      detail:
+        `an unexpected BEFORE row trigger (tgtype=${row.tgtype}) runs on public."${MARKER_SEAL_TABLE}" `
+        + 'and can rewrite NEW."action" into the marker action — PostgreSQL chains same-event BEFORE '
+        + 'row triggers in name order, so one running after the gate forges a marker the gate already '
+        + 'approved as an ordinary row',
+    });
+  }
+
   return {
     sealed: findings.length === 0,
     applicable: true,
@@ -377,7 +427,7 @@ export async function repairMarkerSeals(prisma: PrismaService): Promise<MarkerSe
   let removed = 0;
   await prisma.$transaction(async (tx) => {
     const before = await verifyMarkerSeals(tx);
-    const untrustworthy = before.findings.some((f) => MARKER_FORGERY_SEALS.has(f.fn));
+    const untrustworthy = before.findings.some(opensForgeryWindow);
     for (const statement of functions) await tx.$executeRawUnsafe(statement);
     for (const statement of drops) await tx.$executeRawUnsafe(statement);
     if (untrustworthy) {

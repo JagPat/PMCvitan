@@ -416,7 +416,35 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    already do it. Each fix was mutated back and RED-proven separately, reddening exactly its own
    probe.
 
-17. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (48 probes):
+17. **CODEX ROUND 12 (two P1s, one P2) — all three correct; two are fixed here and one is NOT.**
+   **(a) P1, trigger chaining — FIXED, and the CLASS is fixed, not the instance.** PostgreSQL fires
+   same-event `BEFORE` row triggers in NAME order, each handing its `NEW` to the next, so a trigger
+   sorting after the gate rewrites `NEW."action"` into the marker action AFTER the gate approved an
+   ordinary row. Reproduced before accepting: an ordinary insert became a marker while
+   `verifyMarkerSeals` reported `sealed: true`. **This was the fourth consecutive round on this one
+   surface** — round 5 (tgtype bits), round 10 (name-only adoption), round 11 (`WHEN` predicate),
+   round 12 (chaining) — and each earlier fix added one more property to check. That is the shape
+   problem: the verifier enumerated properties of THREE KNOWN TRIGGERS when the question is whether
+   ANYTHING on this table can produce a marker row, and an open enumeration meets a new finding
+   every round. So the inventory is now CLOSED — any unexpected `BEFORE` row trigger on INSERT or
+   UPDATE is a finding, wherever it sorts — in the runtime verifier AND the migration's adoption
+   test. It is precise, not merely strict: an `AFTER` trigger cannot change the row and is not a
+   finding. **(b) P2, unbounded lock — FIXED, and the first fix was wrong in an instructive way.**
+   `pg_advisory_lock` blocks forever before the try block, so a stalled holder parks every replica
+   with no retryable failure. The first attempt polled `pg_try_advisory_lock`; it bounded the wait
+   and BROKE PROBE 8, whose barrier waits for ungranted waiters in `pg_locks` before releasing two
+   real processes together — a polling loop never blocks, so that observable vanished. The probe
+   failed honestly and the fix became `lock_timeout`, which bounds the wait while sessions still
+   block. That `lock_timeout` governs an advisory lock at all was MEASURED (1.55s against a 1500ms
+   budget, `canceling statement due to lock timeout`) rather than inferred from "other database
+   object". **(c) P1, legacy writers unfenced through startup — NOT FIXED, and deliberately so.** A
+   pre-4c-ii relay can block on the generation lock this verification holds and apply its legacy
+   serializer the moment it commits; re-checking on the NEXT deploy does not protect the deploy being
+   admitted now. The finding is correct. But fully fencing those writers IS the drain, which
+   `phase-6-4c-previous-release-drained` gates — so it is not fixable inside this unit, and a fence
+   this code cannot build must not be claimed. It stands as a stated limit carried by the directive.
+
+18. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (48 probes):
    the vacuity itself (a zero-project report satisfies every success field), each identity refusal,
    the verified repair, marker idempotence, identity enforced WITH the marker set, a non-verified
    report leaving NO marker and the next start succeeding, the unserialized generation collision

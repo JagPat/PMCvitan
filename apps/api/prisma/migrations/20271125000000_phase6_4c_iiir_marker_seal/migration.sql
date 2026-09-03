@@ -163,6 +163,30 @@ BEGIN
     ) AS x
    WHERE x.detail IS NOT NULL;
 
+  -- AND THE INVENTORY IS CLOSED (Codex round 12, P1). Everything above asks whether OUR two seals
+  -- are intact. PostgreSQL chains same-event BEFORE row triggers in NAME order, each handing its
+  -- NEW to the next, so a trigger sorting after the gate rewrites NEW."action" into the marker
+  -- action AFTER the gate approved an ordinary row. Measured: the forged marker committed while the
+  -- runtime verifier still reported sealed. Any unexpected BEFORE row trigger on INSERT or UPDATE
+  -- is therefore a gap, wherever it sorts — resting the seal on the collation of trigger names is
+  -- the kind of incidental property that produces the next finding. This table legitimately carries
+  -- nothing but these three triggers.
+  SELECT v_unenforced || COALESCE(string_agg(
+           'unexpected trigger "' || t.tgname || '" (tgtype=' || t.tgtype::int
+             || ') can rewrite NEW."action" into the marker action', '; ' ORDER BY t.tgname), '')
+    INTO v_unenforced
+    FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+   WHERE c.relname = 'OutboxOperatorAction'
+     AND c.relnamespace = 'public'::regnamespace
+     AND NOT t.tgisinternal
+     AND t.tgname NOT IN ('OutboxOperatorAction_4c_iiir_marker_insert_gated',
+                          'OutboxOperatorAction_4c_iiir_marker_sealed',
+                          'OutboxOperatorAction_4c_iiir_no_truncate')
+     AND (t.tgtype::int & 1) <> 0        -- FOR EACH ROW
+     AND (t.tgtype::int & 2) <> 0        -- BEFORE
+     AND ((t.tgtype::int & 4) <> 0 OR (t.tgtype::int & 16) <> 0);  -- INSERT or UPDATE
+
   IF v_unenforced <> '' THEN
     RAISE EXCEPTION
       'phase6-4c-iii-r: this database carries % repair marker row(s) (%) that CANNOT be shown to '

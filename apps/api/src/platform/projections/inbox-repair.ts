@@ -138,6 +138,55 @@ export const DATABASE_IDENTITY_ENV = 'PHASE6_4C_IIIR_EXPECTED_DATABASE_OID';
  */
 export const PHASE6_4C_IIIR_LOCK_KEY = 640_303_041;
 
+/**
+ * How long a start waits for that lock before refusing (Codex round 12, P2).
+ *
+ * `pg_advisory_lock` blocks forever and is taken BEFORE the try block, so a holder that is alive but
+ * stalled mid-rebuild parks every later replica with no deadline anywhere: `VERIFY_TX_OPTIONS` bounds
+ * only the later interactive transactions and `migrate.sh` supplies no outer timeout. A deploy that
+ * hangs is worse than one that fails, because a failure is retried and a hang needs a human to find
+ * and kill the holder. The budget is larger than any healthy rebuild of this database, so a
+ * legitimate winner still finishes and the loser still SKIPS on the marker exactly as before.
+ */
+export const PHASE6_4C_IIIR_LOCK_WAIT_MS = 15 * 60 * 1000;
+
+/**
+ * Take the session advisory lock, or give up on a deadline. False means the wait expired.
+ *
+ * BOUNDED BY `lock_timeout` rather than by polling `pg_try_advisory_lock`. Both bound the wait; the
+ * difference is what the rest of the system can still observe. A polling loop never BLOCKS, so a
+ * contending start stops appearing in `pg_locks` as an ungranted waiter — and that row is exactly
+ * what PROBE 8's barrier waits for before releasing two real processes into the race together. The
+ * polling version silently made that barrier's condition unsatisfiable; PROBE 8 failed honestly, and
+ * this is the version that bounds the wait without trading the observable away.
+ *
+ * That `lock_timeout` governs `pg_advisory_lock` at all is MEASURED, not assumed — the documentation
+ * says "a table, index, row, or other database object", and an advisory lock's membership in "other"
+ * deserved checking. Against a held lock with `lock_timeout = 1500`, the wait ends in 1.55s with
+ * `canceling statement due to lock timeout`.
+ *
+ * The timeout is restored afterwards: it is set to bound THIS acquisition, and leaving it would
+ * silently bound every `FOR UPDATE` the rebuild takes later.
+ */
+export async function acquireRepairLock(
+  prisma: { $executeRawUnsafe: PrismaClient['$executeRawUnsafe'] },
+  waitMs: number = PHASE6_4C_IIIR_LOCK_WAIT_MS,
+): Promise<boolean> {
+  await prisma.$executeRawUnsafe(`SET lock_timeout = ${Math.max(1, Math.trunc(waitMs))}`);
+  try {
+    await prisma.$executeRawUnsafe(`SELECT pg_advisory_lock(${PHASE6_4C_IIIR_LOCK_KEY}::bigint)`);
+    return true;
+  } catch (error) {
+    // 55P03 lock_not_available is what `lock_timeout` raises. Anything else is a real fault and
+    // must not be reported as "someone else holds the lock".
+    const code = (error as { meta?: { code?: string } })?.meta?.code;
+    if (code === '55P03' || /lock timeout/iu.test(String((error as Error)?.message ?? ''))) return false;
+    throw error;
+  } finally {
+    await prisma.$executeRawUnsafe('SET lock_timeout = DEFAULT');
+  }
+}
+
 /** The marker row: one `OutboxOperatorAction` recording that the repair has succeeded here. */
 export const PHASE6_4C_IIIR_MARKER_ACTION = 'projection.rebuild.phase6-4c-iii-r';
 export const PHASE6_4C_IIIR_OPERATOR = 'deploy';
@@ -166,7 +215,8 @@ export type RefusalCode =
   | 'rebuild-not-verified'
   | 'concurrent-corruption'
   | 'marked-but-corrupt'
-  | 'project-set-changed';
+  | 'project-set-changed'
+  | 'lock-unavailable';
 
 export interface Refusal {
   code: RefusalCode;
@@ -528,6 +578,8 @@ export async function runInboxRepairStep(
   // manifest is how the question is asked. Defaulted so the CLI and the suites construct nothing
   // extra, and injectable so a test can drive it.
   orgs: OrgsParticipant = new OrgsParticipant(),
+  // Injectable ONLY so a probe can contend a real lock without waiting the production budget.
+  lockWaitMs: number = PHASE6_4C_IIIR_LOCK_WAIT_MS,
 ): Promise<InboxRepairOutcome> {
   const base = {
     step: 'phase6-4c-iii-r' as const,
@@ -540,9 +592,21 @@ export async function runInboxRepairStep(
   // and it is held across every decision below. A count read outside the lock could be taken while
   // the winner's rebuild is in flight, and the marker read is the very check the race defeats.
   log(`[4c-iii-r] taking session advisory lock ${PHASE6_4C_IIIR_LOCK_KEY}`);
-  // `$executeRaw`, not `$queryRaw`: `pg_advisory_lock` returns `void`, which Prisma's row decoder
-  // cannot deserialize. The lock is taken by the STATEMENT either way.
-  await prisma.$executeRaw`SELECT pg_advisory_lock(${PHASE6_4C_IIIR_LOCK_KEY}::bigint)`;
+  if (!(await acquireRepairLock(prisma, lockWaitMs))) {
+    // projectCount is 0 on purpose: the count is read UNDER the lock, and this path never held it.
+    // Reporting a number read outside the lock would be the very vacuity this step exists to refuse.
+    const refusal = {
+      code: 'lock-unavailable' as const,
+      message:
+        `another start has held the 4c-iii-r advisory lock ${PHASE6_4C_IIIR_LOCK_KEY} for longer `
+        + `than ${lockWaitMs / 1000}s. A healthy repair finishes well inside that, so the holder is `
+        + 'not making progress: find it by joining `pg_locks` (locktype \'advisory\') to '
+        + '`pg_stat_activity`. See docs/RUNBOOK.md section P64CIIIR. No marker was written and the '
+        + 'deploy fails closed, so the next start retries.',
+    };
+    log(`[4c-iii-r] REFUSED (${refusal.code}): ${refusal.message}`);
+    return { ...base, ok: false, action: 'refused', projectCount: 0, refusal };
+  }
   try {
     // The defect's precondition, asked directly: has this database ever served the register?
     const servedGenerations = await prisma.projectionGeneration.count({

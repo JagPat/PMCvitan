@@ -17,6 +17,7 @@ import {
   DATABASE_IDENTITY_ENV,
   MINIMUM_ENV,
   PHASE6_4C_IIIR_LOCK_KEY,
+  acquireRepairLock,
   PHASE6_4C_IIIR_MARKER_ACTION,
   PHASE6_4C_IIIR_OPERATOR,
   readIdentityConfig,
@@ -31,6 +32,7 @@ import {
 } from '../../src/platform/projections/inbox-repair';
 import {
   MARKER_FORGERY_SEALS,
+  opensForgeryWindow,
   MARKER_SEAL_TRIGGERS,
   extractCanonicalMarkerBodies,
   readMarkerSealMigrationSql,
@@ -1288,6 +1290,123 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     expect(sql.lastIndexOf('EXECUTE FUNCTION phase6_4c_iiir_')).toBeLessThan(commit);
     // and nothing follows the commit but whitespace
     expect(sql.slice(commit + 'COMMIT;'.length).trim()).toBe('');
+  });
+
+  // ── Codex round 12 — two P1s, one P2 ─────────────────────────────────────────────────────────
+
+  const chainedForger = async () => {
+    // Name sorts AFTER the gate, so PostgreSQL runs it second and it sees the NEW the gate approved.
+    await single.$executeRawUnsafe(
+      `CREATE OR REPLACE FUNCTION zz_chain_forge() RETURNS trigger LANGUAGE plpgsql AS $chain$
+         BEGIN NEW."action" := '${PHASE6_4C_IIIR_MARKER_ACTION}'; RETURN NEW; END $chain$`);
+    await single.$executeRawUnsafe(
+      `DROP TRIGGER IF EXISTS "zz_OutboxOperatorAction_chain" ON "OutboxOperatorAction"`);
+    await single.$executeRawUnsafe(
+      `CREATE TRIGGER "zz_OutboxOperatorAction_chain" BEFORE INSERT ON "OutboxOperatorAction"
+         FOR EACH ROW EXECUTE FUNCTION zz_chain_forge()`);
+  };
+  const dropChainedForger = async () => {
+    await single.$executeRawUnsafe(
+      `DROP TRIGGER IF EXISTS "zz_OutboxOperatorAction_chain" ON "OutboxOperatorAction"`);
+    await single.$executeRawUnsafe(`DROP FUNCTION IF EXISTS zz_chain_forge()`);
+  };
+
+  it('R12-1 — a CHAINED trigger can forge a marker past an intact gate, and the verifier says so', async () => {
+    // PostgreSQL chains same-event BEFORE row triggers in NAME order, each handing its NEW to the
+    // next. Every one of our three seals is present, enabled, canonical, unconditioned and
+    // correctly masked here — the gate simply approved an ordinary row that a later trigger then
+    // rewrote. Enumerating properties of OUR triggers cannot see this; only closing the inventory
+    // can, which is why rounds 5/10/11/12 all landed on this surface.
+    try {
+      await chainedForger();
+      expect((await verifyMarkerSeals(single as never)).findings.map((f) => f.fn))
+        .not.toContain('phase6_4c_iiir_marker_insert_gated');   // our seals really are intact
+
+      // the forgery is REAL: an ordinary action goes in, a marker comes out
+      await single.$executeRawUnsafe(
+        `INSERT INTO "OutboxOperatorAction" ("id","action","operatorIdentity","reason")
+         VALUES ('r12-chain','some.ordinary.action','attacker','rewritten by a later trigger')`);
+      expect(await markerCount()).toBe(1);
+
+      const report = await verifyMarkerSeals(single as never);
+      expect(report.sealed).toBe(false);
+      expect(report.findings).toEqual([expect.objectContaining({
+        trigger: 'zz_OutboxOperatorAction_chain',
+        problem: 'unexpected-writer',
+      })]);
+      // …and it opens a forgery window, so the repair invalidates what it found
+      expect(report.findings.some(opensForgeryWindow)).toBe(true);
+    } finally {
+      await dropChainedForger();
+      await restoreMarkerSeals();
+      await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
+    }
+  });
+
+  it('R12-2 — the migration REFUSES to adopt a marker while an unexpected writer trigger exists', async () => {
+    const sql = readMarkerSealMigrationSql();
+    const guard = sql.slice(sql.indexOf('-- ── 0. DIAGNOSTIC-FIRST'), sql.indexOf('-- ── 1.'));
+    await runInboxRepairStep(single, ops, env);
+    expect(await markerCount()).toBe(1);
+    try {
+      await expect(single.$executeRawUnsafe(guard)).resolves.toBeDefined();   // baseline: adopted
+      await chainedForger();
+      await expect(single.$executeRawUnsafe(guard))
+        .rejects.toThrow(/unexpected trigger "zz_OutboxOperatorAction_chain"/u);
+    } finally {
+      await dropChainedForger();
+      await restoreMarkerSeals();
+      await sanctionedReset(t.prisma, ['OutboxOperatorAction']);
+    }
+  });
+
+  it('R12-3 — an AFTER trigger is NOT a finding: the inventory closes on what can rewrite a row', async () => {
+    // Precision, not mere strictness. An AFTER trigger cannot change the row being written, so
+    // rejecting it would be a false positive that makes the seal unusable on a real table.
+    try {
+      await single.$executeRawUnsafe(
+        `CREATE OR REPLACE FUNCTION zz_after_noop() RETURNS trigger LANGUAGE plpgsql AS $a$
+           BEGIN RETURN NULL; END $a$`);
+      await single.$executeRawUnsafe(
+        `CREATE TRIGGER "zz_OutboxOperatorAction_after" AFTER INSERT ON "OutboxOperatorAction"
+           FOR EACH ROW EXECUTE FUNCTION zz_after_noop()`);
+      expect((await verifyMarkerSeals(single as never)).sealed).toBe(true);
+    } finally {
+      await single.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS "zz_OutboxOperatorAction_after" ON "OutboxOperatorAction"`);
+      await single.$executeRawUnsafe(`DROP FUNCTION IF EXISTS zz_after_noop()`);
+      await restoreMarkerSeals();
+    }
+  });
+
+  it('R12-4 — advisory-lock acquisition is BOUNDED, so a stalled holder cannot park the rollout', async () => {
+    // `pg_advisory_lock` blocks forever and is taken BEFORE the try block, so a holder that is alive
+    // but stalled parks every later replica with no deadline and no retryable failure.
+    const holder = new PrismaClient({ datasourceUrl: singleConnectionUrl(process.env.DATABASE_URL!) });
+    try {
+      const [held] = await holder.$queryRaw<Array<{ taken: boolean }>>`
+        SELECT pg_try_advisory_lock(${PHASE6_4C_IIIR_LOCK_KEY}::bigint) AS taken`;
+      expect(held.taken).toBe(true);                       // the lock is genuinely held elsewhere
+
+      // a bounded wait GIVES UP rather than hanging — measured against a real contended lock
+      const started = Date.now();
+      expect(await acquireRepairLock(single as never, 600)).toBe(false);
+      expect(Date.now() - started).toBeLessThan(20_000);
+
+      // and the step turns that into a retryable refusal that writes NO marker
+      const outcome = await runInboxRepairStep(single, ops, { ...env }, undefined, undefined, 600);
+      expect(outcome.ok).toBe(false);
+      expect(outcome.refusal?.code).toBe('lock-unavailable');
+      expect(await markerCount()).toBe(0);
+
+      // released, the very next start proceeds normally
+      await holder.$executeRaw`SELECT pg_advisory_unlock(${PHASE6_4C_IIIR_LOCK_KEY}::bigint)`;
+      const next = await runInboxRepairStep(single, ops, env);
+      expect(next.ok).toBe(true);
+      expect(next.action).toBe('repaired');
+    } finally {
+      await holder.$disconnect();
+    }
   });
 
   it('PROBE 3 — an anchor that names no project in the connected database ABORTS, and writes no marker', async () => {

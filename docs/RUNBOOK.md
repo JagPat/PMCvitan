@@ -1266,6 +1266,7 @@ minimum below 1 is refused as a misconfiguration rather than honoured as an allo
 | `project-set-changed` | a project appeared (or vanished) between the start of the repair and the marker | the rebuild, its verification and its locks are all scoped to the set read at the start, so a project that appeared since was neither rebuilt nor diagnosed. No marker was written; the next start covers the full set. If projects are being created by something other than the API, that is the thing to look at |
 | `marked-but-corrupt` | the marker is present, but a generation is corrupt **again** — the register regressed after a verified repair | **something is still writing this register.** The repair is deliberately NOT re-run: repairing underneath that writer would only mark the same damage twice. Stop every pre-4c-ii process, then rebuild with the operator command and redeploy |
 | `concurrent-corruption` | the rebuild succeeded, but re-checking under the relay's own generation lock found a generation corrupt **again** before the marker could be committed | **something is still writing this register** — a process older than the drain fence is the expected cause. No marker was written. Stop every pre-4c-ii process and redeploy; the next start repairs and marks |
+| `lock-unavailable` | another start held the advisory lock past the wait budget (15 min). A healthy repair finishes well inside it, so the holder is not making progress | find it by joining `pg_locks` (locktype `advisory`, `objid = 640303041`) to `pg_stat_activity`; the holder is a container that started and stalled. No marker was written and the deploy failed closed, so the next start retries once the holder is gone. This bound exists because `pg_advisory_lock` otherwise blocks forever and `migrate.sh` has no outer deadline — a hung deploy needs a human, a failed one retries itself |
 | `system-identity-unreadable` | this deployment's role cannot execute `pg_control_system()` | grant exactly `GRANT EXECUTE ON FUNCTION pg_control_system() TO <role>;` as a superuser and redeploy. On PostgreSQL 16 the default already permits it (the function's ACL is the default `EXECUTE` to `PUBLIC`), so this means the privilege was deliberately revoked |
 
 Every refusal exits non-zero, so **the server does not start** and **no marker is written** — the
@@ -1342,6 +1343,18 @@ Each trigger's `pg_trigger.tgtype` is pinned to its **exact** value (7 / 27 / 34
 BEFORE and row/statement bits: a restore that recreated the insert gate under the same name,
 function, body, owner and enablement but as `BEFORE UPDATE` would otherwise pass while direct
 marker `INSERT`s were accepted again.
+
+**And the inventory is CLOSED: no unexpected trigger may write this table.** Any non-expected
+`BEFORE` row trigger firing on `INSERT` or `UPDATE` is a `unexpected-writer` finding, wherever its
+name sorts. PostgreSQL chains same-event `BEFORE` row triggers in **name order**, each handing its
+`NEW` to the next, so one sorting after the gate rewrites `NEW."action"` into the marker action
+*after* the gate approved an ordinary row — measured, and the forged marker committed while the
+verifier still reported `sealed`. Name order is deliberately **not** the test: a trigger sorting
+before the gate happens to be caught, but resting a seal on the collation of trigger names is the
+kind of incidental property that produces the next finding. `OutboxOperatorAction` legitimately
+carries nothing but these three triggers, so a closed inventory costs nothing and makes any future
+trigger there a decision that must come past this check. An `AFTER` trigger is **not** a finding —
+it cannot change the row being written, and rejecting it would be a false positive.
 
 **And `pg_trigger.tgqual` must be NULL** — no `WHEN` predicate. This is the least visible member of
 the inventory and the reason it is checked at all: a predicate is not part of `tgtype`, the
