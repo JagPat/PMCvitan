@@ -15,12 +15,29 @@ phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
 task_state: correction_required
 work_item: none
-reviewed_merge: 94cf3af
-open_pr: 528
+reviewed_merge: 75708004
+open_pr: none
 next_task: phase-6-task-4c-iv
 blocking_directive: phase-6-4c-previous-release-drained
-updated: 2026-09-03
+updated: 2026-09-04
 ```
+
+### Unit 4c-iii-r merged. It clears NOTHING, and the directive above is why.
+
+`75708004` (PR #528, reviewed head `d69a5725`) merged the deploy-time `decisions.inbox` repair:
+the one-shot step in `scripts/migrate.sh` behind outside-DB identity and a session-level advisory
+lock, its append-only marker seal (`20271125000000`), and the writer fence (`20271126000000`) that
+stamps `ProjectionGeneration.fencedAt` when a projection write arrives from a session that has not
+declared this release's catalog version, so the read path refuses that generation and falls back to
+canonical.
+
+**That is code, not a deployment.** The step has never run against production; nothing here reports
+what it did there. `open_pr` returns to `none` and `reviewed_merge` advances to the commit that
+carried it — no other field moves. `task_state` stays `correction_required` and
+`blocking_directive` stays `phase-6-4c-previous-release-drained`, because the fence answers the
+question "can a stale writer corrupt the register" and the directive asks a different one: whether
+any process older than `5fcc2a58` is still running. **A fence is not a drain, and neither is a
+merge.** The runner resolves to the directive, exactly as it did before this merge.
 
 ### The drain directive STANDS. A clearance was written here on an UNSUPPORTED attribution and is WITHDRAWN.
 
