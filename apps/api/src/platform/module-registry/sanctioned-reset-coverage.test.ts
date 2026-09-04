@@ -125,6 +125,18 @@ describe('Phase 6 unit 4c-0 — sanctioned resets route through the shared helpe
       // statement, so it must NOT go through the helper: the helper disables that very seal
       // (it is now an entry in TRUNCATE_SEALS), which would leave the assertion vacuous and green.
       'phase6-t4c-iii-enablement.test.ts': 1,
+      // Phase 6 unit 4c-iii-r: the repair MARKER's statement-level `BEFORE TRUNCATE` seal. The
+      // marker authorizes every later start to skip the decisions.inbox repair, so losing it by
+      // TRUNCATE is sealed exactly as losing it by DELETE is — and this probe asserts the seal
+      // REFUSES the statement. It must NOT go through the helper: the helper disables that very
+      // seal (it is now an entry in TRUNCATE_SEALS), leaving the assertion vacuous and green.
+      //
+      // The SECOND is the writer fence's own TRUNCATE arm (R24-2). It STAMPS rather than refusing —
+      // `DecisionProjection` is legitimately truncated by the seed and every harness — so the probe
+      // measures that an undeclared TRUNCATE fences the generations that held rows. Routing it
+      // through the helper would disable the arm and leave the measurement vacuous, exactly as for
+      // the marker seal above.
+      'phase6-4c-iiir-inbox-repair.test.ts': 2,
     };
 
     const offenders: string[] = [];

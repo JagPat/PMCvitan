@@ -398,6 +398,23 @@ model ProjectionGeneration {
   /// check inside the new CLI could not do this — that binary contains neither the check nor any
   /// sync call.
   catalogVersion  Int
+  /// Phase 6 unit 4c-iii-r — set by the WRITER FENCE when a session that has not declared this
+  /// release's serializer writes into this generation's rows.
+  ///
+  /// The startup fence above protects a process that TAKES UP SERVICE, and `catalogVersion` protects
+  /// a generation a previous release BUILDS. Neither reaches the case this column exists for: a
+  /// previous-release relay that was ALREADY RUNNING when the migration landed. It synced its
+  /// catalog at its own start, so nothing re-asks it, and it goes on applying events into an
+  /// existing generation with the v1 serializer.
+  ///
+  /// A row trigger on `DecisionProjection` stamps this whenever the writing session has not set
+  /// `vitan.decisions_inbox_catalog_version`, which only this release's projection writer does.
+  /// `readServableGeneration` then refuses the generation and every read falls back to canonical,
+  /// which is always current — so such a write can never be SERVED, and the next deploy's repair
+  /// rebuilds. Deliberately NOT `cursorStatus`: the relay rewrites that column itself immediately
+  /// after the handler returns (`dispatchProjection`), so a fence written there is erased by the
+  /// very transaction it fences. A column the previous release does not know exists cannot be.
+  fencedAt        DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
