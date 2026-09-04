@@ -199,32 +199,48 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
       // has its own probe.
       data: { consumer: DECISIONS_PROJECTION, projectId, generation: 1, status: 'active', cursorStatus: 'live', appliedPosition: stream.nextPosition - 1n, activatedAt: new Date(), catalogVersion: 2 },
     });
-    for (const id of storedIds) {
-      const d = await t.prisma.decision.findUniqueOrThrow({
+    // AND THE FIXTURE DECLARES THE SERIALIZER IT ACTUALLY USED (Phase 6 unit 4c-iii-r). The writer
+    // fence (`20271126000000`) stamps `ProjectionGeneration.fencedAt` for any `DecisionProjection`
+    // write whose session has not declared this release's serializer, and `readServableGeneration`
+    // then refuses that generation. These rows are built by `serializeDecision` — the CURRENT
+    // serializer — so declaring version 2 is simply true of them, and it keeps this probe about the
+    // COMPLETENESS defect it is named for. Not declaring would fence the generation before the
+    // subset was ever reached: the same trap the `catalogVersion` note above already describes for
+    // the round-30 serve-side version fence, quietly converting this into a test of a different
+    // thing. The legacy-WRITER case the fence exists for has its own probes (`R6`, `R22-2`,
+    // `R22-3`) and is not this one.
+    //
+    // One transaction, because `set_config(..., true)` is transaction-LOCAL: a per-statement
+    // declaration outside a transaction would not reach the next statement.
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('vitan.decisions_inbox_catalog_version', '2', true)`;
+      for (const id of storedIds) {
+        const d = await tx.decision.findUniqueOrThrow({
         where: { id },
         // the include must track what `serializeDecision` READS, or the fixture builds its rows
         // through a serializer that is reaching for relations this query never loaded: 4b's named
         // holder, and Phase 6 unit 4c-ii's consultation thread and approval register.
-        include: {
-          options: { orderBy: { order: 'asc' } },
-          changeRequests: { where: { status: 'open' }, take: 1 },
-          deciderMembership: { select: { userId: true } },
-          consultations: { include: { response: true } },
-          approvalRevisions: { select: { version: true } },
-        },
-      });
-      await t.prisma.decisionProjection.create({
-        data: {
-          generationId: gen.id,
-          projectId,
-          decisionId: d.id,
-          status: d.status,
-          publishedAt: d.publishedAt,
-          authorId: d.authorId,
-          dto: serializeDecision(d) as unknown as Prisma.InputJsonValue,
-        },
-      });
-    }
+          include: {
+            options: { orderBy: { order: 'asc' } },
+            changeRequests: { where: { status: 'open' }, take: 1 },
+            deciderMembership: { select: { userId: true } },
+            consultations: { include: { response: true } },
+            approvalRevisions: { select: { version: true } },
+          },
+        });
+        await tx.decisionProjection.create({
+          data: {
+            generationId: gen.id,
+            projectId,
+            decisionId: d.id,
+            status: d.status,
+            publishedAt: d.publishedAt,
+            authorId: d.authorId,
+            dto: serializeDecision(d) as unknown as Prisma.InputJsonValue,
+          },
+        });
+      }
+    });
     return gen;
   };
 
@@ -339,9 +355,14 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
     expect((await ops.diagnose(DECISIONS_PROJECTION, projectId)).state).toBe('current-match');
 
     // flip only the key column the readiness map + pending filter read; the dto stays byte-correct
-    await t.prisma.decisionProjection.update({
-      where: { generationId_decisionId: { generationId: gen.id, decisionId: 'IT-UP-K1' } },
-      data: { status: 'approved' },
+    // Declared for the same reason the fixture above declares: this edits STORED STATE to exercise
+    // the row-set diagnostic, it does not simulate a live previous-release relay.
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('vitan.decisions_inbox_catalog_version', '2', true)`;
+      await tx.decisionProjection.update({
+        where: { generationId_decisionId: { generationId: gen.id, decisionId: 'IT-UP-K1' } },
+        data: { status: 'approved' },
+      });
     });
     expect((await ops.diagnose(DECISIONS_PROJECTION, projectId)).state).toBe('corrupt');
 

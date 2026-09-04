@@ -8,7 +8,7 @@ import type { Role } from '../common/auth';
 import type { DecisionDto } from '../snapshot/types';
 import { serializeDecision, decisionVisibleToViewer, hydrateStoredDecisionDto } from './decision-serialize';
 import { DECISIONS_PROJECTION } from './decisions.projection';
-import { readServableGeneration } from '../platform/projections/generation';
+import { readServableGeneration, stillServableAfterRead } from '../platform/projections/generation';
 
 /**
  * Phase 2 Task 8 — the decisions module's PUBLIC READ boundary (its query contract).
@@ -156,6 +156,15 @@ export class DecisionsQueryService {
       // the snapshot slice orders decisions by id descending — mirror it so the served array matches
       orderBy: { decisionId: 'desc' },
     });
+    // …AND ASK THE FENCE AGAIN, now that the rows are in hand (Codex on `de9fa3b7`). The gate above
+    // and this fetch are separate READ COMMITTED statements, so a previous-release relay can commit
+    // its rewrite and the fence's stamp in between: the gate would see an unfenced, caught-up
+    // generation and the fetch would return the very rows the fence exists to keep off the wire.
+    // The stamp is append-only, so NULL before and NULL after means nothing undeclared entered this
+    // generation across the window; anything else falls back to the canonical live read.
+    if (!(await stillServableAfterRead(this.prisma, gen.id))) {
+      return { decisions: [], statuses: new Map(), generation: null };
+    }
     // The per-decision-row analogue of the composite modules' row-exists check: a generation that
     // only NOOP deliveries advanced (bootstrapped over pre-stream rows, no decision event applied
     // yet) is caught-up but HOLLOW — zero rows while canonical decisions exist. Serving it would

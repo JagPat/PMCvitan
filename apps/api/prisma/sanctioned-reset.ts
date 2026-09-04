@@ -45,6 +45,7 @@ export interface TruncateCapableClient {
  */
 export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger: string }[] = [
   { table: 'ActivityDependency', trigger: 'ActivityDependency_no_truncate' },
+  { table: 'DecisionProjection', trigger: 'DecisionProjection_4c_iiir_writer_fence_truncate' },
   { table: 'Decision', trigger: 'Decision_t4b_no_truncate' },
   { table: 'DecisionEvent', trigger: 'DecisionEvent_t4a_no_truncate' },
   { table: 'DecisionLegacyApproval', trigger: 'DecisionLegacyApproval_no_truncate' },
@@ -66,6 +67,12 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   // Round 29 foresaw this entry: a dozen-plus suites reach `ProjectCapability` directly or
   // through a cascade list, and a statement trigger fires even on an empty table.
   { table: 'ProjectCapability', trigger: 'ProjectCapability_t4c_no_truncate' },
+  // Phase 6 unit 4c-iii-r — the repair marker's statement-level arm. The marker AUTHORIZES every
+  // later start to skip the decisions.inbox repair, so losing it by TRUNCATE is sealed exactly as
+  // losing it by DELETE is; and a row trigger never fires for TRUNCATE. It belongs here because a
+  // sanctioned reset genuinely needs to bypass it: `outbox-operations.test.ts` truncates
+  // `OutboxOperatorAction` directly, and this suite's own per-probe reset does too.
+  { table: 'OutboxOperatorAction', trigger: 'OutboxOperatorAction_4c_iiir_no_truncate' },
 ];
 
 /**
