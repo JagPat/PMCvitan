@@ -273,7 +273,8 @@ export async function verifyWriterFence(prisma: SealCatalogReader): Promise<Writ
   const sealRows = await prisma.$queryRaw<Array<CompanionRow>>`
     SELECT t.tgenabled, t.tgtype::int AS tgtype, t.tgqual IS NOT NULL AS has_when,
            p.proname, p.prosrc, p.proconfig::text AS proconfig,
-           pg_get_userbyid(p.proowner) AS owner
+           pg_get_userbyid(p.proowner) AS owner,
+           pg_get_userbyid(c.relowner) AS table_owner
       FROM pg_trigger t
       JOIN pg_class c ON c.oid = t.tgrelid
       JOIN pg_namespace ns ON ns.oid = c.relnamespace
@@ -294,7 +295,8 @@ export async function verifyWriterFence(prisma: SealCatalogReader): Promise<Writ
   const truncRows = await prisma.$queryRaw<Array<CompanionRow>>`
     SELECT t.tgenabled, t.tgtype::int AS tgtype, t.tgqual IS NOT NULL AS has_when,
            p.proname, p.prosrc, p.proconfig::text AS proconfig,
-           pg_get_userbyid(p.proowner) AS owner
+           pg_get_userbyid(p.proowner) AS owner,
+           pg_get_userbyid(c.relowner) AS table_owner
       FROM pg_trigger t
       JOIN pg_class c ON c.oid = t.tgrelid
       JOIN pg_namespace ns ON ns.oid = c.relnamespace
@@ -334,7 +336,8 @@ export async function verifyWriterFence(prisma: SealCatalogReader): Promise<Writ
 
 interface CompanionRow {
   tgenabled: string; tgtype: number; has_when: boolean;
-  proname: string; prosrc: string; proconfig: string | null; owner: string;
+  proname: string; prosrc: string; proconfig: string | null;
+  owner: string; table_owner: string | null;
 }
 
 /**
@@ -361,6 +364,19 @@ function checkCompanion(
   if (row.has_when) findings.push(`the ${spec.label} carries a WHEN predicate, so everything it does not admit passes unfenced`);
   if (row.proconfig !== null) findings.push(`the ${spec.label} function carries a per-function configuration (proconfig=${row.proconfig})`);
   if (row.prosrc !== spec.body) findings.push(`the ${spec.label} function body is not the migration's own — it has been replaced, and a no-op body passes every other check`);
+  // OWNERSHIP WAS SELECTED AND THEN NEVER COMPARED (Codex on `9705dcdd`) — the column was in the
+  // query and in this row's type, and nothing read it. A body check only catches a replacement that
+  // is STILL THERE when the deploy looks: a role that owns the function can swap in a no-op, clear
+  // `fencedAt`, and restore the canonical body before the next verification, and every check here
+  // would pass over a generation that is once again servable. The primary fence has compared this
+  // since it was written; its companions did not.
+  if (row.table_owner && row.owner !== row.table_owner) {
+    findings.push(
+      `the ${spec.label} function is owned by ${row.owner}, not by ${row.table_owner} which owns `
+      + `public."${spec.table}" — that role can replace its body at will, and restore it before the `
+      + 'next deploy looks',
+    );
+  }
 }
 
 /**

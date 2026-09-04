@@ -30,6 +30,14 @@ ALTER TABLE "ProjectionGeneration" ADD COLUMN IF NOT EXISTS "fencedAt" TIMESTAMP
 
 -- The declaration this release's projection writer makes, inside its own transaction, with
 -- `set_config(..., true)` so it is LOCAL and cannot leak to another session's write.
+-- EVERY RELATION BELOW IS SCHEMA-QUALIFIED (Codex on `9705dcdd`). These functions are
+-- SECURITY INVOKER, so an unqualified name resolves through the WRITING SESSION's `search_path` —
+-- and the writer here is by definition a process this deployment does not control. MEASURED: with a
+-- `decoy."ProjectionGeneration"` present and a legacy session running `search_path = decoy, public`,
+-- a write into `public."DecisionProjection"` stamped the DECOY and left the real generation
+-- unfenced and servable. Qualification rather than a pinned `search_path`, deliberately: pinning it
+-- would populate `proconfig`, and `proconfig IS NULL` is an absolute this fence's verifier depends
+-- on — an `ALTER FUNCTION ... SET` is the very bypass round 18 measured on the marker seals.
 CREATE OR REPLACE FUNCTION phase6_4c_iiir_fence_decision_projection_write()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -52,7 +60,7 @@ BEGIN
   -- Stamp ONCE. The relay holds this generation row FOR UPDATE for the duration of its own
   -- transaction (`lockActiveGeneration`), so this UPDATE never waits on anyone else and never
   -- deadlocks: it is the same row, already locked by the transaction we are running inside.
-  UPDATE "ProjectionGeneration"
+  UPDATE public."ProjectionGeneration"
      SET "fencedAt" = now()
    WHERE "id" = target AND "fencedAt" IS NULL;
 
@@ -62,7 +70,7 @@ BEGIN
   -- read path then serves a register missing that decision. Moving it to a generation id that does
   -- not exist is the sharpest form: the destination stamp updates nothing at all.
   IF TG_OP = 'UPDATE' AND NEW."generationId" IS DISTINCT FROM OLD."generationId" THEN
-    UPDATE "ProjectionGeneration"
+    UPDATE public."ProjectionGeneration"
        SET "fencedAt" = now()
      WHERE "id" = OLD."generationId" AND "fencedAt" IS NULL;
   END IF;
@@ -92,10 +100,10 @@ BEGIN
   IF declared IS NOT NULL AND declared = '2' THEN
     RETURN NULL;
   END IF;
-  UPDATE "ProjectionGeneration" g
+  UPDATE public."ProjectionGeneration" g
      SET "fencedAt" = now()
    WHERE g."fencedAt" IS NULL
-     AND EXISTS (SELECT 1 FROM "DecisionProjection" d WHERE d."generationId" = g."id");
+     AND EXISTS (SELECT 1 FROM public."DecisionProjection" d WHERE d."generationId" = g."id");
   RETURN NULL;
 END;
 $truncate$;

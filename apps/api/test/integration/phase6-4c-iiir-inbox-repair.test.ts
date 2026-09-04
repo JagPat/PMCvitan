@@ -2595,6 +2595,72 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     await putInService();
   });
 
+  // ── R25: the two findings from `9705dcdd` ────────────────────────────────────────────────────
+  it('R25-1 — the fence resolves against public, so a decoy in the writer\'s search_path cannot absorb the stamp', async () => {
+    // THE FINDING, measured before the fix: the trigger functions are SECURITY INVOKER and their
+    // relation names were unqualified, so they resolved through the WRITING SESSION's search_path —
+    // and that writer is by definition a process this deployment does not control. With a
+    // `decoy."ProjectionGeneration"` present and the session running `search_path = decoy, public`,
+    // the stamp landed on the DECOY and the real generation stayed unfenced and servable.
+    await single.$executeRawUnsafe('CREATE SCHEMA IF NOT EXISTS "r25_decoy"');
+    try {
+      await single.$executeRawUnsafe(
+        'CREATE TABLE IF NOT EXISTS "r25_decoy"."ProjectionGeneration" (LIKE public."ProjectionGeneration" INCLUDING ALL)');
+      await single.$executeRawUnsafe(`DELETE FROM "DecisionProjection" WHERE "id" = $1`, 'r25-row');
+      await single.$executeRawUnsafe(`DELETE FROM "ProjectionGeneration" WHERE "id" = $1`, 'r25-gen');
+      await single.$executeRawUnsafe(
+        `INSERT INTO public."ProjectionGeneration" ("id","consumer","projectId","generation","status","catalogVersion","createdAt","updatedAt")
+         VALUES ($1,$2,$3,1,'retired',2,now(),now())`, 'r25-gen', DECISIONS_PROJECTION, 'r25-proj');
+      await single.$executeRawUnsafe(
+        `INSERT INTO "r25_decoy"."ProjectionGeneration" ("id","consumer","projectId","generation","status","catalogVersion","createdAt","updatedAt")
+         VALUES ($1,$2,$3,1,'retired',2,now(),now())`, 'r25-gen', DECISIONS_PROJECTION, 'r25-proj');
+
+      // the legacy writer's session: its path finds the decoy first
+      await single.$executeRawUnsafe('SET search_path = "r25_decoy", public');
+      await single.$executeRawUnsafe(
+        `INSERT INTO public."DecisionProjection" ("id","generationId","projectId","decisionId","status","dto","updatedAt")
+         VALUES ($1,$2,$3,$4,'published','{}'::jsonb, now())`,
+        'r25-row', 'r25-gen', 'r25-proj', 'r25-decision');
+      await single.$executeRawUnsafe('SET search_path = public');
+
+      const [real] = await single.$queryRawUnsafe<Array<{ fenced: boolean }>>(
+        `SELECT ("fencedAt" IS NOT NULL) AS fenced FROM public."ProjectionGeneration" WHERE "id" = $1`, 'r25-gen');
+      const [decoy] = await single.$queryRawUnsafe<Array<{ fenced: boolean }>>(
+        `SELECT ("fencedAt" IS NOT NULL) AS fenced FROM "r25_decoy"."ProjectionGeneration" WHERE "id" = $1`, 'r25-gen');
+      expect(real.fenced, 'the REAL public generation must carry the stamp').toBe(true);
+      expect(decoy.fenced, 'the decoy must be untouched').toBe(false);
+    } finally {
+      await single.$executeRawUnsafe('SET search_path = public');
+      await single.$executeRawUnsafe(`DELETE FROM "DecisionProjection" WHERE "id" = $1`, 'r25-row');
+      await single.$executeRawUnsafe(`DELETE FROM "ProjectionGeneration" WHERE "id" = $1`, 'r25-gen');
+      await single.$executeRawUnsafe('DROP SCHEMA IF EXISTS "r25_decoy" CASCADE');
+    }
+  });
+
+  it('R25-2 — a companion trigger function owned by another role is REJECTED', async () => {
+    // THE FINDING: `checkCompanion` selected the owner into its row type and never compared it. A
+    // body check alone only catches a replacement that is STILL THERE when the deploy looks — a role
+    // that OWNS the function can swap in a no-op, clear `fencedAt`, and restore the canonical body
+    // before the next verification. The primary fence has compared ownership since it was written.
+    const role = 'r25_probe_role';
+    expect((await verifyWriterFence(single)).installed).toBe(true);
+    try {
+      await single.$executeRawUnsafe(`DROP ROLE IF EXISTS ${role}`);
+      await single.$executeRawUnsafe(`CREATE ROLE ${role}`);
+      await single.$executeRawUnsafe(`ALTER FUNCTION phase6_4c_iiir_fence_stamp_sealed() OWNER TO ${role}`);
+      const foreign = await verifyWriterFence(single);
+      expect(foreign.installed).toBe(false);
+      expect(foreign.findings.join(' ')).toMatch(/stamp seal function is owned by r25_probe_role/u);
+    } finally {
+      const [owner] = await single.$queryRawUnsafe<Array<{ o: string }>>(
+        `SELECT pg_get_userbyid(c.relowner) AS o FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND c.relname = 'ProjectionGeneration'`);
+      await single.$executeRawUnsafe(`ALTER FUNCTION phase6_4c_iiir_fence_stamp_sealed() OWNER TO ${owner.o}`);
+      await single.$executeRawUnsafe(`DROP ROLE IF EXISTS ${role}`);
+    }
+    expect((await verifyWriterFence(single)).installed).toBe(true);
+  });
+
   it('PROBE 4b — an unconfigured step ABORTS on a database that has served the register', async () => {
     const outcome = await runInboxRepairStep(single, ops, {});
     expect(outcome.ok).toBe(false);
