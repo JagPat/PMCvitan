@@ -13,14 +13,111 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: correction_required
+task_state: in_progress
 work_item: none
 reviewed_merge: 75708004
 open_pr: none
-next_task: phase-6-task-4c-iv
-blocking_directive: phase-6-4c-previous-release-drained
+next_task: phase-6-task-4c-v
+blocking_directive: phase-6-4c-iv-rollout-complete
 updated: 2026-09-04
 ```
+
+### The drain directive is CLEARED — on the first qualifying `OPERATOR-ATTESTATION`, cited here
+
+**THE RECORD.** https://github.com/JagPat/PMCvitan/issues/482#issuecomment-5541309778 — posted
+2026-09-04T13:42:51Z under JagPat's account (`author_association: OWNER`). It is the FIRST comment
+on #482, across the ~154 before it, that BEGINS with `OPERATOR-ATTESTATION` — the qualifying form
+this file names. The Board adopted it by explicit call in the controlling conversation on
+2026-09-04 and again on #482 (comment 5541611206): *"OPERATOR-ATTESTATION is on #482 comment
+5541309778. Cite it. Clear `blocking_directive: phase-6-4c-previous-release-drained`."*
+
+**PROVENANCE, PRESERVED EXACTLY.** The comment attributes its observations to **GitHub Watch**,
+acting after the Board directed Watch to complete the drain/deploy path. They are posted under the
+owner's account and adopted by the Board; they are NOT JagPat's personal eyewitness observation,
+and this record does not recast them as one. That is the distinction #510 and #511 failed — an
+assistant's inspection quoted as the operator's own words — and it is kept here on purpose: the
+attestation is attributable because the OWNER'S ACCOUNT posted it in the ENUMERATED FORM and the
+BOARD adopted it, not because of who looked at the screen.
+
+**WHAT IT ESTABLISHES, against the two gates this file held.**
+
+*The drain condition* — "no PMC Vitan process older than `5fcc2a58` is running": stated directly
+("in this production snapshot" — the honest bound), with the supporting observation that the sole
+PMC API process class was `exited` before the redeploy, no extra PMC worker resources were
+present, and the deployment tip was `2ec4ba7d` (`5fcc2a58...2ec4ba7d`: ahead 8, behind 0). The
+repository-side fact recorded below still applies: the four process classes are ONE process class
+in code, so one container is the whole fleet.
+
+*The post-deployment evidence lease*, field by field:
+
+| lease field | in the record |
+| --- | --- |
+| intended environment and application | `pms-api.vitan.in` / app `kesk2npohs3vnoroi6tya7x6` |
+| deployed release/commit | `main` `2ec4ba7d` |
+| independently expected NONEMPTY project inventory | the five variables set from the production database BEFORE the deploy; the identity check passed; 3 projects rebuilt |
+| complete project coverage | 3 of 3, `failures=0` |
+| `exit 0` | **by consequence, not quoted**: `migrate.sh` fails closed, and the app returned to `running` — which the runner permits only on exit 0 |
+| `ok: true` | stated |
+| `corruptAfter: 0` | stated — and `corruptBefore=2`: the defect this unit was built for was REAL on production, and is repaired |
+| `failures: 0` | stated |
+
+**What the record does NOT carry, said plainly:** the verbatim `migrate.sh` output and the
+container inventory listing. The lease asks for the eight FIELDS above, and every one is named;
+the verbatim artifacts would make the record stronger and are not required by the lease as
+written. Noted, not waived.
+
+Both gates are therefore discharged by ONE attributable record. The withdrawn passage further
+below stays withdrawn; nothing here revives it or leans on it.
+
+### Unit 4c-iv — the gate-read REMOVAL, delivered here
+
+**WHAT SHIPS, and nothing else.** The three reads of the per-project `consultation` capability
+retire in ONE unit, exactly as the plan stages it (§D, review rounds 25–26): the two write commands
+(`requestConsultation`, `respondToConsultation` no longer `assertEnabled`; the emitter was gated
+THROUGH them and is therefore ungated with them — there was never a separate emitter read), the
+shell contract (`GET …/shell` no longer names `consultation` in `capabilities`), and the client
+(`ConsultationThread` no longer returns `null` on its absence). **No migration.** The
+`ProjectCapability` row, its creation trigger and its PRESERVATION seal are untouched: they retire
+in 4c-v, because 4c-iv is itself a rolling deployment whose own predecessors are the last readers.
+
+**Reproduce-first.** The 4c-iv probe reaches a project with NO capability row — through the
+alternate-writer path the seal refuses, disabled by name for one statement and re-enabled in the
+same transaction, the mirror of the pre-4c-iii fixture — and asserts BOTH routes answer 201 and the
+shell does not advertise the gate: RED at `2ec4ba7d` (404 from `assertEnabled`), GREEN here. P23's
+post-4c-iii shell assertion is inverted rather than dropped. The client probe renders the
+requester's and the consultee's affordances with `capabilities: []` — the list a 4c-iv server now
+sends — RED at the base where the component's first line sends both viewers home.
+
+**THE DISCLOSED RESIDUAL — the stale tab.** A pre-4c-iv bundle still open in a browser reads the
+shell's `capabilities` and, once a 4c-iv server stops naming `consultation`, hides its affordances
+until it reloads. This is the capability-gated stale reader the Board ruled on (plan, 2026-08-29 on
+PR #480): a consultation INFORMS and never GATES, so nothing is blocked, stranded or lost; the
+state resolves on any reload; no drain condition is invented for it.
+
+**THE P3005 CORRECTION STAYS IN THE QUEUE, behind this unit by Board call.** This file previously
+ordered `phase-4-t3c-p3005-baseline-dependency-ordering` after the production evidence cleared and
+BEFORE 4c-iv. The Board directed 4c-iv first (2026-09-04, the controlling conversation and #482
+comment 5541611206). The item is neither dropped nor started here; it remains in the maintenance
+queue below.
+
+### The next gate: `phase-6-4c-iv-rollout-complete`
+
+**Set in this fold, as the plan requires.** 4c-v drops the preservation seal, which is safe only
+once NO instance that still reads the row can be serving — and 4c-iv's own predecessors are those
+readers. The delivered resolver offers exactly two states (plan §D, review round 26): set the
+directive, and 4c-v waits; or do not, and nothing ever schedules 4c-v. The two-step that landed
+4c-ii's directive in a separate STATUS PR is superseded by this file's own rule, so the gate is
+recorded in the same fold as the code it gates.
+
+**What clears it.** An `OPERATOR-ATTESTATION` on #482 — or a direct statement in the controlling
+conversation — that every PMC Vitan process is running the 4c-iv release (this unit's merge commit)
+or later. It is the same attestation shape the drain took, and it is cleared the same way: by an
+attributable record, never by an agent, a green CI, or an exact-head review.
+
+**While this PR is open** the resolver reads `in_progress` + a directive as `directive:…`; the live
+pull request is shepherded from the GitHub PR set, which the handoff treats as the only authority
+on what exists to shepherd. After merge the simulation clears the self-named `open_pr` and lands
+on the directive — the loop parks until the rollout is attested, which is the correct state.
 
 ### Unit 4c-iii-r merged. It clears NOTHING, and the directive above is why.
 
