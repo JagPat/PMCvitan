@@ -163,6 +163,10 @@ export function makeDecisionsProjectionConsumer(): OutboxConsumer {
         return seededThrough;
       },
       dropGeneration: async (tx, target) => {
+        // Declared like every other write path: the fence covers DELETE too (Codex on `6b3ff9e6`),
+        // so the rebuilder discarding a generation's rows would otherwise stamp the very generation
+        // it is discarding.
+        await declareSerializer(tx);
         await tx.decisionProjection.deleteMany({ where: { generationId: target.generationId } });
       },
     },

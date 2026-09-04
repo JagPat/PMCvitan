@@ -341,6 +341,14 @@ if echo "$out" | grep -q "P3005"; then
   # costs nothing when it has somehow already run, and its closing DO block still refuses to commit
   # unless every project carries the row.
   #
+  # 20271126000000_phase6_4c_iiir_writer_fence is here for exactly the same reason as its sibling
+  # below (Codex on `6b3ff9e6`, where it was MISSING from this list). Prisma's model of it is one
+  # nullable column, which `prisma db push` and a resolve-as-applied both reproduce — while the two
+  # things that matter, the writer-fence trigger and the stamp seal, are raw SQL that neither does.
+  # Recording it as applied would leave a database whose ledger claims a fence it does not have, and
+  # nothing later would re-run: the `seals` verification a few lines down would then fail on EVERY
+  # subsequent deploy with no pending migration able to fix it.
+  #
   # 20271125000000_phase6_4c_iiir_marker_seal is here for the same reason, and leaving it out
   # would have been the worst version of this mistake (Codex round 2, P1). Its entire content is
   # raw SQL — three functions, three triggers — so `prisma db push` reproduces NONE of it, and
@@ -370,7 +378,8 @@ if echo "$out" | grep -q "P3005"; then
 20271115000000_phase6_t4c_ii_approval_provenance
 20271116000000_phase6_t4c_ii_rollout_fence
 20271120000000_phase6_t4c_iii_enablement
-20271125000000_phase6_4c_iiir_marker_seal"
+20271125000000_phase6_4c_iiir_marker_seal
+20271126000000_phase6_4c_iiir_writer_fence"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

@@ -1233,10 +1233,21 @@ declaration said. The fence stamps rather than rejecting on purpose: rejecting w
 relay's delivery, which retries, dead-letters and then blocks the generation on that dead position,
 so the register would need an operator after every rolling deploy. Stamping loses no delivery.
 
-The fence is verified on every start by the same `seals` call that verifies the marker seals, and the
-deploy refuses if it is absent, disabled, wrongly timed, hollowed, `proconfig`-altered or foreign-
-owned. A stamped generation is repaired by the ordinary rebuild — the repair builds a fresh
-generation, and `fencedAt` is a property of the generation it replaces.
+It covers INSERT, UPDATE **and DELETE**: a writer that removes a row leaves every surviving row
+correct, so an insert-only fence would read that generation as untouched while it served a register
+missing a decision.
+
+**The stamp is append-only.** Once set it cannot be cleared or moved — not even backdated, which
+would hide when the legacy write happened. There is no operator action that unsets it and none is
+needed: the legitimate reset is a REBUILD, which builds a NEW generation and retires the stamped
+one. Every other column on `ProjectionGeneration` stays freely updatable, so the relay's own
+checkpoint writes and the rebuilder's activation swap are unaffected.
+
+Both the fence and its stamp seal are verified on every start by the same `seals` call that verifies
+the marker seals, and the deploy refuses if either is absent, disabled, wrongly timed, hollowed,
+`proconfig`-altered, foreign-owned, or narrowed by a `WHEN` predicate. Both migrations are in
+`ALWAYS_EXECUTE`, so the P3005 baseline path installs them rather than recording them as applied —
+their triggers are raw SQL that a resolve-as-applied would not reproduce.
 
 **ALL FIVE, or none.** Setting none of them is the fresh-install exemption — a database that has
 never served this register asserts nothing, which is what keeps a first deploy from being walled

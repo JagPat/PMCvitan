@@ -722,7 +722,34 @@ BOTH success paths, after `prisma migrate deploy` and its seal verifications and
    read moves under the `SHARE ROW EXCLUSIVE` lock, which conflicts with the `ACCESS EXCLUSIVE` that
    `ALTER TABLE` takes.
 
-28. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (70 probes):
+28. **CODEX ROUND 23 (four P1s on `6b3ff9e6`) — all four correct, and all four are on the FENCE
+   ROUND 22 ADDED.** Each was reproduced against live PostgreSQL before it was fixed. **(a) the
+   stamp was not evidence.** `UPDATE "ProjectionGeneration" SET "fencedAt" = NULL` succeeded and the
+   generation — legacy-shaped rows and all — became servable again. A stamp any writer can erase
+   seals nothing, which is the thesis of this entire unit applied to something this unit itself
+   shipped. It is now append-only: clearing AND moving are rejected (backdating would hide when the
+   legacy write happened), while every other column stays freely updatable so the relay can still
+   advance its own checkpoint. **(b) DELETE was not fenced.** The trigger fired on INSERT and UPDATE
+   only, so a writer that REMOVES a row left every surviving row correct and the generation
+   unstamped — a caught-up generation then serves a register missing that decision, the same
+   completeness defect `projection-rebuild-upgrade.test.ts` exists for, arriving by another door.
+   The mask now covers DELETE, taking the generation from `OLD`. **(c) the fence verifier never read
+   `tgqual`.** `... FOR EACH ROW WHEN (false)` matched enablement, function, mask, body, `proconfig`
+   and ownership while fencing nothing at all — and the MARKER-seal verifier has asked this question
+   since round 11. A parallel verifier was written without a check its sibling already had; the
+   fence identity now includes `tgqual IS NULL`, and the stamp seal is verified on the same call.
+   **(d) the fence migration was missing from `ALWAYS_EXECUTE`.** The P3005 baseline loop resolves
+   every migration not in that list as applied WITHOUT running it. Prisma models this one as a
+   single nullable column, which a resolve reproduces — while the fence trigger and the stamp seal
+   are raw SQL, which it does not. The ledger would claim a fence the database lacks, and no later
+   deploy could install it: `seals` would fail on every start with nothing pending able to fix it.
+   **What this round is evidence of.** Round 22 answered "a declaration is not a drain" by building
+   a real fence; round 23 is four defects in that fence, three of them shapes this repository had
+   already learned about on the ADJACENT mechanism. A new mechanism does not inherit the hardening
+   of the one it sits beside — it arrives with the whole surface open, and the same enumeration
+   starts again.
+
+29. **PROOF, reproduce-first.** `test/integration/phase6-4c-iiir-inbox-repair.test.ts` (78 probes):
    the vacuity itself (a zero-project report satisfies every success field), each identity refusal,
    the verified repair, marker idempotence, identity enforced WITH the marker set, a non-verified
    report leaving NO marker and the next start succeeding, the unserialized generation collision

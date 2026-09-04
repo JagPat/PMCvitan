@@ -146,6 +146,10 @@ export const WRITER_FENCE_MIGRATION = '20271126000000_phase6_4c_iiir_writer_fenc
 export const WRITER_FENCE_TABLE = 'DecisionProjection';
 export const WRITER_FENCE_TRIGGER = 'DecisionProjection_4c_iiir_writer_fence';
 export const WRITER_FENCE_FUNCTION = 'phase6_4c_iiir_fence_decision_projection_write';
+/** The stamp seal: `fencedAt` is evidence, so once set it cannot be cleared or moved. */
+export const WRITER_FENCE_STAMP_TABLE = 'ProjectionGeneration';
+export const WRITER_FENCE_STAMP_TRIGGER = 'ProjectionGeneration_4c_iiir_fence_stamp_sealed';
+export const WRITER_FENCE_STAMP_FUNCTION = 'phase6_4c_iiir_fence_stamp_sealed';
 
 export function readWriterFenceMigrationSql(): string {
   return readFileSync(
@@ -182,10 +186,12 @@ export interface WriterFenceReport {
 export async function verifyWriterFence(prisma: SealCatalogReader): Promise<WriterFenceReport> {
   const findings: string[] = [];
   const rows = await prisma.$queryRaw<Array<{
-    tgenabled: string; tgtype: number; proname: string; prosrc: string;
+    tgenabled: string; tgtype: number; has_when: boolean; proname: string; prosrc: string;
     proconfig: string | null; owner: string; table_owner: string | null;
   }>>`
-    SELECT t.tgenabled, t.tgtype::int AS tgtype, p.proname, p.prosrc,
+    SELECT t.tgenabled, t.tgtype::int AS tgtype,
+           t.tgqual IS NOT NULL AS has_when,
+           p.proname, p.prosrc,
            p.proconfig::text AS proconfig,
            pg_get_userbyid(p.proowner) AS owner,
            (SELECT pg_get_userbyid(c2.relowner) FROM pg_class c2 JOIN pg_namespace n2 ON n2.oid = c2.relnamespace
@@ -211,14 +217,27 @@ export async function verifyWriterFence(prisma: SealCatalogReader): Promise<Writ
   if (row.proname !== WRITER_FENCE_FUNCTION) {
     findings.push(`the writer fence executes ${row.proname}, not ${WRITER_FENCE_FUNCTION}`);
   }
-  // AFTER (not BEFORE: tgtype bit 2 clear) FOR EACH ROW (bit 1) on INSERT (bit 4) and UPDATE (bit 16)
+  // AFTER (not BEFORE: tgtype bit 2 clear) FOR EACH ROW (bit 1) on INSERT (4), DELETE (8) and
+  // UPDATE (16). DELETE is in the mask because a writer that REMOVES a row leaves the generation
+  // incomplete without touching any row that survives (Codex on `6b3ff9e6`).
   const rowLevel = (row.tgtype & 1) !== 0;
   const after = (row.tgtype & 2) === 0;
-  const covers = (row.tgtype & 4) !== 0 && (row.tgtype & 16) !== 0;
+  const covers = (row.tgtype & 4) !== 0 && (row.tgtype & 8) !== 0 && (row.tgtype & 16) !== 0;
   if (!rowLevel || !after || !covers) {
     findings.push(
       `the writer fence has the wrong timing or event mask (tgtype=${row.tgtype}); it must be AFTER `
-      + 'INSERT OR UPDATE FOR EACH ROW, or a write it does not see is a write it does not fence',
+      + 'INSERT OR UPDATE OR DELETE FOR EACH ROW, or a write it does not see is a write it does not '
+      + 'fence',
+    );
+  }
+  // A `WHEN` PREDICATE IS INVISIBLE TO EVERY OTHER CHECK (Codex on `6b3ff9e6`). It lives in
+  // `tgqual`, not in `tgtype`, the body or `proconfig` — so `... FOR EACH ROW WHEN (false)` matches
+  // enablement, function, mask, body, config and ownership while fencing nothing at all. The
+  // marker-seal verifier has asked this since round 11; this one was written without it.
+  if (row.has_when) {
+    findings.push(
+      'the writer fence carries a WHEN predicate, so it fires only for the rows that predicate '
+      + 'admits — every other row is written unfenced while every other property still matches',
     );
   }
   if (row.proconfig !== null) {
@@ -238,6 +257,41 @@ export async function verifyWriterFence(prisma: SealCatalogReader): Promise<Writ
       + `public."${WRITER_FENCE_TABLE}" — that role can replace its body at will`,
     );
   }
+
+  // AND THE STAMP SEAL, which is what makes the stamp EVIDENCE rather than a hint (Codex on
+  // `6b3ff9e6`). Measured before it existed: `UPDATE "ProjectionGeneration" SET "fencedAt" = NULL`
+  // returned a fenced generation to servable, and the legacy-shaped rows with it. A fence whose
+  // record any writer can erase fences nothing durable, so its seal is verified on the same call
+  // and by the same closed rule.
+  const sealRows = await prisma.$queryRaw<Array<{
+    tgenabled: string; tgtype: number; has_when: boolean; proname: string; proconfig: string | null;
+  }>>`
+    SELECT t.tgenabled, t.tgtype::int AS tgtype, t.tgqual IS NOT NULL AS has_when,
+           p.proname, p.proconfig::text AS proconfig
+      FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+      JOIN pg_namespace ns ON ns.oid = c.relnamespace
+      JOIN pg_proc p ON p.oid = t.tgfoid
+     WHERE ns.nspname = 'public' AND c.relname = ${WRITER_FENCE_STAMP_TABLE}
+       AND t.tgname = ${WRITER_FENCE_STAMP_TRIGGER} AND NOT t.tgisinternal`;
+  const seal = sealRows[0];
+  if (!seal) {
+    findings.push(
+      `the fence stamp seal "${WRITER_FENCE_STAMP_TRIGGER}" is ABSENT from `
+      + `public."${WRITER_FENCE_STAMP_TABLE}", so a stamped generation can be un-fenced with one `
+      + 'UPDATE and its legacy-shaped rows served again',
+    );
+  } else {
+    if (seal.tgenabled !== 'O') findings.push(`the fence stamp seal is DISABLED (tgenabled='${seal.tgenabled}')`);
+    if (seal.proname !== WRITER_FENCE_STAMP_FUNCTION) findings.push(`the fence stamp seal executes ${seal.proname}, not ${WRITER_FENCE_STAMP_FUNCTION}`);
+    // BEFORE (bit 2) UPDATE (bit 16) FOR EACH ROW (bit 1)
+    if ((seal.tgtype & 1) === 0 || (seal.tgtype & 2) === 0 || (seal.tgtype & 16) === 0) {
+      findings.push(`the fence stamp seal has the wrong timing or event mask (tgtype=${seal.tgtype}); it must be BEFORE UPDATE FOR EACH ROW`);
+    }
+    if (seal.has_when) findings.push('the fence stamp seal carries a WHEN predicate, so the updates it does not admit clear the stamp freely');
+    if (seal.proconfig !== null) findings.push(`the fence stamp seal function carries a per-function configuration (proconfig=${seal.proconfig})`);
+  }
+
   return { installed: findings.length === 0, trigger: WRITER_FENCE_TRIGGER, findings };
 }
 

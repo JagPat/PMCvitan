@@ -36,25 +36,59 @@ LANGUAGE plpgsql
 AS $fence$
 DECLARE
   declared text;
+  target text;
 BEGIN
   declared := current_setting('vitan.decisions_inbox_catalog_version', true);
   IF declared IS NOT NULL AND declared = '2' THEN
     RETURN NULL;
   END IF;
+  -- DELETE IS FENCED TOO (Codex on `6b3ff9e6`). An undeclared writer that REMOVES a row leaves the
+  -- generation incomplete without changing any row that survives, so an insert/update-only fence
+  -- reads it as untouched: with the checkpoint at the stream head, `readServableGeneration` then
+  -- serves a register that silently hides the deleted decision. That is the same completeness
+  -- defect `projection-rebuild-upgrade.test.ts` exists for, arriving by a different door. On DELETE
+  -- the row being written no longer has a NEW, so the generation comes from OLD.
+  target := CASE WHEN TG_OP = 'DELETE' THEN OLD."generationId" ELSE NEW."generationId" END;
   -- Stamp ONCE. The relay holds this generation row FOR UPDATE for the duration of its own
   -- transaction (`lockActiveGeneration`), so this UPDATE never waits on anyone else and never
   -- deadlocks: it is the same row, already locked by the transaction we are running inside.
   UPDATE "ProjectionGeneration"
      SET "fencedAt" = now()
-   WHERE "id" = NEW."generationId" AND "fencedAt" IS NULL;
+   WHERE "id" = target AND "fencedAt" IS NULL;
   RETURN NULL;
 END;
 $fence$;
 
 DROP TRIGGER IF EXISTS "DecisionProjection_4c_iiir_writer_fence" ON "DecisionProjection";
 CREATE TRIGGER "DecisionProjection_4c_iiir_writer_fence"
-AFTER INSERT OR UPDATE ON "DecisionProjection"
+AFTER INSERT OR UPDATE OR DELETE ON "DecisionProjection"
 FOR EACH ROW EXECUTE FUNCTION phase6_4c_iiir_fence_decision_projection_write();
+
+-- THE STAMP IS EVIDENCE, SO IT IS SEALED (Codex on `6b3ff9e6`). A stamp any writer can clear is not
+-- evidence: `UPDATE "ProjectionGeneration" SET "fencedAt" = NULL` returned the generation to
+-- servable, and the legacy-shaped rows with it — measured. Once set, the stamp cannot be cleared or
+-- moved. The legitimate reset is a REBUILD, which builds a NEW generation and leaves this one
+-- retired, so nothing correct needs to unset it. Every other column stays freely updatable: the
+-- relay's `appliedPosition`/`cursorStatus` and the rebuilder's activation swap do not touch it.
+CREATE OR REPLACE FUNCTION phase6_4c_iiir_fence_stamp_sealed()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $sealed$
+BEGIN
+  IF OLD."fencedAt" IS NOT NULL
+     AND (NEW."fencedAt" IS NULL OR NEW."fencedAt" <> OLD."fencedAt") THEN
+    RAISE EXCEPTION
+      'the 4c-iii-r writer-fence stamp on generation % is append-only: it records that a session which did not declare this release''s serializer wrote into it, and clearing it would make those rows servable again. Rebuild the projection instead — that builds a new generation.',
+      OLD."id";
+  END IF;
+  RETURN NEW;
+END;
+$sealed$;
+
+DROP TRIGGER IF EXISTS "ProjectionGeneration_4c_iiir_fence_stamp_sealed" ON "ProjectionGeneration";
+CREATE TRIGGER "ProjectionGeneration_4c_iiir_fence_stamp_sealed"
+BEFORE UPDATE ON "ProjectionGeneration"
+FOR EACH ROW EXECUTE FUNCTION phase6_4c_iiir_fence_stamp_sealed();
 
 -- FAIL CLOSED ON ITS OWN INSTALLATION. A migration that silently did not install the fence would be
 -- worse than one that never ran: the deploy would report success and the register would be unfenced.
@@ -68,15 +102,21 @@ BEGIN
     JOIN pg_namespace ns ON ns.oid = c.relnamespace
     JOIN pg_proc p ON p.oid = t.tgfoid
    WHERE ns.nspname = 'public'
-     AND c.relname = 'DecisionProjection'
-     AND t.tgname = 'DecisionProjection_4c_iiir_writer_fence'
+     AND ((c.relname = 'DecisionProjection'
+           AND t.tgname = 'DecisionProjection_4c_iiir_writer_fence'
+           AND p.proname = 'phase6_4c_iiir_fence_decision_projection_write'
+           AND t.tgtype = 29)                       -- ROW(1) + INSERT(4) + DELETE(8) + UPDATE(16), AFTER
+       OR (c.relname = 'ProjectionGeneration'
+           AND t.tgname = 'ProjectionGeneration_4c_iiir_fence_stamp_sealed'
+           AND p.proname = 'phase6_4c_iiir_fence_stamp_sealed'
+           AND t.tgtype = 19))                      -- ROW(1) + BEFORE(2) + UPDATE(16)
      AND NOT t.tgisinternal
      AND t.tgenabled = 'O'
-     AND p.proname = 'phase6_4c_iiir_fence_decision_projection_write'
+     AND t.tgqual IS NULL                           -- no WHEN predicate can narrow either of them
      AND p.proconfig IS NULL;
-  IF n <> 1 THEN
+  IF n <> 2 THEN
     RAISE EXCEPTION
-      '4c-iii-r writer fence did not install (found % matching trigger(s), expected 1). The deploy is refused rather than starting with an unfenced decisions.inbox register.', n;
+      '4c-iii-r writer fence did not install (found % of the 2 required triggers). The deploy is refused rather than starting with an unfenced — or an unsealed — decisions.inbox register.', n;
   END IF;
 END
 $verify$;

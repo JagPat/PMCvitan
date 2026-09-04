@@ -45,6 +45,8 @@ import {
   MARKER_SEAL_TRIGGERS,
   SealRepairPrivilegeError,
   verifyWriterFence,
+  WRITER_FENCE_TRIGGER,
+  WRITER_FENCE_STAMP_TRIGGER,
   extractCanonicalMarkerBodies,
   readMarkerSealMigrationSql,
   MARKER_SEAL_TABLE,
@@ -2342,6 +2344,122 @@ describe('Phase 6 unit 4c-iii-r — deploy-time decisions.inbox repair (live PG)
     } finally {
       await single.$executeRawUnsafe(`SELECT pg_advisory_unlock(${PHASE6_4C_IIIR_LOCK_KEY}::bigint)`);
     }
+  });
+
+  // ── R23: the four findings from `6b3ff9e6`, all on the fence added the round before ──────────
+  it('R23-1 — the fence STAMP is append-only: it can be neither cleared nor moved', async () => {
+    // THE FINDING, measured before the fix: `UPDATE "ProjectionGeneration" SET "fencedAt" = NULL`
+    // succeeded, and the generation — with its legacy-shaped rows — became servable again. A stamp
+    // any writer can erase is not evidence of anything.
+    const row = await t.prisma.projectionGeneration.findFirstOrThrow({
+      where: { consumer: DECISIONS_PROJECTION, projectId: f.projectA.id, status: 'active' },
+      select: { id: true },
+    });
+    await t.prisma.$executeRawUnsafe(
+      `DELETE FROM "DecisionProjection" WHERE "id" = ANY($1::text[])`, ['r23-stamp']);
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "DecisionProjection" ("id","generationId","projectId","decisionId","status","dto","updatedAt")
+       VALUES ($1,$2,$3,$4,'published','{}'::jsonb, now())`,
+      'r23-stamp', row.id, f.projectA.id, 'r23-stamp-decision');
+    const stamped = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { id: row.id }, select: { fencedAt: true } });
+    expect(stamped.fencedAt).not.toBeNull();
+
+    // CLEARED — refused.
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "ProjectionGeneration" SET "fencedAt" = NULL WHERE "id" = $1`, row.id))
+      .rejects.toThrow(/append-only/u);
+    // MOVED — refused too. Backdating it would hide when the legacy write happened, and `now()` is
+    // constant within a transaction, so the probe names an explicit instant rather than re-stamping.
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "ProjectionGeneration" SET "fencedAt" = timestamp '2020-01-01 00:00:00' WHERE "id" = $1`, row.id))
+      .rejects.toThrow(/append-only/u);
+    const after = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { id: row.id }, select: { fencedAt: true } });
+    expect(after.fencedAt).toEqual(stamped.fencedAt);
+
+    // …and the seal is PRECISE: every other column on this table still updates freely, or the relay
+    // could not advance its own checkpoint.
+    await t.prisma.$executeRawUnsafe(
+      `UPDATE "ProjectionGeneration" SET "cursorStatus" = 'live' WHERE "id" = $1`, row.id);
+
+    await t.prisma.$executeRawUnsafe(`DELETE FROM "DecisionProjection" WHERE "id" = $1`, 'r23-stamp');
+    await putInService();
+  });
+
+  it('R23-2 — an undeclared DELETE fences the generation, because removing a row hides a decision', async () => {
+    // THE FINDING: the fence fired on INSERT and UPDATE only. A writer that REMOVES a row leaves
+    // every surviving row correct, so nothing else notices — and a caught-up generation then serves
+    // a register missing that decision, which is the same completeness defect
+    // `projection-rebuild-upgrade.test.ts` exists for, arriving by a different door.
+    await putInService();
+    const row = await t.prisma.projectionGeneration.findFirstOrThrow({
+      where: { consumer: DECISIONS_PROJECTION, projectId: f.projectA.id, status: 'active' },
+      select: { id: true, fencedAt: true },
+    });
+    expect(row.fencedAt).toBeNull();
+
+    // planted WITH the declaration, so the insert itself does not stamp — the DELETE is the subject
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('vitan.decisions_inbox_catalog_version', '2', true)`;
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "DecisionProjection" ("id","generationId","projectId","decisionId","status","dto","updatedAt")
+         VALUES ($1,$2,$3,$4,'published','{}'::jsonb, now())`,
+        'r23-del', row.id, f.projectA.id, 'r23-del-decision');
+    });
+    expect((await t.prisma.projectionGeneration.findFirstOrThrow({ where: { id: row.id }, select: { fencedAt: true } })).fencedAt).toBeNull();
+
+    await t.prisma.$executeRawUnsafe(`DELETE FROM "DecisionProjection" WHERE "id" = $1`, 'r23-del');
+    expect((await t.prisma.projectionGeneration.findFirstOrThrow({ where: { id: row.id }, select: { fencedAt: true } })).fencedAt).not.toBeNull();
+    expect(await readServableGeneration(t.prisma, DECISIONS_PROJECTION, f.projectA.id)).toBeNull();
+    await putInService();
+  });
+
+  it('R23-3 — a WHEN predicate on either fence trigger is REJECTED by the deploy verification', async () => {
+    // THE FINDING: `verifyWriterFence` never read `tgqual`, so `... FOR EACH ROW WHEN (false)`
+    // matched enablement, function, mask, body, proconfig and ownership while fencing nothing. The
+    // marker-seal verifier has asked this since round 11; this one was written without it.
+    expect((await verifyWriterFence(single)).installed).toBe(true);
+    const recreate = async (when: string) => {
+      await single.$executeRawUnsafe(`DROP TRIGGER "${WRITER_FENCE_TRIGGER}" ON "DecisionProjection"`);
+      await single.$executeRawUnsafe(
+        `CREATE TRIGGER "${WRITER_FENCE_TRIGGER}" AFTER INSERT OR UPDATE OR DELETE ON "DecisionProjection"
+         FOR EACH ROW ${when} EXECUTE FUNCTION phase6_4c_iiir_fence_decision_projection_write()`);
+    };
+    try {
+      await recreate('WHEN (false)');
+      const conditional = await verifyWriterFence(single);
+      expect(conditional.installed).toBe(false);
+      expect(conditional.findings.join(' ')).toMatch(/WHEN predicate/u);
+    } finally {
+      await recreate('');
+    }
+    expect((await verifyWriterFence(single)).installed).toBe(true);
+
+    // the stamp seal is held to the same rule
+    try {
+      await single.$executeRawUnsafe(`DROP TRIGGER "${WRITER_FENCE_STAMP_TRIGGER}" ON "ProjectionGeneration"`);
+      const missing = await verifyWriterFence(single);
+      expect(missing.installed).toBe(false);
+      expect(missing.findings.join(' ')).toMatch(/stamp seal .* is ABSENT/u);
+    } finally {
+      await single.$executeRawUnsafe(
+        `CREATE TRIGGER "${WRITER_FENCE_STAMP_TRIGGER}" BEFORE UPDATE ON "ProjectionGeneration"
+         FOR EACH ROW EXECUTE FUNCTION phase6_4c_iiir_fence_stamp_sealed()`);
+    }
+    expect((await verifyWriterFence(single)).installed).toBe(true);
+  });
+
+  it('R23-4 — the fence migration is in ALWAYS_EXECUTE, so the P3005 baseline cannot record it unrun', async () => {
+    // THE FINDING: the baseline loop resolves every migration NOT in this list as applied without
+    // running it. Prisma models this migration as one nullable column — which a resolve reproduces
+    // — while the two things that matter, the fence trigger and the stamp seal, are raw SQL that it
+    // does not. The ledger would then claim a fence the database does not have, and no later deploy
+    // could install it: `seals` would fail on every start with nothing pending to fix it.
+    const runner = readFileSync(resolve(API_DIR, 'scripts/migrate.sh'), 'utf8');
+    const list = /ALWAYS_EXECUTE="([^"]*)"/u.exec(runner);
+    expect(list, 'migrate.sh must define ALWAYS_EXECUTE').toBeTruthy();
+    const named = list![1].split('\n').map((l) => l.trim()).filter(Boolean);
+    expect(named).toContain('20271125000000_phase6_4c_iiir_marker_seal');
+    expect(named).toContain('20271126000000_phase6_4c_iiir_writer_fence');
   });
 
   it('PROBE 4b — an unconfigured step ABORTS on a database that has served the register', async () => {

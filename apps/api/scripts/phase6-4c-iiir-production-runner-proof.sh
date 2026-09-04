@@ -522,8 +522,15 @@ OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
                  || { bad "a deploy over a dropped writer fence was accepted"; printf '%s\n' "$OUT" | tail -20; }
 printf '%s\n' "$OUT" | grep -q 'WRITER FENCE' && ok "and the refusal NAMES the fence" \
                                               || { bad "the refusal did not name the writer fence"; printf '%s\n' "$OUT" | tail -20; }
-# …and re-applying the migration's own statements restores it, so the state is recoverable.
-$PSQL -q -c 'CREATE TRIGGER "DecisionProjection_4c_iiir_writer_fence" AFTER INSERT OR UPDATE ON "DecisionProjection" FOR EACH ROW EXECUTE FUNCTION phase6_4c_iiir_fence_decision_projection_write()' >/dev/null
+# …and the restore is THE MIGRATION ITSELF, replayed, rather than a hand-copied CREATE TRIGGER.
+# A duplicated statement here drifts the moment the migration changes — measured: this restore was
+# written with the pre-DELETE mask and, once the fence grew a DELETE arm, it recreated a trigger of
+# tgtype=21 that the verifier then (correctly) refused, failing the proof on its own fixture. The
+# file is re-runnable by construction (ADD COLUMN IF NOT EXISTS, CREATE OR REPLACE FUNCTION,
+# DROP TRIGGER IF EXISTS before each CREATE) and its closing DO block re-verifies the result, so
+# replaying it cannot drift from what a real deploy installs. This is the same lesson the coupling
+# mutation below already learned twice: never hand-copy what the thing under test owns.
+$PSQL -q -v ON_ERROR_STOP=1 -f "prisma/migrations/20271126000000_phase6_4c_iiir_writer_fence/migration.sql" >/dev/null
 OUT="$(DATABASE_URL="$URL" PHASE6_4C_IIIR_ANCHOR_PROJECT_ID="$ANCHOR" \
        PHASE6_4C_IIIR_EXPECTED_MIN_PROJECTS=2 PHASE6_4C_IIIR_EXPECTED_SYSTEM_IDENTIFIER="$(sysid)" PHASE6_4C_IIIR_DRAINED_MINIMUM_RELEASE="$DRAIN" PHASE6_4C_IIIR_EXPECTED_DATABASE_OID="$(dboid)" \
        sh scripts/migrate.sh 2>&1)"; RC=$?
