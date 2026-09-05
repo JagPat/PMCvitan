@@ -126,16 +126,17 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
       tokens[key] = t.issueProjectToken(uid, projectId, roleOf[key]);
       offTokens[key] = t.issueProjectToken(uid, offProjectId, roleOf[key]);
     }
-    // NO capability planting, and BOTH projects are gate-ON — 4c-iii's `Project` trigger produced
-    // the row for each as it was created. Before 4c-iii this fixture had to plant the pilot row
-    // through the reservation (disabled by name for one statement, re-enabled in the same
-    // transaction) precisely because nothing was allowed to create it; the reservation is now
-    // replaced by the preservation seal and the row is a fact of every project's existence.
+    // NO capability planting, and NO capability row. Before 4c-iii this fixture had to plant the
+    // pilot row through the reservation (disabled by name for one statement); through 4c-iii and
+    // 4c-iv the `Project` trigger produced the row for each project as it was created and this
+    // fixture asserted it; 4c-v retired that trigger, the seal and the rows, because nothing reads
+    // them. Both projects therefore carry NO `consultation` row, and both routes are open anyway
+    // — which is what 4c-iv's probe below asserts.
     for (const pid of [projectId, offProjectId]) {
       const row = await t.prisma.projectCapability.findUnique({
         where: { projectId_capability: { projectId: pid, capability: 'consultation' } },
       });
-      expect(row, `4c-iii must have enabled consultation for ${pid} at creation`).not.toBeNull();
+      expect(row, `after 4c-v nothing creates a consultation row for ${pid}`).toBeNull();
     }
   });
 
@@ -166,17 +167,15 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
     await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor'], { cascade: true });
     await t.prisma.projectionGeneration.deleteMany({ where: { projectId: { in: [projectId, offProjectId] } } });
     await t.prisma.commandExecution.deleteMany({ where: { organizationId: orgId } });
-    // the fence probes enable ORDINARY capabilities on the sibling project; those are cleared and
-    // the `consultation` row deliberately is NOT — 4c-iii's preservation seal refuses to delete it
-    // while the project exists, and this suite has no business removing it.
-    await t.prisma.projectCapability.deleteMany({
-      where: { projectId: offProjectId, capability: { not: 'consultation' } },
-    });
+    // the fence probes enable capabilities on the sibling project; all of them are cleared. Through
+    // 4c-iv the `consultation` row was spared here because the preservation seal refused to delete
+    // it; 4c-v retired that seal and the row alike, so there is nothing left to spare.
+    await t.prisma.projectCapability.deleteMany({ where: { projectId: offProjectId } });
   });
 
   afterAll(async () => {
-    // No capability delete here: 4c-iii made the FK ON DELETE CASCADE, so the project deletion
-    // below takes its rows with it — which is the seal's one permitted removal.
+    // No capability delete here: 4c-iii made the FK ON DELETE CASCADE (kept by 4c-v), so the
+    // project deletion below takes any capability rows with it.
     await t?.prisma.$transaction([
       t.prisma.auditLog.deleteMany({ where: { projectId: { in: [projectId, offProjectId] } } }),
       t.prisma.notification.deleteMany({ where: { projectId: { in: [projectId, offProjectId] } } }),
@@ -301,23 +300,16 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
     // `assertEnabled(projectId, 'consultation')`, so a project whose row is absent answers 404 on
     // both routes; after 4c-iv nothing reads the row, so the same project answers 201 on both.
     //
-    // Reaching a row-less project takes the alternate-writer path 4c-iii's PRESERVATION seal
-    // exists to refuse — a direct DELETE — so the seal is disabled BY NAME for one statement and
-    // re-enabled in the same transaction (the mirror of the pre-4c-iii fixture, which had to plant
-    // the row through the RESERVATION the same way). The seal itself is untouched by this unit
-    // and retires only in 4c-v; this is the state a 4c-iv instance must tolerate during its own
-    // rolling window, since its predecessors are the last readers of the row it no longer reads.
-    await t.prisma.$transaction([
-      t.prisma.$executeRawUnsafe('ALTER TABLE "ProjectCapability" DISABLE TRIGGER "ProjectCapability_t4c_preserved"'),
-      t.prisma.$executeRawUnsafe(
-        `DELETE FROM "ProjectCapability" WHERE "projectId" = $1 AND "capability" = 'consultation'`, offProjectId),
-      t.prisma.$executeRawUnsafe('ALTER TABLE "ProjectCapability" ENABLE TRIGGER "ProjectCapability_t4c_preserved"'),
-    ]);
-    try {
+    // Through 4c-iv, reaching a row-less project took the alternate-writer path 4c-iii's
+    // PRESERVATION seal existed to refuse — the seal was disabled BY NAME for one statement and
+    // re-enabled in the same transaction. 4c-v retired the seal, the creation trigger and the
+    // rows, so the row-less project is now simply every project: the fixture asserts the absence
+    // and drives the routes. This is the permanent state, not a rolling-window tolerance.
+    {
       const gone = await t.prisma.projectCapability.findUnique({
         where: { projectId_capability: { projectId: offProjectId, capability: 'consultation' } },
       });
-      expect(gone, 'the fixture must actually reach a row-less project').toBeNull();
+      expect(gone, 'after 4c-v no project carries the row').toBeNull();
 
       const decisionId = await issue(offProjectId);
       const asked = await post(offTokens.pmc)(
@@ -338,14 +330,6 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
       const shell = await get(offTokens.pmc)(`/projects/${offProjectId}/shell`);
       expect(shell.status).toBe(200);
       expect(shell.body.capabilities).not.toContain('consultation');
-    } finally {
-      // put the row back through the seal's one permitted direction, so the rest of this suite —
-      // and 4c-iii's own presence assertions — see the state every project is guaranteed to have
-      await t.prisma.projectCapability.upsert({
-        where: { projectId_capability: { projectId: offProjectId, capability: 'consultation' } },
-        create: { projectId: offProjectId, capability: 'consultation', enabledById: users.pmc },
-        update: {},
-      });
     }
   });
 
@@ -556,18 +540,15 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
 
   // ═══ THE ROLLOUT FENCE — this unit's own database additions ══════════════════════════════════
 
-  it('the reservation is REPLACED by the preservation seal — not simply dropped', async () => {
-    // REWRITTEN BY 4c-iii. Through 4c-ii this asserted the reservation refusing both doors, which
-    // was the dark window's latch. 4c-iii opens that latch — and §D (round 24) requires the same
-    // transaction to install a seal in its place, because the row's ABSENCE is as dangerous as its
-    // premature presence was: between 4c-iii and 4c-v the gate reads are still authoritative, so a
-    // deleted or re-keyed row makes a gate-reading instance refuse a project a gate-blind 4c-iv
-    // instance accepts.
-    //
-    // This is the HANDOVER pin — reservation gone AND preservation present, asserted together, so
-    // a future unit cannot retire one without the other passing through here. The seal's three
-    // behavioural arms are probed in `phase6-t4c-iii-enablement.test.ts`; what this pins is that
-    // the replacement happened at all, in the suite that owned the thing being replaced.
+  it('the latch is fully RETIRED — reservation, preservation seal and creation trigger all gone', async () => {
+    // REWRITTEN BY 4c-iii, and again by 4c-v. Through 4c-ii this asserted the reservation refusing
+    // both doors (the dark window's latch); through 4c-iv it was the HANDOVER pin — reservation
+    // gone AND preservation seal present, so no unit could retire one without the other passing
+    // through here. 4c-v is that unit: with every read of the row gone (4c-iv) and its rollout
+    // attested complete, the seal, its statement arm and the creation trigger retire together, and
+    // this pin now holds that NOTHING of the latch remains — asserted in the suite that owned the
+    // thing being retired. The arms' before/after behaviour is the mirror probe in
+    // `phase6-t4c-v-seal-retirement.test.ts`.
     const trigger = async (name: string): Promise<number> => {
       const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
         `SELECT count(*)::bigint AS n FROM pg_trigger WHERE tgname = $1`, name,
@@ -575,11 +556,13 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
       return Number(rows[0]?.n ?? -1);
     };
     expect(await trigger('ProjectCapability_t4c_reserved'), 'the reservation is dropped').toBe(0);
-    expect(await trigger('ProjectCapability_t4c_preserved'), 'and the preservation seal stands in its place').toBe(1);
-    expect(await trigger('ProjectCapability_t4c_no_truncate'), 'including its statement-level arm').toBe(1);
+    expect(await trigger('ProjectCapability_t4c_preserved'), 'the preservation seal is retired').toBe(0);
+    expect(await trigger('ProjectCapability_t4c_no_truncate'), 'including its statement-level arm').toBe(0);
+    expect(await trigger('Project_t4c_consultation_enabled'), 'and the creation trigger with it').toBe(0);
+    expect(await trigger('Project_t4c_deleting'), 'and the delete flag the seal consulted').toBe(0);
 
-    // …and the gate the reservation latched is genuinely open: the ordinary writer now succeeds
-    // where it was refused, for a project this suite has not otherwise enabled.
+    // …and the column is still free text: the ordinary writer still succeeds for the value, as
+    // inert data nothing reads — the Board pin (no CHECK, no whitelist) survives the retirement.
     await expect(
       t.prisma.projectCapability.upsert({
         where: { projectId_capability: { projectId: offProjectId, capability: 'consultation' } },
@@ -591,9 +574,9 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
 
   it('the seal is PRECISE: every other capability still enables through the unchanged writer', async () => {
     // A seal that refused every capability would be an outage, and the Board's decision that the
-    // column stays free text would have been quietly reversed. Exactly one value is sealed — and
-    // after 4c-iii it is sealed for PRESENCE rather than absence, which changes what is refused
-    // but not that everything else is untouched.
+    // column stays free text would have been quietly reversed. Exactly one value was ever sealed —
+    // for absence through 4c-ii, for PRESENCE through 4c-iv, and for nothing since 4c-v — and at
+    // every stage everything else was untouched.
     for (const capability of ['labour', 'commercial', 'anything-an-operator-types']) {
       await expect(
         t.prisma.projectCapability.create({ data: { projectId: offProjectId, capability, enabledById: users.pmc } }),

@@ -61,12 +61,11 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   { table: 'DecisionConsultation', trigger: 'DecisionConsultation_t4c_no_truncate' },
   { table: 'DecisionConsultationResponse', trigger: 'DecisionConsultationResponse_t4c_no_truncate' },
   { table: 'OrgMembership', trigger: 'OrgMembership_t4b2_no_truncate' },
-  // Phase 6 unit 4c-iii — the consultation PRESERVATION seal's statement-level arm. Between
-  // 4c-iii and 4c-v the capability row must EXIST for every project (the gate reads are still
-  // authoritative), so removing it by TRUNCATE is sealed exactly as removing it by DELETE is.
-  // Round 29 foresaw this entry: a dozen-plus suites reach `ProjectCapability` directly or
-  // through a cascade list, and a statement trigger fires even on an empty table.
-  { table: 'ProjectCapability', trigger: 'ProjectCapability_t4c_no_truncate' },
+  // Phase 6 unit 4c-iii installed `ProjectCapability_t4c_no_truncate` here — the consultation
+  // PRESERVATION seal's statement-level arm, needed while the gate reads were still authoritative.
+  // Unit 4c-v RETIRED that seal (migration 20271130000000): nothing reads the row any more, so
+  // `ProjectCapability` carries no seal and needs no bypass. The entry is removed rather than left
+  // as a dead name; `phase6-t4c-v-seal-retirement.test.ts` pins its absence.
   // Phase 6 unit 4c-iii-r — the repair marker's statement-level arm. The marker AUTHORIZES every
   // later start to skip the decisions.inbox repair, so losing it by TRUNCATE is sealed exactly as
   // losing it by DELETE is; and a row trigger never fires for TRUNCATE. It belongs here because a

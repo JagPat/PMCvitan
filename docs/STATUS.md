@@ -17,10 +17,129 @@ task_state: in_progress
 work_item: none
 reviewed_merge: 76027074
 open_pr: none
-next_task: phase-6-task-4c-v
-blocking_directive: phase-6-4c-iv-rollout-complete
+next_task: phase-6-task-4d
+blocking_directive: none
 updated: 2026-09-05
 ```
+
+### `phase-6-4c-iv-rollout-complete` is CLEARED — on one deliberately formatted `OPERATOR-ATTESTATION` record, cited here
+
+**THE RECORD.** https://github.com/JagPat/PMCvitan/issues/482#issuecomment-5548460858 —
+2026-09-05, `author_association: OWNER`. Begins `OPERATOR-ATTESTATION`; names
+`phase-6-4c-iv-rollout-complete` and minimum release `76027074`; carries no Watch, Claude,
+Board-via-agent or other generation marker anywhere in it. Its evidence: Coolify redeployed
+`main` `760270748ca1afd740662e18639201a6bfc84df5` to `pms-api.vitan.in`
+(`kesk2npohs3vnoroi6tya7x6`); deployment status Success / Finished; the new container started, the
+rolling update completed, the previous container was stopped and removed; no second PMC API
+application or extra replica was present for the process class; and its closing line: *"Every
+PMC Vitan process in that class is on 76027074 or later."*
+
+**WHAT IT ESTABLISHES.** Exactly the fact the gate asked for and code cannot observe: no serving
+instance predates the gate-read removal, so no reader of the `consultation` capability row exists
+anywhere. The repository-side fact recorded at earlier landings still applies and is still only
+informative: the four process classes are ONE process class in code, so one container is the whole
+fleet. The Board's assignment on the same issue (comments 5548461318 and 5548639277) directs this
+unit on that record, and the coordinator's own reconciliation (comment 5548829599) confirms the
+attestation stands and that "another attestation or technical approval is not needed". This file
+records that adjudication; it does not re-litigate it, and nothing here is inferred from a green
+check, an exit code, or an agent's reading of a dashboard.
+
+`blocking_directive` therefore returns to `none` in this fold, and the resolver — which offered no
+state in which 4c-v could be scheduled without the directive (plan §D, review round 26) — is free
+to let this unit land.
+
+### Unit 4c-v — the SEAL RETIREMENT, delivered here. 4c is COMPLETE at this merge.
+
+**WHAT SHIPS, and nothing else.** ONE migration, `20271130000000_phase6_t4c_v_seal_retirement`, in
+one explicit transaction: it drops the 4c-iii PRESERVATION seal (the row arm
+`ProjectCapability_t4c_preserved` — DELETE, re-key, re-parent, attribution — and the statement arm
+`ProjectCapability_t4c_no_truncate`), the orgs-owned delete flag the seal consulted
+(`Project_t4c_deleting`), the creation trigger (`Project_t4c_consultation_enabled`), the four
+functions behind them, and the `consultation` rows themselves for every project; then it CHECKS
+that none of the five latch triggers, five functions or any row survives, and refuses to commit
+otherwise. The `ON DELETE CASCADE` foreign key 4c-iii installed is KEPT (it is modelled in
+`schema.prisma` and is not the latch), and `capability` stays free text — the Board pin that no
+CHECK or vocabulary whitelist is added holds, so `consultation` can still be upserted through the
+generic writer, as inert data nothing reads. **No service, contract or UI change**: 4c-iv already
+removed every read. This is the "rollout latch, not a permanent pilot" outcome the plan names (§D,
+review round 11), delivered as the migration-only unit review round 25 staged.
+
+**WHY NOW AND NOT BEFORE.** The seal existed for one hazard: while ANY serving instance still read
+the row, an alternate writer removing it split the fleet. 4c-iv removed the reads; the attestation
+above establishes that no pre-4c-iv instance serves. A seal over a row nothing reads protects
+nothing, and a creation trigger manufacturing that row for every new project is the latch still
+running. The plan's own reason 4c-v could not fold into 4c-iv (4c-iv's predecessors were the last
+readers, and a migration runs before the readers are gone — §D, review round 25) is exactly the
+reason it lands now.
+
+**REPRODUCE-FIRST.** The plan states the probe: "the alternate-writer DELETE and key-UPDATE,
+refused before 4c-v and permitted after" — with the TRUNCATE arm the completeness rule adds. The
+new `phase6-t4c-v-seal-retirement.test.ts` was run at `main` `4a6c86f3` BEFORE the migration
+existed: **8 of 9 RED** — `no 4c-iii trigger survives: expected 4 to be +0`; a fresh project
+carrying the row (`expected { …(4) } to be null`); ARM 1 and ARM 2 refused by the seal
+(`may not be DELETED directly`, `may not be RE-KEYED`); the reset registry still naming the seal;
+`ALWAYS_EXECUTE` lacking `20271130`; and the two file-driven probes `ENOENT`. GREEN 9/9 on the
+migrated database. The MIRROR probe drives the SHIPPED files on a scratch database — after the
+shipped 4c-iii file, DELETE, key-UPDATE and TRUNCATE are each REFUSED and every row present; after
+the shipped 4c-v file, each is PERMITTED, every row is gone, the four triggers and functions are
+gone, the cascade FK stays, a new project gets no row, and a second application of the file
+errors on nothing. The `phase6-t4c-ii-consultation` fixture now asserts the ABSENCE of the row for
+both projects while both routes answer 201 (the 4c-iv probe no longer needs to disable the seal by
+name to reach a row-less project — every project is one); its handover pin becomes the retirement
+pin (reservation, seal, statement arm, creation trigger and delete flag all 0, in the suite that
+owned the thing retired). The 4c-iii suite keeps what is still true on a database past 4c-v — the
+ordering race on the shipped file, the reservation dropped not bypassed, the `ALWAYS_EXECUTE`
+pins, the file's own transaction boundary — and its seal-arm, every-project, cascade and re-run
+probes become the BEFORE half of the mirror.
+
+**THE PRODUCTION PATH.** `20271130` joins `ALWAYS_EXECUTE` in `scripts/migrate.sh`, ORDERED AFTER
+`20271120`: on the P3005 baseline path 20271120 is left pending so its raw transition really runs,
+and resolving 20271130 as applied at the same time would record the retirement in the ledger the
+moment the seal was installed. Left pending together, the deploy runs both in ledger order; every
+statement in the retirement is `IF EXISTS` or a DELETE with nothing to delete, so leaving it
+pending costs nothing when it has already run (proven by the re-run probe on the shared database
+and on the scratch mirror). `upgrade-proof.sh` is RESTRUCTURED rather than trimmed: the 4c-iii
+evidence — the backfill reaching every pre-existing legacy project, which only the legacy fixture
+can prove; the creation trigger; the three refused arms; the cascade scope; the precision pin — is
+now produced at a ledger STOP immediately before `20271130` applies, on the database state an
+operator actually passes through, and a 4c-v block after the full ledger asserts the retirement:
+the five triggers and five functions gone by name, every consultation row removed (measured
+against rows the stop proved PRESENT, so the zero is the retirement and not an empty table), the
+cascade FK kept, a post-retirement project carrying no row, DELETE and key-UPDATE permitted on a
+generic-writer row, TRUNCATE permitted inside a rolled-back transaction, and the file re-applied
+as a no-op. The named-seal assertion lists the evidence seals only. `TRUNCATE_SEALS` drops the
+`ProjectCapability` entry (a registry naming a dropped trigger would be harmless at runtime and
+wrong as a record); the coverage test's `PROBE_FILES` pin moves to the mirror probe's one raw
+TRUNCATE; the migration corpus pin advances 98 → 99.
+
+**THE DISCLOSED RESIDUAL, unchanged.** A pre-4c-iv browser tab still open reads the shell's
+`capabilities` and hides its consultation affordances until it reloads. The Board ruled
+(2026-08-29, on PR #480) that a consultation INFORMS and never GATES, so nothing is blocked,
+stranded or lost, and the state resolves on any reload. No drain condition is invented for it; the
+seal is not made permanent on its account.
+
+### What follows: 4c is done, and the §E order names the 4d PLAN unit next
+
+**`next_task` advances to `phase-6-task-4d`**, exactly as `phase-6-task-4c` was named when 4b
+completed (#469), and the narrative binds how that stop starts: per the merged 4b plan's §E order
+("4c implementation → the 4d plan unit → 4d implementation"), the first 4d review unit is the
+DOCS-ONLY 4d plan unit — its own exact-head review to a fresh clean +1; starting material the §C
+orchestration design at PR #340 head `6a53aae` plus §D obligations 4–6 (architect, forwarding,
+countersign) — with 4d implementation only after that plan unit merges and clears. The 4c plan
+(§D, review round 26) makes this handoff conditional on 4c-v's merge, which this fold is.
+
+**While this PR is open** the record names it (`task_state: in_progress`, `open_pr` this PR's
+number on the pointer commit; `none` on the unit commit, because the number does not exist until
+the PR is created — the §D self-naming convention, exactly as #533 did). After merge the simulation
+clears the self-named `open_pr` and resolves to `task:4` — task 4 is still open, its remaining
+scope the 4d units — and the post-merge STATUS flip lands the terminal handoff shape
+(`task_state: merged`, `next_task: phase-6-task-4d`), the same two-step #468 → #469 used at the
+4b/4c boundary. `reviewed_merge` stays `76027074` until this unit's own merge advances it.
+
+**Not started here, by Board call and standing gate.** The P3005 correction
+(`phase-4-t3c-p3005-baseline-dependency-ordering`) stays in the maintenance queue behind 4c
+(#482 comments 5547940421 and 5548121983). Contractor-capture units 1–6 stay Board-gated. #530,
+#531 and #532 are not reopened. No UX, performance, Site Map or photo-capture work.
 
 ### Unit 4c-iv merged. A merge is not a rollout — the gate above stays.
 
@@ -3266,7 +3385,10 @@ starts the GATED work only when the gate's recorded clearance arrives.
   fact about the world outside the repository. Cleared by: an attributable
   operator record of that run — a direct statement in the controlling
   conversation, or an issue-#482 comment beginning `OPERATOR-ATTESTATION` —
-  carrying the fields above.
+  carrying the fields above. **Cleared 2026-09-05** on `OPERATOR-ATTESTATION` #482 comment
+  5547936201 (recorded at the 4c-iv landing above); the entry stays as the record of the gate's
+  shape. The successor production-fact gate, `phase-6-4c-iv-rollout-complete`, lived in the Now
+  block as a scheduled directive and was cleared on comment 5548460858 at the 4c-v landing.
 
 ## Rules for the runner
 
