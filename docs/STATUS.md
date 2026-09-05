@@ -70,8 +70,14 @@ so it holds no label, the obligation returned to the still-labelled #540, and th
 `Replaces: #541` as naming no unit awaiting replacement; no label is applied or cleared by hand — the four annotated
 "(review round 10)" in the plan where they land. No `6a53aae` decision was reopened. The unit
 exceeds the 1,500-line standard budget and declares `justified-large`: ONE plan document that must be
-reviewed whole, grown only by the precisions ten review rounds required. Should this PR's own head
-draw findings, one correction head folds them; a second finding-bearing head would force the same
+reviewed whole, grown only by the precisions eleven review rounds required. This PR's first head
+(`aafc0e17`) drew five findings (four P1, one P2) — the provenance writers never taught to state
+`revisionFinalized` before 4d-iii drops its default; the stale-client chain check racing the
+activation it guards at the transport layer; `deciderPush` routing an architect-designated decision to
+the clients; the client-contract boundary fencing only the awaiting status while the architect
+designation and the architect session are shapes a stale bundle meets first; and the Portfolio
+`countPending` reporting zero for an architect — folded on its second head as one batch ("review
+round 11" in the plan). That was this PR's FIRST finding-bearing head; a second would force the same
 close-and-replace again, never a third correction head.
 
 **What follows, and what does not.** After this plan clears its own exact-head review (a fresh
