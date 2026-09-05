@@ -13,7 +13,7 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: merged
+task_state: in_progress
 work_item: none
 reviewed_merge: f5da6654
 open_pr: none
@@ -21,6 +21,58 @@ next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-05
 ```
+
+### The 4d PLAN unit — opened here, docs-only, on the Board's go
+
+**What this PR is.** The docs-only 4d plan unit the merged 4b plan's §E order names as the first
+4d stop (`docs/superpowers/plans/2026-09-05-decision-workflow-4d.md`): the §C orchestration
+design at PR #340 head `6a53aae` carried in substance with every forcing round annotated, the
+§D obligations 4–6 (P31b/P42b, P31c/P34b, P33b) elaborated to full rows, the probe table
+P28–P42 with the carried arms, and the staging — FOUR implementation PRs (the dark migration
+4d-i, the service/role/UI unit 4d-ii, an operator drain attestation, the reservation retirement
+4d-iii), the 4c rollout discipline applied to 4d's own mixed-version hazard. It is written
+against what 4b and 4c actually DELIVERED (the try-readiness primitive, the command-provenance
+shape, the per-family push predicates, the retired capability latch) and takes up the three
+hand-offs the 4c plan recorded for this review. Opened on the owner's explicit go (2026-09-05,
+the controlling conversation: "Open one draft PR from current main d7eed4ce for Phase 6 docs-only
+4d PLAN unit only"), one PR at a time, from `main` `d7eed4ce` — first as #537, then as #538, then as #539, now as the
+third replacement (below).
+
+**What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
+again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, because the
+number does not exist until the PR is created — the §D self-naming convention, exactly as #533,
+#535, #537, #538 and #539 did). `reviewed_merge` stays `f5da6654` (the last REVIEWED merge; #536 was a STATUS
+record), `next_task` stays `phase-6-task-4d` (the id names the task stop; the plan's §D binds what
+starts at it), `phase_plan` stays the 4c plan until this plan CLEARS, when the implementation's
+first fold moves it. Runner invariants over the parsed Now block: `assessRunnerState` →
+`pr:<this>` while open; `assessPostMergeRunnerState` → simulated, allowed, `task:4`;
+`detectStatusDrift` with the self-named `open_pr` live → no drift.
+
+**Lineage: #537, #538 and #539 each closed at the review-round limit; this PR replaces #539.** #537's
+first head (`d82d47f4`) drew eight Codex findings, folded on its second head (`77ab82b1`); that head
+drew six more, so #537 CLOSED without a third correction head and #538 carried the unit with all
+fourteen folded. #538's first head (`cae3d167`) drew seven P1 findings, folded on its second head
+(`cbbe9d23`, "review round 3"); that head drew five more ("review round 4"), so #538 CLOSED and #539
+carried the unit with all twenty-six folded. #539's first head (`91416864`) drew five P1 findings —
+the Team role pickers offering a role the reservation refuses, a staging sentence ordering the audit
+before the reservation, the pre-send re-check limited to role fan-outs, 4d-i replaying its audit on a
+post-retirement baseline, the catalog-data migration outside the baseline path — folded on its
+second head (`0526eb8d`, "review round 5"); that head drew four more P1 findings — a per-recipient
+skip that set the whole delivery's cancellation mark, a countersign demand cancelled for good when
+the last architect left with nothing re-notifying the next, a uniform membership re-check dropping a
+membership-less org-admin requester, and no web probe of the architect's own action controls. Two
+finding-bearing heads exhaust a review round, so #539 was CLOSED without a third correction head and
+this PR — the same docs-only unit and nothing else, from the same `main` `d7eed4ce` — carries all
+thirty-five fixes with `Replaces: #539`, the four annotated "(review round 6)" in the plan where they
+land. No `6a53aae` decision was reopened. This PR has no finding-bearing head of its own yet; a first
+would be folded on one correction head, and a second would force the same close-and-replace again.
+
+**What follows, and what does not.** After this plan clears its own exact-head review (a fresh
+clean +1 through the `codex-current-head` gate — the independent clearance the 4c plan's
+#486/#490 detour restored as a precondition), 4d implementation begins with 4d-i, the dark
+migration, from the `main` that carries the cleared plan. **No 4d implementation is started by
+this PR.** No UX or performance work. Contractor-capture units 1–6 stay Board-gated. The P3005
+correction stays in the maintenance queue. #530, #531 and #532 stay closed.
 
 ### Unit 4c-v merged — 4c is COMPLETE. The §E handoff to the 4d PLAN unit is the recorded next step.
 
