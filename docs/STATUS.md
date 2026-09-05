@@ -47,6 +47,16 @@ first fold moves it. Runner invariants over the parsed Now block: `assessRunnerS
 `pr:<this>` while open; `assessPostMergeRunnerState` → simulated, allowed, `task:4`;
 `detectStatusDrift` with the self-named `open_pr` live → no drift.
 
+**Review round 1, folded on the second head.** The first head (`d82d47f4`) drew eight Codex
+findings — the stranded return path's request seal admitting only the architect (P1), the
+finality defaults dropped while previous-release writers still serve (P1), a bare `btrim`
+non-blank CHECK (P1), the rejection request exempt from command provenance (P1), a pre-existing
+`architect` membership row surviving the reservation (P1), the decider push's send boundary
+(P2), the status readers with fallback paths (P2), and the countersign's `approved`/`reapproved`
+event semantics (P2). All eight are fixed in the plan on this PR's second head, each annotated
+"(this plan's review round 1)" where it lands; no `6a53aae` decision was reopened. This is the
+PR's FIRST finding-bearing head — a second would exhaust the round and force close-and-replace.
+
 **What follows, and what does not.** After this plan clears its own exact-head review (a fresh
 clean +1 through the `codex-current-head` gate — the independent clearance the 4c plan's
 #486/#490 detour restored as a precondition), 4d implementation begins with 4d-i, the dark
