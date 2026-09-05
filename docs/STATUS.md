@@ -13,7 +13,7 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: merged
+task_state: in_progress
 work_item: none
 reviewed_merge: f5da6654
 open_pr: none
@@ -21,6 +21,89 @@ next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-05
 ```
+
+### The 4d PLAN unit — opened here, docs-only, on the Board's go
+
+**What this PR is.** The docs-only 4d plan unit the merged 4b plan's §E order names as the first
+4d stop (`docs/superpowers/plans/2026-09-05-decision-workflow-4d.md`): the §C orchestration
+design at PR #340 head `6a53aae` carried in substance with every forcing round annotated, the
+§D obligations 4–6 (P31b/P42b, P31c/P34b, P33b) elaborated to full rows, the probe table
+P28–P42 with the carried arms, and the staging — FOUR implementation PRs (the dark migration
+4d-i, the service/role/UI unit 4d-ii, an operator drain attestation, the reservation retirement
+4d-iii), the 4c rollout discipline applied to 4d's own mixed-version hazard. It is written
+against what 4b and 4c actually DELIVERED (the try-readiness primitive, the command-provenance
+shape, the per-family push predicates, the retired capability latch) and takes up the three
+hand-offs the 4c plan recorded for this review. Opened on the owner's explicit go (2026-09-05,
+the controlling conversation: "Open one draft PR from current main d7eed4ce for Phase 6 docs-only
+4d PLAN unit only"), one PR at a time, from `main` `d7eed4ce` — first as #537, then #538, then #539, then #540, then #541, then #542, then #543, now as the
+seventh replacement (below).
+
+**What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
+again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, because the
+number does not exist until the PR is created — the §D self-naming convention, exactly as #533,
+#535, #537, #538, #539, #540, #541, #542 and #543 did). `reviewed_merge` stays `f5da6654` (the last REVIEWED merge; #536 was a STATUS
+record), `next_task` stays `phase-6-task-4d` (the id names the task stop; the plan's §D binds what
+starts at it), `phase_plan` stays the 4c plan until this plan CLEARS, when the implementation's
+first fold moves it. Runner invariants over the parsed Now block: `assessRunnerState` →
+`pr:<this>` while open; `assessPostMergeRunnerState` → simulated, allowed, `task:4`;
+`detectStatusDrift` with the self-named `open_pr` live → no drift.
+
+**Lineage: #537, #538, #539, #540, #541, #542 and #543 each closed at the review-round limit; this PR replaces #543 and settles its ledger obligation.**
+#537 (heads `d82d47f4`, `77ab82b1`: eight + six findings), #538 (`cae3d167`, `cbbe9d23`: seven + five),
+#539 (`91416864`, `0526eb8d`: five + four), #540 (`fcc6d15b`, `04b5491c`: seven + five), #541
+(`a05fdd80`, `6ec40f12`: three + four), #542 (`aafc0e17`, `182a09bf`: five + three) and #543 (`7bfdc3e0`,
+`9c6dc588`: six + six) each drew
+findings on two heads, and two finding-bearing heads exhaust a review round, so each CLOSED without a
+third correction head and the next PR carried the same docs-only unit from the same `main` `d7eed4ce`
+with every finding folded. #541's two heads drew: first (`a05fdd80`) the withdrawal cancelling only
+the decider and forward push families, the drain covering server processes but not stale browser
+tabs, and the finalizer resolving the approver's current name where the revision froze none (that
+head was also promoted before its self-naming pointer was pushed; `d2c1dec3` answered the
+coordinator's blocker changing only `open_pr`); then (`6ec40f12`) the delivered
+`DecisionApprovalRevision_append_only` trigger rejecting the very finality flip 4d pairs,
+`architect` absent from the `DeciderKind` designation contract the 4b plan deferred to 4d, the
+projected `countersignRequired` going stale when the architect standing changes with no decision
+event, and the round-9 withdrawal cancellation also marking the PMC requester's response push P38
+requires delivered. #542's two heads drew: first (`aafc0e17`) the provenance writers never taught to state
+`revisionFinalized` before 4d-iii drops its default, the stale-client chain check racing the activation it
+guards at the transport layer, `deciderPush` routing an architect-designated decision to the clients, the
+client-contract boundary fencing only the awaiting status while the architect designation and the architect
+session are shapes a stale bundle meets first, and the Portfolio `countPending` reporting zero for an
+architect (folded as round 11); then (`182a09bf`) the membership, roster and switch responses carrying the
+`architect` role to a stale tab before the shell read the boundary refuses, the two cancellation spec copies
+omitting `revisionFinalized` where create/revise had been fixed, and an active non-holder architect unable to
+see the pending decision the plan lets them forward. #543's two heads drew: first (`7bfdc3e0`) the last-architect exemption stated for the named holder but not the
+architect role designation, approval assigning no cancellation to a claimed decider/forward push, a forward
+whose designation does not change satisfying every seal, the withdrawal target filter wrongly applied to
+`consultation_requested`, the architect designation reachable on an unpublished draft while the reservation
+stands, and the round-10 freshness signal bypassed by a direct membership write (folded as round 13, which
+chose a read-time overlay); then (`9c6dc588`) the two new enum values committing ahead of the seal transaction
+with no `Decision` audit under the lock, `consultation_requested` deliveries surviving the transitions that
+close the consultation-open set, that read-time overlay putting a synchronous orgs read on every decision
+response, `countersignRequired` serialized when false against P29's byte identity, the round-6
+re-notification bypassed by a direct architect activation, and P29b still asserting the withdrawn signal —
+answered by closing the WRITER SET (a permanent service-only seal on architect membership writes) and
+restoring the round-10 signal behind it. This PR carries all seventy-four fixes with `Replaces: #543`, the
+six annotated "(review round 14)" in the plan where they land. **The ledger, read off the label** (the
+#514/#513 lesson): the obligation is the repository-wide `review-replacement-required` LABEL, not the prose
+lineage. #543 was labelled by the orchestrator BEFORE it closed, so it is the obligation this PR settles. Every
+predecessor closed at the limit (#537, #538, #539, #540, #542, #543) stays a labelled pending obligation until
+a MERGED unit names it — one merge discharges exactly one, the accepted gap recorded in
+`docs/reviews/replacement-lineage-repair.md`, the same state #520 and #521 have been in since #529. #541 alone
+holds no label: it was closed and its branch rebuilt before the orchestrator's gate could label it, so the
+scope gate refused #542's `Replaces: #541` and #542 declared `Replaces: #540` instead — the sequencing lesson
+recorded here, not tidied away; no label is applied or cleared by hand. No `6a53aae` decision was reopened. The unit exceeds the 1,500-line standard budget and
+declares `justified-large`: ONE plan document that must be reviewed whole, grown only by the precisions
+fourteen review rounds required. Should this PR's own head draw findings, one correction head folds them; a
+second finding-bearing head forces the same close-and-replace again — after the orchestrator labels this PR,
+never before — and never a third correction head.
+
+**What follows, and what does not.** After this plan clears its own exact-head review (a fresh
+clean +1 through the `codex-current-head` gate — the independent clearance the 4c plan's
+#486/#490 detour restored as a precondition), 4d implementation begins with 4d-i, the dark
+migration, from the `main` that carries the cleared plan. **No 4d implementation is started by
+this PR.** No UX or performance work. Contractor-capture units 1–6 stay Board-gated. The P3005
+correction stays in the maintenance queue. #530, #531 and #532 stay closed.
 
 ### Unit 4c-v merged — 4c is COMPLETE. The §E handoff to the 4d PLAN unit is the recorded next step.
 
