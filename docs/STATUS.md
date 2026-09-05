@@ -15,12 +15,33 @@ phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 75708004
-open_pr: 533
+reviewed_merge: 76027074
+open_pr: none
 next_task: phase-6-task-4c-v
 blocking_directive: phase-6-4c-iv-rollout-complete
 updated: 2026-09-05
 ```
+
+### Unit 4c-iv merged. A merge is not a rollout — the gate above stays.
+
+`76027074` (PR #533, reviewed head `ea37e49d`, a fresh Codex +1 with zero findings on its first
+head) merged the gate-read removal: the two write commands, the shell contract and the client no
+longer read the per-project `consultation` capability. No migration. The `ProjectCapability` row,
+its creation trigger and its PRESERVATION seal are untouched — they retire in 4c-v.
+
+`reviewed_merge` advances to `76027074` and `open_pr` returns to `none`; no other field moves.
+`task_state` stays `in_progress` and `blocking_directive` stays `phase-6-4c-iv-rollout-complete`,
+because merging 4c-iv is not deploying it. Until every serving instance runs `76027074` or later,
+a pre-4c-iv instance is still a READER of the row 4c-v would drop, and dropping it while any reader
+remains reopens exactly the split brain 4c-iii's seal exists to prevent (plan §D, review round 25).
+**What clears the gate** is an `OPERATOR-ATTESTATION` on #482 — or a direct statement in the
+controlling conversation — carrying no Watch, Claude or other agent-generation marker, that every
+PMC Vitan process runs `76027074` or later. Nothing an agent writes can supply it, and the two
+records cited below are about the PREVIOUS deploy, not this one. Only then does the resolver
+schedule 4c-v.
+
+This landing records `open_pr: none` beside its own live pull request: the directive-landing shape
+the drift shepherd recognises as a correction in flight, exactly as #529 did after #528.
 
 ### Both production gates are CLEARED — on two deliberately formatted `OPERATOR-ATTESTATION` records, cited here
 
