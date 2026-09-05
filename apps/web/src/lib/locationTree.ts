@@ -9,6 +9,27 @@ export function nodeById(nodes: ProjectNode[], id: string | undefined | null): P
   return id ? nodes.find((n) => n.id === id) : undefined;
 }
 
+function indexNodes(nodes: ProjectNode[]): Map<string, ProjectNode> {
+  const byId = new Map<string, ProjectNode>();
+  for (const node of nodes) {
+    const id = node.id;
+    // Keep Array.find's first-match behavior for malformed duplicate ids too.
+    if (!byId.has(id)) byId.set(id, node);
+  }
+  return byId;
+}
+
+function indexChildren(nodes: ProjectNode[]): Map<string, string[]> {
+  const byParent = new Map<string, string[]>();
+  for (const node of nodes) {
+    if (!node.parentId) continue;
+    const children = byParent.get(node.parentId);
+    if (children) children.push(node.id);
+    else byParent.set(node.parentId, [node.id]);
+  }
+  return byParent;
+}
+
 /** Ancestor ids of a node, nearest-first, EXCLUDING the node itself (cycle-safe). */
 export function ancestorIds(nodes: ProjectNode[], id: string | undefined | null): Set<string> {
   const out = new Set<string>();
@@ -24,17 +45,20 @@ export function ancestorIds(nodes: ProjectNode[], id: string | undefined | null)
 
 /** All node ids in the subtree rooted at `id`, INCLUDING `id` itself (cycle-safe). */
 export function subtreeIds(nodes: ProjectNode[], id: string): Set<string> {
-  const childrenBy = new Map<string, string[]>();
-  for (const n of nodes) {
-    if (n.parentId) childrenBy.set(n.parentId, [...(childrenBy.get(n.parentId) ?? []), n.id]);
-  }
+  return walkSubtree(indexChildren(nodes), id);
+}
+
+function walkSubtree(childrenBy: Map<string, string[]>, id: string): Set<string> {
   const out = new Set<string>();
-  const walk = (cur: string): void => {
-    if (out.has(cur)) return;
+  const pending = [id];
+  while (pending.length) {
+    const cur = pending.pop()!;
+    if (out.has(cur)) continue;
     out.add(cur);
-    for (const c of childrenBy.get(cur) ?? []) walk(c);
-  };
-  walk(id);
+    const children = childrenBy.get(cur) ?? [];
+    // Reverse the stack insertion to preserve the existing depth-first Set order.
+    for (let i = children.length - 1; i >= 0; i -= 1) pending.push(children[i]);
+  }
   return out;
 }
 
@@ -54,16 +78,16 @@ export function pathOf(nodes: ProjectNode[], nodeId: string | undefined | null):
 /** Breadcrumb of NODES from root → node (cycle-safe) — the kind-aware sibling of
  *  `trailOf`, for readers that must group by what a node IS rather than where it
  *  sits (nested locations: position no longer implies kind). */
-function trailNodesOf(nodes: ProjectNode[], nodeId: string | undefined | null): ProjectNode[] {
+function trailNodesOf(byId: Map<string, ProjectNode>, nodeId: string | undefined | null): ProjectNode[] {
   const out: ProjectNode[] = [];
   const seen = new Set<string>();
-  let cur = nodeById(nodes, nodeId);
+  let cur = nodeId ? byId.get(nodeId) : undefined;
   while (cur && !seen.has(cur.id)) {
     seen.add(cur.id);
-    out.unshift(cur);
-    cur = nodeById(nodes, cur.parentId ?? undefined);
+    out.push(cur);
+    cur = cur.parentId ? byId.get(cur.parentId) : undefined;
   }
-  return out;
+  return out.reverse();
 }
 
 /** Breadcrumb of {id,name} from root → node (cycle-safe). Empty when the node is missing. */
@@ -108,9 +132,12 @@ const STATUS_LABEL: Record<string, string> = { pending: 'Pending', approved: 'Ap
 export function groupDecisions(decisions: Decision[], nodes: ProjectNode[], mode: GroupBy): DecisionGroup[] {
   const map = new Map<string, DecisionRow[]>();
   const labelOf = new Map<string, string>();
+  const needsLocation = mode !== 'flat' && mode !== 'status';
+  const byId = needsLocation ? indexNodes(nodes) : new Map<string, ProjectNode>();
 
   for (const d of decisions) {
-    const seg = locationSegments(d, nodes);
+    const trail = needsLocation ? trailNodesOf(byId, d.nodeId) : [];
+    const seg = trail.length ? trail.map((node) => node.name) : [d.room || 'Unfiled'];
     let key: string;
     let label: string;
     let subLabel = '';
@@ -126,7 +153,6 @@ export function groupDecisions(decisions: Decision[], nodes: ProjectNode[], mode
       // groups under Pour (where it was FILED), and a zone-filed decision or a zone-level
       // element has NO room and is never presented as one. Free-text legacy decisions
       // keep their stored room name as the group.
-      const trail = trailNodesOf(nodes, d.nodeId);
       const roomIndex = trail.map((n) => n.kind).lastIndexOf('room');
       if (trail.length && roomIndex >= 0) {
         const room = trail[roomIndex]!;
@@ -145,7 +171,6 @@ export function groupDecisions(decisions: Decision[], nodes: ProjectNode[], mode
       // KIND-true: only a decision FILED ON an element forms an object group — a room- or
       // zone-filed decision (or a free-text one) is honestly "No object", with its actual
       // location as the row caption, instead of its last path segment masquerading as one.
-      const trail = trailNodesOf(nodes, d.nodeId);
       const filed = trail[trail.length - 1];
       if (filed?.kind === 'element') {
         key = `el:${filed.name}`;
@@ -215,6 +240,36 @@ export interface PlaceContents {
 }
 
 const RELATION_RANK: Record<DrawingRelation, number> = { here: 0, detail: 1, inherited: 2 };
+
+type PlaceCardCounts = Pick<PlaceContents['counts'], 'decisions' | 'drawings' | 'photos' | 'activities' | 'materials'>;
+type PlaceCardRecords = Record<keyof PlaceCardCounts, readonly { nodeId?: string }[]>;
+
+/** Count the visible cards together: build the tree once and scan each record once.
+ * Callers supply the same audience-filtered slices used by the Place view. Drawings
+ * count only where filed in the subtree; inherited drawings belong to the detail view. */
+export function countPlaceSubtrees(nodes: ProjectNode[], placeIds: string[], records: PlaceCardRecords): Map<string, PlaceCardCounts> {
+  const counts = new Map<string, PlaceCardCounts>();
+  if (!placeIds.length) return counts;
+  const childrenBy = indexChildren(nodes);
+  const cardsByNode = new Map<string, PlaceCardCounts[]>();
+  for (const id of new Set(placeIds)) {
+    const card = { decisions: 0, drawings: 0, photos: 0, activities: 0, materials: 0 };
+    counts.set(id, card);
+    for (const nodeId of walkSubtree(childrenBy, id)) {
+      const cards = cardsByNode.get(nodeId);
+      if (cards) cards.push(card);
+      else cardsByNode.set(nodeId, [card]);
+    }
+  }
+  for (const kind of ['decisions', 'drawings', 'photos', 'activities', 'materials'] as const) {
+    for (const record of records[kind]) {
+      const nodeId = record.nodeId;
+      if (!nodeId) continue;
+      for (const card of cardsByNode.get(nodeId) ?? []) card[kind] += 1;
+    }
+  }
+  return counts;
+}
 
 /**
  * Gather everything at a place for the Site Map. Decisions, photos, activities and

@@ -12,7 +12,7 @@ import { captureAtPlace } from '@/lib/captureContext';
 import { stampText } from '@/lib/captureStamp';
 import { DrawingViewer } from '@/screens/DrawingsScreen';
 import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck, Plus } from '@/lib/icons';
-import { childrenOf, subtreeIds, trailOf, placeContents, type DrawingRelation, type PlacedDrawing } from '@/lib/locationTree';
+import { childrenOf, countPlaceSubtrees, trailOf, placeContents, type DrawingRelation, type PlacedDrawing } from '@/lib/locationTree';
 import { type Drawing, type Photo, type PlacedInspection, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -86,17 +86,10 @@ export function PlacesScreen() {
     [active, nodes, decisions, drawings, photos, activities, materials, inspections],
   );
 
-  const countsFor = (id: string) => {
-    const sub = subtreeIds(nodes, id);
-    const inSub = <T extends { nodeId?: string }>(xs: T[]) => xs.filter((x) => x.nodeId && sub.has(x.nodeId)).length;
-    return {
-      decisions: inSub(decisions),
-      drawings: inSub(drawings),
-      photos: inSub(photos),
-      activities: inSub(activities),
-      materials: inSub(materials),
-    };
-  };
+  const childCounts = useMemo(
+    () => countPlaceSubtrees(nodes, children.map((node) => node.id), { decisions, drawings, photos, activities, materials }),
+    [nodes, children, decisions, drawings, photos, activities, materials],
+  );
 
   const activeNode = nodes.find((n) => n.id === active);
   const total = contents.counts;
@@ -165,7 +158,7 @@ export function PlacesScreen() {
           {children.length > 0 && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10, marginBottom: 22 }}>
               {children.map((n) => {
-                const c = countsFor(n.id);
+                const c = childCounts.get(n.id)!;
                 return (
                   <button key={n.id} onClick={() => setSel(n.id)} data-testid={`place-node-${n.id}`} style={nodeCard}>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.12em', color: 'var(--faint)' }}>{KIND_LABEL[n.kind] ?? n.kind.toUpperCase()}</div>

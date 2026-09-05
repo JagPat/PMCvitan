@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Activity, Decision, Drawing, Material, Photo, PlacedInspection, ProjectNode } from '@vitan/shared';
-import { pathOf, locationSegments, groupDecisions, ancestorIds, subtreeIds, trailOf, placeContents } from '@/lib/locationTree';
+import { pathOf, locationSegments, groupDecisions, ancestorIds, subtreeIds, trailOf, placeContents, countPlaceSubtrees } from '@/lib/locationTree';
 
 const nodes: ProjectNode[] = [
   { id: 'z1', parentId: null, name: 'Ground Floor', kind: 'zone', order: 0 },
@@ -116,6 +116,21 @@ describe('groupDecisions — kind-true grouping on a nested tree (P12)', () => {
 });
 
 describe('location spine helpers', () => {
+  it('preserves traversal order, missing ancestors, and cycle termination', () => {
+    expect([...subtreeIds(nodes, 'z1')]).toEqual(['z1', 'r1', 'e1']);
+    expect([...subtreeIds(nodes, 'missing')]).toEqual(['missing']);
+    const broken: ProjectNode[] = [
+      { id: 'a', parentId: 'b', name: 'A', kind: 'room', order: 0 },
+      { id: 'b', parentId: 'a', name: 'B', kind: 'room', order: 0 },
+      { id: 'orphan', parentId: 'missing', name: 'Orphan', kind: 'room', order: 0 },
+    ];
+    expect([...subtreeIds(broken, 'a')]).toEqual(['a', 'b']);
+    expect(pathOf(broken, 'a')).toEqual(['B', 'A']);
+    expect(trailOf(broken, 'a')).toEqual([{ id: 'b', name: 'B' }, { id: 'a', name: 'A' }]);
+    expect([...ancestorIds(broken, 'orphan')]).toEqual(['missing']);
+    expect(pathOf(broken, 'orphan')).toEqual(['Orphan']);
+  });
+
   it('ancestorIds excludes self; subtreeIds includes self + descendants', () => {
     expect([...ancestorIds(nodes, 'e1')].sort()).toEqual(['r1', 'z1']);
     expect([...subtreeIds(nodes, 'z1')].sort()).toEqual(['e1', 'r1', 'z1']);
@@ -128,6 +143,52 @@ describe('location spine helpers', () => {
       { id: 'r1', name: 'Master Bedroom' },
       { id: 'e1', name: 'Main Door' },
     ]);
+  });
+});
+
+describe('Site Map card counts', () => {
+  const records = {
+    decisions: [{ nodeId: 'e1' }, { nodeId: 'r2' }, {}, { nodeId: 'missing' }],
+    drawings: [{ nodeId: 'z1' }, { nodeId: 'e1' }],
+    photos: [{ nodeId: 'r1' }, { nodeId: 'e1' }, { nodeId: '' }],
+    activities: [{ nodeId: 'r2' }],
+    materials: [{ nodeId: 'e1' }, {}],
+  };
+
+  it('matches independent subtree counts for every record kind, including overlapping roots', () => {
+    const ids = ['z1', 'r1', 'e1', 'z2', 'missing'];
+    const counts = countPlaceSubtrees(nodes, ids, records);
+    for (const id of ids) {
+      const sub = subtreeIds(nodes, id);
+      for (const kind of ['decisions', 'drawings', 'photos', 'activities', 'materials'] as const) {
+        expect(counts.get(id)?.[kind]).toBe(records[kind].filter((r) => r.nodeId && sub.has(r.nodeId)).length);
+      }
+    }
+    // A floor plan inherited by a room is not a drawing FILED in that room's subtree.
+    expect(counts.get('r1')?.drawings).toBe(1);
+    expect(counts.get('z1')?.drawings).toBe(2);
+  });
+
+  it('recomputes from the supplied visible tree and records after a move or scope change', () => {
+    const moved = nodes.map((n) => n.id === 'e1' ? { ...n, parentId: 'r2' } : n);
+    expect(countPlaceSubtrees(nodes, ['z1', 'z2'], records).get('z1')?.materials).toBe(1);
+    expect(countPlaceSubtrees(moved, ['z1', 'z2'], records).get('z1')?.materials).toBe(0);
+    expect(countPlaceSubtrees(moved, ['z1', 'z2'], records).get('z2')?.materials).toBe(1);
+    const empty = { decisions: [], drawings: [], photos: [], activities: [], materials: [] };
+    expect(countPlaceSubtrees(nodes, ['z1'], empty).get('z1')).toEqual({
+      decisions: 0, drawings: 0, photos: 0, activities: 0, materials: 0,
+    });
+    expect(countPlaceSubtrees(nodes, [], records).size).toBe(0);
+    // A filtered-out intermediate location must not reconnect a hidden branch.
+    expect(countPlaceSubtrees(nodes.filter((n) => n.id !== 'r1'), ['z1'], records).get('z1')?.materials).toBe(0);
+  });
+
+  it('counts each record once per card even for duplicate roots and cyclic locations', () => {
+    const cyclic = nodes.map((n) => n.id === 'z1' ? { ...n, parentId: 'e1' } : n);
+    const counts = countPlaceSubtrees(cyclic, ['z1', 'r1', 'z1'], records);
+    expect(counts.size).toBe(2);
+    expect(counts.get('z1')).toEqual(counts.get('r1'));
+    expect(counts.get('z1')?.photos).toBe(2);
   });
 });
 
