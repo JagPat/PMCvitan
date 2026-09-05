@@ -70,12 +70,12 @@ describe('a capture context says what the app already knows', () => {
 });
 
 describe('the Add menu offers only what the role may actually author', () => {
-  it('a pmc gets all three', () => {
-    expect(createOptionsFor('pmc').map((o) => o.kind)).toEqual(['inspection', 'material', 'decision']);
+  it('a pmc gets photos, inspections, deliveries and decisions', () => {
+    expect(createOptionsFor('pmc').map((o) => o.kind)).toEqual(['photo', 'inspection', 'material', 'decision']);
   });
 
-  it('an engineer gets the delivery only — inspection.create and decision.create are pmc', () => {
-    expect(createOptionsFor('engineer').map((o) => o.kind)).toEqual(['material']);
+  it('an engineer gets photos and deliveries — inspection.create and decision.create are pmc', () => {
+    expect(createOptionsFor('engineer').map((o) => o.kind)).toEqual(['photo', 'material']);
   });
 
   it('a client, contractor and consultant are offered nothing rather than a refusal', () => {

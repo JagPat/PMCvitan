@@ -7,6 +7,7 @@ import { Eyebrow, DecisionChip, ActivityChip, Swatch, PhotoViewer, Button, Creat
 import { createOptionsFor, type CreateKind } from '@/lib/createOptions';
 import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
 import { AddMaterialModal } from '@/screens/modals/AddMaterialModal';
+import { AddProgressPhotoModal } from '@/screens/modals/AddProgressPhotoModal';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { captureAtPlace } from '@/lib/captureContext';
 import { stampText } from '@/lib/captureStamp';
@@ -350,6 +351,9 @@ export function PlacesScreen() {
       )}
       {/* `active`, not `sel`: a place deleted out from under the user falls back to the whole
           project, and the form must inherit what the screen is actually showing. */}
+      {creatingKind === 'photo' && (
+        <AddProgressPhotoModal context={captureAtPlace(activeProjectId, active)} onClose={() => setCreatingKind(null)} />
+      )}
       {creatingKind === 'inspection' && (
         <IssueChecklistModal context={captureAtPlace(activeProjectId, active)} onClose={() => setCreatingKind(null)} />
       )}

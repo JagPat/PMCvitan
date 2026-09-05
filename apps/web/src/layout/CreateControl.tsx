@@ -5,6 +5,7 @@ import { captureGlobal } from '@/lib/captureContext';
 import type { CreateKind } from '@/lib/createOptions';
 import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
 import { AddMaterialModal } from '@/screens/modals/AddMaterialModal';
+import { AddProgressPhotoModal } from '@/screens/modals/AddProgressPhotoModal';
 import { IssueDecisionModal } from '@/screens/modals/IssueDecisionModal';
 import { Plus } from '@/lib/icons';
 import { useCanCreateNow } from './useCanCreateNow';
@@ -81,6 +82,9 @@ export function CreateControl() {
         />
       )}
 
+      {kind === 'photo' && (
+        <AddProgressPhotoModal context={captureGlobal(activeProjectId)} onClose={() => setKind(null)} />
+      )}
       {kind === 'inspection' && (
         <IssueChecklistModal context={captureGlobal(activeProjectId)} onClose={() => setKind(null)} />
       )}

@@ -1,8 +1,8 @@
 import { can, type PolicyAction, type TokenRole } from '@vitan/shared';
-import { ClipboardCheck, Package, ClipboardList, type LucideIcon } from 'lucide-react';
+import { Camera, ClipboardCheck, Package, ClipboardList, type LucideIcon } from 'lucide-react';
 
 /** What a user can start creating, named the way a person would say it. */
-export type CreateKind = 'inspection' | 'material' | 'decision';
+export type CreateKind = 'photo' | 'inspection' | 'material' | 'decision';
 
 export interface CreateOption {
   kind: CreateKind;
@@ -25,6 +25,7 @@ export interface CreateOption {
  * action the server would refuse — the existing policy stays the single authority.
  */
 const OPTIONS: readonly CreateOption[] = [
+  { kind: 'photo', label: 'Add progress photo', detail: 'Take a photo or choose one from your phone', action: 'media.upload', icon: Camera },
   { kind: 'inspection', label: 'Check something here', detail: 'Issue a checklist for the site engineer to fill in', action: 'inspection.create', icon: ClipboardCheck },
   { kind: 'material', label: 'Material delivered here', detail: 'Record what arrived and how much', action: 'dailyLog.addMaterial', icon: Package },
   { kind: 'decision', label: 'Something to decide here', detail: 'Put options to the client to choose between', action: 'decision.create', icon: ClipboardList },
