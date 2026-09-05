@@ -91,7 +91,8 @@ mirror seal a decisions trigger reading the orgs-owned `Membership` at commit �
 CORRESPONDENCE seal on `Membership` (`Membership_t4d_chain_mirror`, the delivered membership-guard shape, judging the
 decisions-owned mirror over the orgs → decisions edge), a provenance-bound mirror sealed against DELETE and TRUNCATE
 and registered in `TRUNCATE_SEALS`, and the gate withdrawn as a flag that was never a privilege boundary. This PR
-carries all eighty-four fixes with `Replaces: #544`, the three annotated "(review round 16)" in the plan where they land. **The ledger, read off the label** (the
+carries all eighty-four fixes with `Replaces: #544`, the three annotated "(review round 16)" in the plan where they land,
+and its own round 17 below. **The ledger, read off the label** (the
 #514/#513 lesson): the obligation is the repository-wide `review-replacement-required` LABEL, not the prose
 lineage. #544 was labelled by the orchestrator BEFORE it closed, so it is the obligation this PR settles. Every
 predecessor closed at the limit (#537, #538, #539, #540, #542, #543, #544) stays a labelled pending obligation until
@@ -101,7 +102,7 @@ holds no label: it was closed and its branch rebuilt before the orchestrator's g
 scope gate refused #542's `Replaces: #541` and #542 declared `Replaces: #540` instead — the sequencing lesson
 recorded here, not tidied away; no label is applied or cleared by hand. No `6a53aae` decision was reopened. The unit exceeds the 1,500-line standard budget and
 declares `justified-large`: ONE plan document that must be reviewed whole, grown only by the precisions
-sixteen review rounds required. #544's first head (`4dda84fc`) drew seven findings (six P1, one P2) — the
+seventeen review rounds required. #544's first head (`4dda84fc`) drew seven findings (six P1, one P2) — the
 registry's hard-coded `KNOWN_ROLES` mirror missing from the role fan-out; a "both" left over from round 13's third
 reservation door in the transient block and the replay text; the round-14 fold reading chain presence through the
 orgs participant and the asynchronous refresh not atomic with the membership commit (answered by a decisions-owned
@@ -109,9 +110,18 @@ orgs participant and the asynchronous refresh not atomic with the membership com
 `ChangeRequest.origin` classified additive-ignorable while a stale PMC tab renders a Withdraw the server refuses;
 the gateway's direct `/auth/session` fetch omitting the contract header; and the three fact tables never registered
 in the decisions manifest's ownership sets — folded on its second head as one batch ("review round 15" in the
-plan); that second head drew the three of round 16 above, which closed #544. Should this PR's own head draw
-findings, one correction head folds them; a second finding-bearing head forces the same close-and-replace again —
-after the orchestrator labels this PR, never before — and never a third correction head.
+plan); that second head drew the three of round 16 above, which closed #544. This PR's first head (`d52af4f8`)
+drew five findings (three P1, two P2) — the mirror's cascade-delete exception naming `Project_t4c_deleting`, which
+4c-v retired; the round-16 orgs-owned correspondence seal selecting the decisions-owned mirror at commit (the
+forbidden cross-module read in the other direction); the mirror's provenance attached to `phase6_t4c_provenance_bound`,
+which reads `NEW.id` on a `projectId`-keyed row; the architect's consultation chooser with no roster loaded on a
+fresh session; and `/me/portfolio` carrying `Membership.role` verbatim outside the client boundary — folded on its
+second head as one batch ("review round 17" in the plan): the standing moves DOWN into the platform kernel as a
+trigger-maintained `ProjectRoleStanding` register no module reads across a boundary, the writer boundary becomes
+command provenance on the `Membership` row itself (the three orgs member mutations join the ledger in 4d-ii), the
+project-delete flag trigger is reinstalled under a 4d name, the roster loads on the consultation surface, and the
+portfolio joins the stale-client boundary. That was this PR's FIRST finding-bearing head; a second forces the same
+close-and-replace again — after the orchestrator labels this PR, never before — and never a third correction head.
 
 **What follows, and what does not.** After this plan clears its own exact-head review (a fresh
 clean +1 through the `codex-current-head` gate — the independent clearance the 4c plan's

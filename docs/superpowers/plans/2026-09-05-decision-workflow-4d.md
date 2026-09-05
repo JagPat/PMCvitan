@@ -151,8 +151,21 @@ architect write could pass the trigger and commit with the mirror left
 reading the orgs-owned `Membership` at every commit — exhausted #544's
 review round in turn, so it closed without a third head and THIS eighth
 replacement carries all eighty-four fixes, the three annotated "(review
-round 16)". No design decision carried from `6a53aae` was reopened; every fix
-is a precision this plan owed and had not stated.
+round 16)". Round 17 — this eighth replacement's own first head (`d52af4f8`),
+five findings (three P1, two P2): the mirror's cascade-delete exception naming
+`Project_t4c_deleting`, a trigger 4c-v RETIRED; the round-16 orgs-owned
+correspondence seal selecting the decisions-owned mirror at commit — the
+forbidden cross-module table read in the other direction; the mirror's
+provenance attached to the delivered `phase6_t4c_provenance_bound`, which
+reads `NEW.id` on a row keyed by `projectId` alone; the architect's
+consultation chooser with no roster loaded on a fresh session; and
+`/me/portfolio` carrying `Membership.role` verbatim outside the client
+boundary — is folded on its second head, annotated "(review round 17)": the
+standing moves DOWN into the platform kernel as a trigger-maintained
+register no module reads across a boundary, and the writer boundary becomes
+the command ledger on the membership row itself. No design decision carried
+from `6a53aae` was reopened; every fix is a precision this plan owed and had
+not stated.
 
 ## Provenance, and what is NOT re-litigated
 
@@ -269,7 +282,8 @@ widened the manifest without the mirror could not boot; P28's identity walk
 pins it with the other mirrors), the membership-role comment in
 `schema.prisma`, and every `ROLE_POLICY` entry the role belongs in
 (`packages/shared/src/domain/policy.ts`; the exact policy row set is the
-unit's FIRST deliverable — `project.read` certainly among them,
+unit's FIRST deliverable — `project.read` and `members.read` (the roster
+the consultation chooser needs; review round 17) certainly among them,
 `decision.approve`/`decision.change`/`decision.withdrawChange`/
 `decision.updateDraft` and `consultation.respond` where the architect can be
 the HOLDER or a consultee, `consultation.request` because the architect joins
@@ -969,7 +983,17 @@ The settled design, plus the owner's 2026-08-13 amendment, as behavior:
   `ConsultationThread.tsx` computes its open set as `pending`/`change`, so
   an awaiting decision would let neither the architect ask nor a consultee
   answer through the UI while the widened service and seals admit both —
-  4d-ii widens that predicate with `awaiting_countersign`; and
+  4d-ii widens that predicate with `awaiting_countersign` AND, review round
+  17, LOADS THE ROSTER the chooser draws from: `ConsultationThread` derives
+  its askable set from the store's `members`, which initializes empty and is
+  filled only by `loadTeam()` (the Team screen, `IssueDecisionModal` and
+  `DraftsScreen` call it lazily; startup loads the snapshot, memberships,
+  portfolio and shell and never the roster), so on a fresh architect session
+  the widened Ask would open an EMPTY chooser — 4d-ii has the consultation
+  surface call `loadTeam()` when `members` is empty, exactly as
+  `IssueDecisionModal` does, under the `members.read` row §A.1 gives the
+  role, and P31's web arm drives the architect's Ask from a FRESH store,
+  never from seeded members; and
   `lib/locationTree.ts` keys its per-status counters, its `STATUS_LABEL`
   and its status-mode rank by literal status, so without the new key
   `counts[status] += 1` is `NaN` and the Decision Log's status rollup omits
@@ -1209,12 +1233,12 @@ The settled design, plus the owner's 2026-08-13 amendment, as behavior:
   `Membership` writes that can flip holder-relevant standing (activation,
   removal/restore — hard DELETE included — and role change) and every
   seal-trigger cross-table standing read; for the `architect` role those
-  writes are, from 4d-i, held to the MIRROR CORRESPONDENCE — the orgs-owned
-  `Membership_t4d_chain_mirror` seal refuses AT COMMIT any write that
-  changes architect standing without the decisions-owned mirror agreeing
-  (review round 16, the re-notification paragraph below — round 14's
-  `SET LOCAL`-gated `Membership_t4d_architect_service_only` is withdrawn: a
-  transaction-local setting is not a privilege boundary), so the
+  writes are, from 4d-i, held to COMMAND PROVENANCE ON THE ROW ITSELF —
+  the orgs-owned `Membership_t4d_architect_provenance` seal requires every
+  write whose OLD or NEW role is `architect` to cite a reserved orgs
+  membership command that completes naming that row (review round 17, the
+  re-notification paragraph below — round 14's `SET LOCAL` gate and round
+  16's cross-module correspondence seal are both withdrawn), so the
   direct-writer probes for that role assert REFUSAL AT COMMIT, not
   serialization. **And the membership seal judges
   CONTENT, not only timing** (round 5): the delivered
@@ -1613,7 +1637,7 @@ sites name where today's behavior lives.
 |---|---|---|
 | P28 | the role in every mirror: `TokenRole`, both zod enums, `PushRole`, the `ROLE_POLICY` rows (§A.1's exact set), `decisionsManifest.permissions`, AND the web role pickers/labels (`TeamScreen.tsx`, `RolePicker.tsx`) — the identity walk pins the set; a membership with the new role is mintable through the shipped UI once 4d-iii has dropped the reservation — and NOT OFFERED before it: the role pickers gate `architect` on the shell's `rollout.phase6_4d` read, and `MembersService.add` refuses the role 409 BEFORE provisioning the invited `User` while the reservation stands (a new-email add while reserved → 409 and zero `User` rows; review round 5); the EXISTING targeted ceilings admit the role — a decision published to an architect holder and a consultation requested from an architect both dispatch (RED at base: `buildDispatchIntent` rejects the out-of-ceiling role and the command aborts), and the catalog tripwire over every targeted entry whose narrowing site persists a member role (review round 3); **P28b (this plan): the RESERVATION** — between 4d-i and 4d-iii a direct `Membership` INSERT or role UPDATE whose NEW row names `architect` is refused at the DB (a removed row already in that role can be neither restored nor re-keyed through it), so no project can arm the chain while a previous-release instance may still serve; after 4d-iii the same statements succeed — the mirror of 4c's reservation probe; AND the AUDIT — 4d-i applied over a database holding ANY `Membership` row with `role = 'architect'` (active OR soft-removed) ABORTS naming the rows and installs nothing, and likewise over ANY `Decision` row with `deciderKind = 'architect'` or `status = 'awaiting_countersign'`, audited under the `Decision` table lock after the enum values committed ahead of the transaction, both orderings barrier-probed against a direct writer (review round 14); the audit runs AFTER the reservation's `CREATE TRIGGER` in the same transaction, barrier-probed in both orderings on the shipped file (writer-first → the migration waits then aborts on the committed row; migration-first → the writer waits then is refused); the operator repair is a RE-ROLE through the team role command (a soft removal leaves `role` in place and aborts the next deploy identically — asserted), or the guarded operator DELETE, and the same file then deploys (the `upgrade-proof.sh` abort → re-role → redeploy cycle; review rounds 1–2); the REPLAY arm — the P3005 baseline of a post-4d-iii database holding an active architect replays 4d-i as a no-op on its transient block (marker present) and keeps the architect, while a pre-4d-iii baseline (no marker) installs and audits (review round 5) | `types.ts`, `contracts.ts`, `external-effects.ts`, `policy.ts`, the Team screen role lists; the orgs-owned reservation trigger |
 | P29 | no-active-architect byte-identity: with no architect membership ever, approve lands `approved` directly with `finalized = true`, forward is refused for the missing role's authority but works for holder/PMC, and the whole 4b/4c surface is byte-identical; **P29c (this plan): mixed-version byte-identity** — with the reservation ARMED (4d-i and 4d-ii deployed, 4d-iii not), every project is chain-off, no row can be `awaiting_countersign`, no membership can be `architect`, no `DecisionForward` row and no `decision.forwarded` delivery can exist (a service forward 409s naming the drain directive, a hostile direct forward insert is refused, no Forward affordance renders — review round 4), no `Decision` row — DRAFT or published — carries `deciderKind = 'architect'` (a service create/updateDraft naming it 409s, a hostile direct draft insert is refused; both succeed after 4d-iii — review round 13), every read a pre-4d instance performs on these tables sees only values its enums know, and — the STALE-CLIENT arm, review round 9 — a browser declaring only `recorded-v1` is refused on approve under an active chain — judged inside the command under the readiness lock, the activation-between-check-and-approve barrier in both orderings (review round 11) — and receives no `awaiting_countersign` row and no architect-designated row, an architect session is refused on the shell read for that client (review round 11), while a `countersign-v1` client sees everything; after 4d-iii all four forward arms open | the chain switch; the reservation on all three doors — membership role, forward row, decision designation |
-| P29b | removed-architect deactivation + the stranded decision: the chain deactivates for NEW approvals; `decisions.resolveStrandedCountersign` drives BOTH outcomes (complete-under-no-chain → `approved` with finality + emission; return-to-decider → `change` with the origin-stamped open request), each writing its append-only `DecisionStrandedResolution` fact (UNIQUE per revision; the orphan-fact insert refused by the reverse pairing; a whitespace-only reason — spaces, AND a tab-and-newline-only value — refused at zod AND the CHECK; provenance-bound as the bundle's primary), the RETURNED bundle's request authored by the resolving PMC and ADMITTED by the P33b seal on that pairing (a returned-bundle request attributed to anyone else, or to an architect, refused), the `completed` outcome emitting `decision.reapproved` when the stranded revision's `approvedFrom` is `change`, end-to-end through re-approval; the bare hostile `awaiting_countersign → approved` flip under the INACTIVE chain refused without the fact; the returned-resolution bundle MISSING its `countersign_rejection` request refused at commit; refused while an architect is still active; the architect-reappears race deterministic; the RE-NOTIFICATION (review round 6) — approve → architect A removed (countersign delivery cancelled) → architect B added: exactly one new `decision.awaiting_countersign` delivery per still-awaiting decision, B receives, a `countersign_renotified` audit row attributed to the activating actor; an activation with no awaiting decision emits nothing; an activation while another architect is ALREADY active emits nothing and appends no `countersign_renotified` row (review round 7); the projection fold a status no-op; the FRESHNESS arm (review rounds 10, 13, 14, 15 and 16 — the value now an OWN-MODULE read of the decisions-owned `DecisionChainStanding` mirror written in the membership transaction; no signal, no read of orgs tables anywhere in decisions, not even at commit) — a `pending` decision projected, the first architect added through the service → the mirror flips in the same commit and the very next read of the projected row shows `countersignRequired: true` (present only when true) with no fold delivery in between; the last architect removed → the field absent the same way; A-active/B-added crosses no boundary and writes nothing; a DIRECT architect INSERT / role UPDATE / soft removal / hard DELETE REFUSED AT COMMIT by the orgs-owned `Membership_t4d_chain_mirror` correspondence seal (review round 16 — an invariant judged from the membership boundary, not a `SET LOCAL` flag), so no writer can stale the mirror or skip the re-notification, and a directly-inserted architect B after A left is IMPOSSIBLE rather than un-notified; a direct flip of the mirror row refused by its provenance seal, and the mirror erased by DELETE or by TRUNCATE refused by its own-module erasure seals (review round 16); rebuild == live (the projection stores no such field); the DEPARTED-holder stranded return (review round 7) — `returned` with a target re-homes into `change` with the forward fact in the same bundle, `returned` without one refused | the new resolution command + its fact table + the switch; `DecisionsParticipant.renotifyAwaitingCountersign` on the orgs → decisions edge |
+| P29b | removed-architect deactivation + the stranded decision: the chain deactivates for NEW approvals; `decisions.resolveStrandedCountersign` drives BOTH outcomes (complete-under-no-chain → `approved` with finality + emission; return-to-decider → `change` with the origin-stamped open request), each writing its append-only `DecisionStrandedResolution` fact (UNIQUE per revision; the orphan-fact insert refused by the reverse pairing; a whitespace-only reason — spaces, AND a tab-and-newline-only value — refused at zod AND the CHECK; provenance-bound as the bundle's primary), the RETURNED bundle's request authored by the resolving PMC and ADMITTED by the P33b seal on that pairing (a returned-bundle request attributed to anyone else, or to an architect, refused), the `completed` outcome emitting `decision.reapproved` when the stranded revision's `approvedFrom` is `change`, end-to-end through re-approval; the bare hostile `awaiting_countersign → approved` flip under the INACTIVE chain refused without the fact; the returned-resolution bundle MISSING its `countersign_rejection` request refused at commit; refused while an architect is still active; the architect-reappears race deterministic; the RE-NOTIFICATION (review round 6) — approve → architect A removed (countersign delivery cancelled) → architect B added: exactly one new `decision.awaiting_countersign` delivery per still-awaiting decision, B receives, a `countersign_renotified` audit row attributed to the activating actor; an activation with no awaiting decision emits nothing; an activation while another architect is ALREADY active emits nothing and appends no `countersign_renotified` row (review round 7); the projection fold a status no-op; the FRESHNESS arm (review rounds 10, 13, 14, 15, 16 and 17 — the value now a KERNEL read of the platform-owned `ProjectRoleStanding` register the membership trigger maintains from the row it is handed; no signal, no module reading another module's table anywhere, not even at commit) — a `pending` decision projected, the first architect added through the service → the register moves to 1 in the same commit and the very next read of the projected row shows `countersignRequired: true` (present only when true) with no fold delivery in between; the last architect removed → the field absent the same way; A-active/B-added crosses no boundary (register 1 → 2, the field unchanged); register = `phase6_effective_role_standing(project, 'architect')` after EVERY transition shape (insert, activate, soft-remove, restore, re-role in and out, the project cascade); a DIRECT architect INSERT / role UPDATE / soft removal / restore REFUSED without a receipt, refused at commit with a reserved-but-uncompleted receipt, refused with a receipt borrowed from another command type or actor, by the orgs-owned `Membership_t4d_architect_provenance` seal and its deferred `phase6_t4d_membership_provenance_bound` binding (review round 17 — the command ledger on the row itself, not a `SET LOCAL` flag and not a cross-module seal), and a hard DELETE of an architect row refused outright, so no writer can skip the re-notification and a directly-inserted architect B after A left is IMPOSSIBLE rather than un-notified; a direct write to the register refused, the register erased by DELETE or by TRUNCATE refused, `Membership` truncated refused (review rounds 16–17); rebuild == live (the projection stores no such field); the DEPARTED-holder stranded return (review round 7) — `returned` with a target re-homes into `change` with the forward fact in the same bundle, `returned` without one refused | the new resolution command + its fact table + the switch; `DecisionsParticipant.renotifyAwaitingCountersign` on the orgs → decisions edge |
 | P30 | forward authority (holder/PMC/architect), ACTIVE target only, eligible states only — terminal AND `awaiting_countersign` refusals both probed through the guarded HTTP route with the shared `ROLE_POLICY` action | the forward command |
 | P31 | the `awaiting_countersign` lifecycle: approval under a chain lands it with `finalized = false` — a revision BORN `finalized = true` under an active chain refused by the INSERT seal; the countersign is ONE atomic act — the attributed `DecisionCountersign` ROW + the finality flip + the `awaiting_countersign → approved` transition in one transaction, sealed from BOTH sides (the boolean-only hostile flip refused; the orphan countersign row refused at commit by the deferred reverse seal; the split two-transaction replay refused; the REPLACED append-only seal, review round 10 — a DELETE, and an UPDATE of any column other than the flip, `approvedByName` on a provisional row included, refused, the paired flip accepted, the delivered `_append_only` trigger absent by name after 4d-i) AND attributed to an ACTIVE architect (a non-architect or removed-architect `countersignedById` refused) AND carrying provenance (an absent, foreign, spent or wrong-actor `sourceCommandId` refused — the 4c arms verbatim) + emits the finalizing event by the revision's recorded `approvedFrom` — `decision.approved` for a provisional approval from `pending`, `decision.reapproved` for one from `change` (the reopened → reapproved-into-awaiting → countersigned sequence probed end to end, with the `approved`/`reapproved` + `countersigned` audit rows; a revision born `finalized = false` with NULL `approvedFrom` refused by the birth seal); the ENTRY sealed from the decision side (review round 4) — a bare `UPDATE` to `awaiting_countersign` with no same-transaction provisional revision refused at commit, the re-entry of a rejected or returned decision onto its disposed head refused, the entry under an INACTIVE chain refused, the legal approve accepted; `decision.awaiting_countersign` emits at entry with the architect-targeted push; the READER arm — the shared tripwire walking every `DecisionStatus` value against `decisionChip`/`decisionChipLabel` and `deriveDecisionReading` (RED for `awaiting_countersign` at base: the chip falls back to withdrawn styling, the reading to the decider's approval), plus `StatusChip`, the log filter, the audience selectors, the schedule filter, the consultation thread's open set (the architect asks and a consultee answers on an awaiting decision through the UI) and the location tree's counters, label and rank (no `NaN`, the group present in the status rollup) each answering for the value explicitly; the WEB arm for the architect's OWN controls (review round 6) — the Decision Log renders Countersign, Reject back and Forward on for an `awaiting_countersign` decision to an active architect and to nobody else (a PMC sees the stranded-resolution control only while the chain is INACTIVE), and invoking each through the shipped UI drives the command end to end — countersign → `approved` with finality, reject-back → `change` with the origin-stamped request, forward-on → `change` + the `DecisionForward` fact — RED at base (no control renders; the status falls through the chip fallback) and asserted GREEN post-fix as a product-path assertion, not staging prose; the INBOX arm (review round 7) — `selectActionItems` yields the active architect's countersign item and the navigation badge for an awaiting decision, the PMC's awaiting summary, and the red stranded item when the chain is inactive (RED at base: the selector derives nothing from the status); the PORTFOLIO arm (review round 11) — `countPending` reports on the architect's card the role-designated pending decisions and the awaiting countersigns, and on the PMC's the stranded ones while the chain is inactive (RED at base: zero); the NOTIFICATION arm (review round 7) — the feed after a provisional approve carries the provisional "awaiting the architect's countersign" text and no green approval, and the green one only after the countersign or the `completed` resolution, naming the ORIGINAL approver with the countersigner or resolver as a distinct attribution (review round 8); the CLIENT APPROVAL arm (review round 8) — the approve modal and success copy under an active chain read "sent to the architect for countersign" / "awaiting the architect's countersign", byte-identical to today with no chain; **P31b** the register INSERT pairing (§B.4); **P31c** exactly one countersign per flip (§B.5) | the approve CAS (`decisions.service.ts` `approve`); the new countersign table + its reverse seal + the birth/standing seals; the catalog |
 | P32 | self-countersign is TWO attributed acts under two idempotency keys — one combined act is refused; the two acts appear as two ledger receipts and two register facts | the countersign command |
@@ -1669,12 +1693,12 @@ sites name where today's behavior lives.
     the boundary suite requires Prisma DMMF ownership to EXACTLY equal the
     manifests, so a model cannot enter `schema.prisma` unregistered, and
     `readEncapsulated` keeps the evidence tables inside the foreign-read
-    analyzer; `RolloutRetirement` is registered on the platform manifest and
-    the decisions-owned `DecisionChainStanding` mirror — one row per
-    project, backfilled `active = false`, with its own-module provenance
-    and ERASURE seals (the BEFORE DELETE row seal and the statement-level
-    `DecisionChainStanding_t4d_no_truncate`; review round 16), §A.2 — on
-    the decisions manifest the same way) — with composite
+    analyzer; `RolloutRetirement` and the platform-owned `ProjectRoleStanding`
+    register — one `architect` row per project, backfilled from the
+    migration's own count, with its writer-depth seal, its project-cascade
+    arm and the statement-level `ProjectRoleStanding_t4d_no_truncate`
+    (review rounds 16–17), §A.2 — are registered on the platform manifest
+    the same way) — with composite
     same-project FKs, candidate keys, CHECKs (`btrim` non-blank, the
     `outcome` and designation-kind discriminators), the six contract
     obligations' seals — append-only + named no-TRUNCATE, the deferred
@@ -1699,15 +1723,17 @@ sites name where today's behavior lives.
     UNIQUE, and the two-producer P33b pairing; the two NEW orgs-owned
     primitives `phase6_user_orchestration_authority` and
     `phase6_user_holds_role` (registered as 4c-i's two were; review round 3);
-    the PERMANENT orgs-owned `Membership_t4d_chain_mirror` correspondence
-    seal (review round 16, replacing round 14's `SET LOCAL`-gated
-    `Membership_t4d_architect_service_only`: a DEFERRABLE INITIALLY
-    DEFERRED constraint trigger on `Membership` in the delivered
-    `phase6_t4b2_membership_guard` shape, asserting at commit that the
-    decisions-owned mirror agrees with
-    `phase6_effective_role_standing(projectId, 'architect')`, so no writer
-    of any kind commits an architect standing change the mirror does not
-    carry; not dropped by 4d-iii); the widened `phase6_t4b2_decision_seal`
+    the PERMANENT platform-owned `Membership_t4d_role_standing` register
+    trigger, the PERMANENT orgs-owned `Membership_t4d_architect_provenance`
+    seal with its deferred `phase6_t4d_membership_provenance_bound` binding
+    (with `Membership.sourceCommandId`, its composite FK and partial one-use
+    UNIQUE), the statement-level `Membership_t4d_no_truncate`, and the
+    orgs-owned `Project_t4d_deleting` flag trigger (review round 17,
+    replacing round 14's `SET LOCAL`-gated
+    `Membership_t4d_architect_service_only` and round 16's cross-module
+    `Membership_t4d_chain_mirror`: the standing moves DOWN into the kernel
+    and the writer boundary is the command ledger on the membership row
+    itself, §A.2; none dropped by 4d-iii); the widened `phase6_t4b2_decision_seal`
     (the forward door, status-gated, target- and actor-judged) and the
     approved-entry seal with its decision-side `awaiting_countersign` entry
     arm and the rejection request's `revisionId` (review round 4); the `phase6_t4b2_membership_guard` open set
@@ -1741,10 +1767,10 @@ sites name where today's behavior lives.
     `upgrade-proof.sh` gains the P42 backfill assertions over the legacy
     fixture, the old-write-shape inserts succeeding under the kept defaults,
     the planted pre-existing architect row driving abort → repair →
-    redeploy, and one hostile insert per seal; `TRUNCATE_SEALS` gains FIVE
-    entries — the three new fact tables, the `DecisionChainStanding`
-    mirror's `DecisionChainStanding_t4d_no_truncate` (review round 16) AND
-    the `ChangeRequest` no-TRUNCATE seal the uniform contract adds to that existing table (review round 8: a
+    redeploy, and one hostile insert per seal; `TRUNCATE_SEALS` gains SIX
+    entries — the three new fact tables, the register's
+    `ProjectRoleStanding_t4d_no_truncate` and `Membership_t4d_no_truncate`
+    (review rounds 16–17) AND the `ChangeRequest` no-TRUNCATE seal the uniform contract adds to that existing table (review round 8: a
     statement trigger fires on an empty table, and the harness's `TRUNCATE
     "Decision" … CASCADE` reaches `ChangeRequest`, so an unregistered seal
     would fail every sanctioned reset), while the `RolloutRetirement` marker
@@ -1802,7 +1828,11 @@ sites name where today's behavior lives.
     Expected to EXCEED the standard budget on probes alone — its packet
     argues `justified-large` on its own evidence, never by reference to this
     sentence.
-  - **4d-ii, the service/role/UI unit**: the role fan-out (§A.1 — every
+  - **4d-ii, the service/role/UI unit** (review round 17: it also moves the
+    three orgs membership mutations — `members.add`, `members.updateRole`,
+    `members.remove`; re-activation goes through `add` — onto the command
+    ledger, the provenance 4d-i's seal on architect rows demands, and loads
+    the roster on the consultation surface, §A.2): the role fan-out (§A.1 — every
     mirror, the policy rows, the web lists — and the `DeciderKind`
     DESIGNATION fan-out: the enum value and the two 4b seals' widened role
     arms from 4d-i, then `DECIDER_KINDS`, the shared type,
@@ -1895,116 +1925,143 @@ sites name where today's behavior lives.
     the same way (A leaves, its deliveries cancelled terminally; B inserted
     directly receives neither the new delivery nor the
     `countersign_renotified` row). The answer is to CLOSE THE WRITER SET, not
-    to widen the readers (review round 14) — and, review round 16, to close
-    it with an INVARIANT rather than a FLAG. Round 14 installed a
-    `Membership_t4d_architect_service_only` seal refusing any architect write
-    unless the transaction carried the orgs service's `SET LOCAL
-    vitan.phase6_architect_mutation` gate; a transaction-local setting is not
-    a privilege boundary — any direct writer holding the application's
-    database role (the only role this deployment has, and it OWNS every
-    table, so no GRANT, row policy or SECURITY DEFINER fence can hold it
-    either; the 4c-iii-r marker gate's own comment claims only "unforgeable
-    by ACCIDENT") can `SET LOCAL` the same name, pass the trigger without
-    ever invoking the participant, and commit an architect with the mirror
-    still `false` — the modal promising a lock the approve then refuses, the
-    re-notification skipped. That seal and its gate are WITHDRAWN. What 4d-i
-    installs instead is the orgs-owned `Membership_t4d_chain_mirror` seal: a
-    DEFERRABLE INITIALLY DEFERRED constraint trigger, AFTER INSERT OR UPDATE
-    OR DELETE FOR EACH ROW on `Membership`, judging — exactly as
-    `phase6_t4b2_membership_guard` judges — only the writes that can flip
-    architect standing (an insert, activation, soft removal, hard DELETE or
-    re-role whose OLD or NEW role is `architect`), and asserting AT COMMIT,
-    under `phase6_try_readiness`, that the decisions-owned mirror agrees
-    with the truth: `COALESCE((SELECT "active" FROM "DecisionChainStanding"
-    WHERE "projectId" = pid), false) = (phase6_effective_role_standing(pid,
-    'architect') > 0)`, raising otherwise. That is the delivered membership
-    guard's own shape — an orgs-owned trigger on an orgs-owned table judging
-    decisions-owned rows over the declared orgs → decisions participant
-    edge, the edge `phase6_t4b2_membership_guard` already crosses to read
-    `Decision` — so the correspondence is enforced FROM the membership
-    boundary and decisions reads no orgs table anywhere, not even at commit;
-    permanent, not transient — it outlives 4d-iii. No writer is trusted and
-    none is flagged: a direct architect INSERT, activation, soft removal,
-    hard DELETE or re-role that leaves the mirror behind fails at its own
-    commit, whoever issued it, and the only write that can satisfy the seal
-    is one that also writes the mirror — which, below, only a reserved
-    command executing through the participant can do. Every architect
-    activation and deactivation that COMMITS therefore crosses ONE boundary,
-    and that boundary does both things: it invokes
-    `DecisionsParticipant.renotifyAwaitingCountersign` on the zero-to-one
-    transition (round 6, unchanged) and
-    `DecisionsParticipant.chainStandingChanged` on EITHER crossing of the
-    zero/one boundary — which, review round 15, WRITES a DECISIONS-OWNED
-    FACT rather than signalling: round 14 had the `decisions.inbox` fold
-    read chain presence through the orgs participant inside its handler,
-    and a participant wrapper does not change who owns `Membership` (a
-    decisions consumer over an orgs-owned table is still the forbidden
-    read), while an asynchronous outbox refresh is not atomic with the
-    membership commit (a client reading the old projected row between the
-    commit and the fold's delivery is promised a lock the approve then
-    refuses). So the decisions module OWNS the standing it needs: a
-    one-row-per-project `DecisionChainStanding(projectId PK, active,
-    changedAt, changedById, sourceCommandId)` table, decisions-owned
-    (`ownsModels` + `readEncapsulated`), UPSERTED by `chainStandingChanged`
-    in the SAME transaction as the orgs membership mutation that crosses
-    the boundary, and sealed on its OWN surface only (review round 16: round
-    15 had a decisions-owned `DecisionChainStanding_t4d_mirror` trigger call
-    `phase6_effective_role_standing` at commit — a decisions trigger
-    synchronously reading the orgs-owned `Membership` on every mirror
-    upsert, the very read this paragraph forbids moved to a different site;
-    it is withdrawn, the correspondence being the orgs-owned
-    `Membership_t4d_chain_mirror` seal's job above). Its own seals are three.
-    PROVENANCE: every write of `active` carries the 4c command-provenance
-    shape — `sourceCommandId NOT NULL` with the project-contained composite
-    FK to `CommandExecution(projectId, id)`, the `(projectId,
-    sourceCommandId)` one-use UNIQUE and `phase6_t4c_provenance_bound` tying
-    the row to the RESULT of the reserved command executing it — so a flip
-    of the row without a reserved command executing in the same transaction
-    is refused at commit exactly as any 4c fact is, an UPDATE that changes
-    `active` without a NEW `sourceCommandId` is refused by the row's freeze,
-    and `projectId` is frozen. ERASURE: a BEFORE DELETE row seal refuses
-    every DELETE except the cascade of the project's own deletion (the
-    delivered `Project_t4c_deleting` depth-and-flag arm 4c-iii used for the
-    same case), and the statement-level `DecisionChainStanding_t4d_no_truncate`
-    refuses TRUNCATE — a row trigger never fires for TRUNCATE, a deferred
-    row constraint judges only the rows a statement touched, and after a
-    project's first architect an erased row would read as
-    `countersignRequired: false` while the approve still enters
-    `awaiting_countersign`; the statement seal is registered in
-    `TRUNCATE_SEALS` in the same PR, so the sanctioned reset bypasses it BY
-    NAME as it bypasses every other statement seal. A project with no row
-    is a project with no chain (`COALESCE(…, false)` on both readers), so no
-    creation path owes a row; the 4d-i backfill writes one per project
-    before the seals install, the first activation upserts it where none
-    exists, and from then on it can be neither erased nor flipped outside a
-    reserved command. `countersignRequired` is then
-    an OWN-MODULE read: the ONE decisions read path — live and projection
-    alike, in the hydrate step both run — overlays it from
-    `DecisionChainStanding` (a keyed lookup of one own-module row per
-    response, present only when true), SYNCHRONOUS with the membership
-    commit that wrote it, never stored in the projection DTO, never read
-    from `Membership` anywhere in decisions; the approve CAS keeps judging
-    the chain by the orgs primitive under the readiness lock (the
-    authority), and the mirror's commit-time seal guarantees the two agree.
-    The `decision.countersign_chain_changed` signal is therefore WITHDRAWN
-    for good (round 10 introduced it, 13 withdrew it, 14 restored it):
-    nothing in the projection stores the value, so nothing needs
+    to widen the readers (review round 14) — and to close it with the
+    LEDGER: not a flag, and not a cross-module seal (review rounds 16 and
+    17). Round 14 installed a `Membership_t4d_architect_service_only` seal
+    refusing any architect write unless the transaction carried the orgs
+    service's `SET LOCAL vitan.phase6_architect_mutation` gate; round 16
+    found a transaction-local setting is not a privilege boundary — any
+    direct writer holding the application's database role (the only role
+    this deployment has, and it OWNS every table, so no GRANT, row policy or
+    SECURITY DEFINER fence can hold it either; the 4c-iii-r marker gate's
+    own comment claims only "unforgeable by ACCIDENT") can `SET LOCAL` the
+    same name and pass — and replaced it with an orgs-owned deferred
+    `Membership_t4d_chain_mirror` seal that SELECTED the decisions-owned
+    mirror at commit; round 17 found THAT is the forbidden cross-module
+    table read in the other direction — a trigger selecting a peer module's
+    table is routed through no participant, whatever the prose calls the
+    edge. Both are WITHDRAWN, with the decisions-owned `DecisionChainStanding`
+    mirror they guarded and the `DecisionsParticipant.chainStandingChanged`
+    write that fed it. What replaces them follows the boundary rule to the
+    letter — shared logic moves DOWN, never sideways between peers — in two
+    parts, neither of which reads a peer's table.
+
+    FIRST, the standing itself moves DOWN into the platform kernel: a
+    platform-owned register `ProjectRoleStanding(projectId, role,
+    activeCount, changedAt)`, primary key `(projectId, role)`, same-project
+    FK to `Project` `ON DELETE CASCADE`, `activeCount >= 0` CHECK,
+    registered in `platformManifest.ownsModels` (the kernel's tables are
+    shared infrastructure, as its manifest says) and served by a
+    platform-owned `RoleStandingQuery.activeCount(tx, projectId, role)` —
+    the kernel's contract, exactly as `CapabilitiesService.isEnabled` serves
+    `ProjectCapability` to every module. Its ONLY writer is the
+    platform-owned `Membership_t4d_role_standing` trigger, AFTER INSERT OR
+    UPDATE OR DELETE FOR EACH ROW on `Membership`, which computes the change
+    from the row it is handed and NOTHING else — `before := (OLD.role =
+    'architect' AND OLD.status = 'active')`, `after := (NEW.role =
+    'architect' AND NEW.status = 'active')`, delta `after − before` — and,
+    when the delta is non-zero, applies `INSERT … ON CONFLICT ("projectId",
+    "role") DO UPDATE SET "activeCount" = "activeCount" + delta`: no read of
+    `Membership`, no read of any decisions table, no count. The register is
+    generic in shape so a later unit can carry other roles; 4d maintains the
+    `architect` row only, and `phase6_effective_role_standing` stays the
+    authority for `client`/`pmc` exactly as delivered. It agrees with the
+    orgs primitive BY CONSTRUCTION, not by a cross-module check: both are
+    functions of the same `Membership` rows, a row trigger fires for every
+    row write, the register's own seals admit no other writer — a BEFORE
+    INSERT OR UPDATE OR DELETE seal refusing any write that arrives at
+    `pg_trigger_depth() = 1` (a statement issued directly) and admitting
+    only a write nested inside another trigger: the standing trigger's, or
+    the cascade of the project's own deletion, recognized (review round 17)
+    by depth AND the transaction-local flag the orgs-owned
+    `Project_t4d_deleting` BEFORE DELETE trigger on `Project` sets — 4c-iii's
+    `Project_t4c_deleting` shape reinstalled under a 4d name, because 4c-v
+    retired the original together with the seal that read it, so a plan
+    naming the retired trigger would have refused every project deletion
+    once the register held a row per project; the CHECK turns a delta that
+    would go negative into a refusal, never a clamp; the statement-level
+    `ProjectRoleStanding_t4d_no_truncate`, registered in `TRUNCATE_SEALS` —
+    and `Membership` itself gains the statement-level
+    `Membership_t4d_no_truncate` (registered likewise), so the rows the
+    register counts cannot vanish beneath it. 4d-i backfills one `architect`
+    row per project from a count taken in the migration (zero, which the
+    audit proves), `upgrade-proof.sh` asserts register = count over the
+    legacy fixture, P29b asserts it after EVERY transition shape (insert,
+    activate, soft-remove, restore, re-role in and out, through the service;
+    the project cascade), and an operator `platform:verify` diagnostic
+    compares the two OFFLINE, never in a transaction. `countersignRequired`
+    is then a KERNEL read: the ONE decisions read path — live and projection
+    alike, in the hydrate step both run — overlays `activeCount > 0` for
+    `(projectId, 'architect')` through `RoleStandingQuery` (one keyed lookup
+    per response, present only when true), SYNCHRONOUS with the membership
+    commit whose trigger wrote it, never stored in the projection DTO,
+    never read from `Membership` anywhere in decisions; the approve CAS and
+    every DB seal keep judging the chain by the orgs primitive under the
+    readiness lock over the delivered decisions → orgs edge (the cleared
+    authority), and the two cannot disagree for the reason above. The
+    `decision.countersign_chain_changed` signal stays WITHDRAWN for good
+    (round 10 introduced it, 13 withdrew it, 14 restored it, 15 withdrew
+    it): nothing in the projection stores the value, so nothing needs
     refreshing, and the `decisions.inbox` bump keeps its two other reasons.
-    The value cannot be stale because no writer exists that does not write
-    the mirror in the same transaction; `architect` leaves the §A.2
+
+    SECOND, the writer boundary is the COMMAND LEDGER, on the orgs-owned
+    row: `Membership` gains a nullable `sourceCommandId` with the
+    project-contained composite FK to `CommandExecution(projectId, id)` and
+    the partial one-use UNIQUE `(projectId, sourceCommandId) WHERE
+    "sourceCommandId" IS NOT NULL`, and the orgs-owned
+    `Membership_t4d_architect_provenance` seal requires it on exactly the
+    writes that can flip architect standing: a BEFORE INSERT OR UPDATE
+    trigger that, whenever OLD or NEW role is `architect`, refuses a write
+    whose `sourceCommandId` is absent or not DISTINCT from OLD's and calls
+    the delivered `phase6_t4c_provenance_reserved` (the receipt RESERVED
+    now, of an orgs membership command type, by the requesting actor),
+    paired with the DEFERRED, TABLE-SPECIFIC
+    `phase6_t4d_membership_provenance_bound` requiring at commit that the
+    cited command SUCCEEDED naming this membership row as its result
+    (review round 17: the delivered `phase6_t4c_provenance_bound` reads
+    `NEW.id` and requires `resultRef = NEW.id`, so it binds only a row keyed
+    by `id` — `Membership` has one; the register has none, and needs no
+    binding because its only writer is a trigger); a hard DELETE of a row
+    whose OLD role is `architect` is refused outright except as the cascade
+    of the project's own deletion (depth and flag, as above) — the product
+    removes an architect by status, and the removal IS the standing flip the
+    ledger records. That is the rule every 4c fact already lives under,
+    applied to the one orgs row whose standing decisions depend on, and it
+    makes the three orgs membership mutations that can touch an architect —
+    `members.add` (re-activation of a removed member goes through it),
+    `members.updateRole`, `members.remove` — COMMANDS on the ledger in
+    4d-ii: `executeCommand` with an idempotency key and `resultRef` = the
+    membership id, the routes and the web store carrying the key, the §A
+    command-level readiness-lock enumeration gaining all three. They are not
+    today (`members.service.ts` takes `lockProjectReadiness` and writes no
+    receipt; `worker-devices.service.ts` is the orgs precedent for the
+    ledger). The trust boundary is the ledger's own, stated where the
+    platform seals it (`20270425000000_platform_command_receipt_seal`: no
+    trigger can distinguish the application from SQL that reproduces the
+    protocol by hand — reserve, write, complete, in one transaction — and
+    that residual is the one every provenance-sealed fact in this
+    repository carries; the plan claims nothing stronger). Every architect
+    activation and deactivation that COMMITS therefore crosses ONE boundary
+    — the orgs membership command — and that boundary invokes
+    `DecisionsParticipant.renotifyAwaitingCountersign` on the zero-to-one
+    transition (round 6, unchanged), so no writer can skip the
+    re-notification and a directly-inserted architect B after A left is
+    IMPOSSIBLE rather than un-notified (its receipt cannot exist); the
+    register needs no participant write at all. `architect` leaves the §A.2
     DB-serialized direct-writer set, and a direct architect write is
-    REFUSED AT COMMIT (hostile probes, review round 16: INSERT, role UPDATE
-    into and out of `architect`, soft removal, hard DELETE — each committed
-    alone refused by `Membership_t4d_chain_mirror`; each paired with an
-    unprovenanced flip of the mirror refused by the mirror's provenance
-    seal; the mirror erased by DELETE and by TRUNCATE after an activation
-    refused by its erasure seals; each through the service succeeding,
-    upserting the mirror once per boundary crossing under its reserved
-    command, re-notifying on zero-to-one); the operator repair
+    REFUSED (hostile probes, review rounds 16–17: INSERT, role UPDATE into
+    and out of `architect`, soft removal, restore — each without a receipt
+    refused by the reservation half, each with a reserved-but-never-
+    completed receipt refused at commit by the binding half, each with a
+    receipt borrowed from another command type or actor refused; a hard
+    DELETE refused; a direct write to the register refused, the register
+    erased by DELETE or by TRUNCATE refused, `Membership` truncated refused;
+    each through the service succeeding, the register moving by exactly one
+    in the same commit, re-notifying on zero-to-one); the operator repair
     stays the service re-role (P28b), and the 4d-i audit is unaffected (a
-    migration's own statements run before the seal exists; 4d-i backfills
-    one mirror row per project with `active = false`, which the audit
-    proves true — no architect can exist while reserved). **And the DTO field is
+    migration's own statements run before the seals exist; 4d-i backfills
+    the register at zero, which the audit proves true — no architect can
+    exist while reserved). **And the DTO field is
     OMITTED when false** (review round 14): `countersignRequired` is
     serialized only when true and hydrated as false when absent — the 4c-ii
     consultation precedent, absence being the pre-change default — so the
@@ -2016,11 +2073,13 @@ sites name where today's behavior lives.
     shows `countersignRequired: true` and the modal the countersign copy,
     no fold delivery in between; the last architect removed → the field
     absent the same way; A-active/B-added crosses no boundary and writes
-    nothing; a direct architect INSERT refused at commit by the orgs-owned
-    correspondence seal, and refused again when paired with an
-    unprovenanced mirror flip; a direct flip of the mirror row alone refused
-    by its provenance seal; the mirror erased by DELETE and by TRUNCATE
-    refused (review round 16); rebuild == live (the
+    nothing (register 1 → 2); register = orgs primitive after every
+    transition shape; a direct architect INSERT refused without a receipt,
+    refused at commit with an uncompleted one, refused with a borrowed one;
+    a hard DELETE of an architect row refused; a direct write to the
+    register refused; the register erased by DELETE and by TRUNCATE refused;
+    the project's own deletion cascading through it (review rounds 16–17);
+    rebuild == live (the
     projection stores no such field); with no
     chain both surfaces stay byte-identical; P31's web arm drives the client
     approval path under an active chain and asserts the provisional copy —
@@ -2038,7 +2097,7 @@ sites name where today's behavior lives.
     and `decisions.inbox` (`decisions.projection.ts`, 2 → 3, for the
     awaiting state and the forward-installed holder in its fold — the
     chain-changed signal withdrawn for good in round 15, the standing being
-    a decisions-owned mirror the read path overlays), with the
+    a kernel-owned register the read path overlays), with the
     `OutboxConsumerCatalog` rows and `ProjectionGeneration.catalogVersion`
     migrated in 4d-ii's OWN catalog-data migration, so `syncConsumerCatalog`
     refuses a restarted or rolled-back pre-4d-ii process at startup and it
@@ -2152,7 +2211,14 @@ sites name where today's behavior lives.
     bundle cannot map), `/me/memberships` has its architect memberships
     STRIPPED (the tab cannot enter them; the next full load restores them),
     and the roster `/projects/:projectId/members` has its architect rows
-    stripped likewise (display-only on a stale tab, restored on reload); the
+    stripped likewise (display-only on a stale tab, restored on reload), and
+    — review round 17 — so does `/me/portfolio`: `OrgsService.portfolio`
+    builds its rows from `Membership.role` verbatim and a still-open tab
+    refreshes it unconditionally, so a `recorded-v1` PMC tab re-roled to
+    architect would otherwise receive the new enum through a route neither
+    stripped nor refused, render the project card and offer an Open the
+    switch then rejects — for a lesser client the architect rows are
+    STRIPPED from the portfolio (the card absent until reload); the
     tripwire below carries `Membership.role = 'architect'` as a wire shape
     with these three sites classified; `decisions.create`/`updateDraft` naming
     `deciderKind: 'architect'` and `decisions.forward` to the role are
@@ -2171,8 +2237,8 @@ sites name where today's behavior lives.
     the server's `withdrawChange` refusal remaining the backstop. A TRIPWIRE pins completeness: a test enumerates every enum
     value and column 4d adds (`DecisionStatus.awaiting_countersign`,
     `DeciderKind.architect`, `TokenRole.architect`, `Membership.role =
-    'architect'` on the membership, roster and switch responses (review
-    round 12), `ChangeRequest.origin`, `countersignRequired`, the
+    'architect'` on the membership, roster, switch AND portfolio responses
+    (review rounds 12 and 17), `ChangeRequest.origin`, `countersignRequired`, the
     `DecisionForward` DTO) and asserts each is
     classified strip / refuse / additive-ignorable with its server-side
     refusal named, so a 4d shape added later without a classification fails
@@ -2180,8 +2246,9 @@ sites name where today's behavior lives.
     decision absent from a `recorded-v1` snapshot and present for
     `countersign-v1`; an architect session refused on the shell read for
     `recorded-v1` and served for `countersign-v1`; a `recorded-v1` tab
-    holding a PMC session seeing no architect membership in `/me/memberships`
-    and no architect row in the roster, and refused on `/auth/switch` into an
+    holding a PMC session seeing no architect membership in `/me/memberships`,
+    no architect row in the roster and no architect card on `/me/portfolio`
+    (review round 17), and refused on `/auth/switch` into an
     architect membership, while `countersign-v1` sees both and switches
     (review round 12); a `recorded-v1`-only
     client under an active chain refused on approve (never told "Approved &
