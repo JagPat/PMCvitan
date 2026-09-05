@@ -94,9 +94,16 @@ holds no label: it was closed and its branch rebuilt before the orchestrator's g
 scope gate refused #542's `Replaces: #541` and #542 declared `Replaces: #540` instead — the sequencing lesson
 recorded here, not tidied away; no label is applied or cleared by hand. No `6a53aae` decision was reopened. The unit exceeds the 1,500-line standard budget and
 declares `justified-large`: ONE plan document that must be reviewed whole, grown only by the precisions
-fourteen review rounds required. Should this PR's own head draw findings, one correction head folds them; a
-second finding-bearing head forces the same close-and-replace again — after the orchestrator labels this PR,
-never before — and never a third correction head.
+fifteen review rounds required. This PR's first head (`4dda84fc`) drew seven findings (six P1, one P2) — the
+registry's hard-coded `KNOWN_ROLES` mirror missing from the role fan-out; a "both" left over from round 13's third
+reservation door in the transient block and the replay text; the round-14 fold reading chain presence through the
+orgs participant and the asynchronous refresh not atomic with the membership commit (answered by a decisions-owned
+`DecisionChainStanding` mirror written in the membership transaction and overlaid as an own-module read);
+`ChangeRequest.origin` classified additive-ignorable while a stale PMC tab renders a Withdraw the server refuses;
+the gateway's direct `/auth/session` fetch omitting the contract header; and the three fact tables never registered
+in the decisions manifest's ownership sets — folded on its second head as one batch ("review round 15" in the
+plan). That was this PR's FIRST finding-bearing head; a second forces the same close-and-replace again — after the
+orchestrator labels this PR, never before — and never a third correction head.
 
 **What follows, and what does not.** After this plan clears its own exact-head review (a fresh
 clean +1 through the `codex-current-head` gate — the independent clearance the 4c plan's
