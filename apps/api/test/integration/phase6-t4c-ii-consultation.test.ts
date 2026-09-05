@@ -285,11 +285,68 @@ describe('Phase 6 unit 4c-ii — consultation behaviour (live PG)', () => {
     );
     expect(asked.status, JSON.stringify(asked.body)).toBe(201);
 
+    // REWRITTEN AGAIN BY 4c-iv. Through 4c-iii the shell ADVERTISED `consultation` so the client
+    // could read the same per-project gate the write surface did. 4c-iv retired every read of that
+    // gate — the two commands, this shell entry, and the client — in one unit, so the shell no
+    // longer names it. The routes above still answer 201: that is the whole point.
     const offShell = await get(offTokens.pmc)(`/projects/${offProjectId}/shell`);
     expect(offShell.status).toBe(200);
-    expect(offShell.body.capabilities).toContain('consultation');
+    expect(offShell.body.capabilities).not.toContain('consultation');
     const onShell = await get(tokens.pmc)(`/projects/${projectId}/shell`);
-    expect(onShell.body.capabilities).toContain('consultation');
+    expect(onShell.body.capabilities).not.toContain('consultation');
+  });
+
+  it('4c-iv — the gate READS are gone: a project with NO capability row still reaches BOTH routes, and the shell does not advertise the retired gate', async () => {
+    // THE 4c-iv PROBE, reproduce-first. At the base (4c-iii) both commands begin with
+    // `assertEnabled(projectId, 'consultation')`, so a project whose row is absent answers 404 on
+    // both routes; after 4c-iv nothing reads the row, so the same project answers 201 on both.
+    //
+    // Reaching a row-less project takes the alternate-writer path 4c-iii's PRESERVATION seal
+    // exists to refuse — a direct DELETE — so the seal is disabled BY NAME for one statement and
+    // re-enabled in the same transaction (the mirror of the pre-4c-iii fixture, which had to plant
+    // the row through the RESERVATION the same way). The seal itself is untouched by this unit
+    // and retires only in 4c-v; this is the state a 4c-iv instance must tolerate during its own
+    // rolling window, since its predecessors are the last readers of the row it no longer reads.
+    await t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe('ALTER TABLE "ProjectCapability" DISABLE TRIGGER "ProjectCapability_t4c_preserved"'),
+      t.prisma.$executeRawUnsafe(
+        `DELETE FROM "ProjectCapability" WHERE "projectId" = $1 AND "capability" = 'consultation'`, offProjectId),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "ProjectCapability" ENABLE TRIGGER "ProjectCapability_t4c_preserved"'),
+    ]);
+    try {
+      const gone = await t.prisma.projectCapability.findUnique({
+        where: { projectId_capability: { projectId: offProjectId, capability: 'consultation' } },
+      });
+      expect(gone, 'the fixture must actually reach a row-less project').toBeNull();
+
+      const decisionId = await issue(offProjectId);
+      const asked = await post(offTokens.pmc)(
+        `/projects/${offProjectId}/decisions/${decisionId}/consultations`,
+        { consulteeMembershipId: offMembership.eng, question: 'Does this substrate need a primer?' },
+        randomUUID(),
+      );
+      expect(asked.status, JSON.stringify(asked.body)).toBe(201);
+
+      const consultationId = await consultationOf(decisionId);
+      const answered = await post(offTokens.eng)(
+        `/projects/${offProjectId}/decisions/${decisionId}/consultations/respond`,
+        { consultationId, response: 'Yes — two coats, the first thinned.' },
+        randomUUID(),
+      );
+      expect(answered.status, JSON.stringify(answered.body)).toBe(201);
+
+      const shell = await get(offTokens.pmc)(`/projects/${offProjectId}/shell`);
+      expect(shell.status).toBe(200);
+      expect(shell.body.capabilities).not.toContain('consultation');
+    } finally {
+      // put the row back through the seal's one permitted direction, so the rest of this suite —
+      // and 4c-iii's own presence assertions — see the state every project is guaranteed to have
+      await t.prisma.projectCapability.upsert({
+        where: { projectId_capability: { projectId: offProjectId, capability: 'consultation' } },
+        create: { projectId: offProjectId, capability: 'consultation', enabledById: users.pmc },
+        update: {},
+      });
+    }
   });
 
   // ═══ THE ELIGIBILITY CARVE-OUT, at both moments ══════════════════════════════════════════════
