@@ -48,7 +48,7 @@ first fold moves it. Runner invariants over the parsed Now block: `assessRunnerS
 `pr:<this>` while open; `assessPostMergeRunnerState` → simulated, allowed, `task:4`;
 `detectStatusDrift` with the self-named `open_pr` live → no drift.
 
-**Lineage: #537, #538, #539, #540 and #541 each closed at the review-round limit; this PR replaces #541.**
+**Lineage: #537, #538, #539, #540 and #541 each closed at the review-round limit; this PR replaces #541 in lineage and settles #540's ledger obligation.**
 #537 (heads `d82d47f4`, `77ab82b1`: eight + six findings), #538 (`cae3d167`, `cbbe9d23`: seven + five),
 #539 (`91416864`, `0526eb8d`: five + four), #540 (`fcc6d15b`, `04b5491c`: seven + five) and #541
 (`a05fdd80`, `6ec40f12`: three + four) each drew
@@ -63,7 +63,11 @@ coordinator's blocker changing only `open_pr`); then (`6ec40f12`) the delivered
 `architect` absent from the `DeciderKind` designation contract the 4b plan deferred to 4d, the
 projected `countersignRequired` going stale when the architect standing changes with no decision
 event, and the round-9 withdrawal cancellation also marking the PMC requester's response push P38
-requires delivered. This PR carries all fifty-four fixes with `Replaces: #541`, the four annotated
+requires delivered. This PR carries all fifty-four fixes and declares `Replaces: #540` — the LABEL ledger's
+obligation, not the prose lineage (the #514/#513 lesson below): #541 was a CLAIMANT of #540's obligation and
+was closed before the orchestrator's gate could label it (its gate run was superseded by the rebuilt branch),
+so it holds no label, the obligation returned to the still-labelled #540, and the scope gate refused
+`Replaces: #541` as naming no unit awaiting replacement; no label is applied or cleared by hand — the four annotated
 "(review round 10)" in the plan where they land. No `6a53aae` decision was reopened. The unit
 exceeds the 1,500-line standard budget and declares `justified-large`: ONE plan document that must be
 reviewed whole, grown only by the precisions ten review rounds required. Should this PR's own head

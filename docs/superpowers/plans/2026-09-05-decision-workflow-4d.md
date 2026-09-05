@@ -13,8 +13,10 @@ before 4d implementation begins — the same plan-first contract that preceded
 at `fe9df58d`; 4c: the six units #489 → #498 → #506 → #528 → #533 → #535, with
 the 4c plan itself cleared at #490's gate).
 
-**Review lineage.** This document is the REPLACEMENT of PR #541 (`Replaces: #541`),
-itself the replacement of #540, #539, #538 and #537 in turn — the same docs-only
+**Review lineage.** This document is the REPLACEMENT of PR #541 (the PR declares
+`Replaces: #540`: #541, a claimant closed before the orchestrator could label it,
+holds no ledger obligation — #540 does; the #514/#513 lesson in STATUS), itself
+the replacement of #540, #539, #538 and #537 in turn — the same docs-only
 unit and nothing else, five times rebuilt from the same `main`. Round 1 on #537's first head
 (`d82d47f4`: eight Codex findings — three P1 on the dark-deploy boundary, two P1
 on evidence integrity, one P1 on the stranded return path, two P2 on the push
