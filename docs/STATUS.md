@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: 75708004
-open_pr: none
+open_pr: 533
 next_task: phase-6-task-4c-v
 blocking_directive: phase-6-4c-iv-rollout-complete
 updated: 2026-09-05
