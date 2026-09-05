@@ -120,11 +120,13 @@ describe('Phase 6 unit 4c-0 — sanctioned resets route through the shared helpe
       // each asserted to REFUSE its statement. Routing these through the helper would disable the
       // very seals under test and leave three vacuous green assertions.
       'phase6-t4c-i-consultation.test.ts': 3,
-      // Phase 6 unit 4c-iii: ARM 3 of the capability PRESERVATION seal — the statement-level
-      // `BEFORE TRUNCATE` that keeps the consultation row PRESENT. Asserted to REFUSE its
-      // statement, so it must NOT go through the helper: the helper disables that very seal
-      // (it is now an entry in TRUNCATE_SEALS), which would leave the assertion vacuous and green.
-      'phase6-t4c-iii-enablement.test.ts': 1,
+      // Phase 6 unit 4c-v: the MIRROR probe — one TRUNCATE statement driven twice on a scratch
+      // database, REFUSED after the shipped 4c-iii file and PERMITTED after the shipped 4c-v file.
+      // (4c-iii's own ARM 3 probe lived in `phase6-t4c-iii-enablement.test.ts` until the seal it
+      // asserted was retired; the "before" half now lives here.) It must NOT go through the
+      // helper in either direction: the helper would disable the seal whose refusal is measured,
+      // and after the retirement there is no seal for it to toggle.
+      'phase6-t4c-v-seal-retirement.test.ts': 1,
       // Phase 6 unit 4c-iii-r: the repair MARKER's statement-level `BEFORE TRUNCATE` seal. The
       // marker authorizes every later start to skip the decisions.inbox repair, so losing it by
       // TRUNCATE is sealed exactly as losing it by DELETE is — and this probe asserts the seal
