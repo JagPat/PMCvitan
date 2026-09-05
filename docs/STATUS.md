@@ -13,14 +13,58 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: in_progress
+task_state: merged
 work_item: none
-reviewed_merge: 76027074
-open_pr: 535
+reviewed_merge: f5da6654
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-05
 ```
+
+### Unit 4c-v merged — 4c is COMPLETE. The §E handoff to the 4d PLAN unit is the recorded next step.
+
+`f5da6654` (PR #535, reviewed head `8041181f`, a fresh Codex +1 with zero findings on its first
+head; the merge tree is byte-identical to the reviewed head's tree) merged the seal retirement:
+migration `20271130000000_phase6_t4c_v_seal_retirement` drops the 4c-iii preservation seal, the
+delete flag it consulted, the creation trigger and the `consultation` capability rows, and
+`scripts/migrate.sh` executes it after `20271120` on every path. With it, ALL SIX 4c units —
+4c-0, 4c-i, 4c-ii, 4c-iii (+ 4c-iii-r), 4c-iv and 4c-v — are on `main`, each through the
+exact-head gate, and the plan's own boundary ("4c is not complete until 4c-v merges", §D, review
+round 26) is crossed.
+
+**What moves in this flip, and why it is the TERMINAL handoff shape.** `reviewed_merge` advances
+to `f5da6654`; `open_pr` returns to `none` (#535 is merged — the stale pointer is the drift the
+post-merge handoff on #535 reported); `task_state` becomes `merged` with `work_item: none`, so the
+resolver hands off to the NAMED `next_task` rather than re-entering finished work. This is the
+#468 → #469 two-step at the 4b/4c boundary, repeated at the 4c/4d boundary: a STATUS-only handoff
+records the state AFTER its own merge and never names itself (`assessRunnerState` consumes any
+non-`none` `open_pr` before it reaches `next_task`). Task 4 itself is not finished — its remaining
+scope is the 4d units — and `task: 4` stays; `merged` here is the unit sequence's terminal record,
+exactly as #469 recorded it while 4c–4d remained.
+
+**What the merge does and does not establish.** The retirement is on `main`; Coolify applies it
+on the next deploy through `migrate.sh`, whose `ALWAYS_EXECUTE` ordering makes the baseline path
+correct too. 4c-v carries NO post-deploy gate, and none is invented here: the plan attaches a
+rollout prerequisite to 4c-ii (the drain) and to 4c-v's START (the 4c-iv rollout, cleared on
+#482 comment 5548460858), never to 4c-v's own rollout — a retired seal protects no reader, and the
+one disclosed residual (the pre-4c-iv stale tab) is Board-ruled and resolves on reload. Nothing
+below re-litigates that.
+
+**How the next stop starts — bound here so `next_task:phase-6-task-4d` cannot be read as "start
+4d implementation".** Per the merged 4b plan's §E order ("4c implementation → the 4d plan unit →
+4d implementation") and the 4c plan's own staging (§D: "4d … its plan unit follows 4c
+implementation — ALL SIX PRs"), the first 4d review unit is the DOCS-ONLY 4d PLAN unit: its own
+exact-head review to a fresh clean +1, starting material the §C orchestration design at PR #340
+head `6a53aae` plus §D obligations 4–6 (architect, forwarding, countersign), with 4d
+implementation only after that plan unit merges and clears — exactly as the 4c plan unit preceded
+4c implementation. It is one PR at a time: it opens only after THIS handoff merges, from the
+`main` that carries it.
+
+**Not started, by Board call and standing gate.** The P3005 correction
+(`phase-4-t3c-p3005-baseline-dependency-ordering`) stays in the maintenance queue (#482 comments
+5547940421 and 5548121983). Contractor-capture units 1–6 stay Board-gated. #530, #531 and #532 are
+not reopened. No UX, performance, Site Map or photo-capture work.
 
 ### `phase-6-4c-iv-rollout-complete` is CLEARED — on one deliberately formatted `OPERATOR-ATTESTATION` record, cited here
 
