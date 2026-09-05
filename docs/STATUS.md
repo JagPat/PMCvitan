@@ -99,7 +99,8 @@ no other open tab (the membership events catalogued `invalidate: false`); and th
 when `restoreProject` clears `archivedAt` with the architect count unchanged — answered by the family's own subject
 predicate re-run at the final send, an orgs-owned `membership.standing_changed` invalidation on the crossing, and a
 restore-time re-emit of every still-actionable demand through the round-6 participant. This PR carries all ninety-two
-fixes with `Replaces: #545`, the three annotated "(review round 18)" in the plan where they land. **The ledger, read off the label** (the
+fixes with `Replaces: #545`, the three annotated "(review round 18)" in the plan where they land, and its own
+round 19 below. **The ledger, read off the label** (the
 #514/#513 lesson): the obligation is the repository-wide `review-replacement-required` LABEL, not the prose
 lineage. #545 was labelled by the orchestrator BEFORE it closed, so it is the obligation this PR settles. Every
 predecessor closed at the limit (#537, #538, #539, #540, #542, #543, #544, #545) stays a labelled pending obligation until
@@ -109,7 +110,7 @@ holds no label: it was closed and its branch rebuilt before the orchestrator's g
 scope gate refused #542's `Replaces: #541` and #542 declared `Replaces: #540` instead — the sequencing lesson
 recorded here, not tidied away; no label is applied or cleared by hand. No `6a53aae` decision was reopened. The unit exceeds the 1,500-line standard budget and
 declares `justified-large`: ONE plan document that must be reviewed whole, grown only by the precisions
-eighteen review rounds required. #544's first head (`4dda84fc`) drew seven findings (six P1, one P2) — the
+nineteen review rounds required. #544's first head (`4dda84fc`) drew seven findings (six P1, one P2) — the
 registry's hard-coded `KNOWN_ROLES` mirror missing from the role fan-out; a "both" left over from round 13's third
 reservation door in the transient block and the replay text; the round-14 fold reading chain presence through the
 orgs participant and the asynchronous refresh not atomic with the membership commit (answered by a decisions-owned
@@ -128,8 +129,17 @@ trigger-maintained `ProjectRoleStanding` register no module reads across a bound
 command provenance on the `Membership` row itself (the three orgs member mutations join the ledger in 4d-ii), the
 project-delete flag trigger is reinstalled under a 4d name, the roster loads on the consultation surface, and the
 portfolio joins the stale-client boundary; that second head drew the three of round 18 above, which closed #545.
-Should this PR's own head draw findings, one correction head folds them; a second finding-bearing head forces the same
-close-and-replace again — after the orchestrator labels this PR, never before — and never a third correction head.
+This PR's first head (`0ae38c88`) drew seven findings (six P1, one P2) — the round-18 subject re-judge run once per
+delivery, leaving a role fan-out's second recipient a stale send; its `consultation_responded` rule flat where the claim
+predicate is target-aware; the client boundary fencing `/auth/switch` but not the other token-minting responses;
+`ChangeRequest.origin` serialized when `standard`; no P41 barrier for the transitions that close the consultation set;
+the activation side effects bound to service code a hand-run receipt bypasses; and a rewritable `sourceCommandId` on the
+membership row — folded on its second head as one batch ("review round 19" in the plan): the crossing emits at the
+database boundary through a canonical-pinned SQL twin of `emitEvent`, a decisions-owned ordered consumer drives the
+re-notification and the restore re-emit, the provenance becomes an immutable `MembershipTransition` fact, the send hook
+re-judges the subject per recipient with the claim predicate itself, every token-minting response is fenced, a
+`standard` origin is omitted, and P41 is extended. That was this PR's FIRST finding-bearing head; a second forces the
+same close-and-replace again — after the orchestrator labels this PR, never before — and never a third correction head.
 
 **What follows, and what does not.** After this plan clears its own exact-head review (a fresh
 clean +1 through the `codex-current-head` gate — the independent clearance the 4c plan's
