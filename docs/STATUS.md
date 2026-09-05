@@ -81,9 +81,16 @@ instead; #540's obligation is therefore ORPHANED by that sequencing error and st
 beside #520 and #521 until some unit names it — recorded here, not tidied away; no label is applied or
 cleared by hand. No `6a53aae` decision was reopened. The unit exceeds the 1,500-line standard budget and
 declares `justified-large`: ONE plan document that must be reviewed whole, grown only by the precisions
-twelve review rounds required. Should this PR's own head draw findings, one correction head folds them; a
-second finding-bearing head would force the same close-and-replace again — after the orchestrator labels
-this PR, never before — and never a third correction head.
+thirteen review rounds required. This PR's first head (`7bfdc3e0`) drew six P1 findings — the
+last-architect exemption stated for the named holder but not the architect role designation; approval
+assigning no cancellation to a claimed decider/forward push; a forward whose designation does not change
+satisfying every seal; the withdrawal target filter wrongly applied to `consultation_requested`; the
+architect designation reachable on an unpublished draft while the reservation stands; and the
+`countersignRequired` freshness signal bypassed by a direct membership write (the round-10 signal is
+withdrawn for the read-time overlay it had declined) — folded on its second head as one batch ("review
+round 13" in the plan). That was this PR's FIRST finding-bearing head; a second would force the same
+close-and-replace again — after the orchestrator labels this PR, never before — and never a third
+correction head.
 
 **What follows, and what does not.** After this plan clears its own exact-head review (a fresh
 clean +1 through the `codex-current-head` gate — the independent clearance the 4c plan's

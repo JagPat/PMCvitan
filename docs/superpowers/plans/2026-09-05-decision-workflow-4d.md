@@ -106,8 +106,17 @@ omitting `revisionFinalized` where create/revise had been fixed; and an
 active non-holder architect unable to see the pending decision the plan lets
 them forward — exhausted #542's review round in turn, so it closed without a
 third head and THIS sixth replacement carries all sixty-two fixes, the three
-annotated "(review round 12)". No design decision carried from `6a53aae` was
-reopened; every fix is a precision this plan owed and had not stated.
+annotated "(review round 12)". Round 13 — this sixth replacement's own first
+head (`7bfdc3e0`), six P1 findings: the last-architect exemption stated for
+the NAMED holder but not the architect ROLE designation; approval assigned
+no cancellation for a claimed decider/forward push; a forward whose
+designation does not change satisfying every seal; the withdrawal target
+filter wrongly applied to `consultation_requested`; the architect DESIGNATION
+reachable on an unpublished draft while the reservation stands; and the
+`countersignRequired` freshness signal bypassed by a direct membership write
+— is folded on its second head, annotated "(review round 13)". No design
+decision carried from `6a53aae` was reopened; every fix is a precision this
+plan owed and had not stated.
 
 ## Provenance, and what is NOT re-litigated
 
@@ -270,9 +279,25 @@ fallthrough targets `client`); and the forward door's role-`toDesignation`
 arm (`phase6_effective_role_standing ≥ 1`, §A.2) admits it unchanged. Dark until
 4d-iii like everything else: while the reservation stands no membership can
 hold the role, so `phase6_effective_role_standing(project, 'architect') =
-0` and a decision designated to it is refused by the same open-holder rule
-that refuses a `pmc` decision in a project with no PMC — representable,
-never satisfiable, probed in P29c. P28 gains the role-held arms, RED at base
+0` and a PUBLISHED decision designated to it is refused by the same
+open-holder rule that refuses a `pmc` decision in a project with no PMC —
+but that rule judges publication only (review round 13): the delivered
+`DecisionsService.create` births an unpublished DRAFT carrying its
+`deciderKind` before any standing check, and the 4b seal's role arms fire at
+the publication boundary, so a `countersign-v1` client could store an
+architect-designated draft while a pre-4d process still serves — and that
+process reads the project's rows through its old Prisma enum BEFORE the
+author-visibility filter, failing on the unknown value. The reservation
+therefore has a THIRD door: 4d-i installs `Decision_t4d_architect_reserved`,
+a BEFORE INSERT OR UPDATE trigger refusing ANY `Decision` row whose
+`deciderKind` is `architect` — draft or published — through the SAME
+refusal function as the two other doors, dropped by the SAME 4d-iii
+statement; `decisions.create`/`updateDraft` refuse the value 409 naming the
+drain directive while it stands (the picker is already gated on the
+shell's `rollout.phase6_4d` read). P29c probes the unpublished-draft path:
+while reserved, a service create naming the role is 409 and a hostile direct
+draft insert is refused, so no row anywhere carries the value; after 4d-iii
+both succeed, and the published one is then judged by the open-holder rule. P28 gains the role-held arms, RED at base
 (zod refuses the value; `viewerIsDecider` returns false): a PMC creates a
 decision with `deciderKind: 'architect'` and forwards a pending one to the
 architect role designation; every active architect sees each in the
@@ -426,7 +451,15 @@ The settled design, plus the owner's 2026-08-13 amendment, as behavior:
   write-once trigger (`phase6_t4b2_decision_seal`, the holder arm) loosens to
   exactly one opening — a change accompanied by a same-transaction
   `DecisionForward` row whose `fromDesignation` EQUALS the OLD holder columns
-  and whose `toDesignation` EQUALS the NEW ones. Mere row presence is
+  and whose `toDesignation` EQUALS the NEW ones — **and the two DIFFER**
+  (review round 13): equality alone admits a forward from the client to the
+  client, a no-op holder UPDATE paired with a matching row that appends
+  immutable handoff evidence and sends a forwarded push for a handoff that
+  never happened; the command refuses a same-target forward 409 ("already
+  the holder"), the holder-door arm requires the holder columns to actually
+  change, and the forward-side reverse seal refuses a row whose
+  `fromDesignation` equals its `toDesignation`, so the no-op is
+  unrepresentable at both layers (P34). Mere row presence is
   forgeable: a hostile transaction could insert a forward row naming
   unrelated designations and re-home the holder to a third member with the
   trigger satisfied — authority, counts and pushes following an unrecorded
@@ -565,9 +598,20 @@ The settled design, plus the owner's 2026-08-13 amendment, as behavior:
   generalizing a round-1 draft that cancelled decider deliveries alone): a
   forward cancels that decision's `decider` AND `forward` deliveries (a
   second forward invalidates the first forward's push at the now-displaced
-  holder exactly as it invalidates the decider's); countersign, disagree
-  and the stranded resolution cancel that decision's `countersign` delivery
-  (the demand is gone, whichever way); **the PMC's `withdraw` cancels that
+  holder exactly as it invalidates the decider's); **and so does the
+  APPROVAL that meets the demand** (review round 13): `approve` — landing
+  `approved` directly or `awaiting_countersign` under a chain — cancels that
+  decision's `decider` AND `forward` deliveries by subject under the decision
+  row lock, because a delivery claimed before the approval passes the
+  consumer's final delivery-row, standing and project re-reads (none of
+  them reads the status) and would send "awaiting your approval" after the
+  holder acted; the family predicates' STATUS arm refuses only at CLAIM, so
+  the in-flight one needs the mark; P40 barrier-probes approval between
+  claim and send for both families (held at the pre-send barrier, the
+  approval commits, the final re-read drops the send — the delivery marked)
+  and approval-before-claim (refused at claim by the status arm); countersign,
+  disagree and the stranded resolution cancel that decision's `countersign`
+  delivery (the demand is gone, whichever way); **the PMC's `withdraw` cancels that
   decision's `decider` AND `forward` deliveries — and, review round 9, the two
   consultation families' unsent deliveries for that decision whose TARGET
   leaves the withdrawn audience (a `countersign` delivery cannot exist on a
@@ -581,9 +625,16 @@ The settled design, plus the owner's 2026-08-13 amendment, as behavior:
   deliverable (a withdrawn decision is pmc-only; a PMC may still be told
   advice was given). The withdraw transaction therefore enumerates, under
   the decision row lock, the decision's consultation entries and cancels a
-  `consultation_requested` or `consultation_responded` delivery only where
-  its target user lacks PMC standing (`hasProjectRoleStanding(user,
-  ['pmc'])` false — the architect requester, a non-PMC consultee), through
+  `consultation_responded` delivery only where its target user lacks PMC
+  standing (`hasProjectRoleStanding(user, ['pmc'])` false — the architect
+  requester) — while EVERY `consultation_requested` delivery for the
+  decision is cancelled by subject regardless of target (review round 13):
+  the target filter is right for a RESPONSE, an informational answer a PMC
+  may still receive, and wrong for a REQUEST, an invitation to act that the
+  `consultation.respond` command refuses on a withdrawn subject for a PMC
+  consultee exactly as for anyone else — a claimed request push to a PMC
+  consultee that survived the filter would invite an impossible action;
+  the response cancellation goes through
   a NARROWING arm on the delivered `cancelQueuedPushBySubject`
   (`targetUserIds`, judged against the event's own durable dispatch intent,
   which every arm of that operation — pending, leased, dead, subjectless,
@@ -593,8 +644,10 @@ The settled design, plus the owner's 2026-08-13 amendment, as behavior:
   Probed: PMC requests advice → the consultee responds and the push is
   claimed → the PMC withdraws before the send → the PMC RECEIVES the
   response, the delivery `succeeded`/`dispatch` with no mark; the same
-  sequence with an architect requester → marked, nothing sent (P38's
-  consultation arm and P40's barrier arm, both orderings). The cancellation
+  sequence with an architect requester → marked, nothing sent; and a
+  REQUEST push to a PMC consultee claimed before the withdrawal → marked,
+  nothing sent (review round 13) (P38's consultation arm and P40's barrier
+  arm, both orderings). The cancellation
   is by subject — and target, for the consultation families — under the
   decision row lock inside the withdraw transaction** (review round 4 — the
   forward family knew only a later forward as its invalidation: forward a
@@ -1111,7 +1164,15 @@ The settled design, plus the owner's 2026-08-13 amendment, as behavior:
   promise says it is never refused — a PMC who could neither remove A nor
   reach the stranded resolution. The guard's awaiting arm therefore EXEMPTS
   exactly this case: removing a named holder of an awaiting decision is NOT
-  refused when that member is the project's LAST active architect — the
+  refused when that member is the project's LAST active architect — and,
+  review round 13, the SAME exemption covers the architect ROLE designation:
+  an `awaiting_countersign` decision designated to the architect role names
+  the last architect as the last active member of its holder role, and the
+  round-10 designation fan-out stated the extension in §A.1 while P39 and
+  this paragraph still spoke of the named holder only, a contradiction an
+  implementation could resolve by refusing (the PMC then unable to reach the
+  stranded resolution). Both shapes — named holder AND role designation —
+  are exempt for exactly the last active architect and no one else; the
   removal proceeds, the chain deactivates, the countersign deliveries are
   cancelled, and the decision stays `awaiting_countersign` with a DEPARTED
   holder whose only exits are the stranded resolution's two outcomes:
@@ -1483,19 +1544,19 @@ sites name where today's behavior lives.
 | probe | proves | red site / staging |
 |---|---|---|
 | P28 | the role in every mirror: `TokenRole`, both zod enums, `PushRole`, the `ROLE_POLICY` rows (§A.1's exact set), `decisionsManifest.permissions`, AND the web role pickers/labels (`TeamScreen.tsx`, `RolePicker.tsx`) — the identity walk pins the set; a membership with the new role is mintable through the shipped UI once 4d-iii has dropped the reservation — and NOT OFFERED before it: the role pickers gate `architect` on the shell's `rollout.phase6_4d` read, and `MembersService.add` refuses the role 409 BEFORE provisioning the invited `User` while the reservation stands (a new-email add while reserved → 409 and zero `User` rows; review round 5); the EXISTING targeted ceilings admit the role — a decision published to an architect holder and a consultation requested from an architect both dispatch (RED at base: `buildDispatchIntent` rejects the out-of-ceiling role and the command aborts), and the catalog tripwire over every targeted entry whose narrowing site persists a member role (review round 3); **P28b (this plan): the RESERVATION** — between 4d-i and 4d-iii a direct `Membership` INSERT or role UPDATE whose NEW row names `architect` is refused at the DB (a removed row already in that role can be neither restored nor re-keyed through it), so no project can arm the chain while a previous-release instance may still serve; after 4d-iii the same statements succeed — the mirror of 4c's reservation probe; AND the AUDIT — 4d-i applied over a database holding ANY `Membership` row with `role = 'architect'` (active OR soft-removed) ABORTS naming the rows and installs nothing; the audit runs AFTER the reservation's `CREATE TRIGGER` in the same transaction, barrier-probed in both orderings on the shipped file (writer-first → the migration waits then aborts on the committed row; migration-first → the writer waits then is refused); the operator repair is a RE-ROLE through the team role command (a soft removal leaves `role` in place and aborts the next deploy identically — asserted), or the guarded operator DELETE, and the same file then deploys (the `upgrade-proof.sh` abort → re-role → redeploy cycle; review rounds 1–2); the REPLAY arm — the P3005 baseline of a post-4d-iii database holding an active architect replays 4d-i as a no-op on its transient block (marker present) and keeps the architect, while a pre-4d-iii baseline (no marker) installs and audits (review round 5) | `types.ts`, `contracts.ts`, `external-effects.ts`, `policy.ts`, the Team screen role lists; the orgs-owned reservation trigger |
-| P29 | no-active-architect byte-identity: with no architect membership ever, approve lands `approved` directly with `finalized = true`, forward is refused for the missing role's authority but works for holder/PMC, and the whole 4b/4c surface is byte-identical; **P29c (this plan): mixed-version byte-identity** — with the reservation ARMED (4d-i and 4d-ii deployed, 4d-iii not), every project is chain-off, no row can be `awaiting_countersign`, no membership can be `architect`, no `DecisionForward` row and no `decision.forwarded` delivery can exist (a service forward 409s naming the drain directive, a hostile direct forward insert is refused, no Forward affordance renders — review round 4), every read a pre-4d instance performs on these tables sees only values its enums know, and — the STALE-CLIENT arm, review round 9 — a browser declaring only `recorded-v1` is refused on approve under an active chain — judged inside the command under the readiness lock, the activation-between-check-and-approve barrier in both orderings (review round 11) — and receives no `awaiting_countersign` row and no architect-designated row, an architect session is refused on the shell read for that client (review round 11), while a `countersign-v1` client sees everything; after 4d-iii all four forward arms open | the chain switch; the reservation on both doors |
+| P29 | no-active-architect byte-identity: with no architect membership ever, approve lands `approved` directly with `finalized = true`, forward is refused for the missing role's authority but works for holder/PMC, and the whole 4b/4c surface is byte-identical; **P29c (this plan): mixed-version byte-identity** — with the reservation ARMED (4d-i and 4d-ii deployed, 4d-iii not), every project is chain-off, no row can be `awaiting_countersign`, no membership can be `architect`, no `DecisionForward` row and no `decision.forwarded` delivery can exist (a service forward 409s naming the drain directive, a hostile direct forward insert is refused, no Forward affordance renders — review round 4), no `Decision` row — DRAFT or published — carries `deciderKind = 'architect'` (a service create/updateDraft naming it 409s, a hostile direct draft insert is refused; both succeed after 4d-iii — review round 13), every read a pre-4d instance performs on these tables sees only values its enums know, and — the STALE-CLIENT arm, review round 9 — a browser declaring only `recorded-v1` is refused on approve under an active chain — judged inside the command under the readiness lock, the activation-between-check-and-approve barrier in both orderings (review round 11) — and receives no `awaiting_countersign` row and no architect-designated row, an architect session is refused on the shell read for that client (review round 11), while a `countersign-v1` client sees everything; after 4d-iii all four forward arms open | the chain switch; the reservation on all three doors — membership role, forward row, decision designation |
 | P29b | removed-architect deactivation + the stranded decision: the chain deactivates for NEW approvals; `decisions.resolveStrandedCountersign` drives BOTH outcomes (complete-under-no-chain → `approved` with finality + emission; return-to-decider → `change` with the origin-stamped open request), each writing its append-only `DecisionStrandedResolution` fact (UNIQUE per revision; the orphan-fact insert refused by the reverse pairing; a whitespace-only reason — spaces, AND a tab-and-newline-only value — refused at zod AND the CHECK; provenance-bound as the bundle's primary), the RETURNED bundle's request authored by the resolving PMC and ADMITTED by the P33b seal on that pairing (a returned-bundle request attributed to anyone else, or to an architect, refused), the `completed` outcome emitting `decision.reapproved` when the stranded revision's `approvedFrom` is `change`, end-to-end through re-approval; the bare hostile `awaiting_countersign → approved` flip under the INACTIVE chain refused without the fact; the returned-resolution bundle MISSING its `countersign_rejection` request refused at commit; refused while an architect is still active; the architect-reappears race deterministic; the RE-NOTIFICATION (review round 6) — approve → architect A removed (countersign delivery cancelled) → architect B added: exactly one new `decision.awaiting_countersign` delivery per still-awaiting decision, B receives, a `countersign_renotified` audit row attributed to the activating actor; an activation with no awaiting decision emits nothing; an activation while another architect is ALREADY active emits nothing and appends no `countersign_renotified` row (review round 7); the projection fold a status no-op; the FRESHNESS arm (review round 10) — a `pending` decision projected, the first architect added → `decision.countersign_chain_changed` emitted once and the projected DTO reads `countersignRequired: true`; the last architect removed → `false`; A-active/B-added emits nothing; rebuild == live; the DEPARTED-holder stranded return (review round 7) — `returned` with a target re-homes into `change` with the forward fact in the same bundle, `returned` without one refused | the new resolution command + its fact table + the switch; `DecisionsParticipant.renotifyAwaitingCountersign` on the orgs → decisions edge |
 | P30 | forward authority (holder/PMC/architect), ACTIVE target only, eligible states only — terminal AND `awaiting_countersign` refusals both probed through the guarded HTTP route with the shared `ROLE_POLICY` action | the forward command |
 | P31 | the `awaiting_countersign` lifecycle: approval under a chain lands it with `finalized = false` — a revision BORN `finalized = true` under an active chain refused by the INSERT seal; the countersign is ONE atomic act — the attributed `DecisionCountersign` ROW + the finality flip + the `awaiting_countersign → approved` transition in one transaction, sealed from BOTH sides (the boolean-only hostile flip refused; the orphan countersign row refused at commit by the deferred reverse seal; the split two-transaction replay refused; the REPLACED append-only seal, review round 10 — a DELETE, and an UPDATE of any column other than the flip, `approvedByName` on a provisional row included, refused, the paired flip accepted, the delivered `_append_only` trigger absent by name after 4d-i) AND attributed to an ACTIVE architect (a non-architect or removed-architect `countersignedById` refused) AND carrying provenance (an absent, foreign, spent or wrong-actor `sourceCommandId` refused — the 4c arms verbatim) + emits the finalizing event by the revision's recorded `approvedFrom` — `decision.approved` for a provisional approval from `pending`, `decision.reapproved` for one from `change` (the reopened → reapproved-into-awaiting → countersigned sequence probed end to end, with the `approved`/`reapproved` + `countersigned` audit rows; a revision born `finalized = false` with NULL `approvedFrom` refused by the birth seal); the ENTRY sealed from the decision side (review round 4) — a bare `UPDATE` to `awaiting_countersign` with no same-transaction provisional revision refused at commit, the re-entry of a rejected or returned decision onto its disposed head refused, the entry under an INACTIVE chain refused, the legal approve accepted; `decision.awaiting_countersign` emits at entry with the architect-targeted push; the READER arm — the shared tripwire walking every `DecisionStatus` value against `decisionChip`/`decisionChipLabel` and `deriveDecisionReading` (RED for `awaiting_countersign` at base: the chip falls back to withdrawn styling, the reading to the decider's approval), plus `StatusChip`, the log filter, the audience selectors, the schedule filter, the consultation thread's open set (the architect asks and a consultee answers on an awaiting decision through the UI) and the location tree's counters, label and rank (no `NaN`, the group present in the status rollup) each answering for the value explicitly; the WEB arm for the architect's OWN controls (review round 6) — the Decision Log renders Countersign, Reject back and Forward on for an `awaiting_countersign` decision to an active architect and to nobody else (a PMC sees the stranded-resolution control only while the chain is INACTIVE), and invoking each through the shipped UI drives the command end to end — countersign → `approved` with finality, reject-back → `change` with the origin-stamped request, forward-on → `change` + the `DecisionForward` fact — RED at base (no control renders; the status falls through the chip fallback) and asserted GREEN post-fix as a product-path assertion, not staging prose; the INBOX arm (review round 7) — `selectActionItems` yields the active architect's countersign item and the navigation badge for an awaiting decision, the PMC's awaiting summary, and the red stranded item when the chain is inactive (RED at base: the selector derives nothing from the status); the PORTFOLIO arm (review round 11) — `countPending` reports on the architect's card the role-designated pending decisions and the awaiting countersigns, and on the PMC's the stranded ones while the chain is inactive (RED at base: zero); the NOTIFICATION arm (review round 7) — the feed after a provisional approve carries the provisional "awaiting the architect's countersign" text and no green approval, and the green one only after the countersign or the `completed` resolution, naming the ORIGINAL approver with the countersigner or resolver as a distinct attribution (review round 8); the CLIENT APPROVAL arm (review round 8) — the approve modal and success copy under an active chain read "sent to the architect for countersign" / "awaiting the architect's countersign", byte-identical to today with no chain; **P31b** the register INSERT pairing (§B.4); **P31c** exactly one countersign per flip (§B.5) | the approve CAS (`decisions.service.ts` `approve`); the new countersign table + its reverse seal + the birth/standing seals; the catalog |
 | P32 | self-countersign is TWO attributed acts under two idempotency keys — one combined act is refused; the two acts appear as two ledger receipts and two register facts | the countersign command |
 | P33 | both disagreement outcomes: origin-stamped open `ChangeRequest`, `withdrawChange` refusal on `countersign_rejection`, the class-wide evidence freeze INCLUDING `decisionId`, `origin` AND `revisionId` (review round 4) (the hostile re-point to another decision refused; the hostile `countersign_rejection → 'standard'` re-label refused — the closed escape cannot be reopened by relabelling), impacts rendered, reject-back AND forward-on driven through re-approval to completion — forward-on through the ONE forward door with its `DecisionForward` fact (the request the bundle's provenance primary, the forward citing the same receipt); the freeze covering the new `projectId` and `sourceCommandId` — the hostile UPDATE that NULLs the receipt and the one that replaces it both refused (review round 3); the request's immutable `origin` serialized on the live, projected and rebuilt DTOs and the Withdraw affordance SUPPRESSED for a `countersign_rejection` request in the Decision Log while the direct call still 409s (the web arm, review round 2); the reject-back and forward-on requests carrying a non-NULL `sourceCommandId` bound to the completed `decisions.disagree` receipt — the direct-SQL disagreement bundle by an ACTIVE architect with every pairing, standing and eligibility seal green but NO receipt, refused at commit; **P33b** the rejection request's own pairing, its two producer shapes, and its provenance (§B.6) | the `ChangeRequest` machinery (`requestChange`/`withdrawChange`); the extended freeze |
-| P34 | the forward chain: attribution (actor vs displaced holder), the web Forward affordance following `rollout.phase6_4d` (absent while the reservation stands, rendered after 4d-iii — review round 4), the `decision.forwarded` emission + re-seal, the NON-HOLDER architect's product path (review round 12) — a client-held pending decision rendered in the active architect's Decision Log with the Forward affordance and forwarded end to end through the shipped UI, RED at base where the audience rule hides the row, absent again for a removed architect and while the chain is inactive — non-blank reason (zod + the complete-whitespace `btrim` CHECK + NOT NULL — a tab-and-newline-only reason refused at the DB), the PAIRING sealed in BOTH directions — hostile holder UPDATE refused with NO same-tx forward row AND with a MISMATCHED one; a hostile ORPHAN `DecisionForward` insert (no same-tx holder mutation) refused by the deferred reverse seal; the DOOR status-gated at the DB (a matched forward + holder mutation on an `approved`/`recorded`/`withdrawn` decision refused, and on an `awaiting_countersign` decision refused WITHOUT the same-tx rejection request); the TARGET's standing judged at the DB (a matching row naming a removed membership or an empty role refused); the ACTOR's standing judged at the DB (an inactive or unauthorized `forwardedById` refused; the role-holder arm's own — a matched row on a client-held decision whose `forwardedById` is a contractor while another active client exists, refused by `phase6_user_holds_role`; review round 3); provenance (the 4c arms); **P34b** exactly one forward per holder mutation (§B.5) | the 4b write-once trigger's one door + the reverse constraint trigger + the status/target/actor standing reads |
+| P34 | the forward chain: attribution (actor vs displaced holder), the web Forward affordance following `rollout.phase6_4d` (absent while the reservation stands, rendered after 4d-iii — review round 4), the `decision.forwarded` emission + re-seal, the NON-HOLDER architect's product path (review round 12) — a client-held pending decision rendered in the active architect's Decision Log with the Forward affordance and forwarded end to end through the shipped UI, RED at base where the audience rule hides the row, absent again for a removed architect and while the chain is inactive — non-blank reason (zod + the complete-whitespace `btrim` CHECK + NOT NULL — a tab-and-newline-only reason refused at the DB), the PAIRING sealed in BOTH directions — hostile holder UPDATE refused with NO same-tx forward row AND with a MISMATCHED one; the SAME-TARGET forward refused at the command (409) and at both DB doors — a no-op holder UPDATE paired with a `from = to` row, and the bare `from = to` row insert (review round 13); a hostile ORPHAN `DecisionForward` insert (no same-tx holder mutation) refused by the deferred reverse seal; the DOOR status-gated at the DB (a matched forward + holder mutation on an `approved`/`recorded`/`withdrawn` decision refused, and on an `awaiting_countersign` decision refused WITHOUT the same-tx rejection request); the TARGET's standing judged at the DB (a matching row naming a removed membership or an empty role refused); the ACTOR's standing judged at the DB (an inactive or unauthorized `forwardedById` refused; the role-holder arm's own — a matched row on a client-held decision whose `forwardedById` is a contractor while another active client exists, refused by `phase6_user_holds_role`; review round 3); provenance (the 4c arms); **P34b** exactly one forward per holder mutation (§B.5) | the 4b write-once trigger's one door + the reverse constraint trigger + the status/target/actor standing reads |
 | P35 | the forward-vs-approve barrier: both orderings deterministic, exactly one surviving outcome, a coherent holder; and forward-vs-countersign likewise | the row-lock serialization in the canonical order |
 | P36 | the switch-writers barrier: architect role-change vs approve, activation AND deactivation, both orderings; the orgs role mutations for `architect` take `lockProjectReadiness` (the §A enumeration grows by them); activation-vs-approve asserts ONE countersign delivery per decision in both orderings — approved-before → the re-emit, approved-after → its own approve, never both (review round 6) | `lockProjectReadiness` on the orgs role mutations |
 | P37 | EVERY entry into `approved` sealed behind the chain, SERIALIZED by `phase6_try_readiness`: under an ACTIVE chain the direct `pending → approved` hostile flip refused, the finalized-boolean-only flip refused, the awaiting-flip without the SAME-TX countersign ROW refused, the standard `withdrawChange` restoration (finalized head, `standard` open request) PASSES, the `countersign_rejection` restoration refused; under an INACTIVE chain direct approval legal ONLY from `pending`/`change` — the bare awaiting-flip refused without the stranded-resolution fact; the first-architect-activation-vs-approval barrier deterministic in both orderings (the seal reentrant on the service path, hold-to-commit when free, REFUSE when contended — never blocking inside a trigger) | the new status-transition seal + the try-readiness protocol on every seal-trigger standing read |
-| P38 | the pre-send eligibility guard generalized to EVERY targeted decision push through PER-EVENT-FAMILY predicates — the two NEW families (`countersign`: awaiting + active architect; `forward`: installed holder AND status `pending`/`change` — a withdrawn or terminal decision cancels with the recorded mark, review round 4) beside the three 4c delivered (`decider`, `consultation_requested`, `consultation_responded`): one positive AND one negative probed per new family — a valid consultee push is NOT dropped by the countersign predicate; the consultation-responded predicate widened to the architect requester WITH the withdrawn-audience arm — an active architect requester receives the response push, a response enqueued before a PMC withdrawal is cancelled for the architect requester and still delivered to a PMC requester (review round 3); the two new predicates bound at bootstrap under the BUMPED `webpush.notify` contract, and a process compiled at the old version refused by `syncConsumerCatalog` at startup (the 4c-ii startup-fence probe, re-run for version 3); the catalog-data migration in `ALWAYS_EXECUTE` — a P3005 baseline over a pre-4d-ii database runs it and the upgraded process starts (review round 5) | the delivered per-family registration + the two new `decisions.*PushTarget` queries + the consumer catalog bump and its catalog-data migration |
-| P39 | the delivered orphan guard EXTENDED: removing or re-roling the NAMED holder, or the last active member of a ROLE designation, of an `awaiting_countersign` decision is refused at BOTH layers (409 through `holdsOpenDecisions`; the DB guard on the hostile direct write); removing the LAST ARCHITECT is NOT refused — it deactivates the chain (P29b) — INCLUDING when that architect is the named holder of an awaiting decision (the one named exemption, review round 7), while a named holder who is an architect but not the last is refused naming the pending countersign | `holdsOpenDecisions` + `phase6_t4b2_membership_guard`, open set widened |
-| P40 | claim-time per-family re-check: a forward between commit and claim re-targets or drops the pending DECIDER push, recorded, while a still-standing consultee push SURVIVES the same forward; the `deciderPushTarget` read takes the decision row lock (the 4c hand-off, changed here); the SEND BOUNDARY (review round 1): the forward command cancels not-yet-sent decider deliveries by subject under the decision row lock, the consumer re-reads the cancellation mark immediately before `notifyTargetedUser` and re-judges EACH recipient by the family's OWN standing rule before that user's send — role standing for a fan-out (review round 4), the named membership's active standing for decider/consultee/holder targets (review round 5), `hasProjectRoleStanding` for the responded family's membership-less requester (review round 6) — a stale recipient SKIPPED without the whole-delivery mark (review round 6), and the forward-vs-claim barrier is driven in BOTH orderings — forward-first → re-target or cancel at claim; claim-first with the consumer HELD at the pre-send barrier while the forward commits → the final re-read drops the send and the displaced holder receives nothing — with the in-flight residual (a forward landing after the final re-read, during the provider call) stated as a post-revocation disclosure bound — the new families' bodies generic by construction, the delivered bodies named for the title they carry (review round 8) — not asserted away; the withdraw-vs-claim barrier for a non-PMC holder in both orderings, and the non-last-member interleaving (architects A and B resolved at claim, A removed at the pre-send barrier → B receives, A nothing; a two-holder role forward likewise) — review round 4; the user-targeted arm — a `consultation_responded` push claimed for an active architect requester removed at the pre-send barrier sends nothing, the named-member decider push likewise — review round 5; an org-admin requester with no membership receives the response push, and the partial fan-out (A stale, B sent) leaves the delivery `succeeded`/`dispatch` with no mark while an all-stale fan-out is marked — review round 6; the archive-vs-claim barrier for the forward and countersign families — the project archived at the pre-send barrier → nothing sent, the delivery marked (review round 7) | the delivery claim path; `decisions.query.ts` `deciderPushTarget`; the forward command's subject cancellation; `consumers.ts` `makePushConsumer` |
+| P38 | the pre-send eligibility guard generalized to EVERY targeted decision push through PER-EVENT-FAMILY predicates — the two NEW families (`countersign`: awaiting + active architect; `forward`: installed holder AND status `pending`/`change` — a withdrawn or terminal decision cancels with the recorded mark, review round 4) beside the three 4c delivered (`decider`, `consultation_requested`, `consultation_responded`): one positive AND one negative probed per new family — a valid consultee push is NOT dropped by the countersign predicate; the consultation-responded predicate widened to the architect requester WITH the withdrawn-audience arm — an active architect requester receives the response push, a response enqueued before a PMC withdrawal is cancelled for the architect requester and still delivered to a PMC requester (review round 3), while a REQUEST push enqueued before the withdrawal is cancelled for every consultee, a PMC consultee included (review round 13); the two new predicates bound at bootstrap under the BUMPED `webpush.notify` contract, and a process compiled at the old version refused by `syncConsumerCatalog` at startup (the 4c-ii startup-fence probe, re-run for version 3); the catalog-data migration in `ALWAYS_EXECUTE` — a P3005 baseline over a pre-4d-ii database runs it and the upgraded process starts (review round 5) | the delivered per-family registration + the two new `decisions.*PushTarget` queries + the consumer catalog bump and its catalog-data migration |
+| P39 | the delivered orphan guard EXTENDED: removing or re-roling the NAMED holder, or the last active member of a ROLE designation, of an `awaiting_countersign` decision is refused at BOTH layers (409 through `holdsOpenDecisions`; the DB guard on the hostile direct write); removing the LAST ARCHITECT is NOT refused — it deactivates the chain (P29b) — INCLUDING when that architect is the named holder of an awaiting decision OR the last active member of the architect ROLE designation an awaiting decision names (the one named exemption, review round 7, extended to the role designation in review round 13 — the removal proceeds, the chain deactivates, the stranded `returned` re-homes the role-designated decision with a `toDesignation` exactly as the departed named holder), while a named holder who is an architect but not the last is refused naming the pending countersign, and a `pending`/`change` decision designated to the role still refuses removing its last architect (the open-holder rule, unchanged) | `holdsOpenDecisions` + `phase6_t4b2_membership_guard`, open set widened |
+| P40 | claim-time per-family re-check: a forward between commit and claim re-targets or drops the pending DECIDER push, recorded, while a still-standing consultee push SURVIVES the same forward; the `deciderPushTarget` read takes the decision row lock (the 4c hand-off, changed here); the SEND BOUNDARY (review round 1): the forward command cancels not-yet-sent decider deliveries by subject under the decision row lock, the consumer re-reads the cancellation mark immediately before `notifyTargetedUser` and re-judges EACH recipient by the family's OWN standing rule before that user's send — role standing for a fan-out (review round 4), the named membership's active standing for decider/consultee/holder targets (review round 5), `hasProjectRoleStanding` for the responded family's membership-less requester (review round 6) — a stale recipient SKIPPED without the whole-delivery mark (review round 6), and the forward-vs-claim barrier is driven in BOTH orderings — forward-first → re-target or cancel at claim; claim-first with the consumer HELD at the pre-send barrier while the forward commits → the final re-read drops the send and the displaced holder receives nothing — with the in-flight residual (a forward landing after the final re-read, during the provider call) stated as a post-revocation disclosure bound — the new families' bodies generic by construction, the delivered bodies named for the title they carry (review round 8) — not asserted away; the withdraw-vs-claim barrier for a non-PMC holder in both orderings, and the APPROVAL-vs-claim barrier for the `decider` and `forward` families in both orderings — approval-first refused at claim by the status arm; claim-first held at the pre-send barrier while the approval commits and cancels by subject, the final re-read drops the send, the delivery marked (review round 13), and the non-last-member interleaving (architects A and B resolved at claim, A removed at the pre-send barrier → B receives, A nothing; a two-holder role forward likewise) — review round 4; the user-targeted arm — a `consultation_responded` push claimed for an active architect requester removed at the pre-send barrier sends nothing, the named-member decider push likewise — review round 5; an org-admin requester with no membership receives the response push, and the partial fan-out (A stale, B sent) leaves the delivery `succeeded`/`dispatch` with no mark while an all-stale fan-out is marked — review round 6; the archive-vs-claim barrier for the forward and countersign families — the project archived at the pre-send barrier → nothing sent, the delivery marked (review round 7) | the delivery claim path; `decisions.query.ts` `deciderPushTarget`; the forward command's subject cancellation; `consumers.ts` `makePushConsumer` |
 | P42 | the finality candidate key over the ACTUAL provenance columns: provenance onto an unfinalized revision unrepresentable (both spec tables); `finalized → false` under reference refused by the FK; the additive backfill leaves every legacy revision `finalized = true` and every legacy spec row `revisionFinalized = true`, proven over the legacy fixture in `upgrade-proof.sh`; the DEFAULTS hold through the drain — a revision, a material spec and a labour spec inserted WITHOUT the new columns (the previous release's write shape) all succeed on the 4d-i schema and land `true` (review round 1), a `ChangeRequest` inserted WITHOUT `projectId` is filled from its decision and one naming another project's id is refused by the composite FK (review round 3), and 4d-iii's drop of the defaults is probed by the same inserts then failing AND by a current-version provenance write through the SHIPPED writers — a material and a labour requirement created, revised AND cancelled with `decisionId` after the drop, the cancellation copy carrying the pin forward — succeeding with `revisionFinalized = true` from the widened `approvedRef` (review rounds 11–12; RED at base: the writers spread the three-field result and the insert fails on the required column), its trailing provenance seal by a NULL-`sourceCommandId` standard insert refused while the legacy NULL rows survive; **P42b** with P31b (§B.4) | `DecisionApprovalRevision_provenance_target_key` widened + the two spec FKs re-targeted |
 
 ## §D — Staging, review unit, and order
@@ -1566,9 +1627,11 @@ sites name where today's behavior lives.
     `awaiting_countersign` arm and the requester arm moved onto
     `phase6_user_orchestration_authority` (`phase6_user_decision_authority`
     byte-identical); and the RESERVATION — the orgs-owned
-    `Membership_t4d_architect_reserved` (judged on NEW regardless of OLD) AND
-    `DecisionForward_t4d_reserved` on every forward row (review round 4),
-    one shared refusal function. Every non-blank text
+    `Membership_t4d_architect_reserved` (judged on NEW regardless of OLD),
+    `DecisionForward_t4d_reserved` on every forward row (review round 4) AND
+    `Decision_t4d_architect_reserved` on every `Decision` row naming the
+    architect designation, draft or published (review round 13) — THREE
+    doors, one shared refusal function. Every non-blank text
     column carries the complete-whitespace `btrim` CHECK beside `NOT NULL`
     (review round 1). Its integration suite is the seal-stripped harness of §C;
     `upgrade-proof.sh` gains the P42 backfill assertions over the legacy
@@ -1703,26 +1766,34 @@ sites name where today's behavior lives.
     would keep `countersignRequired: false`, the modal would promise a lock,
     and the approve would land `awaiting_countersign`. The projection must
     not read `Membership` synchronously (a decisions consumer over an
-    orgs-owned table), so the fix rides the edge that already exists: the
-    orgs architect mutation that crosses the standing boundary in EITHER
-    direction (zero-to-one on activation, one-to-zero on the last removal —
-    the same reads the re-notification gate takes under the readiness lock)
-    invokes the decisions-owned `DecisionsParticipant.chainStandingChanged`,
-    which emits ONE decisions-owned signal event
-    `decision.countersign_chain_changed` (project-scoped, `invalidate: true`,
-    no push family — signal-only, in both catalogs and the manifest's
-    `producesEvents`); `deliveryFor` dispatches it as a `decision.*` event
-    and the fold refreshes the whole project's set, baking
-    `countersignRequired` from the chain-presence read through the orgs
-    participant (the read the approve CAS makes) — live == projection ==
-    rebuild by the one derivation. A read-time overlay through the orgs
-    participant was weighed and not taken: a standing read on every list
-    read for a value that changes only on a role mutation. Probed (P29b,
-    RED at base): a `pending` decision projected → the first architect added
-    → the projected DTO reads `countersignRequired: true` and the modal the
-    countersign copy; the last architect removed → `false` again; a
-    non-boundary activation (A active, B added) emits nothing; the rebuild
-    reproduces the live value; with no
+    orgs-owned table). Round 10 answered with a service-emitted signal
+    (`DecisionsParticipant.chainStandingChanged` → a
+    `decision.countersign_chain_changed` event refreshing the fold); round
+    13 found it incomplete and REPLACES it: this plan permits direct
+    `Membership` writes after retirement (activation, removal, hard DELETE,
+    re-role — the DB-serialized writer set of §A.2), and a direct architect
+    INSERT crosses no service boundary, emits no signal, and leaves the
+    stored DTO chain-off while `approve` reads the live standing. There is no
+    boundary every writer crosses except the DATABASE, and a trigger cannot
+    emit a decisions-owned event through the outbox; so `countersignRequired`
+    is NOT STORED at all — the READ-TIME OVERLAY round 10 declined is the
+    answer: the ONE hydrate step the live path and the projection path both
+    run (`decision-serialize.ts`'s read-time hydration of stored DTOs, the 4b
+    precedent) overlays `countersignRequired` from ONE project-scoped
+    chain-presence read through the orgs participant per list read (the
+    read the approve CAS makes — one query per response, never per row),
+    so live == projection == rebuild by construction, since neither stores
+    the value and no writer can stale it. The round-10 signal event and
+    participant method are WITHDRAWN (the `decisions.inbox` bump 2 → 3 keeps
+    its other two reasons); the round-6 re-notification on activation is
+    untouched (a service path with its own audit, not a freshness
+    mechanism). Probed (P29b, RED at base): a `pending` decision projected →
+    an architect added through the SERVICE → the next read shows
+    `countersignRequired: true` and the modal the countersign copy; the same
+    after a DIRECT `Membership` INSERT of an active architect (no event, no
+    service call) — the very next read is true; the last architect removed
+    (service or direct DELETE) → `false`; the stored projection row carries
+    no such field; with no
     chain both surfaces stay byte-identical; P31's web arm drives the client
     approval path under an active chain and asserts the provisional copy —
     with the shared tripwire that walks every `DecisionStatus` value; the three
@@ -1737,8 +1808,9 @@ sites name where today's behavior lives.
     `20271116000000_phase6_t4c_ii_rollout_fence`): `webpush.notify`
     (`consumers.ts`, `catalogVersion` 2 → 3, for the two new claim families)
     and `decisions.inbox` (`decisions.projection.ts`, 2 → 3, for the
-    awaiting state, the forward-installed holder and the chain-changed
-    signal in its fold — review round 10 for the signal), with the
+    awaiting state and the forward-installed holder in its fold — the
+    round-10 chain-changed signal was withdrawn in round 13 for the
+    read-time overlay, which stores nothing), with the
     `OutboxConsumerCatalog` rows and `ProjectionGeneration.catalogVersion`
     migrated in 4d-ii's OWN catalog-data migration, so `syncConsumerCatalog`
     refuses a restarted or rolled-back pre-4d-ii process at startup and it
@@ -1766,7 +1838,7 @@ sites name where today's behavior lives.
     item, the forward affordance for holder/PMC/architect, the stale-state
     banner the 4a §A.3 reader table requires for `awaiting_countersign`).
     **Still chain-off AND forward-off everywhere**, because the reservation
-    stands on both doors (review round 4): the
+    stands on all three doors (review rounds 4 and 13): the
     unit ships every reader and writer while no project can exercise them,
     which is what makes the previous-release drain a pure operational step.
     Its STATUS fold SETS `blocking_directive: phase-6-4d-previous-release-drained`
@@ -1886,8 +1958,9 @@ sites name where today's behavior lives.
     reservation makes that state unreachable until the fleet is attested
     drained.
   - **4d-iii, the reservation retirement**: a migration-only unit that
-    drops `Membership_t4d_architect_reserved` AND `DecisionForward_t4d_reserved`
-    with their shared function (review round 4) AND the two
+    drops `Membership_t4d_architect_reserved`, `DecisionForward_t4d_reserved`
+    AND `Decision_t4d_architect_reserved` with their shared function (review
+    rounds 4 and 13) AND the two
     kept finality defaults (`finalized`, `revisionFinalized` — after the
     drain only writers that state the pin remain, §A.2; review round 1) AND
     installs the trailing INSERT-time seal requiring `sourceCommandId` on
