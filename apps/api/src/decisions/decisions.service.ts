@@ -17,7 +17,6 @@ import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { OrgsParticipant } from '../orgs/orgs.participant';
-import { CapabilitiesService, CONSULTATION_CAPABILITY } from '../platform/capabilities.service';
 
 /** The consultation commands REQUIRE a client key (review round 19) — see `requestConsultation`. */
 function requireIdempotencyKey(key: string | undefined, commandType: string): string {
@@ -79,11 +78,12 @@ export class DecisionsService {
     // (an active membership, locked — the FK's target) is answered by its owner through the
     // declared decisions → orgs workflow-participant edge, never by a raw read here.
     private readonly orgsParticipant: OrgsParticipant,
-    // Phase 6 unit 4c-ii (§D) — the per-project `consultation` capability. Both write commands
-    // and the emitter read it, and so does the client (the delivered `capabilities: string[]`
-    // shell contract), so a gate-off project renders no affordance rather than affordances whose
-    // every request 404s. All three reads retire together in 4c-iv.
-    private readonly capabilities: CapabilitiesService,
+    // Phase 6 unit 4c-iv — the per-project `consultation` capability is NO LONGER READ here.
+    // 4c-ii gated both write commands (and, through them, the emitter) and the client on it;
+    // 4c-iii made the row a fact of every project's existence (creation trigger + backfill,
+    // sealed for presence); 4c-iv retires every read of it — the two commands below, the shell
+    // contract, and the client — in one unit, so no two servers can ever disagree about a
+    // project. The row itself, and the seal keeping it present, stay until 4c-v retires them.
   ) {}
 
   /** Phase 6 task 4b (§A.3) — the decider-routed push: the catalog names the CEILING and this
@@ -584,7 +584,6 @@ export class DecisionsService {
     user: AuthUser,
     idempotencyKey?: string,
   ): Promise<SnapshotDto> {
-    await this.capabilities.assertEnabled(projectId, CONSULTATION_CAPABILITY);
     // Review round 19 — the key is REQUIRED, and refused at the contract with a deliberate 400.
     // Both consultation facts carry a NOT NULL `sourceCommandId` naming the receipt of the
     // command currently executing; when `COMMAND_KEY_ENFORCED` is unset and a caller omits the
@@ -696,7 +695,6 @@ export class DecisionsService {
     user: AuthUser,
     idempotencyKey?: string,
   ): Promise<SnapshotDto> {
-    await this.capabilities.assertEnabled(projectId, CONSULTATION_CAPABILITY);
     const key = requireIdempotencyKey(idempotencyKey, 'consultations.respond');
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };

@@ -13,18 +13,16 @@ import { can, viewerIsConsultee, type Decision } from '@vitan/shared';
  * Consultation INFORMS; it never gates. Nothing here moves a status or changes a gate verdict:
  * the PMC asks a named member a question, that member answers once, and both facts are permanent.
  *
- * **The capability is read HERE, exactly as the server reads it** (review round 26). Gating only
- * the commands and the emitter would leave the upgraded bundle rendering request/respond controls
- * during the whole window in which every project is still gate-off — between 4c-ii and 4c-iii,
- * and for as long as the drain directive is outstanding. Controls whose every request returns a
- * deterministic 404 are not a byte-identical gate-off state; they are a visibly broken one. So
- * this component renders NOTHING off-pilot, and this client read retires in 4c-iv together with
- * the server-side ones — the gate goes in one place, not two.
+ * **The capability is NOT read here any more** (Phase 6 unit 4c-iv). 4c-ii read it exactly as the
+ * server did, so that during the window in which every project was still gate-off the bundle
+ * rendered no affordance rather than controls whose every request 404s. 4c-iii made the row a fact
+ * of every project's existence and 4c-iv retired the reads — server and client in ONE unit, so the
+ * gate went in one place, not two. What remains is the shared `ROLE_POLICY` and the decision's own
+ * openness, which are the same eligibility the server enforces.
  */
 export function ConsultationThread({ decision }: { decision: Decision }) {
   const role = useStore((s) => s.role);
   const sessionUserId = useStore((s) => s.sessionUserId);
-  const capabilities = useStore(useShallow((s) => s.capabilities));
   const members = useStore(useShallow((s) => s.members));
   const requestConsultation = useStore((s) => s.requestConsultation);
   const respondToConsultation = useStore((s) => s.respondToConsultation);
@@ -34,8 +32,6 @@ export function ConsultationThread({ decision }: { decision: Decision }) {
   const [consultee, setConsultee] = useState('');
   const [advice, setAdvice] = useState('');
   const [recommend, setRecommend] = useState<number | ''>('');
-
-  if (!capabilities.includes('consultation')) return null;
 
   const thread = decision.consultations ?? [];
   // Asking is only meaningful while the question is open — the same eligibility the server

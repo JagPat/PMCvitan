@@ -128,8 +128,8 @@ export class DecisionsController {
    * Phase 6 unit 4c-ii (§A) — ASK a named member for advice on an open decision.
    *
    * The route ceiling is the REQUESTING set (`pmc` in 4c; `architect` joins in 4d with the role).
-   * Off-pilot the service answers 404 through the `consultation` capability, so the endpoint does
-   * not exist for a project the gate is closed on.
+   * Since 4c-iv there is no per-project gate on this route: consultation is a core decision
+   * workflow, and the rollout latch 4c-ii/4c-iii used has retired.
    */
   @Post(':decisionId/consultations')
   @RolesFor('consultation.request')
