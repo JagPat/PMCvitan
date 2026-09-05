@@ -64,8 +64,15 @@ membership-less org-admin requester, and no web probe of the architect's own act
 finding-bearing heads exhaust a review round, so #539 was CLOSED without a third correction head and
 this PR — the same docs-only unit and nothing else, from the same `main` `d7eed4ce` — carries all
 thirty-five fixes with `Replaces: #539`, the four annotated "(review round 6)" in the plan where they
-land. No `6a53aae` decision was reopened. This PR has no finding-bearing head of its own yet; a first
-would be folded on one correction head, and a second would force the same close-and-replace again.
+land. No `6a53aae` decision was reopened. This PR's first head (`fcc6d15b`) drew seven P1 findings —
+the retirement marker colliding with the 4c-iii-r closed trigger inventory, the re-notification firing
+on every architect activation, project archival absent from the pre-send hook, the Inbox selector with
+no architect branch, the sole-architect-and-holder removal the widened guard refused, the green
+approval notification written before finality, and the reservation function outside the transient
+replay block — folded on its second head as one batch ("review round 7" in the plan). That was this
+PR's FIRST finding-bearing head; a second would force the same close-and-replace again. The unit now
+exceeds the 1,500-line standard budget and declares `justified-large`: it is ONE plan document that
+must be reviewed whole, grown only by the precisions seven review rounds required.
 
 **What follows, and what does not.** After this plan clears its own exact-head review (a fresh
 clean +1 through the `codex-current-head` gate — the independent clearance the 4c plan's
