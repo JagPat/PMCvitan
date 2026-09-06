@@ -48,7 +48,7 @@ first fold moves it. Runner invariants over the parsed Now block: `assessRunnerS
 `pr:<this>` while open; `assessPostMergeRunnerState` → simulated, allowed, `task:4`;
 `detectStatusDrift` with the self-named `open_pr` live → no drift.
 
-**Lineage: #537, #538, #539, #540, #541, #542, #543, #544, #545, #546, #547 and #548 each closed at the review-round limit; this PR replaces #548 and settles its ledger obligation — and it is the LAST replacement the owner permits (JagPat, 2026-09-06: "Cap the close-and-replace rounds at #549.").**
+**Lineage: #537, #538, #539, #540, #541, #542, #543, #544, #545, #546, #547 and #548 each closed at the review-round limit; this PR replaces #548 and settles its ledger obligation — and, by the owner's directive (JagPat, 2026-09-06: "Cap the close-and-replace rounds at #549."), the autonomous loop opens no replacement beyond it.**
 #537 (heads `d82d47f4`, `77ab82b1`: eight + six findings), #538 (`cae3d167`, `cbbe9d23`: seven + five),
 #539 (`91416864`, `0526eb8d`: five + four), #540 (`fcc6d15b`, `04b5491c`: seven + five), #541
 (`a05fdd80`, `6ec40f12`: three + four), #542 (`aafc0e17`, `182a09bf`: five + three), #543 (`7bfdc3e0`,
@@ -132,9 +132,19 @@ with the re-emit neutralizing first, a park only before the first recipient, the
 recovery arm, a raw-SQL operator repair command, a two-mode actor argument on the twin, all four doors retired,
 the runbook reseal sequence staged before 4d-iii, and the fill phase guarded as a whole. This PR carries all one
 hundred and twenty-nine fixes with `Replaces: #548`, the five annotated "(review round 23)" and the eight
-annotated "(review round 24)" in the plan where they land. **The owner's cap:** this PR is the LAST replacement
-(JagPat, 2026-09-06: "Cap the close-and-replace rounds at #549."); should it reach a second finding-bearing
-head, no further replacement is opened — it stays open as it stands and the blocker is reported on #482. **The ledger, read off the label** (the
+annotated "(review round 24)" in the plan where they land. This PR's own first head (`a87742ae`) drew six findings
+(all P1) — the forward door named on the role-arm seal instead of the attribution seal that freezes the holder, the
+cap phrased as leaving an exhausted PR open, the re-notification racing the unordered push worker, an `actorRole`
+no paired fact freezes, the reserved-value repair unable to clear an awaiting row, and two approval revisions over
+one transition — folded on its second head as one batch ("review round 25" in the plan): the door opened in
+`decision_t4b_attribution_seal`, the cap restated below, a decisions-owned countersign notice serializing the send
+and the re-emit on the decision row lock, action-time role and name frozen on every 4d fact, a
+`--revert-provisional` repair branch, and one register row per approval transition. This PR carries all one
+hundred and thirty-five fixes, the six annotated "(review round 25)" where they land. **The owner's cap, and the
+protocol it leaves intact:** the close-and-replace rule stands as written; the owner directed (JagPat, 2026-09-06:
+"Cap the close-and-replace rounds at #549.") that the autonomous loop opens no replacement beyond this PR —
+should this PR reach a second finding-bearing head, the loop reports the exhausted head and its findings on #482
+and the owner takes the protocol's close-and-replace step or ends the lineage. **The ledger, read off the label** (the
 #514/#513 lesson): the obligation is the repository-wide `review-replacement-required` LABEL, not the prose
 lineage. #548 was labelled by the orchestrator BEFORE it closed, so it is the obligation this PR settles. Every
 predecessor closed at the limit (#537, #538, #539, #540, #542, #543, #544, #545, #546, #547, #548) stays a labelled pending obligation until
@@ -144,7 +154,7 @@ holds no label: it was closed and its branch rebuilt before the orchestrator's g
 scope gate refused #542's `Replaces: #541` and #542 declared `Replaces: #540` instead — the sequencing lesson
 recorded here, not tidied away; no label is applied or cleared by hand. No `6a53aae` decision was reopened. The unit exceeds the 1,500-line standard budget and
 declares `justified-large`: ONE plan document that must be reviewed whole, grown only by the precisions
-twenty-four review rounds required. #544's first head (`4dda84fc`) drew seven findings (six P1, one P2) — the
+twenty-five review rounds required. #544's first head (`4dda84fc`) drew seven findings (six P1, one P2) — the
 registry's hard-coded `KNOWN_ROLES` mirror missing from the role fan-out; a "both" left over from round 13's third
 reservation door in the transient block and the replay text; the round-14 fold reading chain presence through the
 orgs participant and the asynchronous refresh not atomic with the membership commit (answered by a decisions-owned
@@ -182,9 +192,10 @@ plan): the cutover sealed, target locks before the decision lock, every 4d-seale
 archival parking deliveries that restoration releases unchanged, and the transition fact binding the crossing event's
 id; that second head drew the seven of round 22 above, which closed #547. #548's first head (`29ee11af`) drew
 the five of round 23 above, folded on its second head (`966defdd`), which drew the eight of round 24 above and
-closed #548. Should this PR's own head draw findings, one correction head folds them; a second finding-bearing
-head opens NO further replacement — the owner capped the lineage at this PR — it stays open as it stands and the
-blocker is reported on #482 for the owner's decision.
+closed #548. This PR's first head (`a87742ae`) drew the six of round 25 above, folded on its second head — this
+PR's ONE correction head; a second finding-bearing head exhausts this PR under the protocol, and by the owner's
+directive the autonomous loop then opens no replacement itself: it reports the exhausted head on #482 and the
+owner takes the close-and-replace step or ends the lineage.
 
 **What follows, and what does not.** After this plan clears its own exact-head review (a fresh
 clean +1 through the `codex-current-head` gate — the independent clearance the 4c plan's
