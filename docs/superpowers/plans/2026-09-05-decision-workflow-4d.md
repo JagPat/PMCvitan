@@ -373,8 +373,27 @@ re-read; the synthetic fallback never minting `architect`, a dev architect
 being a seeded `User` fixture; the notice FK on `OutboxDelivery(id)` with
 project equality in the correspondence seal; and the seal emission for the
 no-chain approve armed only at 4d-iii, the service emitting until then.
-**The close-and-replace protocol stands unchanged; the owner directs who
-takes its next step**: should THIS PR reach a second finding-bearing head, the autonomous loop opens no replacement itself —
+Round 31 — this fifteenth replacement's own first head (`af357a24`), five
+P1 findings: a direct approval committed while the seal's arm was disarmed
+left its decision without event, feed row or fold PERMANENTLY, since
+arming affects only later writes; the marker-keyed handoff letting a 4d-ii
+approval that read the marker absent emit beside the newly armed seal; a
+membership-less organization owner/admin issued the `pmc` token role by
+`signInAccess` yet required to be recorded as `org_owner`/`org_admin`; the
+receipt columns `actorRole`/`actorName` written by 4d-ii but absent from
+4d-i's schema inventory; and the claim hook described as sharing the lease
+transaction while the delivered `claim`/`claimOne`/`claimExternalRecovery`
+commit their lease before any consumer logic runs — is folded on its
+second head, annotated "(review round 31)": the no-chain arm decided from
+IN-TRANSACTION state (the seal counts the same-transaction approval
+events: one present → it defers, none → it emits, two → refused), so
+every writer has exactly one emitter from 4d-i on with no window and no
+marker race; the owner/admin arm admitting the `pmc` token role through
+the live org-standing read; the receipt columns and their freeze staged
+in 4d-i's repair bootstrap transaction; and all three claim paths
+refactored to run a per-consumer `onClaim` hook inside the lease
+transaction. **The close-and-replace protocol stands unchanged; the owner
+directs who takes its next step**: should THIS PR reach a second finding-bearing head, the autonomous loop opens no replacement itself —
 it reports the exhausted head and its findings on #482 and stops, and no
 #553 is opened without a new Board call. No design decision carried from
 `6a53aae` was reopened; every fix is a precision this plan owed and had
@@ -1634,7 +1653,11 @@ The settled design, plus the owner's 2026-08-13 amendment, as behavior:
   and any name and misattribute the act permanently; so the platform
   receipt `CommandExecution` gains `actorRole` and `actorName`, captured
   at RESERVE time from the authenticated token and frozen with the
-  receipt — NULLABLE through the drain (review round 29: pre-4d processes
+  receipt — the two nullable columns and the receipt seal's freeze arm
+  over them ADDED BY 4d-i's repair bootstrap transaction (review round 31:
+  the 4d-ii binary writes them, so they must exist before it deploys, and
+  4d-ii carries only the catalog-data migration beside its service work)
+  — NULLABLE through the drain (review round 29: pre-4d processes
   serving beside 4d-i/4d-ii reserve `decisions.approve` receipts without
   the pair, so a NOT NULL would break their approvals; a trailing
   INSERT-time seal installed by 4d-iii requires the pair on every receipt
@@ -1655,7 +1678,14 @@ The settled design, plus the owner's 2026-08-13 amendment, as behavior:
   different active architect, the architect could hand-write a receipt
   claiming `pmc`, the forward fact still authorize the architect, and the
   equality freeze the false attribution) with the org owner/admin arm for
-  an actor without membership (`org_owner`/`org_admin` recorded as such),
+  an actor without membership — whose token role IS `pmc` (review round
+  31: `AuthService.signInAccess` and the project access path issue a
+  membership-less organization owner/admin the `pmc` token role; the
+  receipt freezes that token role, the fact's pair equals it, and the
+  per-user judgement's owner/admin arm ADMITS `pmc` for such an actor
+  through the live `OrgMembership.role IN ('owner','admin')` read — no
+  separate `org_owner`/`org_admin` label is recorded or demanded, the org
+  standing being the evidence that authorizes the `pmc` attribution),
   and the name must equal the account's display name read by the same
   orgs-owned predicate family; while a receipt carries NO pair — the drain
   window — the fact seal DERIVES the role from that per-user judgement
@@ -1737,16 +1767,32 @@ The settled design, plus the owner's 2026-08-13 amendment, as behavior:
   `approve`, which writes its own `DomainEvent`, `DecisionEvent` and
   `Notification`; a seal emitting from 4d-i would then emit that approval
   TWICE — duplicate feed rows, invalidations and pushes; so 4d-i installs
-  the no-chain arm DISARMED, keyed on the `RolloutRetirement` marker 4d-iii
-  writes, and the 4d-ii binary keeps 4b's service emission and
-  notification while it reads the rollout closed, switching to the seal's
-  in the same transaction discipline the moment the marker exists — so
-  every writer has exactly one emitter at every instant: before 4d-iii the
-  service, old and new binaries alike, the seal silent; after it the seal,
-  the drained fleet's service path gone; the receipt-backed DIRECT bundle
-  P37 admits under an inactive chain therefore emits nothing during the
-  drain window — the accepted, stated bound of that window, closed at
-  4d-iii — and emits from the seal thereafter), and 4d-ii carries the
+  the no-chain arm as an IN-TRANSACTION OWNERSHIP decision, never a
+  marker-keyed switch (review round 31 — round 30's marker-keyed arm left
+  two holes: a 4d-ii approval that read the `RolloutRetirement` marker
+  absent before 4d-iii committed it would emit beside the newly armed
+  seal, a duplicate no "same transaction discipline" prevents because an
+  absent-row read does not serialize with the marker's insertion; and a
+  receipt-backed DIRECT bundle committed while the arm was disarmed left
+  its decision with no event, feed row or fold PERMANENTLY, since arming
+  affects only later writes): at the deferred pairing check of EVERY
+  `pending`/`change → approved` transition the lifecycle seal COUNTS the
+  same-transaction `decision.approved`/`reapproved` `DomainEvent` rows for
+  the decision — exactly ONE already present (the service's, from a pre-4d
+  process or the 4d-ii binary) → the seal writes nothing; NONE → the seal
+  emits the event and the feed row through the twins; TWO or more →
+  refused at commit — so exactly one emitter holds by construction for
+  every writer at every instant, decided from in-transaction state alone
+  with no marker read and no lock: old and new service binaries keep
+  emitting throughout the drain and the seal defers to them; a hand-run
+  bundle that emits nothing has its event and feed row written by the
+  seal from 4d-i on, never a window without emission and nothing for
+  4d-iii to reconcile; the 4d-ii binary drops its service emission and
+  notification at 4d-iii's marker as a CLEANUP, not a switch, because the
+  seal already owns the case; P37's direct-bundle arm asserts the event,
+  the feed row and the fold with the seal disarmed by nothing, and the
+  handoff probe drives a service approve racing the marker's insertion in
+  both orderings to exactly one event), and 4d-ii carries the
   service-side switch for that transition in the same unit (one emitter
   at every instant; the SQL-twin tripwires prove the event AND the feed
   row byte-identical, both written in the seal transaction before the
@@ -2378,7 +2424,10 @@ sites name where today's behavior lives.
     the boundary suite requires Prisma DMMF ownership to EXACTLY equal the
     manifests, so a model cannot enter `schema.prisma` unregistered, and
     `readEncapsulated` keeps the evidence tables inside the foreign-read
-    analyzer; `RolloutRetirement` and the platform-owned `ProjectRoleStanding`
+    analyzer; `RolloutRetirement`, the platform-owned receipt columns
+    `CommandExecution.actorRole`/`actorName` with their freeze (review
+    round 31, from the repair bootstrap transaction) and the platform-owned
+    `ProjectRoleStanding`
     register — one `architect` row per project, backfilled from the
     migration's own count, with its writer-depth seal, its project-cascade
     arm and the statement-level `ProjectRoleStanding_t4d_no_truncate`
@@ -2492,7 +2541,10 @@ sites name where today's behavior lives.
     EXISTS "DecisionRepairAction"` with its seals, and `ALTER TABLE
     "DecisionApprovalRevision" ADD COLUMN IF NOT EXISTS` for the nullable
     `finalized`, `approvedFrom`, `approvedByName` and `approvedByRole`
-    columns, all additive and invisible to the pre-4d client — ahead of the
+    columns, and `ALTER TABLE "CommandExecution" ADD COLUMN IF NOT EXISTS`
+    for the nullable `actorRole` and `actorName` with the receipt seal's
+    freeze extended over them (review round 31), all additive and
+    invisible to the pre-4d client — ahead of the
     doors transaction, the `ADD VALUE` statements and the seal-and-audit
     transaction, so an audit abort leaves the bootstrap committed and the
     repair below runs on exactly the database it aborted over; the later
@@ -3031,8 +3083,18 @@ sites name where today's behavior lives.
     `webpush.notify` worker, which can claim and send the ORIGINAL
     countersign demand to the new architect B before either crossing is
     handled, after which cancelling finds a succeeded row and the re-emit
-    sends B a second demand): the countersign family's CLAIM hook, in the
-    transaction that leases the delivery — before the provider call — and
+    sends B a second demand): the countersign family's CLAIM hook, run INSIDE the
+    transaction that leases the delivery (review round 31: the delivered
+    `claim`, `claimOne` and `claimExternalRecovery` commit their lease
+    UPDATE before any consumer logic runs, so a hook invoked afterwards
+    would hold no delivery lock and its notice could never satisfy the
+    `xmin = txid_current()::text::xid` correspondence on a lease already
+    committed; 4d-ii therefore refactors ALL THREE claim paths — the batch
+    claim, the immediate dispatcher's `claimOne` and the legacy/shadow
+    recovery claim — to invoke a per-consumer `onClaim` hook, registered by
+    the countersign family, within the lease transaction: the lease
+    UPDATE, then the hook's decision row lock and notice INSERT, then
+    commit, the provider call only after) — before the provider call — and
     under the decision row lock, appends the notice naming the delivery and
     the register's `lastCrossingPosition` it resolved the holders against
     (review round 28 — the pre-send snapshot captured durably with the

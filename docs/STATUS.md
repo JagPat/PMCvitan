@@ -187,6 +187,15 @@ locking its subject deliveries ahead of the decision row and skipping a leased o
 the synthetic fallback never minting `architect`, the notice FK on `OutboxDelivery(id)` with project equality in
 the seal, and the no-chain seal emission armed only at 4d-iii with the service emitting until then. This PR carries
 all one hundred and sixty fixes with `Replaces: #551`, the four annotated "(review round 30)" where they land.
+This PR's own first head (`af357a24`) drew five findings (all P1) — a direct approval committed while the
+no-chain arm was disarmed left permanently un-emitted, the marker-keyed handoff admitting a duplicate, the
+membership-less owner/admin issued the `pmc` token role yet required to be recorded otherwise, the receipt
+columns absent from 4d-i's inventory, and the claim hook described as sharing a lease transaction the relay
+commits first — folded on its second head as one batch ("review round 31" in the plan): the no-chain arm decided
+from in-transaction state (one service event → the seal defers, none → it emits, two → refused), the owner/admin
+arm admitting `pmc` through the live org-standing read, the receipt columns and freeze staged in 4d-i's repair
+bootstrap, and all three claim paths running a per-consumer `onClaim` hook inside the lease transaction. This PR
+carries all one hundred and sixty-five fixes, the five annotated "(review round 31)" where they land.
 **The Board's cap, and the protocol it leaves intact:** the close-and-replace rule stands as written; the Board
 directed that this PR is the last replacement the autonomous loop opens — should it reach a second finding-bearing
 head, the loop reports the exhausted head and its findings on #482 and stops, and no further replacement is opened
@@ -200,7 +209,7 @@ holds no label: it was closed and its branch rebuilt before the orchestrator's g
 scope gate refused #542's `Replaces: #541` and #542 declared `Replaces: #540` instead — the sequencing lesson
 recorded here, not tidied away; no label is applied or cleared by hand. No `6a53aae` decision was reopened. The unit exceeds the 1,500-line standard budget and
 declares `justified-large`: ONE plan document that must be reviewed whole, grown only by the precisions
-thirty review rounds required. #544's first head (`4dda84fc`) drew seven findings (six P1, one P2) — the
+thirty-one review rounds required. #544's first head (`4dda84fc`) drew seven findings (six P1, one P2) — the
 registry's hard-coded `KNOWN_ROLES` mirror missing from the role fan-out; a "both" left over from round 13's third
 reservation door in the transient block and the replay text; the round-14 fold reading chain presence through the
 orgs participant and the asynchronous refresh not atomic with the membership commit (answered by a decisions-owned
@@ -244,8 +253,8 @@ Board GO. #550's first head (`27ea7871`) drew the four of round 27 above, folded
 (`6841e343`), which drew the four of round 28 above and closed #550 — at the Board's cap, lifted by one again on
 the Board GO. #551's first head (`b5a27ef4`) drew the seven of round 29 above, folded on its second head
 (`ee2d7503`), which drew the four of round 30 above and closed #551 — at the Board's cap, lifted by one again on
-the Board GO. Should this PR's own head draw findings, one correction head folds them; a second finding-bearing
-head exhausts this PR under the protocol, and by the Board's directive the autonomous loop then opens no
+the Board GO. This PR's first head (`af357a24`) drew the five of round 31 above, folded on its second head —
+this PR's ONE correction head; a second finding-bearing head exhausts this PR under the protocol, and by the Board's directive the autonomous loop then opens no
 replacement itself: it reports the exhausted head on #482 and stops until a new Board call.
 
 **What follows, and what does not.** After this plan clears its own exact-head review (a fresh
