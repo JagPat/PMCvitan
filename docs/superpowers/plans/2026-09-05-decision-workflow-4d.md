@@ -296,9 +296,24 @@ the repair-evidence table in every 4d-i inventory, the no-chain approve
 joining the seal-emitted set, a retry-safe repair bootstrap transaction
 ahead of the audit, `approvedByRole` staged and written, no emission
 under the cascade, and a migration-gated one-time fill arm on the
-cutover seal. **The close-and-replace protocol stands unchanged; the
-owner directs who takes its next step**: should THIS PR reach a second
-finding-bearing head, the autonomous loop opens no replacement itself —
+cutover seal. Round 27 — this thirteenth replacement's own first head
+(`27ea7871`), four findings (two P1, two P2): the one-time fill arm's
+`xmin = txid_current()` predicate, which PostgreSQL cannot evaluate (no
+`xid = bigint` operator); the countersign notice sealed only by FKs, a
+uniqueness and mutation seals, so a direct writer could name an unrelated
+delivery and an arbitrary standing position and silence the one
+replacement; the cascade probe asserting a hard delete of a project that
+holds a committed `membership.standing_changed` event, which the
+`DomainEvent.tenant` `Restrict` FK refuses regardless; and the dev-session
+fallback minting `dev-architect` under `ALLOW_DEV_AUTH` without reading the
+reservation — is folded on its second head, annotated "(review round
+27)": the repository's `txid_current()::text::xid` cast, an INSERT-time
+correspondence seal binding the notice to its own countersign delivery
+and to the register's current position, the cascade arm scoped to the
+event-free project with the eventful hard delete asserted REFUSED, and
+the dev session refusing `architect` while the reservation stands. **The
+close-and-replace protocol stands unchanged; the owner directs who takes
+its next step**: should THIS PR reach a second finding-bearing head, the autonomous loop opens no replacement itself —
 it reports the exhausted head and its findings on #482 and stops, and no
 #551 is opened without a new Board call. No design decision carried from
 `6a53aae` was reopened; every fix is a precision this plan owed and had
@@ -627,7 +642,15 @@ discipline), and the P3005 baseline path cannot skip the audit because the
 migration is in `ALWAYS_EXECUTE`.
 Until 4d-iii no project can hold an active architect, so no chain can
 activate, no decision can enter `awaiting_countersign`, and no JWT can
-carry the role — which is what keeps a still-serving pre-4d instance safe
+carry the role — INCLUDING the dev session (review round 27: in a
+non-production environment with `ALLOW_DEV_AUTH=true`, `AuthService.session`
+falls back to minting `dev-<role>` for a role with no matching user,
+reading neither `Membership` nor the reservation, so 4d-ii's widened
+`sessionSchema` would let a `countersign-v1` client obtain an architect
+JWT while membership creation is still blocked; the fallback therefore
+REFUSES `architect` — 409 naming the drain directive — until
+`rollout.phase6_4d` is open, and P28b covers this alternate token
+producer) — which is what keeps a still-serving pre-4d instance safe
 (§D states the two concrete failures the reservation prevents). "Activating
 the chain" is thereafter a per-project PRODUCT act — the PMC adds an
 architect member — never an operator step.
@@ -915,7 +938,9 @@ The settled design, plus the owner's 2026-08-13 amendment, as behavior:
   `{ to: 1 }` re-emit itself decides per decision under the decision row
   lock from the decisions-owned `DecisionCountersignNotice` the countersign
   send hook appends in its own send transaction (review round 25, §A.2 —
-  the standing position the send resolved holders against): a demand
+  the standing position the send resolved holders against; INSERT-sealed
+  to that very delivery and to the register's current position, review
+  round 27): a demand
   already sent at or after the crossing, or still pending, is left alone;
   one sent before the crossing, to the displaced architect, is replaced —
   so whichever of the consumer and the unordered push worker runs first,
@@ -2089,7 +2114,7 @@ sites name where today's behavior lives.
 
 | probe | proves | red site / staging |
 |---|---|---|
-| P28 | the role in every mirror: `TokenRole`, both zod enums, `PushRole`, the `ROLE_POLICY` rows (§A.1's exact set), `decisionsManifest.permissions`, AND the web role pickers/labels (`TeamScreen.tsx`, `RolePicker.tsx`) — the identity walk pins the set; a membership with the new role is mintable through the shipped UI once 4d-iii has dropped the reservation — and NOT OFFERED before it: the role pickers gate `architect` on the shell's `rollout.phase6_4d` read, and `MembersService.add` refuses the role 409 BEFORE provisioning the invited `User` while the reservation stands (a new-email add while reserved → 409 and zero `User` rows; review round 5); the EXISTING targeted ceilings admit the role — a decision published to an architect holder and a consultation requested from an architect both dispatch (RED at base: `buildDispatchIntent` rejects the out-of-ceiling role and the command aborts), and the catalog tripwire over every targeted entry whose narrowing site persists a member role (review round 3); **P28b (this plan): the RESERVATION** — between 4d-i and 4d-iii a direct `Membership` INSERT or role UPDATE whose NEW row names `architect` is refused at the DB (a removed row already in that role can be neither restored nor re-keyed through it), so no project can arm the chain while a previous-release instance may still serve; after 4d-iii the same statements succeed — the mirror of 4c's reservation probe; AND the AUDIT — 4d-i applied over a database holding ANY `Membership` row with `role = 'architect'` (active OR soft-removed) ABORTS naming the rows and installs nothing, and likewise over ANY `Decision` row with `deciderKind = 'architect'` or `status = 'awaiting_countersign'`, audited under the `Decision` table lock as the diagnostic for rows that PRE-DATE 4d-i — the two TEXT-judged `Decision` doors installed in their own transaction BEFORE the `ADD VALUE` statements, so no window exists in which a concurrent direct writer can store either value unreserved (review rounds 14 and 20; the row aligned with §D's order in review round 23) — both orderings barrier-probed against a direct writer (review round 14); the audit runs AFTER the reservation's `CREATE TRIGGER` in the same transaction, barrier-probed in both orderings on the shipped file (writer-first → the migration waits then aborts on the committed row; migration-first → the writer waits then is refused); the operator repair is a RE-ROLE through the team role command (a soft removal leaves `role` in place and aborts the next deploy identically — asserted), or the guarded operator DELETE, and the same file then deploys (the `upgrade-proof.sh` abort → re-role → redeploy cycle; review rounds 1–2); the REPLAY arm — the P3005 baseline of a post-4d-iii database holding an active architect replays 4d-i as a no-op on its transient block (marker present) and keeps the architect, while a pre-4d-iii baseline (no marker) installs and audits (review round 5) | `types.ts`, `contracts.ts`, `external-effects.ts`, `policy.ts`, the Team screen role lists; the orgs-owned reservation trigger |
+| P28 | the role in every mirror: `TokenRole`, both zod enums, `PushRole`, the `ROLE_POLICY` rows (§A.1's exact set), `decisionsManifest.permissions`, AND the web role pickers/labels (`TeamScreen.tsx`, `RolePicker.tsx`) — the identity walk pins the set; a membership with the new role is mintable through the shipped UI once 4d-iii has dropped the reservation — and NOT OFFERED before it: the role pickers gate `architect` on the shell's `rollout.phase6_4d` read, and `MembersService.add` refuses the role 409 BEFORE provisioning the invited `User` while the reservation stands (a new-email add while reserved → 409 and zero `User` rows; review round 5); the dev-session fallback (`ALLOW_DEV_AUTH`, `AuthService.session`) refuses `architect` while the reservation stands and mints it after 4d-iii — the alternate token producer covered (review round 27); the EXISTING targeted ceilings admit the role — a decision published to an architect holder and a consultation requested from an architect both dispatch (RED at base: `buildDispatchIntent` rejects the out-of-ceiling role and the command aborts), and the catalog tripwire over every targeted entry whose narrowing site persists a member role (review round 3); **P28b (this plan): the RESERVATION** — between 4d-i and 4d-iii a direct `Membership` INSERT or role UPDATE whose NEW row names `architect` is refused at the DB (a removed row already in that role can be neither restored nor re-keyed through it), so no project can arm the chain while a previous-release instance may still serve; after 4d-iii the same statements succeed — the mirror of 4c's reservation probe; AND the AUDIT — 4d-i applied over a database holding ANY `Membership` row with `role = 'architect'` (active OR soft-removed) ABORTS naming the rows and installs nothing, and likewise over ANY `Decision` row with `deciderKind = 'architect'` or `status = 'awaiting_countersign'`, audited under the `Decision` table lock as the diagnostic for rows that PRE-DATE 4d-i — the two TEXT-judged `Decision` doors installed in their own transaction BEFORE the `ADD VALUE` statements, so no window exists in which a concurrent direct writer can store either value unreserved (review rounds 14 and 20; the row aligned with §D's order in review round 23) — both orderings barrier-probed against a direct writer (review round 14); the audit runs AFTER the reservation's `CREATE TRIGGER` in the same transaction, barrier-probed in both orderings on the shipped file (writer-first → the migration waits then aborts on the committed row; migration-first → the writer waits then is refused); the operator repair is a RE-ROLE through the team role command (a soft removal leaves `role` in place and aborts the next deploy identically — asserted), or the guarded operator DELETE, and the same file then deploys (the `upgrade-proof.sh` abort → re-role → redeploy cycle; review rounds 1–2); the REPLAY arm — the P3005 baseline of a post-4d-iii database holding an active architect replays 4d-i as a no-op on its transient block (marker present) and keeps the architect, while a pre-4d-iii baseline (no marker) installs and audits (review round 5) | `types.ts`, `contracts.ts`, `external-effects.ts`, `policy.ts`, the Team screen role lists; the orgs-owned reservation trigger |
 | P29 | no-active-architect byte-identity: with no architect membership ever, approve lands `approved` directly with `finalized = true`, forward is refused for the missing role's authority but works for holder/PMC, and the whole 4b/4c surface is byte-identical; **P29c (this plan): mixed-version byte-identity** — with the reservation ARMED (4d-i and 4d-ii deployed, 4d-iii not), every project is chain-off, no row can be `awaiting_countersign`, no membership can be `architect`, no `DecisionForward` row and no `decision.forwarded` delivery can exist (a service forward 409s naming the drain directive, a hostile direct forward insert is refused, no Forward affordance renders — review round 4), no `Decision` row — DRAFT or published — carries `deciderKind = 'architect'` (a service create/updateDraft naming it 409s, a hostile direct draft insert is refused; both succeed after 4d-iii — review round 13), every read a pre-4d instance performs on these tables sees only values its enums know, and — the STALE-CLIENT arm, review round 9 — a browser declaring only `recorded-v1` is refused on approve under an active chain — judged inside the command under the readiness lock, the activation-between-check-and-approve barrier in both orderings (review round 11) — and receives no `awaiting_countersign` row and no architect-designated row, an architect session is refused on the shell read for that client (review round 11), while a `countersign-v1` client sees everything; after 4d-iii all four forward arms open | the chain switch; the reservation on all three doors — membership role, forward row, decision designation |
 | P29b | removed-architect deactivation + the stranded decision: the chain deactivates for NEW approvals; `decisions.resolveStrandedCountersign` drives BOTH outcomes (complete-under-no-chain → `approved` with finality + emission; return-to-decider → `change` with the origin-stamped open request), each writing its append-only `DecisionStrandedResolution` fact (UNIQUE per revision; the orphan-fact insert refused by the reverse pairing; a whitespace-only reason — spaces, AND a tab-and-newline-only value — refused at zod AND the CHECK; provenance-bound as the bundle's primary), the RETURNED bundle's request authored by the resolving PMC and ADMITTED by the P33b seal on that pairing (a returned-bundle request attributed to anyone else, or to an architect, refused), the `completed` outcome emitting `decision.reapproved` when the stranded revision's `approvedFrom` is `change`, end-to-end through re-approval; the bare hostile `awaiting_countersign → approved` flip under the INACTIVE chain refused without the fact; the returned-resolution bundle MISSING its `countersign_rejection` request refused at commit; refused while an architect is still active; the architect-reappears race deterministic; the RE-NOTIFICATION (review round 6) — approve → architect A removed (countersign delivery cancelled) → architect B added: exactly one new `decision.awaiting_countersign` delivery per still-awaiting decision, B receives, AND — review round 24 — the HAND-RUN sequence: A removed by a hand-run receipt-backed write while the original countersign delivery is pending and unsent, B activated (by hand or by the service) before that delivery is claimed → the `{ to: 0 }` crossing cancels the original with the mark, the `{ to: 1 }` re-emit raises exactly ONE live delivery, B receives once; the same sequence with the consumer HELD until after B's activation (both crossings pending) → the original marked, one re-emit, never two live demands ; AND — review round 25 — the PUSH-WORKER interleavings: the original claimed and sent to B AFTER the crossing but BEFORE the handler runs → the notice names the crossing's position, the handler skips, B receives ONE; the original sent to A BEFORE A's removal → the notice pre-dates the crossing, the handler re-emits, B receives ONE; the original still pending when the handler runs → skipped, resolved to B at its own send, ONE; the handler and the send contending on the decision row lock in both orderings → ONE — the terminal delivery count asserted per decision, a `countersign_renotified` audit row attributed to the crossing event's system actor and naming the `membershipId` and stream position that identify the immutable `MembershipTransition` (review round 20); an activation with no awaiting decision emits nothing; an activation while another architect is ALREADY active emits nothing and appends no `countersign_renotified` row (review round 7); the projection fold a status no-op; the FRESHNESS arm (review rounds 10, 13, 14, 15, 16 and 17 — the value now a KERNEL read of the platform-owned `ProjectRoleStanding` register the membership trigger maintains from the row it is handed; no signal, no module reading another module's table anywhere, not even at commit) — a `pending` decision projected, the first architect added through the service → the register moves to 1 in the same commit and the very next read of the projected row shows `countersignRequired: true` (present only when true) with no fold delivery in between; the last architect removed → the field absent the same way; A-active/B-added crosses no boundary (register 1 → 2, the field unchanged); register = `phase6_effective_role_standing(project, 'architect')` after EVERY transition shape (insert, activate, soft-remove, restore, re-role in and out, the project cascade); a DIRECT architect INSERT / role UPDATE / soft removal / restore REFUSED without a receipt, refused at commit with a reserved-but-uncompleted receipt, refused with a receipt borrowed from another command type or actor, by the orgs-owned `Membership_t4d_architect_provenance` pairing seal, the immutable `MembershipTransition` fact and its deferred `phase6_t4d_membership_transition_bound` binding (review rounds 17 and 19 — the command ledger as an append-only per-transition fact: not a `SET LOCAL` flag, not a cross-module seal, not a rewritable column), a hard DELETE of an architect row refused outright, and the crossing event emitted by the standing trigger for EVERY writer — a hand-run-receipt insert of architect B after A left still refreshes every tab and B is still re-notified through the `decisions.effects` consumer (review round 19); a direct write to the register refused, the register erased by DELETE or by TRUNCATE refused, `Membership` truncated refused (review rounds 16–17); every OTHER open tab refreshed by the orgs-owned `membership.standing_changed` invalidation on the zero↔one crossing and by nothing on 1 → 2 (review round 18); rebuild == live (the projection stores no such field); the DEPARTED-holder stranded return (review round 7) — `returned` with a target re-homes into `change` with the forward fact in the same bundle, `returned` without one refused | the new resolution command + its fact table + the switch; the `decisions.effects` ordered consumer on `membership.standing_changed` / `project.restored` (review round 19) |
 | P30 | forward authority (holder/PMC/architect), ACTIVE target only, eligible states only — terminal AND `awaiting_countersign` refusals both probed through the guarded HTTP route with the shared `ROLE_POLICY` action | the forward command |
@@ -2152,7 +2177,24 @@ sites name where today's behavior lives.
     composite FKs to `Decision(projectId, id)` and `OutboxDelivery`, UNIQUE
     `(projectId, deliveryId)`, its append-only seal and the statement-level
     `DecisionCountersignNotice_t4d_no_truncate`; created EMPTY here so
-    4d-ii's send hook and consumer can append and read it), and the
+    4d-ii's send hook and consumer can append and read it — AND, review
+    round 27, an INSERT-time CORRESPONDENCE seal
+    `DecisionCountersignNotice_t4d_bound`, since FKs, uniqueness and
+    mutation seals alone would admit a notice naming an unrelated
+    same-project delivery and an arbitrary high `standingPosition`, which
+    the `{ to: 1 }` handler would read as "already demanded" and skip the
+    only replacement: the seal requires that the named `OutboxDelivery` is
+    the `webpush.notify` delivery of a countersign-family `DomainEvent`
+    (the `decision.awaiting_countersign` demand or its re-emit) whose
+    `entityId` is `NEW."decisionId"` in `NEW."projectId"`; that the
+    delivery's `succeeded` write belongs to the CURRENT transaction (its
+    `xmin = txid_current()::text::xid`, the receipt-seal conversion) — the
+    notice is born in the send transaction or not at all; and that
+    `NEW."standingPosition"` equals the register's current
+    `lastCrossingPosition` for `(projectId, 'architect')`, read under the
+    row lock — RED SITES: a notice naming a decider-family or another
+    decision's delivery; a notice inserted outside the send transaction; a
+    position ahead of or behind the register), and the
     operator-only `DecisionRepairAction` evidence register of §D (review
     round 26 — created by the repair bootstrap transaction below, append-only
     with `DecisionRepairAction_t4d_no_truncate`) — each registered
@@ -2574,9 +2616,19 @@ sites name where today's behavior lives.
     as the register seal does — `pg_trigger_depth() > 1` AND the
     transaction-local `Project_t4d_deleting` flag — and there applies no
     delta and emits nothing, the register row and the memberships falling
-    with the project; the cascade probe deletes a project holding an
-    ACTIVE architect and asserts the delete succeeds, no event, no fact,
-    no register row) — calls the
+    with the project — for the project that CAN be hard-deleted, which is
+    an EVENT-FREE one (review round 27: `DomainEvent.tenant` references
+    `Project` with `onDelete: Restrict`, so a project that ever crossed
+    holds its committed `membership.standing_changed` event and its hard
+    delete is refused at that FK before any cascade runs; the supported
+    path for a live project is `archive`, §A.2's parking, and a sanctioned
+    reset that first disposes of the event store is out of this plan's
+    scope); the cascade probe therefore deletes an event-free project with
+    memberships but no architect ever active and asserts the delete
+    succeeds with no emission, no delta and no register row, AND
+    hard-deletes a project holding an active architect and asserts the
+    delete is REFUSED by the tenant FK with the event, the fact and the
+    register row intact — never worked around) — calls the
     platform-owned SQL twin of `emitEvent` — `platform_emit_event(projectId,
     eventType, entityType, entityId, payload, actorId DEFAULT NULL,
     actorRole DEFAULT NULL)`, a kernel primitive that locks and increments
@@ -2824,7 +2876,11 @@ sites name where today's behavior lives.
     two units; the seal installed by 4d-i instead admits an INSERT ONLY when
     the transaction-local setting `phase6.t4d_cutover_fill` names the
     consumer AND that consumer's `OutboxConsumerCatalog` row was inserted
-    in the CURRENT transaction — `xmin = txid_current()` — so the
+    in the CURRENT transaction — `xmin = txid_current()::text::xid`, the
+    conversion `20270425000000_platform_command_receipt_seal` already uses
+    (review round 27: PostgreSQL has no equality operator between the
+    `xid` system column and the `bigint` `txid_current()` returns, so the
+    literal predicate would error and block the catalog migration) — so the
     registering migration alone can fill, in the one transaction that
     registers, a preseed before registration is refused for want of the
     in-transaction catalog row, and every later INSERT is refused for want

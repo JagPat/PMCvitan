@@ -148,8 +148,15 @@ reported on #482 and the owner LIFTED IT BY ONE (Board GO on #549, 2026-09-06). 
 26" in the plan) by the notice and repair-evidence tables in every 4d-i inventory, the no-chain approve joining
 the seal-emitted set, a retry-safe repair bootstrap transaction ahead of the audit, `approvedByRole` staged and
 written, no emission under the cascade, and a migration-gated one-time fill arm on the cutover seal. This PR
-carries all one hundred and forty-one fixes with `Replaces: #549`, the six annotated "(review round 25)" and the
-six annotated "(review round 26)" where they land. **The owner's cap, and the protocol it leaves intact:** the
+carries all one hundred and forty-five fixes with `Replaces: #549`, the six annotated "(review round 25)", the six
+annotated "(review round 26)" and — this PR's own first head (`27ea7871`) drew four findings (two P1, two P2): the
+fill arm's `xmin = txid_current()` predicate PostgreSQL cannot evaluate, the countersign notice sealed only by FKs and
+uniqueness so a direct writer could silence the one replacement, the cascade probe asserting a hard delete the
+`DomainEvent.tenant` Restrict FK refuses, and the dev-session fallback minting `dev-architect` without reading the
+reservation — folded on its second head as one batch ("review round 27" in the plan): the `::text::xid` cast, an
+INSERT-time correspondence seal on the notice, the cascade arm scoped to the event-free project with the eventful
+delete asserted refused, and the dev session refusing the role while reserved — the four annotated "(review round
+27)" where they land. **The owner's cap, and the protocol it leaves intact:** the
 close-and-replace rule stands as written; the owner directed that this PR is the last replacement the autonomous
 loop opens — should it reach a second finding-bearing head, the loop reports the exhausted head and its findings
 on #482 and stops, and no further replacement is opened without a new Board call. **The ledger, read off the label** (the
@@ -162,7 +169,7 @@ holds no label: it was closed and its branch rebuilt before the orchestrator's g
 scope gate refused #542's `Replaces: #541` and #542 declared `Replaces: #540` instead — the sequencing lesson
 recorded here, not tidied away; no label is applied or cleared by hand. No `6a53aae` decision was reopened. The unit exceeds the 1,500-line standard budget and
 declares `justified-large`: ONE plan document that must be reviewed whole, grown only by the precisions
-twenty-six review rounds required. #544's first head (`4dda84fc`) drew seven findings (six P1, one P2) — the
+twenty-seven review rounds required. #544's first head (`4dda84fc`) drew seven findings (six P1, one P2) — the
 registry's hard-coded `KNOWN_ROLES` mirror missing from the role fan-out; a "both" left over from round 13's third
 reservation door in the transient block and the replay text; the round-14 fold reading chain presence through the
 orgs participant and the asynchronous refresh not atomic with the membership commit (answered by a decisions-owned
@@ -202,8 +209,8 @@ id; that second head drew the seven of round 22 above, which closed #547. #548's
 the five of round 23 above, folded on its second head (`966defdd`), which drew the eight of round 24 above and
 closed #548. #549's first head (`a87742ae`) drew the six of round 25 above, folded on its second head
 (`56a27029`), which drew the six of round 26 above and closed #549 — at the owner's cap, lifted by one on the
-Board GO. Should this PR's own head draw findings, one correction head folds them; a second finding-bearing head
-exhausts this PR under the protocol, and by the owner's directive the autonomous loop then opens no replacement
+Board GO. This PR's first head (`27ea7871`) drew the four of round 27 above, folded on its second head — this PR's
+ONE correction head; a second finding-bearing head exhausts this PR under the protocol, and by the owner's directive the autonomous loop then opens no replacement
 itself: it reports the exhausted head on #482 and stops until a new Board call.
 
 **What follows, and what does not.** After this plan clears its own exact-head review (a fresh
