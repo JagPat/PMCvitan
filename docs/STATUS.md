@@ -114,8 +114,16 @@ migration, the notification and audit rows still written by service code a hand-
 association chosen after the write, and a PMC's self-transition to architect failing its own seal — answered by a
 `parked` outcome the relay honours under the project lock, an INSERT-closed cutover created empty in 4d-i,
 seal-written audit rows and consumer-derived notifications, the transition bound at the write through a pointer the
-trigger carries, and the actor judged against the pre-transition standing. This PR carries all one hundred and
-sixteen fixes with `Replaces: #547`, the seven annotated "(review round 22)" in the plan where they land. **The ledger, read off the label** (the
+trigger carries, and the actor judged against the pre-transition standing. This PR's own first head (`29ee11af`)
+drew five findings (all P1) — the P40 archive arm asserting a cancellation mark where the parking contract holds
+the row unmarked, the transition fact column-immutable while its `standingEventId` must move from NULL to the
+event the write emits, §A.1 and P28 still committing the enum ahead of the round-20 reservation, the fact's
+membership FK checked immediately though `members.add` inserts the fact first, and P36 demanding a countersign
+delivery for an approval final before any chain existed — folded on its second head as one batch ("review round
+23" in the plan): the arm parked and released, one sealed NULL→event-id transition, the doors before the enum in
+every statement of the order, the membership FK deferred, and zero deliveries for approve-first under no chain.
+This PR carries all one hundred and twenty-one fixes with `Replaces: #547`, the seven annotated "(review round
+22)" and the five annotated "(review round 23)" in the plan where they land. **The ledger, read off the label** (the
 #514/#513 lesson): the obligation is the repository-wide `review-replacement-required` LABEL, not the prose
 lineage. #547 was labelled by the orchestrator BEFORE it closed, so it is the obligation this PR settles. Every
 predecessor closed at the limit (#537, #538, #539, #540, #542, #543, #544, #545, #546, #547) stays a labelled pending obligation until
@@ -125,7 +133,7 @@ holds no label: it was closed and its branch rebuilt before the orchestrator's g
 scope gate refused #542's `Replaces: #541` and #542 declared `Replaces: #540` instead — the sequencing lesson
 recorded here, not tidied away; no label is applied or cleared by hand. No `6a53aae` decision was reopened. The unit exceeds the 1,500-line standard budget and
 declares `justified-large`: ONE plan document that must be reviewed whole, grown only by the precisions
-twenty-two review rounds required. #544's first head (`4dda84fc`) drew seven findings (six P1, one P2) — the
+twenty-three review rounds required. #544's first head (`4dda84fc`) drew seven findings (six P1, one P2) — the
 registry's hard-coded `KNOWN_ROLES` mirror missing from the role fan-out; a "both" left over from round 13's third
 reservation door in the transient block and the replay text; the round-14 fold reading chain presence through the
 orgs participant and the asynchronous refresh not atomic with the membership commit (answered by a decisions-owned
@@ -161,9 +169,10 @@ re-emit rebuilding work from open subjects instead of the deliveries archival co
 to name the transition fact its audit must trace — folded on its second head as one batch ("review round 21" in the
 plan): the cutover sealed, target locks before the decision lock, every 4d-sealed transition emitting from its seal,
 archival parking deliveries that restoration releases unchanged, and the transition fact binding the crossing event's
-id; that second head drew the seven of round 22 above, which closed #547. Should this PR's own head draw findings,
-one correction head folds them; a second finding-bearing head forces the same close-and-replace again — after the
-orchestrator labels this PR, never before — and never a third correction head.
+id; that second head drew the seven of round 22 above, which closed #547. This PR's first head (`29ee11af`) drew
+the five of round 23 above, folded on its second head — this PR's ONE correction head; a second finding-bearing
+head forces the same close-and-replace again — after the orchestrator labels this PR, never before — and never a
+third correction head.
 
 **What follows, and what does not.** After this plan clears its own exact-head review (a fresh
 clean +1 through the `codex-current-head` gate — the independent clearance the 4c plan's
