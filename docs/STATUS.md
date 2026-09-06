@@ -166,7 +166,18 @@ call with the handler cancelling and replacing whatever was resolved before the 
 `architect` before either branch with the audit naming dev `User` rows, receipt-captured `actorRole`/`actorName`
 sealed to the actor's standing at reserve time and copied verbatim by every fact, and the repair →
 `migrate resolve --rolled-back` → redeploy recovery driven through the real runner. This PR carries all one hundred
-and forty-nine fixes with `Replaces: #550`, the four annotated "(review round 28)" where they land. **The Board's
+and forty-nine fixes with `Replaces: #550`, the four annotated "(review round 28)" where they land. This PR's own
+first head (`b5a27ef4`) drew seven findings (all P1) — the receipt role judged by a project-wide predicate that
+cannot prove this actor held it, that judgement placed in a platform trigger reading orgs standing, the receipt
+pair mandatory while pre-4d processes still reserve without it, the deactivation handler cancelling a claim
+resolved against a later standing, a per-delivery uniqueness the retry rule contradicts, feed rows derived after
+the command's response and the socket invalidation, and opposite lock orders between the claim hook and the
+handlers — folded on its second head as one batch ("review round 29" in the plan): a nullable pair the receipt
+only freezes with a trailing 4d-iii seal, the owning fact seals judging the role per user through
+`phase6_user_holds_role` plus the owner/admin arm, the deactivation handler sparing claims at or after its
+crossing, the triple uniqueness idempotent per position, feed rows written by the admitting seal through a
+platform notification twin before the response, and delivery-then-decision as the one lock order. This PR carries
+all one hundred and fifty-six fixes, the seven annotated "(review round 29)" where they land. **The Board's
 cap, and the protocol it leaves intact:** the close-and-replace rule stands as written; the Board directed that
 this PR is the last replacement the autonomous loop opens — should it reach a second finding-bearing head, the loop
 reports the exhausted head and its findings on #482 and stops, and no further replacement is opened without a new
@@ -180,7 +191,7 @@ holds no label: it was closed and its branch rebuilt before the orchestrator's g
 scope gate refused #542's `Replaces: #541` and #542 declared `Replaces: #540` instead — the sequencing lesson
 recorded here, not tidied away; no label is applied or cleared by hand. No `6a53aae` decision was reopened. The unit exceeds the 1,500-line standard budget and
 declares `justified-large`: ONE plan document that must be reviewed whole, grown only by the precisions
-twenty-eight review rounds required. #544's first head (`4dda84fc`) drew seven findings (six P1, one P2) — the
+twenty-nine review rounds required. #544's first head (`4dda84fc`) drew seven findings (six P1, one P2) — the
 registry's hard-coded `KNOWN_ROLES` mirror missing from the role fan-out; a "both" left over from round 13's third
 reservation door in the transient block and the replay text; the round-14 fold reading chain presence through the
 orgs participant and the asynchronous refresh not atomic with the membership commit (answered by a decisions-owned
@@ -222,8 +233,8 @@ closed #548. #549's first head (`a87742ae`) drew the six of round 25 above, fold
 (`56a27029`), which drew the six of round 26 above and closed #549 — at the owner's cap, lifted by one on the
 Board GO. #550's first head (`27ea7871`) drew the four of round 27 above, folded on its second head
 (`6841e343`), which drew the four of round 28 above and closed #550 — at the Board's cap, lifted by one again on
-the Board GO. Should this PR's own head draw findings, one correction head folds them; a second finding-bearing
-head exhausts this PR under the protocol, and by the Board's directive the autonomous loop then opens no
+the Board GO. This PR's first head (`b5a27ef4`) drew the seven of round 29 above, folded on its second head —
+this PR's ONE correction head; a second finding-bearing head exhausts this PR under the protocol, and by the Board's directive the autonomous loop then opens no
 replacement itself: it reports the exhausted head on #482 and stops until a new Board call.
 
 **What follows, and what does not.** After this plan clears its own exact-head review (a fresh
