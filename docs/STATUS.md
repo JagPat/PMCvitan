@@ -13,14 +13,63 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: merged
+task_state: in_progress
 work_item: none
 reviewed_merge: f5da6654
 open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-05
+updated: 2026-09-07
 ```
+
+### The 4d PLAN unit — reopened as the NARROWED replacement of #552, docs-only
+
+**What this PR is.** The docs-only 4d plan unit the merged 4b plan's §E order names as the first
+4d stop, now `docs/superpowers/plans/2026-09-07-decision-workflow-4d.md`: the §C orchestration
+design at PR #340 head `6a53aae` carried in substance, the §D obligations 4–6 elaborated, the
+probe table P28–P42, and the FOUR-PR staging (the dark migration 4d-i, the service/role/UI unit
+4d-ii, an operator drain attestation, the reservation retirement 4d-iii). It replaces #552
+(`Replaces: #552`), the fifteenth replacement of one unit — #537 through #552, sixteen PRs,
+thirty-two Codex rounds, one hundred and sixty-eight findings, each PR closed at its second
+finding-bearing head — opened from `main` `d7eed4ce` under the standing continuation
+authorization (#482 comment 5563944111, 2026-09-07: no PR-number cap; close-and-replace
+continues; "reduce the review unit at safe dependency seams; preserve the obligations ledger").
+
+**What is different, and why it is not the same plan re-rolled.** Rounds 19–32 — fourteen rounds,
+sixty-one findings — all landed on one round-19 commitment: that the database ADMITS a hand-run
+bundle and must therefore PRODUCE its side effects itself (a PL/pgSQL twin of `emitEvent`, a
+notification twin, seal-written audit rows, a count-based emitter handoff, a claim-time notice
+register, a relay lease refactor). Every one of those findings was a divergence between a
+PL/pgSQL reproduction of the service and the service — an OPEN class. The replacement makes ONE
+design pass: a seal VERIFIES the complete same-transaction bundle (fact, event, audit row, bound
+feed row) and REFUSES anything less; it never emits (the plan's §A.3 obligation 7). The three
+round-32 findings on #552's head `4b9a648f` are answered by that rule, by recipients frozen at
+emission, and by a staged `Notification.eventId` — none dropped. Four mechanisms are withdrawn at
+seams the delivered surface proves safe, each with its argument in the plan's §A.4 ledger: the
+`Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
+cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
+and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
+live standing). The document is 2,032 lines against #552's 3,495.
+
+**What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
+again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
+self-naming convention every 4c and 4d unit followed). `reviewed_merge` stays `f5da6654`,
+`next_task` stays `phase-6-task-4d`, `phase_plan` stays the 4c plan until this plan CLEARS.
+Runner invariants: `assessRunnerState` → `pr:<this>` while open; `assessPostMergeRunnerState` →
+simulated, allowed, `task:4`; `detectStatusDrift` with the self-named `open_pr` live → no drift.
+
+**The ledger, read off the label.** #552 was labelled `review-replacement-required` by the
+orchestrator before it closed, so #552 is the obligation this PR settles. Every predecessor
+closed at the limit (#537–#540, #542–#551) stays a labelled pending obligation until a MERGED
+unit names it, one merge discharging one (`docs/reviews/replacement-lineage-repair.md`); #541
+holds no label. No label is applied or cleared by hand.
+
+**What follows, and what does not.** After this plan clears its own exact-head review, 4d
+implementation begins with 4d-i from the `main` that carries it; a second finding-bearing head
+here means close-and-replace again under the same authorization, with no cap. No 4d
+implementation is started by this PR. Contractor-capture units 1–6 stay Board-gated; the P3005
+correction stays in the maintenance queue; no UX, performance, Site Map or photo-capture work;
+#530, #531 and #532 stay closed.
 
 ### Unit 4c-v merged — 4c is COMPLETE. The §E handoff to the 4d PLAN unit is the recorded next step.
 
