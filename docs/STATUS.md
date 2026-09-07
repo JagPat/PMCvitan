@@ -16,24 +16,24 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: f5da6654
-open_pr: 557
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-07
 ```
 
-### The 4d PLAN unit — the NARROWED plan, replacing #556 (which replaced #555, #554 and #552), docs-only
+### The 4d PLAN unit — the NARROWED plan, replacing #557 (which replaced #556, #555, #554 and #552), docs-only
 
 **What this PR is.** The docs-only 4d plan unit the merged 4b plan's §E order names as the first
 4d stop, `docs/superpowers/plans/2026-09-07-decision-workflow-4d.md`: the §C orchestration
 design at PR #340 head `6a53aae` carried in substance, the §D obligations 4–6 elaborated, the
 probe table P28–P42, and the FOUR-PR staging (the dark migration 4d-i, the service/role/UI unit
-4d-ii, an operator drain attestation, the reservation retirement 4d-iii). It replaces #556
-(`Replaces: #556`) — the narrowed plan's third outing, closed at its second finding-bearing
-head (`bb307c74` three findings folded on `dd2da64b`, which drew five more) — which replaced
-#555 (the second outing: `3e5a85a2` five findings folded on `41ea41d2`, four more there), which
-replaced #554 (the first outing: `cbfdaacb` seven findings folded on `82a497a5`, seven more
-there), which replaced #552, the fifteenth replacement of the ORIGINAL unit (#537 through #552, sixteen PRs,
+4d-ii, an operator drain attestation, the reservation retirement 4d-iii). It replaces #557
+(`Replaces: #557`) — the narrowed plan's fourth outing, closed at its second finding-bearing
+head (`3327f761` five findings folded on `6d5545ce`, which drew four more) — which replaced
+#556 (the third: `bb307c74` three folded on `dd2da64b`, five more there), which replaced #555
+(the second: `3e5a85a2` five folded on `41ea41d2`, four more there), which replaced #554 (the
+first: `cbfdaacb` seven folded on `82a497a5`, seven more there), which replaced #552, the fifteenth replacement of the ORIGINAL unit (#537 through #552, sixteen PRs,
 thirty-two Codex rounds, one hundred and sixty-eight findings). Opened from `main` `d7eed4ce` under the
 standing continuation authorization (#482 comment 5563944111, 2026-09-07: no PR-number cap;
 close-and-replace continues; "reduce the review unit at safe dependency seams; preserve the
@@ -68,7 +68,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 2,808 lines against #552's 3,495.
+live standing). The document is 2,882 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -144,7 +144,7 @@ declared `migration-scope: inseparable` with that boundary stated. None is a con
 the boundary answers. A second finding-bearing head means close-and-replace under the standing
 authorization, no cap.
 
-**Review round 1 on this PR (head `3327f761`): five findings (three P1, two P2), folded on its
+**Review round 1 on #557 (head `3327f761`): five findings (three P1, two P2), folded on its
 ONE correction head.** The converse for the finalizing event admits the countersign's and the
 `completed` resolution's flip of the existing revision (no new revision row) beside the direct
 approve's insert; the `decision.consultation_responded` catalog ceiling widens with the `respond`
@@ -157,6 +157,22 @@ suppress a withdrawn decision's ACTIONABLE kinds for the PMC while the rows and 
 evidence. A second finding-bearing head means close-and-replace under the standing
 authorization, no cap.
 
+**Review round 2 on #557 (head `6d5545ce`): four findings (two P1, two P2), carried here, none
+dropped.** The org-level key gains its TABLE door — the orgs-owned `Project_t4d_org_readiness`
+BEFORE INSERT trigger (4d-iii) tries the org key on every `Project` insert, so a direct insert
+cannot slip past an org write's enumeration; `createProject` re-judges the creator's owner/admin
+standing UNDER `lockOrgStanding` before the insert (the pre-transaction read had let a
+concurrently demoted admin create); every 4d-ii `decision.approved`/`reapproved` event carries
+the exact finalized `revisionId` (the direct approve, the countersign, the `completed`
+resolution) so the converse binds on a durable key and an older kinded green notice renders ITS
+revision's approver, with a drain fallback for previous-release events until 4d-iii; and the
+consultation requester's role is FROZEN on the fact — 4d-i's nullable
+`DecisionConsultation.requestedByRole`, written by 4d-ii's `consultation.request` under the
+seal's requester arm and read by the `respond` emitter — rather than resolved at response time.
+Each is a second-order consequence of a round-1 fold; none is a content question the boundary
+answers. A second finding-bearing head means close-and-replace under the standing authorization,
+no cap.
+
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
 self-naming convention every 4c and 4d unit followed). `reviewed_merge` stays `f5da6654`,
@@ -164,9 +180,9 @@ self-naming convention every 4c and 4d unit followed). `reviewed_merge` stays `f
 Runner invariants: `assessRunnerState` → `pr:<this>` while open; `assessPostMergeRunnerState` →
 simulated, allowed, `task:4`; `detectStatusDrift` with the self-named `open_pr` live → no drift.
 
-**The ledger, read off the label.** #556 was labelled `review-replacement-required` by the
-orchestrator before it closed, so #556 is the obligation this PR settles. Every predecessor
-closed at the limit (#537–#540, #542–#555) stays a labelled pending obligation until a MERGED
+**The ledger, read off the label.** #557 was labelled `review-replacement-required` by the
+orchestrator before it closed, so #557 is the obligation this PR settles. Every predecessor
+closed at the limit (#537–#540, #542–#556) stays a labelled pending obligation until a MERGED
 unit names it, one merge discharging one (`docs/reviews/replacement-lineage-repair.md`); #541
 holds no label. No label is applied or cleared by hand.
 
