@@ -72,7 +72,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 3,326 lines against #552's 3,495.
+live standing). The document is 3,447 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -250,8 +250,28 @@ inserts only), so every `ALWAYS_EXECUTE` replay over a project created since com
 `ReleaseLease` register is sealed — identity frozen after insert, only a non-decreasing
 `leaseUntil` mutable, DELETE refused, `ReleaseLease_t4d_no_truncate` in `TRUNCATE_SEALS` (now
 ELEVEN entries) — so the drain proof cannot be edited into passing. The drain gate itself was
-NOT re-raised. A second finding-bearing head means close-and-replace under the standing
-authorization, no cap.
+NOT re-raised.
+
+**Review round 1 on this PR, #561 (head `b2e556c3`): seven findings (six P1, one P2), folded on
+its ONE correction head, none dropped.** Per-user standing and identity are projected by their
+owner into platform-owned registers (`ProjectUserStanding`, `UserIdentity`) exactly as the role
+count is — written only by generic platform primitives the orgs triggers call, backfilled in
+4d-i, verified offline — and every decisions seal reads them through the kernel
+(`platform_user_holds_role`/`platform_user_orchestration_authority`/`platform_user_display_name`),
+so no decisions seal invokes an orgs-owned function (`decisions.dependsOn` is `[]` and
+`orgs.dependsOn` names `decisions`; the delivered 4b `phase6_user_decision_authority` predates
+the rule and stays byte-identical); the architect's `ROLE_POLICY` set is stated EXACTLY (twelve
+actions — three reads, five delivered decision actions, `consultation.request`,
+`decision.forward`/`countersign`/`disagree` — with the exclusions named) and P28 asserts
+equality over every action; the two delivered consultation facts gain the same-transaction
+effect correspondence in both directions (sealed in 4d-i; the delivered service already emits
+in-transaction); `cancelledAt` is admitted only as the mark's NULL → timestamp write, never
+cleared or rewritten; the activation register's BEFORE INSERT locks the catalog row and requires
+`seq = activationSeq + 1`, the AFTER INSERT advancing `active` and the head together;
+`SnapshotService.shellSummary`'s badge is served by the same `countPending`; and the
+`ProjectEventStream` row cannot be deleted outside the project cascade, inserted at any position
+but 0, or truncated (`TRUNCATE_SEALS` now FOURTEEN entries). The drain gate was not raised. A
+second finding-bearing head means close-and-replace under the standing authorization, no cap.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
