@@ -515,7 +515,7 @@ shell-level `rollout.phase6_4d: 'reserved' | 'open'` read baked from the same
 catalog read, so no client offers what the server refuses (ui-server-parity;
 P34's web arm, P28b's service arm: adding an architect by a NEW email while
 reserved → 409 and ZERO `User` rows created; after 4d-iii the same call
-creates the member). P29c probes the four doors in both states: with the
+creates the member). P29c probes the five doors in both states: with the
 reservation ARMED a service forward is 409, a hostile direct
 `DecisionForward` insert is refused, the outbox holds no
 `decision.forwarded`, no Forward renders, a service create naming the
@@ -2882,7 +2882,7 @@ today's behaviour lives.
     rebuild projections → `outbox:status` clean → `outbox:seal-external`
     recording the NEW coverage → restart in outbox mode, the startup
     validating the seal — BEFORE 4d-iii. **Still chain-off AND forward-off
-    everywhere**, because the reservation stands on all four doors: the unit
+    everywhere**, because the reservation stands on all five doors: the unit
     ships every reader and writer while no project can exercise them, which
     is what makes the previous-release drain a pure operational step. Its
     STATUS fold SETS `blocking_directive: phase-6-4d-previous-release-drained`.
