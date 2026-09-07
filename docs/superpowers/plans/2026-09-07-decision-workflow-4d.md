@@ -447,6 +447,15 @@ serialized by the org key alone, which a direct SQL writer never takes:
 |---|---|---|
 | 1 (P1) 4d-iii's re-projection ran before the doors were installed and held only `lockOrgStanding`, so a direct `Project` INSERT and a direct owner/admin `OrgMembership` INSERT could both commit AFTER the repair's snapshot and BEFORE the doors were installed, and the migration then committed without the `pmc` row a valid owner is owed | §A.2 the kernel read; §D 4d-iii; P42 | 4d-iii FENCES every writer of the three orgs tables FIRST — `LOCK TABLE "Project", "OrgMembership", "Membership" IN SHARE ROW EXCLUSIVE MODE`, taken before the snapshot and before any door, in that one order, held to commit — so every write that began before the fence has ended and is visible to the snapshot, no write can commit between the snapshot and the doors, and the first write after commit meets the installed doors; the migration takes NO org key (the fence subsumes it, and a key taken after the fence could deadlock against a writer holding the key and waiting on the fence); P42's arm starts a direct-SQL pair after the fence and observes it BLOCKED, the repair and the doors committing, the pair then committing through the doors with the `pmc` row present |
 
+**Review round 1 on #564 (head `93349e6`) — one finding (P1), DECLINED on
+the Board's recorded decision, nothing folded.** It is the drain attestation
+again, the only finding on the head, and the first head of this lineage on
+which the Board-decided gate is the ONLY thing the reviewer raises:
+
+| finding | where it lands | the answer |
+|---|---|---|
+| 1 (P1) "allow the runner to clear the drain gate autonomously" — the fail-closed evidence should be sufficient without human sign-off | §D the drain attestation | DECLINED — a Board decision, not a plan defect (#482 comment 5569586836: human production attestation is retained; the autonomous evidence is corroboration; no review finding or agent statement removes it). The plan carries the gate exactly as decided; the contradiction between `AGENTS.md` L72–75 ("do not block on human sign-off") and the recorded decision — the reason the reviewer raises it on fresh heads — is escalated to the Board on #482 as a concrete convergence blocker, and its resolution either way is the user's separate decision |
+
 **Docs-only.** No schema, no migration, no runtime code, no test change, no
 4d implementation. Contractor-capture units 1–6 and the saved UX and
 performance work stay Board-gated and are not mixed in.

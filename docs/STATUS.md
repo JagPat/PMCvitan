@@ -77,7 +77,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 3,736 lines against #552's 3,495.
+live standing). The document is 3,745 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -347,8 +347,17 @@ any door, in that one order, held to commit, and takes NO org key — so every w
 before the fence has ended and is visible to the snapshot, none commits between the snapshot and
 the doors, and the first write after commit meets the installed doors; P42's arm starts a
 direct-SQL pair after the fence, observes it BLOCKED, and asserts it commits through the doors
-with the `pmc` row present. The drain gate was not raised. A second finding-bearing head means
-close-and-replace under the standing authorization, no cap.
+with the `pmc` row present. The drain gate was not raised.
+
+**Review round 1 on this PR, #564 (head `93349e6`): one finding (P1), DECLINED on the Board's
+recorded decision, nothing folded.** "Allow the runner to clear the drain gate autonomously" —
+the only finding on the head — is the Board decision recorded at #482 comment 5569586836, not a
+plan defect; the plan carries the gate exactly as decided and this head records the disposition
+in the lineage table. Every other finding of the lineage is closed; the reviewer raises the
+decided gate on fresh heads because `AGENTS.md` L72–75 ("do not block on human sign-off") and
+the recorded decision contradict, which is escalated to the Board on #482 as a concrete
+convergence blocker. A second finding-bearing head means close-and-replace under the standing
+authorization, no cap.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
