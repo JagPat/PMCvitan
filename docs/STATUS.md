@@ -73,7 +73,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 3,538 lines against #552's 3,495.
+live standing). The document is 3598 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -288,8 +288,24 @@ locks the `decisions.effects` catalog row, activates at `activationSeq + 1` only
 VERIFIES the head active, aborting the retirement otherwise; both consultation facts carry the
 frozen role + name pair (nullable through the drain, required by 4d-iii) bound to their event
 envelopes; and the three new fact tables join the sanctioned reset child-first under their row
-seals disabled by name. The drain gate was not raised. A second finding-bearing head means
-close-and-replace under the standing authorization, no cap.
+seals disabled by name. The drain gate was not raised.
+
+**Review round 1 on this PR, #562 (head `be56b941`): six findings (five P1, one P2), five folded
+on its ONE correction head, one DECLINED on the Board's recorded decision, none dropped.** The
+approve CAS reads `RoleStandingQuery.activeCount` and every NEW seal the kernel's
+`platform_role_standing` over `ProjectRoleStanding` (the delivered `phase6_effective_role_standing`
+stays for the delivered `client`/`pmc` seals only); `MembershipTransition.actorRole` is the actor's
+ACTUAL token role, with team-management authority judged separately by
+`platform_user_manages_team` over a `pmc` row or the platform-owned `OrgUserAuthority` register
+the `OrgMembership` trigger projects (`TRUNCATE_SEALS` now FIFTEEN entries); the
+`Notification(projectId, eventId)` FK is `DEFERRABLE INITIALLY DEFERRED` because the delivered
+writers create the notice before `emitEvent` allocates the event; the consultation converse binds
+each event's push target to the fact's audience (the frozen consultee; the requester with the
+frozen role); and the latest-demand lookup takes `before := NEW."streamPosition"` so a valid
+re-emission never sees itself. The sixth — "remove the human-only drain gate" — is DECLINED as a
+Board decision, not a plan defect: raised on #482 and answered there (comment 5569586836); the
+plan carries the gate exactly as decided and its removal is the user's separate decision. A
+second finding-bearing head means close-and-replace under the standing authorization, no cap.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
