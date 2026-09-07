@@ -231,23 +231,33 @@ jobs:
                   continue;
                 }
 
-                // The lease protects the ref's object id and NOTHING else. Opening a pull
-                // request does not move the ref, so one opened between the guard above and
-                // this push is invisible to the lease, and GitHub offers no deletion
-                // conditional on pull-request state. So this DETECTS AND REPAIRS rather
-                // than claiming prevention: ask again now, and put the ref back at the
-                // exact object id if the answer changed. The branch is restorable
-                // precisely because the object id is known.
-                const opened = await github.paginate(
+                // The lease protects the ref's object id and NOTHING else. Pull-request
+                // activity does not move the ref, so anything that happened between the
+                // guard above and this push is invisible to the lease, and GitHub offers
+                // no deletion conditional on pull-request state. So this DETECTS AND
+                // REPAIRS rather than claiming prevention: ask again now, and put the ref
+                // back at the exact object id if the answer changed. The branch is
+                // restorable precisely because the object id is known.
+                //
+                // It asks the SAME question the guard asked — the whole of conditions 2
+                // and 4 through the same fold, not just "is one open now". A pull request
+                // that opened and CLOSED inside the window leaves nothing open, and its
+                // closure is seconds old: reading only the open ones would record that as
+                // a deletion while condition 4 was freshly violated.
+                const after = readState(await github.paginate(
                   github.rest.pulls.list,
-                  { owner, repo, state: 'open', head: `${owner}:${b.name}`, per_page: 100 },
-                );
-                if (opened.length) {
+                  { owner, repo, state: 'all', head: `${owner}:${b.name}`, per_page: 100 },
+                ));
+                const changed = after.open > 0
+                  ? `${after.open} pull request(s) opened`
+                  : !(after.closedAt < cutoff)
+                    ? `a pull request closed (newest closure ${after.latest?.closed_at})`
+                    : null;
+                if (changed) {
                   await github.rest.git.createRef(
                     { owner, repo, ref: `refs/heads/${b.name}`, sha: b.sha },
                   );
-                  core.warning(`restored ${b.name} at ${b.sha}: pull request `
-                    + `#${opened[0].number} opened while it was being deleted`);
+                  core.warning(`restored ${b.name} at ${b.sha}: ${changed} while it was being deleted`);
                   restored.push(b.name);
                   continue;
                 }
