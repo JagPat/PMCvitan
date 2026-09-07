@@ -1,0 +1,152 @@
+name: Prune stale branches
+
+# "Automatically delete head branches" only ever fires on MERGE. This repository's
+# review protocol closes a pull request at the two-finding-bearing-head limit and
+# opens a successor, so the abandoned head is never merged and that setting never
+# sees it: 124 of 328 live branches got there this way. This job is the other half.
+#
+# It deletes ONLY branches that are provably finished, and the bar is deliberately
+# high because branch REUSE is common here — one branch has been the head of 151
+# pull requests, so "this branch had a closed PR once" is nowhere near sufficient.
+# Every condition below must hold:
+#
+#   1. the branch's pull requests are ALL closed — merged or not. Merged ones are
+#      included deliberately: auto-delete only fires at the moment of merge and is
+#      never retroactive, so the branches that merged before it was enabled would
+#      otherwise sit here forever. The work is in main's history either way.
+#   2. it has NO open pull request        — a reused branch may be live right now;
+#   3. its tip SHA still equals the head SHA its latest pull request recorded — if
+#      anyone re-pushed it since, the branch has moved on and is not the thing that
+#      pull request finished with;
+#   4. that pull request closed more than STALE_DAYS ago, so a replacement opened
+#      minutes ago is never caught mid-flight.
+#
+# Anything that fails a condition is left alone and reported. A deleted branch is
+# recoverable from the GitHub UI, and its commits are unreachable rather than gone.
+#
+# Verified against the live repository before this shipped (2026-09-07, 329 branches):
+# 217 selected, and the guards demonstrably bite rather than being decorative —
+# 99 held back by the staleness window, 2 by the re-push check, 1 by an open pull
+# request, 9 because they never had a pull request at all and want a human.
+
+on:
+  schedule:
+    # Weekly, well away from the hourly handoff watchdog at :17.
+    - cron: '43 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List what would be deleted without deleting it
+        required: false
+        default: true
+        type: boolean
+      stale_days:
+        description: Only prune branches whose last pull request closed this many days ago
+        required: false
+        default: '14'
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  # Never let two prunes race over the same refs.
+  group: prune-stale-branches
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Select and prune finished branches
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          # A scheduled run prunes; a manual run defaults to a dry run so the
+          # selection can be inspected before anything is destroyed.
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          STALE_DAYS: ${{ github.event_name == 'workflow_dispatch' && inputs.stale_days || '14' }}
+        with:
+          script: |
+            const dryRun = process.env.DRY_RUN !== 'false';
+            const staleDays = Number(process.env.STALE_DAYS) || 14;
+            const cutoff = Date.now() - staleDays * 86_400_000;
+            const { owner, repo } = context.repo;
+
+            // One pass over every pull request, newest first, collapsed per head
+            // branch. `latest` is the most recent PR that named the branch, which
+            // is what conditions 4 and 5 are asked about.
+            const state = new Map();
+            for await (const page of github.paginate.iterator(
+              github.rest.pulls.list, { owner, repo, state: 'all', per_page: 100, sort: 'updated', direction: 'desc' },
+            )) {
+              for (const pr of page.data) {
+                const ref = pr.head.ref;
+                const s = state.get(ref) ?? { open: 0, total: 0, latest: null };
+                if (pr.state === 'open') s.open += 1;
+                s.total += 1;
+                if (!s.latest) s.latest = pr; // newest first, so the first seen wins
+                state.set(ref, s);
+              }
+            }
+
+            const defaultBranch = context.payload.repository?.default_branch ?? 'main';
+            const branches = await github.paginate(
+              github.rest.repos.listBranches, { owner, repo, per_page: 100 },
+            );
+
+            const doomed = [], kept = [];
+            for (const branch of branches) {
+              const name = branch.name;
+              const skip = (why) => kept.push({ name, why });
+              if (name === defaultBranch) { skip('default branch'); continue; }
+              if (branch.protected) { skip('protected'); continue; }
+
+              const s = state.get(name);
+              if (!s) { skip('never had a pull request — review by hand'); continue; }
+              if (s.open > 0) { skip(`${s.open} open pull request(s)`); continue; }
+              if (branch.commit.sha !== s.latest.head.sha) { skip('re-pushed since its last pull request'); continue; }
+              const closedAt = Date.parse(s.latest.closed_at ?? s.latest.updated_at);
+              if (!(closedAt < cutoff)) { skip(`closed less than ${staleDays} days ago`); continue; }
+
+              doomed.push({ name, pr: s.latest.number, closedAt: s.latest.closed_at });
+            }
+
+            core.summary.addHeading(dryRun ? 'Prune stale branches — DRY RUN' : 'Prune stale branches');
+            core.summary.addRaw(`\n${branches.length} branches examined; ${doomed.length} selected; stale threshold ${staleDays} days.\n\n`);
+
+            let deleted = 0;
+            const failures = [];
+            for (const b of doomed) {
+              if (dryRun) { core.info(`would delete ${b.name} (last PR #${b.pr}, closed ${b.closedAt})`); continue; }
+              try {
+                await github.rest.git.deleteRef({ owner, repo, ref: `heads/${b.name}` });
+                core.info(`deleted ${b.name} (last PR #${b.pr})`);
+                deleted += 1;
+              } catch (error) {
+                // A branch deleted by someone else between listing and now is not a
+                // failure worth failing the job over; anything else is reported.
+                core.warning(`could not delete ${b.name}: ${error.message}`);
+                failures.push(b.name);
+              }
+            }
+
+            core.summary.addTable([
+              [{ data: 'outcome', header: true }, { data: 'count', header: true }],
+              ['examined', String(branches.length)],
+              ['selected', String(doomed.length)],
+              [dryRun ? 'would delete' : 'deleted', String(dryRun ? doomed.length : deleted)],
+              ['kept', String(kept.length)],
+              ['failed', String(failures.length)],
+            ]);
+            if (doomed.length) {
+              core.summary.addDetails('Selected branches',
+                doomed.map((b) => `${b.name} (last PR #${b.pr}, closed ${b.closedAt})`).join('\n'));
+            }
+            const neverPr = kept.filter((k) => k.why.startsWith('never had'));
+            if (neverPr.length) {
+              core.summary.addDetails(`Never had a pull request — left for a human (${neverPr.length})`,
+                neverPr.map((k) => k.name).join('\n'));
+            }
+            await core.summary.write();
