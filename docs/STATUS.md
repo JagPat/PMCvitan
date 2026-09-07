@@ -16,23 +16,24 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: f5da6654
-open_pr: 555
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-07
 ```
 
-### The 4d PLAN unit — the NARROWED plan, replacing #554 (which replaced #552), docs-only
+### The 4d PLAN unit — the NARROWED plan, replacing #555 (which replaced #554, which replaced #552), docs-only
 
 **What this PR is.** The docs-only 4d plan unit the merged 4b plan's §E order names as the first
 4d stop, `docs/superpowers/plans/2026-09-07-decision-workflow-4d.md`: the §C orchestration
 design at PR #340 head `6a53aae` carried in substance, the §D obligations 4–6 elaborated, the
 probe table P28–P42, and the FOUR-PR staging (the dark migration 4d-i, the service/role/UI unit
-4d-ii, an operator drain attestation, the reservation retirement 4d-iii). It replaces #554
-(`Replaces: #554`) — the narrowed plan's first outing, closed at its second finding-bearing
-head (`cbfdaacb` seven findings folded on `82a497a5`, which drew seven more) — which replaced
-#552, the fifteenth replacement of the ORIGINAL unit (#537 through #552, sixteen PRs, thirty-two
-Codex rounds, one hundred and sixty-eight findings). Opened from `main` `d7eed4ce` under the
+4d-ii, an operator drain attestation, the reservation retirement 4d-iii). It replaces #555
+(`Replaces: #555`) — the narrowed plan's second outing, closed at its second finding-bearing
+head (`3e5a85a2` five findings folded on `41ea41d2`, which drew four more) — which replaced #554
+(the first outing: `cbfdaacb` seven findings folded on `82a497a5`, which drew seven more), which
+replaced #552, the fifteenth replacement of the ORIGINAL unit (#537 through #552, sixteen PRs,
+thirty-two Codex rounds, one hundred and sixty-eight findings). Opened from `main` `d7eed4ce` under the
 standing continuation authorization (#482 comment 5563944111, 2026-09-07: no PR-number cap;
 close-and-replace continues; "reduce the review unit at safe dependency seams; preserve the
 obligations ledger").
@@ -66,9 +67,9 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 2,032 lines against #552's 3,495.
+live standing). The document is 2,523 lines against #552's 3,495.
 
-**Review round 1 on this PR (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
+**Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
 event and refuses an approval event there; the kernel seals its own event envelope at INSERT
 (`DomainEvent_t4d_envelope`: the position this transaction allocated, the intent corresponding to a
@@ -81,7 +82,7 @@ kinded row from kind, event and fact. Each is the plan's own rule applied where 
 unstated; the plan's round-1 table names all seven. A second finding-bearing head means
 close-and-replace under the standing authorization, no cap.
 
-**Review round 1 on this PR (head `3e5a85a2`): five findings, all P1, folded on its ONE correction
+**Review round 1 on #555 (head `3e5a85a2`): five findings, all P1, folded on its ONE correction
 head** — the feed-row correspondence reads through a platform-owned `platform_tx_notification`
 contract; `DomainEvent` gains nullable `actorRole`/`actorName` envelope columns `emitEvent` writes and
 the seal binds; the sanctioned reset gains a membership path (transition facts, then memberships,
@@ -91,6 +92,25 @@ allocating `insertRawEvent` fixture or a named legacy-plant bypass with a tripwi
 question; each is an integration seam the narrowed rule crosses. A second finding-bearing head means
 close-and-replace under the standing authorization, no cap.
 
+**Review round 2 on #555 (head `41ea41d2`): four findings, all P1, carried here, none dropped.**
+The kernel's `EventActor` is widened to the full `Actor` so the compiler enumerates every emitter,
+and `CommercialParticipant.AttributionActor` carries the `actorRole`/`actorName` pair through the
+commercial, procurement, labour and inventory seams (round 1's claim that `resolveActor` reaches
+every emitter did not hold for `announceMoneyMoved`); the `membership.standing_changed` event is
+bound WHOLE to its fact — `role`, `membershipId`, `from`, `to`, `transitionId`, `activeCount` and
+the envelope pair — and obligation 7 gains its CONVERSE for every sealed event type (an event
+without its same-transaction fact is refused by the event-owning module's deferred trigger on the
+kernel table, the delivered `phase6_t4b2_membership_guard` shape), so a standalone crossing event
+cannot fabricate a re-notification; every `DecisionEvent` UPDATE/DELETE site in `test/` and
+`scripts/` is enumerated by category — the unguarded cleanups round 1 missed routed through
+`wipeDecisionEvents`, the three benign-mutation precision arms rewritten, the whole-table reset
+bypasses named — under a tripwire that enumerates statements rather than bypasses; and
+`Notification(projectId, eventId)` is a SAME-PROJECT composite FK to a new
+`DomainEvent(projectId, eventId)` candidate key, so a feed row bound to another project's event is
+unrepresentable. None is a content question the boundary answers; each is the rule one instance
+short. A second finding-bearing head means close-and-replace under the standing authorization,
+no cap.
+
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
 self-naming convention every 4c and 4d unit followed). `reviewed_merge` stays `f5da6654`,
@@ -98,9 +118,9 @@ self-naming convention every 4c and 4d unit followed). `reviewed_merge` stays `f
 Runner invariants: `assessRunnerState` → `pr:<this>` while open; `assessPostMergeRunnerState` →
 simulated, allowed, `task:4`; `detectStatusDrift` with the self-named `open_pr` live → no drift.
 
-**The ledger, read off the label.** #552 was labelled `review-replacement-required` by the
-orchestrator before it closed, so #552 is the obligation this PR settles. Every predecessor
-closed at the limit (#537–#540, #542–#551) stays a labelled pending obligation until a MERGED
+**The ledger, read off the label.** #555 was labelled `review-replacement-required` by the
+orchestrator before it closed, so #555 is the obligation this PR settles. Every predecessor
+closed at the limit (#537–#540, #542–#554) stays a labelled pending obligation until a MERGED
 unit names it, one merge discharging one (`docs/reviews/replacement-lineage-repair.md`); #541
 holds no label. No label is applied or cleared by hand.
 
