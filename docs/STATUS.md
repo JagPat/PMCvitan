@@ -79,7 +79,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 3,794 lines against #552's 3,495.
+live standing). The document is 3,826 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -372,8 +372,21 @@ other is refused by its door and retried after the winner commits, the terminal 
 asserted in both resume orders, the doors not weakened; and 4d-i's packet MUST carry the same
 large-unit evidence 4d-ii's does — the exact `<!-- review-size: justified-large -->` marker, all
 six invariant-matrix rows, the five checks, the file inventory and its `inseparable` marker. The
-drain gate was not raised on this head. A second finding-bearing head means close-and-replace
-under the standing authorization, no cap.
+drain gate was not raised on this head.
+
+**Review round 1 on this PR, #565 (head `5871826`): three findings (two P1, one P2), two folded
+on its ONE correction head, one DECLINED on the Board's recorded decision, none dropped.** Both
+4b seals gain a SEPARATE architect arm judged by `platform_role_standing` over the platform
+register, the delivered `client`/`pmc` arm left byte-identical on `phase6_effective_role_standing`
+(widening that arm's set would have sent a decisions-owned seal's architect branch through the
+orgs-owned function that reads `Membership`/`OrgMembership`/`Project`); and the frozen
+`targetUserIds` must be DISTINCT as well as set-equal to the audience — the producer persists the
+canonical sorted, distinct array, the seal refuses a repeated element, the delivery row's copy is
+bound element-for-element, and P37 gains the duplicate-recipient probe. The third — "remove the
+human-only drain gate" — is DECLINED as a Board decision, not a plan defect (#482 comment
+5569586836); the `AGENTS.md`-vs-decision contradiction stays before the Board (#482 comment
+5575748015). A second finding-bearing head means close-and-replace under the standing
+authorization, no cap.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
