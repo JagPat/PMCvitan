@@ -68,7 +68,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 2,712 lines against #552's 3,495.
+live standing). The document is 2,808 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -142,6 +142,19 @@ rule is corrected to "EXACTLY the declarative schema-metadata mirrors the bounda
 the DMMF" (the manifests' `ownsModels`/`readEncapsulated` registrations and `MODEL_OWNER`),
 declared `migration-scope: inseparable` with that boundary stated. None is a content question
 the boundary answers. A second finding-bearing head means close-and-replace under the standing
+authorization, no cap.
+
+**Review round 1 on this PR (head `3327f761`): five findings (three P1, two P2), folded on its
+ONE correction head.** The converse for the finalizing event admits the countersign's and the
+`completed` resolution's flip of the existing revision (no new revision row) beside the direct
+approve's insert; the `decision.consultation_responded` catalog ceiling widens with the `respond`
+emitter persisting the requester's actual role; ONE org-level readiness key (`lockOrgStanding`,
+`phase6_try_org_readiness`) taken by project creation and FIRST by every owner/admin
+`OrgMembership` writer closes the phantom a per-project key could not; the audit-row and
+envelope attribution bind the frozen pair WHERE the fact carries one and `actorId` alone for a
+drain-window fact with a NULL pair (the branch 4d-iii closes); and the kinded feed readers
+suppress a withdrawn decision's ACTIONABLE kinds for the PMC while the rows and events stay as
+evidence. A second finding-bearing head means close-and-replace under the standing
 authorization, no cap.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
