@@ -70,7 +70,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 3,103 lines against #552's 3,495.
+live standing). The document is 3,264 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -208,8 +208,32 @@ by the gated catalog-data migration, frozen, and VERIFIED by `syncConsumerCatalo
 `DomainEvent` with `Notification`, and `notification`/`changeRequest` cleanups go through named
 helpers under the statement tripwire; and §D's Part 3 opens with BOTH reservations before either
 audit. Seven are second-order consequences of round 1's folds and two are the plan's own earlier
-text contradicting its later rule; none is a content question the boundary answers. A second
-finding-bearing head means close-and-replace under the standing authorization, no cap.
+text contradicting its later rule; none is a content question the boundary answers.
+
+**Review round 1 on this PR, #560 (head `01c6e819`): eleven findings (nine P1, two P2), ten
+folded on its ONE correction head, one DECLINED on the Board's recorded decision, none dropped.**
+The delivery seal's obligation set is the ACTIVE set at commit, judged from the append-only,
+attributable `OutboxConsumerActivation` register whose trigger is the only writer of the frozen
+`active` mirror (`registeredAt` frozen and out of every seal); `expandMissingDeliveries` keeps
+its delivered all-missing contract for every currently-active consumer, so a reactivated
+consumer's cursor never stalls; the delivery rows are a pure function of the event and the
+PERSISTED catalog (`deliveryRowsFor`, called by materialization and expansion alike;
+`deliveryFor` retired), so a standalone CLI with no registry writes the same rows a booted API
+does, and a `dispatch` row's `payload`/`subject` are bound to the immutable intent at insert and
+frozen after (`OutboxDelivery_t4d_bound`/`_frozen`, only lease/status columns and the 4a
+cancellation mark mutable); the seal, the rule columns, the register and the rewrite ship
+TOGETHER in 4d-ii (not migration-only 4d-i, where the seal would have refused the unchanged
+CLIs), with `decisions.effects` registered INACTIVE there and ACTIVATED by 4d-iii's appended row
+after the drain; `requiresPush`/`pushBody` join the enumerated `ExternalEffectCatalog` schema;
+the 4d-ii checklist says `syncConsumerCatalog` VERIFIES (never writes) and the feed read is the
+two owner queries in one REPEATABLE READ transaction (no join); 4d-ii MUST carry the
+`justified-large` packet with both seams argued; `Notification_t4d_no_truncate` is named in the
+nine-entry list; the legacy-plant bypass names the converse trigger too and the outbox probes'
+standalone `decision.approved` plants move to an unpaired announcement family. The eleventh —
+"remove the mandatory human drain attestation" — is DECLINED as a Board decision, not a plan
+defect: it was raised on #482 and answered there (comment 5569586836); the plan carries the gate
+exactly as decided and its removal is the user's separate decision. A second finding-bearing head
+means close-and-replace under the standing authorization, no cap.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
