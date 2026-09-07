@@ -13,7 +13,7 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: merged
+task_state: in_progress
 work_item: none
 reviewed_merge: f5da6654
 open_pr: none
@@ -21,6 +21,270 @@ next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-05
 ```
+
+### The 4d PLAN unit — opened here, docs-only, on the Board's go
+
+**What this PR is.** The docs-only 4d plan unit the merged 4b plan's §E order names as the first
+4d stop (`docs/superpowers/plans/2026-09-05-decision-workflow-4d.md`): the §C orchestration
+design at PR #340 head `6a53aae` carried in substance with every forcing round annotated, the
+§D obligations 4–6 (P31b/P42b, P31c/P34b, P33b) elaborated to full rows, the probe table
+P28–P42 with the carried arms, and the staging — FOUR implementation PRs (the dark migration
+4d-i, the service/role/UI unit 4d-ii, an operator drain attestation, the reservation retirement
+4d-iii), the 4c rollout discipline applied to 4d's own mixed-version hazard. It is written
+against what 4b and 4c actually DELIVERED (the try-readiness primitive, the command-provenance
+shape, the per-family push predicates, the retired capability latch) and takes up the three
+hand-offs the 4c plan recorded for this review. Opened on the owner's explicit go (2026-09-05,
+the controlling conversation: "Open one draft PR from current main d7eed4ce for Phase 6 docs-only
+4d PLAN unit only"), one PR at a time, from `main` `d7eed4ce` — first as #537, then #538, then #539, then #540, then #541, then #542, then #543, then #544, then #545, then #546, then #547, then #548, then #549, then #550, then #551, now as the
+fifteenth replacement (below).
+
+**What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
+again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, because the
+number does not exist until the PR is created — the §D self-naming convention, exactly as #533,
+#535, #537, #538, #539, #540, #541, #542, #543, #544, #545, #546, #547, #548, #549, #550 and #551 did). `reviewed_merge` stays `f5da6654` (the last REVIEWED merge; #536 was a STATUS
+record), `next_task` stays `phase-6-task-4d` (the id names the task stop; the plan's §D binds what
+starts at it), `phase_plan` stays the 4c plan until this plan CLEARS, when the implementation's
+first fold moves it. Runner invariants over the parsed Now block: `assessRunnerState` →
+`pr:<this>` while open; `assessPostMergeRunnerState` → simulated, allowed, `task:4`;
+`detectStatusDrift` with the self-named `open_pr` live → no drift.
+
+**Lineage: #537, #538, #539, #540, #541, #542, #543, #544, #545, #546, #547, #548, #549, #550, #551 and #552 each closed at the review-round limit; this PR replaces #552 and settles its ledger obligation — under the owner's STANDING continuation authorization (JagPat, 2026-09-07, #482 comment 5563944111: "#552 is not the last permitted replacement … Do not introduce another PR-number cap"), which supersedes the per-PR caps recorded on #549, #550, #551 and #552, so the loop closes an exhausted PR and opens the next freshly scoped replacement itself, narrowing the unit at safe seams, and escalates only a concrete significant blocker.**
+#537 (heads `d82d47f4`, `77ab82b1`: eight + six findings), #538 (`cae3d167`, `cbbe9d23`: seven + five),
+#539 (`91416864`, `0526eb8d`: five + four), #540 (`fcc6d15b`, `04b5491c`: seven + five), #541
+(`a05fdd80`, `6ec40f12`: three + four), #542 (`aafc0e17`, `182a09bf`: five + three), #543 (`7bfdc3e0`,
+`9c6dc588`: six + six), #544 (`4dda84fc`, `822d4838`: seven + three), #545 (`d52af4f8`, `5efbfc06`: five +
+three), #546 (`0ae38c88`, `e60b540c`: seven + five) #547 (`64b0c239`, `ad4352dc`: five + seven) #548 (`29ee11af`, `966defdd`: five + eight) #549 (`a87742ae`, `56a27029`: six + six) #550 (`27ea7871`, `6841e343`: four + four), #551 (`b5a27ef4`, `ee2d7503`: seven + four) and #552 (`af357a24`, `4b9a648f`: five + three) each drew
+findings on two heads, and two finding-bearing heads exhaust a review round, so each CLOSED without a
+third correction head and the next PR carried the same docs-only unit from the same `main` `d7eed4ce`
+with every finding folded. #541's two heads drew: first (`a05fdd80`) the withdrawal cancelling only
+the decider and forward push families, the drain covering server processes but not stale browser
+tabs, and the finalizer resolving the approver's current name where the revision froze none (that
+head was also promoted before its self-naming pointer was pushed; `d2c1dec3` answered the
+coordinator's blocker changing only `open_pr`); then (`6ec40f12`) the delivered
+`DecisionApprovalRevision_append_only` trigger rejecting the very finality flip 4d pairs,
+`architect` absent from the `DeciderKind` designation contract the 4b plan deferred to 4d, the
+projected `countersignRequired` going stale when the architect standing changes with no decision
+event, and the round-9 withdrawal cancellation also marking the PMC requester's response push P38
+requires delivered. #542's two heads drew: first (`aafc0e17`) the provenance writers never taught to state
+`revisionFinalized` before 4d-iii drops its default, the stale-client chain check racing the activation it
+guards at the transport layer, `deciderPush` routing an architect-designated decision to the clients, the
+client-contract boundary fencing only the awaiting status while the architect designation and the architect
+session are shapes a stale bundle meets first, and the Portfolio `countPending` reporting zero for an
+architect (folded as round 11); then (`182a09bf`) the membership, roster and switch responses carrying the
+`architect` role to a stale tab before the shell read the boundary refuses, the two cancellation spec copies
+omitting `revisionFinalized` where create/revise had been fixed, and an active non-holder architect unable to
+see the pending decision the plan lets them forward. #543's two heads drew: first (`7bfdc3e0`) the last-architect exemption stated for the named holder but not the
+architect role designation, approval assigning no cancellation to a claimed decider/forward push, a forward
+whose designation does not change satisfying every seal, the withdrawal target filter wrongly applied to
+`consultation_requested`, the architect designation reachable on an unpublished draft while the reservation
+stands, and the round-10 freshness signal bypassed by a direct membership write (folded as round 13, which
+chose a read-time overlay); then (`9c6dc588`) the two new enum values committing ahead of the seal transaction
+with no `Decision` audit under the lock, `consultation_requested` deliveries surviving the transitions that
+close the consultation-open set, that read-time overlay putting a synchronous orgs read on every decision
+response, `countersignRequired` serialized when false against P29's byte identity, the round-6
+re-notification bypassed by a direct architect activation, and P29b still asserting the withdrawn signal —
+answered by closing the WRITER SET (a permanent service-only seal on architect membership writes) and
+restoring the round-10 signal behind it. #544's two heads drew: first (`4dda84fc`) the seven of round 15 below; then
+(`822d4838`) the `DecisionChainStanding` mirror sealed against a wrong write but not against ERASURE (no DELETE or
+no-TRUNCATE seal, absent from `TRUNCATE_SEALS`), the round-14 `SET LOCAL` service gate CALLER-CONTROLLED (any holder
+of the application's database role can set it and commit an architect with the mirror left `false`), and the round-15
+mirror seal a decisions trigger reading the orgs-owned `Membership` at commit — answered by an orgs-owned commit-time
+CORRESPONDENCE seal on `Membership` (`Membership_t4d_chain_mirror`, the delivered membership-guard shape, judging the
+decisions-owned mirror over the orgs → decisions edge), a provenance-bound mirror sealed against DELETE and TRUNCATE
+and registered in `TRUNCATE_SEALS`, and the gate withdrawn as a flag that was never a privilege boundary. This PR
+carried all eighty-four fixes with `Replaces: #544`. #545's two heads drew: first (`d52af4f8`) the five of round 17 below;
+then (`5efbfc06`) a legal direct `pending → approved` transition under an inactive chain slipping a claimed push past a
+send boundary that re-judged the person and the project but never the subject; the zero↔one architect crossing reaching
+no other open tab (the membership events catalogued `invalidate: false`); and the archived-project drop never re-emitted
+when `restoreProject` clears `archivedAt` with the architect count unchanged — answered by the family's own subject
+predicate re-run at the final send, an orgs-owned `membership.standing_changed` invalidation on the crossing, and a
+restore-time re-emit of every still-actionable demand through the round-6 participant. This PR carries all ninety-two
+fixes with `Replaces: #545`. #546's two heads drew: first (`0ae38c88`) the seven of round 19 below; then
+(`e60b540c`) the crossing event carrying no actor for the audit row its consumer writes, the enum values committing
+before the `Decision` reservation (a gap an audit cannot close against a concurrent writer), a freshly registered
+consumer replaying every historical restore, the transition fact's actor never re-judged for team-management
+authority, and the admitted hand-run activation never touching the readiness key — answered by system-attributed
+audit rows naming the immutable transition, text-judged reservation doors installed before the enum values, a
+per-project registration cutover the consumer treats as a no-op, the management predicate re-applied at the database
+boundary, and a try-readiness arm on every standing flip. This PR carries all one hundred and four fixes with
+`Replaces: #546`. #547's two heads drew: first (`64b0c239`) the five of round 21 below; then (`ad4352dc`) the park
+written inside a hook whose result the relay marks succeeded regardless, the archived read and the park not one
+transaction under the project lock, the cutover open to a later INSERT and staged in 4d-ii instead of the dark
+migration, the notification and audit rows still written by service code a hand-run bundle skips, the fact-to-event
+association chosen after the write, and a PMC's self-transition to architect failing its own seal — answered by a
+`parked` outcome the relay honours under the project lock, an INSERT-closed cutover created empty in 4d-i,
+seal-written audit rows and consumer-derived notifications, the transition bound at the write through a pointer the
+trigger carries, and the actor judged against the pre-transition standing. #548's first head (`29ee11af`)
+drew five findings (all P1) — the P40 archive arm asserting a cancellation mark where the parking contract holds
+the row unmarked, the transition fact column-immutable while its `standingEventId` must move from NULL to the
+event the write emits, §A.1 and P28 still committing the enum ahead of the round-20 reservation, the fact's
+membership FK checked immediately though `members.add` inserts the fact first, and P36 demanding a countersign
+delivery for an approval final before any chain existed — folded on its second head as one batch ("review round
+23" in the plan): the arm parked and released, one sealed NULL→event-id transition, the doors before the enum in
+every statement of the order, the membership FK deferred, and zero deliveries for approve-first under no chain;
+that second head (`966defdd`) drew eight (seven P1, one P2) — the last-architect cancellation left to the service
+while a hand-run deactivation is admitted, a fan-out parked whole after its first recipient was sent, the
+legacy/shadow recovery claim ignoring the parking sentinel, the audit repair routed through a client that cannot
+read the row, the emit twin with no actor argument, 4d-iii naming three of four doors, the 4d-ii catalog change
+unstaged through the external-effect reseal, and the cutover fill replayed against its own INSERT seal — closing
+#548; answered here ("review round 24" in the plan) by consumer-derived cancellation on the `{ to: 0 }` crossing
+with the re-emit neutralizing first, a park only before the first recipient, the `nextAttemptAt` gate on the
+recovery arm, a raw-SQL operator repair command, a two-mode actor argument on the twin, all four doors retired,
+the runbook reseal sequence staged before 4d-iii, and the fill phase guarded as a whole. This PR carries all one
+hundred and twenty-nine fixes with `Replaces: #548`, the five annotated "(review round 23)" and the eight
+annotated "(review round 24)" in the plan where they land. #549's first head (`a87742ae`) drew six findings
+(all P1) — the forward door named on the role-arm seal instead of the attribution seal that freezes the holder, the
+cap phrased as leaving an exhausted PR open, the re-notification racing the unordered push worker, an `actorRole`
+no paired fact freezes, the reserved-value repair unable to clear an awaiting row, and two approval revisions over
+one transition — folded on its second head as one batch ("review round 25" in the plan): the door opened in
+`decision_t4b_attribution_seal`, the cap restated below, a decisions-owned countersign notice serializing the send
+and the re-emit on the decision row lock, action-time role and name frozen on every 4d fact, a
+`--revert-provisional` repair branch, and one register row per approval transition; that second head (`56a27029`)
+drew six more (all P1) — the notice register absent from the 4d-i inventories, the no-chain direct approval
+admitted without an event, the provisional repair needing schema the aborting migration had not created,
+`approvedByRole` unstaged and unwritten, a crossing event emitted inside the project-delete cascade, and the
+cutover both INSERT-sealed in 4d-i and filled by 4d-ii — which closed #549 at the owner's cap; the cap was
+reported on #482 and the owner LIFTED IT BY ONE (Board GO on #549, 2026-09-06). Answered here ("review round
+26" in the plan) by the notice and repair-evidence tables in every 4d-i inventory, the no-chain approve joining
+the seal-emitted set, a retry-safe repair bootstrap transaction ahead of the audit, `approvedByRole` staged and
+written, no emission under the cascade, and a migration-gated one-time fill arm on the cutover seal. This PR
+#550 carried all one hundred and forty-five fixes with `Replaces: #549`, the six annotated "(review round 25)", the six
+annotated "(review round 26)" and — #550's own first head (`27ea7871`) drew four findings (two P1, two P2): the
+fill arm's `xmin = txid_current()` predicate PostgreSQL cannot evaluate, the countersign notice sealed only by FKs and
+uniqueness so a direct writer could silence the one replacement, the cascade probe asserting a hard delete the
+`DomainEvent.tenant` Restrict FK refuses, and the dev-session fallback minting `dev-architect` without reading the
+reservation — folded on its second head as one batch ("review round 27" in the plan): the `::text::xid` cast, an
+INSERT-time correspondence seal on the notice, the cascade arm scoped to the event-free project with the eventful
+delete asserted refused, and the dev session refusing the role while reserved — the four annotated "(review round
+27)" where they land; that second head (`6841e343`) drew four more (all P1) — the notice bound to the register's
+current position at success, racing the irreversible send; the dev-session refusal limited to the fallback while a
+real `User` row bypasses it; the frozen actor role and name supplied by the fact writer rather than bound to the
+authenticated actor; and the post-abort redeploy stopping at P3009 without `migrate resolve --rolled-back` — which
+closed #550 at the Board's cap; the cap was reported on #482 and the Board LIFTED IT BY ONE again (Board GO on #550,
+2026-09-06). Answered here ("review round 28" in the plan) by the notice captured at the claim before the provider
+call with the handler cancelling and replacing whatever was resolved before the crossing, the session refusing
+`architect` before either branch with the audit naming dev `User` rows, receipt-captured `actorRole`/`actorName`
+sealed to the actor's standing at reserve time and copied verbatim by every fact, and the repair →
+`migrate resolve --rolled-back` → redeploy recovery driven through the real runner. This PR carries all one hundred
+and forty-nine fixes with `Replaces: #550`, the four annotated "(review round 28)" where they land. #551's own
+first head (`b5a27ef4`) drew seven findings (all P1) — the receipt role judged by a project-wide predicate that
+cannot prove this actor held it, that judgement placed in a platform trigger reading orgs standing, the receipt
+pair mandatory while pre-4d processes still reserve without it, the deactivation handler cancelling a claim
+resolved against a later standing, a per-delivery uniqueness the retry rule contradicts, feed rows derived after
+the command's response and the socket invalidation, and opposite lock orders between the claim hook and the
+handlers — folded on its second head as one batch ("review round 29" in the plan): a nullable pair the receipt
+only freezes with a trailing 4d-iii seal, the owning fact seals judging the role per user through
+`phase6_user_holds_role` plus the owner/admin arm, the deactivation handler sparing claims at or after its
+crossing, the triple uniqueness idempotent per position, feed rows written by the admitting seal through a
+platform notification twin before the response, and delivery-then-decision as the one lock order; that second
+head (`ee2d7503`) drew four more (three P1, one P2) — the delivery-first lock order stated for the crossing handlers
+only while the command cancellations still took the decision lock first, the synthetic `dev-architect` fallback
+admitted after 4d-iii with no account to satisfy the name seal, the notice FK declared against a candidate key
+`OutboxDelivery` lacks, and the no-chain approval emitted by the seal while a pre-4d process still emits it during
+the drain — which closed #551 at the Board's cap; the cap was reported on #482 and the Board LIFTED IT BY ONE
+again (Board GO on #551, 2026-09-06). Answered here ("review round 30" in the plan) by every command cancellation
+locking its subject deliveries ahead of the decision row and skipping a leased one for the claim's final re-read,
+the synthetic fallback never minting `architect`, the notice FK on `OutboxDelivery(id)` with project equality in
+the seal, and the no-chain seal emission armed only at 4d-iii with the service emitting until then. This PR carries
+all one hundred and sixty fixes with `Replaces: #551`, the four annotated "(review round 30)" where they land.
+#552's first head (`af357a24`) drew five findings (all P1) — a direct approval committed while the
+no-chain arm was disarmed left permanently un-emitted, the marker-keyed handoff admitting a duplicate, the
+membership-less owner/admin issued the `pmc` token role yet required to be recorded otherwise, the receipt
+columns absent from 4d-i's inventory, and the claim hook described as sharing a lease transaction the relay
+commits first — folded on its second head as one batch ("review round 31" in the plan): the no-chain arm decided
+from in-transaction state (one service event → the seal defers, none → it emits, two → refused), the owner/admin
+arm admitting `pmc` through the live org-standing read, the receipt columns and freeze staged in 4d-i's repair
+bootstrap, and all three claim paths running a per-consumer `onClaim` hook inside the lease transaction. #552's
+second head (`4b9a648f`) drew three findings (two P1, one P2) — the count-based no-chain handoff deferring to
+ANY single same-transaction approval event without checking its kind, actor, payload, register row or feed row,
+so a forged or partial direct bundle satisfied it; the claim-time notice recording only the standing position
+while the delivered push handler resolves holders in `handle` AFTER the lease commits, so a holder activated
+between claim and send received the original AND the crossing handler's replacement; and the promised
+`(event, recipient)` notification idempotency naming columns the project-wide `Notification` feed does not
+have — answered here ("review round 32" in the plan) by the seal deciding by CORRESPONDENCE with the derived
+canonical bundle (a lone wrong-kind, forged or partial bundle refused, the canonical one admitted, an absent
+one written), by the claim hook resolving the audience inside the lease transaction and persisting it on the
+notice as the ONLY audience the send may use, and by `platform_write_notification` keyed on
+`Notification.eventId`/`kind`, columns 4d-i's repair bootstrap adds with a partial unique index. This PR
+carries all one hundred and sixty-eight fixes with `Replaces: #552`, the three annotated "(review round 32)"
+where they land, and is NARROWED at its one safe seam: the plan's ~380-line per-round narrative header, which
+carried no design, is retired to a sixteen-row ledger (this record stays authoritative; every design annotation
+stays inline where it lands).
+**The standing authorization, and the protocol it leaves intact:** the close-and-replace rule stands as
+written — two finding-bearing heads exhaust a PR, no third correction head, one replacement from current
+`main` — but its next step is no longer Board-gated: under the owner's standing continuation authorization
+(#482 comment 5563944111, 2026-09-07) the loop closes the exhausted PR, opens the next freshly scoped replacement
+itself, narrows it further at safe seams rather than re-rolling it, reports each replacement on #482 with its
+links, and escalates only a concrete significant blocker (inaccessible credentials or runtime, an unavailable
+executor after permitted recovery, a product decision with materially different outcomes, materially new scope
+or cost, a security exception, a destructive production action, or an attestation no authorized evidence can
+supply). **The ledger, read off the label** (the
+#514/#513 lesson): the obligation is the repository-wide `review-replacement-required` LABEL, not the prose
+lineage. #552 was labelled by the orchestrator BEFORE it closed, so it is the obligation this PR settles. Every
+predecessor closed at the limit (#537, #538, #539, #540, #542, #543, #544, #545, #546, #547, #548, #549, #550, #551, #552) stays a labelled pending obligation until
+a MERGED unit names it — one merge discharges exactly one, the accepted gap recorded in
+`docs/reviews/replacement-lineage-repair.md`, the same state #520 and #521 have been in since #529. #541 alone
+holds no label: it was closed and its branch rebuilt before the orchestrator's gate could label it, so the
+scope gate refused #542's `Replaces: #541` and #542 declared `Replaces: #540` instead — the sequencing lesson
+recorded here, not tidied away; no label is applied or cleared by hand. No `6a53aae` decision was reopened. The unit exceeds the 1,500-line standard budget and
+declares `justified-large`: ONE plan document that must be reviewed whole, grown only by the precisions
+thirty-two review rounds required, and narrowed at its one safe seam (review round 32). #544's first head (`4dda84fc`) drew seven findings (six P1, one P2) — the
+registry's hard-coded `KNOWN_ROLES` mirror missing from the role fan-out; a "both" left over from round 13's third
+reservation door in the transient block and the replay text; the round-14 fold reading chain presence through the
+orgs participant and the asynchronous refresh not atomic with the membership commit (answered by a decisions-owned
+`DecisionChainStanding` mirror written in the membership transaction and overlaid as an own-module read);
+`ChangeRequest.origin` classified additive-ignorable while a stale PMC tab renders a Withdraw the server refuses;
+the gateway's direct `/auth/session` fetch omitting the contract header; and the three fact tables never registered
+in the decisions manifest's ownership sets — folded on its second head as one batch ("review round 15" in the
+plan); that second head drew the three of round 16 above, which closed #544. #545's first head (`d52af4f8`)
+drew five findings (three P1, two P2) — the mirror's cascade-delete exception naming `Project_t4c_deleting`, which
+4c-v retired; the round-16 orgs-owned correspondence seal selecting the decisions-owned mirror at commit (the
+forbidden cross-module read in the other direction); the mirror's provenance attached to `phase6_t4c_provenance_bound`,
+which reads `NEW.id` on a `projectId`-keyed row; the architect's consultation chooser with no roster loaded on a
+fresh session; and `/me/portfolio` carrying `Membership.role` verbatim outside the client boundary — folded on its
+second head as one batch ("review round 17" in the plan): the standing moves DOWN into the platform kernel as a
+trigger-maintained `ProjectRoleStanding` register no module reads across a boundary, the writer boundary becomes
+command provenance on the `Membership` row itself (the three orgs member mutations join the ledger in 4d-ii), the
+project-delete flag trigger is reinstalled under a 4d name, the roster loads on the consultation surface, and the
+portfolio joins the stale-client boundary; that second head drew the three of round 18 above, which closed #545.
+#546's first head (`0ae38c88`) drew seven findings (six P1, one P2) — the round-18 subject re-judge run once per
+delivery, leaving a role fan-out's second recipient a stale send; its `consultation_responded` rule flat where the claim
+predicate is target-aware; the client boundary fencing `/auth/switch` but not the other token-minting responses;
+`ChangeRequest.origin` serialized when `standard`; no P41 barrier for the transitions that close the consultation set;
+the activation side effects bound to service code a hand-run receipt bypasses; and a rewritable `sourceCommandId` on the
+membership row — folded on its second head as one batch ("review round 19" in the plan): the crossing emits at the
+database boundary through a canonical-pinned SQL twin of `emitEvent`, a decisions-owned ordered consumer drives the
+re-notification and the restore re-emit, the provenance becomes an immutable `MembershipTransition` fact, the send hook
+re-judges the subject per recipient with the claim predicate itself, every token-minting response is fenced, a
+`standard` origin is omitted, and P41 is extended; that second head drew the five of round 20 above, which closed
+#546. #547's first head (`64b0c239`) drew five findings (all P1) — the consumer cutover created without a seal; the
+withdraw command's target-aware cancellation taking the decision lock before the target memberships; the
+`decision.awaiting_countersign` emission left in the service path while the seals admit a hand-run bundle; the restore
+re-emit rebuilding work from open subjects instead of the deliveries archival consumed; and the crossing event unable
+to name the transition fact its audit must trace — folded on its second head as one batch ("review round 21" in the
+plan): the cutover sealed, target locks before the decision lock, every 4d-sealed transition emitting from its seal,
+archival parking deliveries that restoration releases unchanged, and the transition fact binding the crossing event's
+id; that second head drew the seven of round 22 above, which closed #547. #548's first head (`29ee11af`) drew
+the five of round 23 above, folded on its second head (`966defdd`), which drew the eight of round 24 above and
+closed #548. #549's first head (`a87742ae`) drew the six of round 25 above, folded on its second head
+(`56a27029`), which drew the six of round 26 above and closed #549 — at the owner's cap, lifted by one on the
+Board GO. #550's first head (`27ea7871`) drew the four of round 27 above, folded on its second head
+(`6841e343`), which drew the four of round 28 above and closed #550 — at the Board's cap, lifted by one again on
+the Board GO. #551's first head (`b5a27ef4`) drew the seven of round 29 above, folded on its second head
+(`ee2d7503`), which drew the four of round 30 above and closed #551 — at the Board's cap, lifted by one again on
+the Board GO. #552's first head (`af357a24`) drew the five of round 31 above, folded on its second head
+(`4b9a648f`), which drew the three of round 32 above and closed #552 — at the Board's cap, reported on #482 and
+then SUPERSEDED by the owner's standing continuation authorization of 2026-09-07, which installs no new cap. This
+PR has no finding-bearing head of its own yet; a first is folded on one correction head; a second exhausts it
+under the protocol, and the loop then closes it and opens the next freshly scoped replacement under that
+authorization, narrowing further at safe seams.
+
+**What follows, and what does not.** After this plan clears its own exact-head review (a fresh
+clean +1 through the `codex-current-head` gate — the independent clearance the 4c plan's
+#486/#490 detour restored as a precondition), 4d implementation begins with 4d-i, the dark
+migration, from the `main` that carries the cleared plan. **No 4d implementation is started by
+this PR.** No UX or performance work. Contractor-capture units 1–6 stay Board-gated. The P3005
+correction stays in the maintenance queue. #530, #531 and #532 stay closed.
 
 ### Unit 4c-v merged — 4c is COMPLETE. The §E handoff to the 4d PLAN unit is the recorded next step.
 
