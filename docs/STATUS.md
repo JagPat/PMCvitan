@@ -16,24 +16,26 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: f5da6654
-open_pr: 558
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-07
 ```
 
-### The 4d PLAN unit — the NARROWED plan, replacing #557 (which replaced #556, #555, #554 and #552), docs-only
+### The 4d PLAN unit — the NARROWED plan, replacing #558 (which replaced #557, #556, #555, #554 and #552), docs-only
 
 **What this PR is.** The docs-only 4d plan unit the merged 4b plan's §E order names as the first
 4d stop, `docs/superpowers/plans/2026-09-07-decision-workflow-4d.md`: the §C orchestration
 design at PR #340 head `6a53aae` carried in substance, the §D obligations 4–6 elaborated, the
 probe table P28–P42, and the FOUR-PR staging (the dark migration 4d-i, the service/role/UI unit
-4d-ii, an operator drain attestation, the reservation retirement 4d-iii). It replaces #557
-(`Replaces: #557`) — the narrowed plan's fourth outing, closed at its second finding-bearing
-head (`3327f761` five findings folded on `6d5545ce`, which drew four more) — which replaced
-#556 (the third: `bb307c74` three folded on `dd2da64b`, five more there), which replaced #555
-(the second: `3e5a85a2` five folded on `41ea41d2`, four more there), which replaced #554 (the
-first: `cbfdaacb` seven folded on `82a497a5`, seven more there), which replaced #552, the fifteenth replacement of the ORIGINAL unit (#537 through #552, sixteen PRs,
+4d-ii, an operator drain attestation, the reservation retirement 4d-iii). It replaces #558
+(`Replaces: #558`) — the narrowed plan's fifth outing, closed at its second finding-bearing
+head (`a07f78b7` seven findings folded on `96ba845b`/`64d9030f`, which drew nine more) — which
+replaced #557 (the fourth: `3327f761` five folded on `6d5545ce`, four more there), which
+replaced #556 (the third: `bb307c74` three folded on `dd2da64b`, five more there), which
+replaced #555 (the second: `3e5a85a2` five folded on `41ea41d2`, four more there), which
+replaced #554 (the first: `cbfdaacb` seven folded on `82a497a5`, seven more there), which
+replaced #552, the fifteenth replacement of the ORIGINAL unit (#537 through #552, sixteen PRs,
 thirty-two Codex rounds, one hundred and sixty-eight findings). Opened from `main` `d7eed4ce` under the
 standing continuation authorization (#482 comment 5563944111, 2026-09-07: no PR-number cap;
 close-and-replace continues; "reduce the review unit at safe dependency seams; preserve the
@@ -68,7 +70,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 3,025 lines against #552's 3,495.
+live standing). The document is 3,103 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -173,7 +175,7 @@ Each is a second-order consequence of a round-1 fold; none is a content question
 answers. A second finding-bearing head means close-and-replace under the standing authorization,
 no cap.
 
-**Review round 1 on this PR (head `a07f78b7`): seven findings, all P1, folded on its ONE
+**Review round 1 on #558 (head `a07f78b7`): seven findings, all P1, folded on its ONE
 correction head.** The `renotified` converse branch binds to its CROSSING (`crossingEventId` +
 `transitionId` verified through the new kernel read `platform_event`, unique per decision and
 crossing, the same push-shape check as the provisional approve); the standard request closure
@@ -188,8 +190,26 @@ register from 4d-ii; `rollout:drain-evidence` reading the deploy platform's runn
 for the processes that predate it) as CORROBORATION, while the direct explicit operator
 attestation stays REQUIRED — the question was raised on #482 and answered there (comment
 5569586836: the user's standing instructions retain human production attestation; evidence does
-not replace it; no review request or agent statement can remove it). A second finding-bearing head means close-and-replace under the standing authorization,
-no cap.
+not replace it; no review request or agent statement can remove it). A second
+finding-bearing head means close-and-replace under the standing authorization, no cap.
+
+**Review round 2 on #558 (head `64d9030f`): nine findings, all P1, carried here, none dropped.**
+The `renotified` converse requires the cited crossing to be the 0 → 1 activation (payload
+`activeCount = 1`, `to` active); `expandMissingDeliveries` keeps its role for every event that
+predates a consumer's REGISTRATION (the 4d-i → 4d-ii interval included) while the delivery seal
+binds only consumers registered at the event's commit; 4d-iii's replay re-drops all FIVE doors by
+name; the one-snapshot feed read runs the owner-provided notification and decision queries inside
+ONE REPEATABLE READ transaction (no cross-module join); §A.2's forwarding paragraph states the
+canonical lock order (readiness → `Project` → `Membership` → the subject's delivery rows →
+`Decision`); the `open → resolved` closure pairs with its reapproval transition in both
+directions beside the `withdrawn` pairing; `dispatchRule`/`subscribedEventTypes` are written only
+by the gated catalog-data migration, frozen, and VERIFIED by `syncConsumerCatalog` at startup;
+`Notification_t4d_no_truncate` joins `TRUNCATE_SEALS` (nine), the sanctioned reset truncates
+`DomainEvent` with `Notification`, and `notification`/`changeRequest` cleanups go through named
+helpers under the statement tripwire; and §D's Part 3 opens with BOTH reservations before either
+audit. Seven are second-order consequences of round 1's folds and two are the plan's own earlier
+text contradicting its later rule; none is a content question the boundary answers. A second
+finding-bearing head means close-and-replace under the standing authorization, no cap.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
@@ -198,9 +218,9 @@ self-naming convention every 4c and 4d unit followed). `reviewed_merge` stays `f
 Runner invariants: `assessRunnerState` → `pr:<this>` while open; `assessPostMergeRunnerState` →
 simulated, allowed, `task:4`; `detectStatusDrift` with the self-named `open_pr` live → no drift.
 
-**The ledger, read off the label.** #557 was labelled `review-replacement-required` by the
-orchestrator before it closed, so #557 is the obligation this PR settles. Every predecessor
-closed at the limit (#537–#540, #542–#556) stays a labelled pending obligation until a MERGED
+**The ledger, read off the label.** #558 was labelled `review-replacement-required` by the
+orchestrator before it closed, so #558 is the obligation this PR settles. Every predecessor
+closed at the limit (#537–#540, #542–#557) stays a labelled pending obligation until a MERGED
 unit names it, one merge discharging one (`docs/reviews/replacement-lineage-repair.md`); #541
 holds no label. No label is applied or cleared by hand.
 
