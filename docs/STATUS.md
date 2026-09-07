@@ -75,7 +75,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 3,649 lines against #552's 3,495.
+live standing). The document is 3,687 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -320,8 +320,21 @@ could each miss the other (barrier-tested, the repair asserted); the 4d-i invent
 four consultation attribution columns; and the frozen-delivery seal admits exactly the three
 relay-owned `dispatch → noop` transitions the delivered code performs (the same-statement mark,
 the completion of an already-marked leased row, the retirement of a pending pre-intent row). The
-drain gate was not raised. A second finding-bearing head means close-and-replace under the
-standing authorization, no cap.
+drain gate was not raised.
+
+**Review round 1 on this PR, #563 (head `6bf75a36`): five findings (four P1, one P2), four folded
+on its ONE correction head, one DECLINED on the Board's recorded decision, none dropped.**
+`EmitInput` gains an optional caller-minted `eventId` that `emitEvent` passes into the event
+insert, so every notification writer mints the id, stamps the notice and then emits under the
+deferred FK; `OutboxDelivery_t4d_bound` judges EVERY delivery row's `deliveryAction` against its
+consumer's persisted rule whatever the consumer's activation state (existence stays required only
+for the active set), so a row planted for an inactive consumer cannot survive reactivation with
+the wrong action; P41 names `decisions.service.ts` `requestConsultation`/`respondToConsultation`;
+and the 4d-ii checklist names the platform's `deliveryRowsFor` projection in place of the retired
+`deliveryFor`. The fifth — "replace the human-only drain gate" — is DECLINED as a Board decision,
+not a plan defect: raised on #482 and answered there (comment 5569586836); the plan carries the
+gate exactly as decided and its removal is the user's separate decision. A second
+finding-bearing head means close-and-replace under the standing authorization, no cap.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
