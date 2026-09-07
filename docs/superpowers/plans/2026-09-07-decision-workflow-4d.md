@@ -14,21 +14,23 @@ before 4d implementation begins — the same plan-first contract that preceded
 
 ## Review lineage, and what this replacement does differently
 
-This document REPLACES PR #557 (`Replaces: #557` — labelled
+This document REPLACES PR #558 (`Replaces: #558` — labelled
 `review-replacement-required` by the orchestrator before it closed, so the
 ledger holds its obligation; every predecessor closed at the limit stays a
 labelled pending obligation until a MERGED unit names it, one merge
 discharging one — the accepted gap of
 `docs/reviews/replacement-lineage-repair.md`; #541 alone holds no label,
-having closed before it could be labelled). #557 was the FOURTH outing of
-the NARROWED plan: it drew five findings on its first head (`3327f761`,
-folded on its one correction head `6d5545ce`) and four more on that head,
-and closed at the limit. #557 had replaced #556 (the third outing: three
-findings on `bb307c74` folded on `dd2da64b`, five more there), #556 had
-replaced #555 (the second: five on `3e5a85a2` folded on `41ea41d2`, four
-more there), #555 had replaced #554 (the first: seven on `cbfdaacb` folded
-on `82a497a5`, seven more there), and #554 had replaced #552, the fifteenth
-replacement of the ORIGINAL docs-only unit: #537 → #538 → #539 →
+having closed before it could be labelled). #558 was the FIFTH outing of
+the NARROWED plan: it drew seven findings on its first head (`a07f78b7`,
+folded on its one correction `96ba845b`/`526dd5a5`/`64d9030f`) and nine
+more on that head, and closed at the limit. #558 had replaced #557 (the
+fourth outing: five findings on `3327f761` folded on `6d5545ce`, four more
+there), #557 had replaced #556 (the third: three on `bb307c74` folded on
+`dd2da64b`, five more there), #556 had replaced #555 (the second: five on
+`3e5a85a2` folded on `41ea41d2`, four more there), #555 had replaced #554
+(the first: seven on `cbfdaacb` folded on `82a497a5`, seven more there),
+and #554 had replaced #552, the fifteenth replacement of the ORIGINAL
+docs-only unit: #537 → #538 → #539 →
 #540 → #541 → #542 → #543 → #544 → #545 → #546 → #547 → #548 → #549 → #550 →
 #551 → #552, sixteen PRs, thirty-two Codex review rounds, one hundred and
 sixty-eight findings, each PR closed without a third correction head when
@@ -264,6 +266,28 @@ decision where it belongs:
 | 5 (P1) the audit's ACCESS EXCLUSIVE lock on `Membership` could not block a concurrent `User(role = 'architect')` creation; a still-serving `ensure-accounts` could commit its user, be refused at the membership, and leave a residual the migration's success hid | §A.1 the reservation; §D 4d-i, 4d-iii; P28b | a FIFTH door, `User_t4d_architect_reserved` (BEFORE INSERT OR UPDATE on `User`, `role = 'architect'` judged as text), installed in Part 3 under `LOCK TABLE "User" IN SHARE ROW EXCLUSIVE MODE` taken beside the `Membership` lock BEFORE the audit, so the migration-first ordering refuses the user write itself and the audit's zero holds; retired by 4d-iii with the other four; every "four doors" is now five |
 | 6 (P1) "the decision already loaded in the same snapshot" was two READ COMMITTED queries started independently, so a withdrawal committing between them let the notification read return a kinded withdrawal notice authorized by the stale, still-visible decision | §A.3 obligation 7 (the readers); §D 4d-ii; P29/P31 | the kinded feed path reads each notification and its governing decision's status in ONE statement (one snapshot), and judges `decisionVisibleToViewer` on the row that statement returned; the projection fold is per event and has no second read; a withdraw-between-reads barrier proves the notice absent |
 | 7 (P1) a hand-run bundle's event was accepted with no same-transaction `OutboxDelivery` rows, their creation left to `expandMissingDeliveries` — which runs only when the relay runs — so with `OUTBOX_RELAY_AUTOSTART=false` or the relay down the committed transition had no durable effect | §A.3 obligation 7 (the kernel envelope); §D 4d-i, 4d-ii; P37/P38 | the platform-owned deferred `DomainEvent_t4d_deliveries` requires at commit, for every ACTIVE row of the persisted `OutboxConsumerCatalog`, exactly one same-transaction delivery row for the event whose `dispatch`/`noop` status follows a PERSISTED rule the catalog row carries (`syncConsumerCatalog` writes each consumer's `dispatchRule` — every event, `invalidate` intents, push-bearing intents, or a type set — from the compiled registry at startup); a bundle without its rows is refused, and `expandMissingDeliveries` keeps only its legacy role for events older than 4d-i |
+
+**Review round 2 on #558 (head `64d9030f`) — nine findings, all P1,
+folded here, none dropped.** Seven are second-order consequences of round
+1's own folds (a crossing bound without its predicate, a closure paired for
+one resolution and not the other, a persisted rule left writable, a
+recovery pass narrowed by the wrong boundary, a snapshot fix that crossed a
+module boundary, a reset inventory that missed two newly sealed tables, a
+"five doors" fold whose §D sequence and replay contract still said four),
+and two are the plan's own earlier text contradicting its later rule (the
+lock order in one paragraph; the Part 3 order in another):
+
+| finding | where it lands | the answer |
+|---|---|---|
+| 1 (P1) the `renotified` converse verified the cited crossing's type, transition and position but not its PREDICATE, so a legitimate 1 → 2 activation the consumer classifies `noop` could be cited to commit an extra demand | §A.3 obligation 7 (the converse); P36 | the cited event must be the 0 → 1 ACTIVATION crossing — payload `activeCount = 1` and `to` an active architect — read through `platform_event`; any other standing event is refused |
+| 2 (P1) narrowing `expandMissingDeliveries` to events older than 4d-i omitted the 4d-i → 4d-ii interval, during which `decisions.effects` was not yet registered; its cursor from 0 would wait forever at the first omitted position | §A.3 obligation 7 (the delivery seal); §D 4d-ii; P38 | the seal requires rows for the consumers REGISTERED at the event's commit, and expansion keeps its role for every event that predates a consumer's registration — the whole 4d-i → 4d-ii interval included — exactly the P38 registration arm |
+| 3 (P1) 4d-iii's replay contract re-dropped FOUR triggers while the same paragraph retires five; a rolled-back first attempt would leave one installed and every retry aborting | §D 4d-iii | every replay re-drops all FIVE doors and their shared function `IF EXISTS`; the closing check names all five |
+| 4 (P1) the one-snapshot fix joined the platform-owned `Notification` to the decisions-owned `Decision` in one SQL statement — a synchronous cross-module table read | §A.3 obligation 7 (the readers); §D 4d-ii; P31 | the snapshot opens ONE REPEATABLE READ transaction and runs the OWNER-provided queries inside it — the platform's notification query and the decisions module's decision query — judging visibility on rows from that one snapshot; no join, no foreign read |
+| 5 (P1) §A.2's forwarding paragraph had approve/forward take the `Decision` lock immediately after readiness, while the canonical order locks the subject's delivery rows BEFORE the decision; a relay lease + a command could deadlock | §A.2 the forward door; P35 | the paragraph now states the canonical order — readiness → `Project` → `Membership` → the subject's delivery rows `FOR UPDATE` ascending → `Decision` — and P35's barrier probes that exact sequence |
+| 6 (P1) the closure↔restoration bundle covered the `withdrawn` closure only; the reapproval path closes its request `resolved`, so a direct writer could resolve the sole open request and leave the decision in `change`, or reapprove and leave the request open | §A.3 obligation 7 (the converse, both closures); P37 | the `open → resolved` closure pairs with its reapproval transition in both directions — the same-transaction `Decision` landed `approved` (no chain) or `awaiting_countersign` (chain) with its revision, and the reapproval's entry seal requiring the same-transaction closure of the open request |
+| 7 (P1) `dispatchRule`/`subscribedEventTypes` decided whether a delivery must dispatch but were written freely at startup; a direct writer could alter a rule and commit a `noop` where a push was owed | §A.3 obligation 7 (the delivery seal); §D 4d-i, 4d-ii; P38 | the rules are written ONLY by the versioned catalog-data migration under the gate, frozen by `OutboxConsumerCatalog_t4d_rules`, and `syncConsumerCatalog` VERIFIES the persisted rule equals the compiled contract at startup — refusing on drift, exactly as it treats `catalogVersion` — and never writes it |
+| 8 (P1) the reset inventory covered `DecisionEvent` and memberships, but 4d-i also makes kinded `Notification` rows undeletable behind an FK to `DomainEvent` and seals `ChangeRequest`; the seed truncates `DomainEvent` without `Notification` and deletes both tables directly, as do many suites | §D 4d-i; P28b | `Notification_t4d_no_truncate` joins `TRUNCATE_SEALS` (NINE entries), the sanctioned reset truncates `DomainEvent` WITH `Notification` under the named disables, and `notification.deleteMany` / `changeRequest.deleteMany` cleanups are routed through named reset helpers (`wipeNotifications`, `wipeChangeRequests`) under the statement-enumerating tripwire, which now covers both tables |
+| 9 (P1) §D's authoritative Part 3 sequence still opened with the `Membership` door alone and ran both audits before the `User` lock and door | §D 4d-i (Part 3); P28b | Part 3 opens with BOTH reservations — the `Membership` door's `CREATE TRIGGER` and `LOCK TABLE "User"` with `User_t4d_architect_reserved` — and runs the audits only after both locks are held |
 
 **Docs-only.** No schema, no migration, no runtime code, no test change, no
 4d implementation. Contractor-capture units 1–6 and the saved UX and
@@ -678,11 +702,15 @@ mirrors `selectLogDecisions` / `selectVisibleDecisions`, and the projection
 read-path filter), gaining no authority by sight; `change`, `approved` and
 `recorded` stay as today, `withdrawn` stays pmc-only, and with no chain the
 predicate is byte-identical (P29). **Forwarding SERIALIZES against approval
-and countersign**: each of approve/countersign/forward takes
-`lockProjectReadiness` and then the decision row's lock in the canonical
-order and re-checks the holder INSIDE the transaction, so the loser of
-either ordering is a deterministic 409 — barrier-probed in BOTH orderings
-(P35). Every hostile shape is probed under P34: no row; a mismatched row; the
+and countersign**: each of approve/countersign/forward takes the locks in
+the ONE canonical order — `lockProjectReadiness`, then `Project`, then
+`Membership`, then the decision's subject delivery rows `FOR UPDATE` in
+ascending id order, then the `Decision` row (#558's review round 2, finding
+5: an earlier wording here took the decision row immediately after
+readiness while the relay leases a delivery before waiting on the decision,
+a deadlock this order forecloses) — and re-checks the holder INSIDE the
+transaction, so the loser of either ordering is a deterministic 409 —
+barrier-probed in BOTH orderings against that exact sequence (P35). Every hostile shape is probed under P34: no row; a mismatched row; the
 orphan row; the same-target no-op at both doors; a matched row on a
 terminal or awaiting decision; a matched row naming a removed membership or
 an empty role; an inactive or unauthorized actor, and the role-holder arm's
@@ -2009,7 +2037,11 @@ before it. Each fact table carries:
    a COMMITTED event's type, entity, position and payload, the committed-row
    sibling of `platform_tx_event` — proves the crossing is a
    `membership.standing_changed` event of this project whose payload names
-   that `transitionId`, at a position EARLIER than this event's; exactly one
+   that `transitionId`, at a position EARLIER than this event's, AND that
+   it is the 0 → 1 ACTIVATION crossing — its payload `activeCount = 1` and
+   `to` an active architect membership (#558's review round 2, finding 1: a
+   legitimate 1 → 2 activation, which the consumer classifies `noop`, could
+   otherwise be cited); exactly one
    same-transaction `countersign_renotified` audit row names the same
    crossing and transition; the decisions-owned partial UNIQUE index on
    `DecisionEvent (decisionId, (payload->>'crossingEventId')) WHERE type =
@@ -2060,7 +2092,18 @@ before it. Each fact table carries:
    current) landed `approved` and the same-transaction
    `decision.change_withdrawn` event through `platform_tx_event`; the
    approved-entry seal's restoration arm already requires the
-   same-transaction closure; neither half commits without the other. An event of a sealed type without its fact is refused at commit;
+   same-transaction closure; neither half commits without the other. **And
+   the `open → resolved` closure pairs with its REAPPROVAL the same way**
+   (#558's review round 2, finding 6: the reapproval path closes its request
+   `resolved`/`reapproved`, not `withdrawn`, so a direct writer could
+   resolve the sole open request and leave the decision in `change`, or
+   reapprove and leave the request open): the same decisions-owned deferred
+   trigger requires, for a request written to `resolved`, the same-transaction
+   `Decision` row landed `approved` (no chain) or `awaiting_countersign`
+   (chain) with its same-transaction revision and event; and the
+   reapproval's entry seal — the approved-entry seal without a chain, the
+   awaiting-entry seal with one — requires the same-transaction closure of
+   the open request; neither half commits alone. An event of a sealed type without its fact is refused at commit;
    the forward direction (the fact without its event) is the obligation
    above; a hand-run bundle therefore reproduces BOTH or commits neither. There is ONE emitter — the
    service — for every writer at every instant; a hand-run bundle that
@@ -2080,17 +2123,30 @@ before it. Each fact table carries:
    commit, for EVERY active row of the persisted `OutboxConsumerCatalog`,
    exactly one same-transaction `OutboxDelivery(eventId, consumer)` row for
    the new event whose status is `dispatch` or `noop` according to a
-   PERSISTED rule the catalog row carries — `dispatchRule`, written by
-   `syncConsumerCatalog` from each consumer's compiled registration at
-   startup (`all`: every event dispatches; `invalidate`: dispatch iff the
-   intent's `invalidate`; `push`: dispatch iff the intent carries a push;
-   `types`: dispatch iff the event's type is in the row's
-   `subscribedEventTypes`) — so the seal judges the rows against kernel
-   truth and reproduces no consumer logic; `materializeDeliveries` already
-   writes exactly those rows for the service path, a hand-run bundle writes
-   the same rows or is refused, and `expandMissingDeliveries` keeps only its
-   LEGACY role for events older than 4d-i (a recovery pass, never the path
-   by which a 4d event acquires its obligations).
+   PERSISTED rule the catalog row carries — `dispatchRule` (`all`: every
+   event dispatches; `invalidate`: dispatch iff the intent's `invalidate`;
+   `push`: dispatch iff the intent carries a push; `types`: dispatch iff the
+   event's type is in the row's `subscribedEventTypes`) — so the seal judges
+   the rows against kernel truth and reproduces no consumer logic. **The
+   rules are sealed evidence, not startup state** (#558's review round 2,
+   finding 7): they are written ONLY by the versioned catalog-data migration
+   under the `SET LOCAL` gate (4d-ii's migration writes each consumer's rule
+   beside its `catalogVersion`), frozen by `OutboxConsumerCatalog_t4d_rules`
+   (UPDATE of the rule columns refused outside the gate), and
+   `syncConsumerCatalog` VERIFIES at startup that the persisted rule equals
+   the compiled contract — refusing the process on drift exactly as it
+   refuses a `catalogVersion` mismatch today — and never writes it. The seal
+   requires rows for the consumers REGISTERED at the event's commit
+   (`registeredAt` before the event), and `expandMissingDeliveries` keeps its
+   role for every event that PREDATES a consumer's registration — the whole
+   4d-i → 4d-ii interval included, since `decisions.effects` registers in
+   4d-ii and its ordered cursor starts at 0 (#558's review round 2, finding
+   2: narrowing expansion to events older than 4d-i would have left that
+   consumer waiting forever at the first omitted position) — a recovery pass
+   for the registration gap, never the path by which a 4d event acquires
+   the obligations of a consumer already registered; `materializeDeliveries`
+   already writes exactly those rows for the service path, and a hand-run
+   bundle writes the same rows or is refused.
 
    **The kernel seals its own envelope, so a module seal never has to** (this
    PR's review round 1, finding 2): the delivered event store is append-only
@@ -2359,9 +2415,14 @@ before it. Each fact table carries:
    delivered snapshot starts its decision slice and its notification query
    independently under READ COMMITTED, so a withdrawal committing between
    them returned a kinded withdrawal notice the filter authorized against
-   the stale, still-visible decision; the kinded feed query therefore joins
-   each notice to its decision's CURRENT status and visibility inputs in one
-   statement — one snapshot — and the projection fold, being per event, has
+   the stale, still-visible decision; the snapshot therefore opens ONE
+   REPEATABLE READ transaction and runs the OWNER-provided queries inside
+   it — the platform's notification query and the decisions module's
+   decision query, each the owner's own contract — so both read the same
+   snapshot and visibility is judged on the decision rows of that snapshot,
+   with NO cross-module join (#558's review round 2, finding 4: a single
+   statement joining `Notification` to `Decision` would have been a
+   synchronous foreign read), and the projection fold, being per event, has
    no second read; P31's barrier withdraws between the two reads and asserts
    the notice absent for the contractor),
    the text-prefix filters keep governing kind-less rows, and P29's
@@ -2631,10 +2692,14 @@ today's behaviour lives.
     'architect'` and `ALTER TYPE "DecisionStatus" ADD VALUE IF NOT EXISTS
     'awaiting_countersign'`, each its own statement (a value added inside a
     transaction is unusable until it commits — the way 20271015 added
-    `recorded`). **Part 3, the seal-and-audit transaction**, opening with the
-    orgs-owned RESERVATION's `CREATE TRIGGER` (`Membership_t4d_architect_reserved`)
-    and — only after that lock is held — the diagnostic-first `Membership`
-    and `User` audits that ABORT with a bounded sample, then everything else:
+    `recorded`). **Part 3, the seal-and-audit transaction**, opening with
+    BOTH orgs-owned RESERVATIONS — the `Membership` door's `CREATE TRIGGER`
+    (`Membership_t4d_architect_reserved`, taking ACCESS EXCLUSIVE on
+    `Membership`) and `LOCK TABLE "User" IN SHARE ROW EXCLUSIVE MODE` with
+    the `User` door's `CREATE TRIGGER` (`User_t4d_architect_reserved`) — and
+    only after BOTH locks are held (#558's review round 2, finding 9) the
+    diagnostic-first `Membership` and `User` audits that ABORT with a bounded
+    sample, then everything else:
     the THREE decisions-owned fact tables (`DecisionForward`,
     `DecisionCountersign`, `DecisionStrandedResolution`), each registered in
     `decisionsManifest.ownsModels` AND `readEncapsulated`, with composite
@@ -2689,10 +2754,20 @@ today's behaviour lives.
     `DomainEvent_t4d_decision_event_paired`; the reset protocol in
     `prisma/seed.ts` and `test/integration/fixtures.ts` gaining
     `DecisionEvent_t4d_append_only`, the membership path (transition facts,
-    then memberships, under their seals disabled by name) and the sweep of
-    EVERY `DecisionEvent` UPDATE/DELETE site — hand-disabled and unguarded —
-    into `wipeDecisionEvents`, the three precision arms rewritten, with the
-    statement-enumerating tripwire; the `insertRawEvent` fixture, the named
+    then memberships, under their seals disabled by name), the
+    `Notification`/`ChangeRequest` path (#558's review round 2, finding 8:
+    kinded feed rows are undeletable behind the FK to `DomainEvent` and
+    `ChangeRequest` rows are delete-sealed, while the seed truncates
+    `DomainEvent` alone and deletes both tables directly, as do many suites)
+    — `Notification_t4d_no_truncate` in `TRUNCATE_SEALS`, the sanctioned
+    reset truncating `DomainEvent` TOGETHER WITH `Notification` under the
+    named disables, and every `notification.deleteMany` /
+    `changeRequest.deleteMany` cleanup routed through the named
+    `wipeNotifications` / `wipeChangeRequests` helpers — and the sweep of
+    EVERY `DecisionEvent`, `Notification` and `ChangeRequest` UPDATE/DELETE
+    site — hand-disabled and unguarded — into the helpers, the three
+    precision arms rewritten, with the statement-enumerating tripwire
+    covering all three tables; the `insertRawEvent` fixture, the named
     legacy-plant bypass in the proofs and the raw-insert tripwire; the
     `DomainEvent(projectId, eventId)` candidate key and
     `Notification.eventId` (nullable, same-project composite FK to it,
@@ -2744,7 +2819,7 @@ today's behaviour lives.
     role could not honour), UPDATE and DELETE refused, no-TRUNCATE — and
     `verifyMarkerSeals` is probed UNCHANGED after 4d-i and 4d-iii. Every
     statement is `IF NOT EXISTS`/`IF EXISTS`/`CREATE OR REPLACE` so a
-    partial apply retries. `TRUNCATE_SEALS` gains EIGHT entries across 4d-i
+    partial apply retries. `TRUNCATE_SEALS` gains NINE entries across 4d-i
     and 4d-ii — the three fact tables, `ProjectRoleStanding_t4d_no_truncate`,
     `Membership_t4d_no_truncate`, `MembershipTransition_t4d_no_truncate`,
     `ChangeRequest_t4d_no_truncate` and `ExternalEffectCatalog_t4d_no_truncate`
@@ -2971,7 +3046,10 @@ today's behaviour lives.
     CONFLICT (unit) DO NOTHING` under the `SET LOCAL` gate, so a later
     `ALWAYS_EXECUTE` replay over the immutable row neither aborts nor
     rewrites it, the closing verification requiring the row to EXIST);
-    re-runnable — every replay re-drops the FOUR triggers AND their shared
+    re-runnable — every replay re-drops ALL FIVE reservation triggers
+    (`Decision_t4d_architect_reserved`, `Decision_t4d_awaiting_reserved`,
+    `Membership_t4d_architect_reserved`, `User_t4d_architect_reserved`,
+    `DecisionForward_t4d_reserved`) AND their shared
     function `IF EXISTS` and then CHECKS the retirement complete exactly as
     4c-v's closing block does, raising if a trigger or the function remains —
     in `ALWAYS_EXECUTE` after 4d-i, with the mirror probes (P28b; the
