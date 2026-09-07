@@ -51,6 +51,19 @@ cutover (its hazard retired in round 21), archived-project parking (the delivere
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
 live standing). The document is 2,032 lines against #552's 3,495.
 
+**Review round 1 on this PR (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
+its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
+event and refuses an approval event there; the kernel seals its own event envelope at INSERT
+(`DomainEvent_t4d_envelope`: the position this transaction allocated, the intent corresponding to a
+persisted, versioned `ExternalEffectCatalog` seeded by 4d-i, widened by 4d-ii, the old version retired by
+4d-iii); a trailing 4d-iii seal requires `approvedByName`/`approvedByRole` on every new revision;
+`MembershipTransition` freezes and validates `actorRole`/`actorName`; `DecisionEvent` gains an
+append-only seal; the owner/admin authority arm is judged live for self-transitions; and the feed row
+carries a structured `Notification.kind` the seal binds to the event with every reader rendering a
+kinded row from kind, event and fact. Each is the plan's own rule applied where one instance was
+unstated; the plan's round-1 table names all seven. A second finding-bearing head means
+close-and-replace under the standing authorization, no cap.
+
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
 self-naming convention every 4c and 4d unit followed). `reviewed_merge` stays `f5da6654`,
