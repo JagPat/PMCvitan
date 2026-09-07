@@ -81,6 +81,16 @@ kinded row from kind, event and fact. Each is the plan's own rule applied where 
 unstated; the plan's round-1 table names all seven. A second finding-bearing head means
 close-and-replace under the standing authorization, no cap.
 
+**Review round 1 on this PR (head `3e5a85a2`): five findings, all P1, folded on its ONE correction
+head** — the feed-row correspondence reads through a platform-owned `platform_tx_notification`
+contract; `DomainEvent` gains nullable `actorRole`/`actorName` envelope columns `emitEvent` writes and
+the seal binds; the sanctioned reset gains a membership path (transition facts, then memberships,
+under their seals disabled by name); every direct `DecisionEvent` reset bypass is swept into
+`wipeDecisionEvents` with a tripwire; and the repository's raw `DomainEvent` probes move to an
+allocating `insertRawEvent` fixture or a named legacy-plant bypass with a tripwire. None is a content
+question; each is an integration seam the narrowed rule crosses. A second finding-bearing head means
+close-and-replace under the standing authorization, no cap.
+
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
 self-naming convention every 4c and 4d unit followed). `reviewed_merge` stays `f5da6654`,
