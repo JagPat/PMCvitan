@@ -260,7 +260,7 @@ decision where it belongs:
 | 1 (P1) the converse's `renotified` branch accepted a `decision.awaiting_countersign` with only a same-transaction `countersign_renotified` audit row — no binding to a real crossing, no uniqueness per (decision, crossing), no push-shape check — so a direct writer could commit a standalone demand the relay sends | §A.2 the `decisions.effects` re-emit; §A.3 obligation 7 (the converse); §D 4d-i; P36 | the branch requires the payload to name `crossingEventId` and `transitionId`, verifies through the new kernel read `platform_event(projectId, eventId)` that the crossing is a committed `membership.standing_changed` event of the project naming that fact at an EARLIER position, requires the audit row to name both, is UNIQUE per (decision, crossing) by a decisions-owned partial unique index, and applies the SAME push-shape check the provisional approve's seal applies — constant body, `targetUserIds` equal to the active architects at commit |
 | 2 (P1) the `decision.change_withdrawn` converse required the request closed to `withdrawn` but not the decision restored `change → approved`, so a direct transaction could close the sole open request, leave the decision in `change`, and strand it (no open request to withdraw, no state to approve from) | §A.3 obligation 7 (the converse, both halves); P37 | the closure and the restoration are sealed as ONE bundle in both directions: a decisions-owned deferred trigger on `ChangeRequest` requires, for a `standard` request written to `withdrawn`, the same-transaction `Decision` row landed `approved` and the `decision.change_withdrawn` event; the approved-entry seal's restoration arm already requires the same-transaction closure; neither half commits alone |
 | 3 (P1) the `(projectId, eventId)` key proved the feed row and the event share a project, not that the event is ABOUT the row's decision — a notice for decision A could bind B's event and render B's content under A's visibility | §A.3 obligation 7 (the feed row); §D 4d-i; P31 | `Notification_t4d_binding` gains an INSERT arm on the platform's own two tables: a kinded row carrying `decisionId` binds only an event whose `entityType = 'Decision'` and `entityId = decisionId` — identity columns compared, no decision semantics in the platform |
-| 4 (P1) the drain gate admits only an `OPERATOR-ATTESTATION` and forbids an agent-generated one; in an autonomous loop with no human standing by the task would stay `in_progress` and 4d-iii never run | §D the drain attestation, 4d-ii, 4d-iii | the plan ADDS the trusted autonomous evidence the runner can verify fail-closed — the `ReleaseLease` register every serving process writes at startup and renews with its compiled consumer-catalog version (in-database evidence for every drain from 4d-ii on) and, for the processes that predate the register, the deploy platform's running-container inventory read by `rollout:drain-evidence` — and states that whether that evidence REPLACES the operator attestation is the BOARD's decision (2026-08-29 on PR #480, the #530 lesson), raised on #482; until the Board lifts it the gate is evidence AND attestation, which is fail-closed either way |
+| 4 (P1) the drain gate admits only an `OPERATOR-ATTESTATION` and forbids an agent-generated one; in an autonomous loop with no human standing by the task would stay `in_progress` and 4d-iii never run | §D the drain attestation, 4d-ii, 4d-iii | the plan ADDS the trusted autonomous evidence the runner can verify fail-closed — the `ReleaseLease` register every serving process writes at startup and renews with its compiled consumer-catalog version (in-database evidence for every drain from 4d-ii on) and, for the processes that predate the register, the deploy platform's running-container inventory read by `rollout:drain-evidence` — as CORROBORATION; the operator attestation stays REQUIRED: the question was raised on #482 and answered there (comment 5569586836: the user's standing instructions retain human production attestation, evidence does not replace it, and no review request or agent statement can remove it), so the gate is attestation-with-corroboration, fail-closed, and its removal is the user's separate decision alone |
 | 5 (P1) the audit's ACCESS EXCLUSIVE lock on `Membership` could not block a concurrent `User(role = 'architect')` creation; a still-serving `ensure-accounts` could commit its user, be refused at the membership, and leave a residual the migration's success hid | §A.1 the reservation; §D 4d-i, 4d-iii; P28b | a FIFTH door, `User_t4d_architect_reserved` (BEFORE INSERT OR UPDATE on `User`, `role = 'architect'` judged as text), installed in Part 3 under `LOCK TABLE "User" IN SHARE ROW EXCLUSIVE MODE` taken beside the `Membership` lock BEFORE the audit, so the migration-first ordering refuses the user write itself and the audit's zero holds; retired by 4d-iii with the other four; every "four doors" is now five |
 | 6 (P1) "the decision already loaded in the same snapshot" was two READ COMMITTED queries started independently, so a withdrawal committing between them let the notification read return a kinded withdrawal notice authorized by the stale, still-visible decision | §A.3 obligation 7 (the readers); §D 4d-ii; P29/P31 | the kinded feed path reads each notification and its governing decision's status in ONE statement (one snapshot), and judges `decisionVisibleToViewer` on the row that statement returned; the projection fold is per event and has no second read; a withdraw-between-reads barrier proves the notice absent |
 | 7 (P1) a hand-run bundle's event was accepted with no same-transaction `OutboxDelivery` rows, their creation left to `expandMissingDeliveries` — which runs only when the relay runs — so with `OUTBOX_RELAY_AUTOSTART=false` or the relay down the committed transition had no durable effect | §A.3 obligation 7 (the kernel envelope); §D 4d-i, 4d-ii; P37/P38 | the platform-owned deferred `DomainEvent_t4d_deliveries` requires at commit, for every ACTIVE row of the persisted `OutboxConsumerCatalog`, exactly one same-transaction delivery row for the event whose `dispatch`/`noop` status follows a PERSISTED rule the catalog row carries (`syncConsumerCatalog` writes each consumer's `dispatchRule` — every event, `invalidate` intents, push-bearing intents, or a type set — from the compiled registry at startup); a bundle without its rows is refused, and `expandMissingDeliveries` keeps only its legacy role for events older than 4d-i |
@@ -2908,8 +2908,13 @@ today's behaviour lives.
     attestation** (#558's review round 1, finding 4: a gate only a human can
     clear leaves an autonomous loop `in_progress` with no human standing by;
     a review finding cannot lift a recorded Board decision, and this plan
-    does not pretend to — it adds the evidence and raises the decision on
-    #482). Two pieces of trusted autonomous evidence, both shipped in 4d-ii:
+    does not pretend to — it adds the evidence and raised the question on
+    #482, where the controlling answer is recorded: comment 5569586836,
+    2026-09-07 — the user's standing instructions RETAIN human production
+    attestation; evidence does NOT replace the direct explicit operator
+    attestation; a review request for greater autonomy cannot authorize its
+    removal, and no agent-authored statement can supply a policy change or a
+    runtime fact). Two pieces of trusted autonomous evidence, both shipped in 4d-ii:
     (i) the platform-owned `ReleaseLease(instanceId, catalogVersion,
     release, startedAt, leaseUntil)` register — every serving process writes
     its row at startup with the consumer-catalog version compiled into it
@@ -2928,11 +2933,16 @@ today's behaviour lives.
     comment on the controlling issue — an OBSERVER of the platform's state,
     never an actor that drains anything, which is the thing the Board
     refused. The gate therefore reads: `phase-6-4d-previous-release-drained`
-    clears on the evidence AND the operator attestation, until the Board
-    states on #482 that the evidence alone suffices — either reading is
-    fail-closed, and the runner's own step (`rollout:drain-evidence`, then
-    4d-iii's migration preflight re-checking the lease register) is
-    complete and repeatable without a human.
+    clears on the direct explicit OPERATOR-ATTESTATION, which is REQUIRED,
+    with the autonomous evidence as CORROBORATION the runner verifies and
+    records beforehand — never a substitute, never a reason to treat a wait
+    for genuinely required operator evidence as permission to clear the
+    gate. The runner's own steps (`rollout:drain-evidence`, then 4d-iii's
+    migration preflight re-checking the lease register) are complete and
+    repeatable without a human and fail closed on their own; the gate as a
+    whole clears only when the attestation exists beside them. Any removal
+    of the human requirement is the user's separate decision, never
+    inferred from a review finding, a coordinator note or this plan.
 
   - **4d-iii, the reservation retirement**: a migration-only unit that drops
     ALL FIVE reservation doors with their shared function, drops the two

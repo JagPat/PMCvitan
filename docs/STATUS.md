@@ -68,7 +68,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 3,015 lines against #552's 3,495.
+live standing). The document is 3,025 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -185,9 +185,10 @@ status in ONE statement; the platform-owned `DomainEvent_t4d_deliveries` seal re
 registered consumer's delivery row at commit against a PERSISTED `dispatchRule`; and the drain
 gate gains the trusted autonomous evidence the runner can verify fail-closed (the `ReleaseLease`
 register from 4d-ii; `rollout:drain-evidence` reading the deploy platform's running containers
-for the processes that predate it) while the Board-decided operator attestation STANDS until the
-Board lifts it — raised on #482 as the Board's question, not folded as if it were the plan's to
-decide. A second finding-bearing head means close-and-replace under the standing authorization,
+for the processes that predate it) as CORROBORATION, while the direct explicit operator
+attestation stays REQUIRED — the question was raised on #482 and answered there (comment
+5569586836: the user's standing instructions retain human production attestation; evidence does
+not replace it; no review request or agent statement can remove it). A second finding-bearing head means close-and-replace under the standing authorization,
 no cap.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
