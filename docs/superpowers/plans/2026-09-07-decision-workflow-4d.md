@@ -14,17 +14,19 @@ before 4d implementation begins — the same plan-first contract that preceded
 
 ## Review lineage, and what this replacement does differently
 
-This document REPLACES PR #562 (`Replaces: #562` — labelled
+This document REPLACES PR #563 (`Replaces: #563` — labelled
 `review-replacement-required` by the orchestrator before it closed, so the
 ledger holds its obligation; every predecessor closed at the limit stays a
 labelled pending obligation until a MERGED unit names it, one merge
 discharging one — the accepted gap of
 `docs/reviews/replacement-lineage-repair.md`; #541 alone holds no label,
-having closed before it could be labelled). #562 was the EIGHTH outing
-of the NARROWED plan: it drew six findings on its first head (`be56b941`;
-five folded on its one correction `2f493f8f`, one — the drain attestation
-— declined on the Board's recorded decision) and five more on that head,
-and closed at the limit. #562 had replaced #561 (the seventh outing: seven
+having closed before it could be labelled). #563 was the NINTH outing
+of the NARROWED plan: it drew five findings on its first head (`6bf75a36`;
+four folded on its one correction `01706fe`, one — the drain attestation
+— declined on the Board's recorded decision) and one more on that head,
+and closed at the limit. #563 had replaced #562 (the eighth outing: six on
+`be56b941`, five folded on `2f493f8f` and the drain attestation declined,
+five more there), #562 had replaced #561 (the seventh outing: seven
 on `b2e556c3` folded on `d5646595`, nine more there), #561 had replaced
 #560 (the sixth
 outing: eleven on `01c6e819`, ten folded on `847b5c40` and one — the drain
@@ -414,13 +416,13 @@ would have refused:
 |---|---|---|
 | 1 (P1) `OrgUserAuthority` was introduced with no primitive, trigger or backfill populating it, so `platform_user_manages_team` failed every owner/admin who also holds a non-PMC membership | §A.2 the kernel read; §D 4d-i; P29b | the generic `platform_org_authority_apply(orgId, userId, role, present)` primitive, the orgs-owned `OrgMembership_t4d_org_authority` trigger (insert, promotion, demotion, removal), the 4d-i backfill under the gated arm, `platform:verify` and P29b arms |
 | 2 (P1) the forward door judged a role `toDesignation` by `platform_role_standing`, but `ProjectRoleStanding` carries the `architect` row only, so a forward to a live `client` or `pmc` role was refused at the DB | §A.2 the forward door; P30/P34 | the role target is judged by `platform_role_has_holder(project, role)`, an EXISTS over the per-user register, which is populated for every role |
-| 3 (P1) between 4d-i and 4d-iii a `Project` INSERT and an owner/admin `OrgMembership` INSERT could each run its AFTER trigger before the other's row was visible, leaving no `pmc` row for a valid holder, and installing the doors later repairs nothing | §A.2 the kernel read; §D 4d-iii; P29b/P42 | 4d-iii RE-PROJECTS `ProjectUserStanding` and `OrgUserAuthority` from the orgs truth under the org key, org by org, in the same transaction BEFORE installing the doors or dropping a reservation; the interleaving is barrier-tested and the repair asserted |
+| 3 (P1) between 4d-i and 4d-iii a `Project` INSERT and an owner/admin `OrgMembership` INSERT could each run its AFTER trigger before the other's row was visible, leaving no `pmc` row for a valid holder, and installing the doors later repairs nothing | §A.2 the kernel read; §D 4d-iii; P29b/P42 | 4d-iii RE-PROJECTS `ProjectUserStanding` and `OrgUserAuthority` from the orgs truth under the org key, org by org, in the same transaction BEFORE installing the doors or dropping a reservation; the interleaving is barrier-tested and the repair asserted (the "under the org key" of this answer is superseded by #563's round 2: the repair is taken behind the table fence) |
 | 4 (P1) the authoritative 4d-i inventory named `DecisionConsultation.requestedByRole` alone while §A requires 4d-ii to write four columns and 4d-iii to seal them | §D 4d-i | all four nullable frozen columns and their DMMF-pinned metadata are in the 4d-i inventory |
 | 5 (P1) the frozen-delivery seal admitted `dispatch → noop` only with `cancelledAt` set in the same statement, refusing the relay's leased-cancel completion and its neutralization of a pending pre-intent event | §A.3 obligation 7 (the delivery seal); P37 | the seal admits exactly the THREE relay-owned transitions the delivered code performs: the same-statement mark, the completion of an already-marked row, and the retirement of a pending row whose event has no intent |
 
 **Review round 1 on #563 (head `6bf75a36`) — five findings (four P1, one
-P2): four folded on its ONE correction head, one DECLINED on the Board's
-recorded decision, none dropped.** Two are second-order consequences of
+P2): four folded on its ONE correction head `01706fe`, one DECLINED on the
+Board's recorded decision, none dropped.** Two are second-order consequences of
 earlier folds (the deferred notice FK without the id its writers must
 mint; the delivery seal's "never forbids a row" leaving an inactive
 consumer's planted row unjudged), two are checklist lines that lagged the
@@ -435,6 +437,15 @@ question the Board answered:
 | 3 (P1) the delivery seal never forbade a row, so a row planted for an INACTIVE consumer with the wrong action survived reactivation and misdirected the ordered cursor | §A.3 obligation 7 (the delivery seal); P37 | existence is required only for the active set, but `OutboxDelivery_t4d_bound` judges EVERY row's `deliveryAction` against its consumer's persisted rule, whatever the activation state |
 | 4 (P2) P41 named `consultations.service.ts`, which does not exist | §B P41 | P41 names `decisions.service.ts` `requestConsultation`/`respondToConsultation`, the delivered 4c commands |
 | 5 (P1) the 4d-ii checklist still said the consumer's `deliveryFor` copies `targetUserIds`, the process-local path the plan retired | §D 4d-ii | the checklist names the platform's `deliveryRowsFor` projection |
+
+**Review round 2 on #563 (head `01706fe`) — one finding (P1), carried
+here, none dropped.** It is a second-order consequence of #562's round-2
+fold: the re-projection that closes the drain window was itself
+serialized by the org key alone, which a direct SQL writer never takes:
+
+| finding | where it lands | the answer |
+|---|---|---|
+| 1 (P1) 4d-iii's re-projection ran before the doors were installed and held only `lockOrgStanding`, so a direct `Project` INSERT and a direct owner/admin `OrgMembership` INSERT could both commit AFTER the repair's snapshot and BEFORE the doors were installed, and the migration then committed without the `pmc` row a valid owner is owed | §A.2 the kernel read; §D 4d-iii; P42 | 4d-iii FENCES every writer of the three orgs tables FIRST — `LOCK TABLE "Project", "OrgMembership", "Membership" IN SHARE ROW EXCLUSIVE MODE`, taken before the snapshot and before any door, in that one order, held to commit — so every write that began before the fence has ended and is visible to the snapshot, no write can commit between the snapshot and the doors, and the first write after commit meets the installed doors; the migration takes NO org key (the fence subsumes it, and a key taken after the fence could deadlock against a writer holding the key and waiting on the fence); P42's arm starts a direct-SQL pair after the fence and observes it BLOCKED, the repair and the doors committing, the pair then committing through the doors with the `pmc` row present |
 
 **Docs-only.** No schema, no migration, no runtime code, no test change, no
 4d implementation. Contractor-capture units 1–6 and the saved UX and
@@ -1019,11 +1030,40 @@ no org-key door serializes a `Project` INSERT against an owner/admin
 `OrgMembership` INSERT, so each AFTER trigger can run before the other's
 uncommitted row is visible and both commit with no `pmc` row for a valid
 holder; 4d-iii therefore RE-PROJECTS `ProjectUserStanding` and
-`OrgUserAuthority` from the orgs truth under `lockOrgStanding`, org by org
-in ascending id, inside the same transaction and BEFORE it installs a
-door or drops a reservation — a verify-and-repair whose diff is recorded
-in the migration's closing report — and P42's arm drives that exact
-interleaving under the barrier during the window and asserts the repair. The kernel serves them through
+`OrgUserAuthority` from the orgs truth, org by org in ascending id, inside
+the same transaction and BEFORE it installs a door or drops a reservation
+— a verify-and-repair whose diff is recorded in the migration's closing
+report. **The repair is taken behind a table fence, not behind the org
+key** (#563's review round 2, finding 1: a repair serialized by
+`lockOrgStanding` alone excludes only the writers that take the key, and
+a direct SQL writer takes none — a `Project` INSERT and an owner/admin
+`OrgMembership` INSERT could both commit after the repair's snapshot and
+before the doors were installed, and the migration would commit without
+the `pmc` row a valid owner is owed): the FIRST statement of 4d-iii's
+transaction after its `SET LOCAL` gate is `LOCK TABLE "Project",
+"OrgMembership", "Membership" IN SHARE ROW EXCLUSIVE MODE` — the mode that
+conflicts with every row write from any writer, service or direct, and
+the mode the door installations themselves take — taken in that ONE
+order, before the snapshot and before any door, and held to commit. The
+lock request waits for every in-flight write of those tables to end, so
+every write that began before the fence is committed or rolled back and
+visible to the repair's snapshot; no write can commit between the
+snapshot and the doors; and the first write after the commit meets the
+installed doors. The migration takes NO org key — the fence subsumes it
+for the three tables, and a key taken after the fence could deadlock
+against a service writer that holds the key and is waiting on the fence
+(a writer holding the key simply waits, commits after the migration, and
+meets the doors with the key it already holds). The delivered writers
+write the three tables in the fence's order or touch one alone, so no
+delivered writer can hold a later table and wait for an earlier one; a
+direct writer that does is a deadlock PostgreSQL detects, and the
+re-runnable migration aborting there leaves every door intact. P42's arm
+drives the drain-window interleaving under the barrier and asserts the
+repair, and then starts a direct-SQL `Project` + owner/admin
+`OrgMembership` pair AFTER the fence, observes both BLOCKED
+(`pg_stat_activity.wait_event_type = 'Lock'`), lets the migration commit
+its repair and its doors, and asserts the pair then commits through the
+doors with the `pmc` row present. The kernel serves them through
 `platform_user_holds_role(project, user, role)`,
 `platform_user_orchestration_authority(project, user)` (a `pmc` or
 `architect` row), `platform_user_display_name(userId)`,
@@ -3122,7 +3162,7 @@ today's behaviour lives.
 | P39 | the delivered orphan guard EXTENDED: removing or re-roling the NAMED holder, or the last active member of a ROLE designation, of an `awaiting_countersign` decision refused at BOTH layers (409 through `holdsOpenDecisions`; the DB guard on the hostile direct write); removing the LAST ARCHITECT NOT refused — it deactivates the chain (P29b) — INCLUDING when that architect is the named holder or the last member of the architect ROLE designation an awaiting decision names (the one named exemption), while a named holder who is an architect but not the last is refused naming the pending countersign, and a `pending`/`change` decision designated to the role still refuses removing its last architect | `holdsOpenDecisions` + `phase6_t4b2_membership_guard`, open set widened |
 | P40 | the send boundary per family (§A.2): the claim-time re-target (the `deciderPushTarget` read taking the decision row lock); the invalidation-vs-claim barrier in both orderings for the decider, forward, countersign (the frozen-set arms), user-targeted and consultation families; the direct-transition arm and the fan-out arm; the archive arm — the delivery dropped with the mark at the pre-send barrier and NOTHING re-notified on restoration, the awaiting decision served to the architect's next read; the responded family's target-aware re-judge; the withdraw-vs-respond barrier in both orderings; the delivery row after a partial fan-out `succeeded`/`dispatch` with NO mark, marked only when every resolved recipient is stale; the consultee push surviving each; the residual stated per family | the consumer's per-recipient hook; the cancellation inventory |
 | P41 | the delivered 4c lock-order + terminal-state probe EXTENDED to the transitions 4d adds that CLOSE the consultation-open set: `consultation.request` and `consultation.respond` vs the COUNTERSIGN, vs the `completed` stranded resolution, and vs the standard `withdrawChange`, each in BOTH orderings under the canonical lock order, asserting the TERMINAL invariant directly — consultation-first leaves the historical consultation/response standing and the finalizer commits `approved` beside it; finalize-first returns 409 with NO consultation row, NO response row and NO `consultation_*` effect; the `returned` resolution and the countersign REJECTION land `change`, which stays in the open set, so the same probe asserts the consultation ACCEPTED after them; no deadlock abort in either ordering | `decisions.service.ts` `requestConsultation` / `respondToConsultation` (the delivered 4c commands — there is no `consultations.service.ts`); `decisions.countersign`, `resolveStrandedCountersign`, `withdrawChange` |
-| P42 | the finality candidate key over the ACTUAL provenance columns: provenance onto an unfinalized revision unrepresentable (both spec tables); `finalized → false` under reference refused by the FK; the additive backfill leaves every legacy revision `finalized = true` and every legacy spec row `revisionFinalized = true`, proven over the legacy fixture in `upgrade-proof.sh`; the DEFAULTS hold through the drain — a revision, a material spec and a labour spec inserted WITHOUT the new columns all succeed on the 4d-i schema and land `true`, a `ChangeRequest` inserted WITHOUT `projectId` is filled from its decision and one naming another project's id is refused by the composite FK, a `Notification` inserted WITHOUT `eventId` succeeds; 4d-iii's drop of the defaults probed by the same inserts then failing AND by a current-version provenance write through the SHIPPED writers — create, revise AND cancel, material and labour — succeeding with `revisionFinalized = true` from the widened `approvedRef` (RED at base); 4d-iii's trailing seals — a NULL-`sourceCommandId` standard request refused while the legacy NULL rows survive; a decision notification without `eventId` or without `kind` refused while legacy rows survive; a new `DecisionApprovalRevision` without `approvedByName` or `approvedByRole` refused while the legacy NULL rows survive (a receipt-backed no-chain approval after the drain cannot lose its attribution); the retired catalog version's intent refused; **P42b** with P31b (§B.4); the drain-window interleaving — a `Project` INSERT and an owner/admin `OrgMembership` INSERT under the barrier in both orderings during the 4d-i → 4d-iii window leaving no `pmc` row, 4d-iii's re-projection restoring it under the org key before any door installs; 4d-iii over a `decisions.effects` an operator activated then deactivated — the retirement re-activating at the next sequence and verifying the head, a retirement whose verification fails leaving every door installed, a replay over an active head appending nothing | `DecisionApprovalRevision_provenance_target_key` widened + the two spec FKs re-targeted; the trailing seals |
+| P42 | the finality candidate key over the ACTUAL provenance columns: provenance onto an unfinalized revision unrepresentable (both spec tables); `finalized → false` under reference refused by the FK; the additive backfill leaves every legacy revision `finalized = true` and every legacy spec row `revisionFinalized = true`, proven over the legacy fixture in `upgrade-proof.sh`; the DEFAULTS hold through the drain — a revision, a material spec and a labour spec inserted WITHOUT the new columns all succeed on the 4d-i schema and land `true`, a `ChangeRequest` inserted WITHOUT `projectId` is filled from its decision and one naming another project's id is refused by the composite FK, a `Notification` inserted WITHOUT `eventId` succeeds; 4d-iii's drop of the defaults probed by the same inserts then failing AND by a current-version provenance write through the SHIPPED writers — create, revise AND cancel, material and labour — succeeding with `revisionFinalized = true` from the widened `approvedRef` (RED at base); 4d-iii's trailing seals — a NULL-`sourceCommandId` standard request refused while the legacy NULL rows survive; a decision notification without `eventId` or without `kind` refused while legacy rows survive; a new `DecisionApprovalRevision` without `approvedByName` or `approvedByRole` refused while the legacy NULL rows survive (a receipt-backed no-chain approval after the drain cannot lose its attribution); the retired catalog version's intent refused; **P42b** with P31b (§B.4); the drain-window interleaving — a `Project` INSERT and an owner/admin `OrgMembership` INSERT under the barrier in both orderings during the 4d-i → 4d-iii window leaving no `pmc` row, 4d-iii's re-projection restoring it behind the table fence before any door installs, and a direct-SQL `Project` + owner/admin `OrgMembership` pair started AFTER the fence observed BLOCKED in `pg_stat_activity`, the migration committing its repair and its doors, the pair then committing through the doors with the `pmc` row present (the pair started BEFORE the fence delays the fence until it ends and IS repaired); 4d-iii over a `decisions.effects` an operator activated then deactivated — the retirement re-activating at the next sequence and verifying the head, a retirement whose verification fails leaving every door installed, a replay over an active head appending nothing | `DecisionApprovalRevision_provenance_target_key` widened + the two spec FKs re-targeted; the trailing seals |
 
 ## §D — Staging, review unit, and order
 
@@ -3586,7 +3626,16 @@ today's behaviour lives.
     of the human requirement is the user's separate decision, never
     inferred from a review finding, a coordinator note or this plan.
 
-  - **4d-iii, the reservation retirement**: a migration-only unit that drops
+  - **4d-iii, the reservation retirement**: a migration-only unit whose
+    transaction, after its `SET LOCAL` gate, FIRST takes `LOCK TABLE
+    "Project", "OrgMembership", "Membership" IN SHARE ROW EXCLUSIVE MODE`
+    in that one order and holds it to commit — the fence behind which
+    every write of those tables from any writer, service or direct, ends
+    before the snapshot and none commits before the doors (#563's review
+    round 2, finding 1) — and takes NO org key; THEN re-projects
+    `ProjectUserStanding` and `OrgUserAuthority` from the orgs truth, org
+    by org in ascending id, recording the diff in its closing report
+    (#562's review round 2, finding 3); and only then drops
     ALL FIVE reservation doors with their shared function, drops the two
     kept finality defaults (`finalized`, `revisionFinalized` — after the
     drain only writers that state the pin remain), installs the TRAILING
