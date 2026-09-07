@@ -68,7 +68,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 2,882 lines against #552's 3,495.
+live standing). The document is 3,015 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -171,6 +171,23 @@ consultation requester's role is FROZEN on the fact — 4d-i's nullable
 seal's requester arm and read by the `respond` emitter — rather than resolved at response time.
 Each is a second-order consequence of a round-1 fold; none is a content question the boundary
 answers. A second finding-bearing head means close-and-replace under the standing authorization,
+no cap.
+
+**Review round 1 on this PR (head `a07f78b7`): seven findings, all P1, folded on its ONE
+correction head.** The `renotified` converse branch binds to its CROSSING (`crossingEventId` +
+`transitionId` verified through the new kernel read `platform_event`, unique per decision and
+crossing, the same push-shape check as the provisional approve); the standard request closure
+and the `change → approved` restoration are sealed as one bundle in both directions; a kinded
+notice binds only an event ABOUT its decision (`Notification_t4d_binding` INSERT arm on
+`entityType`/`entityId`); a FIFTH reservation door, `User_t4d_architect_reserved`, installed
+under a `User` table lock before the audit; the kinded feed reads each notice and its decision's
+status in ONE statement; the platform-owned `DomainEvent_t4d_deliveries` seal requires every
+registered consumer's delivery row at commit against a PERSISTED `dispatchRule`; and the drain
+gate gains the trusted autonomous evidence the runner can verify fail-closed (the `ReleaseLease`
+register from 4d-ii; `rollout:drain-evidence` reading the deploy platform's running containers
+for the processes that predate it) while the Board-decided operator attestation STANDS until the
+Board lifts it — raised on #482 as the Board's question, not folded as if it were the plan's to
+decide. A second finding-bearing head means close-and-replace under the standing authorization,
 no cap.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
