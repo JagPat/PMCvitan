@@ -16,24 +16,41 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: f5da6654
-open_pr: 554
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-07
 ```
 
-### The 4d PLAN unit — reopened as the NARROWED replacement of #552, docs-only
+### The 4d PLAN unit — the NARROWED plan, replacing #554 (which replaced #552), docs-only
 
 **What this PR is.** The docs-only 4d plan unit the merged 4b plan's §E order names as the first
-4d stop, now `docs/superpowers/plans/2026-09-07-decision-workflow-4d.md`: the §C orchestration
+4d stop, `docs/superpowers/plans/2026-09-07-decision-workflow-4d.md`: the §C orchestration
 design at PR #340 head `6a53aae` carried in substance, the §D obligations 4–6 elaborated, the
 probe table P28–P42, and the FOUR-PR staging (the dark migration 4d-i, the service/role/UI unit
-4d-ii, an operator drain attestation, the reservation retirement 4d-iii). It replaces #552
-(`Replaces: #552`), the fifteenth replacement of one unit — #537 through #552, sixteen PRs,
-thirty-two Codex rounds, one hundred and sixty-eight findings, each PR closed at its second
-finding-bearing head — opened from `main` `d7eed4ce` under the standing continuation
-authorization (#482 comment 5563944111, 2026-09-07: no PR-number cap; close-and-replace
-continues; "reduce the review unit at safe dependency seams; preserve the obligations ledger").
+4d-ii, an operator drain attestation, the reservation retirement 4d-iii). It replaces #554
+(`Replaces: #554`) — the narrowed plan's first outing, closed at its second finding-bearing
+head (`cbfdaacb` seven findings folded on `82a497a5`, which drew seven more) — which replaced
+#552, the fifteenth replacement of the ORIGINAL unit (#537 through #552, sixteen PRs, thirty-two
+Codex rounds, one hundred and sixty-eight findings). Opened from `main` `d7eed4ce` under the
+standing continuation authorization (#482 comment 5563944111, 2026-09-07: no PR-number cap;
+close-and-replace continues; "reduce the review unit at safe dependency seams; preserve the
+obligations ledger").
+
+**Review round 2 on #554 (head `82a497a5`): seven findings, all P1, carried here.** The stream
+counter's transition is sealed one-to-one with the events (`ProjectEventStream_t4d_allocation` +
+a deferred allocation pairing); the frozen-audience push is bound to the transition's owed shape
+(the catalog's constant body, `targetUserIds` equal to the set the orgs primitive
+`phase6_role_holder_user_ids` resolves at commit); the sanctioned resets in `prisma/seed.ts` and
+`test/integration/fixtures.ts` gain the `DecisionEvent` append-only seal by name; the `Membership`
+standing trigger is ORGS-owned and writes through a generic platform primitive
+`platform_role_standing_apply`; the feed row's binding is frozen and an owed notice cannot be
+deleted (the withdraw retires kind-less rows only); the audit row's whole attribution and named
+payload fields correspond to the fact; and every kinded feed row is filtered through
+`decisionVisibleToViewer` before rendering. The plan's §A.3 now STATES the boundary these rounds
+kept probing: a seal proves what happened is recorded coherently on every named field; free
+content written by a holder of the application's own database role is trusted as every delivered
+4a–4c surface trusts it, and 4d narrows that trust wherever a reader can derive from a fact.
 
 **What is different, and why it is not the same plan re-rolled.** Rounds 19–32 — fourteen rounds,
 sixty-one findings — all landed on one round-19 commitment: that the database ADMITS a hand-run
