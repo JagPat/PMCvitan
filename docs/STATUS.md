@@ -67,7 +67,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 2,523 lines against #552's 3,495.
+live standing). The document is 2,616 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -110,6 +110,20 @@ bypasses named — under a tripwire that enumerates statements rather than bypas
 unrepresentable. None is a content question the boundary answers; each is the rule one instance
 short. A second finding-bearing head means close-and-replace under the standing authorization,
 no cap.
+
+**Review round 1 on this PR (head `bb307c74`): three findings, all P1, folded on its ONE
+correction head.** Every `Membership` writer outside `members.service` is enumerated (the sign-in
+provisioning, project creation, the seed, `ensure-accounts`) and `ensure-accounts` validates its
+`ACCOUNTS_JSON` before the first write, refusing an `architect` entry with no partial write;
+the orgs-owned `Membership_t4d_readiness` trigger rides `phase6_try_readiness` on every
+`Membership` row write of every role, so every standing writer serializes with every
+readiness-locked command and a frozen push audience equals the set at commit by construction
+(the four writers outside `members.service` take `lockProjectReadiness` in 4d-ii; the
+drain-window residual is stated); and 4d-i is MIGRATION-ONLY — `prisma/`, `test/`, `scripts/`,
+no `src/` file — with the emitter plumbing (`emitEvent`'s envelope write, the widened
+`EventActor`, the full `AttributionActor`, the identity contract) moved to 4d-ii where the
+transitions that need it ship. A second finding-bearing head means close-and-replace under the
+standing authorization, no cap.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
