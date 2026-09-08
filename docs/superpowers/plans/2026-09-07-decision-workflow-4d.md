@@ -45,17 +45,20 @@ remains the user's decision to give in their own voice; the plan carries
 the default until then. The lineage tables below keep every earlier
 decline and both reverted folds as history.
 
-This document REPLACES PR #572 in content and declares `Replaces: #568`
-in the ledger: #572 closed at the limit BEFORE the orchestrator evaluated its
-second finding-bearing head (CI on that head never reached the gate), so it
-carries no `review-replacement-required` label and holds no ledger
-obligation, while #568 — labelled by the orchestrator before it closed — is
-the obligation #572 claimed as its unmerged replacement and never
-discharged; a labelled unit closed at the limit stays a pending obligation
-until a MERGED unit names it, one merge discharging one — the accepted gap
-of `docs/reviews/replacement-lineage-repair.md` (#567's obligation was
-discharged by #569's merge and #559's by #570's; #520–#566 were unlabelled
-by hand on 2026-09-08 per #569's record, not by this lineage).
+This document is carried on PR #572 itself, FIXED FORWARD on its own branch:
+the Board decided it (#482 comment 5585712971, 2026-09-08 — fix-forward on
+#572, no replacement for vehicle reasons alone) and the forced
+close-and-replace at the second finding-bearing head was retired on `main`
+by #578 (`f050bcd`). This head was first opened as the replacement #575
+(`Replaces: #568`, from `main` `c835168`); a coordinator closed #575 back
+into #572 at 11:28 UTC and the commits stayed on the branch. The ledger line
+is `Replaces: none`: the `review-replacement-required` labels on #559, #567
+and #568 were removed on the Board's instruction at 11:36 UTC (#572 comment
+5584522420; #567's obligation had already been discharged by #569's merge
+and #559's by #570's; #520–#566 were unlabelled by hand at 06:05 UTC per
+#569's record), an empty ledger admits `none` and refuses `#568`, and #578
+retired the rule that minted those labels. The content lineage from #568 is
+kept below unchanged.
 #572 was the FIFTEENTH outing of the NARROWED plan: it drew two findings on
 its first head (`8b50b52`: the standard writer's frozen pair, the unkeyed
 `requestChange`), folded on its one correction `e2fd243e` by a second
