@@ -22,7 +22,7 @@ blocking_directive: none
 updated: 2026-09-08
 ```
 
-### The 4d PLAN unit — the NARROWED plan, replacing #567 (which replaced #566, #565, #564, #563, #562, #561, #560, #558, #557, #556, #555, #554 and #552), docs-only
+### The 4d PLAN unit — the NARROWED plan, carried on #572 and fixed forward, docs-only
 
 **What this PR is.** The docs-only 4d plan unit the merged 4b plan's §E order names as the first
 4d stop, `docs/superpowers/plans/2026-09-07-decision-workflow-4d.md`: the §C orchestration
@@ -32,6 +32,8 @@ probe table P28–P42, and the FIVE-PR staging (the dark migration 4d-i, the dar
 comment 5569586836) RESTORED: the lifted-gate fold of #568's head `b0d5399` rested on an in-session
 selection GitHub Watch records as its own keystroke (#482 comment 5581275205), so it is REVERSED
 here and `AGENTS.md` is left exactly as `main` carries it — the reservation retirement 4d-iii).
+**Its ledger line is `Replaces: none`, and the replacement chain recited below is HISTORY, not a live obligation.** The close-and-replace rule that minted that chain is retired on `main` (#578 at `f050bcd`); the #559/#567/#568 labels were removed on the Board's instruction at 11:36 UTC on 2026-09-08. Nothing in this entry asks a runner to open, claim or carry a replacement — the chain is recorded so the review history stays readable, and reading it as current work is the mistake this paragraph exists to prevent (#572 review round 5).
+
 It is carried on #572 itself, FIXED FORWARD (Board decision, #482 comment 5585712971; the forced
 close-and-replace retired on `main` by #578 at `f050bcd`) — the #575 replacement that first carried
 this head was closed back into #572 by a coordinator at 11:28 UTC on 2026-09-08, its commits kept;
