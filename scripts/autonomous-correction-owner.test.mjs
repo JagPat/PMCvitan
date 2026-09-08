@@ -414,7 +414,8 @@ test('O7: the safety boundaries this unit must not move are unchanged', () => {
     'upgrade-proof',
   ]);
   const gate = readFileSync(GATE, 'utf8');
-  assert.match(gate, /const STATUS_CONTEXT = 'codex-current-head';/u);
+  assert.match(gate, /STATUS_CONTEXT/u);
+  assert.match(readFileSync(new URL('./review-policy.mjs', import.meta.url), 'utf8'), /STATUS_CONTEXT = 'codex-current-head'/u);
 
   // Routing is a pure read of the PR body: it publishes no status, moves no
   // draft, and merges nothing. Anything it touched would be a boundary change.
@@ -439,13 +440,15 @@ test('O8: the PR template and the loop documentation carry the declaration', asy
   const template = read('../.github/pull_request_template.md');
   assert.match(template, /<!-- correction-owner: claude -->/u);
   for (const owner of CORRECTION_OWNERS) {
-    assert.match(template, new RegExp(`correction-owner: ${owner}`, 'u'));
+    assert.match(read('../docs/POLICY.md'), new RegExp(`correction-owner: ${owner}`, 'u'));
+    assert.match(template, /POLICY\.md/u);
   }
 
   for (const document of ['../docs/AUTONOMOUS_LOOP.md', '../AGENTS.md', '../CLAUDE.md']) {
-    assert.match(read(document), /correction-owner/u, `${document} must state the requirement`);
+    assert.match(read(document), /POLICY\.md/u, `${document} points to the canonical requirement`);
   }
-  assert.match(read('../docs/AUTONOMOUS_LOOP.md'), /correction_stalled/u);
+  assert.match(read('../docs/POLICY.md'), /correction-owner/u);
+  assert.match(read('../docs/POLICY.md'), /correction_stalled/u);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -687,10 +690,9 @@ test('C9: the replacement handoff names the declared owner, not Claude', async (
   // those two paragraphs instruct different agents to do the same thing, and
   // they do it on the replacement path — the one place the loop is already
   // fragile.
-  const agents = readFileSync(new URL('../AGENTS.md', import.meta.url), 'utf8');
-  const handoff = agents.slice(agents.indexOf('## Review → fix handoff'));
-  const secondHead = handoff.slice(handoff.indexOf('On every finding-bearing head'));
-  const directive = secondHead.slice(0, secondHead.indexOf('\n- '));
+  const contract = readFileSync(new URL('../docs/POLICY.md', import.meta.url), 'utf8');
+  const directive = contract.slice(contract.indexOf('A replacement is exceptional:'),
+    contract.indexOf('Keep one concern per PR.'));
 
   // The property is who is INSTRUCTED, not whether a name appears: the directive
   // may — and should — say that Claude must not do it on another owner's behalf.

@@ -805,22 +805,24 @@ test('agent guidance and the PR template share the executable policy vocabulary'
     readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'),
   ]);
 
-  for (const text of [agents, claude, loop]) {
-    assert.match(text, /20\s+files/u);
-    assert.match(text, /1,500\s+changed lines/u);
-    assert.match(text, /fix forward/u);
-    assert.doesNotMatch(text, /Review-Convergence: complete/u);
+  for (const entrypoint of [agents, claude, loop]) {
+    assert.match(entrypoint, /POLICY\.md/u);
   }
+  const contract = await readFile(new URL('../docs/POLICY.md', import.meta.url), 'utf8');
+  const policy = await import('./review-policy.mjs');
+  assert.ok(contract.includes(`${policy.STANDARD_MAX_FILES} files`));
+  assert.ok(contract.includes(`${policy.STANDARD_MAX_CHANGED_LINES.toLocaleString('en-US')} changed`));
+  assert.match(contract, /fix forward/u);
   assert.match(template, /<!-- review-size: standard -->/u);
-  assert.match(template, /<!-- review-size: justified-large -->/u);
+  assert.match(contract, /<!-- review-size: justified-large -->/u);
   assert.match(template, /<!-- migration-scope: separated -->/u);
-  assert.match(template, /<!-- migration-scope: inseparable -->/u);
+  assert.match(contract, /<!-- migration-scope: inseparable -->/u);
   assert.match(template, /Replaces: none/u);
   for (const key of PRE_REVIEW_KEYS) {
     assert.match(template, new RegExp(key, 'u'));
   }
-  assert.match(agents, /authoritative PR head/u);
-  assert.match(agents, /synthetic merge/u);
+  assert.match(contract, /authoritative PR head/u);
+  assert.match(contract, /synthetic merge/u);
   for (const invariant of REQUIRED_INVARIANTS) {
     assert.match(template, new RegExp(invariant, 'u'));
   }

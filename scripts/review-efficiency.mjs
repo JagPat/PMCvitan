@@ -1,3 +1,27 @@
+import {
+  REVIEW_SCOPE_ENFORCE_AFTER_PR,
+  PRE_REVIEW_ENFORCE_AFTER_PR,
+  STANDARD_MAX_FILES,
+  STANDARD_MAX_CHANGED_LINES,
+  REPLACEMENT_REQUIRED_LABEL,
+  REQUIRED_PRE_REVIEW_CHECKS,
+  REQUIRED_INVARIANTS,
+  STATUS_DOCUMENT,
+  CODEX_LOGIN,
+  isRetryableReviewFailureDescription,
+} from './review-policy.mjs';
+export {
+  REVIEW_SCOPE_ENFORCE_AFTER_PR,
+  PRE_REVIEW_ENFORCE_AFTER_PR,
+  STANDARD_MAX_FILES,
+  STANDARD_MAX_CHANGED_LINES,
+  REPLACEMENT_REQUIRED_LABEL,
+  REQUIRED_PRE_REVIEW_CHECKS,
+  REQUIRED_INVARIANTS,
+  STATUS_DOCUMENT,
+  isRetryableReviewFailureDescription,
+} from './review-policy.mjs';
+
 // The deferral-phase check shares docs/STATUS.md's own state vocabulary rather than keeping
 // a second copy of it — see phaseHasOpenWork.
 import { OPEN_TASK_STATES } from './autonomous-status-state.mjs';
@@ -7,22 +31,9 @@ import { LINEAGE_BASE_REF, isLineageBase } from './lineage-policy.mjs';
 // the cheap gate and the merge boundary cannot disagree about who owns a fix.
 import { correctionOwnerProblem } from './correction-owner.mjs';
 
-export const REVIEW_SCOPE_ENFORCE_AFTER_PR = 246;
-export const PRE_REVIEW_ENFORCE_AFTER_PR = 345;
-export const STANDARD_MAX_FILES = 20;
-export const STANDARD_MAX_CHANGED_LINES = 1_500;
-export const REPLACEMENT_REQUIRED_LABEL = 'review-replacement-required';
 // Legacy convergence packets retain their parsing threshold; the live gate
 // never closes or blocks a PR based on the number of reviewed heads.
 export const CONVERGENCE_AFTER_FINDING_HEADS = 2;
-
-export const REQUIRED_PRE_REVIEW_CHECKS = [
-  'concurrency-serialization',
-  'old-release-migration-compatibility',
-  'trigger-alternate-writers',
-  'authorization-tenancy',
-  'ci-reproduce-first',
-];
 
 // How many finding-bearing heads a DOCS-ONLY review may take before the still-open
 // questions must be handed to probes.
@@ -48,25 +59,12 @@ export const REQUIRED_PRE_REVIEW_CHECKS = [
 // one place a verification can exist.
 export const PLAN_REVIEW_ROUND_CAP = 3;
 
-export const REQUIRED_INVARIANTS = [
-  'authorization-tenancy',
-  'civil-time-lifecycle',
-  'concurrency-idempotency',
-  'data-integrity-conservation',
-  'offline-reconciliation',
-  'ui-server-parity',
-];
-
-const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
 const LARGE_MARKER = '<!-- review-size: justified-large -->';
 const INSEPARABLE_MIGRATION_MARKER = '<!-- migration-scope: inseparable -->';
 const CONVERGENCE_PACKET = /^docs\/reviews\/[^/]*convergence[^/]*\.md$/iu;
 const MIGRATION_FILE = /^apps\/api\/prisma\/migrations\/[^/]+\/migration\.sql$/u;
 const SERVICE_OR_UI_FILE = /^(?:apps\/api\/src|apps\/web\/src|packages\/shared\/src)\//u;
 const REPLACES_DECLARATION = /^[\t ]*replaces:[\t ]*(none|#\d+)[\t ]*$/gimu;
-// The state file `deferralPhases` reads. Named here because the gate must also notice when a
-// PR CHANGES it — see the phase check in assessConvergence.
-export const STATUS_DOCUMENT = 'docs/STATUS.md';
 
 function finiteCount(value) {
   const count = Number(value);
@@ -442,31 +440,6 @@ export function findingHeadSeverity(comments, reviews = []) {
     else severity.set(head, 'minor');
   }
   return severity;
-}
-
-// The review gate's own retryable terminal failures, by the description it
-// publishes. ONE definition, because two consumers read it: the gate decides
-// whether to re-dispatch, and the correction watchdog decides whether anyone
-// owes a correction at all. An earlier draft recognised only the timeout, so the
-// other three drew an actionable "push a new head" for a failure a new head
-// cannot fix — it would invalidate the exact head the gate is trying to recover.
-// The review gate's own retryable terminal failures, by the description it
-// publishes. ONE definition, because two consumers read it: the gate decides
-// whether to re-dispatch, and the correction watchdog decides whether anyone
-// owes a correction at all — for these, nobody does, so it opens no lease.
-const RETRYABLE_REVIEW_FAILURES = [
-  'Codex review timed out',
-  'Codex evidence changed during final verification',
-  'review: Required CI changed during current-head Codex review',
-  'review: bootstrap exact-head review requested',
-];
-
-export function isRetryableReviewFailureDescription(description) {
-  const text = String(description ?? '');
-  // Re-evaluate failures written by the retired round-reset gate. This does
-  // not clear a status: the ordinary CI and current-head review guards run again.
-  return /^review: \d+ finding-bearing heads reached the review-round limit\b/u.test(text)
-    || RETRYABLE_REVIEW_FAILURES.some((marker) => text.includes(marker));
 }
 
 export function codexFindingHeads(comments, reviews = []) {

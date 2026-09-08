@@ -1,3 +1,5 @@
+import { STATUS_CONTEXT } from './review-policy.mjs';
+
 export { isAutonomousPullRequest } from './runner-continuation.mjs';
 
 import { readFile } from 'node:fs/promises';
@@ -381,7 +383,7 @@ async function handOffMergedPullRequest(
 
   const combinedStatus = await client.combinedStatus(pullRequest.head.sha);
   const exactHeadStatus = combinedStatus.statuses?.find(
-    (status) => status.context === 'codex-current-head',
+    (status) => status.context === STATUS_CONTEXT,
   );
   if (exactHeadStatus?.state !== 'success') {
     console.warn(
