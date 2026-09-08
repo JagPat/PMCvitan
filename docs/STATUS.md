@@ -584,8 +584,9 @@ also committed a machine-local `node_modules` symlink by mistake (a worktree bui
 
 **Review round 2 on #572 (head `e2fd243e`): two findings, both P1, carried here, none dropped.**
 (1) The `node_modules` symlink — a packaging error on the tree, not a plan defect: gone from this
-replacement's tree (`git ls-files` shows no such path); the one-line `.gitignore` prevention is
-deliberately kept OUT of this docs-only unit and queued as its own task. (2) The §A.3 fact-table
+replacement's tree (`git ls-files` shows no such path); the one-line `.gitignore` prevention
+(`node_modules` without the slash) landed on `e3e2828` by the same session and is carried here as
+the unit's single non-documentation line. (2) The §A.3 fact-table
 row for `ChangeRequest` gave actor standing only to an architect under a chain or the resolving
 PMC and named only an awaiting subject, although the row governs `origin = 'standard'` too; the
 delivered `decision.change` policy admits `pmc`, `client`, `contractor`, `engineer` and
