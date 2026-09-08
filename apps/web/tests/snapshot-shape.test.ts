@@ -23,14 +23,17 @@ import apiGatewaySource from '@/data/apiGateway.ts?raw';
  * When a task adds/drops a snapshot key, update SNAPSHOT_KEYS here in the same PR.
  */
 
-// The 16 top-level keys of the project snapshot at Task 1 (SnapshotDto,
-// apps/api/src/snapshot/types.ts:291-318; ApiSnapshot, apiGateway.ts:40-77).
+// The top-level keys of the project snapshot (SnapshotDto, apps/api/src/snapshot/types.ts;
+// ApiSnapshot, apiGateway.ts). `openChecklists` joined them so the DEFAULT read path — the
+// snapshot, with `VITE_INSPECTIONS_READ` unset — serves EVERY issued checklist rather than the
+// one the field view happens to open.
 const SNAPSHOT_KEYS = [
   'project',
   'decisions',
   'activities',
   'placedInspections',
   'checklist',
+  'openChecklists',
   'reviews',
   'review',
   'reinspectionCreated',

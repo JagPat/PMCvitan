@@ -86,6 +86,10 @@ export interface ApiSnapshot {
   /** inspections placed on the tree — Site Map's "inspections here" (pmc/engineer only) */
   placedInspections: PlacedInspection[];
   checklist: Checklist | null;
+  /** EVERY issued, unsubmitted checklist. Optional so a client built after this change still reads a
+   *  snapshot served before it (the store falls back to the single `checklist`) rather than blanking
+   *  the outstanding list. */
+  openChecklists?: Checklist[];
   reviews: Review[];
   review: Review | null; // deprecated (first pending) — back-compat; use `reviews`
   reinspectionCreated: boolean;

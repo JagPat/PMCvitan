@@ -1,4 +1,5 @@
 import { useRef, type CSSProperties } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore, checklistFrozen } from '@/store/store';
 import { EmptyState, Eyebrow, StatTile, Button, LocationContext, EditState } from '@/components';
 import { Camera } from '@/lib/icons';
@@ -24,6 +25,11 @@ function toggleStyle(active: boolean, solid: string, text: string): CSSPropertie
 
 export function EngineerChecklistScreen() {
   const checklist = useStore((s) => s.checklist);
+  // EVERY checklist issued to this site, so a second one is work the engineer can actually open
+  // rather than a count they can only read. `checklist` is one OF these — the picker below is how
+  // they move the edit slot between them.
+  const openChecklists = useStore(useShallow((s) => s.openChecklists));
+  const selectChecklist = useStore((s) => s.selectChecklist);
   // gate round 8: once a submit is dispatched (submitting / queued) or the server
   // confirms it submitted, the checklist is FROZEN — every input is read-only.
   const frozen = useStore((s) => checklistFrozen(s));
@@ -91,12 +97,49 @@ export function EngineerChecklistScreen() {
       <div className={styles.mobileScreen} style={{ flex: 1, paddingBottom: 20 }}>
         <div style={{ padding: '10px 0 14px' }}>
           <Eyebrow size={9}>TODAY'S INSPECTION</Eyebrow>
-          <div style={{ fontWeight: 700, fontSize: 21, marginTop: 4, lineHeight: 1.2 }}>{checklist.title}</div>
+          <div data-testid="checklist-title" style={{ fontWeight: 700, fontSize: 21, marginTop: 4, lineHeight: 1.2 }}>{checklist.title}</div>
           {/* WHERE this check is carried out — the filed trail, tappable back to the Site Map. */}
           <div style={{ marginTop: 4 }}>
             <LocationContext nodeId={checklist.nodeId} fallback={checklist.zone} compact testId="checklist-place" />
           </div>
           <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{checklist.date}</div>
+          {/* More than one checklist is out on this site. Before this, the engineer saw only the
+              oldest and the rest were invisible work — so the picker is the whole point of the
+              list, not decoration. Unsubmitted marks on the one they leave are kept, so moving
+              between them costs nothing. */}
+          {openChecklists.length > 1 && (
+            <div data-testid="checklist-picker" style={{ marginTop: 12 }}>
+              <Eyebrow size={9}>{openChecklists.length} CHECKLISTS OUT — TAP TO SWITCH</Eyebrow>
+              <div style={{ display: 'flex', gap: 7, marginTop: 7, flexWrap: 'wrap' }}>
+                {openChecklists.map((c) => {
+                  const active = c.id === checklist.id;
+                  return (
+                    <button
+                      key={c.id}
+                      onClick={() => selectChecklist(c.id)}
+                      aria-current={active ? 'true' : undefined}
+                      data-testid={`checklist-tab-${c.id}`}
+                      style={{
+                        padding: '7px 11px',
+                        borderRadius: 9,
+                        fontFamily: 'var(--font-sans)',
+                        fontWeight: 600,
+                        fontSize: 12,
+                        textAlign: 'left',
+                        cursor: active ? 'default' : 'pointer',
+                        border: active ? '1px solid var(--ink, #23211c)' : '1px solid rgba(35,33,28,.15)',
+                        background: active ? 'var(--ink, #23211c)' : '#fff',
+                        color: active ? '#fff' : 'var(--muted)',
+                      }}
+                    >
+                      {c.title}
+                      <span style={{ display: 'block', fontWeight: 500, fontSize: 11, opacity: 0.8 }}>{c.zone}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <StatTile label="DONE" value={`${doneCount}/${checklist.items.length}`} />
             <StatTile label="PHOTOS" value={photoCount} />

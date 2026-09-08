@@ -1295,4 +1295,53 @@ describe('replay lifecycle', () => {
     expect(await getEvidence('anon', 'ambli', 'k-del')).toBeNull();
     expect(s().failedEvidence).toHaveLength(0);
   });
+
+  it('a checklist switch mid-write leaves the thumbnail on the checklist it was captured on', async () => {
+    // The offline arm writes its optimistic thumbnail AFTER awaiting the durable write, and
+    // `evidenceContextStillCurrent` guards the SCOPE — project + generation — which switching
+    // between two checklists of the SAME project does not change. Without the identity check the
+    // mirror lands on whatever checklist now occupies the edit slot, at the same index, showing one
+    // inspection's photo under another. The durable row is correct either way: its `meta` names the
+    // captured inspection and item.
+    s()._setGateway({ project: 'ambli', uploadMedia: vi.fn() } as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    seedChecklist();
+    const captured = s().checklist!;
+    const other: Checklist = {
+      id: 'INSP-91', title: 'Other check', zone: 'Basement', date: '03 Jul 2026', submitted: false,
+      items: [
+        { id: 'other-1', name: 'Slope', state: null, photos: 0, note: '' },
+        { id: 'other-2', name: 'Seal', state: null, photos: 0, note: '' },
+      ],
+    };
+    useStore.setState((st) => { st.openChecklists = [captured, other]; });
+
+    const evidenceStore = await import('@/data/evidenceStore');
+    const realPut = evidenceStore.putEvidence;
+    let release!: (v: unknown) => void;
+    const held = new Promise((r) => (release = r));
+    vi.spyOn(evidenceStore, 'putEvidence').mockImplementationOnce(async (entry) => {
+      await held; // the durable write is IN FLIGHT while the engineer switches checklists
+      return realPut(entry);
+    });
+
+    const capture = s().addChecklistEvidence(0, PX); // parks on the held write
+    s().selectChecklist('INSP-91');                  // same project, same generation
+    expect(s().checklist?.id).toBe('INSP-91');
+    release(null);
+    await capture;
+
+    // the OTHER checklist is untouched — no borrowed photo, no borrowed thumbnail
+    expect(s().checklist?.id).toBe('INSP-91');
+    expect(s().checklist?.items[0].photos).toBe(0);
+    expect(s().checklist?.items[0].evidence ?? []).toEqual([]);
+
+    // the durable row was still written, against the inspection it was captured on
+    const rows = await listEvidence('anon', 'ambli');
+    expect(rows.map((r) => r.inspectionId)).toContain('INSP-90');
+    expect(rows.find((r) => r.inspectionId === 'INSP-90')?.inspectionItemId).toBe('item-1');
+    // and it is queued for upload in this scope
+    expect(s().pendingEvidenceCount).toBe(1);
+  });
+
 });
