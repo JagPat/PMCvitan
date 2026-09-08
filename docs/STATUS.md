@@ -27,8 +27,9 @@ updated: 2026-09-07
 **What this PR is.** The docs-only 4d plan unit the merged 4b plan's §E order names as the first
 4d stop, `docs/superpowers/plans/2026-09-07-decision-workflow-4d.md`: the §C orchestration
 design at PR #340 head `6a53aae` carried in substance, the §D obligations 4–6 elaborated, the
-probe table P28–P42, and the FOUR-PR staging (the dark migration 4d-i, the service/role/UI unit
-4d-ii, an operator drain attestation, the reservation retirement 4d-iii). It replaces #566
+probe table P28–P42, and the FIVE-PR staging (the dark migration 4d-i, the dark server unit
+4d-ii-a, the client unit 4d-ii-b, an operator drain attestation, the reservation retirement
+4d-iii). It replaces #566
 (`Replaces: #566`) — the narrowed plan's twelfth outing, closed at its second finding-bearing
 head (`cc8b3ba` two findings, one folded on `e3d6c23` and one — the drain attestation —
 declined; a relay-based drain fold `1a2ba97` reverted on `5921f22`, which drew two more) —
@@ -83,7 +84,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 4,001 lines against #552's 3,495.
+live standing). The document is 4,097 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -454,6 +455,33 @@ installed designation has no active holder — named departed OR role with zero 
 (`platform_role_has_holder` false) — the forward running FROM the empty designation to the named
 active target; P29b adds the emptied-role probe, RED against the named-holder-only rule. The
 drain gate was not raised on this head.
+
+**Review round 1 on this PR, #567 (head `5f07c5a`): four findings, all P1, three folded on its
+ONE correction head, one DECLINED on the Board's recorded decision, none dropped.** (1) The
+drain gate — DECLINED as a plan defect: the recorded default (#482 comment 5569586836) retains
+the human attestation; the Board's DIRECT decision to lift it (#482 comment 5577872836) is
+accepted and prepared as its own docs-only head, held until the session is permitted to apply
+it, so §D carries the gate as at `5921f22` until that head lands. (2) Every LIVE previous-release
+decision writer now has its explicit drain branch: a NULL envelope pair is admitted through the
+4d-i → 4d-ii drain on every sealed event type a 4c writer can emit (the no-chain approve, the
+standard `requestChange`, `withdrawChange`, `requestConsultation`, `respondToConsultation`), the
+attribution arm binding `actorId` alone whenever the pair is NULL; the change-request notice is
+owed for the `countersign_rejection` origin only, the standard request's transition owing none
+and joining the correspondence table; a legacy-writer table in §A.3 states what each writes,
+what the seals demand and why they agree; P42 drives all five shapes through the 4d-i seals and
+asserts each commits, RED against the approve-only NULL rule. (3) `deliveryRowsFor` locks EVERY
+`OutboxConsumerCatalog` row `FOR SHARE` — active and inactive alike — BEFORE filtering by
+`active`, so an activation's `FOR UPDATE` on an inactive row either committed before the event's
+read or waits for its commit; P38's barrier arm drives the exact read → activation → commit
+interleaving, RED against the active-only lock. (4) 4d-ii is SPLIT into 4d-ii-a (the SERVER unit,
+dark: the catalog-data migration, the commands, the seals, the interceptor and every server
+change — the migration seam inseparable for it alone) and 4d-ii-b (the CLIENT unit: the web
+gateway's `countersign-v1` declaration and every web surface, probed against the 4d-ii-a server
+with the doors standing); the drain's minimum release is 4d-ii-a's and 4d-ii-b's fold sets the
+directive; the earlier inseparability claim is recorded as false under the plan's own staging
+(the doors keep every new shape unrepresentable and the lesser-client refusal fires only under an
+active chain). A second finding-bearing head means close-and-replace under the standing
+authorization, no cap.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D

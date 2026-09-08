@@ -543,6 +543,19 @@ emptied:
 | 1 (P1) 4d-i re-pointed the still-live consultation request seal's requester arm from `phase6_user_decision_authority` onto `platform_user_orchestration_authority`, yet the plan admits that through the 4d-i → 4d-iii window a concurrent `Project` INSERT and owner/admin `OrgMembership` INSERT can both commit without the membership-less owner's `pmc` row — so that owner passes the delivered service's orgs-truth check and the DB seal refuses the insert, breaking consultation requests (the previous release's included) until 4d-iii repairs the register | §A.2 the window rule; §A.2 consultation; §D 4d-i, 4d-ii, 4d-iii; P29b | the WINDOW RULE: until the fenced re-projection has proven the fanned-out rows equal to the orgs truth, no seal or read a window writer can meet judges a user's `pmc` standing through them — the consultation seal's requester arm STAYS `phase6_user_decision_authority` (4d-i widens the open set alone) and 4d-iii re-points it after the re-projection, in the same transaction; 4d-ii's service keeps the delivered requester check and admits an `architect` requester through the kernel read, an arm no window request can exercise (the reservation keeps every architect unrepresentable until 4d-iii); the `MembershipTransition` fact's `pmc` actor arm derives a membership-less owner/admin from the RACE-FREE registers (`OrgUserAuthority` + the absence of a membership-granted row, the org read from the orgs-owned seal's own `Project` row); and the participant's `effectiveRoleHolderUserIds` keeps the delivered orgs-truth SQL for `pmc`/`client` while `rollout.phase6_4d` reads `reserved`, wrapping the kernel read once it reads `open` — P29b's race fixture leaves the owner without the fanned-out row and asserts the request, the fact and the delivered push all admit them, RED against the 4d-i re-point |
 | 2 (P1) the stranded `returned` outcome required a `toDesignation` only when a NAMED holder had departed; an architect-ROLE-designated decision approved by its sole architect, who then leaves under the exemption, stays `awaiting_countersign` with an EMPTY role designation, so the PMC's `returned → change` carried no `DecisionForward` and the open-holder rule refused the transition (the role still has zero holders) — the advertised outcome was unusable | §A.2 the stranded decision; §A.2 the exemption; P29b | re-homing is REQUIRED whenever the INSTALLED designation has no active holder — the named membership departed OR the role designation holds zero active members (`platform_role_has_holder` false) — the bundle's `DecisionForward` running FROM that empty designation (the departed membership, or the role) to the named ACTIVE target; a `returned` without a target for such a designation is 400, and with a target for a designation that still has a holder it is an ordinary same-bundle forward through the same door; P29b adds the emptied-role probe, RED against the named-holder-only rule |
 
+**Review round 1 on #567 (head `5f07c5a`) — four findings, all P1: three
+folded on its ONE correction head, one DECLINED on the Board's recorded
+decision, none dropped.** One is the drain gate again; one is the set of
+delivered writers the drain must keep alive; one is a lock taken over the
+wrong row set; one is a seam the plan's own staging had already opened:
+
+| finding | where it lands | the answer |
+|---|---|---|
+| 1 (P1) "let verified drain evidence clear the gate" | §D the drain attestation | DECLINED as a plan defect — the gate is the Board's: the recorded default (#482 comment 5569586836) retains the human attestation with the autonomous evidence as fail-closed corroboration, and the Board's DIRECT decision to lift it (#482 comment 5577872836, its own words under the owner account with no coordinator marker) is accepted and prepared as its own docs-only head, held until the session is permitted to apply it (the session's permission layer refused it twice — #566 comment 5577923054); §D carries the gate as at `5921f22` until that head lands, and no review finding changes it |
+| 2 (P1) through the 4d-i → 4d-ii drain a still-serving 4c instance also runs `requestChange`, `withdrawChange`, `requestConsultation` and `respondToConsultation`; the delivered `emitEvent` writes no envelope pair and the standard `requestChange` writes no `Notification`, yet the plan armed correspondence for those types in 4d-i, admitted a NULL envelope pair on the no-chain approve alone, and listed a notice as part of the `ChangeRequest` effect — so an ordinary legacy command could be refused at commit before 4d-ii deployed | §A.3 obligation 7 (the attribution arm, the legacy-writer table, the correspondence table); the `ChangeRequest` row of the fact table; §D 4d-i; P42 | EVERY live previous-release decision writer has its explicit drain branch, stated once in a table: a NULL envelope pair is admitted through the drain on every sealed event type a 4c writer can emit, the attribution arm binding `actorId` alone whenever the pair is NULL (the trailing 4d-iii seal closes it); the change-request notice is owed for the `countersign_rejection` origin ONLY, the standard request's transition owing none (the delivered path writes none) and its row joining the correspondence table; the consultation events are admitted in the delivered emitters' own targeted shapes with a NULL frozen pair; P42 drives all five legacy shapes through the 4d-i seals and asserts each COMMITS, RED against the approve-only NULL rule |
+| 3 (P1) `deliveryRowsFor` read only the persisted ACTIVE rows `FOR SHARE`, so an inactive consumer's row was never locked: an event could read the obligation set, an activation could then lock that row, flip it and commit before the event committed, and both succeeded with the event carrying no row for a consumer active at its commit | §A.3 obligation 7 (the delivery rows); P38 | `deliveryRowsFor` locks EVERY `OutboxConsumerCatalog` row `FOR SHARE` — active and inactive alike — BEFORE filtering by `active`, the event's transaction holding the locks to commit, so an activation's `FOR UPDATE` either committed before the read or waits for the event's commit; P38's barrier arm drives the exact read → activation → event-commit interleaving, the activation observed BLOCKED until the event commits, RED against the active-only lock |
+| 4 (P1) 4d-ii claimed the service/UI seam inseparable because a server without its client would refuse every deployed browser session — but throughout 4d-ii the five reservation doors keep every new shape unrepresentable and the in-command lesser-client refusal fires only under an ACTIVE chain, so a server-only unit lands dark behind every existing tab, and a unit already expected to exceed 1,500 lines was avoidably broad | §D the staging (FIVE PRs), 4d-ii-a and 4d-ii-b, the drain; §A.2 the client boundary | 4d-ii is SPLIT: 4d-ii-a, the SERVER unit, lands dark with the catalog-data migration, the four commands, the seals, the interceptor and every server change; 4d-ii-b, the CLIENT unit, ships the web gateway's `countersign-v1` declaration and every web surface, probed against the 4d-ii-a server with the doors standing; the drain's minimum release is 4d-ii-a's and 4d-ii-b's STATUS fold sets the directive; the migration seam stays inseparable for 4d-ii-a alone; the earlier inseparability claim is recorded as false under the plan's own staging |
+
 **Docs-only.** No schema, no migration, no runtime code, no test change, no
 4d implementation. Contractor-capture units 1–6 and the saved UX and
 performance work stay Board-gated and are not mixed in.
@@ -1913,8 +1926,10 @@ tab sends exactly that; once 4d-iii lets a chain activate, such a tab could
 approve a decision, receive the unknown `awaiting_countersign`, report
 "Approved & locked", fall through the chip fallback and hold no
 countersign-aware action state. 4d-ii introduces the next contract value
-`countersign-v1` — the web gateway declares it on EVERY request that reaches
-the API, `req()` AND the direct `fetch('/auth/session')` in
+`countersign-v1` (its server half — the interceptor, the in-command
+refusals, the completeness tripwire — in 4d-ii-a; the gateway's declaration
+and every web surface in 4d-ii-b, §D) — the web gateway declares it on
+EVERY request that reaches the API, `req()` AND the direct `fetch('/auth/session')` in
 `ApiGateway.connect()` that `useApiSync` takes under `DEV_AUTH` (a
 client-boundary tripwire enumerates every `fetch(` site in the gateway and
 asserts the header on each API-bound one) — and a sibling transport-layer
@@ -2513,10 +2528,19 @@ before it. Each fact table carries:
    envelope carries no role or name, so 4d-i adds both as nullable columns
    the delivered `20261015000000` append-only trigger freezes, `emitEvent`
    writes them from the actor it is HANDED from 4d-ii — the columns land
-   DARK in 4d-i and nothing writes them until the service unit — and NULL
-   is admitted ONLY on the no-chain approve's event through the drain, since
-   the pre-4d-ii `emitEvent` writes neither; the trailing 4d-iii seal then requires the pair on every
-   new event of EITHER kind — a `systemActor` carries a constant name and
+   DARK in 4d-i and nothing writes them until the service unit — and a NULL
+   pair is admitted through the drain on EVERY sealed event type a
+   previous-release writer can emit — the no-chain approve's
+   `decision.approved`/`reapproved`, the standard `requestChange`'s
+   `decision.change_requested`, `withdrawChange`'s
+   `decision.change_withdrawn`, and the two consultation events — since the
+   pre-4d-ii `emitEvent` writes neither column for ANY of them, the
+   attribution arm binding `actorId` alone whenever the pair is NULL
+   (#567's review round 1, finding 2: admitting NULL on the approve alone
+   would have refused the four other live legacy commands at commit until
+   4d-ii deployed; the legacy-writer table below states every branch); the
+   trailing 4d-iii seal then requires the pair on every new event of EITHER
+   kind — a `systemActor` carries a constant name and
    role by construction). **Every emitter hands the pair, and the compiler
    is the tripwire** (#555's review round 2, finding 1: round 1 claimed
    `resolveActor` supplies the pair to every emitter, which the commercial
@@ -2563,9 +2587,11 @@ before it. Each fact table carries:
    and leaves the revision's `approvedByRole` NULL, so an unconditional
    equality would abort every legacy approval through the drain; the NULL
    branch is stated once, for every fact with a frozen pair, and closes when
-   4d-iii makes a NULL pair unrepresentable on new rows — P42's arm drives a
-   pre-4d-ii-shaped approval through the 4d-i seals and asserts it commits,
-   then the same shape after 4d-iii and asserts it is refused); and, for a
+   4d-iii makes a NULL pair unrepresentable on new rows — P42's arm drives EVERY
+   pre-4d-ii-shaped live writer — the approval, the standard request, the
+   withdrawal, the consultation request and response — through the 4d-i
+   seals and asserts each commits, then the same shapes after 4d-iii and
+   asserts each is refused where the trailing seals require what it lacks); and, for a
    transition that owes a feed row, exactly ONE `Notification` for the
    project whose `eventId` names that event, whose `decisionId` is the
    decision, and whose `kind` equals that event's `eventType` — read through
@@ -2804,15 +2830,21 @@ before it. Each fact table carries:
    `syncConsumerCatalog` verifies the persisted ones against);
    `materializeDeliveries` and `expandMissingDeliveries` both call it, so a
    process that booted no registry writes the same rows a booted API does;
-   `deliveryRowsFor` reads the catalog rows `FOR SHARE` and the event's
-   transaction holds those locks to commit, so an activation append — which
-   takes the row `FOR UPDATE` — either committed before the obligation set
-   was read or waits for the event's commit, and the deferred seal re-reads
-   under the same locks (#561's review round 2, finding 5: an unlocked read
+   `deliveryRowsFor` locks EVERY `OutboxConsumerCatalog` row `FOR SHARE` —
+   active and inactive alike — BEFORE it filters by `active`, and the
+   event's transaction holds those locks to commit, so an activation append
+   — which takes its row `FOR UPDATE` — either committed before the
+   obligation set was read or waits for the event's commit (#567's review
+   round 1, finding 3: locking only the rows the `active` filter returned
+   left an inactive consumer's row unlocked, so an activation could take
+   it, flip it and commit between the event's read and its commit, and the
+   event committed with no row for a consumer active at its commit), and
+   the deferred seal re-reads under the same locks (#561's review round 2, finding 5: an unlocked read
    let an activation commit between the event's check and its commit,
    leaving an event with no row for a consumer active at its commit — the
    exact window the seal exists to close); P38's barrier probes
-   event-vs-activation in both orderings;
+   event-vs-activation in both orderings, the read → activation →
+   event-commit interleaving against an inactive row included;
    the platform-owned BEFORE INSERT trigger `OutboxDelivery_t4d_bound`
    requires EVERY row's `deliveryAction` to equal the action its consumer's
    persisted rule derives for the event, whatever the consumer's activation
@@ -3206,6 +3238,7 @@ before it. Each fact table carries:
    | `awaiting_countersign → change` by `returned` resolution | `decision.change_requested` | `stranded_resolved` + `change_requested` | the change-request notice | `resolvedById` = `requestedById` | 4d-i |
    | the holder mutation (forward, generic or forward-on) | `decision.forwarded` | `forwarded` | the forward notice | `forwardedById` | 4d-i |
    | `pending`/`change → approved` with NO chain (the direct approve) | `decision.approved` / `decision.reapproved` | `approved` / `reapproved` | the green approved notice | the head revision's `approvedById` | event + audit row from 4d-i (the delivered `approve` writes both in-transaction, so the previous release is compatible through the drain); the feed row's `eventId` binding from 4d-iii, since the previous release writes the row without it |
+   | `… → change` by the standard `requestChange` (the delivered path, `origin = 'standard'`) | `decision.change_requested` | `change_requested` | — (the delivered path writes none) | the receipt's actor | event + audit row + the `ChangeRequest` row from 4d-i (delivered, in-transaction; the envelope pair NULL and `sourceCommandId` NULL through the drain) |
    | `change → approved` by standard `withdrawChange` | `decision.change_withdrawn` | `change_withdrawn` | — (the delivered path writes none) | the receipt's actor | event + audit row from 4d-i (delivered, in-transaction) |
    | the architect standing flip on `Membership` | `membership.standing_changed` naming the fact — payload `transitionId`, `membershipId`, `role`, `from`, `to`, `activeCount` ALL bound to the fact and the register; paired in the CONVERSE by `DomainEvent_t4d_standing_event_paired` | — (orgs; the fact is the audit) | — | the fact's `actorId` and frozen `actorRole`/`actorName`, on the event envelope | 4d-i (no pre-4d writer can flip the role) |
 
@@ -3213,6 +3246,28 @@ before it. Each fact table carries:
    not list (the delivered `issued`, `drafted`, `draft_updated`,
    `change_withdrawn` on other paths) is untouched; the seal judges only the
    transitions it admits.
+
+   **Every LIVE previous-release decision writer is preserved through the
+   4d-i → 4d-ii drain, each with its explicit branch** (#567's review round
+   1, finding 2: the approve had one, the other four did not). A 4c instance
+   still serving under the 4d-i schema can run exactly five sealed writers;
+   the table states what each writes in its own transaction, what the 4d-i
+   seals demand, and why the two agree — no branch is implied:
+
+   | 4c writer (delivered) | what its transaction writes | what the 4d-i seals demand of it | why it commits |
+   |---|---|---|---|
+   | `approve` / re-approve with no chain | the revision (`approvedByRole`/`approvedByName` NULL, `finalized` born `true` under the kept default, no `revisionId` in the payload), `pending`/`change → approved`, the `decision.approved`/`reapproved` event with the delivered broadcast push and a NULL envelope pair, the `approved`/`reapproved` audit row, the feed row without `eventId` | the event and the audit row, attribution by `actorId` alone (the pair NULL), the converse's same-transaction revision insert as the finalizer, the broadcast push shape, no `eventId` binding on the feed row until 4d-iii | every demanded part is written; nothing demanded is absent (P42's arm) |
+   | `requestChange` (`origin = 'standard'`) | the open `ChangeRequest` (`sourceCommandId` NULL, the frozen pair NULL), the `change_requested` audit row, the `decision.change_requested` event with `dispatch: {}` and a NULL envelope pair — NO notice | the event and the audit row, attribution by `actorId` alone, the `ChangeRequest` row (the converse), NO feed row for the standard origin, NO push (the catalog row's `requiresPush` is false, matching the delivered emitter), `sourceCommandId` admissible NULL until 4d-iii | the notice and the receipt are demanded only of the `countersign_rejection` origin and only after 4d-iii respectively |
+   | `withdrawChange` | the open request written to `withdrawn`, `change → approved`, the `change_withdrawn` audit row, the `decision.change_withdrawn` event with `dispatch: {}` and a NULL envelope pair — all under the readiness lock | the closure ↔ restoration bundle (all three parts), the event and the audit row, attribution by `actorId` alone, no feed row | the delivered path already writes the whole bundle in one transaction |
+   | `requestConsultation` | the `DecisionConsultation` row (the frozen requester pair NULL, `sourceCommandId` set — the 4c receipt), the `decision.consultation_requested` event targeted at the consultee (`targetUserId`) | the same-transaction event naming the consultation with its push targeted at the frozen `consulteeUserId` (the delivered shape), the requester arm on the delivered `phase6_user_decision_authority` through the window (the window rule of §A.2), the frozen pair admissible NULL until 4d-iii | the delivered emitter targets exactly the consultee; the pair is demanded only by the trailing seal |
+   | `respondToConsultation` | the response row (the frozen responder pair NULL), the `decision.consultation_responded` event targeted at the requester with `roles: ['pmc']` | the event naming the consultation, targeted at the fact's `requestedById` with `roles` bound to the frozen requester role — `['pmc']` where that role is NULL (the delivered ceiling, P38's legacy-NULL arm), the responder pair admissible NULL until 4d-iii | the delivered shape IS the NULL-role shape the seal admits |
+
+   `create`, `updateDraft`, `publish` and every other delivered command emit
+   types the correspondence does not list and are untouched. P42 drives all
+   five shapes, exactly as the 4c release writes them, through the 4d-i
+   seals and asserts each COMMITS, then the same shapes after 4d-iii and
+   asserts each is refused only where a trailing seal requires what the
+   shape lacks — RED against a NULL rule that admits the approve alone.
 
 The closed enumeration over every fact these units add:
 
@@ -3225,7 +3280,7 @@ The closed enumeration over every fact these units add:
 | `DecisionCountersign` (4d) | finality flip + `awaiting → approved` ⟷ row | `countersignedById` ACTIVE architect; frozen role + name judged | `awaiting_countersign` only | required | the finalizing event + `countersigned` + the green notice | P31 |
 | `DecisionStrandedResolution` (4d) | outcome BUNDLE ⟷ row | `resolvedById` pmc; frozen role + name judged; non-blank reason | `awaiting_countersign` AND no active architect | required | per outcome, the table above | P29b |
 | `DecisionApprovalRevision` finality (4d) | birth value by chain presence; flip only by paired fact; one row per approval transition | carried by the pairing facts; `approvedByRole`/`approvedByName` judged when present | the approved-entry seal | delivered (4c) | the awaiting entry's and the direct approve's rows | P31/P37/P42 |
-| `ChangeRequest` origin (4d) | `countersign_rejection` ⟷ the exact `awaiting_countersign → change` transition, AND with its producer's fact (P33b) | `requestedById` ACTIVE architect under an ACTIVE chain, or the resolving pmc; frozen role + name judged | the awaiting subject | REQUIRED for `countersign_rejection`; admissible NULL on `'standard'` rows only until 4d-iii | `decision.change_requested` + `change_requested` + notice | P29b/P33/P33b |
+| `ChangeRequest` origin (4d) | `countersign_rejection` ⟷ the exact `awaiting_countersign → change` transition, AND with its producer's fact (P33b) | `requestedById` ACTIVE architect under an ACTIVE chain, or the resolving pmc; frozen role + name judged | the awaiting subject | REQUIRED for `countersign_rejection`; admissible NULL on `'standard'` rows only until 4d-iii | `decision.change_requested` + `change_requested`, + the change-request notice for the `countersign_rejection` origin ONLY — the standard request's transition owes none (the delivered path writes none; the notice arm is keyed on the paired request's `origin`) | P29b/P33/P33b |
 | `MembershipTransition` (4d, orgs) | the architect standing write ⟷ row; one flip per membership and per project per transaction | `actorId` holds team-management authority (the owner/admin arm live; the project-PMC arm live, or the captured pre-state for a self-demotion); frozen `actorRole`/`actorName` judged | — | required (`phase6_t4d_membership_transition_bound`) | `membership.standing_changed` naming the fact — `role`, `membershipId`, `from`, `to`, `transitionId`, `activeCount` and the envelope pair all equal to the fact and the register — and paired in the converse | P29b |
 
 A future fact table added under these units inherits this contract by
@@ -3390,11 +3445,11 @@ today's behaviour lives.
 | P35 | the forward-vs-approve barrier: both orderings deterministic, exactly one surviving outcome, a coherent holder; forward-vs-countersign likewise; every cancelling command vs a concurrent claim in both orderings under the ONE lock order, no deadlock | the row-lock serialization in the canonical order |
 | P36 | the switch-writers barrier: architect role-change vs approve, activation AND deactivation, both orderings — the SERVICE activation and the HAND-RUN one (a direct INSERT under a hand-completed receipt with its fact and event) each vs `approve` and vs the stranded resolution, the hand-run writer refused as contended while the key is held and the terminal state asserted (approve-first → the activation lands after and the decision stays `approved`; activation-first → the approve lands `awaiting_countersign`); the orgs role mutations for `architect` in the §A enumeration; activation-vs-approve asserting the countersign deliveries per decision EXACTLY by ordering — approve-first under NO chain owes ZERO; activation-first → the approve's OWN emission is the ONE; a decision already awaiting when the activation crosses receives the ONE re-emit; never two for one decision; the ordered handlers' P-before-Q sequence with an approve landing between them; the NON-architect standing writers serialized — forward-to-`client`-role vs a direct insert of active client B in BOTH orderings (B-first → frozen set {A, B}; forward-first → B REFUSED as contended by `Membership_t4d_readiness`'s message, accepted after the commit, the frozen set equal to the audience at commit), the same for an `engineer` provisioning sign-in vs a forward to `engineer`, and for a forward to the `pmc` role vs an `OrgMembership` owner insert (B-first → {A, B}; forward-first → the org write REFUSED by `OrgMembership_t4d_readiness`, the frozen set equal to the audience at commit) — RED in the seal-stripped run where B commits mid-forward; the STALE ACTIVATION — B activated (Q) and removed (R) before the consumer reaches Q: Q recorded `noop` with `stale_activation`, no re-emit, no dead-letter, R handled next and cancelling the unsent pre-Q demands, the consumer's cursor past both; Q → R → S with C active at handling: exactly ONE fresh demand, frozen to C, S skipped — RED where the Q handler re-emits unconditionally and the empty-audience seal dead-letters it; PROJECT CREATION vs an owner insert for the same org in BOTH orderings, then a forward to the `pmc` role on the new project asserting no committed effective holder absent from the frozen set — RED in the seal-stripped run where the phantom lands; the same with a DIRECT `Project` insert (refused as contended by `Project_t4d_org_readiness` while the owner write holds the key, accepted after) — RED where the table door is omitted; demotion-vs-creation in both orderings (demotion-first → 403 at the in-key re-judge; creation-first → the project stands) — RED at base where the authority read precedes the transaction; a hand-run `renotified` bundle citing an activation crossing that PRECEDES the decision's latest demand refused by the converse, one citing a crossing at or after it admitted | `lockProjectReadiness` on the orgs role mutations, the four other `Membership` writers and the org owner/admin writers; `lockOrgStanding` on project creation and the org writers; `Membership_t4d_readiness`/`OrgMembership_t4d_readiness` (4d-iii); `decisions.effects` |
 | P37 | EVERY entry into `approved` sealed behind the chain, SERIALIZED by `phase6_try_readiness`: under an ACTIVE chain the direct `pending → approved` hostile flip refused, the finalized-boolean-only flip refused, the awaiting-flip without the SAME-TX countersign ROW refused, the standard `withdrawChange` restoration PASSES, the `countersign_rejection` restoration refused; under an INACTIVE chain direct approval legal ONLY from `pending`/`change` AND ONLY WITH ITS BUNDLE — the receipt-backed direct bundle with revision, transition, event and audit row ACCEPTED, the stream advanced and the `decisions.inbox` fold applied; the same bundle without its event refused at commit; with two events refused; with an event whose `actorId` is not the revision's approver refused; with the audit row missing refused; an event inserted at the stream's `nextPosition` without the increment refused by the envelope seal, one at an already-taken position refused by the uniqueness, a second event after one increment refused, an increment by two refused by the allocation seal, an increment with no event at the allocated position refused at commit (no gap, no double allocation representable); the `insertRawEvent` fixture's insert admitted and the delivered envelope arms passing unchanged, a legacy plant admitted only inside its named bypass and refused outside it, the raw-insert tripwire RED on an unlisted site; an intent naming an unknown `(coverageVersion, effectKey)`, a key whose catalog `eventType` is not the event's, a mismatched `invalidate`, a push outside the ceiling, or `targetUserIds` on a family without a frozen audience, each refused, and an intent copied from the catalog row admitted; after 4d-iii, an event of either kind without the envelope pair refused and every write-through emitter — a PO issue and amendment, a labour PO, an inventory receipt, a measurement, the activation CLI, the re-evaluate CLI — committing `commercial.money_moved` WITH the pair (RED at base where `AttributionActor` drops the name) AND with its delivery rows derived from the persisted catalog by a process that booted no registry (RED at base, where `materializeDeliveries` writes nothing without one); a `dispatch` row whose `payload.body`, `roles`, `targetUserId` or `targetUserIds` differs from its event's intent, or whose `subject` is not the event's `entityId`, refused at insert, the previous release's `{body, roles, targetUserId}` shape admitted for an intent without `targetUserIds`, an UPDATE of a delivery's `payload`, `subject` or identity refused, the 4a cancellation mark (`dispatch → noop` with `cancelledAt`, payload preserved) admitted and a bare `deliveryAction` flip refused; without a feed row bound to the event refused, and BEFORE 4d-iii the previous release's write shape (feed row with NULL `eventId` and NULL `kind`) accepted — the bare awaiting-flip refused without the stranded-resolution fact; the first-architect-activation-vs-approval barrier deterministic in both orderings; a `DecisionConsultation` or response inserted without its same-transaction `decision.consultation_requested`/`responded` event refused at commit, the event without its fact refused, the delivered service path unchanged and accepted; a `ProjectEventStream` row DELETE refused, an INSERT at `nextPosition ≠ 0` or for a project holding events refused, the project-deletion cascade admitted; a delivery's `cancelledAt` cleared, rewritten, or set outside the mark's statement or the leased/dead mark-only arm refused, the mark itself admitted; a `decision.approved` bundle without its push, or with `roles` narrower than the broadcast ceiling, refused and the delivered shape admitted; the envelope insert and the gated retirement stamp under the barrier in both orderings — an intent retired before the insert's lock refused, one retired after the insert's commit admitted, never an event on a retired intent; a consultation request or response whose envelope pair differs from the fact's frozen pair refused, a request event targeting a user other than the frozen consultee or a response event targeting a user other than the requester refused; a chain check reading `platform_role_standing` equal to the orgs truth after every architect transition shape; the relay's leased-cancel completion and its pre-intent neutralization admitted by the frozen-delivery seal, a bare `dispatch → noop` on an unmarked row with an intent refused; a delivery row planted for an INACTIVE consumer whose action contradicts its persisted rule refused at insert, one that matches admitted and left in place by the next expansion pass; a writer minting its event id, stamping the notice first and emitting second committing with the deferred FK satisfied; the architect arm of both 4b seals judged from `ProjectRoleStanding` — an architect-designated open decision refused with the register at zero and admitted once the orgs trigger writes the row — and the boundary tripwire asserting the seal functions' architect branches name no orgs table; a hand-run demand whose `targetUserIds` is `[A, A]` for one active architect refused, `[A]` admitted, and a delivery row carrying a non-canonical copy of a canonical intent refused; with a published `pending` decision designated to the architect role and ONE active architect, that membership's removal, deactivation and re-role each REFUSED by `Membership_t4b2_holder_guard`'s architect arm reading the post-write register, TWO architects removed in one statement refused likewise, and the same removal admitted once the decision is resolved (RED against the AFTER-ordered register trigger, where the guard read `1` and the count landed at zero) | the status-transition seal + obligation 7 |
-| P38 | the pre-send eligibility guard generalized to EVERY targeted decision push through PER-EVENT-FAMILY predicates — the two NEW families (`countersign`: awaiting + active architect; `forward`: installed holder AND `pending`/`change`) beside the three delivered: one positive AND one negative per new family; a valid consultee push NOT dropped by the countersign predicate; the responded predicate widened to the architect requester WITH the withdrawn-audience arm; a REQUEST push enqueued before a withdrawal cancelled for every consultee; the two new predicates bound under the BUMPED `webpush.notify` contract (`catalogVersion` 2 → 3), a process compiled at the old version refused by `syncConsumerCatalog` at startup, the catalog-data migration in `ALWAYS_EXECUTE` (a P3005 baseline over a pre-4d-ii database runs it and the upgraded process starts), a SECOND execution of 4d-ii's catalog file over an already-registered database a no-op; the `decisions.effects` REGISTRATION over a database holding historical events — every historical delivery `succeeded`/`noop`, zero notifications, zero `countersign_renotified` rows; the external-effect RESEAL sequence — the 4d-ii build refused in outbox mode under the 4d-i seal, served in shadow, resealed, then booting in outbox mode; the PERSISTED catalog — 4d-i's seeded rows equal to `canonicalCatalog()` at its coverage version (the tripwire), an intent at the pre-4d-ii version admitted through the drain while 4d-ii's rows stand beside it, refused after 4d-iii retires them, the singleton seal version equal to the newest UNRETIRED persisted version at boot, a direct UPDATE, DELETE or TRUNCATE of the catalog refused; `targetUserIds` admitted by `buildDispatchIntent` only for the two frozen-audience families and refused elsewhere; the response push of a requester re-roled between request and response carrying the FROZEN request-time role, a `consultation.request` whose `requestedByRole` the requester does not hold refused by the INSERT seal, a legacy NULL-role consultation's response pushed as `pmc`; the ACTIVATION boundary — a direct `UPDATE` of `OutboxConsumerCatalog.active` or `registeredAt` refused, an appended `OutboxConsumerActivation` row flipping the mirror, an UPDATE or DELETE of the register refused; a consumer deactivated for event N (no row demanded, the seal passing) and reactivated at N + 1 receiving N's row from the next expansion pass and its ordered cursor advancing through N; `decisions.effects` registered inactive with no row demanded of a pre-4d-ii-shaped emit, activated by 4d-iii's appended row with every historical delivery `succeeded`/`noop`; a direct `UPDATE`, `DELETE` or `TRUNCATE` of the activation register refused, a blank or all-whitespace `reason` refused; a `ReleaseLease` row's `instanceId`/`release`/`catalogVersion`/`startedAt` UPDATE refused, a `leaseUntil` decrease refused, DELETE and TRUNCATE refused, the renewal admitted; two operator activation appends under the deterministic barrier in both orderings — the second refused with a stale sequence, the mirror equal to the highest committed fact, never reordered; an event and an activation append under the barrier in both orderings — the activation before the event's read owed a row, the activation after the event's commit owing none, never an event without a row for a consumer active at its commit | the per-family registration + the two new `decisions.*PushTarget` queries + the consumer catalog bump |
+| P38 | the pre-send eligibility guard generalized to EVERY targeted decision push through PER-EVENT-FAMILY predicates — the two NEW families (`countersign`: awaiting + active architect; `forward`: installed holder AND `pending`/`change`) beside the three delivered: one positive AND one negative per new family; a valid consultee push NOT dropped by the countersign predicate; the responded predicate widened to the architect requester WITH the withdrawn-audience arm; a REQUEST push enqueued before a withdrawal cancelled for every consultee; the two new predicates bound under the BUMPED `webpush.notify` contract (`catalogVersion` 2 → 3), a process compiled at the old version refused by `syncConsumerCatalog` at startup, the catalog-data migration in `ALWAYS_EXECUTE` (a P3005 baseline over a pre-4d-ii database runs it and the upgraded process starts), a SECOND execution of 4d-ii's catalog file over an already-registered database a no-op; the `decisions.effects` REGISTRATION over a database holding historical events — every historical delivery `succeeded`/`noop`, zero notifications, zero `countersign_renotified` rows; the external-effect RESEAL sequence — the 4d-ii build refused in outbox mode under the 4d-i seal, served in shadow, resealed, then booting in outbox mode; the PERSISTED catalog — 4d-i's seeded rows equal to `canonicalCatalog()` at its coverage version (the tripwire), an intent at the pre-4d-ii version admitted through the drain while 4d-ii's rows stand beside it, refused after 4d-iii retires them, the singleton seal version equal to the newest UNRETIRED persisted version at boot, a direct UPDATE, DELETE or TRUNCATE of the catalog refused; `targetUserIds` admitted by `buildDispatchIntent` only for the two frozen-audience families and refused elsewhere; the response push of a requester re-roled between request and response carrying the FROZEN request-time role, a `consultation.request` whose `requestedByRole` the requester does not hold refused by the INSERT seal, a legacy NULL-role consultation's response pushed as `pmc`; the ACTIVATION boundary — a direct `UPDATE` of `OutboxConsumerCatalog.active` or `registeredAt` refused, an appended `OutboxConsumerActivation` row flipping the mirror, an UPDATE or DELETE of the register refused; a consumer deactivated for event N (no row demanded, the seal passing) and reactivated at N + 1 receiving N's row from the next expansion pass and its ordered cursor advancing through N; `decisions.effects` registered inactive with no row demanded of a pre-4d-ii-shaped emit, activated by 4d-iii's appended row with every historical delivery `succeeded`/`noop`; a direct `UPDATE`, `DELETE` or `TRUNCATE` of the activation register refused, a blank or all-whitespace `reason` refused; a `ReleaseLease` row's `instanceId`/`release`/`catalogVersion`/`startedAt` UPDATE refused, a `leaseUntil` decrease refused, DELETE and TRUNCATE refused, the renewal admitted; two operator activation appends under the deterministic barrier in both orderings — the second refused with a stale sequence, the mirror equal to the highest committed fact, never reordered; an event and an activation append under the barrier in both orderings — the activation before the event's read owed a row, the activation after the event's commit owing none, never an event without a row for a consumer active at its commit — and the exact read → activation → commit interleaving against an INACTIVE consumer: the event's transaction takes its read with every catalog row locked, that consumer's included, the activation's `FOR UPDATE` then observed BLOCKED in `pg_stat_activity` until the event commits, the event owing no row and the activation applying after it, RED against a lock over the active rows alone, where the activation slips between the read and the commit and the event commits without the row (#567's review round 1, finding 3) | the per-family registration + the two new `decisions.*PushTarget` queries + the consumer catalog bump |
 | P39 | the delivered orphan guard EXTENDED: removing or re-roling the NAMED holder, or the last active member of a ROLE designation, of an `awaiting_countersign` decision refused at BOTH layers (409 through `holdsOpenDecisions`; the DB guard on the hostile direct write); removing the LAST ARCHITECT NOT refused — it deactivates the chain (P29b) — INCLUDING when that architect is the named holder or the last member of the architect ROLE designation an awaiting decision names (the one named exemption), while a named holder who is an architect but not the last is refused naming the pending countersign, and a `pending`/`change` decision designated to the role still refuses removing its last architect | `holdsOpenDecisions` + `phase6_t4b2_membership_guard`, open set widened |
 | P40 | the send boundary per family (§A.2): the claim-time re-target (the `deciderPushTarget` read taking the decision row lock); the invalidation-vs-claim barrier in both orderings for the decider, forward, countersign (the frozen-set arms), user-targeted and consultation families; the direct-transition arm and the fan-out arm; the archive arm — the delivery dropped with the mark at the pre-send barrier and NOTHING re-notified on restoration, the awaiting decision served to the architect's next read; the responded family's target-aware re-judge; the withdraw-vs-respond barrier in both orderings; the delivery row after a partial fan-out `succeeded`/`dispatch` with NO mark, marked only when every resolved recipient is stale; the consultee push surviving each; the residual stated per family | the consumer's per-recipient hook; the cancellation inventory |
 | P41 | the delivered 4c lock-order + terminal-state probe EXTENDED to the transitions 4d adds that CLOSE the consultation-open set: `consultation.request` and `consultation.respond` vs the COUNTERSIGN, vs the `completed` stranded resolution, and vs the standard `withdrawChange`, each in BOTH orderings under the canonical lock order, asserting the TERMINAL invariant directly — consultation-first leaves the historical consultation/response standing and the finalizer commits `approved` beside it; finalize-first returns 409 with NO consultation row, NO response row and NO `consultation_*` effect; the `returned` resolution and the countersign REJECTION land `change`, which stays in the open set, so the same probe asserts the consultation ACCEPTED after them; no deadlock abort in either ordering | `decisions.service.ts` `requestConsultation` / `respondToConsultation` (the delivered 4c commands — there is no `consultations.service.ts`); `decisions.countersign`, `resolveStrandedCountersign`, `withdrawChange` |
-| P42 | the finality candidate key over the ACTUAL provenance columns: provenance onto an unfinalized revision unrepresentable (both spec tables); `finalized → false` under reference refused by the FK; the additive backfill leaves every legacy revision `finalized = true` and every legacy spec row `revisionFinalized = true`, proven over the legacy fixture in `upgrade-proof.sh`; the DEFAULTS hold through the drain — a revision, a material spec and a labour spec inserted WITHOUT the new columns all succeed on the 4d-i schema and land `true`, a `ChangeRequest` inserted WITHOUT `projectId` is filled from its decision and one naming another project's id is refused by the composite FK, a `Notification` inserted WITHOUT `eventId` succeeds; 4d-iii's drop of the defaults probed by the same inserts then failing AND by a current-version provenance write through the SHIPPED writers — create, revise AND cancel, material and labour — succeeding with `revisionFinalized = true` from the widened `approvedRef` (RED at base); 4d-iii's trailing seals — a NULL-`sourceCommandId` standard request refused while the legacy NULL rows survive; a decision notification without `eventId` or without `kind` refused while legacy rows survive; a new `DecisionApprovalRevision` without `approvedByName` or `approvedByRole` refused while the legacy NULL rows survive (a receipt-backed no-chain approval after the drain cannot lose its attribution); the retired catalog version's intent refused; **P42b** with P31b (§B.4); the drain-window interleaving — a `Project` INSERT and an owner/admin `OrgMembership` INSERT under the barrier in both orderings during the 4d-i → 4d-iii window leaving no `pmc` row, 4d-iii's re-projection restoring it behind the table fence before any door installs, and a direct-SQL `Project` + owner/admin `OrgMembership` pair started AFTER the fence observed BLOCKED in `pg_stat_activity`, the migration committing its repair and its doors, the pair then meeting the doors — exactly ONE commits, the other is REFUSED by its door's message, the refused statement RETRIED after the winner commits succeeds, the terminal state holds the `pmc` row, both resume orders (the pair started BEFORE the fence delays the fence until it ends and IS repaired); 4d-iii over a `decisions.effects` an operator activated then deactivated — the retirement re-activating at the next sequence and verifying the head, a retirement whose verification fails leaving every door installed, a replay over an active head appending nothing | `DecisionApprovalRevision_provenance_target_key` widened + the two spec FKs re-targeted; the trailing seals |
+| P42 | the finality candidate key over the ACTUAL provenance columns: provenance onto an unfinalized revision unrepresentable (both spec tables); `finalized → false` under reference refused by the FK; the additive backfill leaves every legacy revision `finalized = true` and every legacy spec row `revisionFinalized = true`, proven over the legacy fixture in `upgrade-proof.sh`; the DEFAULTS hold through the drain — a revision, a material spec and a labour spec inserted WITHOUT the new columns all succeed on the 4d-i schema and land `true`, a `ChangeRequest` inserted WITHOUT `projectId` is filled from its decision and one naming another project's id is refused by the composite FK, a `Notification` inserted WITHOUT `eventId` succeeds; 4d-iii's drop of the defaults probed by the same inserts then failing AND by a current-version provenance write through the SHIPPED writers — create, revise AND cancel, material and labour — succeeding with `revisionFinalized = true` from the widened `approvedRef` (RED at base); 4d-iii's trailing seals — a NULL-`sourceCommandId` standard request refused while the legacy NULL rows survive; a decision notification without `eventId` or without `kind` refused while legacy rows survive; a new `DecisionApprovalRevision` without `approvedByName` or `approvedByRole` refused while the legacy NULL rows survive (a receipt-backed no-chain approval after the drain cannot lose its attribution); the retired catalog version's intent refused; **P42b** with P31b (§B.4); the five live previous-release decision writers — the no-chain approve, the standard `requestChange`, `withdrawChange`, `requestConsultation` and `respondToConsultation` — each driven as its exact 4c-shaped bundle (a NULL envelope pair, no `sourceCommandId` and no notice on the standard request, `dispatch: {}` where the delivered emitter sends nothing, the delivered targeted shapes on the consultation events) through the 4d-i seals and asserted to COMMIT, then after 4d-iii refused exactly where a trailing seal requires what the shape lacks (RED against a NULL rule admitting the approve alone); the drain-window interleaving — a `Project` INSERT and an owner/admin `OrgMembership` INSERT under the barrier in both orderings during the 4d-i → 4d-iii window leaving no `pmc` row, 4d-iii's re-projection restoring it behind the table fence before any door installs, and a direct-SQL `Project` + owner/admin `OrgMembership` pair started AFTER the fence observed BLOCKED in `pg_stat_activity`, the migration committing its repair and its doors, the pair then meeting the doors — exactly ONE commits, the other is REFUSED by its door's message, the refused statement RETRIED after the winner commits succeeds, the terminal state holds the `pmc` row, both resume orders (the pair started BEFORE the fence delays the fence until it ends and IS repaired); 4d-iii over a `decisions.effects` an operator activated then deactivated — the retirement re-activating at the next sequence and verifying the head, a retirement whose verification fails leaving every door installed, a replay over an active head appending nothing | `DecisionApprovalRevision_provenance_target_key` widened + the two spec FKs re-targeted; the trailing seals |
 
 ## §D — Staging, review unit, and order
 
@@ -3421,10 +3476,12 @@ today's behaviour lives.
   2026-09-07): a freshly scoped replacement from current `main` carrying
   `Replaces: #<this>` and every unresolved finding — no PR-number cap.
 
-- **4d implementation follows as FOUR PRs — the dark migration 4d-i, the
-  service/role/UI unit 4d-ii, a drain attestation, and the trailing
-  reservation retirement 4d-iii — each honouring the mandatory migration
-  seam** (the additive schema is deployable before any caller uses it — that
+- **4d implementation follows as FIVE PRs — the dark migration 4d-i, the
+  dark SERVER unit 4d-ii-a, the CLIENT unit 4d-ii-b, a drain attestation,
+  and the trailing reservation retirement 4d-iii — each honouring the
+  mandatory migration seam and the service/UI seam the standing reservation
+  makes viable** (#567's review round 1, finding 4; "4d-ii" names the pair
+  wherever the distinction does not matter) (the additive schema is deployable before any caller uses it — that
   viable seam makes a single migration+service+UI PR a violation of the
   repository's migration review-unit rule, and this plan takes the seam):
 
@@ -3639,10 +3696,15 @@ today's behaviour lives.
     redeploy through the real runner, the register-equals-count assertion,
     and one hostile insert per seal. **Deployed dark**: no contract, no
     command, no route, no reader; a still-serving 4d-ii-less instance cannot
-    produce any new value, and the ONE 4d-sealed transition it can perform —
-    the no-chain approve — already writes the event and audit row the
-    correspondence requires and keeps writing its feed row without
-    `eventId`, which the seal admits until 4d-iii. **4d-i is expected to
+    produce any new value, and the FIVE 4d-sealed writers it can still run —
+    the no-chain approve, the standard `requestChange`, `withdrawChange`,
+    `requestConsultation` and `respondToConsultation` — each already write
+    the event, the audit row and the fact the correspondence requires in
+    their own transaction, with a NULL envelope pair, no notice where the
+    delivered path writes none and the delivered push shapes, which the
+    seals admit exactly (the legacy-writer table of §A.3 obligation 7 —
+    #567's review round 1, finding 2); the approve keeps writing its feed
+    row without `eventId`, which the seal admits until 4d-iii. **4d-i is expected to
     EXCEED the standard budget on probes alone and its packet MUST carry
     the large-unit evidence** (#564's review round 2, finding 3: "argues
     `justified-large`" required neither the marker nor the matrix the
@@ -3653,8 +3715,17 @@ today's behaviour lives.
     `<!-- migration-scope: inseparable -->` marker with the stated
     boundary above — exactly what 4d-ii's paragraph requires of 4d-ii.
 
-  - **4d-ii, the service/role/UI unit**: the role fan-out (§A.1 — every
-    mirror, the policy rows, the web lists, the DESIGNATION fan-out, the
+  - **4d-ii, the service/role/UI unit — SPLIT into 4d-ii-a, the SERVER
+    unit, and 4d-ii-b, the CLIENT unit** (#567's review round 1, finding 4):
+    4d-ii-a carries every item of the inventory below EXCEPT the web items
+    enumerated for 4d-ii-b at the end of this bullet, and lands DARK — while
+    the five reservation doors stand, every shape the `countersign-v1`
+    boundary strips or refuses is unrepresentable and the in-command
+    lesser-client refusal fires only under an ACTIVE chain, so the server
+    refuses no deployed browser session and needs no client to ship. The
+    inventory: the role fan-out (§A.1 — every
+    mirror, the policy rows, the web lists (4d-ii-b), the DESIGNATION
+    fan-out, the
     `deciderPush` architect arm, the `deciderPushTarget` arm, `countPending`);
     the four commands (`decisions.forward`, `decisions.countersign`,
     `decisions.disagree` with its two paths,
@@ -3774,25 +3845,28 @@ today's behaviour lives.
     EVERY upgraded process at startup), so a restarted or rolled-back
     pre-4d-ii process is refused at startup and can never claim the sole
     ordered delivery — that is what makes the drain DURABLE rather than a
-    one-time observation; 4d-ii therefore carries this ONE catalog-data
-    migration beside its service change and declares the seam inseparable in
-    its packet for the reason 4c-ii did (the version and the code that
-    declares it must move together); the socket consumer is not bumped.
-    **4d-ii is a CATALOG CHANGE, staged as one**: its new push families and
+    one-time observation; 4d-ii-a therefore carries this ONE catalog-data
+    migration beside its service change and declares the migration seam
+    inseparable in its packet for the reason 4c-ii did (the version and the
+    code that declares it must move together); the socket consumer is not
+    bumped. **4d-ii-a is a CATALOG CHANGE, staged as one**: its new push families and
     widened targeted entries change the sealed external-effect coverage
     hash, and the delivered `OutboxBootstrap` REFUSES to start in
     `OUTBOX_SENDER_MODE=outbox` while the persisted seal differs from the
     compiled catalog, so its staging follows `docs/RUNBOOK.md`'s
     catalog-change sequence, written into the packet as steps: drain the old
-    fleet to zero instances → deploy 4d-ii in legacy/shadow sender mode →
+    fleet to zero instances → deploy 4d-ii-a in legacy/shadow sender mode →
     rebuild projections → `outbox:status` clean → `outbox:seal-external`
     recording the NEW coverage → restart in outbox mode, the startup
     validating the seal — BEFORE 4d-iii. **Still chain-off AND forward-off
     everywhere**, because the reservation stands on all five doors: the unit
     ships every reader and writer while no project can exercise them, which
-    is what makes the previous-release drain a pure operational step. Its
-    STATUS fold SETS `blocking_directive: phase-6-4d-previous-release-drained`.
-    **4d-ii is expected to EXCEED the standard budget and its packet MUST
+    is what makes the previous-release drain a pure operational step.
+    4d-ii-b's STATUS fold — the last unit before the drain — SETS
+    `blocking_directive: phase-6-4d-previous-release-drained`, and the
+    minimum release the directive names is 4d-ii-a's, the server release
+    carrying the bumped consumer contracts.
+    **4d-ii-a is expected to EXCEED the standard budget and its packet MUST
     carry the large-unit evidence** (#560's review round 1, finding 9): it
     declares `<!-- review-size: justified-large -->` with the visible
     restatement, completes all six invariant-matrix rows and the five
@@ -3800,15 +3874,37 @@ today's behaviour lives.
     considered and are stated in that packet, not assumed: the migration
     seam is INSEPARABLE for the reason above (the catalog version and the
     code that declares it move together, as 4c-ii's did); the service/UI
-    seam is inseparable because the `countersign-v1` client boundary (§A.2)
-    makes a server without its client refuse every deployed browser
-    session, and a client without its server ships surfaces no response
-    can populate and no browser proof can drive. What CAN be cut is
-    already outside it: the dark seals (4d-i), the reservation retirement
-    and the standing-writer seals (4d-iii), and the drain.
+    seam is SEPARABLE and TAKEN (#567's review round 1, finding 4): an
+    earlier text claimed the `countersign-v1` boundary makes a server
+    without its client refuse every deployed browser session, which is
+    false under this plan's own staging — while the doors stand the
+    interceptor strips nothing that exists, the architect refusals meet no
+    architect, and the in-command refusal fires only under an active chain
+    no project can have — so 4d-ii-a lands dark behind every existing tab.
+    **4d-ii-b, the CLIENT unit**: the web gateway declaring `countersign-v1`
+    on every API-bound request with the client-boundary `fetch(` tripwire
+    (§A.2); the web role fan-out — the role lists, the decider picker's
+    `architect` designation and the Team role pickers following the shell's
+    `rollout.phase6_4d` read; the Forward affordance; the Inbox
+    `awaiting_countersign` branch and the reader enumeration's web arms
+    under the shared status tripwire; the architect's Decision Log controls
+    (Countersign / Reject back / Forward on); the approval confirmation copy
+    reading `countersignRequired` and the success copy following the
+    returned status; the roster on the consultation surface; the store's
+    handling of the additive fields and the `DecisionForward` DTO; the shell
+    badge rendering `countPending`'s count; and the web arms of P28b, P29c,
+    P30, P31, P33 and P34, its browser proofs driven against the 4d-ii-a
+    server with the doors still standing (the boundary probed BEFORE the
+    role is enabled, as §A.2 states). It carries no migration and declares
+    the marker its size warrants — `justified-large` with the six-row
+    matrix if it exceeds the budget. What CAN be cut is already outside the
+    pair: the dark seals (4d-i), the reservation retirement and the
+    standing-writer seals (4d-iii), and the drain.
 
   - **The drain attestation** — the operator states that every process older
-    than the 4d-ii release is stopped or drained, as an `OPERATOR-ATTESTATION`
+    than the 4d-ii-a release (the server release carrying the bumped
+    consumer contracts; 4d-ii-b is client-only) is stopped or drained, as an
+    `OPERATOR-ATTESTATION`
     on the controlling issue naming the directive and the minimum release,
     carrying no agent-generation marker — the attestation covers processes
     ALREADY RUNNING, which no code can observe; the bumped consumer contracts
