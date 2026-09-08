@@ -2,6 +2,11 @@
 <!-- migration-scope: separated -->
 <!-- correction-owner: claude -->
 
+<!-- The POLICY.md links below are absolute on purpose. GitHub copies this file into a PR
+     DESCRIPTION, where a relative path resolves against /pull/<number> and lands on a
+     repository page instead of the file — and this template no longer restates the scope,
+     marker and ownership rules, so a broken link leaves an author with nothing. -->
+
 ## Objective
 
 One user workflow or one architectural concern:
@@ -16,31 +21,13 @@ One user workflow or one architectural concern:
 
 Replaces: none
 
+Use [docs/POLICY.md](https://github.com/JagPat/PMCvitan/blob/main/docs/POLICY.md) for scope limits, migration seams,
+owner declarations and review continuity. Change the leading markers when that
+contract requires it and explain the concrete boundary in this review unit.
+The checklist and matrix below record evidence against that shared contract.
+
 For an exceptional voluntary replacement, also provide `Replacement reason:`
 with the concrete scope or approach benefit; preserve findings and proof links.
-
-For a PR above 20 files or 1,500 changed lines, replace the first marker with
-`<!-- review-size: justified-large -->` and explain why splitting would make the
-change less safe or less reviewable.
-
-Keep migration review units separate from service/UI changes when there is a
-viable seam. Only replace the second marker with
-`<!-- migration-scope: inseparable -->` when they cannot be reviewed safely
-apart, and explain that boundary in `Migration/service seam`.
-
-Declare which agent will fix this PR's review findings. Replace the third marker
-with `<!-- correction-owner: cursor -->` when a Cursor agent owns the
-corrections; keep `<!-- correction-owner: claude -->` when Claude Code web
-Auto-fix does. The declaration is required, is validated by `review-scope`
-before any expensive job runs, and decides every correction notice the
-controller publishes — an undeclared, unknown, or self-contradicting owner is
-refused, and a `claude/**` branch may only declare `claude`. GitHub can neither
-start a Cursor session nor observe whether one is running, so a Cursor-owned
-finding is routed to Cursor by name with the notice saying exactly that — a
-human resumes it, and the notice never claims the correction has or has not
-begun. Only an undeclared or malformed marker is
-reported as `correction_stalled`. Declaring the wrong owner sends the correction
-to the wrong agent.
 
 ## Pre-review checklist
 
@@ -71,8 +58,6 @@ to the wrong agent.
 
 ## Review continuity
 
-Keep unresolved work on this PR and fix forward until its findings are resolved.
-Review-round count alone never warrants closure or replacement. If a different
-scope or approach makes replacement useful, document that concrete benefit and
-carry every outstanding finding and proof with links in both directions. A new PR
-number is not progress on `main`; all required CI and exact-head review still apply.
+Keep unresolved work on this PR and fix forward under
+[the canonical review-continuity policy](https://github.com/JagPat/PMCvitan/blob/main/docs/POLICY.md#review-continuity-and-scope).
+Any exceptional replacement must explain its benefit and preserve findings and proofs.

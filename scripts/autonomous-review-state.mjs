@@ -1,7 +1,7 @@
-import { isLineageBase } from './lineage-policy.mjs';
+import { CODEX_LOGIN, CODEX_GRAPHQL_LOGIN } from './review-policy.mjs';
+export { CODEX_LOGIN, CODEX_GRAPHQL_LOGIN } from './review-policy.mjs';
 
-export const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
-export const CODEX_GRAPHQL_LOGIN = 'chatgpt-codex-connector';
+import { isLineageBase } from './lineage-policy.mjs';
 
 function timestamp(value, field) {
   const parsed = Date.parse(value);

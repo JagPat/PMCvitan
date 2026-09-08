@@ -1,51 +1,13 @@
-// WHO fixes a review finding on this pull request.
-//
-// The loop had no answer to that question, and answered it anyway. Every
-// finding notice said "Claude Auto-fix handles the review comments" because the
-// sentence was a string literal at the call site. On 2026-08-17 that was told to
-// PR #350, whose corrections belong to a Cursor agent, and to PR #349, whose
-// corrections belong to Claude — the same words, with no reading of either PR.
-//
-// Nothing available to GitHub can INFER the answer. The branch prefix does not
-// carry it (both PRs were on `codex/**`), the PR author is the repository owner
-// in both cases, and a subscription-backed agent session is invisible from
-// here: there is no API that says whether a Claude Auto-fix or a Cursor session
-// is alive, so "is a worker running?" is not a question this repository can ask.
-//
-// So the answer is DECLARED, in the one place both the author and the trusted
-// controller can read: a machine-readable marker in the pull request body. The
-// declaration is validated by the first, cheapest gate, and every downstream
-// notice is derived from it rather than assumed.
-//
-// This module is a LEAF on purpose — it imports nothing — so the scope gate
-// (scripts/review-efficiency.mjs), the review controller
-// (scripts/autonomous-review-gate.mjs) and the correction watchdog
-// (scripts/correction-lease.mjs) can all read one definition of ownership
-// without a cycle.
+import { CORRECTION_OWNERS, AWAKENABLE_FROM_GITHUB, CORRECTION_STALLED } from './review-policy.mjs';
+export { CORRECTION_OWNERS, AWAKENABLE_FROM_GITHUB, CORRECTION_STALLED } from './review-policy.mjs';
 
-export const CORRECTION_OWNERS = ['claude', 'cursor'];
-
-// Which owners GitHub can actually WAKE, under this repository's
-// subscription-only authentication.
-//
-// Claude Code web Auto-fix subscribes to a pull request and receives its comment
-// events, so a marked `@claude` comment reaches that session — this is the same
-// mechanism `scripts/runner-continuation.mjs` already relies on. Nothing here can
-// start a Cursor agent: there is no credential, no dispatch and no webhook this
-// repository owns, and adding one would mean adding an AI credential, which
-// docs/AUTONOMOUS_LOOP.md forbids.
-//
-// An owner outside this set is not a failure to route. It is a correction that
-// GitHub can describe but cannot start, and saying so plainly is the whole point
-// — see `correction_stalled`.
-export const AWAKENABLE_FROM_GITHUB = new Set(['claude']);
-
-// The honest terminal state: a correction is owed, its owner is known (or
-// knowably absent), and no automation can begin it.
-export const CORRECTION_STALLED = 'correction_stalled';
+// Parse a declared owner and render a correction instruction. Supported owners
+// and wake capabilities are defined once in review-policy.mjs, a dependency-free
+// leaf shared with the scope gate and watchdog. Agent session liveness cannot be
+// inferred from a PR author or branch name; docs/POLICY.md states that contract.
 
 const DECLARATION = /<!--\s*correction-owner:\s*([A-Za-z][A-Za-z0-9_-]*)\s*-->/gu;
-// docs/AUTONOMOUS_LOOP.md reserves this prefix for Claude-authored work, so a
+// docs/POLICY.md reserves this prefix for Claude-authored work, so a
 // branch under it declaring another owner contradicts itself. No other prefix
 // implies anything — #349 and #350 are both loop PRs on `codex/**`.
 const CLAUDE_BRANCH_PREFIX = 'claude/';
