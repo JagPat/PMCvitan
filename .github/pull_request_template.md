@@ -2,6 +2,11 @@
 <!-- migration-scope: separated -->
 <!-- correction-owner: claude -->
 
+<!-- The POLICY.md links below are absolute on purpose. GitHub copies this file into a PR
+     DESCRIPTION, where a relative path resolves against /pull/<number> and lands on a
+     repository page instead of the file — and this template no longer restates the scope,
+     marker and ownership rules, so a broken link leaves an author with nothing. -->
+
 ## Objective
 
 One user workflow or one architectural concern:
@@ -16,7 +21,7 @@ One user workflow or one architectural concern:
 
 Replaces: none
 
-Use [docs/POLICY.md](../docs/POLICY.md) for scope limits, migration seams,
+Use [docs/POLICY.md](https://github.com/JagPat/PMCvitan/blob/main/docs/POLICY.md) for scope limits, migration seams,
 owner declarations and review continuity. Change the leading markers when that
 contract requires it and explain the concrete boundary in this review unit.
 The checklist and matrix below record evidence against that shared contract.
@@ -54,5 +59,5 @@ with the concrete scope or approach benefit; preserve findings and proof links.
 ## Review continuity
 
 Keep unresolved work on this PR and fix forward under
-[the canonical review-continuity policy](../docs/POLICY.md#review-continuity-and-scope).
+[the canonical review-continuity policy](https://github.com/JagPat/PMCvitan/blob/main/docs/POLICY.md#review-continuity-and-scope).
 Any exceptional replacement must explain its benefit and preserve findings and proofs.
