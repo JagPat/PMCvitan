@@ -620,7 +620,24 @@ request; `decision.change` leaves the set (ELEVEN actions; the architect's chang
 membership mutations into ledger commands with a NOT NULL `sourceCommandId`, but deployed tabs
 call those routes with no `Idempotency-Key`; all three opt into `synthesizeKeyWhenAbsent: true` —
 the answer `requestChange` took in round 1 — and P29b gains the three no-header arms against the
-4d-ii-a server plus the keyed replay arms. Head `c2e0840` also merged `main` `f050bcd` (#578);
+4d-ii-a server plus the keyed replay arms.
+
+**Root cause, audited (the gate asked for one at this round).** Read across rounds rather than
+within one, findings 2, 3 and 4 are a single failure: an obligation discharged at the site where
+it was REPORTED and never over the set of sites that carry it. Round 1 gave `requestChange` key
+synthesis and left its three sibling writers — same unit, same NOT NULL column — to be found in
+round 3. Round 2 enumerated the `ChangeRequest` row by origin and wrote "member" where the general
+actor-standing contract says standing. §A.1 declared a closed action set and never reconciled it
+against the seals that judge the same acts. So the deliverable beside the four fixes is two rules
+stated over SETS: §A.3 obligation 6 now requires key synthesis AND a no-header probe of EVERY
+ledgered command whose fact carries required provenance, naming the covered writers exhaustively;
+and §A.1 requires its closed set to name, per action, the seal that judges it, so a grant a seal
+would refuse is a defect rather than a discovery. Both would have caught findings 3 and 4 before
+this review. One residual is recorded rather than changed: `decision.withdrawChange` stays in the
+architect set as decided, and is now unreachable (the delivered command admits only the requester
+or a PMC and refuses a `countersign_rejection` request) — inert, not contradictory.
+
+Head `c2e0840` also merged `main` `f050bcd` (#578);
 this correction merges `main` `279499e` (#574), whose `.gitignore` rule supersedes the duplicate
 line this branch carried, leaving the unit docs-only.
 

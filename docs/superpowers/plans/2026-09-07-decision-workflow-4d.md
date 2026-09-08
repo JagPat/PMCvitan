@@ -658,6 +658,57 @@ meet it — and one is the plan still carrying the retired protocol:
 | 3 (P1) the exact architect `ROLE_POLICY` set still listed `decision.change`, so after 4d-iii an architect's standard `requestChange` is admitted at the policy boundary and refused by the origin seal — authorized and denied in two places | §A.1 the action set; P28's equality pin | `decision.change` leaves the architect's set — ELEVEN actions — because the §A.3 contract admits a standard request only from the delivered set the architect is not in, and the architect's change path is `decision.disagree` (`origin = 'countersign_rejection'`); P28's pin now asserts `decision.change` absent and turns RED if it is re-admitted; `decision.withdrawChange` stays as delivered (a command-level check no seal judges) |
 | 4 (P1) 4d-ii-a converts `members.add`/`updateRole`/`remove` into ledger commands writing a `MembershipTransition` with a NOT NULL `sourceCommandId`, but deployed tabs call those routes with no `Idempotency-Key` (`apiGateway.ts`), so under the documented default `executeCommand` takes its ledger-less branch with a null `commandId` and an ordinary add, re-role or removal rolls back at the fact insert — the "dark" claim failing for every open tab until 4d-ii-b ships keys | §A.2 the membership commands; §D 4d-ii-a's inventory; P29b | all three commands opt into `synthesizeKeyWhenAbsent: true` — the same delivered answer `requestChange` took in round 1 — so a keyless call reserves a per-call server key and commits its fact, a keyed call replays exactly once and enforcement still refuses a missing key first; P29b gains the three no-header arms against the 4d-ii-a server (RED against the keyless writer) and the keyed replay arms |
 
+**Root-cause audit of the repeated findings.** The gate asked for one at this
+round, and the four fixes above do not answer it: each is correct and each is
+local. Read across rounds instead of within one, three of them are a single
+failure — **an obligation was discharged at the site where it was reported,
+never over the set of sites that carry it.**
+
+| the obligation | where it was discharged | the site it did not reach |
+|---|---|---|
+| a required `sourceCommandId` needs `synthesizeKeyWhenAbsent` | round 1, finding 2 — `requestChange` / `ChangeRequest` | the three membership commands, same unit, same NOT NULL column (round 3, finding 4) |
+| the `ChangeRequest` row is enumerated by ORIGIN | round 2, finding 2 — the origin split, actor arm written "ACTIVE member" | the membership-less `pmc` the general actor-standing contract already admits (round 3, finding 2) |
+| the architect's authority is an explicit CLOSED set | §A.1 — the enumeration was written and pinned | it was never reconciled against the §A.3 seals that judge the same acts (round 3, finding 3) |
+
+The pattern is not carelessness at any one site; it is that a fix was treated
+as complete when the reported call site was correct. Two rounds of local fixes
+produced a third round of the same defect at the sites the first two did not
+visit, which is precisely the signal a finding count is for.
+
+So this round's deliverable is two rules stated over SETS, not a fourth local
+fix. Both are written into the sections they govern:
+
+- **§A.3 obligation 6 (command provenance) is discharged PER WRITER.** Every
+  command this plan puts on the ledger whose fact carries required provenance
+  opts into `synthesizeKeyWhenAbsent: true` AND carries a probe driving it with
+  no `Idempotency-Key` header — because `COMMAND_KEY_ENFORCED` is unset by
+  default, so an unkeyed call takes `executeCommand`'s ledger-less branch and
+  `run` receives a null `commandId` that a required column then rejects, on a
+  call the current API accepts. The covered writers are named exhaustively
+  there (`decisions.requestChange`; `members.add`, `members.updateRole`,
+  `members.remove`), so a writer added later is added to a list rather than
+  discovered by a reviewer.
+- **§A.1's closed set is RECONCILED against the seals, not merely declared.**
+  Each granted action names the §A.3 seal that judges the act it authorizes,
+  and a grant whose seal would refuse the actor is a defect in this plan —
+  fixed by narrowing the grant or by deliberately widening the seal with its
+  probes, never by leaving both standing on their own pages.
+
+Those two sentences would have caught findings 3 and 4 of this round before it
+was requested, and that is the test this audit sets itself.
+
+**One residual, recorded rather than changed.** Finding 3 removes
+`decision.change` and leaves `decision.withdrawChange` in the architect's set,
+on the stated ground that no seal judges it. That is right about the seal, and
+the grant is now unreachable for a different reason: the delivered
+`withdrawChange` admits only the requester or a `pmc`
+(`decisions.service.ts`), refuses a `countersign_rejection` request outright,
+and — with `decision.change` gone — an architect can never be a standard
+request's requester. It grants no reachable call. It is left as decided,
+because it is inert rather than contradictory and re-opening a deliberate
+choice from the same round is churn; a reviewer who wants the set to contain
+only reachable actions should say so and it comes out.
+
 **Docs-only.** No schema, no migration, no runtime code, no test change, no
 4d implementation. Contractor-capture units 1–6 and the saved UX and
 performance work stay Board-gated and are not mixed in.
@@ -810,7 +861,17 @@ inspection, daily-log, media and drawing action — the architect's authority
 is the decision workflow and nothing adjacent. P28's `route-policy.test.ts`
 arm asserts EQUALITY: for every action in `ROLE_POLICY`, `architect` is in
 its role list iff the action is one of the eleven, so an accidental widening
-onto a commercial or payment action and an omitted read both fail the pin. **The EXISTING targeted catalog entries
+onto a commercial or payment action and an omitted read both fail the pin.
+
+**And the set is RECONCILED against the seals, not merely declared** (#572's
+round-3 root-cause audit). An equality pin proves this list matches
+`ROLE_POLICY`; it cannot prove the list matches what the §A.3 seals will
+ALLOW, and that gap is exactly where `decision.change` sat for three rounds —
+granted here, refused by the origin seal, each page self-consistent. So every
+action granted here names the seal that judges the act it authorizes, and a
+grant whose seal would refuse the actor is a defect in this plan: fixed by
+narrowing the grant or by deliberately widening the seal WITH its probes,
+never by leaving both standing. **The EXISTING targeted catalog entries
 whose ceilings the role must enter** are widened too: `decision.published`
 and `decision.consultation_requested` in `EXTERNAL_EFFECTS` list every role
 a decider or consultee can hold, and their emitters persist the named
@@ -2664,7 +2725,26 @@ before it. Each fact table carries:
    the project-contained composite FK to `CommandExecution`, the one-use
    `(projectId, sourceCommandId)` UNIQUE, and the deferred result-binding
    constraint trigger tying the row to the reserved command's RESULT and
-   the receipt's `actorId` to the row's recorded actor. **Extended for
+   the receipt's `actorId` to the row's recorded actor.
+
+   **Discharged PER WRITER, not per finding** (#572's round-3 root-cause
+   audit). Every command this plan puts on the ledger whose fact carries
+   required provenance ALSO opts into `synthesizeKeyWhenAbsent: true` and
+   carries a probe that drives it with NO `Idempotency-Key` header. The reason
+   applies to all of them identically: `COMMAND_KEY_ENFORCED` is unset by
+   default, so an unkeyed call takes `executeCommand`'s LEDGER-LESS branch and
+   `run` receives a null `commandId`, which a required `sourceCommandId` then
+   rejects — on a call the current API accepts. Synthesis reserves a per-call
+   server key and changes nothing else (two unkeyed retries still each run
+   once, a client key still replays exactly once, enforcement still refuses a
+   missing key BEFORE synthesis is considered); requiring the header instead
+   would be a new client error on a valid call, and is rejected on that
+   ground. The covered writers, exhaustively: `decisions.requestChange` (round
+   1, finding 2) and `members.add`, `members.updateRole`, `members.remove`
+   (round 3, finding 4). Two rounds found the same defect at different call
+   sites because the first fix was made only where it was reported; the list
+   is here so a writer added later joins it rather than being discovered by a
+   reviewer. **Extended for
    BUNDLES**: the delivered `phase6_t4c_provenance_bound` requires the
    receipt's `resultRef` to name the row itself, which a command writing ONE
    fact satisfies and a command writing a bundle (forward-on: request +
