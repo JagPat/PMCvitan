@@ -28,6 +28,17 @@ export interface InspectionChecklistStructure {
  * before storing an `inspectionId`. Per-viewer/role visibility and each item's fresh signed evidence paths
  * are baked at read time ({@link bakeInspections}); the boundary CI check enforces the encapsulation.
  */
+/**
+ * Is this stored projection base the shape THIS release's serializer produces? Every entry of a v2
+ * base carries `assigneeId` (a string or an explicit `null`); a v1 entry has no such key. Checked by
+ * key presence rather than truthiness, because `null` is a legitimate v2 value meaning unassigned.
+ */
+function isCurrentInspectionsBase(base: InspectionsBase): boolean {
+  const entries = (base as unknown as { inspections?: unknown[] }).inspections;
+  if (!Array.isArray(entries)) return false;
+  return entries.every((e) => e !== null && typeof e === 'object' && 'assigneeId' in (e as object));
+}
+
 @Injectable()
 export class InspectionsQueryService {
   constructor(
@@ -72,6 +83,23 @@ export class InspectionsQueryService {
     // A caught-up generation with NO row yet is not authoritative-empty data — fall back to canonical.
     if (!row) return { slices: empty, generation: null };
     const base = row.dto as unknown as InspectionsBase;
+    // A V1-SHAPED ROW INSIDE A V2 GENERATION IS NOT SERVABLE.
+    //
+    // `catalogVersion` fences the GENERATION, and that is not the same as fencing its ROWS. During a
+    // rolling deploy a previous-release relay is still running; it re-syncs the consumer catalog only
+    // at startup, so it can apply the next `inspection.*` event and rewrite this row with the v1
+    // serializer AFTER a v2 generation is active. The generation stays stamped v2 and unfenced (the
+    // writer fence installed by `20271126000000` covers `DecisionProjection` only), so the version
+    // gate above lets it through — and every entry then lacks `assigneeId`, which `bakeInspections`
+    // reads as "assigned to nobody I can name" and filters out, emptying the field view for every
+    // non-PMC viewer.
+    //
+    // The stored bytes answer the question the stamp cannot, so ask them: a v2 base carries the key
+    // on every entry. A row that does not is from an older writer whatever the generation says, and
+    // the caller falls back to the canonical live read, which is always current. This is the read
+    // half of the fence; the write half (an `InspectionsProjection` writer trigger mirroring the
+    // decisions one) is a separate unit, and until it exists this is what keeps wrong data unserved.
+    if (!isCurrentInspectionsBase(base)) return { slices: empty, generation: null };
     return { slices: bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId }), generation: gen.generation };
   }
 

@@ -159,33 +159,63 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
   });
 
   /**
-   * The other half of the assignee rule: a CONTRACTOR is an eligible assignee (the reject path's own
-   * CORRECTIVE_ROLES), so their own corrective work must be submittable BY THEM — and by nobody else,
-   * including the engineer who would otherwise have picked it up. The route ceiling admits the role;
-   * this is the narrowing that keeps the ceiling from becoming the rule, so an unassigned site
-   * checklist stays engineer/PMC work.
+   * A CONTRACTOR CANNOT BE ASSIGNED CORRECTIVE WORK, and that is the point rather than an omission.
+   * `assigneeId` decides who may submit, so an assignee who cannot reach the submit route is work
+   * nobody can hand back. An earlier head widened the route ceiling to admit contractors instead;
+   * that left authority without a surface — no checklist screen, no inbox task, a redirected route
+   * and no `media.upload` grant, so a FAILED item's mandatory photo is unattachable. The dead end is
+   * closed at its source: `decide` refuses the assignment, naming the roles that can do the work.
    */
-  it('submit: a CONTRACTOR assignee submits their own corrective work, but not an unassigned checklist', async () => {
+  it('decide: a CONTRACTOR cannot be named the assignee, and the refusal names the eligible role', async () => {
     const { p, pmcA } = await freshProject();
     const con = `it-inidem-u-conA-${projSeq}`;
     await t.prisma.user.create({ data: { id: con, projectId: p, role: 'contractor', name: 'Con A', email: `${con}@t.local` } });
     await t.prisma.membership.create({ data: { projectId: p, userId: con, role: 'contractor', status: 'active' } });
-    const asCon = (): AuthUser => ({ sub: con, role: 'contractor', projectId: p }) as AuthUser;
 
-    // an UNASSIGNED checklist is not the contractor's to submit
-    await svc.create(p, createInput({ title: 'Site QA (open)' }), asPmc(pmcA, p), 'k-con-open');
-    const open = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Site QA (open)' }, include: { items: true } });
-    expect(open.assigneeId).toBe(null);
-    await expect(svc.submit(p, open.id, { items: open.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) }, asCon(), 'k-con-open-sub'))
-      .rejects.toBeInstanceOf(ForbiddenException);
-    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: open.id } })).submitted).toBe(false);
+    await svc.create(p, createInput({ title: 'Rework QA' }), asPmc(pmcA, p), 'k-con-assign');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Rework QA' }, include: { items: true } });
+    await svc.submit(p, insp.id, { items: insp.items.map((it) => ({ id: it.id, state: 'fail' as const, photos: 0, note: 'x' })) }, asPmc(pmcA, p), 'k-con-sub')
+      .catch(() => undefined); // a failed item needs evidence; the assignment guard below is what this probe is about
+    await svc.submit(p, insp.id, { items: insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) }, asPmc(pmcA, p), 'k-con-sub2');
 
-    // their OWN assigned corrective work is accepted — the deadlock this closes
-    await svc.create(p, createInput({ title: 'Rework QA' }), asPmc(pmcA, p), 'k-con-assigned');
-    const mine = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Rework QA' }, include: { items: true } });
-    await t.prisma.inspection.update({ where: { id: mine.id }, data: { assigneeId: con } });
-    await svc.submit(p, mine.id, { items: mine.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) }, asCon(), 'k-con-assigned-sub');
-    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: mine.id } })).submitted).toBe(true);
+    await expect(svc.decide(p, insp.id, { approve: false, rejectedItemIds: [insp.items[0].id], assigneeId: con }, asPmc(pmcA, p), 'k-con-decide'))
+      .rejects.toThrow(/active engineer/i);
+    // and the refusal is precise, not merely strict: no re-inspection was created
+    expect(await t.prisma.inspection.count({ where: { projectId: p, reinspectionOfId: insp.id } })).toBe(0);
+  });
+
+  /**
+   * ROUND 4 — `assigneeId` IS AN AUTHORITY CLAIM, SO THE DATABASE FREEZES IT.
+   *
+   * The read gates on it and `submit` accepts only its holder, but the column was freely updateable:
+   * an alternate writer could move it from A to B and B would then pass the guard and be recorded as
+   * having done A's corrective work — the ownership claim rewritten with no attributable transition.
+   * The service never updates it (it is set once, by the rejection that creates the re-inspection),
+   * so the freeze costs no legitimate path and every other UPDATE on the row still passes.
+   */
+  it('assigneeId is frozen at the database: a hostile reassignment is rejected, ordinary updates are not', async () => {
+    const { p, pmcA } = await freshProject();
+    const engA = `it-inidem-u-frzA-${projSeq}`;
+    const engB = `it-inidem-u-frzB-${projSeq}`;
+    for (const [id, name] of [[engA, 'Frz A'], [engB, 'Frz B']] as const) {
+      await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
+    }
+    await svc.create(p, createInput({ title: 'Frozen QA' }), asPmc(pmcA, p), 'k-frz');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Frozen QA' }, include: { items: true } });
+    await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: engA } }); // the one legitimate set
+
+    // the forgery the guard depends on being impossible: substituting B for A, and erasing A
+    await expect(t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: engB } }))
+      .rejects.toThrow(/assigneeId is frozen/i);
+    await expect(t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: null } }))
+      .rejects.toThrow(/assigneeId is frozen/i);
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } })).assigneeId).toBe(engA);
+
+    // precise, not merely strict: the ordinary lifecycle write that leaves the column alone succeeds
+    await svc.submit(p, insp.id, { items: insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) },
+      { sub: engA, role: 'engineer', projectId: p } as AuthUser, 'k-frz-sub');
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } })).submitted).toBe(true);
   });
 
   it('submit: an UNASSIGNED checklist is unchanged — the role gate is the whole guard, as before', async () => {

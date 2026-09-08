@@ -2373,17 +2373,24 @@ export const useStore = create<Store>()(
         set((s) => {
           s.outbox.push({ t: 'uploadEvidence', scope: ctx.scope, clientKey });
           s.syncQueue.push('Evidence photo');
-          // The local thumbnail belongs to the checklist the photo was CAPTURED on, and the edit
-          // slot can have moved during the IndexedDB write. `evidenceContextStillCurrent` guards
-          // the SCOPE (project + generation), which a switch between two checklists of the same
-          // project does not change — so without this the mirror lands on whatever checklist is in
-          // the slot now, at the same index, showing one inspection's photo under another. The
-          // durable row is unaffected either way: its `meta` names the captured inspection and item,
-          // so the upload and the reconcile stay correct and the count below still belongs to this
-          // scope's pending set. Only the optimistic thumbnail is skipped, and the next refresh
-          // renders it in the right place.
-          const it = s.checklist?.id === c.id ? s.checklist.items[idx] : undefined;
-          if (it && it.id === item.id) { it.photos += 1; it.evidence = [...(it.evidence ?? []), dataUrl]; }
+          // The local thumbnail belongs to the checklist the photo was CAPTURED on, and the edit slot
+          // can have moved during the IndexedDB write. `evidenceContextStillCurrent` guards the SCOPE
+          // (project + generation), which a switch between two checklists of the same project does
+          // not change — so addressing the slot lands one inspection's photo under another.
+          //
+          // DECLINING to write was not enough. Offline there is no refresh to correct it: the
+          // engineer switches back and the captured checklist still reads `photos: 0` with no
+          // evidence, so a FAILED item cannot be queued for submission until signal returns, even
+          // though its durable row is already queued. So the mirror is applied to the CAPTURED
+          // checklist wherever it lives — the slot when it is still there, and its own
+          // `openChecklists` entry when the engineer has moved on. Both are the same inspection;
+          // `overlayChecklistMarks` and `ownerOfEditSlot` reconcile them on the next apply.
+          const mirror = (target: Checklist | undefined): void => {
+            const it = target?.items[idx];
+            if (it && it.id === item.id) { it.photos += 1; it.evidence = [...(it.evidence ?? []), dataUrl]; }
+          };
+          if (s.checklist?.id === c.id) mirror(s.checklist);
+          mirror(s.openChecklists.find((o) => o.id === c.id));
           s.pendingEvidenceCount += 1;
         });
         persistOutbox();

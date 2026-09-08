@@ -1342,6 +1342,20 @@ describe('replay lifecycle', () => {
     expect(rows.find((r) => r.inspectionId === 'INSP-90')?.inspectionItemId).toBe('item-1');
     // and it is queued for upload in this scope
     expect(s().pendingEvidenceCount).toBe(1);
+
+    // ROUND 4 — AND IT LANDED ON THE CHECKLIST IT WAS CAPTURED ON.
+    //
+    // Declining to write to the wrong checklist was only half the rule. OFFLINE there is no refresh
+    // to put it right: the captured checklist keeps `photos: 0` with no evidence, so a FAILED item
+    // (this one is failed) cannot be queued for submission until signal returns — even though its
+    // durable row is already queued. The mirror belongs on the captured checklist's own outstanding
+    // entry, which is exactly where the engineer finds it when they switch back.
+    const back = s().openChecklists.find((c) => c.id === 'INSP-90')!;
+    expect(back.items[0].photos).toBe(1);
+    expect(back.items[0].evidence ?? []).toEqual([PX]);
+    // switching back shows it, so the failed item is submittable while still offline
+    s().selectChecklist('INSP-90');
+    expect(s().checklist?.items[0].photos).toBe(1);
   });
 
 });

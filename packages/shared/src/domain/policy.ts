@@ -187,15 +187,16 @@ export const ROLE_POLICY = {
   'phase.manage': ['pmc'],
   'node.manage': ['pmc'],
   'inspection.create': ['pmc'],
-  // A re-inspection is CORRECTIVE work assigned to whoever submitted the rejected original, and the
-  // reject path admits an active engineer OR CONTRACTOR as that assignee. With the route ceiling at
-  // engineer|pmc, a contractor's own remedial work was unsubmittable by ITS assignee and — once the
-  // service began refusing a non-assignee — by anybody else either, so the correction chain dead-
-  // ended. The ceiling admits the contractor; `InspectionsService.submit` narrows it — a contractor may
-  // submit ONLY an inspection assigned to them. That ownership relation is exactly what the
-  // contractor-capture staging below is fail-closed for LACKING — `assigneeId` is a server-held tie
-  // between the record and the calling party, so no contractor can reach another party's checklist.
-  'inspection.submit': ['engineer', 'pmc', 'contractor'],
+  // Deliberately NOT widened to `contractor`, and `CORRECTIVE_ROLES` is narrowed to match.
+  //
+  // An earlier head granted it, because `decide` admitted a contractor assignee whose work no
+  // caller could then submit. That grant was the wrong half of the fix: authority without a
+  // surface. A contractor has no checklist screen (`screensFor`), no inbox checklist task, a
+  // redirected `/site/checklist` route, and no `media.upload` grant — so a contractor assignee
+  // marking an item FAILED cannot attach the photo `submit` requires and could never finish the
+  // work. Building that surface is a product addition, not a correction to a read-path defect.
+  // The dead end is closed at its source instead: corrective work is assigned to an engineer.
+  'inspection.submit': ['engineer', 'pmc'],
   'inspection.decide': ['pmc'],
   'dailyLog.start': ['engineer', 'pmc'],
   'dailyLog.addMaterial': ['engineer', 'pmc'],

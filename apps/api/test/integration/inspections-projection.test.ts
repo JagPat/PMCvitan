@@ -239,6 +239,47 @@ describe('Phase 2 Task 10 (Module 3) — inspections projection == live slices, 
     expect(served.checklist?.title).toBe('Legacy Slab QA'); // the engineer's field view is NOT empty
   });
 
+  /**
+   * ROUND 4 — A V1-SHAPED ROW INSIDE A V2 GENERATION IS REFUSED.
+   *
+   * The version stamp fences the GENERATION, not its rows. A previous-release relay re-syncs the
+   * consumer catalog only at startup, so during a rolling deploy it can apply the next inspection
+   * event and rewrite this row with the v1 serializer AFTER the v2 generation is active. Nothing
+   * marks that: the generation is still stamped v2 and still unfenced, because the writer fence
+   * covers `DecisionProjection` only. The version gate therefore passes it, and every entry lacking
+   * `assigneeId` empties the field view for every non-PMC viewer.
+   *
+   * This is that exact row — current generation, current version, older contents — and the read must
+   * refuse it on the bytes rather than the stamp.
+   */
+  it('round 4: a v2 generation whose ROW was rewritten by a v1 writer is refused, and the read serves LIVE', async () => {
+    const p = await freshProject();
+    const eng = (await t.prisma.membership.findFirstOrThrow({ where: { projectId: p, role: 'engineer' } })).userId;
+    await createChecklist(p, 'Rolling Deploy QA', ['Rebar']);
+    await applyProjection(p);
+    const fresh = await query.projectionSlice(p, 'engineer', eng);
+    expect(fresh.generation).toBe(1);
+    expect(fresh.slices.checklist?.title).toBe('Rolling Deploy QA');
+
+    // the previous release's relay rewrites the row — and stamps NOTHING
+    const row = await t.prisma.inspectionsProjection.findFirstOrThrow({ where: { projectId: p } });
+    const v1 = (row.dto as { inspections: Array<Record<string, unknown>> });
+    for (const e of v1.inspections) delete e.assigneeId;
+    await t.prisma.inspectionsProjection.update({
+      where: { generationId_projectId: { generationId: row.generationId, projectId: p } },
+      data: { dto: v1 as never },
+    });
+    const gen = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: INSPECTIONS_PROJECTION, projectId: p } });
+    expect(gen.catalogVersion).toBe(2); // the stamp still says current
+    expect(gen.fencedAt).toBeNull();    // and nothing fenced it
+
+    const stale = await query.projectionSlice(p, 'engineer', eng);
+    expect(stale.generation).toBeNull();          // refused on its CONTENTS
+    const served = await query.moduleInspections(p, 'engineer', eng);
+    expect(served.source).toBe('live');
+    expect(served.checklist?.title).toBe('Rolling Deploy QA'); // the engineer still sees their work
+  });
+
   it('GET …/inspections serves the module read (live fallback while the projection has no generation)', async () => {
     const pid = f.projectA.id;
     const token = t.issueProjectToken(f.memberUser.id, pid, 'pmc');

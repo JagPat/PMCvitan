@@ -24,10 +24,23 @@ import { ActivityParticipant } from '../activities/activity.participant';
 /** Corrective work is executed by these roles — a reinspection assignee must hold one
  *  as an ACTIVE membership (a PMC may assign themselves EXPLICITLY; see decide()).
  *
- *  EXPORTED because `inspection.submit`'s route ceiling must admit every one of them: an assignee who
- *  cannot reach `submit` is corrective work nobody can ever hand back. `inspections.contract.test.ts`
- *  pins the ceiling against THIS constant, so widening either set without the other fails there. */
-export const CORRECTIVE_ROLES = ['engineer', 'contractor'];
+ *  CONTRACTOR IS DELIBERATELY ABSENT, and this is the narrower half of a correction.
+ *  `assigneeId` decides who may submit, so an assignee who cannot REACH `submit` is corrective work
+ *  nobody can hand back — the dead end an earlier head created by adding the guard while the route
+ *  ceiling stayed engineer|pmc. Widening the ceiling looked like the fix and was not: a contractor
+ *  has no checklist screen, no inbox task, a redirected route and no `media.upload` grant, so a
+ *  FAILED item's mandatory photo is unattachable and the work still cannot be finished. Until that
+ *  surface exists as its own unit, the assignee set is the roles that can actually do the work.
+ *
+ *  EXPORTED so `inspections.contract.test.ts` can pin the ceiling against THIS constant: every role
+ *  a rejection may assign must be able to reach the submit route. */
+export const CORRECTIVE_ROLES = ['engineer'];
+
+/** The assignee set as prose, DERIVED from {@link CORRECTIVE_ROLES} so a refusal can never promise a
+ *  role the rule refuses. Rendering it by hand is how "engineer or contractor" outlived the set. */
+const CORRECTIVE_ROLES_PHRASE = CORRECTIVE_ROLES.length === 1
+  ? `an active ${CORRECTIVE_ROLES[0]}`
+  : `an active ${CORRECTIVE_ROLES.slice(0, -1).join(', ')} or ${CORRECTIVE_ROLES[CORRECTIVE_ROLES.length - 1]}`;
 
 /** Default correction window: decide-day + N civil days (PMC-overridable per decide). */
 const DEFAULT_DUE_IN_DAYS = 3;
@@ -124,18 +137,12 @@ export class InspectionsService {
     // name on somebody's remedial work. No PMC exemption: the reject path's own rule is that a PMC
     // takes the work by naming THEMSELVES the assignee (`pmcSelfExplicit`), which this then honours.
     //
-    // The two halves are stated separately because the route ceiling and the assignee set are not the
-    // same set. `decide` admits an active engineer OR CONTRACTOR as the assignee, so the ceiling now
-    // admits a contractor too (policy) and the narrowing lives here: a contractor may submit ONLY work
-    // assigned to them. Without the second arm the widened ceiling would hand every contractor on the
-    // project the site's UNASSIGNED checklists, which was never theirs to submit — the ceiling is a
-    // ceiling, not the rule.
-    if (insp.assigneeId) {
-      if (insp.assigneeId !== user.sub) {
-        throw new ForbiddenException('This inspection is assigned to someone else — only its assignee can submit it.');
-      }
-    } else if (user.role === 'contractor') {
-      throw new ForbiddenException('An unassigned checklist is submitted by the site engineer or the PMC — this one is not assigned to you.');
+    // Every role `decide` may assign can reach this route (CORRECTIVE_ROLES is a subset of the
+    // `inspection.submit` ceiling, pinned in CI), so an assigned inspection always has exactly one
+    // caller who can submit it and no assignment can dead-end. An UNASSIGNED checklist is unchanged —
+    // the role gate on the route is the whole guard, as before.
+    if (insp.assigneeId && insp.assigneeId !== user.sub) {
+      throw new ForbiddenException('This inspection is assigned to someone else — only its assignee can submit it.');
     }
     if (insp.items.length === 0) throw new BadRequestException('This inspection has no checklist items to submit.');
 
@@ -289,8 +296,8 @@ export class InspectionsService {
       if (!assigneeId) {
         throw new BadRequestException(
           insp.closing
-            ? 'This closing inspection has no recorded completer to assign — name an eligible assignee (an active engineer or contractor).'
-            : 'No assignee could be derived — name an eligible assignee (an active engineer or contractor).',
+            ? `This closing inspection has no recorded completer to assign — name an eligible assignee (${CORRECTIVE_ROLES_PHRASE}).`
+            : `No assignee could be derived — name an eligible assignee (${CORRECTIVE_ROLES_PHRASE}).`,
         );
       }
 
@@ -326,8 +333,8 @@ export class InspectionsService {
           if (!eligible) {
             throw new BadRequestException(
               input.assigneeId === undefined
-                ? 'The recorded completer no longer holds an ACTIVE engineer or contractor membership on this project — name an explicit eligible assignee.'
-                : 'The assignee must hold an ACTIVE engineer or contractor membership on this project (a PMC may assign themselves explicitly).',
+                ? `The recorded completer no longer holds ${CORRECTIVE_ROLES_PHRASE} membership on this project — name an explicit eligible assignee.`
+                : `The assignee must hold ${CORRECTIVE_ROLES_PHRASE} membership on this project (a PMC may assign themselves explicitly).`,
             );
           }
           // CAS: one decision wins; the loser gets a deterministic 409
