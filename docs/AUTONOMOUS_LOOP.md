@@ -29,7 +29,7 @@ This repository is designed to progress without the owner's laptop or technical 
 2. Claude starts from latest `origin/main`, records the base SHA, opens a draft PR, enables web Auto-fix, and remains subscribed.
 3. GitHub first runs the two dependency-free gates `review-scope` and `battery-plan`, then requires `web`, `api`, `e2e`, `api-e2e`, and `upgrade-proof`. An unjustified broad review unit stops before the expensive jobs. A first product-CI failure receives one GitHub-native failed-job retry; deterministic `review-scope` failures do not. A second product failure remains draft and blocked for a real correction. When all seven pass on the current head, the trusted default-branch workflow sets `codex-current-head` pending and marks the draft ready.
 4. Marking the PR ready triggers Codex. The same exact-head workflow run polls that one invocation to its terminal result and accepts only evidence from `chatgpt-codex-connector[bot]` for the current SHA and review cycle. Review and review-comment webhooks never start or mutate the merge workflow.
-5. A current-head finding fails `codex-current-head` and returns the PR to draft. The PR's DECLARED correction owner reproduces the complete first-round finding set and may push one coherent correction; that push invalidates every prior clearance. If the correction head also receives findings, the trusted owner stops that PR and requires a newly scoped replacement from current `main`.
+5. A current-head finding fails `codex-current-head` and returns the PR to draft. The PR's DECLARED correction owner reproduces the complete finding set and fixes forward on the same PR; every push invalidates prior clearance. Further findings require further corrections, not automatic closure or replacement.
 6. A fresh current-head clean Codex signal succeeds `codex-current-head`. GitHub then squash-merges that exact reviewed SHA immediately when the PR is clean. If GitHub still reports a waiting state, the controller queues squash auto-merge with the same expected head OID; a clean-state race retries the exact-SHA merge once. Missing CI, stale evidence, timeout, or inactive authoring all fail closed.
 7. The merge controller explicitly dispatches the trusted handoff workflow because GitHub suppresses ordinary workflow events produced by `GITHUB_TOKEN`. The dispatch is retried three times, and an hourly GitHub-side watchdog drains the durable cursor if the immediate dispatch is interrupted. The handoff waits for a queued merge when necessary, always drains merged work and conflict state before rescheduling an open wait target, and posts one marked `@claude` continuation. Coolify deploys `main`; the runner updates `docs/STATUS.md` and begins the next work item only after merge.
 
@@ -67,14 +67,13 @@ This repository is designed to progress without the owner's laptop or technical 
 - Claude self-audits those rows before the first review. Codex performs one
   comprehensive first pass and batches all findings. Correction reviews cover
   the delta, prior findings, and affected adjacent invariants.
-- After two distinct Codex finding-bearing heads, the current PR is exhausted:
-  no third correction head is accepted. Close it and open a smaller replacement
-  from current `main`, limited to the unresolved review unit and carrying
-  `Replaces: #<closed-pr>` in the body. Historical convergence packets and
-  trailers cannot reset this count.
-- The replacement receives a fresh comprehensive review and the full applicable
-  CI battery. Resetting the PR bounds accumulated patch risk; it does not waive,
-  dismiss, or downgrade any finding.
+- Keep unresolved PRs open and fix forward, regardless of how many heads have
+  received findings. Keep one correction owner and preserve the review history.
+- A replacement requires a concrete benefit from changing scope or approach, with
+  every outstanding finding and proof carried forward and both PRs linked. The
+  user superseded the automatic two-head close-and-replace rule on 2026-09-08.
+  Opening a replacement is not progress on `main`; only merged changes advance it.
+  Required CI and independent exact-head review remain mandatory.
 
 No human approval is required. The owner may interrupt or redirect the loop, but is not a technical gate.
 
@@ -123,8 +122,8 @@ The watchdog opens a lease when the exact head's required `codex-current-head`
 status is a **failure someone owes a correction for**, decided by the status
 PREFIX the gate writes — `review:`, `scope:`, `ci:` — never by the sentence after
 it. An earlier draft matched the two Codex-finding sentences and so never saw the
-review-round-limit failure, the one state whose remedy is a replacement rather
-than another head. `recovery:` is the gate retrying itself and opens no lease.
+review-round-limit failure. That historical rule is now retired; its old failures
+request fresh gate evaluation rather than an owner replacement. `recovery:` is the gate retrying itself and opens no lease.
 
 Two refinements sit on top of that without weakening it: the prefix decides
 WHETHER a correction is owed, where a miss means silence; the sentence may refine
@@ -312,22 +311,13 @@ Each of these cost the loop a round or a cycle, and each was a case of trusting 
 signal that does not carry the thing it appears to carry. They are recorded so the
 next reader pays the cost once rather than again.
 
-### The round budget is gate state — read it at the moment of acting
+### Review continuity supersedes the former round budget
 
-A Codex review comment arriving is **not** evidence that a correction round is
-available. The budget is `REVIEW_RESET_AFTER_FINDING_HEADS = 2` finding-bearing
-heads, and the gate's own `<!-- autonomous-review-state -->` comment plus the
-`codex-current-head` status on the exact SHA are what say where a unit stands.
-
-On PR #401 the gate recorded `replacement_required` at 02:08 and a third head was
-pushed at 02:18 in response to the review comments, described in a PR comment as
-"correction round 1". It was not — both heads had already drawn findings. The
-correct action was to close and open a replacement, which is what eventually
-happened, with a wasted head and a misleading comment in between.
-
-**Before acting on any finding, re-read the gate state.** Not what you concluded a
-turn earlier, and not what a scheduled check-in written earlier says: those are
-snapshots of a value that moves.
+The former two-head rule caused unresolved work to move through replacement PRs
+without advancing `main`. The user retired that rule on 2026-09-08. Historical
+`replacement_required` comments and labels are not instructions to close a PR.
+Read current findings and gate state, fix forward with one owner, and verify the
+new head. Repeated findings warrant a root-cause audit, not a new PR number.
 
 ### PR-body markers are invisible in every rendered view
 
@@ -504,22 +494,22 @@ PR before the laptop is unavailable. If that subscription-backed session stops,
 the GitHub gate deliberately leaves the PR unmerged rather than silently falling
 back to an unreviewed path.
 
-## Review-round reset
+## Review continuity
 
-The round limit applies uniformly to code, migrations, UI work, and documentation.
-After the first finding-bearing head, the author may make one batched correction
-that reproduces and addresses the complete set. If that correction head also has a
-finding, the trusted owner publishes `replacement_required`, returns the PR to
-draft, and does not invoke Codex again for another head on that PR.
+The gate records review history without rejecting another correction head merely
+because earlier heads received findings. Current-head findings still fail
+`codex-current-head` and return the existing PR to draft. The watchdog routes the
+same declared owner to fix forward; it never orders closure based on a round count.
+Obsolete round-limit failures request the existing gate recovery workflow, which
+rechecks CI and current-head review rather than clearing the status directly.
 
-The author closes the exhausted PR and starts from current `main`. The replacement
-body declares `Replaces: #<closed-pr>`, carries forward every unresolved finding
-and its reproduction, and narrows the diff to one reviewable unit. Work already
-merged to `main` is not replayed. Unrelated service, UI, refactor, or migration work
-moves to separate PRs; migration and service/UI code remain together only when the
-template records why no safe compatibility seam exists.
+Historical replacement labels no longer block unrelated `Replaces: none` work.
+Explicit replacement declarations retain their existing provenance checks so
+previously carried findings stay traceable. A replacement is exceptional and must
+explain a concrete scope or approach benefit; it receives full applicable CI and a
+fresh comprehensive review. No finding is dismissed and no clean signal is inherited.
 
-This is a review-unit reset, not a finding reset. The replacement runs the full
-applicable CI battery, receives a fresh comprehensive Codex review, and still fails
-closed on any current-head finding. A convergence packet, commit trailer, extra
-commit, or body edit on the exhausted PR cannot create another review round.
+Voluntary replacements without a historical round-limit label must include a
+concrete `Replacement reason:` alongside `Replaces: #N`; the source must be a
+closed, unmerged PR from this repository targeting `main`, with findings and
+proofs preserved in both PRs. Do not replace an already settled source.
