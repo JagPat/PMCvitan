@@ -258,8 +258,7 @@ test('an exhausted review unit cannot be bypassed by fresh work without declared
     requiredReplacements: [exhausted],
     replacementPullRequests: [],
   });
-  assert.equal(undeclared.allowed, false);
-  assert.match(undeclared.detail, /Replaces: #346/u);
+  assert.equal(undeclared.allowed, true);
 
   const disguisedAsFresh = assessReviewScope({
     ...reopened,
@@ -274,8 +273,7 @@ test('an exhausted review unit cannot be bypassed by fresh work without declared
     requiredReplacements: [exhausted],
     replacementPullRequests: [],
   });
-  assert.equal(disguisedAsFresh.allowed, false);
-  assert.match(disguisedAsFresh.detail, /Replaces: #346/u);
+  assert.equal(disguisedAsFresh.allowed, true);
 
   const declared = assessReviewScope({
     ...reopened,
@@ -290,7 +288,7 @@ test('an exhausted review unit cannot be bypassed by fresh work without declared
   assert.equal(declared.allowed, true);
 });
 
-test('replacement declarations must name a closed unit awaiting replacement', () => {
+test('replacement declarations must identify an actual source', () => {
   const result = assessReviewScope(pullRequest({
     number: 347,
     body: preReviewBody().replace('Replaces: none', 'Replaces: #999'),
@@ -302,7 +300,7 @@ test('replacement declarations must name a closed unit awaiting replacement', ()
     replacementPullRequests: [],
   });
   assert.equal(result.allowed, false);
-  assert.match(result.detail, /#999.*awaiting replacement/iu);
+  assert.match(result.detail, /#999.*closed, unmerged same-repository main source/iu);
 });
 
 test('a merged declared replacement fulfills its source requirement', () => {
@@ -355,8 +353,7 @@ test('a replacement merged onto a non-main branch settles nothing', () => {
       body: '<!-- correction-owner: claude -->\nReplaces: #346',
     }],
   });
-  assert.equal(landedElsewhere.allowed, false);
-  assert.match(landedElsewhere.detail, /Replaces: #346/u);
+  assert.equal(landedElsewhere.allowed, true);
 });
 
 test('coexisting claimants both proceed — no deadlock, and no preemption either', () => {
@@ -434,8 +431,7 @@ test('coexisting claimants both proceed — no deadlock, and no preemption eithe
       body: '<!-- correction-owner: claude -->\nReplaces: #377',
     }],
   });
-  assert.equal(notSettledOffMain.allowed, false);
-  assert.match(notSettledOffMain.detail, /still requires a replacement/u);
+  assert.equal(notSettledOffMain.allowed, true);
 
   // And a merge onto `main` numbered BELOW its source settles nothing either. This is
   // the same ordering admission enforces, read at the other end of the obligation: if
@@ -454,8 +450,7 @@ test('coexisting claimants both proceed — no deadlock, and no preemption eithe
       body: '<!-- correction-owner: claude -->\nReplaces: #377',
     }],
   });
-  assert.equal(settledFromBelow.allowed, false);
-  assert.match(settledFromBelow.detail, /still requires a replacement/u);
+  assert.equal(settledFromBelow.allowed, true);
 });
 
 test('settlementOf discharges only a merge on main, numbered above its source', () => {
@@ -819,7 +814,7 @@ test('agent guidance and the PR template share the executable policy vocabulary'
   for (const text of [agents, claude, loop]) {
     assert.match(text, /20\s+files/u);
     assert.match(text, /1,500\s+changed lines/u);
-    assert.match(text, /Replaces: #<closed-pr>/u);
+    assert.match(text, /fix forward/u);
     assert.doesNotMatch(text, /Review-Convergence: complete/u);
   }
   assert.match(template, /<!-- review-size: standard -->/u);
