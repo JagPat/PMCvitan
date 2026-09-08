@@ -73,6 +73,12 @@ so directly rather than framing it as a suggestion.
 
 - This project runs as an autonomous loop. Do not block on human sign-off, and do
   not tell the author to wait for approval — no one is standing by to give it.
+- The one Board-decided exception is the production drain attestation. Clearing
+  `phase-6-4d-previous-release-drained` requires the operator's human
+  `OPERATOR-ATTESTATION`; the automated release-lease and fleet-inventory evidence
+  is fail-closed corroboration only, never a substitute. The Board retained that
+  gate on 2026-09-08. It is not a plan defect: a review must not ask to remove it
+  or to let autonomous evidence clear it.
 - Review still happens BEFORE merge. Every PR starts as a draft with Claude Code
   web Auto-fix enabled. After `review-scope` and the five product CI jobs pass,
   the trusted GitHub orchestrator marks the PR ready to trigger Codex on the
