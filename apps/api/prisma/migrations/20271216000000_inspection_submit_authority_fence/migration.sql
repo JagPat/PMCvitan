@@ -44,9 +44,40 @@
 -- THE ROLE LIST BELOW IS PINNED TO `CORRECTIVE_ROLES` BY `inspections.contract.test.ts`. One rule
 -- stated at two boundaries has to be stated identically, and a SQL copy that silently drifted from
 -- the TypeScript one would be the rule disagreeing with itself about who holds the work.
+-- IT TAKES THE PROJECT'S READINESS FENCE BEFORE IT READS MEMBERSHIP (#571 round 8, finding 1).
+-- Round 7 moved the SERVICE's binding check under `lockProjectReadiness` for exactly one reason —
+-- an unlocked read can be overtaken by a membership change that commits first — and then added
+-- this trigger, which read `Membership` under no lock at all. The same hole, in the object built to
+-- close it. An alternate writer that takes no readiness key can begin its UPDATE while assignee A
+-- is inactive, a membership transaction can reactivate A and commit, and an unfenced trigger would
+-- permit B: the terminal state then has a binding active assignee A and B recorded forever.
+--
+-- TRY-AND-REFUSE, NOT WAIT. `pg_try_advisory_xact_lock` never blocks, so this trigger cannot invert
+-- a lock order and deadlock against a writer that holds the key and is waiting on this row. When
+-- the key is already held by ANOTHER transaction the honest answer is that authority cannot be
+-- judged right now, so the submit is refused and the caller retries — a refusal a retry clears,
+-- rather than a decision taken on a membership picture that is provably in flux.
+--
+-- The current release's `submit` already holds this key (it is the first statement of that
+-- command's transaction), and an advisory lock re-taken by the transaction that holds it succeeds,
+-- so the ordinary path passes straight through. Only an unfenced writer actually acquires anything.
+--
+-- The lock acquisition is its own statement, so the `EXISTS` below runs as a LATER statement and,
+-- under READ COMMITTED, takes a fresh snapshot — the membership picture it reads is the one that
+-- exists after the fence is held, not the one the outer UPDATE started with.
+--
+-- THE KEY IS `readinessLockKey`'s, and `inspections.contract.test.ts` pins this expression against
+-- it. Two spellings of one lock is the failure mode `readiness-lock.ts` exported that helper to
+-- prevent: the day the prefix changes, a second spelling stops serializing against the first and
+-- nothing fails.
 CREATE OR REPLACE FUNCTION inspection_submit_authority() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = pg_catalog, public AS $authority$
 BEGIN
+  IF NOT pg_try_advisory_xact_lock(hashtextextended('readiness:' || NEW."projectId", 0)) THEN
+    RAISE EXCEPTION
+      'Inspection % cannot be submitted right now: this project''s readiness is held by another transaction, so the assignee''s standing cannot be judged. Retry.',
+      NEW."id";
+  END IF;
   IF EXISTS (
     SELECT 1 FROM public."Membership" m
      WHERE m."projectId" = NEW."projectId"

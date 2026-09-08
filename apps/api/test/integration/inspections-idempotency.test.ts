@@ -479,4 +479,87 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: open.id } })).submittedById).toBe(rival);
   });
 
+
+  /**
+   * ROUND 8, FINDING 1 — the trigger reads `Membership`, so it must hold the fence that makes that
+   * read decidable.
+   *
+   * Round 7 moved the SERVICE's binding check under `lockProjectReadiness` for exactly this reason,
+   * and then added a trigger that read membership under no lock at all — the same hole in the object
+   * built to close it. An alternate writer taking no readiness key could be permitted while a
+   * reactivation committed underneath it, leaving a binding active assignee and the wrong submitter
+   * recorded forever.
+   */
+  it('ROUND 8 — the writer fence REFUSES rather than judging standing while the readiness key is held', async () => {
+    const { p, pmcA } = await freshProject();
+    const held = `it-inidem-u-r8held-${projSeq}`;
+    const rival = `it-inidem-u-r8rival-${projSeq}`;
+    for (const [id, name] of [[held, 'Held'], [rival, 'Rival']] as const) {
+      await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
+    }
+    await svc.create(p, createInput({ title: 'Fenced by key' }), asPmc(pmcA, p), 'k-r8f-1');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Fenced by key' } });
+    await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: held } });
+
+    // A concurrent transaction holds this project's readiness key — exactly what a membership
+    // change does while it writes. The previous-release writer's UPDATE must be refused, NOT
+    // permitted on the membership picture it happened to start with, and NOT blocked into a
+    // deadlock (the trigger TRIES the lock; it never waits for it).
+    const other = await import('@prisma/client').then((m) => new m.PrismaClient());
+    try {
+      await other.$transaction(async (tx2) => {
+        await tx2.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtextextended('readiness:' || $1, 0))`, p);
+        await expect(t.prisma.$executeRaw`
+          UPDATE "Inspection" SET "submitted" = true, "submittedById" = ${rival} WHERE "id" = ${insp.id}`)
+          .rejects.toThrow(/readiness is held by another transaction/i);
+      });
+    } finally {
+      await other.$disconnect();
+    }
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } })).submitted).toBe(false);
+
+    // …and with the key free the SAME statement reaches the ordinary authority refusal, so the
+    // fence is a serialization guard and not a second, stricter rule.
+    await expect(t.prisma.$executeRaw`
+      UPDATE "Inspection" SET "submitted" = true, "submittedById" = ${rival} WHERE "id" = ${insp.id}`)
+      .rejects.toThrow(/only its assignee may submit it/i);
+
+    // precise, not merely strict: the SHIPPED submit — which holds the key itself — still commits
+    const items = await t.prisma.inspectionItem.findMany({ where: { inspectionId: insp.id } });
+    await svc.submit(p, insp.id, { items: items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) },
+      { sub: held, role: 'engineer', projectId: p } as AuthUser, 'k-r8f-own');
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } })).submittedById).toBe(held);
+  });
+
+  /**
+   * ROUND 8, FINDING 2 — through the LIVE read, not the pure baker: a record stays readable to the
+   * engineer who made it after its original assignee becomes binding again.
+   */
+  it('ROUND 8 — a reactivated assignee does not hide the record its replacement submitted', async () => {
+    const { p, pmcA } = await freshProject();
+    const gone = `it-inidem-u-r8gone-${projSeq}`;
+    const other = `it-inidem-u-r8other-${projSeq}`;
+    for (const [id, name] of [[gone, 'Gone'], [other, 'Other']] as const) {
+      await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
+    }
+    await svc.create(p, createInput({ title: 'Stranded then returned' }), asPmc(pmcA, p), 'k-r8r-1');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Stranded then returned' }, include: { items: true } });
+    await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: gone } });
+    await t.prisma.membership.updateMany({ where: { projectId: p, userId: gone }, data: { status: 'removed' } });
+
+    await svc.submit(p, insp.id, { items: insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) },
+      { sub: other, role: 'engineer', projectId: p } as AuthUser, 'k-r8r-sub');
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } })).submittedById).toBe(other);
+
+    // the assignee comes back — their assignment binds again
+    await t.prisma.membership.updateMany({ where: { projectId: p, userId: gone }, data: { status: 'active' } });
+    const slice = await reads.snapshotSlice(p, 'engineer', other);
+    // RED before this round: the fallback applied the live assignment rule to a finished record and
+    // the engineer who did the work was served `checklist: null`
+    expect(slice.checklist?.id).toBe(insp.id);
+    expect(slice.openChecklists).toEqual([]);
+  });
+
 });

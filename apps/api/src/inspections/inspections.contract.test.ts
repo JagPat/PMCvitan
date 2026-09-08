@@ -5,6 +5,7 @@ import { INSPECTIONS_COMMANDS, INSPECTIONS_QUERIES, rolesFor, type InspectionsMo
 import { inspectionsManifest } from './inspections.manifest';
 import { InspectionsQueryService } from './inspections.query';
 import { CORRECTIVE_ROLES, InspectionsService } from './inspections.service';
+import { readinessLockKey } from '../common/readiness-lock';
 
 /**
  * Phase 2 Task 10 (Module 3) — the inspections module is reachable ONLY through its shared contract
@@ -55,6 +56,27 @@ describe('Task 10 — the inspections module implements its shared command/query
     expect(sqlRoles.sort()).toEqual([...CORRECTIVE_ROLES].sort());
   });
 
+  /**
+   * ROUND 8, FINDING 1 — the fence's lock must be THE readiness lock, not one that looks like it.
+   *
+   * The trigger takes the project's readiness key before it reads `Membership`, and it must spell
+   * that key exactly as `readinessLockKey` does. `readiness-lock.ts` exported that helper precisely
+   * because a second spelling fails silently: the day the prefix changes, one caller stops
+   * serializing against the other and every test still passes. SQL cannot import the helper, so the
+   * pin is here — derived from the helper rather than from a literal.
+   */
+  it('the writer fence takes the SAME advisory key as lockProjectReadiness', () => {
+    const sql = readFileSync(
+      join(__dirname, '../../prisma/migrations/20271216000000_inspection_submit_authority_fence/migration.sql'),
+      'utf8',
+    );
+    const prefix = readinessLockKey('');
+    expect(sql, 'the fence must try-acquire the readiness advisory lock before reading Membership')
+      .toContain(`pg_try_advisory_xact_lock(hashtextextended('${prefix}' || NEW."projectId", 0))`);
+    // and it must TRY rather than wait — a blocking acquisition here can invert a lock order
+    expect(sql).not.toMatch(/pg_advisory_xact_lock\(/u);
+  });
+
   it('the manifest queries EQUAL the shared query contract', () => {
     expect(inspectionsManifest.queries).toEqual([...INSPECTIONS_QUERIES]);
   });
@@ -92,7 +114,7 @@ describe('Task 10 — the inspections module implements its shared command/query
       ].sort(),
     );
     // the atomic activity↔inspection edges stay WORKFLOW contracts (participant), not cross-module reads.
-    expect(inspectionsManifest.workflowParticipants).toEqual(['activities']);
+    expect(inspectionsManifest.workflowParticipants).toEqual(['activities', 'orgs']);
     // no cross-module read dependency: every consumer reads inspection through THIS module's query.
     expect(inspectionsManifest.dependsOn).toEqual([]);
   });

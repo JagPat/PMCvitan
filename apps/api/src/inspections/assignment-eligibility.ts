@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import type { OrgsParticipant, OrgsParticipantClient } from '../orgs/orgs.participant';
 
 /**
  * WHEN DOES A CORRECTIVE ASSIGNMENT BIND? — the one place that answers it.
@@ -52,35 +53,81 @@ export const CORRECTIVE_ROLES_PHRASE = CORRECTIVE_ROLES.length === 1
 /** Does this membership row let its holder do corrective work on their own account? The predicate
  *  `decide` applies when it NAMES an assignee, so assignment-time and binding-time agree by
  *  construction. (`decide` additionally admits a PMC naming THEMSELVES — that is a separate,
- *  explicitly audited case about who may be written, not about whether the write binds.) */
+ *  explicitly audited case about who may be written, not about whether the write binds.)
+ *
+ *  Judges a row `decide` has ALREADY read under its own `FOR UPDATE` — it re-states no query and
+ *  reaches no orgs table itself, which is why it stays here while the QUERIES go to the owner. */
 export function holdsCorrectiveRole(membership: { status: string; role: string } | null | undefined): boolean {
   return membership?.status === 'active' && CORRECTIVE_ROLES.includes(membership.role);
 }
 
 /**
- * Of these candidate assignees, which ones' assignments still BIND? One query, one predicate, for
- * every caller — the submit guard, the read boundary, and anything that follows them.
+ * Of these candidate assignees, which ones' assignments still BIND? One question, one predicate,
+ * for every caller — the submit guard, the read boundary, and anything that follows them.
  *
- * Takes any Prisma client so the answer can be read INSIDE a transaction that already holds the
- * project's readiness key: `MembersService.add`/`updateRole`/`remove` take that same key before they
- * write, so a caller that reads this under the lock cannot have the answer changed underneath it
- * before it commits (#571 round 7, finding 2). A read outside a transaction is still correct for a
- * read-only caller, which is what the snapshot and module reads are.
+ * ASKED OF THE OWNER, NOT OF THE TABLE (#571 round 8, finding 3). `Membership` is orgs-owned. An
+ * earlier spelling of this module queried it directly and justified that in a comment: the model is
+ * not `readEncapsulated`, and `activities.query.ts` and `drawings.service.ts` already read it. That
+ * justification was wrong, and `orgs.participant.ts` says so in its own words — *"not being
+ * read-encapsulated makes a read representable, not legitimate; the OWNER states the rule"* — twice,
+ * once as the file's opening rule and once "without exception" for a later caller. Existing reads
+ * elsewhere are precedent for the mistake, not permission for it. `OrgsParticipant` is the
+ * cycle-exempt channel the repository already uses for exactly this, and inspections declares the
+ * `orgs` workflow-participant edge for it (`inspections.manifest.ts`), so `dependsOn` stays empty
+ * and the module graph stays acyclic.
  *
- * `Membership` is orgs-owned but NOT read-encapsulated (`orgs.manifest.ts` declares no
- * `readEncapsulated`), the same direct read `activities.query.ts` and `drawings.service.ts` already
- * make.
+ * `effectiveRoleHolderUserIds` is the owner's own enumeration of who holds a role on the project.
+ * For a non-`pmc` role its org-owner/admin arm is inert by construction (the arm is gated on the
+ * role being `pmc`), so for `CORRECTIVE_ROLES` it is exactly "an ACTIVE membership in that role" —
+ * the same predicate {@link assignmentStillBinds} asks per user, which is why the two can never
+ * disagree. Asked once per role and unioned, so the set is derived from {@link CORRECTIVE_ROLES}
+ * rather than from a hand-written query.
+ *
+ * Stated honestly: this enumerates every corrective-role holder on the project rather than only the
+ * candidates, so it reads more rows than the direct query it replaces. That is the cost of asking
+ * the owner instead of the table, it is one indexed query per role per read, and it is bounded by
+ * project membership — the same human scale `readiness-lock.ts` reasons about for a far coarser
+ * lock. Per-candidate calls would be narrower and unbounded in COUNT; one bounded query is the
+ * better trade at this scale.
+ *
+ * Runs against whatever client the caller passes, so a caller inside a transaction that already
+ * holds the project's readiness key gets an answer no membership change can overtake before it
+ * commits (#571 round 7, finding 2). A read outside a transaction is still correct for a read-only
+ * caller, which is what the snapshot and module reads are.
  */
 export async function bindingAssigneeIds(
-  client: Prisma.TransactionClient | { membership: { findMany: (args: unknown) => Promise<{ userId: string }[]> } },
+  orgs: Pick<OrgsParticipant, 'effectiveRoleHolderUserIds'>,
+  client: OrgsParticipantClient | Prisma.TransactionClient,
   projectId: string,
   candidateIds: readonly string[],
 ): Promise<Set<string>> {
-  const ids = [...new Set(candidateIds)];
-  if (ids.length === 0) return new Set();
-  const rows = await (client as Prisma.TransactionClient).membership.findMany({
-    where: { projectId, userId: { in: ids }, status: 'active', role: { in: CORRECTIVE_ROLES } },
-    select: { userId: true },
-  });
-  return new Set(rows.map((r) => r.userId));
+  const candidates = new Set(candidateIds);
+  if (candidates.size === 0) return new Set();
+  const binding = new Set<string>();
+  for (const role of CORRECTIVE_ROLES) {
+    for (const userId of await orgs.effectiveRoleHolderUserIds(client, projectId, role)) {
+      if (candidates.has(userId)) binding.add(userId);
+    }
+  }
+  return binding;
+}
+
+/**
+ * Does THIS one assignee still hold the work, judged under a row lock?
+ *
+ * The submit path's authoritative check. `forUpdate` locks the standing rows before the answer is
+ * read, so a concurrent re-role or reactivation of an EXISTING membership waits for this
+ * transaction — belt to the readiness key's braces, and the owner's own documented caveat applies:
+ * `FOR UPDATE` locks rows that exist, so it closes the change-of-an-existing-row race, which is the
+ * shape a stranded assignee's return actually takes (`MembersService.add` upserts onto the same
+ * `(projectId, userId)` row).
+ */
+export function assignmentStillBinds(
+  orgs: Pick<OrgsParticipant, 'hasProjectRoleStanding'>,
+  client: OrgsParticipantClient | Prisma.TransactionClient,
+  projectId: string,
+  assigneeId: string,
+  opts: { forUpdate?: boolean } = {},
+): Promise<boolean> {
+  return orgs.hasProjectRoleStanding(client, projectId, assigneeId, CORRECTIVE_ROLES, opts);
 }

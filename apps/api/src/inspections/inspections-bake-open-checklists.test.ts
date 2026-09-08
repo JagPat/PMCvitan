@@ -156,6 +156,30 @@ describe('assigned corrective work stays with its assignee', () => {
     expect(slices.checklist?.id).toBe('INSP-2');
   });
 
+  /**
+   * ROUND 8, FINDING 2 — the assignment rule must not reach backwards over a finished record.
+   *
+   * Engineer B legitimately submits a checklist stranded by assignee A; A is later reactivated, so
+   * A's assignment binds again — and the read then hid from B the record of work B actually did,
+   * down to `checklist: null` when it was the project's only one. `mine` answers "may I DO this?",
+   * which is a question about OPEN work.
+   */
+  it('keeps a SUBMITTED record readable after its assignee becomes binding again', () => {
+    const submittedByReplacement = entry({ id: 'INSP-1', assigneeId: 'eng-a', submitted: true, kind: 'checklist', by: 'B' });
+    const slices = bake([submittedByReplacement], 'engineer', 'eng-b', new Set(['eng-a']));
+    expect(slices.checklist?.id).toBe('INSP-1');
+    // it is a record, not outstanding work
+    expect(slices.openChecklists).toEqual([]);
+  });
+
+  it('still does not open a colleague’s OPEN assigned checklist as the fallback', () => {
+    // the round-3 guard this must not re-break: with nothing of the viewer's own open, an open
+    // checklist that binds to somebody else is still not theirs to be shown
+    const slices = bake([assigned('INSP-1', 'eng-b')], 'engineer', 'eng-a', new Set(['eng-b']));
+    expect(slices.openChecklists).toEqual([]);
+    expect(slices.checklist).toBeNull();
+  });
+
   it('shows the PMC everything, because they issued it and must see what is outstanding', () => {
     const rows = [assigned('INSP-1', 'eng-a'), assigned('INSP-2', 'eng-b'), entry({ id: 'INSP-3' })];
     expect(bake(rows, 'pmc').openChecklists.map((c) => c.id)).toEqual(['INSP-1', 'INSP-2', 'INSP-3']);

@@ -21,8 +21,9 @@ import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../p
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { ActivityParticipant } from '../activities/activity.participant';
 import {
-  CORRECTIVE_ROLES_PHRASE, bindingAssigneeIds, holdsCorrectiveRole,
+  CORRECTIVE_ROLES, CORRECTIVE_ROLES_PHRASE, assignmentStillBinds, holdsCorrectiveRole,
 } from './assignment-eligibility';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 
 /** The corrective-assignment rule lives in ONE module ({@link assignment-eligibility}) and every site
  *  that asks about a named assignee calls it. Re-exported here because `inspections.contract.test.ts`
@@ -51,6 +52,10 @@ export class InspectionsService {
     // the Activity write stays in the activities module while this decision orchestrates
     // it in ONE transaction with the inspection CAS.
     private readonly activities: ActivityParticipant,
+    // #571 round 8, finding 3 — `Membership` is orgs-owned, so the question "does this assignment
+    // still bind?" is asked of its OWNER through the cycle-exempt participant channel, never of the
+    // table. The manifest declares the `orgs` workflow-participant edge for exactly this.
+    private readonly orgs: OrgsParticipant,
   ) {}
 
   /** PMC issues a stage checklist — becomes the engineer's current field checklist.
@@ -147,8 +152,7 @@ export class InspectionsService {
     // below, inside the transaction and after `lockProjectReadiness`, where no membership change can
     // interleave. Both call the same function, so the two can only disagree about TIME.
     if (insp.assigneeId && insp.assigneeId !== user.sub) {
-      const binding = await bindingAssigneeIds(this.prisma, projectId, [insp.assigneeId]);
-      if (binding.has(insp.assigneeId)) {
+      if (await assignmentStillBinds(this.orgs, this.prisma, projectId, insp.assigneeId)) {
         throw new ForbiddenException(ASSIGNED_TO_SOMEONE_ELSE);
       }
     }
@@ -196,8 +200,10 @@ export class InspectionsService {
         // agree about who held the work at commit. Same function as the early guard and the read
         // boundary — one rule, asked at the moment the answer is written down.
         if (insp.assigneeId && insp.assigneeId !== user.sub) {
-          const bindingNow = await bindingAssigneeIds(tx, projectId, [insp.assigneeId]);
-          if (bindingNow.has(insp.assigneeId)) {
+          // `forUpdate` locks the standing rows the answer rests on, so a re-role or reactivation
+          // of the existing membership waits for this transaction — the owner's own lock, on top of
+          // the readiness key already held above.
+          if (await assignmentStillBinds(this.orgs, tx, projectId, insp.assigneeId, { forUpdate: true })) {
             throw new ForbiddenException(ASSIGNED_TO_SOMEONE_ELSE);
           }
         }

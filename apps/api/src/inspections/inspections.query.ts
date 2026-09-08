@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma.service';
 import { SignedUrlService } from '../media/signed-url.service';
 import { bakeInspections, computeInspectionsBase, type InspectionsBase, type InspectionsSlices } from './inspections-serialize';
 import { bindingAssigneeIds } from './assignment-eligibility';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 import { INSPECTIONS_PROJECTION } from './inspections.projection';
 import { readServableGeneration } from '../platform/projections/generation';
 import { nextSeqId } from '../domain/ids';
@@ -45,6 +46,8 @@ export class InspectionsQueryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly signed: SignedUrlService,
+    // #571 round 8, finding 3 — the assignee-standing question goes to the model's OWNER.
+    private readonly orgs: OrgsParticipant,
   ) {}
 
   /** Bake an evidence media row's short-lived signed serve path (minted per read — never stored). */
@@ -75,7 +78,7 @@ export class InspectionsQueryService {
    */
   private bindingAssignees(projectId: string, base: InspectionsBase): Promise<Set<string>> {
     const named = base.inspections.map((i) => i.assigneeId).filter((id): id is string => typeof id === 'string');
-    return bindingAssigneeIds(this.prisma, projectId, named);
+    return bindingAssigneeIds(this.orgs, this.prisma, projectId, named);
   }
 
   /**

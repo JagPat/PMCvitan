@@ -240,7 +240,19 @@ export function bakeInspections(
   // The one the field view opens by default: the oldest open checklist, else the oldest submitted
   // one so a finished checklist stays readable. Chosen from a SORTED list — `find` over the
   // unordered read returned a planner-dependent row, so two runs could disagree.
-  const checklistRow = openRows[0] ?? all.filter((i) => i.kind === 'checklist' && mine(i)).sort(byId)[0];
+  //
+  // THE ASSIGNMENT FILTER APPLIES TO OPEN WORK ONLY (#571 round 8, finding 2). `mine` answers "may
+  // I DO this?", and a submitted checklist is a record of work already done — so judging the
+  // fallback by it made a live rule reach backwards over history. The case: engineer B legitimately
+  // submits a checklist stranded by assignee A, A is later reactivated, and A's assignment starts
+  // binding again — retroactively hiding from B the record of work B actually performed, down to
+  // `checklist: null` when it is the project's only one. Restricting the fallback to SUBMITTED rows
+  // fixes that and cannot re-open the round-3 defect it was guarding: an OPEN checklist that is
+  // somebody else's is excluded by this filter, and one that is the viewer's own is already in
+  // `openRows`, so this branch is only reached when there are none. Nothing is widened that the
+  // module does not already show — `placedInspections` carries every inspection, submitted and
+  // assigned included, to every pmc/engineer viewer.
+  const checklistRow = openRows[0] ?? all.filter((i) => i.kind === 'checklist' && i.submitted).sort(byId)[0];
   const checklist: Checklist | null = checklistRow ? toChecklist(checklistRow) : null;
 
   // The review queue: any submitted-but-undecided inspection, sorted by id. AUTH-02: PMC-only.
