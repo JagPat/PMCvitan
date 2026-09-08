@@ -56,9 +56,14 @@ export interface InspectionsBase {
   inspections: InspectionBaseEntry[];
 }
 
-/** The five per-viewer/role inspection slices the snapshot's inspection keys carry. */
+/** The per-viewer/role inspection slices the snapshot's inspection keys carry. */
 export interface InspectionsSlices {
   checklist: Checklist | null;
+  /** EVERY open (issued, unsubmitted) checklist, oldest id first. `checklist` is one of these —
+   *  the single row the field view opens by default — and carrying only that one was a defect:
+   *  a second issued checklist hid the first, and the PMC who issued them saw none of them
+   *  (`reviews` carries SUBMITTED inspections only). Same visibility as `checklist`. */
+  openChecklists: Checklist[];
   reviews: Review[];
   review: Review | null;
   reinspectionCreated: boolean;
@@ -145,29 +150,41 @@ export function bakeInspections(
   const canSeeInspections = role === 'pmc' || role === 'engineer';
   const all = base.inspections;
 
-  // The engineer's CURRENT checklist: prefer an open (unsubmitted) one — a freshly issued checklist
-  // supersedes an already-submitted earlier one in the field view. (Not role-gated — the field view.)
-  const checklistRow = all.find((i) => i.kind === 'checklist' && !i.submitted) ?? all.find((i) => i.kind === 'checklist');
-  const checklist: Checklist | null = checklistRow
-    ? {
-        id: checklistRow.id,
-        title: checklistRow.title,
-        zone: checklistRow.zone,
-        nodeId: checklistRow.nodeId ?? undefined, // location spine
-        date: checklistRow.date,
-        submitted: checklistRow.submitted,
-        items: checklistRow.items.map(
-          (it): ChecklistItem => ({
-            id: it.id, // the capture flow links evidence uploads to THIS item (Task 4)
-            name: it.name,
-            state: it.state as ItemState,
-            photos: it.photos,
-            note: it.note,
-            evidence: it.mediaIds.map(evidencePath),
-          }),
-        ),
-      }
-    : null;
+  // Issued checklists. `computeInspectionsBase` reads them with no `orderBy`, so row order is
+  // whatever the planner returns: every choice made here sorts first, or it is not reproducible.
+  // Sorted by id like the review queue below, so the two slices order consistently.
+  const byId = (a: InspectionBaseEntry, b: InspectionBaseEntry) => a.id.localeCompare(b.id);
+  const toChecklist = (row: InspectionBaseEntry): Checklist => ({
+    id: row.id,
+    title: row.title,
+    zone: row.zone,
+    nodeId: row.nodeId ?? undefined, // location spine
+    date: row.date,
+    submitted: row.submitted,
+    items: row.items.map(
+      (it): ChecklistItem => ({
+        id: it.id, // the capture flow links evidence uploads to THIS item (Task 4)
+        name: it.name,
+        state: it.state as ItemState,
+        photos: it.photos,
+        note: it.note,
+        evidence: it.mediaIds.map(evidencePath),
+      }),
+    ),
+  });
+
+  // EVERY open checklist, not one of them. Issuing a second checklist used to hide the first:
+  // the field view asked `find` for a single row, so the other was issued work that no surface
+  // showed — and the PMC who issued it could not see it either, because `reviews` carries only
+  // SUBMITTED inspections. (Not role-gated — this is the field view, same visibility as below.)
+  const openRows = all.filter((i) => i.kind === 'checklist' && !i.submitted).sort(byId);
+  const openChecklists: Checklist[] = openRows.map(toChecklist);
+
+  // The one the field view opens by default: the oldest open checklist, else the oldest submitted
+  // one so a finished checklist stays readable. Chosen from a SORTED list — `find` over the
+  // unordered read returned a planner-dependent row, so two runs could disagree.
+  const checklistRow = openRows[0] ?? all.filter((i) => i.kind === 'checklist').sort(byId)[0];
+  const checklist: Checklist | null = checklistRow ? toChecklist(checklistRow) : null;
 
   // The review queue: any submitted-but-undecided inspection, sorted by id. AUTH-02: PMC-only.
   const reviews: Review[] = all
@@ -221,6 +238,7 @@ export function bakeInspections(
 
   return {
     checklist,
+    openChecklists,
     reviews: isPmc ? reviews : [],
     review: isPmc ? (reviews[0] ?? null) : null, // deprecated single (first pending) — back-compat
     reinspectionCreated: isPmc ? reinspectionCreated : false,

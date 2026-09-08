@@ -62,7 +62,7 @@ export class InspectionsQueryService {
    */
   async projectionSlice(projectId: string, role: string): Promise<{ slices: InspectionsSlices; generation: number | null }> {
     const gen = await readServableGeneration(this.prisma, INSPECTIONS_PROJECTION, projectId);
-    const empty: InspectionsSlices = { checklist: null, reviews: [], review: null, reinspectionCreated: false, placedInspections: [] };
+    const empty: InspectionsSlices = { checklist: null, openChecklists: [], reviews: [], review: null, reinspectionCreated: false, placedInspections: [] };
     if (!gen) return { slices: empty, generation: null };
 
     const row = await this.prisma.inspectionsProjection.findUnique({

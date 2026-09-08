@@ -27,7 +27,7 @@ const moduleResult = (
   source: 'projection' | 'live' = 'projection',
   generation: number | null = 3,
 ): ModuleInspections => ({
-  checklist: null, reviews: [], review: null, reinspectionCreated: false, placedInspections: [],
+  checklist: null, openChecklists: [], reviews: [], review: null, reinspectionCreated: false, placedInspections: [],
   source, generation: source === 'live' ? null : generation, ...over,
 });
 
@@ -92,6 +92,35 @@ describe('Task 10 (Module 3) — module-owned inspections read (XOR)', () => {
     expect(s().inspectionsLoad).toBe('ready');
     expect(s().inspectionsSource).toBe('projection');
     expect(gw.inspections).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries EVERY outstanding checklist, so a second issued one does not hide the first', async () => {
+    // The defect: the read carried ONE checklist, so issuing a second made one of them
+    // invisible — to the engineer who had to fill it and to the PMC who issued it.
+    vi.stubEnv('VITE_INSPECTIONS_READ', 'moduleQuery');
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot()),
+      inspections: vi.fn().mockResolvedValue(
+        moduleResult({ checklist: checklist('INSP-1'), openChecklists: [checklist('INSP-1'), checklist('INSP-2')] }),
+      ),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().openChecklists.map((c) => c.id)).toEqual(['INSP-1', 'INSP-2']);
+    // and they are NOT in the review queue — nothing has been submitted for review yet
+    expect(s().reviews).toEqual([]);
+  });
+
+  it('snapshot mode keeps the outstanding list consistent with the checklist it owns', async () => {
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot({ checklist: checklist('INSP-9') })),
+      inspections: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().openChecklists.map((c) => c.id)).toEqual(['INSP-9']);
   });
 
   it('moduleQuery mode: the LIVE fallback is surfaced faithfully (projection lagged the write)', async () => {

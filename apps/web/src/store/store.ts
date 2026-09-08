@@ -287,6 +287,10 @@ export interface AppState {
   /** the Site Map's pending focus when it is entered from a location breadcrumb (project-owned) */
   placeFocus: string | null;
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
+  /** EVERY open (issued, unsubmitted) checklist. `checklist` is the one the field view opens;
+   *  this is the whole outstanding set, so a second issued checklist no longer hides the first
+   *  and the PMC who issued them can see what is still out on site. */
+  openChecklists: Checklist[];
   // Unsubmitted per-field checklist edits (gate round 6). The engineer's marks
   // live only in this client until they submit; any snapshot refresh — this
   // upload's own OR a concurrent useApiSync `changed` refresh — would otherwise
@@ -904,6 +908,7 @@ export function getInitialState(): AppState {
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     placeFocus: null,
     checklist: structuredClone(SEED_CHECKLIST),
+    openChecklists: [structuredClone(SEED_CHECKLIST)],
     checklistMarks: { inspectionId: null, generation: 0, rev: 0, byItem: {} },
     submission: { inspectionId: null, generation: 0, status: 'idle', attempt: 0 },
     reviews: [structuredClone(SEED_REVIEW)],
@@ -1128,8 +1133,12 @@ export const useStore = create<Store>()(
         const inspModule = inspectionsReadMode() === 'moduleQuery';
         if (!inspModule) {
           s.checklist = snap.checklist ?? null;
+          // The snapshot has no open-list slice; the single checklist it owns IS the outstanding
+          // set in that mode, so the two stay consistent rather than the list going silently empty.
+          s.openChecklists = snap.checklist ? [snap.checklist] : [];
         } else if (inspectionsResult) {
           s.checklist = inspectionsResult.checklist ?? null;
+          s.openChecklists = [...(inspectionsResult.openChecklists ?? [])];
           s.inspectionsLoad = 'ready';
           s.inspectionsSource = inspectionsResult.source;
         } else if (inspectionsResult === null) {
