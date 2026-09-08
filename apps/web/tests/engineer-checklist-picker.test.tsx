@@ -186,3 +186,53 @@ describe('the engineer can open every checklist that is out on site', () => {
     expect(useStore.getState().checklist?.items[0].photos).toBe(1);
   });
 });
+
+/**
+ * ROUND 7, FINDING 4 — a refused photo must say WHOSE work it is before anyone can delete it.
+ *
+ * The Retry/Delete panel is project-wide; the picker above it is not. So the moment the engineer
+ * switches from checklist A to B, A's failed uploads sit on B's screen behind a Delete button whose
+ * only label was generic server text like `upload rejected (400)`. Delete is the one non-server path
+ * that destroys bytes for good, and it was destroying work the engineer had no way to recognise as
+ * belonging to a different checklist.
+ */
+describe('a refused photo names the work it belongs to', () => {
+  const failed = (clientKey: string, inspectionId: string, inspectionItemId: string) =>
+    ({ clientKey, reason: 'upload rejected (400)', mime: 'image/png', inspectionId, inspectionItemId });
+
+  it('says which OTHER checklist and item a failure came from', async () => {
+    const both = [checklist('INSP-1', 'Rebar'), checklist('INSP-2', 'Shuttering')];
+    const { view, useStore } = await mount(both, both[1]); // looking at Shuttering
+    act(() => {
+      useStore.setState({ failedEvidence: [failed('k1', 'INSP-1', 'INSP-1-i1')] });
+    });
+    const where = view.getByTestId('evidence-failed-where-k1').textContent ?? '';
+    expect(where).toContain('Rebar');   // the checklist it belongs to, by the name the engineer knows
+    expect(where).toContain('Verify');  // and the item on it
+    // the row is still OFFERED, not filtered away: hiding it would strand the photo instead
+    expect(view.getByTestId('evidence-retry-k1')).toBeTruthy();
+  });
+
+  it('says so plainly when the failure IS on the checklist in the slot', async () => {
+    const both = [checklist('INSP-1', 'Rebar'), checklist('INSP-2', 'Shuttering')];
+    const { view, useStore } = await mount(both, both[0]);
+    act(() => {
+      useStore.setState({ failedEvidence: [failed('k2', 'INSP-1', 'INSP-1-i1')] });
+    });
+    const where = view.getByTestId('evidence-failed-where-k2').textContent ?? '';
+    expect(where).toContain('this checklist');
+    expect(where).toContain('Verify');
+  });
+
+  it('still names a failure whose checklist has left the outstanding list', async () => {
+    // submitted since the upload failed, so it is no longer in `openChecklists` — the stored ids are
+    // the fallback, because a name that no longer resolves beats no name when Delete is permanent
+    const one = checklist('INSP-2', 'Shuttering');
+    const { view, useStore } = await mount([one], one);
+    act(() => {
+      useStore.setState({ failedEvidence: [failed('k3', 'INSP-77', 'INSP-77-i1')] });
+    });
+    const where = view.getByTestId('evidence-failed-where-k3').textContent ?? '';
+    expect(where).toContain('INSP-77');
+  });
+});

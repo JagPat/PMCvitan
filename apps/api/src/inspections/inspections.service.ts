@@ -20,27 +20,20 @@ import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { ActivityParticipant } from '../activities/activity.participant';
+import {
+  CORRECTIVE_ROLES_PHRASE, bindingAssigneeIds, holdsCorrectiveRole,
+} from './assignment-eligibility';
 
-/** Corrective work is executed by these roles — a reinspection assignee must hold one
- *  as an ACTIVE membership (a PMC may assign themselves EXPLICITLY; see decide()).
- *
- *  CONTRACTOR IS DELIBERATELY ABSENT, and this is the narrower half of a correction.
- *  `assigneeId` decides who may submit, so an assignee who cannot REACH `submit` is corrective work
- *  nobody can hand back — the dead end an earlier head created by adding the guard while the route
- *  ceiling stayed engineer|pmc. Widening the ceiling looked like the fix and was not: a contractor
- *  has no checklist screen, no inbox task, a redirected route and no `media.upload` grant, so a
- *  FAILED item's mandatory photo is unattachable and the work still cannot be finished. Until that
- *  surface exists as its own unit, the assignee set is the roles that can actually do the work.
- *
- *  EXPORTED so `inspections.contract.test.ts` can pin the ceiling against THIS constant: every role
- *  a rejection may assign must be able to reach the submit route. */
-export const CORRECTIVE_ROLES = ['engineer'];
+/** The corrective-assignment rule lives in ONE module ({@link assignment-eligibility}) and every site
+ *  that asks about a named assignee calls it. Re-exported here because `inspections.contract.test.ts`
+ *  and the service's own refusal prose have always named it through this file, and the pin those tests
+ *  make is on the VALUE, not on where it is imported from. */
+export { CORRECTIVE_ROLES } from './assignment-eligibility';
 
-/** The assignee set as prose, DERIVED from {@link CORRECTIVE_ROLES} so a refusal can never promise a
- *  role the rule refuses. Rendering it by hand is how "engineer or contractor" outlived the set. */
-const CORRECTIVE_ROLES_PHRASE = CORRECTIVE_ROLES.length === 1
-  ? `an active ${CORRECTIVE_ROLES[0]}`
-  : `an active ${CORRECTIVE_ROLES.slice(0, -1).join(', ')} or ${CORRECTIVE_ROLES[CORRECTIVE_ROLES.length - 1]}`;
+/** ONE refusal sentence for the binding-assignment rule. Stated once because the rule is now checked
+ *  twice on the submit path — an early read for a friendly 403, and the authoritative re-read inside
+ *  the transaction — and two hand-written copies would eventually tell the caller two things. */
+const ASSIGNED_TO_SOMEONE_ELSE = 'This inspection is assigned to someone else — only its assignee can submit it.';
 
 /** Default correction window: decide-day + N civil days (PMC-overridable per decide). */
 const DEFAULT_DUE_IN_DAYS = 3;
@@ -141,33 +134,22 @@ export class InspectionsService {
     // `inspection.submit` ceiling, pinned in CI), so an assigned inspection always has exactly one
     // caller who can submit it and no assignment can dead-end. An UNASSIGNED checklist is unchanged —
     // the role gate on the route is the whole guard, as before.
-    // The assignment binds ONLY WHILE ITS ASSIGNEE CAN STILL DO THE WORK (#571's review round 6,
-    // findings 2 and 3). The guard exists so a second engineer is not recorded as having done
-    // somebody's remedial work — a claim about attribution, which is meaningless once the named
-    // person cannot act at all. An assignee whose membership was removed or re-roled, and a PMC who
-    // took the work by naming themselves (`pmcSelfExplicit`) but holds no checklist screen, are both
-    // in that position: refusing everyone else does not protect their attribution, it strands the
-    // work, because the exact-assignee guard refuses every replacement and the latch refuses to
-    // clear or transfer the value.
     //
-    // So eligibility is re-derived HERE rather than trusted from the moment of assignment: an
-    // ACTIVE membership in a corrective role — the same predicate `decide` applies when it names
-    // the assignee, and the same one that decides who has a surface to fill a checklist on. When it
-    // holds, the work is theirs alone. When it no longer holds, the assignment stays on the row as
-    // the record of who was asked, and the checklist returns to the ordinary role gate.
+    // The assignment binds ONLY WHILE ITS ASSIGNEE CAN STILL DO THE WORK — `bindingAssigneeIds`, the
+    // one statement of that rule, which the READ boundary calls with the same argument so a checklist
+    // this will accept from engineer B is exactly the checklist B can open (#571 round 7, finding 1).
     //
-    // This replaces the one-time repair migration an earlier head carried. That migration cleared
-    // stranded assignments at deploy time, which fixed the rows that already existed and nothing
-    // about the ones a membership change would strand the next day — a data fix for a state the
-    // RULE should decide. Deciding it here covers legacy, current and future rows alike, mutates no
-    // history, and needs no trigger disabled.
+    // THIS COPY IS THE EARLY, FRIENDLY ANSWER, NOT THE AUTHORITY. It reads outside the transaction so
+    // a refusal is a 403 with a sentence in it rather than a conflict raised from inside a command,
+    // and it can be stale by the time the write lands: `MembersService.add`/`updateRole` take the
+    // project's readiness key and can reactivate the assignee between this read and the CAS, which
+    // pins only the unchanged `assigneeId` (#571 round 7, finding 2). The BINDING check is re-taken
+    // below, inside the transaction and after `lockProjectReadiness`, where no membership change can
+    // interleave. Both call the same function, so the two can only disagree about TIME.
     if (insp.assigneeId && insp.assigneeId !== user.sub) {
-      const assigneeMembership = await this.prisma.membership.findFirst({
-        where: { projectId, userId: insp.assigneeId, status: 'active', role: { in: CORRECTIVE_ROLES } },
-        select: { id: true },
-      });
-      if (assigneeMembership) {
-        throw new ForbiddenException('This inspection is assigned to someone else — only its assignee can submit it.');
+      const binding = await bindingAssigneeIds(this.prisma, projectId, [insp.assigneeId]);
+      if (binding.has(insp.assigneeId)) {
+        throw new ForbiddenException(ASSIGNED_TO_SOMEONE_ELSE);
       }
     }
     if (insp.items.length === 0) throw new BadRequestException('This inspection has no checklist items to submit.');
@@ -202,6 +184,23 @@ export class InspectionsService {
       run: async (tx) => {
         // submission moves the linked chain's tip state — a readiness write (finding 1)
         await lockProjectReadiness(tx, projectId);
+        // THE AUTHORITATIVE BINDING CHECK (#571 round 7, finding 2). The guard before the transaction
+        // reads memberships unlocked, so its answer can be overtaken: `MembersService.add`/`updateRole`
+        // take THIS key before they write, so an assignee observed ineligible there can be reactivated
+        // as an engineer and committed while this command is still assembling — and the CAS below pins
+        // only `assigneeId`, which such a reactivation never touches. The submitter would then be
+        // recorded against work the rule had just made exclusive again.
+        //
+        // Re-taken HERE, under the key, that interleaving cannot happen: every membership change to
+        // this project is serialized against this transaction, so whichever order they take, the two
+        // agree about who held the work at commit. Same function as the early guard and the read
+        // boundary — one rule, asked at the moment the answer is written down.
+        if (insp.assigneeId && insp.assigneeId !== user.sub) {
+          const bindingNow = await bindingAssigneeIds(tx, projectId, [insp.assigneeId]);
+          if (bindingNow.has(insp.assigneeId)) {
+            throw new ForbiddenException(ASSIGNED_TO_SOMEONE_ELSE);
+          }
+        }
         // write each ROW its own result — (id, inspectionId) keeps containment even
         // against a raced id (gate finding 3: never keyed by non-unique name)
         for (const dbIt of insp.items) {
@@ -364,7 +363,13 @@ export class InspectionsService {
             Prisma.sql`SELECT "status", "role" FROM "Membership" WHERE "projectId" = ${projectId} AND "userId" = ${assigneeId} FOR UPDATE`,
           );
           const pmcSelfExplicit = input.assigneeId === user.sub && user.role === 'pmc' && membership?.role === 'pmc';
-          const eligible = membership?.status === 'active' && (CORRECTIVE_ROLES.includes(membership.role) || pmcSelfExplicit);
+          // `holdsCorrectiveRole` is the SAME predicate the submit guard and the read boundary apply,
+          // so assignment-time and binding-time can never drift apart. The one difference is stated
+          // rather than duplicated: a PMC naming THEMSELVES is admitted HERE, because that is a rule
+          // about who may be written down, not about whether the written name excludes everyone else.
+          // Their assignment binds nobody afterwards — they hold no checklist screen — which is why
+          // the submit and read sites deliberately do not repeat this arm.
+          const eligible = holdsCorrectiveRole(membership) || (membership?.status === 'active' && pmcSelfExplicit);
           if (!eligible) {
             throw new BadRequestException(
               input.assigneeId === undefined

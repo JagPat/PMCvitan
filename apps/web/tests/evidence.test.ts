@@ -495,7 +495,7 @@ describe('replay lifecycle', () => {
       st.outbox = []; st.syncQueue = []; st.pendingEvidenceCount = 0;
       // Villa's OWN failed row happens to carry the same clientKey — the stale
       // delete must not sweep it out of Villa's Retry/Delete surface
-      st.failedEvidence = [{ clientKey: 'k-shared', reason: 'upload rejected (400)', mime: 'image/png' }];
+      st.failedEvidence = [{ clientKey: 'k-shared', reason: 'upload rejected (400)', mime: 'image/png', inspectionId: 'INSP-90', inspectionItemId: 'i1' }];
       st.toast = null;
     });
     release(null);
@@ -593,7 +593,7 @@ describe('replay lifecycle', () => {
       st.activeProjectId = 'villa';
       st.projectScopeGeneration += 1;
       st.outbox = []; st.syncQueue = []; st.pendingEvidenceCount = 0;
-      st.failedEvidence = [{ clientKey: 'k-villa-own', reason: 'upload rejected (400)', mime: 'image/png' }];
+      st.failedEvidence = [{ clientKey: 'k-villa-own', reason: 'upload rejected (400)', mime: 'image/png', inspectionId: 'INSP-90', inspectionItemId: 'i1' }];
       st.toast = null;
     });
     release(null);

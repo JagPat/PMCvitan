@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { INSPECTIONS_COMMANDS, INSPECTIONS_QUERIES, rolesFor, type InspectionsModuleResult } from '@vitan/shared';
 import { inspectionsManifest } from './inspections.manifest';
 import { InspectionsQueryService } from './inspections.query';
@@ -29,6 +31,28 @@ describe('Task 10 — the inspections module implements its shared command/query
   it('every role a rejection may ASSIGN can reach the submit route', () => {
     const ceiling = rolesFor('inspection.submit');
     for (const role of CORRECTIVE_ROLES) expect(ceiling).toContain(role);
+  });
+
+  /**
+   * ROUND 7, FINDING 3 — the same rule, stated at two boundaries, has to stay ONE rule.
+   *
+   * `Inspection_submit_authority` restates the binding-assignment rule in SQL, because a rolling
+   * deployment's previous-release replica is a writer this deployment does not control and the
+   * database is the only boundary it shares. That copy exists to be a floor UNDER the service rule,
+   * never a different rule: if the TypeScript set gained a role the SQL list did not, the trigger
+   * would reject submits this release deliberately accepts, and every such submit would fail with a
+   * database error nobody could act on. Pinned by reading the migration, so the two lists cannot
+   * drift without this failing.
+   */
+  it('the writer fence names EXACTLY the CORRECTIVE_ROLES the service enforces', () => {
+    const sql = readFileSync(
+      join(__dirname, '../../prisma/migrations/20271216000000_inspection_submit_authority_fence/migration.sql'),
+      'utf8',
+    );
+    const match = /m\."role" IN \(([^)]*)\)/u.exec(sql);
+    expect(match, 'the fence must name the corrective roles in a `m."role" IN (...)` list').not.toBeNull();
+    const sqlRoles = match![1].split(',').map((r) => r.trim().replace(/^'|'$/gu, ''));
+    expect(sqlRoles.sort()).toEqual([...CORRECTIVE_ROLES].sort());
   });
 
   it('the manifest queries EQUAL the shared query contract', () => {

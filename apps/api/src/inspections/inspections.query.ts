@@ -4,6 +4,7 @@ import type { InspectionsModuleResult, ReadinessInspection } from '@vitan/shared
 import { PrismaService } from '../prisma.service';
 import { SignedUrlService } from '../media/signed-url.service';
 import { bakeInspections, computeInspectionsBase, type InspectionsBase, type InspectionsSlices } from './inspections-serialize';
+import { bindingAssigneeIds } from './assignment-eligibility';
 import { INSPECTIONS_PROJECTION } from './inspections.projection';
 import { readServableGeneration } from '../platform/projections/generation';
 import { nextSeqId } from '../domain/ids';
@@ -56,7 +57,25 @@ export class InspectionsQueryService {
    */
   async snapshotSlice(projectId: string, role: string, viewerId?: string): Promise<InspectionsSlices> {
     const base = await computeInspectionsBase(this.prisma, projectId);
-    return bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId });
+    return bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base) });
+  }
+
+  /**
+   * Which of this base's named assignees still HOLD their work — the live half of the read.
+   *
+   * Resolved here, per read, rather than stored in the base, because the base is a rebuildable
+   * PROJECTION refreshed by `inspection.*` events and this fact changes under `member.*` ones: a
+   * stored copy would keep a removed engineer's checklist hidden from every eligible replacement
+   * until something unrelated touched the inspection. Asking the membership table at read time makes
+   * the projection-served and live-served slices identical for the same reason they already are —
+   * the same function, the same argument — while keeping the stored bytes viewer-independent.
+   *
+   * One query per read, over the DISTINCT assignees actually present, and skipped entirely when the
+   * project has none (the common case: an issued checklist is nobody's in particular).
+   */
+  private bindingAssignees(projectId: string, base: InspectionsBase): Promise<Set<string>> {
+    const named = base.inspections.map((i) => i.assigneeId).filter((id): id is string => typeof id === 'string');
+    return bindingAssigneeIds(this.prisma, projectId, named);
   }
 
   /**
@@ -100,7 +119,7 @@ export class InspectionsQueryService {
     // half of the fence; the write half (an `InspectionsProjection` writer trigger mirroring the
     // decisions one) is a separate unit, and until it exists this is what keeps wrong data unserved.
     if (!isCurrentInspectionsBase(base)) return { slices: empty, generation: null };
-    return { slices: bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId }), generation: gen.generation };
+    return { slices: bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base) }), generation: gen.generation };
   }
 
   /**

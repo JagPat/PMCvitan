@@ -334,8 +334,13 @@ export interface AppState {
   online: boolean;
   syncQueue: string[];
   outbox: OutboxOp[];
-  /** FAILED evidence (terminal non-dedupe rejection) awaiting the user's Retry/Delete (Task 4) */
-  failedEvidence: { clientKey: string; reason: string; mime: string }[];
+  /** FAILED evidence (terminal non-dedupe rejection) awaiting the user's Retry/Delete (Task 4),
+   *  each row still carrying WHICH work it belongs to. `inspectionId` /
+   *  `inspectionItemId` are kept because Delete on this list is the one non-server path that drops
+   *  bytes permanently, and the panel is project-wide while the checklist picker is not: without the
+   *  association, switching to checklist B put A's retained photo under a Delete button labelled only
+   *  `upload rejected (400)` (#571 round 7, finding 4). */
+  failedEvidence: { clientKey: string; reason: string; mime: string; inspectionId: string; inspectionItemId: string }[];
   /** evidence photos durably saved offline, awaiting upload (Task 4) */
   pendingEvidenceCount: number;
   access: AccessState;
@@ -794,6 +799,28 @@ function overlayChecklistMarks(s: AppState): void {
  * pinning the slot to a checklist that is no longer outstanding.
  */
 /**
+ * The outstanding set a read serves — from EITHER endpoint, by one rule.
+ *
+ * `openChecklists` is this release's field. A client deployed ahead of its API talks to a server
+ * that has never heard of it, and the honest answer to "what else is out on site?" from such a
+ * server is the one checklist it does return — but ONLY while that checklist is still open. When
+ * nothing is open the server deliberately serves the oldest SUBMITTED one so a finished checklist
+ * stays readable, and wrapping THAT would report completed work as outstanding and awaiting the
+ * engineer. An older server simply cannot tell us about a second open checklist, and an empty list
+ * is the honest answer to that.
+ *
+ * Written once and shared because it was written twice and diverged: the snapshot branch derived the
+ * fallback and the module branch coerced the missing field to `[]`, so a client-first rollout in
+ * `moduleQuery` mode reported no work out on site while the same response carried an unsubmitted
+ * checklist (#571 round 7, finding 5). The two branches differ in WHERE the payload comes from and
+ * in nothing else, so the compatibility rule cannot live inside either of them.
+ */
+const outstandingFrom = (
+  openChecklists: readonly Checklist[] | undefined,
+  checklist: Checklist | null | undefined,
+): Checklist[] => (openChecklists ? [...openChecklists] : (checklist && !checklist.submitted ? [checklist] : []));
+
+/**
  * Write the checklist in the edit slot back over its entry in the outstanding list.
  *
  * Field STATE and NOTE survive a switch through `checklistMarks`, which the engineer's own edits
@@ -1233,19 +1260,19 @@ export const useStore = create<Store>()(
           // would have left the second issued checklist invisible on the path nearly every
           // deployment uses — the fix would only have worked once the non-default module read was
           // switched on. The fallback covers a client that outran its server.
-          // The fallback covers a client deployed ahead of its API. It must NOT wrap a submitted
-          // checklist: when nothing is open the server deliberately serves the oldest SUBMITTED one
-          // so a finished checklist stays readable, and wrapping that would report completed work as
-          // out on site and awaiting the engineer. An older server simply cannot tell us about a
-          // second open checklist, and an empty list is the honest answer to that.
-          const open = snap.openChecklists
-            ?? (snap.checklist && !snap.checklist.submitted ? [snap.checklist] : []);
-          s.openChecklists = [...open];
+          // The old-server fallback is `outstandingFrom` — the SAME rule the module branch below
+          // takes, because "the server did not send the field" means the same thing on both.
+          const open = outstandingFrom(snap.openChecklists, snap.checklist);
+          s.openChecklists = open;
           const owner = ownerOfEditSlot(open, snap.checklist ?? null, s.selectedChecklistId);
           s.checklist = owner.checklist;
           s.selectedChecklistId = owner.selectedId;
         } else if (inspectionsResult) {
-          const open = [...(inspectionsResult.openChecklists ?? [])];
+          // A CLIENT-FIRST rollout reaches a previous-release API here too: that endpoint returns
+          // `checklist` and has no `openChecklists` at all, and coercing the missing field to `[]`
+          // told the PMC no work was out on site while the very same response carried an unsubmitted
+          // checklist. Same rule, same function as the snapshot branch above.
+          const open = outstandingFrom(inspectionsResult.openChecklists, inspectionsResult.checklist);
           s.openChecklists = open;
           const owner = ownerOfEditSlot(open, inspectionsResult.checklist ?? null, s.selectedChecklistId);
           s.checklist = owner.checklist;
@@ -1681,7 +1708,8 @@ export const useStore = create<Store>()(
         if (!scopeStillCurrent(projScope)) return; // the project switched mid-read
         if (evidenceScope() !== scope || get().activeProjectId !== projectId || outboxKey() !== storageKey) return;
 
-        const failed = entries.filter((e) => e.status === 'failed').map((e) => ({ clientKey: e.clientKey, reason: e.failReason ?? 'upload rejected', mime: e.mime }));
+        // the stored entry has always known its checklist and item — carry them, do not discard them
+        const failed = entries.filter((e) => e.status === 'failed').map((e) => ({ clientKey: e.clientKey, reason: e.failReason ?? 'upload rejected', mime: e.mime, inspectionId: e.inspectionId, inspectionItemId: e.inspectionItemId }));
         const pending = entries.filter((e) => e.status === 'pending'); // only pending rows earn a replay op
         let reconstructed = false;
         set((s) => {

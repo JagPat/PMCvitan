@@ -32,8 +32,22 @@ const entry = (over: Partial<InspectionBaseEntry> & { id: string }): InspectionB
   ...over,
 });
 
-const bake = (inspections: InspectionBaseEntry[], role: string, viewerId?: string) =>
-  bakeInspections({ inspections } as InspectionsBase, { role, evidencePath: (id) => `/evidence/${id}`, viewerId });
+/** `bindingAssignees` defaults to EVERY named assignee — the ordinary case, where each one still
+ *  holds an active corrective membership. The round-7 probes below pass a narrower set to say that a
+ *  particular assignee no longer does. */
+const bake = (
+  inspections: InspectionBaseEntry[],
+  role: string,
+  viewerId?: string,
+  bindingAssignees?: ReadonlySet<string>,
+) =>
+  bakeInspections({ inspections } as InspectionsBase, {
+    role,
+    evidencePath: (id) => `/evidence/${id}`,
+    viewerId,
+    bindingAssignees: bindingAssignees
+      ?? new Set(inspections.map((i) => i.assigneeId).filter((id): id is string => typeof id === 'string')),
+  });
 
 describe('bakeInspections — issued checklists are visible', () => {
   it('carries EVERY open checklist, not just one', () => {
@@ -145,6 +159,39 @@ describe('assigned corrective work stays with its assignee', () => {
   it('shows the PMC everything, because they issued it and must see what is outstanding', () => {
     const rows = [assigned('INSP-1', 'eng-a'), assigned('INSP-2', 'eng-b'), entry({ id: 'INSP-3' })];
     expect(bake(rows, 'pmc').openChecklists.map((c) => c.id)).toEqual(['INSP-1', 'INSP-2', 'INSP-3']);
+  });
+
+  /**
+   * ROUND 7, FINDING 1 — the read must answer the assignment question with the SAME rule `submit` does.
+   *
+   * Round 6 made the assignment stop binding once its assignee can no longer do the work (removed,
+   * re-roled, or a PMC who named themselves and holds no checklist screen), so `submit` accepts a
+   * replacement engineer. This boundary went on filtering by the stored id, so the very callers the
+   * new rule made eligible could neither see the checklist nor open it: the work was submittable in
+   * principle by people who could not reach it in practice. These probes are RED against a `mine`
+   * that reads `assigneeId` alone.
+   */
+  it('returns a STRANDED assignee’s checklist to every eligible engineer', () => {
+    const rows = [assigned('INSP-1', 'eng-gone'), entry({ id: 'INSP-2' })];
+    // `eng-gone` was removed from the project (or re-roled): their assignment binds nobody now.
+    const slices = bake(rows, 'engineer', 'eng-a', new Set());
+    expect(slices.openChecklists.map((c) => c.id)).toEqual(['INSP-1', 'INSP-2']);
+    // and it is openable, not merely listed — the singular slice comes from the same filtered set
+    expect(slices.checklist?.id).toBe('INSP-1');
+  });
+
+  it('still keeps a BINDING assignee’s checklist off a colleague’s view', () => {
+    // the negative half: an assignee who IS still eligible is unchanged by finding 1's fix
+    const rows = [assigned('INSP-1', 'eng-b'), entry({ id: 'INSP-2' })];
+    const slices = bake(rows, 'engineer', 'eng-a', new Set(['eng-b']));
+    expect(slices.openChecklists.map((c) => c.id)).toEqual(['INSP-2']);
+  });
+
+  it('returns a PMC self-assigned re-inspection to the engineers, matching submit', () => {
+    // `pmcSelfExplicit`: `decide` admits a PMC naming themselves, and `submit` then treats that
+    // assignment as non-binding because a PMC has no checklist screen. The read has to agree.
+    const rows = [assigned('INSP-1', 'pmc-1')];
+    expect(bake(rows, 'engineer', 'eng-a', new Set()).openChecklists.map((c) => c.id)).toEqual(['INSP-1']);
   });
 
   it('leaves UNASSIGNED checklists everybody’s — the common case, unchanged', () => {

@@ -3,6 +3,7 @@ import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { InspectionsService } from '../../src/inspections/inspections.service';
+import { InspectionsQueryService } from '../../src/inspections/inspections.query';
 import type { AuthUser } from '../../src/common/auth';
 
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
@@ -20,6 +21,7 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
   let t: TestApp;
   let f: TwoProjectFixture;
   let svc: InspectionsService;
+  let reads: InspectionsQueryService;
   let projSeq = 0;
 
   const asPmc = (sub: string, projectId: string): AuthUser => ({ sub, role: 'pmc', projectId }) as AuthUser;
@@ -28,6 +30,7 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     t = await createTestApp();
     f = await createTwoProjectFixture(t.prisma);
     svc = t.app.get(InspectionsService);
+    reads = t.app.get(InspectionsQueryService);
   });
   afterAll(async () => {
     await f?.cleanup();
@@ -336,6 +339,144 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     const done = await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } });
     expect(done.submitted).toBe(true);
     expect(done.submittedById).toBe(engA);
+  });
+
+
+  /**
+   * ROUND 7, FINDING 1 — the READ has to answer the assignment question the way `submit` does.
+   *
+   * Round 6 made a stranded assignment stop binding, so `submit` accepts a replacement engineer. The
+   * read boundary went on filtering by the stored id, so the checklist stayed off every eligible
+   * engineer's field view: submittable in principle by people who could not find it. This is the same
+   * generator the previous three rounds produced — the rule written where the finding was reported,
+   * not over the set of sites that carry it — so the fix is one function both sides call, and this
+   * probe walks the LIVE read, not the pure baker.
+   */
+  it('ROUND 7 — a stranded assignee’s checklist is READABLE by the engineers who may submit it', async () => {
+    const { p, pmcA } = await freshProject();
+    const gone = `it-inidem-u-r7gone-${projSeq}`;
+    const other = `it-inidem-u-r7other-${projSeq}`;
+    const held = `it-inidem-u-r7held-${projSeq}`;
+    for (const [id, name] of [[gone, 'Gone'], [other, 'Other'], [held, 'Held']] as const) {
+      await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
+    }
+    await svc.create(p, createInput({ title: 'Stranded read' }), asPmc(pmcA, p), 'k-r7r-1');
+    await svc.create(p, createInput({ title: 'Held read' }), asPmc(pmcA, p), 'k-r7r-2');
+    const stranded = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Stranded read' } });
+    const bound = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Held read' } });
+    await t.prisma.inspection.update({ where: { id: stranded.id }, data: { assigneeId: gone } });
+    await t.prisma.inspection.update({ where: { id: bound.id }, data: { assigneeId: held } });
+    await t.prisma.membership.updateMany({ where: { projectId: p, userId: gone }, data: { status: 'removed' } });
+
+    const slice = await reads.snapshotSlice(p, 'engineer', other);
+    const ids = slice.openChecklists.map((c) => c.id);
+    // the stranded one is offered — RED before this round, where it was filtered out by id
+    expect(ids).toContain(stranded.id);
+    // and the one whose assignee CAN still act is still not this engineer's to see
+    expect(ids).not.toContain(bound.id);
+
+    // read and write agree, which is the whole point: exactly what the read offers, submit accepts
+    await svc.submit(p, stranded.id, {
+      items: (await t.prisma.inspectionItem.findMany({ where: { inspectionId: stranded.id } }))
+        .map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })),
+    }, { sub: other, role: 'engineer', projectId: p } as AuthUser, 'k-r7r-sub');
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: stranded.id } })).submittedById).toBe(other);
+  });
+
+  /**
+   * ROUND 7, FINDING 2 — the binding check has to be re-taken under the project's readiness key.
+   *
+   * `MembersService.add`/`updateRole` take that key before they write, so an assignee observed
+   * ineligible by the pre-transaction guard can be reactivated as an engineer and committed while
+   * this command is still assembling. The CAS pins only `assigneeId`, which a reactivation never
+   * touches, so the stranger would commit as the submitter of work that had become exclusive again.
+   *
+   * The window is reproduced the way round 5 reproduced its own: by making the EARLY guard's read
+   * return the answer it legitimately could have read a moment before, while the committed row says
+   * otherwise. Waiting on a real scheduler would make the probe timing-dependent for no gain.
+   */
+  it('ROUND 7 — a membership reactivation racing the guard cannot be committed past', async () => {
+    const { p, pmcA } = await freshProject();
+    const held = `it-inidem-u-r7racehold-${projSeq}`;
+    const rival = `it-inidem-u-r7racerival-${projSeq}`;
+    for (const [id, name] of [[held, 'Held'], [rival, 'Rival']] as const) {
+      await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
+    }
+    await svc.create(p, createInput({ title: 'Raced binding' }), asPmc(pmcA, p), 'k-r7race-1');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Raced binding' }, include: { items: true } });
+    await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: held } });
+
+    // The early, unlocked guard sees the assignee as ineligible; the committed truth (which the
+    // in-transaction re-read under the readiness key will see) is that they are an active engineer.
+    const findMany = vi.spyOn(t.prisma.membership, 'findMany').mockResolvedValueOnce([] as never);
+    try {
+      await expect(svc.submit(p, insp.id, { items: insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) },
+        { sub: rival, role: 'engineer', projectId: p } as AuthUser, 'k-r7race-sub'))
+        .rejects.toBeInstanceOf(ForbiddenException);
+    } finally {
+      findMany.mockRestore();
+    }
+    const after = await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } });
+    expect(after.submitted).toBe(false);
+    expect(after.submittedById).toBe(null);
+
+    // precise, not merely strict: the rightful assignee still submits it
+    await svc.submit(p, insp.id, { items: insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) },
+      { sub: held, role: 'engineer', projectId: p } as AuthUser, 'k-r7race-own');
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } })).submittedById).toBe(held);
+  });
+
+  /**
+   * ROUND 7, FINDING 3 — the rule holds against a writer this deployment does not control.
+   *
+   * During a rolling deployment a previous-release replica keeps serving, and its `submit` has no
+   * assignee guard — it never had one to keep. The raw UPDATEs below ARE that writer: the exact
+   * statement the previous release issues, with none of this release's checks in front of it. The
+   * freeze trigger waves them through because `assigneeId` is untouched, so the database is the only
+   * place the authority can still be asserted.
+   */
+  it('ROUND 7 — a previous-release submit of assigned work is refused at the database', async () => {
+    const { p, pmcA } = await freshProject();
+    const held = `it-inidem-u-r7fenceheld-${projSeq}`;
+    const gone = `it-inidem-u-r7fencegone-${projSeq}`;
+    const rival = `it-inidem-u-r7fencerival-${projSeq}`;
+    for (const [id, name] of [[held, 'Held'], [gone, 'Gone'], [rival, 'Rival']] as const) {
+      await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
+    }
+    await svc.create(p, createInput({ title: 'Fenced held' }), asPmc(pmcA, p), 'k-r7f-1');
+    await svc.create(p, createInput({ title: 'Fenced stranded' }), asPmc(pmcA, p), 'k-r7f-2');
+    await svc.create(p, createInput({ title: 'Fenced open' }), asPmc(pmcA, p), 'k-r7f-3');
+    const bound = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Fenced held' } });
+    const stranded = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Fenced stranded' } });
+    const open = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Fenced open' } });
+    await t.prisma.inspection.update({ where: { id: bound.id }, data: { assigneeId: held } });
+    await t.prisma.inspection.update({ where: { id: stranded.id }, data: { assigneeId: gone } });
+    await t.prisma.membership.updateMany({ where: { projectId: p, userId: gone }, data: { status: 'removed' } });
+
+    const legacySubmit = (id: string, by: string) => t.prisma.$executeRaw`
+      UPDATE "Inspection" SET "submitted" = true, "submittedById" = ${by}, "submittedByName" = ${by}
+       WHERE "id" = ${id}`;
+
+    // 1. the forgery the finding describes: a stranger submitting BOUND work
+    await expect(legacySubmit(bound.id, rival)).rejects.toThrow(/only its assignee may submit it/i);
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: bound.id } })).submitted).toBe(false);
+
+    // 2. an UNATTRIBUTABLE submit of bound work is the same refusal, not a hole
+    await expect(t.prisma.$executeRaw`UPDATE "Inspection" SET "submitted" = true WHERE "id" = ${bound.id}`)
+      .rejects.toThrow(/only its assignee may submit it/i);
+
+    // 3. …and it rejects ONLY what this release already rejects. The assignee's own submit passes,
+    // a STRANDED assignment lets a replacement through, and an unassigned checklist never reaches
+    // the membership lookup at all — otherwise the fence would break current replicas.
+    await legacySubmit(bound.id, held);
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: bound.id } })).submittedById).toBe(held);
+    await legacySubmit(stranded.id, rival);
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: stranded.id } })).submittedById).toBe(rival);
+    await legacySubmit(open.id, rival);
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: open.id } })).submittedById).toBe(rival);
   });
 
 });

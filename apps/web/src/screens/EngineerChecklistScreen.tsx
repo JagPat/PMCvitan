@@ -103,6 +103,21 @@ export function EngineerChecklistScreen() {
   const doneCount = checklist.items.filter((it) => it.state).length;
   const photoCount = checklist.items.reduce((a, it) => a + it.photos, 0);
 
+  /**
+   * WHOSE work a refused photo belongs to, in the words the engineer already uses for it: the item's
+   * own name, and the checklist's title when the row is not from the one on screen. Resolved from
+   * `openChecklists` (the outstanding set this screen already holds) and falling back to the stored
+   * ids when the checklist has since been submitted and left that list — a name that no longer
+   * resolves is still better than no name, because Delete here is permanent.
+   */
+  const evidenceOrigin = (inspectionId: string, itemId: string): string => {
+    const owner = openChecklists.find((c) => c.id === inspectionId);
+    const itemName = owner?.items.find((it) => it.id === itemId)?.name;
+    const where = itemName ?? `item ${itemId}`;
+    if (inspectionId === checklist.id) return `on this checklist — ${where}`;
+    return `on ${owner?.title ?? inspectionId} — ${where}`;
+  };
+
   const set = (i: number, v: Exclude<ItemState, null>) => () => setItem(i, v);
 
   return (
@@ -240,12 +255,27 @@ export function EngineerChecklistScreen() {
             {pendingEvidenceCount} photo{pendingEvidenceCount === 1 ? '' : 's'} saved offline — will upload when signal returns
           </div>
         )}
+        {/* The refused-photo list is PROJECT-WIDE and the checklist picker above is not, so a row on
+            this screen can belong to a checklist the engineer is no longer looking at. Delete here is
+            the one non-server path that drops bytes for good, and `upload rejected (400)` alone never
+            said whose work was about to be destroyed — so every row names its checklist and item, and
+            a row from another checklist says so outright (#571 round 7, finding 4). Filtering them out
+            instead would have hidden the other checklist's failures entirely, which is the same defect
+            the picker exists to fix: work nobody can see is work nobody can recover. */}
         {failedEvidence.length > 0 && (
           <div style={{ marginTop: 12, background: '#FBF0EF', border: '1px solid #E7CBC7', borderRadius: 12, padding: '11px 13px' }} data-testid="evidence-failed">
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--red-solid)', letterSpacing: '.1em' }}>PHOTOS THE SERVER REFUSED — CHOOSE FOR EACH</div>
             {failedEvidence.map((f) => (
               <div key={f.clientKey} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-                <span style={{ flex: 1, fontSize: 12.5 }}>{f.reason}</span>
+                <span style={{ flex: 1, fontSize: 12.5 }} data-testid={`evidence-failed-${f.clientKey}`}>
+                  {f.reason}
+                  <span
+                    style={{ display: 'block', fontSize: 11, color: 'var(--muted)' }}
+                    data-testid={`evidence-failed-where-${f.clientKey}`}
+                  >
+                    {evidenceOrigin(f.inspectionId, f.inspectionItemId)}
+                  </span>
+                </span>
                 <button onClick={() => void retryFailedEvidence(f.clientKey)} data-testid={`evidence-retry-${f.clientKey}`} style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid var(--ink)', background: '#fff', cursor: 'pointer', fontSize: 12 }}>Retry</button>
                 <button onClick={() => void deleteFailedEvidence(f.clientKey)} data-testid={`evidence-delete-${f.clientKey}`} style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid var(--red-solid)', color: 'var(--red-solid)', background: '#fff', cursor: 'pointer', fontSize: 12 }}>Delete</button>
               </div>

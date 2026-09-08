@@ -146,6 +146,45 @@ describe('Task 10 (Module 3) — module-owned inspections read (XOR)', () => {
     expect(s().openChecklists.map((c) => c.id)).toEqual(['INSP-9']);
   });
 
+  it('ROUND 7 — moduleQuery mode takes the SAME old-server fallback as the snapshot', async () => {
+    // A CLIENT-FIRST rollout: this client is ahead of its API, and that API's `GET …/inspections`
+    // returns `checklist` with no `openChecklists` at all. Coercing the missing field to `[]` told
+    // the PMC no work was out on site while the very same response carried an unsubmitted checklist
+    // — the snapshot branch immediately above already derived it correctly, so this was one
+    // compatibility rule written twice and diverging. RED before `outstandingFrom`.
+    vi.stubEnv('VITE_INSPECTIONS_READ', 'moduleQuery');
+    // an API that has never heard of the field: the key is ABSENT, not empty
+    const { openChecklists: _absent, ...legacy } = moduleResult({ checklist: checklist('INSP-9') });
+    void _absent;
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot()),
+      inspections: vi.fn().mockResolvedValue(legacy),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().openChecklists.map((c) => c.id)).toEqual(['INSP-9']);
+    expect(s().checklist?.id).toBe('INSP-9');
+  });
+
+  it('ROUND 7 — and it does NOT wrap a SUBMITTED checklist as outstanding, in either mode', async () => {
+    // The other half of the same rule: when nothing is open the server deliberately serves the
+    // oldest SUBMITTED checklist so a finished one stays readable. Reporting that as work out on
+    // site would be the fallback lying in the opposite direction.
+    vi.stubEnv('VITE_INSPECTIONS_READ', 'moduleQuery');
+    const done = { ...checklist('INSP-9'), submitted: true };
+    const { openChecklists: _gone, ...legacy } = moduleResult({ checklist: done });
+    void _gone;
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot()),
+      inspections: vi.fn().mockResolvedValue(legacy),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().openChecklists).toEqual([]);
+  });
+
   it('the engineer can move the edit slot to another open checklist, and the choice survives a refresh', async () => {
     const both = [checklist('INSP-1'), checklist('INSP-2')];
     const gw = {

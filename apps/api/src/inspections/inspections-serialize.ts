@@ -171,9 +171,19 @@ export function bakeInspections(
   base: InspectionsBase,
   // `role` is the viewer's role as a string (the API `Role` includes 'worker', wider than the shared
   // `Role`) — the AUTH-02 gating is a plain equality check, so a string keeps both sides compatible.
-  opts: { role: string; evidencePath: (mediaId: string) => string; viewerId?: string },
+  opts: {
+    role: string;
+    evidencePath: (mediaId: string) => string;
+    viewerId?: string;
+    /** The assignees whose assignments still BIND, from `bindingAssigneeIds` — the ONE statement of
+     *  that rule, resolved by the caller because it is a live membership fact and this function is
+     *  pure over the stored base (a base that embedded it would go stale the moment a membership
+     *  changed, with no `inspection.*` event to refresh it). REQUIRED, not defaulted: a caller that
+     *  forgot it would silently serve the pre-round-7 behaviour, which is the defect itself. */
+    bindingAssignees: ReadonlySet<string>;
+  },
 ): InspectionsSlices {
-  const { role, evidencePath, viewerId } = opts;
+  const { role, evidencePath, viewerId, bindingAssignees } = opts;
   const isPmc = role === 'pmc';
   const canSeeInspections = role === 'pmc' || role === 'engineer';
   const all = base.inspections;
@@ -213,8 +223,17 @@ export function bakeInspections(
   // who did A's remedial work. An UNASSIGNED checklist is still everybody's, which is the common
   // case and unchanged. The PMC sees all of it — they issue this work and must see what is
   // outstanding, which is the whole point of the list.
+  //
+  // AND IT STOPS BEING THEIRS WHEN THEY CAN NO LONGER DO IT. `submit` accepts a replacement engineer
+  // the moment the named assignee stops holding an active corrective membership — removed, re-roled,
+  // or a PMC who took the work by naming themselves and has no checklist screen to fill it on. Read
+  // and write must answer that with the SAME predicate: a checklist `submit` will take from engineer
+  // B is a checklist B has to be able to find and open, and filtering here on the stored id alone
+  // left the only eligible callers unable to reach the work at all (#571 round 7, finding 1). So the
+  // filter asks whether the assignment BINDS, not whether the column is set — `bindingAssignees` is
+  // the same `bindingAssigneeIds` answer the submit guard takes, resolved once per read.
   const mine = (i: InspectionBaseEntry): boolean =>
-    isPmc || i.assigneeId === null || i.assigneeId === viewerId;
+    isPmc || i.assigneeId === null || i.assigneeId === viewerId || !bindingAssignees.has(i.assigneeId);
   const openRows = all.filter((i) => i.kind === 'checklist' && !i.submitted && mine(i)).sort(byId);
   const openChecklists: Checklist[] = openRows.map(toChecklist);
 
