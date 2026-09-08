@@ -16,22 +16,24 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: f5da6654
-open_pr: 566
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-07
 ```
 
-### The 4d PLAN unit — the NARROWED plan, replacing #565 (which replaced #564, #563, #562, #561, #560, #558, #557, #556, #555, #554 and #552), docs-only
+### The 4d PLAN unit — the NARROWED plan, replacing #566 (which replaced #565, #564, #563, #562, #561, #560, #558, #557, #556, #555, #554 and #552), docs-only
 
 **What this PR is.** The docs-only 4d plan unit the merged 4b plan's §E order names as the first
 4d stop, `docs/superpowers/plans/2026-09-07-decision-workflow-4d.md`: the §C orchestration
 design at PR #340 head `6a53aae` carried in substance, the §D obligations 4–6 elaborated, the
 probe table P28–P42, and the FOUR-PR staging (the dark migration 4d-i, the service/role/UI unit
-4d-ii, an operator drain attestation, the reservation retirement 4d-iii). It replaces #565
-(`Replaces: #565`) — the narrowed plan's eleventh outing, closed at its second finding-bearing
-head (`5871826` three findings, two folded on `89bd230` and one — the drain attestation —
-declined on the Board's recorded decision, which drew one more) — which replaced #564 (the
+4d-ii, an operator drain attestation, the reservation retirement 4d-iii). It replaces #566
+(`Replaces: #566`) — the narrowed plan's twelfth outing, closed at its second finding-bearing
+head (`cc8b3ba` two findings, one folded on `e3d6c23` and one — the drain attestation —
+declined; a relay-based drain fold `1a2ba97` reverted on `5921f22`, which drew two more) —
+which replaced #565 (the eleventh: `5871826` three findings, two folded on `89bd230` and the
+drain attestation declined, one more there), which replaced #564 (the
 tenth: `93349e6` one finding — the drain attestation — declined and recorded on `2a47037`,
 three more there), which replaced #563 (the ninth: `6bf75a36`
 five findings, four folded on `01706fe` and the drain attestation declined, one more there),
@@ -81,7 +83,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 3,894 lines against #552's 3,495.
+live standing). The document is 4,001 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -401,7 +403,7 @@ carry the membership id, and no AFTER guard reads it); the decisions-owned guard
 the delta; P37 asserts the last-architect removal, re-role and two-in-one-statement removal
 refused, RED against the AFTER ordering. The drain gate was not raised on this head.
 
-**Review round 1 on this PR, #566 (head `cc8b3ba`): two findings, both P1, one folded on its
+**Review round 1 on #566 (head `cc8b3ba`): two findings, both P1, one folded on its
 ONE correction head, one DECLINED on the Board's recorded decision, none dropped.** The
 membership transition fact is inserted BEFORE the membership write for EVERY transition (add
 already did; re-role and removal join it), so every arm of its BEFORE INSERT trigger — actor
@@ -420,8 +422,38 @@ hold (#482 comment 5577732007) established that no direct user decision exists b
 agent prose cannot supersede the retained gate, which the user's standing instruction also
 retains; the next head reverts the fold byte-for-byte and records the episode here and in the
 plan's lineage. The attestation stays REQUIRED, the autonomous evidence stays fail-closed
-corroboration, and any change waits on the user's direct decision. A second finding-bearing head
-means close-and-replace under the standing authorization, no cap.
+corroboration, and any change waits on the user's direct decision. **The Board then decided
+DIRECTLY** (#482 comment 5577872836 — its own words under the owner account, no coordinator
+marker): the human attestation is LIFTED and the autonomous fail-closed gate authorized; that fold
+is prepared as its own docs-only head on this lineage and held until the session is permitted to
+apply it, so §D carries the gate exactly as at `5921f22` until it lands. A second finding-bearing
+head means close-and-replace under the standing authorization, no cap.
+
+**Review round 2 on #566 (head `5921f22`): two findings, both P1, carried here, none dropped.**
+One is the WINDOW RULE: 4d-i re-pointed the still-live consultation request seal's requester arm
+onto the per-user register, but through the 4d-i → 4d-iii window the admitted `Project`-vs-
+`OrgMembership` race can leave a membership-less owner/admin without their `pmc` row, so the
+delivered service admitted the owner and the DB seal refused the insert until 4d-iii repaired the
+register. The plan now states the rule — until the fenced re-projection has proven the fanned-out
+rows equal to the orgs truth, no seal or read a window writer can meet judges a user's `pmc`
+standing through them — and disposes its three arms: the consultation seal's requester arm STAYS
+`phase6_user_decision_authority` (4d-i widens the open set alone) and 4d-iii re-points it after
+the re-projection in the same transaction, 4d-ii's service keeping the delivered check and
+admitting an `architect` requester through the kernel read (inert until 4d-iii, when architects
+become representable); the `MembershipTransition` fact's `pmc` actor arm derives a membership-less
+owner/admin from the RACE-FREE registers (`OrgUserAuthority` + no membership-granted row, the org
+read from the orgs-owned seal's own `Project` row); and the participant's `effectiveRoleHolderUserIds`
+keeps the delivered orgs-truth SQL for `pmc`/`client` while `rollout.phase6_4d` reads `reserved`,
+wrapping the kernel read once it reads `open`. P29b's race fixture leaves the owner without the
+fanned-out row and asserts the request, the fact and the delivered push all admit them, RED
+against the 4d-i re-point. The other is the stranded return for an EMPTIED ROLE designation: the
+`returned` outcome required a `toDesignation` only for a departed NAMED holder, so an architect-
+role-designated decision whose sole architect approved it and left carried no `DecisionForward`
+on `returned → change` and the open-holder rule refused it. Re-homing is now REQUIRED whenever the
+installed designation has no active holder — named departed OR role with zero members
+(`platform_role_has_holder` false) — the forward running FROM the empty designation to the named
+active target; P29b adds the emptied-role probe, RED against the named-holder-only rule. The
+drain gate was not raised on this head.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
@@ -430,9 +462,9 @@ self-naming convention every 4c and 4d unit followed). `reviewed_merge` stays `f
 Runner invariants: `assessRunnerState` → `pr:<this>` while open; `assessPostMergeRunnerState` →
 simulated, allowed, `task:4`; `detectStatusDrift` with the self-named `open_pr` live → no drift.
 
-**The ledger, read off the label.** #565 was labelled `review-replacement-required` by the
-orchestrator before it closed, so #565 is the obligation this PR settles. Every predecessor
-closed at the limit (#537–#540, #542–#564) stays a labelled pending obligation until a MERGED
+**The ledger, read off the label.** #566 was labelled `review-replacement-required` by the
+orchestrator before it closed, so #566 is the obligation this PR settles. Every predecessor
+closed at the limit (#537–#540, #542–#565) stays a labelled pending obligation until a MERGED
 unit names it, one merge discharging one (`docs/reviews/replacement-lineage-repair.md`); #541
 holds no label. No label is applied or cleared by hand.
 
