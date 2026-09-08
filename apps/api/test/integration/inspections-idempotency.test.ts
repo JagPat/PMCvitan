@@ -683,18 +683,28 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
    * ROUND 10, FINDING 1 — the evidence rule at the boundary the replicas SHARE.
    *
    * Round 9 put the evidence authority in `MediaService`. A previous-release replica is not running
-   * `MediaService`, so during a rolling deployment it would still attach a photo to — or
-   * permanently DELETE a photo from — an inspection whose assignment binds to somebody else. The
-   * submit path got this fence in round 7; evidence was left in the position submit was fenced out
-   * of.
+   * `MediaService`, so during a rolling deployment it would still attach a photo to an inspection
+   * whose assignment binds to somebody else. The submit path got this fence in round 7; evidence was
+   * left in the position submit was fenced out of.
    *
-   * These raw statements ARE that writer: the exact rows the previous release writes, with none of
-   * this release's guards in front of them and nothing declaring who is writing.
+   * The raw statements below ARE that writer: the exact rows the previous release writes, with none
+   * of this release's guards in front of them and nothing declaring who is writing.
+   *
+   * ATTACH IS FENCED AT THE DATABASE; REMOVE IS NOT — and this probe pins that line from BOTH sides
+   * (#571 round 10, after `api-e2e` on `29b9be8f`). An earlier spelling of the fence carried a DELETE
+   * arm, and it refused the seed: `prisma/seed.ts` wipes `Media`, and the FK cascade issues a
+   * statement byte-identical to the one the legacy unlink issues. A trigger cannot see intent, so
+   * fencing DELETE refuses every reset in the repository. The migration states that measurement in
+   * full and says where the remove half rests instead — `MediaService.remove`'s guard plus the drain
+   * requirement. Both halves are asserted here, so neither can be quietly moved: the ADMITTED cascade
+   * turns red the moment a DELETE arm comes back, and the refused rival delete turns red the moment
+   * the service guard that now carries that half is dropped.
    */
-  it('ROUND 10 — an unattributed evidence write on BINDING work is refused at the database', async () => {
+  it('ROUND 10 — an unattributed evidence ATTACH on BINDING work is refused at the database', async () => {
     const { p, pmcA } = await freshProject();
     const held = `it-inidem-u-r10held-${projSeq}`;
-    for (const [id, name] of [[held, 'Held']] as const) {
+    const rival = `it-inidem-u-r10riv-${projSeq}`;
+    for (const [id, name] of [[held, 'Held'], [rival, 'Rival']] as const) {
       await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
       await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
     }
@@ -702,45 +712,62 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Fenced evidence' }, include: { items: true } });
     const item = insp.items[0]!;
     const asUser = (sub: string) => ({ sub, role: 'engineer', projectId: p }) as AuthUser;
+    const links = () => t.prisma.inspectionEvidence.count({ where: { projectId: p, inspectionId: insp.id } });
 
     // an UNASSIGNED checklist is untouched by the fence — the common case, unchanged
     const before = await media.create(p, asUser(held), {
       kind: 'inspection', mime: 'image/png', data: Buffer.from('abcd').toString('base64'),
       inspectionId: insp.id, inspectionItemId: item.id,
     });
-    // `media.create` already linked it, so the legacy DELETE comes first and the legacy INSERT
-    // restores it — both operations exercised while the inspection is unassigned, both admitted
+    // `media.create` already linked it, so the legacy unlink comes first and the legacy attach
+    // restores it — both while the inspection is unassigned, both admitted
     await t.prisma.$executeRaw`DELETE FROM "InspectionEvidence" WHERE "projectId" = ${p} AND "mediaId" = ${before.id}`;
     await t.prisma.$executeRaw`
       INSERT INTO "InspectionEvidence" ("id","projectId","inspectionId","inspectionItemId","mediaId")
       VALUES ('r10-legacy-open', ${p}, ${insp.id}, ${item.id}, ${before.id})`;
+    expect(await links()).toBe(1);
 
     await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: held } });
 
-    // ASSIGNED and binding: a previous-release writer declares no actor and is refused, on the
-    // INSERT and on the DELETE alike — RED before this round, where no trigger protected either
+    // ASSIGNED and binding: a previous-release writer declares no actor and cannot attach — RED
+    // before this round, where no trigger protected the evidence surface at all. The photo it
+    // attaches is a FRESH one, deliberately: re-linking `before` would collide with the
+    // (inspectionItemId, mediaId) unique index, and a probe the schema would have refused anyway
+    // proves nothing about the fence.
+    const stranger = await t.prisma.media.create({
+      data: { projectId: p, kind: 'inspection', mime: 'image/png', data: Buffer.from('mnop'), uploadedBy: held },
+    });
     await expect(t.prisma.$executeRaw`
       INSERT INTO "InspectionEvidence" ("id","projectId","inspectionId","inspectionItemId","mediaId")
-      VALUES ('r10-legacy-1', ${p}, ${insp.id}, ${item.id}, ${before.id})`)
-      .rejects.toThrow(/only its assignee may change its photo evidence/i);
-    await expect(t.prisma.$executeRaw`
-      DELETE FROM "InspectionEvidence" WHERE "projectId" = ${p} AND "mediaId" = ${before.id}`)
-      .rejects.toThrow(/only its assignee may change its photo evidence/i);
-    // the assignee's evidence is still there
-    expect(await t.prisma.inspectionEvidence.count({ where: { projectId: p, mediaId: before.id } })).toBe(1);
+      VALUES ('r10-legacy-1', ${p}, ${insp.id}, ${item.id}, ${stranger.id})`)
+      .rejects.toThrow(/only its assignee may attach photo evidence/i);
+    expect(await links()).toBe(1);
 
-    // precise, not merely strict: THIS release declares the actor, and the assignee's own writes pass
+    // THE MEASURED LIMIT, asserted rather than described. This is the seed's own act: wiping `Media`
+    // cascades the link away, and the fence ADMITS it, because the cascade's statement is the legacy
+    // unlink's statement. Re-adding a DELETE arm makes this line fail here instead of in `api-e2e`.
+    await t.prisma.media.deleteMany({ where: { projectId: p, id: before.id } });
+    expect(await links()).toBe(0);
+
+    // …so the remove half rests on the SERVICE guard, and that is what holds it: the assignee may
+    // destroy the photos behind their own binding work, and a rival with the same role may not
     const own = await media.create(p, asUser(held), {
       kind: 'inspection', mime: 'image/png', data: Buffer.from('efgh').toString('base64'),
       inspectionId: insp.id, inspectionItemId: item.id,
     });
+    await expect(media.remove(own.id, asUser(rival))).rejects.toBeInstanceOf(ForbiddenException);
+    expect(await links()).toBe(1);
     expect(await media.remove(own.id, asUser(held))).toBe(true);
+    expect(await links()).toBe(0);
 
-    // …and a STRANDED assignment returns evidence to the ordinary role gate, legacy writer included:
-    // the very DELETE refused a moment ago now succeeds, because the assignment binds nobody
+    // …and a STRANDED assignment returns evidence to the ordinary role gate. This is the SAME
+    // statement, on the same row, by the same unattributed writer as the refusal above — only the
+    // assignee's standing differs, so nothing but the binding question can explain the two answers.
     await t.prisma.membership.updateMany({ where: { projectId: p, userId: held }, data: { status: 'removed' } });
-    await t.prisma.$executeRaw`DELETE FROM "InspectionEvidence" WHERE "projectId" = ${p} AND "mediaId" = ${before.id}`;
-    expect(await t.prisma.inspectionEvidence.count({ where: { projectId: p, mediaId: before.id } })).toBe(0);
+    await t.prisma.$executeRaw`
+      INSERT INTO "InspectionEvidence" ("id","projectId","inspectionId","inspectionItemId","mediaId")
+      VALUES ('r10-legacy-1', ${p}, ${insp.id}, ${item.id}, ${stranger.id})`;
+    expect(await links()).toBe(1);
   });
 
   /**

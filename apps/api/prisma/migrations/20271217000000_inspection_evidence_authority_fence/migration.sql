@@ -8,10 +8,31 @@
 -- end: the bytes do not come back, and nothing downstream can reconstruct what the item proved.
 --
 -- WHY A SETTING AND NOT A COLUMN. The submit fence judges an actor the row itself carries
--- (`submittedById`). `InspectionEvidence` carries no actor, and a DELETE could not use one anyway —
--- the row records who ADDED the evidence, never who is removing it. So the actor arrives as a
+-- (`submittedById`). `InspectionEvidence` carries no actor, so the actor arrives as a
 -- transaction-local setting this release's writers set and the previous release does not know
 -- exists: the same discriminator `20271126000000` uses, for the same reason.
+--
+-- INSERT ONLY, AND THAT IS A MEASURED LIMIT RATHER THAN AN OVERSIGHT (#571 round 10, after CI).
+-- An earlier spelling of this fence carried a DELETE arm too. It refused the seed: `prisma/seed.ts`
+-- wipes `Media`, and the FK cascade issues
+--
+--   DELETE FROM ONLY "public"."InspectionEvidence" WHERE $1 = "projectId" AND $2 = "mediaId"
+--
+-- which is BYTE-IDENTICAL to the statement `InspectionParticipant.removeEvidence` issues on the
+-- legacy delete path. Measured on a live database, not reasoned about: the sanctioned teardown and
+-- the writer this fence exists to stop present the database with the same act, and a trigger cannot
+-- see intent. Fencing DELETE therefore refuses every reset in the repository — the exact failure
+-- `prisma/sanctioned-reset.ts` was written to prevent ("installing one seal used to mean editing
+-- every suite that resets a table in its cascade, and MISSING one meant the required integration
+-- battery stopped being runnable"), and it would have to be bypassed at more than a dozen teardown
+-- sites, each of which is one edit away from silently disabling the protection anyway.
+--
+-- So the halves are answered differently, and the plan says which is which. ATTACHING evidence to
+-- somebody else's binding work is fenced HERE, at the database, where no teardown ever inserts.
+-- REMOVING it rests on `MediaService.remove`'s guard plus the drain requirement
+-- (`phase-6-4d-previous-release-drained`) — the second of the two answers this finding itself
+-- admits. Claiming a DELETE fence that every reset must switch off would be a weaker guarantee
+-- dressed as a stronger one.
 --
 -- ITS HONEST LIMIT, stated because the repository states it elsewhere (4c-iii-r): a `SET LOCAL` is
 -- MISTAKE-PROOFING, not a privilege boundary — this deployment's single table-owning role could not
@@ -39,11 +60,7 @@ DECLARE
   v_actor text;
   v_row public."InspectionEvidence";
 BEGIN
-  IF TG_OP = 'DELETE' THEN
-    v_project := OLD."projectId"; v_inspection := OLD."inspectionId"; v_row := OLD;
-  ELSE
-    v_project := NEW."projectId"; v_inspection := NEW."inspectionId"; v_row := NEW;
-  END IF;
+  v_project := NEW."projectId"; v_inspection := NEW."inspectionId"; v_row := NEW;
 
   SELECT i."assigneeId" INTO v_assignee
     FROM public."Inspection" i WHERE i."id" = v_inspection;
@@ -55,7 +72,7 @@ BEGIN
   -- holding the key and waiting on these rows.
   IF NOT pg_try_advisory_xact_lock(hashtextextended('readiness:' || v_project, 0)) THEN
     RAISE EXCEPTION
-      'Inspection % evidence cannot be changed right now: this project''s readiness is held by another transaction, so the assignee''s standing cannot be judged. Retry.',
+      'Inspection % evidence cannot be attached right now: this project''s readiness is held by another transaction, so the assignee''s standing cannot be judged. Retry.',
       v_inspection;
   END IF;
 
@@ -66,7 +83,7 @@ BEGIN
   v_actor := NULLIF(current_setting('vitan.inspection_evidence_actor', true), '');
   IF v_actor IS DISTINCT FROM v_assignee THEN
     RAISE EXCEPTION
-      'Inspection % is assigned to % and only its assignee may change its photo evidence; this write was made by %.',
+      'Inspection % is assigned to % and only its assignee may attach photo evidence to it; this write was made by %.',
       v_inspection, v_assignee, COALESCE(v_actor, '(an unattributed writer)');
   END IF;
   RETURN v_row;
@@ -75,7 +92,7 @@ $evidence$;
 
 DROP TRIGGER IF EXISTS "InspectionEvidence_t571_authority" ON "InspectionEvidence";
 CREATE TRIGGER "InspectionEvidence_t571_authority"
-  BEFORE INSERT OR DELETE ON "InspectionEvidence"
+  BEFORE INSERT ON "InspectionEvidence"
   FOR EACH ROW EXECUTE FUNCTION inspection_evidence_authority();
 
 COMMIT;
