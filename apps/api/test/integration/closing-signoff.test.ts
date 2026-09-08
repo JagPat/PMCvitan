@@ -37,7 +37,9 @@ describe('closing sign-off controls activity completion (integration)', () => {
       data: [
         // the engineer who claims completion + a second eligible member for the churn paths
         { projectId: f.projectA.id, userId: f.ownerUser.id, role: 'engineer', status: 'active' },
-        { projectId: f.projectA.id, userId: f.strangerUser.id, role: 'contractor', status: 'active' },
+        // a SECOND ENGINEER, not a contractor: CORRECTIVE_ROLES no longer admits a contractor,
+        // because a contractor cannot reach the submit route an assignment depends on.
+        { projectId: f.projectA.id, userId: f.strangerUser.id, role: 'engineer', status: 'active' },
       ],
       skipDuplicates: true,
     });
@@ -176,7 +178,7 @@ describe('closing sign-off controls activity completion (integration)', () => {
       expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: closingId } })).decided).toBe(false);
       expect((await t.prisma.activity.findUniqueOrThrow({ where: { id: activityId } })).status).toBe('awaiting_signoff');
 
-      // naming an ACTIVE contractor explicitly succeeds
+      // naming an ACTIVE second ENGINEER explicitly succeeds
       expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemIds: await signOffIds(closingId), assigneeId: f.strangerUser.id })).status).toBe(201);
       const child = await t.prisma.inspection.findFirstOrThrow({ where: { reinspectionOfId: closingId } });
       expect(child.assigneeId).toBe(f.strangerUser.id);
@@ -409,7 +411,7 @@ describe('closing sign-off controls activity completion (integration)', () => {
         expect((await pending).status).toBe(400);
       } finally {
         b.restore();
-        await t.prisma.membership.update({ where: { projectId_userId: { projectId: f.projectA.id, userId: f.strangerUser.id } }, data: { role: 'contractor', status: 'active' } });
+        await t.prisma.membership.update({ where: { projectId_userId: { projectId: f.projectA.id, userId: f.strangerUser.id } }, data: { role: 'engineer', status: 'active' } });
       }
       expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: closingId } })).decided).toBe(false);
       expect(await t.prisma.inspection.count({ where: { reinspectionOfId: closingId } })).toBe(0);
