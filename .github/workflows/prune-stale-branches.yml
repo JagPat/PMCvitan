@@ -1,0 +1,301 @@
+name: Prune stale branches
+
+# "Automatically delete head branches" only ever fires on MERGE. This repository's
+# review protocol closes a pull request at the two-finding-bearing-head limit and
+# opens a successor, so the abandoned head is never merged and that setting never
+# sees it: 124 of 328 live branches got there this way. This job is the other half.
+#
+# It deletes ONLY branches that are provably finished, and the bar is deliberately
+# high because branch REUSE is common here — one branch has been the head of 151
+# pull requests, so "this branch had a closed PR once" is nowhere near sufficient.
+# Every condition below must hold:
+#
+#   1. the branch's pull requests are ALL closed — merged or not. Merged ones are
+#      included deliberately: auto-delete only fires at the moment of merge and is
+#      never retroactive, so the branches that merged before it was enabled would
+#      otherwise sit here forever. The work is in main's history either way.
+#   2. it has NO open pull request        — a reused branch may be live right now;
+#   3. its tip SHA still equals the head SHA recorded by the most recently CLOSED
+#      pull request on it — if anyone re-pushed since, the branch has moved on and
+#      is not the thing that pull request finished with;
+#   4. that closure was more than STALE_DAYS ago, so a replacement opened minutes
+#      ago is never caught mid-flight.
+#
+# Only pull requests whose head lives in THIS repository count. A pull request from
+# a fork carries a `head.ref` naming a branch in someone else's repository, which
+# can collide with one of ours and would otherwise be read as proof that our branch
+# is finished. Conditions 3 and 4 are measured against the most recently CLOSED
+# pull request, never the most recently UPDATED one: a stray label or comment on an
+# old pull request must not be able to promote it past the staleness window.
+#
+# Anything that fails a condition is left alone and reported. A deleted branch is
+# recoverable from the GitHub UI, and its commits are unreachable rather than gone.
+#
+# The deletion itself is a compare-and-swap, not a checked call. `DELETE /git/refs`
+# takes only a ref name, so a branch that moved between the check and the call would
+# be destroyed anyway; git's own protocol does have a conditional form, and this job
+# uses it — `--force-with-lease=refs/heads/<name>:<sha>` on a delete pushes the old
+# object id and the server refuses if the ref no longer holds it. Condition 3 is
+# therefore enforced by the remote at the instant of deletion and cannot be raced.
+#
+# Conditions 2 and 4 have no such mechanism: they are re-derived from a fresh listing
+# of that one branch's pull requests immediately before the push. That narrows the
+# window to a single round trip but cannot close it — a lease protects the ref's object
+# id, and opening a pull request does not move the ref, so a pull request opened inside
+# that window is invisible to it. GitHub offers no deletion conditional on
+# pull-request state, so the job DETECTS AND REPAIRS instead of claiming prevention:
+# after a successful delete it asks again, and puts the ref back at the exact object id
+# it recorded if the answer changed. The branch is restorable precisely because that
+# object id is known. Stated plainly rather than papered over: for a few seconds the
+# head of a newly opened pull request can be missing, and then it is back.
+#
+# Verified against the live repository before this shipped (2026-09-07, 330 branches,
+# 557 pull requests): 219 selected, and the guards demonstrably bite rather than being
+# decorative — 99 held back by the staleness window, 1 by the re-push check, 1 by an
+# open pull request, 9 because they have no closed pull request of their own and want
+# a human. The fork rule is a guard with nothing to catch today: every pull request in
+# the corpus is branch-to-branch, and none has a deleted head repository.
+#
+# Measuring against the newest CLOSURE rather than the newest UPDATE is not cosmetic.
+# `claude/owner-aware-correction-routing-ihcm26` last closed at pull request #380, on
+# the SHA the branch still points at; #377 closed earlier on an older SHA but was
+# touched three days later, so ordering by update time picked #377 and mis-reported
+# the branch as re-pushed.
+
+on:
+  schedule:
+    # Weekly, well away from the hourly handoff watchdog at :17.
+    - cron: '43 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List what would be deleted without deleting it
+        required: false
+        default: true
+        type: boolean
+      stale_days:
+        description: Only prune branches whose last pull request closed this many days ago
+        required: false
+        default: '14'
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  # Never let two prunes race over the same refs.
+  group: prune-stale-branches
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # A depth-1 checkout is enough: the leases below name object ids explicitly and
+      # git does not need them locally to send a delete. This step is here for the
+      # authenticated `origin` remote, not for history.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+
+      - name: Select and prune finished branches
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          # A scheduled run prunes; a manual run defaults to a dry run so the
+          # selection can be inspected before anything is destroyed.
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          STALE_DAYS: ${{ github.event_name == 'workflow_dispatch' && inputs.stale_days || '14' }}
+        with:
+          script: |
+            const dryRun = process.env.DRY_RUN !== 'false';
+            const staleDays = Number(process.env.STALE_DAYS);
+            // A negative or non-numeric threshold would put the cutoff in the FUTURE,
+            // and every branch would then read as stale. Refuse the run outright.
+            if (!Number.isFinite(staleDays) || staleDays <= 0) {
+              core.setFailed(`stale_days must be a positive number; got ${JSON.stringify(process.env.STALE_DAYS)}`);
+              return;
+            }
+            const cutoff = Date.now() - staleDays * 86_400_000;
+            const { owner, repo } = context.repo;
+            const thisRepo = `${owner}/${repo}`;
+
+            // Everything conditions 2 and 4 ask, derived from one branch's own pull
+            // requests. Used to select, and again — freshly — just before deleting.
+            const readState = (prs) => {
+              const s = { open: 0, latest: null, closedAt: 0 };
+              for (const pr of prs) {
+                if (pr.head.repo?.full_name !== thisRepo) continue;
+                if (pr.state === 'open') { s.open += 1; continue; }
+                const closedAt = Date.parse(pr.closed_at ?? '');
+                if (Number.isFinite(closedAt) && closedAt > s.closedAt) {
+                  s.closedAt = closedAt;
+                  s.latest = pr;
+                }
+              }
+              return s;
+            };
+
+            // One pass over every pull request, collapsed per head branch. A pull
+            // request whose head lives in a FORK is skipped outright: its head ref
+            // names a branch in another repository and tells us nothing about ours,
+            // but the name can collide with one of ours.
+            const byRef = new Map();
+            for await (const page of github.paginate.iterator(
+              github.rest.pulls.list, { owner, repo, state: 'all', per_page: 100 },
+            )) {
+              for (const pr of page.data) {
+                if (!byRef.has(pr.head.ref)) byRef.set(pr.head.ref, []);
+                byRef.get(pr.head.ref).push(pr);
+              }
+            }
+            const state = new Map([...byRef].map(([ref, prs]) => [ref, readState(prs)]));
+
+            const defaultBranch = context.payload.repository?.default_branch ?? 'main';
+            const branches = await github.paginate(
+              github.rest.repos.listBranches, { owner, repo, per_page: 100 },
+            );
+
+            const examined = branches.length;
+            const doomed = [], kept = [];
+            for (const branch of branches) {
+              const name = branch.name;
+              const skip = (why) => kept.push({ name, why });
+              if (name === defaultBranch) { skip('default branch'); continue; }
+              if (branch.protected) { skip('protected'); continue; }
+
+              const s = state.get(name);
+              if (s?.open > 0) { skip(`${s.open} open pull request(s)`); continue; }
+              if (!s || !s.latest) { skip('no closed pull request of its own — review by hand'); continue; }
+              if (branch.commit.sha !== s.latest.head.sha) { skip('re-pushed since its last pull request'); continue; }
+              if (!(s.closedAt < cutoff)) { skip(`closed less than ${staleDays} days ago`); continue; }
+
+              doomed.push({ name, pr: s.latest.number, sha: s.latest.head.sha, closedAt: s.latest.closed_at });
+            }
+
+            core.summary.addHeading(dryRun ? 'Prune stale branches — DRY RUN' : 'Prune stale branches');
+            core.summary.addRaw(`\n${examined} branches examined; ${doomed.length} selected; stale threshold ${staleDays} days.\n\n`);
+
+            let deleted = 0;
+            const failures = [], raced = [], restored = [];
+            for (const b of doomed) {
+              if (dryRun) { core.info(`would delete ${b.name} (last PR #${b.pr}, closed ${b.closedAt})`); continue; }
+              try {
+                // The listing above is a snapshot taken before any deletion. Re-derive
+                // conditions 2 and 4 from THIS branch's own pull requests, now — a new
+                // pull request may have opened, or opened and closed, since selection.
+                // The concurrency group serialises prune runs against each other; it
+                // never serialised them against contributors.
+                const fresh = readState(await github.paginate(
+                  github.rest.pulls.list,
+                  { owner, repo, state: 'all', head: `${owner}:${b.name}`, per_page: 100 },
+                ));
+                if (fresh.open > 0) {
+                  core.notice(`kept ${b.name}: ${fresh.open} pull request(s) open since it was selected`);
+                  raced.push(b.name);
+                  continue;
+                }
+                if (!(fresh.closedAt < cutoff)) {
+                  core.notice(`kept ${b.name}: its newest closure is under ${staleDays} days old`);
+                  raced.push(b.name);
+                  continue;
+                }
+                // Condition 3 is not re-checked and then trusted — it is DELEGATED to
+                // the remote. `--force-with-lease` sends the expected old object id, so
+                // the server itself refuses the delete if the branch has moved. There is
+                // no window between the check and the destruction because there is no
+                // separate check: the condition and the deletion are one operation.
+                const push = await exec.getExecOutput(
+                  'git',
+                  ['push', 'origin', `--force-with-lease=refs/heads/${b.name}:${b.sha}`, `:refs/heads/${b.name}`],
+                  { ignoreReturnCode: true, silent: true },
+                );
+                if (push.exitCode !== 0) {
+                  // A non-zero push is NOT automatically a lost lease. A revoked token, a
+                  // repository rule, or a network failure exit non-zero too, and filing
+                  // those as concurrent pushes would let this job report a tidy green run
+                  // for months while deleting nothing. Only the remote's own refusals are
+                  // read as races; everything else is a failure and fails the job.
+                  const why = `${push.stderr}${push.stdout}`;
+                  if (/\bstale info\b/u.test(why)) {
+                    core.notice(`kept ${b.name}: the remote refused the lease — re-pushed since it was selected`);
+                    raced.push(b.name);
+                  } else if (/remote ref does not exist/u.test(why)) {
+                    core.notice(`kept ${b.name}: already gone`);
+                    raced.push(b.name);
+                  } else {
+                    core.warning(`could not delete ${b.name}: ${why.trim().split('\n').slice(-3).join(' / ')}`);
+                    failures.push(b.name);
+                  }
+                  continue;
+                }
+
+                // The lease protects the ref's object id and NOTHING else. Pull-request
+                // activity does not move the ref, so anything that happened between the
+                // guard above and this push is invisible to the lease, and GitHub offers
+                // no deletion conditional on pull-request state. So this DETECTS AND
+                // REPAIRS rather than claiming prevention: ask again now, and put the ref
+                // back at the exact object id if the answer changed. The branch is
+                // restorable precisely because the object id is known.
+                //
+                // It asks the SAME question the guard asked — the whole of conditions 2
+                // and 4 through the same fold, not just "is one open now". A pull request
+                // that opened and CLOSED inside the window leaves nothing open, and its
+                // closure is seconds old: reading only the open ones would record that as
+                // a deletion while condition 4 was freshly violated.
+                const after = readState(await github.paginate(
+                  github.rest.pulls.list,
+                  { owner, repo, state: 'all', head: `${owner}:${b.name}`, per_page: 100 },
+                ));
+                const changed = after.open > 0
+                  ? `${after.open} pull request(s) opened`
+                  : !(after.closedAt < cutoff)
+                    ? `a pull request closed (newest closure ${after.latest?.closed_at})`
+                    : null;
+                if (changed) {
+                  await github.rest.git.createRef(
+                    { owner, repo, ref: `refs/heads/${b.name}`, sha: b.sha },
+                  );
+                  core.warning(`restored ${b.name} at ${b.sha}: ${changed} while it was being deleted`);
+                  restored.push(b.name);
+                  continue;
+                }
+                core.info(`deleted ${b.name} (last PR #${b.pr})`);
+                deleted += 1;
+              } catch (error) {
+                // A branch deleted by someone else between listing and now is not a
+                // failure worth failing the job over; anything else is reported.
+                core.warning(`could not delete ${b.name}: ${error.message}`);
+                failures.push(b.name);
+              }
+            }
+
+            core.summary.addTable([
+              [{ data: 'outcome', header: true }, { data: 'count', header: true }],
+              ['examined', String(examined)],
+              ['selected', String(doomed.length)],
+              [dryRun ? 'would delete' : 'deleted', String(dryRun ? doomed.length : deleted)],
+              ['kept', String(kept.length)],
+              ['raced', String(raced.length)],
+              ['restored', String(restored.length)],
+              ['failed', String(failures.length)],
+            ]);
+            if (doomed.length) {
+              core.summary.addDetails('Selected branches',
+                doomed.map((b) => `${b.name} (last PR #${b.pr}, closed ${b.closedAt})`).join('\n'));
+            }
+            const neverPr = kept.filter((k) => k.why.startsWith('no closed'));
+            if (neverPr.length) {
+              core.summary.addDetails(`No closed pull request of their own — left for a human (${neverPr.length})`,
+                neverPr.map((k) => k.name).join('\n'));
+            }
+            await core.summary.write();
+
+            // A failure that is not a lost lease means the job could not do its work —
+            // a revoked permission, a repository rule, a broken remote. Reporting that
+            // as a green run is how a scheduled cleanup dies quietly.
+            if (failures.length) {
+              core.setFailed(`${failures.length} branch deletion(s) failed for reasons other `
+                + `than a lost lease: ${failures.join(', ')}`);
+            }
