@@ -81,7 +81,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 3,852 lines against #552's 3,495.
+live standing). The document is 3,876 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -399,8 +399,22 @@ before the write — so every AFTER guard on `Membership` judges the post-write 
 row and for a multi-row statement alike; the per-user register trigger stays AFTER (its rows
 carry the membership id, and no AFTER guard reads it); the decisions-owned guard is not taught
 the delta; P37 asserts the last-architect removal, re-role and two-in-one-statement removal
-refused, RED against the AFTER ordering. The drain gate was not raised on this head. A second
-finding-bearing head means close-and-replace under the standing authorization, no cap.
+refused, RED against the AFTER ordering. The drain gate was not raised on this head.
+
+**Review round 1 on this PR, #566 (head `cc8b3ba`): two findings, both P1, one folded on its
+ONE correction head, one DECLINED on the Board's recorded decision, none dropped.** The
+membership transition fact is inserted BEFORE the membership write for EVERY transition (add
+already did; re-role and removal join it), so every arm of its BEFORE INSERT trigger — actor
+role, display name, team-management authority — judges the pre-state registers by
+construction and the self-demotion special case collapses into the one rule (written
+membership-first, a PMC's self re-role had already projected the new role before the fact
+claimed the frozen `pmc`); the membership write's BEFORE trigger requires the fact to already
+exist in the transaction, so "fact first" is the sealed protocol; P29b gains the self re-role,
+self-demotion and membership-first-hostile arms. The other — "allow the autonomous runner to
+clear the drain gate" — is DECLINED as a Board decision, not a plan defect (#482 comment
+5569586836); the `AGENTS.md`-vs-decision contradiction stays before the Board (#482 comment
+5575748015). A second finding-bearing head means close-and-replace under the standing
+authorization, no cap.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
