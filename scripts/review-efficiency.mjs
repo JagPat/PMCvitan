@@ -110,6 +110,40 @@ export function settlementOf(source, replacementPullRequests = []) {
     && replacementSource(candidate.body) === source) ?? null;
 }
 
+// A voluntary replacement must "record a concrete scope or approach benefit" (POLICY.md).
+// The first version of this check tested only that SOME non-whitespace followed the label, so
+// `Replacement reason: n/a` cleared it — the provenance path existed and validated nothing.
+//
+// What a gate can honestly enforce is a FLOOR, not a judgement. It cannot tell whether a stated
+// benefit is real; a reviewer does that. What it can refuse is the shapes that carry no claim at
+// all: a known placeholder token, and a fragment too short to be a statement of anything. Both
+// refusals name what is missing, so an author who meant it can say it properly rather than guess.
+const REPLACEMENT_REASON_PLACEHOLDERS = new Set([
+  'n/a', 'n.a.', 'na', 'none', 'nil', 'nothing', 'no reason', 'reason', 'placeholder', 'tbd', 'tba',
+  'todo', 'to do', 'x', 'xx', 'xxx', '-', '--', '---', '.', '?', '??', 'test', 'testing', 'asdf',
+  'same', 'same as above', 'see above', 'see below', 'as discussed', 'as above', 'duplicate',
+  'replacement', 'replaces', 'scope', 'approach', 'refactor', 'cleanup', 'fix',
+]);
+
+/** The text after `Replacement reason:`, or null when the line is absent. */
+export function replacementReasonOf(body) {
+  const match = /^[\t ]*Replacement reason:[\t ]*(\S[^\r\n]*)$/imu.exec(String(body ?? ''));
+  return match ? match[1].trim() : null;
+}
+
+/** Does the body state a replacement reason that clears the placeholder floor? */
+export function statesConcreteReplacementReason(body) {
+  const reason = replacementReasonOf(body);
+  if (!reason) return false;
+  const normalized = reason.toLowerCase().replace(/[\s.!,;:]+$/u, '').trim();
+  if (REPLACEMENT_REASON_PLACEHOLDERS.has(normalized)) return false;
+  // A benefit is a claim about scope or approach, which takes a sentence to make. Six words and
+  // twenty characters is the floor a placeholder cannot reach and a real reason clears without
+  // trying — deliberately low, because the check is not the reviewer.
+  const words = normalized.split(/\s+/u).filter((word) => /[a-z0-9]/u.test(word));
+  return words.length >= 6 && normalized.replace(/\s+/gu, '').length >= 20;
+}
+
 export function assessReplacementLineage({
   pullRequest,
   requiredReplacements,
@@ -167,9 +201,7 @@ export function assessReplacementLineage({
       // actual source and a stated benefit instead of requiring that label.
       const source = replacementPullRequests.find(pr => pr.number === declaration.source);
       const repository = pullRequest?.base?.repo?.full_name;
-      const justified = /^[\t ]*Replacement reason:[\t ]*\S[^\r\n]*$/imu.test(
-        String(pullRequest?.body ?? ''),
-      );
+      const justified = statesConcreteReplacementReason(pullRequest?.body);
       if (!source || !justified || !repository || source.state !== 'closed'
           || source.merged_at || source.merged
           || !isLineageBase(source.base?.ref)
@@ -179,7 +211,8 @@ export function assessReplacementLineage({
         return {
           allowed: false,
           detail: `Replaces: #${declaration.source} needs a closed, unmerged same-repository main source `
-            + 'and a concrete Replacement reason; an already settled source cannot be replaced again',
+            + 'and a concrete Replacement reason naming the scope or approach benefit — a placeholder '
+            + 'such as "n/a" does not state one; an already settled source cannot be replaced again',
         };
       }
       requirement = { pullRequest: source };
