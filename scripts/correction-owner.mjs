@@ -210,7 +210,7 @@ function ownerLabel(owner) {
 
 // What the loop asks the declared owner to do, per reason. The OWNER decision is
 // made once, above; these only phrase it.
-function declaredInstruction(owner, { reason, pullRequestNumber, detail }) {
+function declaredInstruction(owner, { reason, detail }) {
   const who = ownerLabel(owner);
   // An owner GitHub cannot wake gets the same instruction plus the truth about
   // who has to start it. Omitting that is how a routed-but-unstarted correction
@@ -250,12 +250,7 @@ function declaredInstruction(owner, { reason, pullRequestNumber, detail }) {
       + `${verdict}.${size} Editing the PR body reruns the scope gate, so most scope verdicts `
       + `clear with no new head.${start}`;
   }
-  if (reason === 'replacement') {
-    return `${who} owns this correction: close this PR without another correction head, open a `
-      + 'smaller replacement from current `main` carrying only the unresolved scope, and record '
-      + `\`Replaces: #${pullRequestNumber}\` in its body. Every finding remains blocking; no `
-      + `safety check is waived.${start}`;
-  }
+
   return `${who} owns this correction: read every current-head Codex finding, reproduce the `
     + `complete set, fix them forward as one coherent batch, and push one new head.${start}`;
 }
@@ -263,7 +258,7 @@ function declaredInstruction(owner, { reason, pullRequestNumber, detail }) {
 // And what it says when nobody is declared. It names the defect and the exact
 // action that resolves it, and it resolves to no agent — least of all to Claude
 // by default, which is the assumption this whole module exists to remove.
-function undeclaredInstruction(declaration, { reason, pullRequestNumber }) {
+function undeclaredInstruction(declaration) {
   const opening = `Correction ownership is not established on this PR: ${declaration.detail}. `
     + 'No agent is routed and no correction is in flight.';
   // ADD only when the block is empty. Told to a body that already carries a
@@ -278,14 +273,7 @@ function undeclaredInstruction(declaration, { reason, pullRequestNumber }) {
     : `Resume action: replace the correction-owner marker(s) in the PR body with exactly one `
       + `${MARKER_HELP}, leaving no other declaration in the block. The edit reruns the scope `
       + 'gate and routes the correction to the declared owner.';
-  if (reason === 'replacement') {
-    // The replacement POLICY is stated even when no owner is: the remedy does
-    // not depend on who performs it, and leaving it out would make an
-    // undeclared PR the one place the round limit goes unexplained.
-    return `${opening} This unit has also reached the review-round limit: close this PR without `
-      + 'another correction head and open a smaller replacement from current `main` carrying '
-      + `only the unresolved scope and declaring \`Replaces: #${pullRequestNumber}\`. ${resume}`;
-  }
+
   return `${opening} ${resume}`;
 }
 

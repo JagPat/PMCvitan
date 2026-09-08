@@ -11,12 +11,10 @@ export const REVIEW_SCOPE_ENFORCE_AFTER_PR = 246;
 export const PRE_REVIEW_ENFORCE_AFTER_PR = 345;
 export const STANDARD_MAX_FILES = 20;
 export const STANDARD_MAX_CHANGED_LINES = 1_500;
-export const REVIEW_RESET_AFTER_FINDING_HEADS = 2;
 export const REPLACEMENT_REQUIRED_LABEL = 'review-replacement-required';
-// Retained for the legacy convergence-evidence parser below. The trusted
-// controller now applies REVIEW_RESET_AFTER_FINDING_HEADS before that older
-// evidence shape can authorize another correction head.
-export const CONVERGENCE_AFTER_FINDING_HEADS = REVIEW_RESET_AFTER_FINDING_HEADS;
+// Legacy convergence packets retain their parsing threshold; the live gate
+// never closes or blocks a PR based on the number of reviewed heads.
+export const CONVERGENCE_AFTER_FINDING_HEADS = 2;
 
 export const REQUIRED_PRE_REVIEW_CHECKS = [
   'concurrency-serialization',
@@ -163,14 +161,30 @@ export function assessReplacementLineage({
   // rather than a silence.
 
   if (declaration.kind === 'source') {
-    const requirement = pending.find(
+    let requirement = pending.find(
       ({ pullRequest: source }) => source?.number === declaration.source,
     );
     if (!requirement) {
-      return {
-        allowed: false,
-        detail: `Replaces: #${declaration.source} does not name a review unit awaiting replacement`,
-      };
+      // Voluntary replacements have no retired round-limit label. Validate the
+      // actual source and a stated benefit instead of requiring that label.
+      const source = replacementPullRequests.find(pr => pr.number === declaration.source);
+      const repository = pullRequest?.base?.repo?.full_name;
+      const justified = /^[\t ]*Replacement reason:[\t ]*\S[^\r\n]*$/imu.test(
+        String(pullRequest?.body ?? ''),
+      );
+      if (!source || !justified || !repository || source.state !== 'closed'
+          || source.merged_at || source.merged
+          || !isLineageBase(source.base?.ref)
+          || source.base?.repo?.full_name !== repository
+          || source.head?.repo?.full_name !== repository
+          || settlementOf(source.number, replacementPullRequests)) {
+        return {
+          allowed: false,
+          detail: `Replaces: #${declaration.source} needs a closed, unmerged same-repository main source `
+            + 'and a concrete Replacement reason; an already settled source cannot be replaced again',
+        };
+      }
+      requirement = { pullRequest: source };
     }
     if (requirement.pullRequest.state !== 'closed') {
       return {
@@ -197,13 +211,8 @@ export function assessReplacementLineage({
     return { allowed: true, detail: null };
   }
 
-  if (pending.length > 0) {
-    const source = pending[0].pullRequest;
-    return {
-      allowed: false,
-      detail: `exhausted PR #${source.number} still requires a replacement; declare Replaces: #${source.number} before starting fresh work`,
-    };
-  }
+  // Historical round-limit labels cannot compel new replacement PRs or block
+  // unrelated work. Explicit replacements above still retain their provenance.
   return { allowed: true, detail: null };
 }
 
@@ -470,7 +479,10 @@ const RETRYABLE_REVIEW_FAILURES = [
 
 export function isRetryableReviewFailureDescription(description) {
   const text = String(description ?? '');
-  return RETRYABLE_REVIEW_FAILURES.some((marker) => text.includes(marker));
+  // Re-evaluate failures written by the retired round-reset gate. This does
+  // not clear a status: the ordinary CI and current-head review guards run again.
+  return /^review: \d+ finding-bearing heads reached the review-round limit\b/u.test(text)
+    || RETRYABLE_REVIEW_FAILURES.some((marker) => text.includes(marker));
 }
 
 export function codexFindingHeads(comments, reviews = []) {
