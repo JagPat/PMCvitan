@@ -2325,14 +2325,34 @@ export const useStore = create<Store>()(
         get().flash('That photo is too large (over 4 MB) — retake at a lower resolution.');
         return;
       }
+      // ONE rule for every local thumbnail this function writes. Round 4 fixed the offline branch
+      // to mirror onto the CAPTURED checklist wherever it lives and left the demo branch addressing
+      // the edit slot, so round 5 found the same defect one branch over: a demo capture that
+      // finished reading after a switch updated neither copy and still said "Photo attached", and
+      // the engineer who switched back saw no evidence on a FAILED item they then could not submit.
+      // Fixing the reported branch again would leave the next one, so the rule lives here once.
+      //
+      // Both copies are written on purpose. `ownerOfEditSlot` structuredClones the slot precisely so
+      // it never shares an object with its `openChecklists` entry, so the captured checklist exists
+      // as two independent copies and a write to one alone makes them disagree until the next apply.
+      const mirrorCapture = (s: AppState): void => {
+        const apply = (target: Checklist | undefined): void => {
+          const it = target?.items[idx];
+          if (!it) return;
+          // Server-backed rows carry ids and are matched by them. A demo checklist's items may have
+          // none, and there the index within the already-id-matched checklist IS the identity.
+          if (item.id && it.id !== item.id) return;
+          it.photos += 1;
+          it.evidence = [...(it.evidence ?? []), dataUrl];
+        };
+        if (s.checklist?.id === c.id) apply(s.checklist);
+        apply(s.openChecklists.find((o) => o.id === c.id));
+      };
       // demo (no gateway): the counter + a local thumbnail are the whole story
       if (!gateway) {
-        set((s) => {
-          // demo has no durable row, so the slot IS the record — mirror only when the slot still holds
-          // the checklist the photo was taken on, never onto whichever one the engineer switched to.
-          const it = s.checklist?.id === c.id ? s.checklist.items[idx] : undefined;
-          if (it) { it.photos += 1; it.evidence = [...(it.evidence ?? []), dataUrl]; }
-        });
+        // Demo has no durable row, so these copies ARE the record — which is exactly why declining
+        // to write loses the photo outright rather than merely delaying it.
+        set(mirrorCapture);
         get().flash('Photo attached (demo).');
         return;
       }
@@ -2385,12 +2405,7 @@ export const useStore = create<Store>()(
           // checklist wherever it lives — the slot when it is still there, and its own
           // `openChecklists` entry when the engineer has moved on. Both are the same inspection;
           // `overlayChecklistMarks` and `ownerOfEditSlot` reconcile them on the next apply.
-          const mirror = (target: Checklist | undefined): void => {
-            const it = target?.items[idx];
-            if (it && it.id === item.id) { it.photos += 1; it.evidence = [...(it.evidence ?? []), dataUrl]; }
-          };
-          if (s.checklist?.id === c.id) mirror(s.checklist);
-          mirror(s.openChecklists.find((o) => o.id === c.id));
+          mirrorCapture(s);
           s.pendingEvidenceCount += 1;
         });
         persistOutbox();

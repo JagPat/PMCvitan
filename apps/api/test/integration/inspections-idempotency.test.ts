@@ -232,4 +232,43 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } })).submitted).toBe(true);
   });
 
+  it('ROUND 5 — an assignment landing between the guard and the CAS does not let a stranger submit', async () => {
+    // The guard reads `assigneeId` OUTSIDE the transaction, and the latch deliberately permits
+    // `null -> someone` because that is assignment, not reassignment. So engineer B can read an
+    // unassigned checklist, an alternate writer can assign it to engineer A, and B's transaction
+    // then commits: the old CAS pinned only `submitted`/`decided`, so A's assignment survived while
+    // B was recorded as the person who did the work — the precise misattribution the guard exists
+    // to prevent, reached by racing it instead of by passing it.
+    const { p, pmcA } = await freshProject();
+    const engA = `it-inidem-u-casA-${projSeq}`;
+    const engB = `it-inidem-u-casB-${projSeq}`;
+    for (const [id, name] of [[engA, 'Cas A'], [engB, 'Cas B']] as const) {
+      await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
+    }
+    await svc.create(p, createInput({ title: 'Raced QA' }), asPmc(pmcA, p), 'k-cas-1');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Raced QA' }, include: { items: true } });
+    expect(insp.assigneeId).toBe(null); // B's read sees it unassigned
+
+    // …and the assignment lands before B's transaction starts (the interleaving the latch allows)
+    await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: engA } });
+
+    await expect(svc.submit(p, insp.id, { items: insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) },
+      { sub: engB, role: 'engineer', projectId: p } as AuthUser, 'k-cas-sub'))
+      .rejects.toThrow(/changed while submitting/i);
+
+    // nothing was recorded: the work is still A's, and still open for A to do
+    const after = await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } });
+    expect(after.submitted).toBe(false);
+    expect(after.submittedById).toBe(null);
+    expect(after.assigneeId).toBe(engA);
+
+    // precise, not merely strict: the rightful assignee still submits it
+    await svc.submit(p, insp.id, { items: insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) },
+      { sub: engA, role: 'engineer', projectId: p } as AuthUser, 'k-cas-sub-a');
+    const done = await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } });
+    expect(done.submitted).toBe(true);
+    expect(done.submittedById).toBe(engA);
+  });
+
 });

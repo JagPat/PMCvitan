@@ -182,9 +182,18 @@ export class InspectionsService {
           const s = submitted.get(dbIt.id)!;
           await tx.inspectionItem.updateMany({ where: { id: dbIt.id, inspectionId }, data: { state: s.state, photos: s.photos, note: s.note } });
         }
-        // CAS: one submit wins; a concurrent submit/decide makes count 0 → 409
+        // CAS: one submit wins; a concurrent submit/decide makes count 0 → 409.
+        //
+        // `assigneeId` is in the predicate because the guard above read it OUTSIDE this
+        // transaction, and the value can legitimately change in between: the freeze trigger is a
+        // one-way LATCH, so `null → someone` is permitted (it is assignment, not reassignment).
+        // Without this arm an unassigned checklist that acquires an assignee after the guard runs
+        // would keep that assignment and record a DIFFERENT person as its submitter — the exact
+        // misattribution the guard exists to prevent, reached by racing it rather than by passing
+        // it. Prisma renders `assigneeId: null` as `IS NULL`, so the observed-unassigned case is
+        // pinned as precisely as the observed-assigned one, and a change either way makes count 0.
         const { count } = await tx.inspection.updateMany({
-          where: { id: inspectionId, projectId, submitted: false, decided: false },
+          where: { id: inspectionId, projectId, submitted: false, decided: false, assigneeId: insp.assigneeId },
           data: { submitted: true, by: actor.actorName, submittedById: actor.actorId, submittedByName: actor.actorName },
         });
         if (count === 0) throw new ConflictException('The inspection changed while submitting — reload and retry');

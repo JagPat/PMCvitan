@@ -1358,4 +1358,59 @@ describe('replay lifecycle', () => {
     expect(s().checklist?.items[0].photos).toBe(1);
   });
 
+  it('ROUND 5 — a DEMO capture that finishes after a switch lands on the captured checklist too', async () => {
+    // Round 4 fixed the OFFLINE mirror and left the demo branch addressing the edit slot, so the
+    // same defect survived one branch over — which is the generator this round is correcting, not
+    // just the instance. Demo is the worse half: there is no durable row and no server to reconcile
+    // from, so the copies in the store ARE the record. Declining to write does not delay the photo,
+    // it loses it, while still reporting "Photo attached".
+    //
+    // No gateway is set: that is what selects the demo branch.
+    useStore.setState((st) => { st.online = true; });
+    seedChecklist();
+    const captured = s().checklist!;
+    const other: Checklist = {
+      id: 'INSP-92', title: 'Other demo check', zone: 'Terrace', date: '03 Jul 2026', submitted: false,
+      items: [
+        { id: 'demo-1', name: 'Fall', state: null, photos: 0, note: '' },
+        { id: 'demo-2', name: 'Rail', state: null, photos: 0, note: '' },
+      ],
+    };
+    useStore.setState((st) => { st.openChecklists = [captured, other]; });
+
+    // the capture is pinned to INSP-90 while the engineer has already moved to INSP-92
+    s().selectChecklist('INSP-92');
+    expect(s().checklist?.id).toBe('INSP-92');
+    await s().addChecklistEvidence(0, PX, 'INSP-90');
+
+    // the checklist in the slot borrows nothing
+    expect(s().checklist?.items[0].photos).toBe(0);
+    expect(s().checklist?.items[0].evidence ?? []).toEqual([]);
+
+    // and the CAPTURED checklist has it — RED before this round, where neither copy was written
+    const back = s().openChecklists.find((c) => c.id === 'INSP-90')!;
+    expect(back.items[0].photos).toBe(1);
+    expect(back.items[0].evidence ?? []).toEqual([PX]);
+    s().selectChecklist('INSP-90');
+    expect(s().checklist?.items[0].photos).toBe(1);
+    expect(s().checklist?.items[0].evidence ?? []).toEqual([PX]);
+  });
+
+  it('ROUND 5 — a DEMO capture with the captured checklist still in the slot writes it exactly once', async () => {
+    // The shared rule writes BOTH copies of the captured checklist on purpose (the slot is a
+    // structuredClone of its openChecklists entry, so a write to one alone makes them disagree).
+    // This pins that it is one increment per copy and not two on either — a double count would
+    // show a photo the engineer never took.
+    useStore.setState((st) => { st.online = true; });
+    seedChecklist();
+    const captured = s().checklist!;
+    useStore.setState((st) => { st.openChecklists = [captured]; });
+
+    await s().addChecklistEvidence(0, PX, 'INSP-90');
+
+    expect(s().checklist?.items[0].photos).toBe(1);
+    expect(s().checklist?.items[0].evidence ?? []).toEqual([PX]);
+    expect(s().openChecklists.find((c) => c.id === 'INSP-90')!.items[0].photos).toBe(1);
+  });
+
 });
