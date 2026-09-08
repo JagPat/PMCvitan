@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 
 import {
   assessConvergence,
@@ -15,7 +17,11 @@ import {
   settlementOf,
 } from './review-efficiency.mjs';
 import { OPEN_TASK_STATES, parseStatusNow } from './autonomous-status-state.mjs';
-import { run as runScope } from './review-scope.mjs';
+import {
+  assessTrackedTree,
+  parseTrackedTree,
+  run as runScope,
+} from './review-scope.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
 
@@ -1545,4 +1551,115 @@ test('EVERY review unit must target main, not only a declared claimant', () => {
     replacementPullRequests: [],
   });
   assert.equal(onMain.allowed, true);
+});
+
+test('a tracked node_modules path is refused whatever its mode; a lookalike name is not', () => {
+  const clean = assessTrackedTree([
+    { mode: '100644', path: 'package.json' },
+    { mode: '100644', path: 'docs/node_modules-notes.md' },
+    { mode: '100644', path: 'apps/web/src/node_modules_shim.ts' },
+  ]);
+  assert.equal(clean.allowed, true);
+  assert.equal(clean.inspected, 3);
+
+  // PR #572 head e2fd243e: a root symlink, which the directory-only ignore rule
+  // `node_modules/` does not cover.
+  const rootSymlink = assessTrackedTree([
+    { mode: '100644', path: 'package.json' },
+    { mode: '120000', path: 'node_modules' },
+  ]);
+  assert.equal(rootSymlink.allowed, false);
+  assert.match(rootSymlink.detail, /1 tracked path\(s\)/u);
+  assert.match(rootSymlink.detail, /node_modules \(symlink\)/u);
+  assert.match(rootSymlink.detail, /never change the application Node version/u);
+
+  const nestedFile = assessTrackedTree([
+    { mode: '100644', path: 'apps/api/node_modules/.bin/prisma' },
+  ]);
+  assert.equal(nestedFile.allowed, false);
+  assert.match(nestedFile.detail, /apps\/api\/node_modules\/\.bin\/prisma\b/u);
+  assert.doesNotMatch(nestedFile.detail, /\(symlink\)/u);
+
+  const unreadable = assessTrackedTree(undefined);
+  assert.equal(unreadable.allowed, false);
+  assert.match(unreadable.detail, /could not be listed/u);
+});
+
+test('the ls-files stage record is parsed by its NUL and tab, keeping the mode', () => {
+  assert.deepEqual(parseTrackedTree(
+    '100644 0123456789abcdef0123456789abcdef01234567 0\tpackage.json\0'
+    + '120000 a91adc6975a1a5c78e038e25f99aec483affe7cd 0\tnode_modules\0'
+    + '100755 0123456789abcdef0123456789abcdef01234567 0\tdocs/a b.sh\0',
+  ), [
+    { mode: '100644', path: 'package.json' },
+    { mode: '120000', path: 'node_modules' },
+    { mode: '100755', path: 'docs/a b.sh' },
+  ]);
+  assert.deepEqual(parseTrackedTree(''), []);
+});
+
+// The reproduction behind the `.gitignore` change from `node_modules/` to
+// `node_modules`: a dangling symlink of that name is staged by `git add -A`
+// under the directory-only rule and ignored under the type-agnostic one. Run
+// against the repository's OWN ignore file, so editing the rule back is RED here.
+test('the repository ignore rule keeps a node_modules symlink out of the index; the old rule did not', async () => {
+  const git = promisify(execFile);
+  const directory = await mkdtemp(join(tmpdir(), 'pmcvitan-tracked-tree-'));
+  const stage = async (ignoreRules) => {
+    await writeFile(join(directory, '.gitignore'), ignoreRules);
+    await git('git', ['add', '-A', '.'], { cwd: directory });
+    const { stdout } = await git('git', ['ls-files', '--stage', '-z'], { cwd: directory });
+    await git('git', ['rm', '-rq', '--cached', '.'], { cwd: directory });
+    return parseTrackedTree(stdout);
+  };
+  try {
+    await git('git', ['init', '-q', directory]);
+    await writeFile(join(directory, 'package.json'), '{}\n');
+    await mkdir(join(directory, 'apps/web/node_modules'), { recursive: true });
+    await writeFile(join(directory, 'apps/web/node_modules/x.js'), '');
+    // Dangling on purpose: on a runner the developer's absolute target never exists.
+    await symlink('/home/someone/workspace/node_modules', join(directory, 'node_modules'));
+
+    const repositoryRules = await readFile(new URL('../.gitignore', import.meta.url), 'utf8');
+    assert.match(repositoryRules, /^node_modules$/mu, 'the rule must be type-agnostic');
+    const current = assessTrackedTree(await stage(repositoryRules));
+    assert.equal(current.allowed, true, current.detail);
+    assert.deepEqual(current.offenders, []);
+
+    const previous = assessTrackedTree(await stage('node_modules/\n'));
+    assert.equal(previous.allowed, false);
+    assert.deepEqual(previous.offenders, [{ mode: '120000', path: 'node_modules' }]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('the scope CLI refuses a tracked dependency path independently of the scope verdict', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pmcvitan-review-tree-'));
+  const eventPath = join(directory, 'event.json');
+  const previousExitCode = process.exitCode;
+  try {
+    await writeFile(eventPath, JSON.stringify({ pull_request: pullRequest() }));
+    const clean = await runScope({
+      eventPath,
+      listTreeImpl: async () => [{ mode: '100644', path: 'package.json' }],
+    });
+    assert.equal(clean.allowed, true);
+    assert.equal(clean.tree.allowed, true);
+    assert.equal(process.exitCode, previousExitCode);
+
+    const refused = await runScope({
+      eventPath,
+      listTreeImpl: async () => [
+        { mode: '100644', path: 'package.json' },
+        { mode: '120000', path: 'node_modules' },
+      ],
+    });
+    assert.equal(refused.allowed, true, 'the scope verdict is unchanged');
+    assert.equal(refused.tree.allowed, false);
+    assert.equal(process.exitCode, 1);
+  } finally {
+    process.exitCode = previousExitCode;
+    await rm(directory, { recursive: true, force: true });
+  }
 });
