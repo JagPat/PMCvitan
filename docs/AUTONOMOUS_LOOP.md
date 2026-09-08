@@ -67,11 +67,19 @@ This repository is designed to progress without the owner's laptop or technical 
 - Claude self-audits those rows before the first review. Codex performs one
   comprehensive first pass and batches all findings. Correction reviews cover
   the delta, prior findings, and affected adjacent invariants.
-- After two distinct Codex finding-bearing heads, the current PR is exhausted:
-  no third correction head is accepted. Close it and open a smaller replacement
-  from current `main`, limited to the unresolved review unit and carrying
-  `Replaces: #<closed-pr>` in the body. Historical convergence packets and
-  trailers cannot reset this count.
+- After two distinct Codex finding-bearing heads the gate raises a ROOT-CAUSE
+  advisory: it records the count and asks the correction owner to name the
+  generator producing the findings. It does NOT fail the required status, mark
+  the unit exhausted, or demand a replacement. A third and later correction head
+  on the same PR is ordinary. The count is measured for the signal it carries,
+  not as a budget to spend.
+- Renumbering was the previous rule and it was withdrawn on evidence: it resolves
+  no finding — the same commits return under a new number — it drops the review
+  thread, so the next reviewer re-derives context and often re-raises the same
+  class, and it costs a full battery per replacement. Over one measured window
+  two commits reached `main` while one plan unit burned fourteen numbered
+  attempts. A unit is closed and replaced only when the UNIT is wrong: wrong
+  base, out of scope, or two concerns that must be split.
 - The replacement receives a fresh comprehensive review and the full applicable
   CI battery. Resetting the PR bounds accumulated patch risk; it does not waive,
   dismiss, or downgrade any finding.

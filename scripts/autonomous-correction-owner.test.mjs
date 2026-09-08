@@ -712,7 +712,11 @@ test('C9: the replacement handoff names the declared owner, not Claude', async (
     'the replacement action must not be assigned to Claude unconditionally',
   );
   assert.match(directive, /declared (correction )?owner/iu, 'it names the declared owner');
-  assert.match(directive, /closes the exhausted PR/u, 'and still states the action');
+  // The action at the head count is now correcting IN PLACE, and the replacement path
+  // survives for a unit that is genuinely wrong — ownership must bind to both, which is
+  // this test's property: whoever acts, it is the declared owner and not Claude by default.
+  assert.match(directive, /keeps\s+correcting THAT pull request/u, 'it states the in-place action');
+  assert.match(directive, /closes the exhausted PR/u, 'and still binds the replacement path to that owner');
 });
 
 test('C10: the documented meaning of correction_stalled matches what routing emits', async () => {

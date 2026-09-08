@@ -143,8 +143,11 @@ so directly rather than framing it as a suggestion.
 - On correction heads, review the correction delta, every prior finding, and the
   adjacent invariants the correction can affect. Do not reopen a cleared area
   merely to restate it, but do report any newly exposed correctness or integrity
-  defect. After a second finding-bearing head the current PR is closed; review
-  its replacement as a fresh, comprehensive unit.
+  defect. A unit is NOT closed at a head count: it is corrected in place, so a
+  third or later correction head on the same pull request is ordinary and is
+  reviewed as such. When findings keep recurring across heads, say so and name
+  the GENERATOR you think produces them — that is more use to the author than
+  the next instance.
 - Rank findings by severity. Lead with anything that is a correctness,
   data-integrity, or ordering bug.
 - For each finding, give the concrete failure: the inputs or interleaving that
@@ -210,10 +213,15 @@ so directly rather than framing it as a suggestion.
   claiming the lease key with a stale verdict. It comments and nothing else: no status, no draft change, no
   merge, no Codex call. A watchdog that could not assess a pull request fails the
   handoff job rather than reporting green over an unobserved correction.
-- On the second finding-bearing head, the PR's declared correction owner makes
-  no further correction on that PR. That same owner closes the exhausted PR and
-  opens a smaller replacement from current `main`, preserving the unresolved
-  findings and reproduce-first proofs and declaring `Replaces: #<closed-pr>`.
+- On the second finding-bearing head, the PR's declared correction owner keeps
+  correcting THAT pull request. The count is a signal to stop patching instances
+  and find the GENERATOR — the one cause producing them — not a reason to
+  renumber: a replacement resolves no finding, returns the same commits under a
+  new number, and costs a full battery while nothing reaches `main`. A unit is
+  closed and replaced only when the UNIT is wrong (wrong base, out of scope, two
+  concerns that must be split). That judgement is the declared owner's too: the
+  same owner closes the exhausted PR and opens its replacement declaring
+  `Replaces: #<closed-pr>`, never Claude on another owner's behalf.
   Ownership carries to the replacement path exactly as it does to a fix: a
   Cursor-owned unit is closed and replaced by Cursor, and Claude — subscribed to
   every PR — must not perform it on that owner's behalf. The replacement starts a

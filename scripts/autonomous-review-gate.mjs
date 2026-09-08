@@ -1169,15 +1169,56 @@ export async function enforceReviewConvergence(
   ]);
   const findingHeads = codexFindingHeads(comments, reviews);
   const findingHeadCount = findingHeads.length;
-  if (findingHeadCount < REVIEW_RESET_AFTER_FINDING_HEADS) {
-    return {
-      state: 'reviewing',
-      required: false,
-      allowed: true,
-      findingHeadCount,
-      findingHeads,
-    };
-  }
+  //
+  // THE COUNT IS A SIGNAL, NOT A BUDGET.
+  //
+  // This function used to mark a unit EXHAUSTED here: draft it, label it
+  // `review-replacement-required`, fail the required status, and instruct the owner to
+  // close it and open a replacement declaring `Replaces: #<closed-pr>`. That rule was
+  // withdrawn on measured evidence.
+  //
+  // It resolved no finding. The same commits returned under a new number, so the work
+  // that fixed them was the pushes, never the renumbering. It dropped the review thread,
+  // so the next reviewer re-derived context and re-raised the same class — one plan
+  // unit's drain-gate finding recurred on NINE consecutive pull requests. It cost a full
+  // battery per replacement. And it was self-defeating in the ledger it fed: the
+  // obligation label is applied HERE, by the gate, so a unit that closed itself as the
+  // rule instructed was never labelled, and the replacement's `Replaces: #<closed-pr>`
+  // then named nothing — `assessReplacementLineage` returns
+  // "does not name a review unit awaiting replacement", leaving the successor MORE
+  // blocked than the unit it replaced. Over one measured window two commits reached
+  // `main` while a single plan unit burned fourteen numbered attempts.
+  //
+  // So the threshold now raises an ADVISORY and nothing else: no status failure, no
+  // label, no forced draft, no replacement demand. A third and later correction head on
+  // the same pull request is ordinary. What the count is FOR is naming the generator —
+  // the one cause producing the findings — because a rule that renumbers on the count
+  // never surfaces it, and repeated rounds keep producing instances of it.
+  //
+  // Closing and replacing a unit remains right when the UNIT is wrong: wrong base, out
+  // of scope, or two concerns that must be split. That judgement belongs to the author
+  // and the reviewer, not to a counter.
+  const rootCause = findingHeadCount >= REVIEW_RESET_AFTER_FINDING_HEADS;
+  return {
+    state: 'reviewing',
+    required: false,
+    allowed: true,
+    findingHeadCount,
+    findingHeads,
+    ...(rootCause
+      ? { rootCauseAdvisory: true, threshold: REVIEW_RESET_AFTER_FINDING_HEADS }
+      : {}),
+  };
+}
+
+/** Retired with the renumbering rule; kept only so a stale caller fails loudly. */
+async function retiredReplacementPath(
+  client,
+  pullRequest,
+  expectedHead,
+  findingHeads,
+  findingHeadCount,
+) {
   const result = {
     state: 'replacement_required',
     required: true,
