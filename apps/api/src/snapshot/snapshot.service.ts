@@ -80,7 +80,7 @@ export class SnapshotService {
       // contracts; the snapshot chains its already-fetched id→status decision map in so the decision
       // read never happens twice (identical data — the bake result cannot differ).
       decisionSlicePromise.then((s) => this.activitiesQuery.snapshotSlice(projectId, { decisionStatuses: s.statuses, decisionDrafts: s.drafts, decisionDeciders: s.deciders, withdrawnReasonVisible: role === 'pmc' })),
-      // Task 10 (Module 3) — the five role-gated inspection slices come from the module's query (the same
+      // Task 10 (Module 3) — the role-gated inspection slices come from the module's query (the same
       // per-viewer/role serialization moved there verbatim, so byte-identical), never a direct read.
       this.inspectionsQuery.snapshotSlice(projectId, role),
       // Task 10 — the daily-log slice (latest log core + project-wide materials) comes from the
@@ -150,8 +150,8 @@ export class SnapshotService {
     // inputs + active members + unexpired overrides at `now`), the stored→wire status remap, the ACTIVE
     // override list for the UI, and the phase rollups computed from the baked activities — byte-identical.
 
-    // Task 10 (Module 3) — the five role-gated inspection slices (`checklist`, `reviews`, `review`,
-    // `reinspectionCreated`, `placedInspections`) come from `inspectionSlices` (the inspections module's
+    // Task 10 (Module 3) — the role-gated inspection slices (`checklist`, `openChecklists`, `reviews`,
+    // `review`, `reinspectionCreated`, `placedInspections`) come from `inspectionSlices` (the inspections module's
     // query, destructured above), which bakes the SAME per-viewer/role serialization the inline shaping
     // used to: the engineer's current checklist (all roles), the PMC review queue (pmc only), and the
     // Site-Map placement (pmc/engineer), each item's evidence as fresh signed serve paths — byte-identical.
@@ -186,6 +186,7 @@ export class SnapshotService {
       review: inspectionSlices.review, // deprecated single (first pending) — back-compat
       reinspectionCreated: inspectionSlices.reinspectionCreated,
       checklist: inspectionSlices.checklist,
+      openChecklists: inspectionSlices.openChecklists,
       drawings: drawingDtos,
       phases: activitySlices.phases,
       // Task 10 — the daily-log core comes from the module query (byte-identical); the snapshot

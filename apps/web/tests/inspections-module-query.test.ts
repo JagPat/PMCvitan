@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
+import { emptyProjectData } from '@/store/projectScope';
 import type { ApiGateway, ApiSnapshot, ModuleInspections } from '@/data/apiGateway';
 import { enabledScreensFor, SCREEN_MODULE } from '@/lib/screens';
 import type { Checklist, Review, PlacedInspection } from '@vitan/shared';
@@ -112,7 +113,29 @@ describe('Task 10 (Module 3) — module-owned inspections read (XOR)', () => {
     expect(s().reviews).toEqual([]);
   });
 
-  it('snapshot mode keeps the outstanding list consistent with the checklist it owns', async () => {
+  it('snapshot mode — the DEFAULT read path — carries every outstanding checklist too', async () => {
+    // The first version of this fix only worked under `VITE_INSPECTIONS_READ=moduleQuery`. That is
+    // the NON-default: with the flag unset the snapshot owns the inspection slices, and this branch
+    // rebuilt the list from the single `checklist` — so with two checklists out, the count read one
+    // and the second stayed hidden on the path nearly every deployment actually runs.
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot({
+        checklist: checklist('INSP-9'),
+        openChecklists: [checklist('INSP-9'), checklist('INSP-10')],
+      })),
+      inspections: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().openChecklists.map((c) => c.id)).toEqual(['INSP-9', 'INSP-10']);
+    // the module read is not consulted at all in this mode
+    expect(gw.inspections).not.toHaveBeenCalled();
+  });
+
+  it('snapshot mode falls back to the single checklist when the server predates the open-set slice', async () => {
+    // A client deployed ahead of its API still shows the checklist it is served rather than an
+    // empty outstanding list — the fallback is honest about what that older server can tell it.
     const gw = {
       snapshot: vi.fn().mockResolvedValue(makeSnapshot({ checklist: checklist('INSP-9') })),
       inspections: vi.fn(),
@@ -121,6 +144,103 @@ describe('Task 10 (Module 3) — module-owned inspections read (XOR)', () => {
     await s().requestFreshSnapshot();
     await flush();
     expect(s().openChecklists.map((c) => c.id)).toEqual(['INSP-9']);
+  });
+
+  it('the engineer can move the edit slot to another open checklist, and the choice survives a refresh', async () => {
+    const both = [checklist('INSP-1'), checklist('INSP-2')];
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot({ checklist: both[0], openChecklists: both })),
+      inspections: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    // the server's default owns the slot until the engineer says otherwise
+    expect(s().checklist?.id).toBe('INSP-1');
+
+    s().selectChecklist('INSP-2');
+    expect(s().checklist?.id).toBe('INSP-2');
+
+    // a background refresh must not drag them back to the server's default mid-inspection
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().checklist?.id).toBe('INSP-2');
+  });
+
+  it('unsubmitted marks are kept per checklist, so switching between them loses no work', async () => {
+    const both = [checklist('INSP-1'), checklist('INSP-2')];
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot({ checklist: both[0], openChecklists: both })),
+      inspections: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+
+    s().setItem(0, 'pass');
+    s().setNote(0, 'crack at the north edge');
+    expect(s().checklist?.items[0].state).toBe('pass');
+
+    // move to the other checklist: it is server-clean, and the first one's work is NOT on it
+    s().selectChecklist('INSP-2');
+    expect(s().checklist?.items[0].state).toBe(null);
+    expect(s().checklist?.items[0].note).toBe('');
+    s().setItem(0, 'fail');
+
+    // and back: the first checklist's unsubmitted marks are still there
+    s().selectChecklist('INSP-1');
+    expect(s().checklist?.items[0].state).toBe('pass');
+    expect(s().checklist?.items[0].note).toBe('crack at the north edge');
+
+    // a refresh restores each one's own intent, not the last one edited
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().checklist?.items[0].state).toBe('pass');
+    s().selectChecklist('INSP-2');
+    expect(s().checklist?.items[0].state).toBe('fail');
+  });
+
+  it('a selection that stops being outstanding hands the slot back to the server default', async () => {
+    const both = [checklist('INSP-1'), checklist('INSP-2')];
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot({ checklist: both[0], openChecklists: both })),
+      inspections: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    s().selectChecklist('INSP-2');
+    expect(s().checklist?.id).toBe('INSP-2');
+
+    // INSP-2 has been submitted, so the server no longer serves it as outstanding
+    gw.snapshot.mockResolvedValue(makeSnapshot({ checklist: both[0], openChecklists: [both[0]] }));
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().checklist?.id).toBe('INSP-1');
+    expect(s().selectedChecklistId).toBe(null);
+  });
+
+  it('the outstanding list is PROJECT data — a scope teardown empties it', async () => {
+    // `openChecklists` holds project-contained inspection ids. Left out of the scope teardown it
+    // would render one site's outstanding work under another after a switch.
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot({
+        checklist: checklist('INSP-1'),
+        openChecklists: [checklist('INSP-1'), checklist('INSP-2')],
+      })),
+      inspections: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    s().selectChecklist('INSP-2');
+    expect(s().openChecklists).toHaveLength(2);
+
+    expect(emptyProjectData().openChecklists).toEqual([]);
+    expect(emptyProjectData().selectedChecklistId).toBe(null);
+    useStore.setState(emptyProjectData());
+    expect(s().openChecklists).toEqual([]);
+    expect(s().selectedChecklistId).toBe(null);
   });
 
   it('moduleQuery mode: the LIVE fallback is surfaced faithfully (projection lagged the write)', async () => {

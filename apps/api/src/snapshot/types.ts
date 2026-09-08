@@ -380,6 +380,11 @@ export interface SnapshotDto {
   /** every inspection with its place, for the Site Map (pmc/engineer only; empty otherwise) */
   placedInspections: PlacedInspection[];
   checklist: Checklist | null;
+  /** EVERY issued, unsubmitted checklist. `checklist` is the one the field view opens by default;
+   *  this is the whole outstanding set. The snapshot is the DEFAULT read path (`VITE_INSPECTIONS_READ`
+   *  is unset), so serving only `checklist` here left a second issued checklist invisible on the path
+   *  almost every deployment actually uses. */
+  openChecklists: Checklist[];
   /** The PMC review queue: every submitted-but-undecided inspection (a submitted
    *  checklist, the seeded review, an auto-created closing inspection), oldest first. */
   reviews: Review[];

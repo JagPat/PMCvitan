@@ -135,6 +135,29 @@ export async function computeInspectionsBase(
 }
 
 /**
+ * Order two inspection ids the way a human reads them: by the numeric suffix, not by its characters.
+ *
+ * The two id producers disagree about padding. `nextSeqId('INSP-', …)` mints three-digit ids
+ * (`INSP-023`); the seeded rows carry unpadded ones (`INSP-18`, `INSP-21`, `INSP-22`), and both
+ * shapes live in the same project. Under a plain `localeCompare` the padded id sorts FIRST —
+ * `'INSP-023' < 'INSP-22'` because `'0' < '2'` — so the newest checklist would be the one the
+ * field view opens by default and the outstanding list would read newest-first for part of its
+ * range and oldest-first for the rest. Comparing the suffix as a number orders them by issue
+ * sequence regardless of padding; ids whose suffix is not a number (or whose prefix differs) fall
+ * back to the string order, which is still total and still reproducible.
+ */
+export function compareInspectionIds(a: string, b: string): number {
+  const split = (id: string): { prefix: string; n: number | null } => {
+    const m = /^(.*?)(\d+)$/u.exec(id);
+    return m ? { prefix: m[1], n: Number(m[2]) } : { prefix: id, n: null };
+  };
+  const x = split(a);
+  const y = split(b);
+  if (x.n !== null && y.n !== null && x.prefix === y.prefix && x.n !== y.n) return x.n - y.n;
+  return a.localeCompare(b);
+}
+
+/**
  * Bake the stored base into the five per-viewer/role slices the snapshot and the module read both emit.
  * A pure function of (base, viewer role, signer), so projection-served and live-served slices are
  * identical whenever the base is. `evidencePath` mints each item's fresh signed serve paths.
@@ -153,7 +176,7 @@ export function bakeInspections(
   // Issued checklists. `computeInspectionsBase` reads them with no `orderBy`, so row order is
   // whatever the planner returns: every choice made here sorts first, or it is not reproducible.
   // Sorted by id like the review queue below, so the two slices order consistently.
-  const byId = (a: InspectionBaseEntry, b: InspectionBaseEntry) => a.id.localeCompare(b.id);
+  const byId = (a: InspectionBaseEntry, b: InspectionBaseEntry) => compareInspectionIds(a.id, b.id);
   const toChecklist = (row: InspectionBaseEntry): Checklist => ({
     id: row.id,
     title: row.title,
@@ -189,7 +212,7 @@ export function bakeInspections(
   // The review queue: any submitted-but-undecided inspection, sorted by id. AUTH-02: PMC-only.
   const reviews: Review[] = all
     .filter((i) => i.submitted && !i.decided)
-    .sort((a, b) => a.id.localeCompare(b.id))
+    .sort((a, b) => compareInspectionIds(a.id, b.id))
     .map(
       (i): Review => ({
         id: i.id,

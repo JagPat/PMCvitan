@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bakeInspections, type InspectionBaseEntry, type InspectionsBase } from './inspections-serialize';
+import { bakeInspections, compareInspectionIds, type InspectionBaseEntry, type InspectionsBase } from './inspections-serialize';
 
 /**
  * A PMC issues field checklists to the site. Each one is work someone is expected to do.
@@ -79,5 +79,39 @@ describe('bakeInspections — issued checklists are visible', () => {
     const slices = bake([entry({ id: 'INSP-1' }), entry({ id: 'INSP-2' })], 'contractor');
     expect(slices.checklist).not.toBeNull();
     expect(slices.openChecklists).toHaveLength(2);
+  });
+});
+
+/**
+ * The two id producers disagree about padding: `nextSeqId('INSP-', …)` mints `INSP-023` while the
+ * seeded rows carry `INSP-18`/`INSP-21`/`INSP-22`, and both shapes live in one project. Ordering
+ * those by their characters puts the newest checklist first — `'INSP-023' < 'INSP-22'` because
+ * `'0' < '2'` — so the field view's default would be the newest issued checklist, and the
+ * outstanding list would read oldest-first over one range and newest-first over the other.
+ */
+describe('inspection ids order by issue sequence, not by padding', () => {
+  it('orders a padded id after the unpadded one it actually follows', () => {
+    expect(compareInspectionIds('INSP-023', 'INSP-22')).toBeGreaterThan(0);
+    expect(compareInspectionIds('INSP-22', 'INSP-023')).toBeLessThan(0);
+    expect(compareInspectionIds('INSP-9', 'INSP-10')).toBeLessThan(0);
+  });
+
+  it('stays a total order for ids it cannot read as a sequence', () => {
+    expect(compareInspectionIds('INSP-7', 'INSP-7')).toBe(0);
+    // different prefixes, and a suffix that is not a number: the string order still decides
+    expect(compareInspectionIds('DL-2', 'INSP-1')).toBeLessThan(0);
+    expect(compareInspectionIds('INSP-x', 'INSP-1')).toBeGreaterThan(0);
+  });
+
+  it('opens the OLDEST checklist across both id shapes, and lists them in issue order', () => {
+    const slices = bake([entry({ id: 'INSP-023' }), entry({ id: 'INSP-22' }), entry({ id: 'INSP-9' })], 'engineer');
+    expect(slices.openChecklists.map((c) => c.id)).toEqual(['INSP-9', 'INSP-22', 'INSP-023']);
+    expect(slices.checklist?.id).toBe('INSP-9');
+  });
+
+  it('orders the review queue by the same rule', () => {
+    const submitted = (id: string) => entry({ id, kind: 'review', submitted: true, by: 'Eng' });
+    const slices = bake([submitted('INSP-023'), submitted('INSP-22')], 'pmc');
+    expect(slices.reviews.map((r) => r.id)).toEqual(['INSP-22', 'INSP-023']);
   });
 });
