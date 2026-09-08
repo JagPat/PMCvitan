@@ -52,7 +52,16 @@ export function makeInspectionsProjectionConsumer(): OutboxConsumer {
     name: INSPECTIONS_PROJECTION,
     kind: 'ordered',
     effect: 'db',
-    catalogVersion: 1,
+    // v2 — the base entries gained `assigneeId`, and the read gates on it. A generation materialized by
+    // the v1 serializer stores entries with NO such key, so `assigneeId` reads back `undefined`: neither
+    // `null` (unassigned, everybody's) nor the viewer's id, and `mine()` therefore rejects EVERY legacy
+    // checklist for every non-PMC viewer — an engineer would open the field view to nothing at all until
+    // somebody rebuilt the projection. Stamping v2 makes such a generation non-servable
+    // (`readServableGeneration` refuses `catalogVersion < catalogVersionFor`), so the read falls back to
+    // the canonical live slice, which is always current and carries the column. No repair step is
+    // required: the ordinary `projection:rebuild` stamps a fresh generation at v2, and until it runs the
+    // fallback serves correct data.
+    catalogVersion: 2,
     deliveryFor,
     projection: {
       rebuildSeed: async (tx, target) => {

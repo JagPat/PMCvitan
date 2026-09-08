@@ -158,6 +158,36 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } })).submitted).toBe(true);
   });
 
+  /**
+   * The other half of the assignee rule: a CONTRACTOR is an eligible assignee (the reject path's own
+   * CORRECTIVE_ROLES), so their own corrective work must be submittable BY THEM — and by nobody else,
+   * including the engineer who would otherwise have picked it up. The route ceiling admits the role;
+   * this is the narrowing that keeps the ceiling from becoming the rule, so an unassigned site
+   * checklist stays engineer/PMC work.
+   */
+  it('submit: a CONTRACTOR assignee submits their own corrective work, but not an unassigned checklist', async () => {
+    const { p, pmcA } = await freshProject();
+    const con = `it-inidem-u-conA-${projSeq}`;
+    await t.prisma.user.create({ data: { id: con, projectId: p, role: 'contractor', name: 'Con A', email: `${con}@t.local` } });
+    await t.prisma.membership.create({ data: { projectId: p, userId: con, role: 'contractor', status: 'active' } });
+    const asCon = (): AuthUser => ({ sub: con, role: 'contractor', projectId: p }) as AuthUser;
+
+    // an UNASSIGNED checklist is not the contractor's to submit
+    await svc.create(p, createInput({ title: 'Site QA (open)' }), asPmc(pmcA, p), 'k-con-open');
+    const open = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Site QA (open)' }, include: { items: true } });
+    expect(open.assigneeId).toBe(null);
+    await expect(svc.submit(p, open.id, { items: open.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) }, asCon(), 'k-con-open-sub'))
+      .rejects.toBeInstanceOf(ForbiddenException);
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: open.id } })).submitted).toBe(false);
+
+    // their OWN assigned corrective work is accepted — the deadlock this closes
+    await svc.create(p, createInput({ title: 'Rework QA' }), asPmc(pmcA, p), 'k-con-assigned');
+    const mine = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Rework QA' }, include: { items: true } });
+    await t.prisma.inspection.update({ where: { id: mine.id }, data: { assigneeId: con } });
+    await svc.submit(p, mine.id, { items: mine.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) }, asCon(), 'k-con-assigned-sub');
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: mine.id } })).submitted).toBe(true);
+  });
+
   it('submit: an UNASSIGNED checklist is unchanged — the role gate is the whole guard, as before', async () => {
     const { p, pmcA } = await freshProject();
     const eng = `it-inidem-u-engC-${projSeq}`;

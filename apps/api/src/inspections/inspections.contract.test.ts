@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { INSPECTIONS_COMMANDS, INSPECTIONS_QUERIES, type InspectionsModuleResult } from '@vitan/shared';
+import { INSPECTIONS_COMMANDS, INSPECTIONS_QUERIES, rolesFor, type InspectionsModuleResult } from '@vitan/shared';
 import { inspectionsManifest } from './inspections.manifest';
 import { InspectionsQueryService } from './inspections.query';
-import { InspectionsService } from './inspections.service';
+import { CORRECTIVE_ROLES, InspectionsService } from './inspections.service';
 
 /**
  * Phase 2 Task 10 (Module 3) — the inspections module is reachable ONLY through its shared contract
@@ -16,6 +16,19 @@ import { InspectionsService } from './inspections.service';
 describe('Task 10 — the inspections module implements its shared command/query contract', () => {
   it('the manifest commands EQUAL the shared command contract', () => {
     expect(inspectionsManifest.commands).toEqual([...INSPECTIONS_COMMANDS]);
+  });
+
+  /**
+   * A rejection names the assignee of the corrective re-inspection, and `decide` admits any
+   * CORRECTIVE_ROLES holder. The assignee is then the ONLY caller `submit` accepts — so a role that
+   * may be named an assignee but cannot reach the route is corrective work NOBODY can hand back:
+   * its assignee is refused at the door and everybody else is refused by the assignee check. The
+   * ceiling is asserted against the assignee set rather than a literal list, so widening either one
+   * without the other fails here.
+   */
+  it('every role a rejection may ASSIGN can reach the submit route', () => {
+    const ceiling = rolesFor('inspection.submit');
+    for (const role of CORRECTIVE_ROLES) expect(ceiling).toContain(role);
   });
 
   it('the manifest queries EQUAL the shared query contract', () => {

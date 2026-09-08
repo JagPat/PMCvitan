@@ -92,7 +92,7 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'phase.manage': ['pmc'],
   'node.manage': ['pmc'],
   'inspection.create': ['pmc'],
-  'inspection.submit': ['engineer', 'pmc'],
+  'inspection.submit': ['engineer', 'pmc', 'contractor'],
   'inspection.decide': ['pmc'],
   'dailyLog.start': ['engineer', 'pmc'],
   'dailyLog.addMaterial': ['engineer', 'pmc'],

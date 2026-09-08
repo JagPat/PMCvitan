@@ -187,7 +187,15 @@ export const ROLE_POLICY = {
   'phase.manage': ['pmc'],
   'node.manage': ['pmc'],
   'inspection.create': ['pmc'],
-  'inspection.submit': ['engineer', 'pmc'],
+  // A re-inspection is CORRECTIVE work assigned to whoever submitted the rejected original, and the
+  // reject path admits an active engineer OR CONTRACTOR as that assignee. With the route ceiling at
+  // engineer|pmc, a contractor's own remedial work was unsubmittable by ITS assignee and — once the
+  // service began refusing a non-assignee — by anybody else either, so the correction chain dead-
+  // ended. The ceiling admits the contractor; `InspectionsService.submit` narrows it — a contractor may
+  // submit ONLY an inspection assigned to them. That ownership relation is exactly what the
+  // contractor-capture staging below is fail-closed for LACKING — `assigneeId` is a server-held tie
+  // between the record and the calling party, so no contractor can reach another party's checklist.
+  'inspection.submit': ['engineer', 'pmc', 'contractor'],
   'inspection.decide': ['pmc'],
   'dailyLog.start': ['engineer', 'pmc'],
   'dailyLog.addMaterial': ['engineer', 'pmc'],

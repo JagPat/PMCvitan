@@ -21,8 +21,10 @@ const checklist = (id: string, title: string): Checklist => ({
   items: [{ id: `${id}-i1`, name: 'Verify', state: null, photos: 0, note: '', evidence: [] }],
 });
 
-async function mount(open: Checklist[], current: Checklist | null) {
-  vi.stubEnv('VITE_API_URL', 'http://api.test');
+async function mount(open: Checklist[], current: Checklist | null, opts: { demo?: boolean } = {}) {
+  // `demo` leaves VITE_API_URL unset, so the store has no gateway and the local mirror IS the record —
+  // which is what makes an evidence mis-target observable without standing up a fake upload.
+  if (!opts.demo) vi.stubEnv('VITE_API_URL', 'http://api.test');
   vi.resetModules();
   const { useStore, getInitialState } = await import('@/store/store');
   const { EngineerChecklistScreen } = await import('@/screens/EngineerChecklistScreen');
@@ -95,6 +97,61 @@ describe('the engineer can open every checklist that is out on site', () => {
     expect(useStore.getState().checklist?.id).toBe('INSP-2');
     expect(useStore.getState().checklist?.submitted).toBe(false);
     expect(view.getByTestId('checklist-title').textContent).toBe('Shuttering');
+  });
+
+  it('demo submit files the SUBMITTED checklist for review, not the one still out on site', async () => {
+    // The advance above replaces the slot before the review is built. Reading the slot afterwards
+    // filed the still-unsubmitted checklist into the PMC's queue — with PASS/FAIL results derived
+    // from marks nobody had made — and lost the submitted one, so the work that was actually done
+    // was never reviewable and the work still out on site read as finished.
+    const both = [checklist('INSP-1', 'Rebar'), checklist('INSP-2', 'Shuttering')].map((c) => ({
+      ...c, items: [{ ...c.items[0], state: 'pass' as const, photos: 1 }],
+    }));
+    const { useStore } = await mount(both, both[0]);
+    await act(async () => { await useStore.getState().submitInspection(); });
+
+    const reviews = useStore.getState().reviews;
+    const filed = reviews.find((r) => r.id === 'INSP-1');
+    expect(filed?.title).toBe('Rebar'); // the checklist that was actually submitted
+    // and the checklist still out on site is NOT in the queue
+    expect(reviews.some((r) => r.id === 'INSP-2')).toBe(false);
+  });
+
+  it('a photo is filed against the checklist it was TAKEN on, even if the engineer switches while it reads', async () => {
+    // Reading the file is asynchronous. The handler used to retain only an item INDEX and the store
+    // re-read the edit slot, so a switch during the read filed the photo against the OTHER checklist's
+    // item at the same position — evidence attached to work it is not evidence of. Demo mode, where
+    // the local mirror is the whole record, makes the mis-target directly observable.
+    const both = [checklist('INSP-1', 'Rebar'), checklist('INSP-2', 'Shuttering')];
+    const { view, useStore } = await mount(both, both[0], { demo: true });
+
+    // hold the read open so the switch lands strictly between the capture and the store call
+    let fire: (() => void) | null = null;
+    class HeldReader {
+      result = 'data:image/jpeg;base64,AAAA';
+      onload: (() => void) | null = null;
+      readAsDataURL() { fire = () => this.onload?.(); }
+    }
+    const RealReader = globalThis.FileReader;
+    (globalThis as unknown as { FileReader: unknown }).FileReader = HeldReader;
+    try {
+      act(() => { fireEvent.click(view.getByTestId('evidence-0')); }); // the camera opens on INSP-1's item
+      const input = view.getByTestId('evidence-file-input') as HTMLInputElement;
+      Object.defineProperty(input, 'files', { value: [new File(['x'], 'p.jpg', { type: 'image/jpeg' })], configurable: true });
+      act(() => { fireEvent.change(input); });
+      expect(fire).not.toBeNull(); // the read is genuinely in flight — the switch below is not a no-op
+
+      act(() => { fireEvent.click(view.getByTestId('checklist-tab-INSP-2')); }); // the engineer moves on
+      expect(useStore.getState().checklist?.id).toBe('INSP-2');
+      await act(async () => { fire!(); await Promise.resolve(); }); // the read finally completes
+    } finally {
+      (globalThis as unknown as { FileReader: unknown }).FileReader = RealReader;
+    }
+
+    // the checklist the engineer switched TO did not acquire somebody else's photo
+    expect(useStore.getState().checklist?.id).toBe('INSP-2');
+    expect(useStore.getState().checklist?.items[0].photos).toBe(0);
+    expect(useStore.getState().checklist?.items[0].evidence ?? []).toEqual([]);
   });
 
   it('a demo photo survives leaving the checklist and coming back', async () => {

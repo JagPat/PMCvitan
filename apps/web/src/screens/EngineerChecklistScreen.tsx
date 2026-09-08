@@ -50,15 +50,21 @@ export function EngineerChecklistScreen() {
   const unavailable = inspectionsLoad === 'error';
   // one hidden file input, re-targeted per item (Task 4: photos are REAL evidence rows)
   const fileRef = useRef<HTMLInputElement>(null);
-  const targetIdx = useRef(0);
+  // The capture target is the item AND the checklist it belongs to. More than one checklist can be out
+  // on site, and reading the file is asynchronous — an engineer who switches tabs while the read runs
+  // would otherwise have the photo land on the checklist that arrived in the slot, at the same index.
+  // Pinned when the camera opens; read back in the handler and carried to the store.
+  const target = useRef<{ inspectionId: string; idx: number } | null>(null);
   const pickEvidence = (i: number) => {
-    targetIdx.current = i;
+    if (!checklist) return;
+    target.current = { inspectionId: checklist.id, idx: i };
     fileRef.current?.click();
   };
   const onPicked = (file: File | null) => {
-    if (!file) return;
+    const t = target.current;
+    if (!file || !t) return;
     const reader = new FileReader();
-    reader.onload = () => { void addChecklistEvidence(targetIdx.current, String(reader.result)); };
+    reader.onload = () => { void addChecklistEvidence(t.idx, String(reader.result), t.inspectionId); };
     reader.readAsDataURL(file);
     if (fileRef.current) fileRef.current.value = '';
   };

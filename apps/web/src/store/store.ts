@@ -433,7 +433,9 @@ export interface AppActions {
   addPhoto: (idx: number) => void;
   /** Capture REAL evidence for a checklist item (Task 4): durably stored (IndexedDB)
    *  BEFORE any success message, uploaded now or on reconnect, exactly once. */
-  addChecklistEvidence: (idx: number, dataUrl: string) => Promise<void>;
+  /** `capturedOn` is the checklist the photo was TAKEN on, pinned by the caller before the async
+   *  file read — the edit slot can move while it runs. */
+  addChecklistEvidence: (idx: number, dataUrl: string, capturedOn?: string) => Promise<void>;
   /** The user's Retry on a failed evidence photo — re-queues with the SAME clientKey. */
   retryFailedEvidence: (clientKey: string) => Promise<void>;
   /** The user's explicit Delete of a failed evidence photo — the ONLY non-server path that drops bytes. */
@@ -830,7 +832,17 @@ function ownerOfEditSlot(
 export function checklistFrozen(
   s: Pick<AppState, 'checklist' | 'submission' | 'projectScopeGeneration'>,
 ): boolean {
-  const c = s.checklist;
+  return inspectionFrozen(s, s.checklist);
+}
+
+/** The same freeze rule, asked about a NAMED checklist rather than whichever one is in the edit slot.
+ *  An evidence capture is answered for the checklist the photo was TAKEN on, which an async read can
+ *  outlive — judging it against the slot would let a submitted checklist accept a photo (or a frozen
+ *  slot refuse one that belongs to an editable checklist behind it). */
+export function inspectionFrozen(
+  s: Pick<AppState, 'submission' | 'projectScopeGeneration'>,
+  c: Checklist | null | undefined,
+): boolean {
   if (!c) return false;
   if (c.submitted) return true;
   const sub = s.submission;
@@ -2278,11 +2290,29 @@ export const useStore = create<Store>()(
         recordChecklistMark(s, c.id, it.id, 'state', it.state);
       }),
     addPhoto: (idx) => set((s) => { if (checklistFrozen(s)) return; const it = s.checklist?.items[idx]; if (it) it.photos += 1; }),
-    addChecklistEvidence: async (idx, dataUrl) => {
-      const c = get().checklist;
+    addChecklistEvidence: async (idx, dataUrl, capturedOn) => {
+      // THE PHOTO BELONGS TO THE CHECKLIST IT WAS TAKEN ON. Reading the file is asynchronous, and the
+      // engineer can move the edit slot while it runs (more than one checklist is out on site — that is
+      // the whole point of the picker). Re-reading the slot here addressed the OTHER checklist at the
+      // same item index, so the durable upload named the wrong inspection and item: a photo filed as
+      // evidence against work it is not evidence of. `capturedOn` is pinned at the moment the camera
+      // was opened; the checklist is resolved from it, falling back to the slot only for a caller that
+      // pins nothing.
+      const resolveCaptured = (): Checklist | null => {
+        const st = get();
+        if (!capturedOn) return st.checklist;
+        if (st.checklist?.id === capturedOn) return st.checklist;
+        return st.openChecklists.find((o) => o.id === capturedOn) ?? null;
+      };
+      const c = resolveCaptured();
       const item = c?.items[idx];
-      if (!c || !item) return;
-      if (checklistFrozen(get())) { get().flash('This inspection is submitted — no more changes.'); return; } // gate round 8
+      if (!c || !item) {
+        // The checklist the photo was taken on is no longer outstanding (submitted, decided, or the
+        // project moved). Say so rather than dropping the capture in silence.
+        if (capturedOn) get().flash('That checklist is no longer open — the photo was not attached.');
+        return;
+      }
+      if (inspectionFrozen(get(), c)) { get().flash('This inspection is submitted — no more changes.'); return; } // gate round 8
       const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
       if (!m) {
         get().flash('Could not read that photo — please try again.');
@@ -2298,7 +2328,9 @@ export const useStore = create<Store>()(
       // demo (no gateway): the counter + a local thumbnail are the whole story
       if (!gateway) {
         set((s) => {
-          const it = s.checklist?.items[idx];
+          // demo has no durable row, so the slot IS the record — mirror only when the slot still holds
+          // the checklist the photo was taken on, never onto whichever one the engineer switched to.
+          const it = s.checklist?.id === c.id ? s.checklist.items[idx] : undefined;
           if (it) { it.photos += 1; it.evidence = [...(it.evidence ?? []), dataUrl]; }
         });
         get().flash('Photo attached (demo).');
@@ -2523,32 +2555,27 @@ export const useStore = create<Store>()(
         s.checklist.submitted = true;
         s.submission = { inspectionId: null, generation: s.projectScopeGeneration, status: 'idle', attempt: 0 };
         delete s.checklistMarks.byInspection[s.checklist.id];
-        // a submitted checklist is no longer outstanding: drop it from the open set so the demo path
-        // agrees with what the server would serve. The edit slot must MOVE with it — leaving the
-        // submitted checklist in the slot drops the open count to one, which hides the picker and
-        // makes the checklist still out on site unreachable. The server path has no such problem: its
-        // next snapshot re-picks the slot from the open set.
-        const submittedId = s.checklist.id;
-        s.openChecklists = s.openChecklists.filter((c) => c.id !== submittedId);
-        if (s.selectedChecklistId === submittedId) s.selectedChecklistId = null;
-        const next = s.openChecklists[0];
-        // `current` first: `next` is an immer draft, and a draft proxy is not a cloneable source
-        if (next) { s.checklist = structuredClone(current(next)) as Checklist; s.selectedChecklistId = next.id; }
+        // THE REVIEW IS BUILT FIRST, from the checklist that was actually submitted. The advance below
+        // replaces `s.checklist` with the next OPEN one, so reading the slot afterwards filed the
+        // still-unsubmitted checklist into the PMC's queue — with PASS/FAIL results derived from marks
+        // nobody had made — and lost the submitted one entirely. `current` first: `s.checklist` is an
+        // immer draft, and the advance mutates the slot out from under any reference kept into it.
+        const submitted = structuredClone(current(s.checklist)) as Checklist;
         // demo (no API): the submitted checklist enters the PMC review queue,
         // mapping each item's pass/fail state to a PASS/FAIL result.
-        if (!s.reviews.some((r) => r.id === s.checklist!.id)) {
+        if (!s.reviews.some((r) => r.id === submitted.id)) {
           s.reviews.push({
-            id: s.checklist.id,
-            title: s.checklist.title,
-            zone: s.checklist.zone,
+            id: submitted.id,
+            title: submitted.title,
+            zone: submitted.zone,
             // the review inherits the checklist's FILED location, not just its legacy zone
             // text: a checklist raised against a room is reviewed at that room, and dropping
             // `nodeId` here would leave every demo-path review reading as unplaced.
-            ...(s.checklist.nodeId ? { nodeId: s.checklist.nodeId } : {}),
+            ...(submitted.nodeId ? { nodeId: submitted.nodeId } : {}),
             by: 'Site Engineer',
-            date: s.checklist.date,
+            date: submitted.date,
             decided: false,
-            items: s.checklist.items.map((it) => ({
+            items: submitted.items.map((it) => ({
               name: it.name,
               result: it.state === 'fail' ? 'FAIL' : 'PASS',
               swatch: 'concrete',
@@ -2557,6 +2584,16 @@ export const useStore = create<Store>()(
             })),
           });
         }
+        // a submitted checklist is no longer outstanding: drop it from the open set so the demo path
+        // agrees with what the server would serve. The edit slot must MOVE with it — leaving the
+        // submitted checklist in the slot drops the open count to one, which hides the picker and
+        // makes the checklist still out on site unreachable. The server path has no such problem: its
+        // next snapshot re-picks the slot from the open set.
+        s.openChecklists = s.openChecklists.filter((c) => c.id !== submitted.id);
+        if (s.selectedChecklistId === submitted.id) s.selectedChecklistId = null;
+        const next = s.openChecklists[0];
+        // `current` first: `next` is an immer draft, and a draft proxy is not a cloneable source
+        if (next) { s.checklist = structuredClone(current(next)) as Checklist; s.selectedChecklistId = next.id; }
       });
       get().flash('Inspection submitted to the architect for review.');
     },

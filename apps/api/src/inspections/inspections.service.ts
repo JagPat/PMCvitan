@@ -22,8 +22,12 @@ import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { ActivityParticipant } from '../activities/activity.participant';
 
 /** Corrective work is executed by these roles — a reinspection assignee must hold one
- *  as an ACTIVE membership (a PMC may assign themselves EXPLICITLY; see decide()). */
-const CORRECTIVE_ROLES = ['engineer', 'contractor'];
+ *  as an ACTIVE membership (a PMC may assign themselves EXPLICITLY; see decide()).
+ *
+ *  EXPORTED because `inspection.submit`'s route ceiling must admit every one of them: an assignee who
+ *  cannot reach `submit` is corrective work nobody can ever hand back. `inspections.contract.test.ts`
+ *  pins the ceiling against THIS constant, so widening either set without the other fails there. */
+export const CORRECTIVE_ROLES = ['engineer', 'contractor'];
 
 /** Default correction window: decide-day + N civil days (PMC-overridable per decide). */
 const DEFAULT_DUE_IN_DAYS = 3;
@@ -119,9 +123,19 @@ export class InspectionsService {
     // recorded as the person who did it, so letting a second engineer submit it would put the wrong
     // name on somebody's remedial work. No PMC exemption: the reject path's own rule is that a PMC
     // takes the work by naming THEMSELVES the assignee (`pmcSelfExplicit`), which this then honours.
-    // An UNASSIGNED checklist is unchanged — the role gate on the route is the whole guard, as before.
-    if (insp.assigneeId && insp.assigneeId !== user.sub) {
-      throw new ForbiddenException('This inspection is assigned to someone else — only its assignee can submit it.');
+    //
+    // The two halves are stated separately because the route ceiling and the assignee set are not the
+    // same set. `decide` admits an active engineer OR CONTRACTOR as the assignee, so the ceiling now
+    // admits a contractor too (policy) and the narrowing lives here: a contractor may submit ONLY work
+    // assigned to them. Without the second arm the widened ceiling would hand every contractor on the
+    // project the site's UNASSIGNED checklists, which was never theirs to submit — the ceiling is a
+    // ceiling, not the rule.
+    if (insp.assigneeId) {
+      if (insp.assigneeId !== user.sub) {
+        throw new ForbiddenException('This inspection is assigned to someone else — only its assignee can submit it.');
+      }
+    } else if (user.role === 'contractor') {
+      throw new ForbiddenException('An unassigned checklist is submitted by the site engineer or the PMC — this one is not assigned to you.');
     }
     if (insp.items.length === 0) throw new BadRequestException('This inspection has no checklist items to submit.');
 
