@@ -85,7 +85,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 4,140 lines against #552's 3,495.
+live standing). The document is 4,206 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -502,6 +502,33 @@ pairing seals ran; 4d-i's `CREATE OR REPLACE` now widens both clauses for exactl
 provisional transition, the INSERT clause kept, and P31 drives both chain flows through the
 widened function, RED at the delivered one. A second finding-bearing head means
 close-and-replace under the standing authorization, no cap.
+
+**Review round 1 on this PR, #568 (head `55144a3`): four findings as the gate counts them (the
+second raised twice), all P1, two folded on its ONE correction head, one DECLINED on the Board's
+recorded decision, none dropped.** (1) The drain gate — DECLINED as on every head since #558: the
+recorded default (#482 comment 5569586836) retains the human attestation; the Board's DIRECT
+decision to lift it (#482 comment 5577872836) is accepted and its fold prepared as its own
+docs-only head, held until the session is permitted to apply it. (2) The converse pairing had
+installed an orgs-owned constraint trigger on the kernel's `DomainEvent` reading
+`MembershipTransition`, and §A.3 repeated the shape for the decisions types — the platform kernel
+executing application-module persistence logic, the dependency inverted. The plan now uses a
+PLATFORM-OWNED generic mechanism: the kernel's `DomainEventPairingClaim` register (written only
+through `platform_claim_event_pairing` at trigger depth; append-only, no-TRUNCATE), the persisted
+catalog's `pairingRequired` flag, and the kernel-owned DEFERRED seal `DomainEvent_t4d_pairing_claimed`
+requiring exactly one same-transaction claim for every event of a pairing-required type, reading
+platform tables alone; the OWNER's fact seal verifies its event through `platform_tx_event` and
+CLAIMS it; no peer-owned trigger is installed on the kernel table, every arm attributed to "the
+converse" is an arm of the claiming fact seal, and the raw-plant bypass names the kernel's seal.
+P29b/P37 gain the unclaimed-event, direct-claim and double-claim refusals. (3) A `standard`
+`ChangeRequest` had no bidirectional link to its `approved → change` transition, so a planted
+request could occupy `ChangeRequest_one_open_per_decision` and block the stranded `returned`
+resolution's rejection request; the OPENING is now one bundle in both directions like the
+closure — the inserted standard request requires the same-transaction `approved → change` on its
+own `Decision` row and the approved-entry seal's `approved → change` arm requires exactly one
+same-transaction open standard request — the delivered `requestChange` performing both under the
+readiness lock, so the previous release is compatible through the drain; P33 gains both refusals
+and the reviewer's shape. A second finding-bearing head means close-and-replace under the
+standing authorization, no cap.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
