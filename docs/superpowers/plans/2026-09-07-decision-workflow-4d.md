@@ -31,8 +31,9 @@ unmarked words. The Board then decided directly at comment 5577872836. The
 fold was prepared as its own docs-only head and HELD — the session's
 permission layer refused to apply it twice (#566 comment 5577923054), and
 a denial is not routed around — until the user permitted it in the session
-on 2026-09-08; this head applies it, on #568 after its round-1 correction
-`2530c8e`. §D "The drain gate" now reads: the gate clears on the fail-closed
+on 2026-09-08; it was applied on #568's head `b0d5399` after its round-1
+correction `2530c8e` (Codex returned a clean +1 on that head) and is carried
+here. §D "The drain gate" now reads: the gate clears on the fail-closed
 AUTONOMOUS evidence — the sealed `ReleaseLease` register showing no live
 lease below the minimum catalog version, and `rollout:drain-evidence`'s
 fail-closed running-container verdict recorded as a `DRAIN-EVIDENCE`
@@ -42,17 +43,22 @@ runner clears the directive itself when both pieces of evidence hold, and
 4d-iii proceeds. The lineage tables below keep every earlier decline, and
 the reverted head `1a2ba97`, as the history they were.
 
-This document REPLACES PR #567 (`Replaces: #567` — labelled
+This document REPLACES PR #568 (`Replaces: #568` — labelled
 `review-replacement-required` by the orchestrator before it closed, so the
-ledger holds its obligation; every predecessor closed at the limit stays a
-labelled pending obligation until a MERGED unit names it, one merge
-discharging one — the accepted gap of
-`docs/reviews/replacement-lineage-repair.md`; #541 alone holds no label,
-having closed before it could be labelled). #567 was the THIRTEENTH outing
-of the NARROWED plan: it drew four findings on its first head (`5f07c5a`;
-three folded on its one correction `7bf282f`, one — the drain attestation
-— declined on the Board's recorded decision) and three more on `7bf282f`,
-and closed at the limit. #567 had replaced #566 (the twelfth outing: two
+ledger holds its obligation; a labelled unit closed at the limit stays a
+pending obligation until a MERGED unit names it, one merge discharging one
+— the accepted gap of `docs/reviews/replacement-lineage-repair.md`; #567's
+obligation was discharged by #569's merge and #559's by #570's, and #520–#566
+were unlabelled by hand on 2026-09-08 per #569's record, not by this
+lineage). #568 was the FOURTEENTH outing of the NARROWED plan: it drew four
+findings on its first head (`55144a3`, as the gate counts them; two folded on
+its one correction `2530c8e`, the drain gate declined there and then FOLDED
+on `b0d5399` under the Board's direct decision once the user permitted it —
+Codex returned a clean +1 on `b0d5399`) and two more on `867d065` (the
+`main` merges carrying #569's `AGENTS.md` bullet corrected to the decided
+gate), and closed at the limit. #568 had replaced #567 (the thirteenth
+outing: four findings on `5f07c5a`; three folded on `7bf282f`, the drain
+attestation declined; three more there), #567 had replaced #566 (the twelfth outing: two
 findings on `cc8b3ba`, one folded on `e3d6c23` and the drain attestation
 declined, a relay-based drain fold `1a2ba97` reverted on `5921f22`, two
 more there), #566 had replaced #565 (the eleventh outing: three
@@ -574,6 +580,16 @@ record of the Board's direct decision; two are seals on the delivered
 | 1 (P1) "apply the recorded autonomous drain decision" — the plan itself now records the Board's direct decision, so the reviewer reads it as fresh evidence | §D the drain attestation | DECLINED as a plan defect, for the reason the record states: the Board's direct decision (#482 comment 5577872836) is ACCEPTED and its fold PREPARED as its own docs-only head, held only because the session's permission layer refused to apply it (#566 comment 5577923054); a review finding does not change who applies a policy fold or when — the record of the decision in this plan was the record of that pending head, not a contradiction to resolve by folding it there; the fold is APPLIED on #568's head after `2530c8e`, the user having permitted it in the session |
 | 2 (P1) the awaiting entry arm was `BEFORE UPDATE` only: after 4d-iii drops `Decision_t4d_awaiting_reserved`, a direct INSERT of a published `Decision` already carrying `awaiting_countersign` passed the delivered 4b INSERT seal (publication and holder standing) and committed with no provisional revision, receipt, demand event, audit row or notice, leaving countersign and the stranded resolution no head to finalize | §A.2 the countersign entry; P37 | the approved-entry seal gains a BEFORE INSERT arm: a decision is never BORN `awaiting_countersign` — the state is ENTERED only through the sealed transition — so the born-awaiting row is refused outright; P37 gains the hostile born-awaiting INSERT, RED against the UPDATE-only arm |
 | 3 (P1) the delivered `decision_t4b_attribution_seal` admits the frozen approval tuple's first write only on `pending`/`change → approved` and forbids an approval-bearing `change` row from leaving `approved`/`change`, so the provisional approve (`pending → awaiting_countersign`, tuple written) and the chain reapproval (`change → awaiting_countersign`) both aborted before the pairing seals ran; the plan named only the function's holder-forward opening | §A.2 forwarding (the attribution seal), countersign; §D 4d-i; P31 | 4d-i's `CREATE OR REPLACE` of the function widens BOTH clauses for exactly the sealed provisional transition — the tuple-write arm admits `pending`/`change → awaiting_countersign` beside `→ approved`, the standing arm admits `change → awaiting_countersign` beside `change → approved` — each admitted only where the approved-entry seal's awaiting arm and its DEFERRED pairing judge the same transition; the INSERT clause (a tuple belongs only to an approved decision) is kept, a decision never being born awaiting; P31 drives both chain flows through the widened seal, RED at the delivered function |
+
+**Review round 2 on #568 (head `867d065`) — two findings, both P1, carried
+here, none dropped.** One is the seed plant meeting a seal this plan itself
+armed a unit earlier; one is a closed inventory that forgot its newest
+member:
+
+| finding | where it lands | the answer |
+|---|---|---|
+| 1 (P1) the DL-003 plant's bypass disabled `ChangeRequest_t4d_provenance_required` alone, but 4d-i already installs the permanent DEFERRED pairing seal on `ChangeRequest` that requires every open `standard` request to accompany its same-transaction `approved → change` transition, its claimed event and its audit row; the seed creates DL-003 directly in `change` in an earlier transaction and later inserts the request bare, so fresh AND mature post-4d-iii seeds still abort when the deferred trigger fires | §A.2 the closure and the opening (the seal NAMED); §D 4d-iii the DL-003 plant; P28b | the deferred pairing seal is NAMED `ChangeRequest_t4d_paired` — the ONE deferred pairing seal on the table — and the plant's ONE transaction disables BOTH `ChangeRequest_t4d_paired` (4d-i, permanent) AND `ChangeRequest_t4d_provenance_required` (4d-iii, trailing) by name in the seed's existing `DO $$ … pg_trigger … DISABLE TRIGGER` shape and re-enables both after; the complete opening bundle is deliberately NOT constructed (the seeded world carries no events, and a fabricated transition would be a fake fact); the two names are the CLOSED set the legacy-shaped row cannot satisfy — `DomainEvent_t4d_pairing_claimed` never fires because the plant inserts no event — and P28b's reset arm gains the RED probe: the same plant with ONLY the provenance seal disabled is refused at commit by `ChangeRequest_t4d_paired` |
+| 2 (P1) the closed FIFTEEN-entry `TRUNCATE_SEALS` inventory omitted the `DomainEventPairingClaim` no-TRUNCATE seal that §A.2 declares and that the 4d-i reset truncates with `DomainEvent`; `sanctionedReset` disables only listed seals, so every seed or suite reset reaching the register would abort before cleanup | §D 4d-i the `TRUNCATE_SEALS` inventory and the reset's table list | `DomainEventPairingClaim_t4d_no_truncate` joins `TRUNCATE_SEALS` as its SIXTEENTH entry, and `DomainEventPairingClaim` joins the reset's table list beside `DomainEvent` and `Notification`, truncated under the named disables; the coverage tripwire counts sixteen |
 
 **Review round 1 on #568 (head `55144a3`) — four findings as the gate
 counts them (the second raised twice, on one line), all P1: two folded on
@@ -2794,8 +2810,10 @@ before it. Each fact table carries:
    transaction close the sole open request, append the audit row and the
    event, and leave the decision in `change` — stranded, with nothing to
    withdraw and no state to approve from): a decisions-owned DEFERRED
-   trigger on `ChangeRequest` requires, for a `standard` request written to
-   `withdrawn`, the same-transaction `Decision` row (own table, `xmin`
+   trigger on `ChangeRequest` — `ChangeRequest_t4d_paired`, the ONE deferred
+   pairing seal on the table, whose only admitted bypass is the seed's DL-003
+   plant (§D 4d-iii; #568's review round 2, finding 1) — requires, for a
+   `standard` request written to `withdrawn`, the same-transaction `Decision` row (own table, `xmin`
    current) landed `approved` and the same-transaction
    `decision.change_withdrawn` event through `platform_tx_event`; the
    approved-entry seal's restoration arm already requires the
@@ -3710,8 +3728,8 @@ today's behaviour lives.
     `ChangeRequest` rows are delete-sealed, while the seed truncates
     `DomainEvent` alone and deletes both tables directly, as do many suites)
     — `Notification_t4d_no_truncate` in `TRUNCATE_SEALS`, the sanctioned
-    reset truncating `DomainEvent` TOGETHER WITH `Notification` under the
-    named disables, and every `notification.deleteMany` /
+    reset truncating `DomainEvent` TOGETHER WITH `Notification` AND
+    `DomainEventPairingClaim` under the named disables, and every `notification.deleteMany` /
     `changeRequest.deleteMany` cleanup routed through the named
     `wipeNotifications` / `wipeChangeRequests` helpers — and the sweep of
     EVERY `DecisionEvent`, `Notification` and `ChangeRequest` UPDATE/DELETE
@@ -3780,7 +3798,7 @@ today's behaviour lives.
     role could not honour), UPDATE and DELETE refused, no-TRUNCATE — and
     `verifyMarkerSeals` is probed UNCHANGED after 4d-i and 4d-iii. Every
     statement is `IF NOT EXISTS`/`IF EXISTS`/`CREATE OR REPLACE` so a
-    partial apply retries. `TRUNCATE_SEALS` gains FIFTEEN entries across
+    partial apply retries. `TRUNCATE_SEALS` gains SIXTEEN entries across
     4d-i and 4d-ii — the three fact tables,
     `ProjectRoleStanding_t4d_no_truncate`, `Membership_t4d_no_truncate`,
     `MembershipTransition_t4d_no_truncate`, `ChangeRequest_t4d_no_truncate`,
@@ -3791,8 +3809,11 @@ today's behaviour lives.
     evidence registers that refused UPDATE and DELETE but not TRUNCATE),
     `ProjectUserStanding_t4d_no_truncate`, `UserIdentity_t4d_no_truncate` and
     `ProjectEventStream_t4d_no_truncate` (#561's review round 1, findings 1
-    and 7) and `OrgUserAuthority_t4d_no_truncate` (#562's review round 1,
-    finding 2) —
+    and 7), `OrgUserAuthority_t4d_no_truncate` (#562's review round 1,
+    finding 2) and `DomainEventPairingClaim_t4d_no_truncate` (#568's review
+    round 2, finding 2: the register §A.2 declares non-truncatable and the
+    reset truncates with `DomainEvent` was missing from the closed
+    inventory, so every reset reaching it would have aborted) —
     while `RolloutRetirement` (a rollout fact, never test data), the
     consumer catalog with its activation register and the lease register
     (bootstrap and rollout evidence) are deliberately NOT in the reset's
@@ -4131,15 +4152,31 @@ today's behaviour lives.
     request with `requestedById` alone — a pre-4d-shaped row in a seeded
     world that carries no events — and a normal post-migration seed would
     abort on this seal): the plant runs inside one `$transaction` that
-    disables `ChangeRequest_t4d_provenance_required` by name in the seed's
-    existing `DO $$ … IF EXISTS (SELECT 1 FROM pg_trigger …) … DISABLE
-    TRIGGER` shape and re-enables it after, so a pre-4d-iii database seeds
+    disables, by name, BOTH `ChangeRequest` seals the legacy-shaped row
+    cannot satisfy — `ChangeRequest_t4d_provenance_required` (this unit's
+    trailing seal) AND the permanent 4d-i pairing seal
+    `ChangeRequest_t4d_paired`, which would otherwise refuse the bare open
+    `standard` request at commit for lacking its same-transaction `approved
+    → change` transition, claimed event and audit row (#568's review round
+    2, finding 1: the seed creates DL-003 directly in `change` in an
+    earlier transaction and inserts the request with no transition, event
+    or audit row, so disabling the trailing seal alone left fresh AND
+    mature post-4d-iii seeds aborting on the deferred trigger) — in the
+    seed's existing `DO $$ … IF EXISTS (SELECT 1 FROM pg_trigger …) …
+    DISABLE TRIGGER` shape and re-enables both after; the complete opening
+    bundle is deliberately NOT constructed (the seeded world carries no
+    events, and a fabricated transition would be a fake fact), the two names
+    are the CLOSED set (`DomainEvent_t4d_pairing_claimed` never fires
+    because the plant inserts no event), and a pre-4d-iii database seeds
     unchanged; it is the ONLY admitted site under the statement tripwire
     (every other `changeRequest.create` in the repository is the service
     writer or an asserted hostile refusal), and P28b's reset arm runs the
     FULL seed on the post-4d-iii schema — a fresh database migrated through
     4d-iii, then a mature reseed — asserting it succeeds with every seal
-    enabled afterwards and the planted request a legacy-shaped row, `Notification.eventId` AND
+    enabled afterwards and the planted request a legacy-shaped row, and
+    that the same plant with ONLY the provenance seal disabled is refused at
+    commit by `ChangeRequest_t4d_paired` (RED against the single-name
+    bypass, #568's review round 2, finding 1), `Notification.eventId` AND
     `kind` required on every new row carrying a `decisionId`, and
     `approvedByName` AND `approvedByRole` required on every new
     `DecisionApprovalRevision`, and `DomainEvent.actorRole` AND `actorName`

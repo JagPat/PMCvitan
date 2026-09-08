@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: f5da6654
-open_pr: 568
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-07
@@ -29,12 +29,14 @@ updated: 2026-09-07
 design at PR #340 head `6a53aae` carried in substance, the §D obligations 4–6 elaborated, the
 probe table P28–P42, and the FIVE-PR staging (the dark migration 4d-i, the dark server unit
 4d-ii-a, the client unit 4d-ii-b, the autonomous drain gate — the human attestation LIFTED by the
-Board on 2026-09-08 in its own words (#482 comment 5577872836), folded on this PR's head after
-`2530c8e` once the user permitted it in the session — the reservation retirement 4d-iii). It
-replaces #567
-(`Replaces: #567`) — the narrowed plan's thirteenth outing, closed at its second
-finding-bearing head (`5f07c5a` four findings, three folded on `7bf282f` and one — the drain
-attestation — declined, which drew three more) — which replaced #566 (the twelfth: `cc8b3ba`
+Board on 2026-09-08 in its own words (#482 comment 5577872836), folded on #568's head `b0d5399`
+once the user permitted it in the session and carried here — the reservation retirement 4d-iii).
+It replaces #568 (`Replaces: #568`) — the narrowed plan's fourteenth outing, closed at its second
+finding-bearing head (`55144a3` four findings as the gate counts them, two folded on `2530c8e`,
+the drain gate declined there and FOLDED on `b0d5399` under the Board's direct decision, Codex
+clean on `b0d5399`; two more on `867d065`, the `main` merges) — which replaced #567 (the
+thirteenth: `5f07c5a` four findings, three folded on `7bf282f` and the drain attestation
+declined, three more there), which replaced #566 (the twelfth: `cc8b3ba`
 two findings, one folded on `e3d6c23` and the drain attestation declined, a relay-based drain
 fold `1a2ba97` reverted on `5921f22`, two more there), which replaced #565 (the eleventh: `5871826` three findings, two folded on `89bd230` and the
 drain attestation declined, one more there), which replaced #564 (the
@@ -87,7 +89,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 4,231 lines against #552's 3,495.
+live standing). The document is 4,268 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -430,7 +432,7 @@ decided directly on 2026-09-08 (#482 comment 5577872836 — its own words under 
 no coordinator marker): the human drain attestation is LIFTED and the plan change authorized.**
 The fold was prepared as its own docs-only head and HELD while the session's permission layer
 refused it (#566 comment 5577923054 — a denial is not routed around); the user then permitted it
-in the session, and it is FOLDED on this PR's head after `2530c8e`: `phase-6-4d-previous-release-drained`
+in the session, and it is FOLDED on #568's head `b0d5399`: `phase-6-4d-previous-release-drained`
 clears on the fail-closed autonomous evidence — the sealed `ReleaseLease` register showing no live
 lease below the minimum and `rollout:drain-evidence`'s passing `DRAIN-EVIDENCE` verdict, both
 re-verified by 4d-iii's migration preflight, which aborts with every door intact if either stops
@@ -469,7 +471,7 @@ ONE correction head, one DECLINED on the Board's recorded decision, none dropped
 drain gate — DECLINED as a plan defect: the recorded default (#482 comment 5569586836) retains
 the human attestation; the Board's DIRECT decision to lift it (#482 comment 5577872836) is
 accepted and prepared as its own docs-only head, held until the user permitted it in the
-session — now FOLDED on this PR's head after `2530c8e` (the #566 round-1 record above). (2) Every LIVE previous-release
+session — now FOLDED on #568's head `b0d5399` (the #566 round-1 record above). (2) Every LIVE previous-release
 decision writer now has its explicit drain branch: a NULL envelope pair is admitted through the
 4d-i → 4d-ii drain on every sealed event type a 4c writer can emit (the no-chain approve, the
 standard `requestChange`, `withdrawChange`, `requestConsultation`, `respondToConsultation`), the
@@ -497,7 +499,7 @@ own record of the Board's direct decision — DECLINED as a plan defect for the 
 states: the decision (#482 comment 5577872836) is accepted and its fold prepared as its own
 docs-only head, held only because the session's permission layer refused to apply it; a review
 finding does not change who applies a policy fold or when — the user did, and it is FOLDED on
-this PR's head after `2530c8e`. (2) The awaiting entry arm was
+#568's head `b0d5399`. (2) The awaiting entry arm was
 `BEFORE UPDATE` only, so after 4d-iii a direct INSERT of a published `Decision` already carrying
 `awaiting_countersign` passed the delivered 4b INSERT seal and committed with no provisional
 revision, receipt, demand event, audit row or notice; the approved-entry seal now refuses a
@@ -517,7 +519,7 @@ recorded decision, none dropped.** (1) The drain gate — DECLINED as on every h
 recorded default (#482 comment 5569586836) retains the human attestation; the Board's DIRECT
 decision to lift it (#482 comment 5577872836) is accepted and its fold prepared as its own
 docs-only head, held until the user permitted it in the session — which followed, so it is
-FOLDED on this PR's head after `2530c8e`. (2) The converse pairing had
+FOLDED on #568's head `b0d5399`. (2) The converse pairing had
 installed an orgs-owned constraint trigger on the kernel's `DomainEvent` reading
 `MembershipTransition`, and §A.3 repeated the shape for the decisions types — the platform kernel
 executing application-module persistence logic, the dependency inverted. The plan now uses a
@@ -536,8 +538,28 @@ closure — the inserted standard request requires the same-transaction `approve
 own `Decision` row and the approved-entry seal's `approved → change` arm requires exactly one
 same-transaction open standard request — the delivered `requestChange` performing both under the
 readiness lock, so the previous release is compatible through the drain; P33 gains both refusals
-and the reviewer's shape. A second finding-bearing head means close-and-replace under the
-standing authorization, no cap.
+and the reviewer's shape. Codex returned a clean +1 on the drain-decision head `b0d5399`;
+the second finding-bearing head was `867d065`, the `main` merges (#569's `AGENTS.md` bullet
+corrected to the decided gate; #570's workflow), on which Codex raised two findings, so #568
+closed at the limit.
+
+**Review round 2 on #568 (head `867d065`): two findings, both P1, carried here, none dropped.**
+(1) The seed's DL-003 plant disabled `ChangeRequest_t4d_provenance_required` alone, but 4d-i
+already installs the permanent DEFERRED pairing seal on `ChangeRequest` — now NAMED
+`ChangeRequest_t4d_paired` — requiring every open `standard` request to accompany its
+same-transaction `approved → change` transition, claimed event and audit row; the seed creates
+DL-003 directly in `change` in an earlier transaction and inserts the request bare, so fresh and
+mature post-4d-iii seeds still aborted at commit. The plant's one transaction now disables BOTH
+seals by name in the seed's existing `DO $$ … pg_trigger … DISABLE TRIGGER` shape and re-enables
+both after; the opening bundle is deliberately not constructed (a fabricated transition would be
+a fake fact); the two names are the closed set (`DomainEvent_t4d_pairing_claimed` never fires —
+no event is inserted); P28b gains the RED probe that the single-name bypass is refused by
+`ChangeRequest_t4d_paired`. (2) The closed FIFTEEN-entry `TRUNCATE_SEALS` inventory omitted the
+`DomainEventPairingClaim` no-TRUNCATE seal §A.2 declares and the reset truncates with
+`DomainEvent`, so every reset reaching the register would have aborted;
+`DomainEventPairingClaim_t4d_no_truncate` is the SIXTEENTH entry and the register joins the
+reset's table list beside `DomainEvent` and `Notification`. A second finding-bearing head means
+close-and-replace under the standing authorization, no cap.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
@@ -546,11 +568,13 @@ self-naming convention every 4c and 4d unit followed). `reviewed_merge` stays `f
 Runner invariants: `assessRunnerState` → `pr:<this>` while open; `assessPostMergeRunnerState` →
 simulated, allowed, `task:4`; `detectStatusDrift` with the self-named `open_pr` live → no drift.
 
-**The ledger, read off the label.** #567 was labelled `review-replacement-required` by the
-orchestrator before it closed, so #567 is the obligation this PR settles. Every predecessor
-closed at the limit (#537–#540, #542–#566) stays a labelled pending obligation until a MERGED
-unit names it, one merge discharging one (`docs/reviews/replacement-lineage-repair.md`); #541
-holds no label. No label is applied or cleared by hand.
+**The ledger, read off the label.** #568 was labelled `review-replacement-required` by the
+orchestrator before it closed, so #568 is the obligation this PR settles. #567's obligation was
+discharged by #569's merge (a content-less ledger discharge, `AGENTS.md` alone) and #559's by
+#570's; #520–#566 were unlabelled by hand at 06:05 UTC on 2026-09-08 per #569's record. A
+labelled unit closed at the limit stays a pending obligation until a MERGED unit names it, one
+merge discharging one (`docs/reviews/replacement-lineage-repair.md`). No label is applied or
+cleared by this lineage.
 
 **What follows, and what does not.** After this plan clears its own exact-head review, 4d
 implementation begins with 4d-i from the `main` that carries it; a second finding-bearing head
