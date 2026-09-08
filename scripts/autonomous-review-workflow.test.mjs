@@ -692,9 +692,9 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     ),
     true,
   );
-  assert.equal(autoMergeDraft, null);
-  assert.equal(pullRequest.draft, true);
-  assert.match(statusWrites.at(-1).description, /replacement PR/u);
+  assert.equal(autoMergeDraft, false);
+  assert.equal(pullRequest.draft, false);
+  assert.equal(statusWrites.at(-1).state, 'success');
 });
 
 test('a review failure remains latched after a later success write', () => {
@@ -1056,7 +1056,7 @@ test('live current-head findings stop recovery before another ready transition',
   assert.match(statusWrites[0].description, /1 current-head Codex finding/u);
 });
 
-test('a finding on the second distinct head publishes replacement_required immediately', async () => {
+test('a finding on the second distinct head requires correction on the same PR', async () => {
   const expectedHead = 'b'.repeat(40);
   const pullRequest = {
     number: 346,
@@ -1098,10 +1098,9 @@ test('a finding on the second distinct head publishes replacement_required immed
     null,
   );
 
-  assert.deepEqual(marked, [346]);
-  assert.match(sticky.at(-1)[1], /replacement_required/u);
-  assert.match(sticky.at(-1)[1], /Replaces: #346/u);
-  assert.doesNotMatch(sticky.at(-1)[1], /pushes a new head/u);
+  assert.deepEqual(marked, []);
+  assert.match(sticky.at(-1)[1], /changes_required/u);
+  assert.doesNotMatch(sticky.at(-1)[1], /Replaces: #346/u);
 });
 
 test('a durable recovery request survives owner-job replacement', () => {
@@ -1392,7 +1391,7 @@ test('the trusted owner enforces the review-round reset after CI and before Code
   // the rendered instruction is asserted below, in the behavioural probe.
   // Derived from the REFRESHED pull request (`live`), not the run-start
   // snapshot: an owner marker edited mid-run must change who the notice names.
-  assert.match(gate, /correctionNotice\(live, \{ detail, reason: 'replacement' \}\)/u);
+  assert.doesNotMatch(gate, /correctionNotice\(live, \{ detail, reason: 'replacement' \}\)/u);
   assert.match(gate, /assessReviewScope\(pullRequest,/u);
   assert.match(gate, /state: 'scope_required'/u);
   assert.match(
@@ -1538,8 +1537,8 @@ test('final admission revalidates live scope and the late review-round reset', a
     pullRequest.number,
     head,
   );
-  assert.equal(lateReset.allowed, false);
-  assert.equal(lateReset.state, 'replacement_required');
+  assert.equal(lateReset.allowed, true);
+  assert.equal(lateReset.state, 'allowed');
 
   let commentCalls = 0;
   client.reviewComments = async () => ([{
@@ -1629,7 +1628,7 @@ test('the trusted client persists the replacement requirement as a repository la
   }
 });
 
-test('the second finding-bearing head requires replacement even when convergence evidence exists', async () => {
+test('multiple historical finding heads do not block the next correction', async () => {
   const head = 'c'.repeat(40);
   const pullRequest = {
     number: 247,
@@ -1668,14 +1667,11 @@ test('the second finding-bearing head requires replacement even when convergence
     pullRequest,
     head,
   );
-  assert.equal(blocked.allowed, false);
-  assert.equal(blocked.state, 'replacement_required');
-  assert.equal(statuses[0][1], 'failure');
-  assert.match(statuses[0][2], /replacement PR/u);
-  assert.match(sticky[0][1], /replacement_required/u);
-  assert.match(sticky[0][1], /Replaces: #247/u);
-  assert.match(sticky[0][1], /close this PR/iu);
-  assert.equal(commitCalls, 0, 'replacement is decided from finding-head history alone');
+  assert.equal(blocked.allowed, true);
+  assert.equal(blocked.state, 'reviewing');
+  assert.deepEqual(statuses, []);
+  assert.deepEqual(sticky, []);
+  assert.equal(commitCalls, 0, 'review history does not demand a reset packet');
 });
 
 test('one polled Codex invocation owns terminal success and merge completion', async () => {
@@ -2169,8 +2165,8 @@ test('the same re-check does not disturb a unit that is still on main', async ()
   };
 
   const result = await reviewGate.enforceReviewConvergence(client, pullRequest, expectedHead);
-  assert.deepEqual(marked, [602], 'a genuine on-main exhaustion is still recorded');
-  assert.equal(result.required, true);
+  assert.deepEqual(marked, [], 'review history does not create a replacement obligation');
+  assert.equal(result.required, false);
   assert.notEqual(result.superseded, true);
 });
 

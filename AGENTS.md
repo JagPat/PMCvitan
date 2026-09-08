@@ -102,17 +102,17 @@ so directly rather than framing it as a suggestion.
 - Keep migration changes in a separate review unit from service or UI work when
   there is a viable seam. An inseparable unit must use the template marker and
   state the concrete compatibility boundary that makes splitting less safe.
-- After two distinct heads receive Codex findings, that PR's review round is
-  exhausted. Do not push a third correction head. Close it and open a newly
-  scoped replacement from current `main`, limited to the unresolved unit and
-  carrying `Replaces: #<closed-pr>` in its body. Historical convergence packets
-  or trailers do not reset the count. The replacement receives a fresh full
-  review and all safety checks; nothing is dismissed or waived.
+- Keep unresolved PRs open and fix forward on their existing branches. A review
+  round count never justifies closure or replacement. A replacement is exceptional:
+  record the concrete scope or approach benefit, carry every outstanding finding
+  and reproduction, and link both PRs. A new PR number is not delivery progress;
+  only merged changes advance `main`. This user direction of 2026-09-08 supersedes
+  the former two-finding-head close-and-replace rule.
+
 
 ## Out of a review's scope
 
-- **Do not review the controller's round-reset state, and do not review CI
-  state.** Both are enforced by the trusted gate before promotion, fail-closed,
+- **Do not review CI state.** Required checks are enforced by the trusted gate before promotion, fail-closed,
   on the exact head. A finding about either adds no safety, because a head you
   are asked to review has already passed them by construction. Review the DIFF:
   the code, the schema, the invariants, and the interleavings.
@@ -143,8 +143,8 @@ so directly rather than framing it as a suggestion.
 - On correction heads, review the correction delta, every prior finding, and the
   adjacent invariants the correction can affect. Do not reopen a cleared area
   merely to restate it, but do report any newly exposed correctness or integrity
-  defect. After a second finding-bearing head the current PR is closed; review
-  its replacement as a fresh, comprehensive unit.
+  defect. Continue correcting on this PR until the findings are resolved;
+  review count alone does not require a fresh PR.
 - Rank findings by severity. Lead with anything that is a correctness,
   data-integrity, or ordering bug.
 - For each finding, give the concrete failure: the inputs or interleaving that
@@ -210,15 +210,10 @@ so directly rather than framing it as a suggestion.
   claiming the lease key with a stale verdict. It comments and nothing else: no status, no draft change, no
   merge, no Codex call. A watchdog that could not assess a pull request fails the
   handoff job rather than reporting green over an unobserved correction.
-- On the second finding-bearing head, the PR's declared correction owner makes
-  no further correction on that PR. That same owner closes the exhausted PR and
-  opens a smaller replacement from current `main`, preserving the unresolved
-  findings and reproduce-first proofs and declaring `Replaces: #<closed-pr>`.
-  Ownership carries to the replacement path exactly as it does to a fix: a
-  Cursor-owned unit is closed and replaced by Cursor, and Claude — subscribed to
-  every PR — must not perform it on that owner's behalf. The replacement starts a
-  new comprehensive review round; it does not inherit a clean signal or bypass
-  any check.
+- On every finding-bearing head, the declared correction owner continues fixing
+  the same PR. Keep one producer; Claude must not take over another owner's work.
+  Repeated findings call for a complete root-cause audit and stronger proofs, not
+  an automatic PR replacement. Keep every outstanding finding traceable.
 - A fresh current-head clean signal makes `codex-current-head` succeed and queues
   squash auto-merge. No human tags anyone and no human technical approval is
   involved. The runner continues only after the reviewed PR merges and

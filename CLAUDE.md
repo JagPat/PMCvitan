@@ -43,12 +43,12 @@ architectural concern; the standard budget is 20 files and 1,500 changed lines.
 Complete the PR template's five pre-review checks and six-row invariant matrix
 before the first review. Separate migrations from service/UI work when there is a
 viable seam; explicitly justify the rare inseparable unit. Read and batch every
-Codex finding before pushing a correction. After two distinct finding-bearing
-heads, close that PR and open a smaller replacement from current `main`, carrying
-`Replaces: #<closed-pr>` and only the unresolved unit. Never use another correction
-head, a historical convergence packet, or a trailer to reset the count. The
-`review-scope` check and trusted exact-head gate enforce this protocol without
-replacing any product test or independent review.
+Codex finding before pushing a correction. Keep unresolved PRs open and fix forward
+on the same branch regardless of review-round count. Replace a PR only when a
+concrete change of scope or approach improves the work, recording the reason and
+carrying every outstanding finding and proof. New PR numbers are not progress;
+only merged changes advance `main`. The user's 2026-09-08 direction supersedes the
+former two-head reset. Required CI and independent exact-head review still apply.
 
 Before architecture or implementation work, read:
 

@@ -18,7 +18,6 @@ import {
   codexFindingHeads,
   PRE_REVIEW_ENFORCE_AFTER_PR,
   REPLACEMENT_REQUIRED_LABEL,
-  REVIEW_RESET_AFTER_FINDING_HEADS,
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
 } from './review-efficiency.mjs';
 import {
@@ -1169,53 +1168,17 @@ export async function enforceReviewConvergence(
   ]);
   const findingHeads = codexFindingHeads(comments, reviews);
   const findingHeadCount = findingHeads.length;
-  if (findingHeadCount < REVIEW_RESET_AFTER_FINDING_HEADS) {
-    return {
-      state: 'reviewing',
-      required: false,
-      allowed: true,
-      findingHeadCount,
-      findingHeads,
-    };
-  }
-  const result = {
-    state: 'replacement_required',
-    required: true,
-    allowed: false,
+  const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
+  if (!live) return { state: 'superseded', allowed: false, superseded: true };
+  // Review history is telemetry, never a reason to close unresolved work.
+  // Current-head findings and CI are enforced independently below.
+  return {
+    state: 'reviewing',
+    required: false,
+    allowed: true,
     findingHeadCount,
     findingHeads,
-    threshold: REVIEW_RESET_AFTER_FINDING_HEADS,
   };
-
-  const live = await setDraftForCurrentHead(
-    client,
-    pullRequest.number,
-    expectedHead,
-    true,
-  );
-  if (!live) return { ...result, superseded: true };
-  await client.markReplacementRequired(pullRequest.number);
-  const detail = `${findingHeadCount} finding-bearing heads reached the review-round limit; this unit requires a replacement PR`;
-  await client.setStatus(
-    expectedHead,
-    'failure',
-    `review: ${detail}`,
-    pullRequest.html_url,
-  );
-  const notice = correctionNotice(live, { detail, reason: 'replacement' });
-  await client.updateStickyComment(
-    pullRequest.number,
-    statusBody({
-      state: 'replacement_required',
-      head: expectedHead,
-      detail,
-      attempt: 0,
-      owner: notice.owner ?? 'undeclared',
-      correctionState: noticeState(notice),
-      next: notice.instruction,
-    }),
-  );
-  return result;
 }
 
 export async function enforceReviewScope(client, pullRequest, expectedHead) {

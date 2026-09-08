@@ -20,10 +20,7 @@
 // `codex-current-head`, draft state, auto-merge, or Codex.
 import { createHash } from 'node:crypto';
 
-import {
-  REVIEW_RESET_AFTER_FINDING_HEADS,
-  isRetryableReviewFailureDescription,
-} from './review-efficiency.mjs';
+import { isRetryableReviewFailureDescription } from './review-efficiency.mjs';
 import {
   AWAKENABLE_FROM_GITHUB,
   CORRECTION_STALLED,
@@ -225,8 +222,6 @@ function leaseBody({
  * `reportedState` is what the notice CALLS the situation:
  *   correction_recovery   — a declared owner GitHub can wake
  *   correction_stalled    — a declared owner it cannot wake, or none declared
- *   replacement_required  — the review-round limit is reached, so the remedy is
- *                           a replacement PR and never a third correction head
  */
 export function assessCorrectionLease({
   pullRequest,
@@ -240,7 +235,6 @@ export function assessCorrectionLease({
   now,
   comments = [],
   graceMs = CORRECTION_LEASE_GRACE_MS,
-  resetAfterFindingHeads = REVIEW_RESET_AFTER_FINDING_HEADS,
 }) {
   const expected = typeof head === 'string' && head.length > 0 ? head : null;
   if (!expected) {
@@ -260,10 +254,8 @@ export function assessCorrectionLease({
   const declaration = parseCorrectionOwner(body ?? pullRequest?.body, {
     headRef: pullRequest?.head?.ref,
   });
-  // The round limit outranks the status's own reason: once two heads have borne
-  // findings the remedy is a replacement whatever the current failure says.
-  const exhausted = (findingHeads ?? []).length >= resetAfterFindingHeads;
-  const effectiveReason = exhausted ? 'replacement' : reason;
+  // Keep the same owner correcting this PR regardless of review-round count.
+  const effectiveReason = reason === 'replacement' ? 'review' : reason;
   const routing = correctionRouting({
     declaration,
     head: expected,
@@ -279,11 +271,9 @@ export function assessCorrectionLease({
     owner,
     kind: `correction:${owedFailureId(effectiveReason, detail, occurrence)}`,
   });
-  const reportedState = exhausted
-    ? 'replacement_required'
-    : routing.awakenable
-      ? 'correction_recovery'
-      : CORRECTION_STALLED;
+  const reportedState = routing.awakenable
+    ? 'correction_recovery'
+    : CORRECTION_STALLED;
 
   const base = {
     owner,
