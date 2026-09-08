@@ -28,7 +28,8 @@ updated: 2026-09-07
 4d stop, `docs/superpowers/plans/2026-09-07-decision-workflow-4d.md`: the §C orchestration
 design at PR #340 head `6a53aae` carried in substance, the §D obligations 4–6 elaborated, the
 probe table P28–P42, and the FOUR-PR staging (the dark migration 4d-i, the service/role/UI unit
-4d-ii, an operator drain attestation, the reservation retirement 4d-iii). It replaces #565
+4d-ii, the autonomous drain gate — the human attestation LIFTED by the Board on 2026-09-08 (#482
+comment 5577525644) — the reservation retirement 4d-iii). It replaces #565
 (`Replaces: #565`) — the narrowed plan's eleventh outing, closed at its second finding-bearing
 head (`5871826` three findings, two folded on `89bd230` and one — the drain attestation —
 declined on the Board's recorded decision, which drew one more) — which replaced #564 (the
@@ -81,7 +82,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 3,876 lines against #552's 3,495.
+live standing). The document is 3,908 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -201,7 +202,8 @@ register from 4d-ii; `rollout:drain-evidence` reading the deploy platform's runn
 for the processes that predate it) as CORROBORATION, while the direct explicit operator
 attestation stays REQUIRED — the question was raised on #482 and answered there (comment
 5569586836: the user's standing instructions retain human production attestation; evidence does
-not replace it; no review request or agent statement can remove it). A second
+not replace it; no review request or agent statement can remove it — a default the Board
+SUPERSEDED on 2026-09-08, see the #566 round-1 record below). A second
 finding-bearing head means close-and-replace under the standing authorization, no cap.
 
 **Review round 2 on #558 (head `64d9030f`): nine findings, all P1, carried here, none dropped.**
@@ -411,10 +413,17 @@ membership-first, a PMC's self re-role had already projected the new role before
 claimed the frozen `pmc`); the membership write's BEFORE trigger requires the fact to already
 exist in the transaction, so "fact first" is the sealed protocol; P29b gains the self re-role,
 self-demotion and membership-first-hostile arms. The other — "allow the autonomous runner to
-clear the drain gate" — is DECLINED as a Board decision, not a plan defect (#482 comment
-5569586836); the `AGENTS.md`-vs-decision contradiction stays before the Board (#482 comment
-5575748015). A second finding-bearing head means close-and-replace under the standing
-authorization, no cap.
+clear the drain gate" — was first DECLINED on the recorded default (#482 comment 5569586836) and
+the `AGENTS.md`-vs-decision contradiction put to the Board (#482 comment 5575748015); **the Board
+answered on 2026-09-08 (#482 comment 5577525644, relayed to #566 as comment 5577525720): the
+human drain attestation is LIFTED and the plan change authorized**, so it is FOLDED on this PR's
+second head: `phase-6-4d-previous-release-drained` clears on the fail-closed autonomous evidence
+— the sealed `ReleaseLease` register showing no live lease below the minimum and
+`rollout:drain-evidence`'s passing `DRAIN-EVIDENCE` verdict, both re-verified by 4d-iii's
+migration preflight, which aborts with every door intact if either stops holding — the runner
+clearing the directive itself and an operator attestation accepted, never required; no actor
+drains anything and no evidence is asserted in prose. A second finding-bearing head means
+close-and-replace under the standing authorization, no cap.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
