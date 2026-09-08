@@ -141,8 +141,34 @@ export class InspectionsService {
     // `inspection.submit` ceiling, pinned in CI), so an assigned inspection always has exactly one
     // caller who can submit it and no assignment can dead-end. An UNASSIGNED checklist is unchanged —
     // the role gate on the route is the whole guard, as before.
+    // The assignment binds ONLY WHILE ITS ASSIGNEE CAN STILL DO THE WORK (#571's review round 6,
+    // findings 2 and 3). The guard exists so a second engineer is not recorded as having done
+    // somebody's remedial work — a claim about attribution, which is meaningless once the named
+    // person cannot act at all. An assignee whose membership was removed or re-roled, and a PMC who
+    // took the work by naming themselves (`pmcSelfExplicit`) but holds no checklist screen, are both
+    // in that position: refusing everyone else does not protect their attribution, it strands the
+    // work, because the exact-assignee guard refuses every replacement and the latch refuses to
+    // clear or transfer the value.
+    //
+    // So eligibility is re-derived HERE rather than trusted from the moment of assignment: an
+    // ACTIVE membership in a corrective role — the same predicate `decide` applies when it names
+    // the assignee, and the same one that decides who has a surface to fill a checklist on. When it
+    // holds, the work is theirs alone. When it no longer holds, the assignment stays on the row as
+    // the record of who was asked, and the checklist returns to the ordinary role gate.
+    //
+    // This replaces the one-time repair migration an earlier head carried. That migration cleared
+    // stranded assignments at deploy time, which fixed the rows that already existed and nothing
+    // about the ones a membership change would strand the next day — a data fix for a state the
+    // RULE should decide. Deciding it here covers legacy, current and future rows alike, mutates no
+    // history, and needs no trigger disabled.
     if (insp.assigneeId && insp.assigneeId !== user.sub) {
-      throw new ForbiddenException('This inspection is assigned to someone else — only its assignee can submit it.');
+      const assigneeMembership = await this.prisma.membership.findFirst({
+        where: { projectId, userId: insp.assigneeId, status: 'active', role: { in: CORRECTIVE_ROLES } },
+        select: { id: true },
+      });
+      if (assigneeMembership) {
+        throw new ForbiddenException('This inspection is assigned to someone else — only its assignee can submit it.');
+      }
     }
     if (insp.items.length === 0) throw new BadRequestException('This inspection has no checklist items to submit.');
 

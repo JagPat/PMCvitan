@@ -232,6 +232,63 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } })).submitted).toBe(true);
   });
 
+  it('ROUND 6 — an assignment whose assignee can no longer act does not strand the checklist', async () => {
+    // The guard protects ATTRIBUTION: a second engineer must not be recorded as having done
+    // somebody's remedial work. That claim is meaningless once the named person cannot act at all,
+    // and refusing everyone else then strands the work — the exact-assignee guard refuses every
+    // replacement and the latch refuses to clear or transfer the value. Three ways in, one rule out.
+    const { p, pmcA } = await freshProject();
+    const gone = `it-inidem-u-gone-${projSeq}`;   // removed after being assigned
+    const reroled = `it-inidem-u-rerole-${projSeq}`; // re-roled to contractor after being assigned
+    const other = `it-inidem-u-otherE-${projSeq}`;
+    for (const [id, name] of [[gone, 'Gone'], [reroled, 'Reroled'], [other, 'Other Eng']] as const) {
+      await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
+    }
+
+    for (const [assignee, mutate] of [
+      [gone, async () => { await t.prisma.membership.updateMany({ where: { projectId: p, userId: gone }, data: { status: 'removed' } }); }],
+      [reroled, async () => { await t.prisma.membership.updateMany({ where: { projectId: p, userId: reroled }, data: { role: 'contractor' } }); }],
+      [pmcA, async () => { /* a PMC who took the work by naming themselves has no checklist screen */ }],
+    ] as const) {
+      await svc.create(p, createInput({ title: `Stranded ${assignee}` }), asPmc(pmcA, p), `k-strand-${assignee}`);
+      const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: `Stranded ${assignee}` }, include: { items: true } });
+      await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: assignee } });
+      await mutate();
+
+      // another engineer can do the work, and is recorded as having done it
+      await svc.submit(p, insp.id, { items: insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) },
+        { sub: other, role: 'engineer', projectId: p } as AuthUser, `k-strand-sub-${assignee}`);
+      const done = await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } });
+      expect(done.submitted).toBe(true);
+      expect(done.submittedById).toBe(other);
+      // …and the assignment is KEPT as the record of who was asked, never erased
+      expect(done.assigneeId).toBe(assignee);
+    }
+  });
+
+  it('ROUND 6 — an assignee who CAN still act keeps the work to themselves', async () => {
+    // precise, not merely permissive: the rule must not read as "anyone may submit assigned work"
+    const { p, pmcA } = await freshProject();
+    const held = `it-inidem-u-held-${projSeq}`;
+    const rival = `it-inidem-u-rival-${projSeq}`;
+    for (const [id, name] of [[held, 'Held'], [rival, 'Rival']] as const) {
+      await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
+    }
+    await svc.create(p, createInput({ title: 'Held QA' }), asPmc(pmcA, p), 'k-held-1');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Held QA' }, include: { items: true } });
+    await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: held } });
+
+    await expect(svc.submit(p, insp.id, { items: insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) },
+      { sub: rival, role: 'engineer', projectId: p } as AuthUser, 'k-held-rival'))
+      .rejects.toBeInstanceOf(ForbiddenException);
+
+    await svc.submit(p, insp.id, { items: insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) },
+      { sub: held, role: 'engineer', projectId: p } as AuthUser, 'k-held-own');
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } })).submittedById).toBe(held);
+  });
+
   it('ROUND 5 — an assignment landing between the guard and the CAS does not let a stranger submit', async () => {
     // The guard reads `assigneeId` OUTSIDE the transaction, and the latch deliberately permits
     // `null -> someone` because that is assignment, not reassignment. So engineer B can read an
