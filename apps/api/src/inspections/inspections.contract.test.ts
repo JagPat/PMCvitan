@@ -45,15 +45,23 @@ describe('Task 10 — the inspections module implements its shared command/query
    * database error nobody could act on. Pinned by reading the migration, so the two lists cannot
    * drift without this failing.
    */
-  it('the writer fence names EXACTLY the CORRECTIVE_ROLES the service enforces', () => {
-    const sql = readFileSync(
-      join(__dirname, '../../prisma/migrations/20271216000000_inspection_submit_authority_fence/migration.sql'),
-      'utf8',
-    );
-    const match = /m\."role" IN \(([^)]*)\)/u.exec(sql);
-    expect(match, 'the fence must name the corrective roles in a `m."role" IN (...)` list').not.toBeNull();
-    const sqlRoles = match![1].split(',').map((r) => r.trim().replace(/^'|'$/gu, ''));
+  it('the writer fences name EXACTLY the CORRECTIVE_ROLES the service enforces, in ONE place', () => {
+    const migrations = join(__dirname, '../../prisma/migrations');
+    const submit = readFileSync(join(migrations, '20271216000000_inspection_submit_authority_fence/migration.sql'), 'utf8');
+    const evidence = readFileSync(join(migrations, '20271217000000_inspection_evidence_authority_fence/migration.sql'), 'utf8');
+
+    // #571 round 10 — the SUBMIT and EVIDENCE fences ask the same question, so the predicate is
+    // extracted into `inspection_assignment_binds` and stated ONCE. A second fence carrying its own
+    // copy of the role list is exactly how the two would come to disagree, so the pin asserts both
+    // that the list is right AND that there is only one of it.
+    const roleLists = [...(submit + evidence).matchAll(/m\."role" IN \(([^)]*)\)/gu)];
+    expect(roleLists, 'the corrective-role list must appear EXACTLY once across the fences').toHaveLength(1);
+    const sqlRoles = roleLists[0]![1].split(',').map((r) => r.trim().replace(/^'|'$/gu, ''));
     expect(sqlRoles.sort()).toEqual([...CORRECTIVE_ROLES].sort());
+
+    // and both fences must actually reach it
+    expect(submit, 'the submit fence must ask the shared predicate').toContain('inspection_assignment_binds(');
+    expect(evidence, 'the evidence fence must ask the shared predicate').toContain('inspection_assignment_binds(');
   });
 
   /**
@@ -70,11 +78,18 @@ describe('Task 10 — the inspections module implements its shared command/query
       join(__dirname, '../../prisma/migrations/20271216000000_inspection_submit_authority_fence/migration.sql'),
       'utf8',
     );
+    const evidence = readFileSync(
+      join(__dirname, '../../prisma/migrations/20271217000000_inspection_evidence_authority_fence/migration.sql'),
+      'utf8',
+    );
     const prefix = readinessLockKey('');
-    expect(sql, 'the fence must try-acquire the readiness advisory lock before reading Membership')
+    expect(sql, 'the submit fence must try-acquire the readiness advisory lock before judging')
       .toContain(`pg_try_advisory_xact_lock(hashtextextended('${prefix}' || NEW."projectId", 0))`);
-    // and it must TRY rather than wait — a blocking acquisition here can invert a lock order
-    expect(sql).not.toMatch(/pg_advisory_xact_lock\(/u);
+    // #571 round 10 — the evidence fence takes the SAME key, derived the same way
+    expect(evidence, 'the evidence fence must try-acquire the same readiness advisory lock')
+      .toContain(`pg_try_advisory_xact_lock(hashtextextended('${prefix}' || v_project, 0))`);
+    // and both must TRY rather than wait — a blocking acquisition here can invert a lock order
+    expect(sql + evidence).not.toMatch(/[^_]pg_advisory_xact_lock\(/u);
   });
 
   it('the manifest queries EQUAL the shared query contract', () => {

@@ -48,13 +48,17 @@ export class InspectionParticipant {
    */
   async assertEvidenceMutable(
     tx: Prisma.TransactionClient,
-    params: { projectId: string; inspectionId: string; actorUserId: string },
+    params: { projectId: string; inspectionId: string; actorUserId: string; forUpdate?: boolean },
   ): Promise<void> {
-    const { projectId, inspectionId, actorUserId } = params;
+    const { projectId, inspectionId, actorUserId, forUpdate = true } = params;
     const insp = await tx.inspection.findUnique({ where: { id: inspectionId }, select: { projectId: true, assigneeId: true } });
     if (!insp || insp.projectId !== projectId) return; // containment is the callers' own check
     if (!insp.assigneeId || insp.assigneeId === actorUserId) return;
-    if (await assignmentStillBinds(this.orgs, tx, projectId, insp.assigneeId, { forUpdate: true })) {
+    // `forUpdate` defaults ON — every caller that decides a WRITE is inside a transaction. The one
+    // caller that passes `false` is the upload preflight, which runs outside one: locking standing
+    // rows there would take and immediately release a lock that protects nothing, and the decision
+    // it feeds is deliberately advisory (#571 round 10, finding 2).
+    if (await assignmentStillBinds(this.orgs, tx, projectId, insp.assigneeId, { forUpdate })) {
       throw new ForbiddenException('This inspection is assigned to someone else — only its assignee can change its photo evidence.');
     }
   }
@@ -140,11 +144,28 @@ export class InspectionParticipant {
    * `inspection.evidence_added` — invoked on the media-create transaction. Idempotent on the
    * (item, media) unique. Returns the event meta so media-create dispatches it after commit.
    */
+  /**
+   * Declare WHO is changing evidence, for the database fence that judges it
+   * (`20271217000000`, #571 round 10, finding 1).
+   *
+   * `InspectionEvidence` carries no actor column, and a DELETE could not use one anyway — the row
+   * records who ADDED the evidence, never who is removing it. So the actor is a transaction-local
+   * setting, set by this release's writers and unknown to the previous release, whose evidence
+   * writes on assigned work the fence then refuses as unattributed.
+   *
+   * `set_config(..., true)` is LOCAL: it dies with the transaction and cannot leak into another
+   * session's write. Parameterised, never interpolated.
+   */
+  private declareEvidenceActor(tx: Prisma.TransactionClient, actorUserId: string): Promise<unknown> {
+    return tx.$executeRaw`SELECT set_config('vitan.inspection_evidence_actor', ${actorUserId}, true)`;
+  }
+
   async addEvidence(
     tx: Prisma.TransactionClient,
     params: { projectId: string; actor: Actor; inspectionId: string; inspectionItemId: string; mediaId: string },
   ): Promise<EmittedEventMeta> {
     const { projectId, actor, inspectionId, inspectionItemId, mediaId } = params;
+    await this.declareEvidenceActor(tx, actor.actorId);
     await tx.inspectionEvidence.upsert({
       where: { inspectionItemId_mediaId: { inspectionItemId, mediaId } },
       create: { projectId, inspectionId, inspectionItemId, mediaId },
@@ -165,6 +186,7 @@ export class InspectionParticipant {
     const { projectId, actor, mediaId } = params;
     const links = await tx.inspectionEvidence.findMany({ where: { projectId, mediaId }, select: { inspectionId: true } });
     if (links.length === 0) return null;
+    await this.declareEvidenceActor(tx, actor.actorId);
     await tx.inspectionEvidence.deleteMany({ where: { projectId, mediaId } });
     return emitEvent(tx, { projectId, actor, eventType: 'inspection.evidence_removed', entityType: 'Inspection', entityId: links[0].inspectionId, payload: { mediaId, unlinked: links.length }, effectKey: 'inspection.evidence_removed', dispatch: {} });
   }

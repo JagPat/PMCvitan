@@ -1413,4 +1413,41 @@ describe('replay lifecycle', () => {
     expect(s().openChecklists.find((c) => c.id === 'INSP-90')!.items[0].photos).toBe(1);
   });
 
+
+  it('ROUND 10 — a queued submit freezes ITS checklist even when the slot describes another', async () => {
+    // The capture path already resolves the checklist the photo was TAKEN on (round 4) and asks the
+    // freeze about THAT checklist (round 8). Both right — and the freeze then read the single
+    // `submission` slot, which `reconcileSubmission` repoints at whichever checklist the last read
+    // was about. So: queue A's submit offline, switch to B, and a photo for A whose FileReader is
+    // still running found A unfrozen and mutated its items after A's payload had been frozen. On
+    // reconnect the submit op precedes that upload, so a failed item loses the evidence its
+    // submission needed. RED before the outbox arm in `inspectionFrozen`.
+    s()._setGateway({ project: 'ambli', submitInspection: vi.fn(), uploadMedia: vi.fn() } as unknown as ApiGateway);
+    seedChecklist();
+    // every item marked, or the submit is refused before it can queue
+    useStore.setState((st) => { st.checklist!.items[0].state = null; st.checklist!.items[1].state = null; });
+    s().setItem(0, 'pass'); s().setItem(1, 'pass');
+    useStore.setState((st) => { st.online = false; });
+    const a = s().checklist!;
+    const b = { ...a, id: 'INSP-91', items: a.items.map((it, i) => ({ ...it, id: `INSP-91-i${i + 1}` })) };
+    useStore.setState((st) => { st.openChecklists = [a, b]; });
+
+    // A's submit is queued offline — durable in the outbox
+    s().submitInspection();
+    expect(s().outbox.some((o) => o.t === 'submitInspection' && o.inspectionId === a.id)).toBe(true);
+
+    // the engineer moves to B, and the submission slot follows them
+    s().selectChecklist('INSP-91');
+    expect(s().checklist?.id).toBe('INSP-91');
+
+    // a photo for A, captured before the switch, arrives now
+    const before = s().openChecklists.find((c) => c.id === a.id)!.items[0].photos;
+    await s().addChecklistEvidence(0, PX, a.id);
+
+    // A is frozen by its own queued submit, whichever checklist owns the slot
+    expect(s().openChecklists.find((c) => c.id === a.id)!.items[0].photos).toBe(before);
+    expect(s().outbox.filter((o) => o.t === 'uploadEvidence')).toHaveLength(0);
+  });
+
+
 });

@@ -857,7 +857,7 @@ function ownerOfEditSlot(
  *  (state, note, photo, evidence) consults this so nothing changes the payload once
  *  it has been dispatched. */
 export function checklistFrozen(
-  s: Pick<AppState, 'checklist' | 'submission' | 'projectScopeGeneration'>,
+  s: Pick<AppState, 'checklist' | 'submission' | 'projectScopeGeneration' | 'outbox'>,
 ): boolean {
   return inspectionFrozen(s, s.checklist);
 }
@@ -867,11 +867,24 @@ export function checklistFrozen(
  *  outlive — judging it against the slot would let a submitted checklist accept a photo (or a frozen
  *  slot refuse one that belongs to an editable checklist behind it). */
 export function inspectionFrozen(
-  s: Pick<AppState, 'submission' | 'projectScopeGeneration'>,
+  s: Pick<AppState, 'submission' | 'projectScopeGeneration' | 'outbox'>,
   c: Checklist | null | undefined,
 ): boolean {
   if (!c) return false;
   if (c.submitted) return true;
+  // THE DURABLE QUEUED SUBMIT IS ASKED FIRST, because the slot below can be describing a DIFFERENT
+  // checklist (#571 round 10, finding 3). This function was already made per-checklist — that was
+  // the round-4 fix — but its evidence stayed the SINGLE `submission` slot, and `reconcileSubmission`
+  // repoints that slot at whichever checklist the read is about. So: queue A's submit offline, switch
+  // to B, and the slot describes B; a photo for A whose `FileReader` is still running then finds
+  // `inspectionFrozen(s, A)` false and mutates A's items and queues its evidence AFTER A's payload
+  // was frozen. On reconnect the submit op precedes that upload, so a failed item loses the evidence
+  // its submission needed, or evidence lands on an already-submitted record.
+  //
+  // The outbox is the durable fact and `reconcileSubmission` already derives the slot's `queued`
+  // status from exactly this predicate — asking it here is the same question at the same source, so
+  // a checklist with a queued submit is frozen whether or not it currently owns the slot.
+  if (s.outbox.some((op) => op.t === 'submitInspection' && op.inspectionId === c.id)) return true;
   const sub = s.submission;
   return (
     sub.inspectionId === c.id &&

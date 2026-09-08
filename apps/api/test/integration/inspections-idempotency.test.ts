@@ -5,6 +5,7 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { InspectionsService } from '../../src/inspections/inspections.service';
 import { InspectionsQueryService } from '../../src/inspections/inspections.query';
 import { MediaService } from '../../src/media/media.service';
+import { StorageService } from '../../src/media/storage.service';
 import type { AuthUser } from '../../src/common/auth';
 
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
@@ -675,6 +676,104 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     const after = await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } });
     expect(after.submitted).toBe(false);
     expect(after.submittedById).toBe(null);
+  });
+
+
+  /**
+   * ROUND 10, FINDING 1 — the evidence rule at the boundary the replicas SHARE.
+   *
+   * Round 9 put the evidence authority in `MediaService`. A previous-release replica is not running
+   * `MediaService`, so during a rolling deployment it would still attach a photo to — or
+   * permanently DELETE a photo from — an inspection whose assignment binds to somebody else. The
+   * submit path got this fence in round 7; evidence was left in the position submit was fenced out
+   * of.
+   *
+   * These raw statements ARE that writer: the exact rows the previous release writes, with none of
+   * this release's guards in front of them and nothing declaring who is writing.
+   */
+  it('ROUND 10 — an unattributed evidence write on BINDING work is refused at the database', async () => {
+    const { p, pmcA } = await freshProject();
+    const held = `it-inidem-u-r10held-${projSeq}`;
+    for (const [id, name] of [[held, 'Held']] as const) {
+      await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
+    }
+    await svc.create(p, createInput({ title: 'Fenced evidence' }), asPmc(pmcA, p), 'k-r10e-1');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Fenced evidence' }, include: { items: true } });
+    const item = insp.items[0]!;
+    const asUser = (sub: string) => ({ sub, role: 'engineer', projectId: p }) as AuthUser;
+
+    // an UNASSIGNED checklist is untouched by the fence — the common case, unchanged
+    const before = await media.create(p, asUser(held), {
+      kind: 'inspection', mime: 'image/png', data: Buffer.from('abcd').toString('base64'),
+      inspectionId: insp.id, inspectionItemId: item.id,
+    });
+    // `media.create` already linked it, so the legacy DELETE comes first and the legacy INSERT
+    // restores it — both operations exercised while the inspection is unassigned, both admitted
+    await t.prisma.$executeRaw`DELETE FROM "InspectionEvidence" WHERE "projectId" = ${p} AND "mediaId" = ${before.id}`;
+    await t.prisma.$executeRaw`
+      INSERT INTO "InspectionEvidence" ("id","projectId","inspectionId","inspectionItemId","mediaId")
+      VALUES ('r10-legacy-open', ${p}, ${insp.id}, ${item.id}, ${before.id})`;
+
+    await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: held } });
+
+    // ASSIGNED and binding: a previous-release writer declares no actor and is refused, on the
+    // INSERT and on the DELETE alike — RED before this round, where no trigger protected either
+    await expect(t.prisma.$executeRaw`
+      INSERT INTO "InspectionEvidence" ("id","projectId","inspectionId","inspectionItemId","mediaId")
+      VALUES ('r10-legacy-1', ${p}, ${insp.id}, ${item.id}, ${before.id})`)
+      .rejects.toThrow(/only its assignee may change its photo evidence/i);
+    await expect(t.prisma.$executeRaw`
+      DELETE FROM "InspectionEvidence" WHERE "projectId" = ${p} AND "mediaId" = ${before.id}`)
+      .rejects.toThrow(/only its assignee may change its photo evidence/i);
+    // the assignee's evidence is still there
+    expect(await t.prisma.inspectionEvidence.count({ where: { projectId: p, mediaId: before.id } })).toBe(1);
+
+    // precise, not merely strict: THIS release declares the actor, and the assignee's own writes pass
+    const own = await media.create(p, asUser(held), {
+      kind: 'inspection', mime: 'image/png', data: Buffer.from('efgh').toString('base64'),
+      inspectionId: insp.id, inspectionItemId: item.id,
+    });
+    expect(await media.remove(own.id, asUser(held))).toBe(true);
+
+    // …and a STRANDED assignment returns evidence to the ordinary role gate, legacy writer included:
+    // the very DELETE refused a moment ago now succeeds, because the assignment binds nobody
+    await t.prisma.membership.updateMany({ where: { projectId: p, userId: held }, data: { status: 'removed' } });
+    await t.prisma.$executeRaw`DELETE FROM "InspectionEvidence" WHERE "projectId" = ${p} AND "mediaId" = ${before.id}`;
+    expect(await t.prisma.inspectionEvidence.count({ where: { projectId: p, mediaId: before.id } })).toBe(0);
+  });
+
+  /**
+   * ROUND 10, FINDING 2 — the bytes must not be stored by a request the authority refuses.
+   *
+   * The authoritative check runs inside the transaction, but `storage.put` had already written the
+   * object by then and the rollback does not reach the bucket: a refused caller could repeat with a
+   * fresh `clientKey` indefinitely, each 403 leaving an unreferenced object behind.
+   */
+  it('ROUND 10 — a refused evidence upload stores no bucket object', async () => {
+    const { p, pmcA } = await freshProject();
+    const held = `it-inidem-u-r10bh-${projSeq}`;
+    const rival = `it-inidem-u-r10br-${projSeq}`;
+    for (const [id, name] of [[held, 'Held'], [rival, 'Rival']] as const) {
+      await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
+    }
+    await svc.create(p, createInput({ title: 'Preflight' }), asPmc(pmcA, p), 'k-r10p-1');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Preflight' }, include: { items: true } });
+    await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: held } });
+
+    const storage = t.app.get(StorageService);
+    const put = vi.spyOn(storage, 'put');
+    try {
+      await expect(media.create(p, { sub: rival, role: 'engineer', projectId: p } as AuthUser, {
+        kind: 'inspection', mime: 'image/png', data: Buffer.from('abcd').toString('base64'),
+        inspectionId: insp.id, inspectionItemId: insp.items[0]!.id,
+      })).rejects.toBeInstanceOf(ForbiddenException);
+      // RED before this round: the refusal came AFTER the object was written
+      expect(put).not.toHaveBeenCalled();
+    } finally {
+      put.mockRestore();
+    }
   });
 
 });

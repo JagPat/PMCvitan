@@ -84,6 +84,15 @@ export class MediaService {
     }
     if (input.inspectionId) {
       await this.inspections.assertEvidenceTarget(projectId, input.inspectionId, input.inspectionItemId);
+      // AUTHORITY BEFORE BYTES (#571 round 10, finding 2). The authoritative check runs inside the
+      // transaction below, where it cannot be overtaken — but `storage.put` has already written the
+      // object by then, and the rollback that follows a refusal does not reach the bucket. A caller
+      // refused here would still have persisted the bytes, and could do it again with a fresh
+      // `clientKey` for as long as they liked: 403 after 403, each one leaving an unreferenced object
+      // behind. This preflight is a CHEAP EARLY NO, not the authority — it reads outside any
+      // transaction and may be stale, exactly like the submit path's pre-transaction guard, and the
+      // in-transaction recheck below is what actually decides.
+      await this.inspectionParticipant.assertEvidenceMutable(this.prisma as unknown as Prisma.TransactionClient, { projectId, inspectionId: input.inspectionId, actorUserId: user.sub, forUpdate: false });
     }
     const bytes = Buffer.from(input.data, 'base64');
     const key = this.storage.keyFor(projectId, input.kind, input.mime);

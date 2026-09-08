@@ -70,6 +70,44 @@
 -- it. Two spellings of one lock is the failure mode `readiness-lock.ts` exported that helper to
 -- prevent: the day the prefix changes, a second spelling stops serializing against the first and
 -- nothing fails.
+-- THE RULE ITSELF, STATED ONCE IN SQL. `inspection_assignment_binds` is the SQL statement of
+-- `assignment-eligibility.ts`, and the only one: `20271217000000`'s evidence fence asks this same
+-- function rather than carrying a second copy of the role list, and `inspections.contract.test.ts`
+-- pins that there is exactly ONE such list across the fences. Two fences with two copies of one
+-- predicate is how they would come to disagree about who holds the work.
+--
+-- It takes the assignee's membership row FOR UPDATE before it judges (#571 round 9, finding 2):
+-- `phase6_t4b2_membership_guard` returns before `phase6_try_readiness` for an ordinary
+-- inactive -> active ENGINEER transition, so a direct reactivation of a plain engineer holds no
+-- readiness key and the advisory lock alone would not serialize it. The row lock closes that in both
+-- orders and needs no cooperation from the other writer, which is the point of a fence built for
+-- writers that cooperate with nothing. VOLATILE, not STABLE, precisely because it takes that lock.
+--
+-- Stated honestly, and it is the same caveat `OrgsParticipant.hasProjectRoleStanding` records for
+-- its own `forUpdate`: `FOR UPDATE` locks rows that EXIST. It closes the change-of-an-existing-row
+-- race, which is the shape a stranded assignee's return actually takes (a soft `status = 'removed'`
+-- or a re-role, both UPDATEs of the same `(projectId, userId)` row, and `MembersService.add` upserts
+-- onto it). A membership INSERTED for a user who never had one on this project is not serialized —
+-- that direction only ever grants standing AFTER this decision, to somebody who was not the
+-- assignee when it was made.
+CREATE OR REPLACE FUNCTION inspection_assignment_binds(p_project text, p_assignee text)
+RETURNS boolean
+LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, public AS $binds$
+BEGIN
+  IF p_assignee IS NULL THEN RETURN false; END IF;
+  PERFORM 1 FROM public."Membership" m
+   WHERE m."projectId" = p_project AND m."userId" = p_assignee
+     FOR UPDATE;
+  RETURN EXISTS (
+    SELECT 1 FROM public."Membership" m
+     WHERE m."projectId" = p_project
+       AND m."userId" = p_assignee
+       AND m."status" = 'active'
+       AND m."role" IN ('engineer')
+  );
+END;
+$binds$;
+
 CREATE OR REPLACE FUNCTION inspection_submit_authority() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = pg_catalog, public AS $authority$
 BEGIN
@@ -78,39 +116,7 @@ BEGIN
       'Inspection % cannot be submitted right now: this project''s readiness is held by another transaction, so the assignee''s standing cannot be judged. Retry.',
       NEW."id";
   END IF;
-  -- AND IT LOCKS THE ASSIGNEE'S MEMBERSHIP ROW, because the advisory key alone does not reach
-  -- every reactivation (#571 round 9, finding 2). `phase6_t4b2_membership_guard` returns BEFORE
-  -- `phase6_try_readiness` for an ordinary inactive -> active ENGINEER transition — it takes the
-  -- readiness key only when the judged set is non-empty, and that set gains 'pmc' for such a
-  -- transition only when the user is also an org owner/admin (`20271015000000`). So a direct
-  -- reactivation of a plain engineer holds no advisory key at all, and the try-lock above would
-  -- succeed while that reactivation commits underneath this statement: assignee A active and
-  -- binding again, submitter B recorded forever.
-  --
-  -- A ROW lock closes it in both orders and needs no cooperation from the other writer, which is
-  -- the point — this fence exists for writers that cooperate with nothing. If the reactivation has
-  -- not yet run, it must wait for this transaction and then meets a submitted row; if it is in
-  -- flight, this waits for it and the EXISTS below sees A active and refuses. No deadlock is
-  -- reachable: this row lock is only ever taken AFTER the advisory key was acquired, so no
-  -- membership writer that takes the key can be holding it while waiting on this row.
-  --
-  -- Stated honestly, and it is the same caveat `OrgsParticipant.hasProjectRoleStanding` records for
-  -- its own `forUpdate`: `FOR UPDATE` locks rows that EXIST. It therefore closes the
-  -- change-of-an-existing-row race, which is the shape a stranded assignee's return actually takes
-  -- (a soft `status = 'removed'` or a re-role, both UPDATEs of the same
-  -- `(projectId, userId)` row, and `MembersService.add` upserts onto it). A membership INSERTED for
-  -- a user who has never had one on this project is not serialized — that direction only ever
-  -- grants standing AFTER this decision, to somebody who was not the assignee when it was made.
-  PERFORM 1 FROM public."Membership" m
-   WHERE m."projectId" = NEW."projectId" AND m."userId" = NEW."assigneeId"
-     FOR UPDATE;
-  IF EXISTS (
-    SELECT 1 FROM public."Membership" m
-     WHERE m."projectId" = NEW."projectId"
-       AND m."userId" = NEW."assigneeId"
-       AND m."status" = 'active'
-       AND m."role" IN ('engineer')
-  ) THEN
+  IF inspection_assignment_binds(NEW."projectId", NEW."assigneeId") THEN
     RAISE EXCEPTION
       'Inspection % is assigned to % and only its assignee may submit it; % was recorded as the submitter. A writer without this release''s submit guard reached this row.',
       NEW."id", NEW."assigneeId", COALESCE(NEW."submittedById", '(nobody)');
