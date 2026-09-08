@@ -328,7 +328,7 @@ decision where it belongs:
 |---|---|---|
 | 1 (P1) the converse's `renotified` branch accepted a `decision.awaiting_countersign` with only a same-transaction `countersign_renotified` audit row — no binding to a real crossing, no uniqueness per (decision, crossing), no push-shape check — so a direct writer could commit a standalone demand the relay sends | §A.2 the `decisions.effects` re-emit; §A.3 obligation 7 (the converse); §D 4d-i; P36 | the branch requires the payload to name `crossingEventId` and `transitionId`, verifies through the new kernel read `platform_event(projectId, eventId)` that the crossing is a committed `membership.standing_changed` event of the project naming that fact at an EARLIER position, requires the audit row to name both, is UNIQUE per (decision, crossing) by a decisions-owned partial unique index, and applies the SAME push-shape check the provisional approve's seal applies — constant body, `targetUserIds` equal to the active architects at commit |
 | 2 (P1) the `decision.change_withdrawn` converse required the request closed to `withdrawn` but not the decision restored `change → approved`, so a direct transaction could close the sole open request, leave the decision in `change`, and strand it (no open request to withdraw, no state to approve from) | §A.3 obligation 7 (the converse, both halves); P37 | the closure and the restoration are sealed as ONE bundle in both directions: a decisions-owned deferred trigger on `ChangeRequest` requires, for a `standard` request written to `withdrawn`, the same-transaction `Decision` row landed `approved` and the `decision.change_withdrawn` event; the approved-entry seal's restoration arm already requires the same-transaction closure; neither half commits alone |
-| 3 (P1) the `(projectId, eventId)` key proved the feed row and the event share a project, not that the event is ABOUT the row's decision — a notice for decision A could bind B's event and render B's content under A's visibility | §A.3 obligation 7 (the feed row); §D 4d-i; P31 | `Notification_t4d_binding` gains an INSERT arm on the platform's own two tables: a kinded row carrying `decisionId` binds only an event whose `entityType = 'Decision'` and `entityId = decisionId` — identity columns compared, no decision semantics in the platform |
+| 3 (P1) the `(projectId, eventId)` key proved the feed row and the event share a project, not that the event is ABOUT the row's decision — a notice for decision A could bind B's event and render B's content under A's visibility | §A.3 obligation 7 (the feed row); §D 4d-i; P31 | the same-decision binding is required on INSERT — carried, since #572's round 4, by the separately named DEFERRED `Notification_t4d_binding_bound` rather than by the immediate freeze trigger, which cannot also be a constraint trigger: a kinded row carrying `decisionId` binds only an event whose `entityType = 'Decision'` and `entityId = decisionId` — identity columns compared, no decision semantics in the platform |
 | 4 (P1) the drain gate admits only an `OPERATOR-ATTESTATION` and forbids an agent-generated one; in an autonomous loop with no human standing by the task would stay `in_progress` and 4d-iii never run | §D the drain attestation, 4d-ii, 4d-iii | the plan ADDS the trusted autonomous evidence the runner can verify fail-closed — the `ReleaseLease` register every serving process writes at startup and renews with its compiled consumer-catalog version (in-database evidence for every drain from 4d-ii on) and, for the processes that predate the register, the deploy platform's running-container inventory read by `rollout:drain-evidence` — as CORROBORATION; the operator attestation stays REQUIRED: the question was raised on #482 and answered there (comment 5569586836: the user's standing instructions retain human production attestation, evidence does not replace it, and no review request or agent statement can remove it), so the gate is attestation-with-corroboration, fail-closed, and its removal is the user's separate decision alone |
 | 5 (P1) the audit's ACCESS EXCLUSIVE lock on `Membership` could not block a concurrent `User(role = 'architect')` creation; a still-serving `ensure-accounts` could commit its user, be refused at the membership, and leave a residual the migration's success hid | §A.1 the reservation; §D 4d-i, 4d-iii; P28b | a FIFTH door, `User_t4d_architect_reserved` (BEFORE INSERT OR UPDATE on `User`, `role = 'architect'` judged as text), installed in Part 3 under `LOCK TABLE "User" IN SHARE ROW EXCLUSIVE MODE` taken beside the `Membership` lock BEFORE the audit, so the migration-first ordering refuses the user write itself and the audit's zero holds; retired by 4d-iii with the other four; every "four doors" is now five |
 | 6 (P1) "the decision already loaded in the same snapshot" was two READ COMMITTED queries started independently, so a withdrawal committing between them let the notification read return a kinded withdrawal notice authorized by the stale, still-visible decision | §A.3 obligation 7 (the readers); §D 4d-ii; P29/P31 | the kinded feed path reads each notification and its governing decision's status in ONE statement (one snapshot), and judges `decisionVisibleToViewer` on the row that statement returned; the projection fold is per event and has no second read; a withdraw-between-reads barrier proves the notice absent |
@@ -658,6 +658,20 @@ meet it — and one is the plan still carrying the retired protocol:
 | 3 (P1) the exact architect `ROLE_POLICY` set still listed `decision.change`, so after 4d-iii an architect's standard `requestChange` is admitted at the policy boundary and refused by the origin seal — authorized and denied in two places | §A.1 the action set; P28's equality pin | `decision.change` leaves the architect's set — ELEVEN actions — because the §A.3 contract admits a standard request only from the delivered set the architect is not in, and the architect's change path is `decision.disagree` (`origin = 'countersign_rejection'`); P28's pin now asserts `decision.change` absent and turns RED if it is re-admitted; `decision.withdrawChange` stays as delivered (a command-level check no seal judges) |
 | 4 (P1) 4d-ii-a converts `members.add`/`updateRole`/`remove` into ledger commands writing a `MembershipTransition` with a NOT NULL `sourceCommandId`, but deployed tabs call those routes with no `Idempotency-Key` (`apiGateway.ts`), so under the documented default `executeCommand` takes its ledger-less branch with a null `commandId` and an ordinary add, re-role or removal rolls back at the fact insert — the "dark" claim failing for every open tab until 4d-ii-b ships keys | §A.2 the membership commands; §D 4d-ii-a's inventory; P29b | all three commands opt into `synthesizeKeyWhenAbsent: true` — the same delivered answer `requestChange` took in round 1 — so a keyless call reserves a per-call server key and commits its fact, a keyed call replays exactly once and enforcement still refuses a missing key first; P29b gains the three no-header arms against the 4d-ii-a server (RED against the keyless writer) and the keyed replay arms |
 
+**Review round 4 on #572 (head `76d8f786`) — six findings, five P1 and one
+P2, all folded here, none dropped.** Two are unimplementable-as-written
+objects, two are missing attribution or lifecycle, and TWO are the previous
+round's own remedy failing:
+
+| finding | where it lands | the answer |
+|---|---|---|
+| 1 (P1) `Notification_t4d_binding` was given BOTH a deferred INSERT arm that must inspect an event the same transaction inserts later AND an immediate `BEFORE UPDATE OR DELETE` freeze; PostgreSQL has no trigger that is both, so implementing the stated object either rejects every notice-before-event writer or leaves one arm unenforced | §A.2 (the feed row's binding); §A.3 obligation 7; §D 4d-i; P31 | the timings become separate NAMED objects: `Notification_t4d_binding_bound` (DEFERRABLE INITIALLY DEFERRED, INSERT, the same-decision binding, checked at commit) and `Notification_t4d_binding` (immediate, `BEFORE UPDATE OR DELETE`, the freeze, carrying no INSERT arm); P31 asserts each against a writer exercising only its half |
+| 2 (P1) a `standard` request's withdrawal froze nothing about its CLOSER — `ChangeRequest` carried a frozen requester pair only — so a hand-run bundle could set a truthful `resolvedById` and stamp an arbitrary role and name on the append-only `decision.change_withdrawn` event envelope and audit row | §A.2 (the withdrawal bundle); §A.3 obligations 3 and 7; P33 | `resolvedByRole`/`resolvedByName` join the row, written with `resolvedById` and immutable with it, judged exactly as obligation 3 judges every frozen pair, with the correspondence binding BOTH effect records to that pair rather than to `actorId` alone. The `countersign_rejection` closure already had this through its resolution fact; the standard origin had no closure fact and so had nowhere to put it, which is why it was missed |
+| 3 (P2) the "exhaustive" key-synthesis roster written LAST round named `requestChange` and the three membership commands and missed `decisions.forward`, `decisions.countersign`, `decisions.disagree` and `decisions.resolveStrandedCountersign` — four commands the SAME paragraph discusses by name two sentences later, each writing a fact with required `sourceCommandId` | §A.3 obligation 6; §D 4d-ii; P29b/P42 | the set is DERIVED from the §A.3 fact table — every ledgered command whose fact's provenance column reads `required` — with no hand-maintained roster at all; the current derivation (EIGHT commands) is shown as a CHECK on the derivation, and stated to be the error if a reader derives a different set from the table |
+| 4 (P1) `User_t4d_identity` covered insert and rename and said nothing about deletion, while `UserIdentity` is sealed and non-truncatable and the seed and fixtures hard-delete `User` rows — so a reset either fails on the identity row's FK or leaves orphaned identity evidence `platform:verify` reports forever | §A.2 (the identity register); §D 4d-i; P28b | `UserIdentity.userId` carries `ON DELETE CASCADE` and the seal ADMITS that cascade explicitly — a nested delete at trigger depth from the owning `User` row — while a direct `DELETE` stays refused; the sanctioned reset needs no new step, and P28b asserts both halves |
+| 5 (P1) the pairing register is UNIQUE per event and the kernel refuses an unclaimed `pairingRequired` event, but the `countersign_renotified` branch (whose only fact is an audit row) named no claimant, while bundles sharing one event would produce TWO claims under the blanket "every fact seal claims its events" | §A.3 obligation 7 (the claim); §A.2 (the re-notification branch); P29b/P37 | the rule is stated PER BRANCH: the branch's PRIMARY fact claims and every other fact in the bundle is verification-only. The re-notification branch's claimant is its audit row; the bundle primaries were already named; a branch added without naming its claimant is a defect. P29b/P37 assert both failure shapes |
+| 6 (P1) the window rule's "three arms, each disposed" omitted the 4d-ii APPROVAL writer: a membership-less owner/admin can validly approve while the chain is reserved, the service revalidates from org truth, but the approval revision's pair-validation seal had no race-free fallback and would refuse the approval the service just authorised | §A.2 (the window rule); §D 4d-ii/4d-iii; P29b | a fourth arm keeps that validation on the race-free authority derivation until 4d-iii re-points it, AND the four arms are replaced by the rule they share — through the window, no seal a window writer can reach judges `pmc` standing through the fanned-out register — so a fifth writer is covered without being listed |
+
 **Root-cause audit of the repeated findings.** The gate asked for one at this
 round, and the four fixes above do not answer it: each is correct and each is
 local. Read across rounds instead of within one, three of them are a single
@@ -696,6 +710,25 @@ fix. Both are written into the sections they govern:
 
 Those two sentences would have caught findings 3 and 4 of this round before it
 was requested, and that is the test this audit sets itself.
+
+**It failed that test one round later, and the failure is the useful part.**
+Round 4's finding 3 is the provenance rule above being applied to a roster I
+wrote by hand and called "exhaustive" — a roster missing four commands that
+the very same paragraph goes on to name two sentences later. Round 4's finding
+6 is the window rule's "three arms, each disposed" missing a fourth writer, the
+same shape in a different table. So the round-3 diagnosis was right and its
+remedy was the wrong KIND of thing: I answered "the set was not swept" by
+writing down the set, which is another instance of exactly what fails —
+an enumeration a human must remember to extend.
+
+The round-4 answer is therefore not a longer list but a DERIVATION. The
+provenance rule now reads its set off the §A.3 fact table's own provenance
+column, and the window rule states the property its arms share instead of
+counting them, so a command or a writer added later is covered by construction
+and a reader who derives a different set is holding the correction. A rule
+that can go stale is a rule with the defect built in; the test this audit sets
+itself is whether the next round finds a MISSING INSTANCE of either rule, and
+if it does, the mechanism is still wrong and not merely the list.
 
 **One residual, recorded rather than changed.** Finding 3 removes
 `decision.change` and leaves `decision.withdrawChange` in the architect's set,
@@ -1342,6 +1375,21 @@ account is projected the instant it exists; a rename rewrites the row —
 #561's review round 2, finding 7: a rename-only trigger left an actor
 provisioned after 4d-i without an identity row, so every fact of theirs
 would have been refused).
+**And the row FALLS with its user** (#572's review round 4, finding 4). The
+trigger covered insert and rename and said nothing about deletion, while
+`UserIdentity` is sealed and non-truncatable and the seed and the integration
+fixtures HARD-DELETE `User` rows. Either outcome was wrong: the delete fails
+on the identity row's FK and no reset completes, or the row outlives its user
+and `platform:verify` reports orphaned identity evidence forever. So
+`UserIdentity.userId` carries `ON DELETE CASCADE`, and the seal ADMITS that
+cascade explicitly — a nested delete at trigger depth from the owning `User`
+row, exactly as the register's other writes are admitted only from their
+owner — while a direct `DELETE` against `UserIdentity` stays refused. The
+sanctioned reset needs no new step: the cascade fires from the `User`
+deletion the reset already performs. P28b asserts both halves — reseeding a
+database whose users are deleted leaves NO `UserIdentity` row behind and
+`platform:verify` is clean, and a hand-run `DELETE FROM "UserIdentity"` is
+still refused.
 4d-i backfills all three registers from the current orgs truth under the
 same gated writer arm as the role register; `platform:verify` compares
 them OFFLINE against the orgs tables; P28b/P29b assert all three after
@@ -1475,7 +1523,29 @@ push in the window never omits the racing owner, and every frozen-audience
 seal (all reachable only after 4d-iii) resolves the same SQL as the
 service; the `architect` audience is the wrapper from 4d-ii, no architect
 existing before 4d-iii, so the two implementations never coexist for a
-reachable set. P29b's race fixture — the `Project` INSERT and the
+reachable set; and **(iv)** the 4d-ii APPROVAL writer's frozen-pair
+validation keeps the RACE-FREE derivation for `pmc` through the window
+(#572's review round 4, finding 6). A membership-less owner/admin can
+validly approve on a holder's behalf while the chain is still reserved, and
+the shipped service revalidates that authority from org truth before writing
+the new frozen approval pair — but in the admitted race that actor has no
+fanned-out `pmc` row, so a seal reading `platform_user_holds_role` alone
+would refuse the approval the service just authorised. The approval
+revision's pair-validation arm therefore asks the same race-free question
+arm (ii) asks — an `OrgUserAuthority` owner/admin row AND no
+membership-granted row for the actor on that project — until 4d-iii
+re-points it onto the register after the re-projection, so service and seal
+agree in the window and after it, by construction rather than by timing.
+
+Three arms were listed as exhaustive in round 3 and this is a fourth, which
+is the same defect as finding 3 of this round in a different table: a set was
+enumerated by hand. The rule these four share, stated so a fifth writer is
+covered without being listed: **through the window, NO seal a window writer
+can reach judges a user's `pmc` standing through the fanned-out register** —
+each such seal either keeps its delivered predicate or asks the race-free
+authority derivation, and 4d-iii re-points them together after the
+re-projection. An arm that cannot state which of those two it takes is a
+defect in this plan. P29b's race fixture — the `Project` INSERT and the
 owner/admin `OrgMembership` INSERT resumed in BOTH orders under the barrier
 before the doors exist — leaves the owner WITHOUT the fanned-out row, and
 then asserts: the owner's consultation request COMMITS (the delivered
@@ -1639,6 +1709,23 @@ and every sealed decisions type the §A.3 table lists, FALSE for
 OWN DEFERRED constraint trigger `DomainEvent_t4d_pairing_claimed` requires
 at commit, for every event whose catalog row is `pairingRequired`, exactly
 ONE same-transaction claim naming it — reading nothing but platform tables.
+**EXACTLY ONE claimant per event, named per branch** (#572's review round
+4, finding 5). The register is UNIQUE per event and the kernel refuses an
+unclaimed `pairingRequired` event, so "every fact seal claims its events"
+breaks at both ends: a branch whose only same-transaction fact is an AUDIT
+row (the `countersign_renotified` re-emitted demand) named no claimant and
+would abort with the event unclaimed, while a BUNDLE whose facts share one
+event (the returned resolution; a reapproval) would have two seals claim it
+and abort on the UNIQUE. The rule is therefore stated per branch, not per
+seal: **the branch's PRIMARY fact claims, and every other fact in the bundle
+is verification-only** — it verifies the event through `platform_tx_event`
+and does not claim it. The primary is already named elsewhere in this plan
+for the bundles that have one (the reject-back/forward-on REQUEST for
+`decisions.disagree`, the RESOLUTION row for `resolveStrandedCountersign`),
+it is the audit row for the re-notification branch above, and a branch this
+plan adds without naming its claimant is a defect. P29b/P37 assert both
+failure shapes: an unclaimed event aborts, and a doubly-claimed one aborts.
+
 The OWNER supplies the claim: the orgs-owned `MembershipTransition` seal,
 having verified its event through `platform_tx_event` (the fact-side arm
 above — the payload's `transitionId` the fact's id, the `entityId` the
@@ -2739,12 +2826,29 @@ before it. Each fact table carries:
    once, a client key still replays exactly once, enforcement still refuses a
    missing key BEFORE synthesis is considered); requiring the header instead
    would be a new client error on a valid call, and is rejected on that
-   ground. The covered writers, exhaustively: `decisions.requestChange` (round
-   1, finding 2) and `members.add`, `members.updateRole`, `members.remove`
-   (round 3, finding 4). Two rounds found the same defect at different call
-   sites because the first fix was made only where it was reported; the list
-   is here so a writer added later joins it rather than being discovered by a
-   reviewer. **Extended for
+   ground. The covered set is DERIVED, not listed
+   (#572's review round 4, finding 3). It is exactly: every command in §D's
+   inventory whose fact appears in the §A.3 fact table with a provenance
+   column reading `required`. There is no hand-maintained roster to keep in
+   step, because a roster is what failed here three rounds running — round 1
+   fixed `requestChange`, round 3 added the three membership commands and
+   called that list "exhaustive", and round 4 found four more (`decisions.forward`,
+   `decisions.countersign`, `decisions.disagree`,
+   `decisions.resolveStrandedCountersign`) that the same paragraph goes on to
+   discuss by name two sentences later. A rule that requires me to remember
+   its instances has the defect built in; a rule read off a table the plan
+   already maintains does not.
+
+   Derived TODAY, as a check on the derivation rather than as the authority:
+   `DecisionForward`, `DecisionCountersign` and `DecisionStrandedResolution`
+   are `required`, so `decisions.forward`, `decisions.countersign`,
+   `decisions.disagree` (its forward-on and reject-back bundles) and
+   `decisions.resolveStrandedCountersign` are covered; `ChangeRequest` is
+   `required` for the `countersign_rejection` origin, so `requestChange` and
+   `disagree` are covered; `MembershipTransition` is `required`, so
+   `members.add`, `members.updateRole` and `members.remove` are covered.
+   EIGHT commands. If a reader derives a different set from the §A.3 table,
+   the table is the answer and this paragraph is the error. **Extended for
    BUNDLES**: the delivered `phase6_t4c_provenance_bound` requires the
    receipt's `resultRef` to name the row itself, which a command writing ONE
    fact satisfies and a command writing a bundle (forward-on: request +
@@ -2935,7 +3039,8 @@ before it. Each fact table carries:
    second demand the ordered handler would have skipped because the real
    demand postdates Q); exactly one
    same-transaction `countersign_renotified` audit row names the same
-   crossing and transition; the decisions-owned partial UNIQUE index on
+   crossing and transition — **and that audit row is this branch's PAIRING
+   CLAIMANT** (#572's review round 4, finding 5); the decisions-owned partial UNIQUE index on
    `DecisionEvent (decisionId, (payload->>'crossingEventId')) WHERE type =
    'countersign_renotified'` makes a second demand for one (decision,
    crossing) unrepresentable; and the converse applies to this branch the
@@ -2978,7 +3083,25 @@ before it. Each fact table carries:
    `decision.change_withdrawn` — a `change_withdrawn` audit row AND the
    decision's `ChangeRequest` row written to `withdrawn` AND the `Decision`
    row landed `approved` in the same transaction (the delivered
-   `withdrawChange` does all three under the readiness lock). **And the
+   `withdrawChange` does all three under the readiness lock).
+
+   **The closer is frozen exactly as the requester is** (#572's review round
+   4, finding 2). `ChangeRequest` gained a frozen `requestedByRole`/
+   `requestedByName` pair and nothing for the actor who CLOSES it, so a
+   hand-run bundle could set a truthful `resolvedById` and still stamp an
+   arbitrary role and name on the `decision.change_withdrawn` event envelope
+   and its audit row — permanently, both being append-only. The row therefore
+   gains `resolvedByRole`/`resolvedByName`, written with `resolvedById` and
+   immutable with it, judged at the withdrawal exactly as obligation 3 judges
+   every frozen pair (the role the actor HOLDS by
+   `platform_user_holds_role`, the account's `platform_user_display_name`),
+   and obligation 7's correspondence for this type binds BOTH effect records
+   to that pair rather than to `actorId` alone. This is the same rule the
+   `countersign_rejection` closure already follows through its resolution
+   fact; the standard origin had no closure fact and so had nowhere to put
+   it, which is why it was missed. P33 gains the forged-closer arm: a bundle
+   citing a real `resolvedById` with a role or name the registers do not give
+   that user is refused at commit. **And the
    closure and the restoration are one bundle in BOTH directions** (#558's
    review round 1, finding 2: requiring the closure alone let a direct
    transaction close the sole open request, append the audit row and the
@@ -3444,11 +3567,27 @@ before it. Each fact table carries:
    cross-project binding is unrepresentable at insert, and
    `Notification_t4d_binding` below freezes `projectId` and `eventId` so it
    cannot be reached by update either; and the key proves a shared PROJECT,
-   not a shared DECISION, so `Notification_t4d_binding` also carries an
-   INSERT arm on the platform's own two tables — a kinded row carrying
-   `decisionId` binds only an event whose `entityType = 'Decision'` and
-   `entityId = NEW."decisionId"`, identity columns compared with no decision
-   semantics in the platform (#558's review round 1, finding 3: with
+   not a shared DECISION, so a SECOND platform-owned trigger —
+   `Notification_t4d_binding_bound`, DEFERRABLE INITIALLY DEFERRED on INSERT,
+   checked at COMMIT — reads the platform's own two tables and requires that a
+   kinded row carrying `decisionId` bind only an event whose
+   `entityType = 'Decision'` and `entityId = NEW."decisionId"`, identity
+   columns compared with no decision semantics in the platform.
+
+   **Two triggers, because one cannot do both jobs** (#572's review round 4,
+   finding 1). An earlier draft gave this arm to `Notification_t4d_binding`,
+   the `BEFORE UPDATE OR DELETE` freeze below. That object is not
+   implementable: the arm must see a `DomainEvent` the same transaction
+   inserts LATER — the delivered writers mint the notice before the event —
+   so it has to run at commit, and PostgreSQL has no trigger that is both an
+   immediate `BEFORE` trigger and a deferred constraint trigger. Whichever
+   half won, the other was lost: an immediate `BEFORE INSERT` rejects every
+   notice-before-event writer, and a deferred constraint trigger cannot
+   perform a `BEFORE`-time freeze. So the timings are separate NAMED objects
+   with separate remits — `Notification_t4d_binding_bound` (deferred, INSERT,
+   the same-decision binding) and `Notification_t4d_binding` (immediate,
+   `BEFORE UPDATE OR DELETE`, the freeze) — and P31 asserts each independently
+   against a writer that exercises only its half (#558's review round 1, finding 3: with
    decisions A and B in one project a direct writer could bind A's notice to
    B's otherwise-unused event, copy its type into `kind`, and have the
    readers authorize on A while rendering B's content) — partially UNIQUE on `eventId` where
@@ -3473,7 +3612,8 @@ before it. Each fact table carries:
    — the feed agrees with the fact and the event by construction, for every
    writer. **The binding is FROZEN and the owed notice cannot be erased**
    (#554's review round 2, finding 5): `Notification_t4d_binding`, a BEFORE
-   UPDATE OR DELETE trigger, refuses on any row whose `eventId` is non-NULL a
+   UPDATE OR DELETE trigger — the IMMEDIATE half of the split above, carrying
+   no INSERT arm — refuses on any row whose `eventId` is non-NULL a
    change to `eventId`, `kind`, `decisionId` or `projectId` (a NULLing
    included — the legacy cache path can never be re-entered) and refuses its
    DELETE; `text`/`color` stay writable as the display cache no reader

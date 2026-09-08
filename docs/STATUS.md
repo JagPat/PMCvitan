@@ -641,6 +641,32 @@ Head `c2e0840` also merged `main` `f050bcd` (#578);
 this correction merges `main` `279499e` (#574), whose `.gitignore` rule supersedes the duplicate
 line this branch carried, leaving the unit docs-only.
 
+**Review round 4 on #572 (head `76d8f786`): six findings — five P1, one P2 — folded on this branch,
+none dropped.** (1) `Notification_t4d_binding` was specified as one trigger doing two jobs PostgreSQL
+cannot combine — a deferred INSERT arm inspecting an event the same transaction inserts later, and an
+immediate `BEFORE UPDATE OR DELETE` freeze; the timings are now separate named objects
+(`Notification_t4d_binding_bound` deferred, `Notification_t4d_binding` immediate). (2) A `standard`
+request's withdrawal froze nothing about its closer, so a hand-run bundle could stamp an arbitrary
+role and name on the append-only event and audit row; `resolvedByRole`/`resolvedByName` join the row,
+immutable with `resolvedById`, with both effect records bound to them. (3) The "exhaustive"
+key-synthesis roster written in round 3 missed four commands the same paragraph names two sentences
+later. (4) `User_t4d_identity` said nothing about deletion while `UserIdentity` is sealed and the
+fixtures hard-delete users; `ON DELETE CASCADE` is added and admitted by the seal, a direct DELETE
+still refused. (5) The pairing register is UNIQUE per event, but one branch named no claimant and
+bundles would have named two; the rule is now per BRANCH — the primary fact claims, the rest verify.
+(6) The window rule's three arms omitted the approval writer.
+
+**Root cause, audited — and the round-3 remedy FAILED its own test.** Round 3 diagnosed the
+generator correctly (an obligation discharged where reported, not over the set that carries it) and
+then answered it by writing the set down. Findings 3 and 6 of round 4 are that answer failing: a
+hand-written roster and a hand-counted list of arms, each missing a member. The remedy was the wrong
+KIND of thing — an enumeration someone must remember to extend has the defect built in. Round 4
+replaces both with DERIVATIONS: the provenance rule reads its set off the §A.3 fact table's own
+provenance column, and the window rule states the property its arms share instead of counting them,
+so a command or writer added later is covered by construction. The test this sets itself is whether
+a later round finds a missing INSTANCE of either rule; if it does, the mechanism is still wrong
+rather than the list being short.
+
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
 self-naming convention every 4c and 4d unit followed). `reviewed_merge` stays `f5da6654`,
