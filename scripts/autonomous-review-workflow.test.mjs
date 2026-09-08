@@ -692,14 +692,9 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     ),
     true,
   );
-  // The head count no longer drafts the unit or fails its status: it stays reviewable and
-  // is corrected in place, so this third block reaches the ordinary terminal handling —
-  // the same `false` the recovered-clean block above records — instead of the retired
-  // replacement path. The test's actual subject is the FIRST block: a buried clean
-  // verdict cannot promote a draft without a fresh polled review. That is unchanged.
   assert.equal(autoMergeDraft, false);
   assert.equal(pullRequest.draft, false);
-  assert.doesNotMatch(statusWrites.at(-1).description, /replacement PR/u);
+  assert.equal(statusWrites.at(-1).state, 'success');
 });
 
 test('a review failure remains latched after a later success write', () => {
@@ -1061,7 +1056,7 @@ test('live current-head findings stop recovery before another ready transition',
   assert.match(statusWrites[0].description, /1 current-head Codex finding/u);
 });
 
-test('a finding on the second distinct head is corrected in place, never renumbered', async () => {
+test('a finding on the second distinct head requires correction on the same PR', async () => {
   const expectedHead = 'b'.repeat(40);
   const pullRequest = {
     number: 346,
@@ -1103,18 +1098,9 @@ test('a finding on the second distinct head is corrected in place, never renumbe
     null,
   );
 
-  // The count is a SIGNAL, not a budget. Reaching it must not label the unit, must not
-  // demand a replacement, and must not tell the owner to renumber: the same commits
-  // would return under a new number having resolved nothing, and — because the
-  // obligation label is minted here — a unit that closed itself as the old rule
-  // instructed was never labelled, so its successor's `Replaces:` named nothing at all.
-  assert.deepEqual(marked, [], 'the unit is not marked as owing a replacement');
-  assert.doesNotMatch(sticky.at(-1)[1], /replacement_required/u);
-  assert.doesNotMatch(sticky.at(-1)[1], /Replaces: #346/u);
-  // it is still a finding on the current head, so the unit stays in the ordinary
-  // correction state and the owner still owes a fix on THIS pull request
+  assert.deepEqual(marked, []);
   assert.match(sticky.at(-1)[1], /changes_required/u);
-  assert.match(sticky.at(-1)[1], /current-head Codex finding/u);
+  assert.doesNotMatch(sticky.at(-1)[1], /Replaces: #346/u);
 });
 
 test('a durable recovery request survives owner-job replacement', () => {
@@ -1405,7 +1391,7 @@ test('the trusted owner enforces the review-round reset after CI and before Code
   // the rendered instruction is asserted below, in the behavioural probe.
   // Derived from the REFRESHED pull request (`live`), not the run-start
   // snapshot: an owner marker edited mid-run must change who the notice names.
-  assert.match(gate, /correctionNotice\(live, \{ detail, reason: 'replacement' \}\)/u);
+  assert.doesNotMatch(gate, /correctionNotice\(live, \{ detail, reason: 'replacement' \}\)/u);
   assert.match(gate, /assessReviewScope\(pullRequest,/u);
   assert.match(gate, /state: 'scope_required'/u);
   assert.match(
@@ -1551,7 +1537,6 @@ test('final admission revalidates live scope and the late review-round reset', a
     pullRequest.number,
     head,
   );
-  // the late re-read still MEASURES the round, but a head count no longer refuses it
   assert.equal(lateReset.allowed, true);
   assert.equal(lateReset.state, 'allowed');
 
@@ -1643,7 +1628,7 @@ test('the trusted client persists the replacement requirement as a repository la
   }
 });
 
-test('the second finding-bearing head raises a root-cause advisory, not a replacement demand', async () => {
+test('multiple historical finding heads do not block the next correction', async () => {
   const head = 'c'.repeat(40);
   const pullRequest = {
     number: 247,
@@ -1682,16 +1667,11 @@ test('the second finding-bearing head raises a root-cause advisory, not a replac
     pullRequest,
     head,
   );
-  // Reaching the threshold is a signal to find the GENERATOR, so the unit stays
-  // reviewable: no status failure, no forced draft, no label, no instruction to
-  // renumber. The count is still MEASURED — it is what the advisory reports.
   assert.equal(blocked.allowed, true);
   assert.equal(blocked.state, 'reviewing');
-  assert.equal(blocked.findingHeadCount, 2);
-  assert.equal(blocked.rootCauseAdvisory, true, 'the count is surfaced, not spent');
-  assert.deepEqual(statuses, [], 'the required status is not failed by a head count');
-  assert.deepEqual(sticky, [], 'no replacement demand is published');
-  assert.equal(commitCalls, 0, 'the count is still read from finding-head history alone');
+  assert.deepEqual(statuses, []);
+  assert.deepEqual(sticky, []);
+  assert.equal(commitCalls, 0, 'review history does not demand a reset packet');
 });
 
 test('one polled Codex invocation owns terminal success and merge completion', async () => {
@@ -2142,17 +2122,13 @@ test('a base retargeted MID-POLL cannot mint an obligation, publish a finding, o
     },
   };
 
-  // Two finding-bearing heads. The label is no longer minted from a head count at all,
-  // so the retargeting hazard this test was written for cannot arise here any more —
-  // but the assertion is KEPT, because it is the one that must never regress: an
-  // off-`main` unit must never acquire a repository-wide obligation.
+  // Two finding-bearing heads: without the re-check this reaches markReplacementRequired.
   const result = await reviewGate.enforceReviewConvergence(client, onMain, expectedHead);
 
   assert.equal(marked.length, 0,
     'a retargeted unit must not be labelled — that label is a repository-wide obligation');
-  assert.notEqual(result.superseded, true,
-    'nothing is attempted that could be superseded: the count only raises an advisory');
-  assert.equal(result.state, 'reviewing');
+  assert.equal(result.superseded, true,
+    'the convergence must report itself superseded rather than completing');
   assert.deepEqual(draftTransitions, [],
     'and no lifecycle transition may be written against a unit that cannot land on main');
 });
@@ -2189,13 +2165,8 @@ test('the same re-check does not disturb a unit that is still on main', async ()
   };
 
   const result = await reviewGate.enforceReviewConvergence(client, pullRequest, expectedHead);
-  // An on-`main` unit at the threshold is no longer "exhausted": it is corrected in
-  // place, so nothing is labelled and nothing is required of it beyond the fix its
-  // findings already demand.
-  assert.deepEqual(marked, [], 'a head count no longer mints a repository-wide obligation');
+  assert.deepEqual(marked, [], 'review history does not create a replacement obligation');
   assert.equal(result.required, false);
-  assert.equal(result.state, 'reviewing');
-  assert.equal(result.findingHeadCount, 2, 'the count is still measured and reported');
   assert.notEqual(result.superseded, true);
 });
 

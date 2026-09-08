@@ -66,10 +66,10 @@ to the wrong agent.
 - [ ] No deployed migration bytes changed.
 - [ ] Review packet and `docs/STATUS.md` state are truthful.
 
-## Review-round reset
+## Review continuity
 
-After the second finding-bearing Codex head, do not push another correction to
-this PR. Close it and open a newly scoped replacement from current `main`,
-carrying only the unresolved unit and changing `Replaces: none` to this PR's
-number. The replacement receives a fresh comprehensive review; no safety check
-is waived.
+Keep unresolved work on this PR and fix forward until its findings are resolved.
+Review-round count alone never warrants closure or replacement. If a different
+scope or approach makes replacement useful, document that concrete benefit and
+carry every outstanding finding and proof with links in both directions. A new PR
+number is not progress on `main`; all required CI and exact-head review still apply.

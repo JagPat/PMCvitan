@@ -22,7 +22,6 @@ import {
   owedFailureId,
 } from './correction-lease.mjs';
 import { isCorrectionEligiblePullRequest } from './correction-owner.mjs';
-import { REVIEW_RESET_AFTER_FINDING_HEADS } from './review-efficiency.mjs';
 
 const REPOSITORY = 'JagPat/PMCvitan';
 const HEAD = 'dc54a78e0f2b4c1d9a3e5f60718293a4b5c6d7e8';
@@ -188,22 +187,20 @@ test('L2b: the owed reason comes from the status PREFIX, not its wording', async
   assert.equal(correctionReasonFor(status('ci: required checks failed')), 'ci');
   assert.equal(
     correctionReasonFor(status('review: 2 finding-bearing heads reached the review-round limit')),
-    'review',
-    'the round limit is owed like any other review failure',
+    null,
+    'the obsolete round limit requests gate recovery, not an owner correction',
   );
 
   // And on the published artefact: it asks for a replacement, never a third head.
   const exhausted = await watch({
     statuses: [status(
-      'review: 2 finding-bearing heads reached the review-round limit; '
-      + 'this unit requires a replacement PR',
+      'review: 2 current-head Codex findings',
     )],
     reviewComments: [codexFinding('first'), codexFinding(HEAD)],
   });
-  assert.equal(exhausted.assessment.reportedState, 'replacement_required');
-  assert.match(exhausted.published, /replacement/iu);
-  assert.doesNotMatch(exhausted.published, /push (a|one) new head/iu);
-  assert.equal(REVIEW_RESET_AFTER_FINDING_HEADS, 2);
+  assert.equal(exhausted.assessment.reportedState, 'correction_recovery');
+  assert.doesNotMatch(exhausted.published, /close this PR/iu);
+  assert.match(exhausted.published, /push (a|one) new head/iu);
 
   // `recovery:` is the gate asking ITSELF to retry, so nobody owes anything.
   assert.equal(correctionReasonFor(status('recovery: request superseded by newer review state')), null);
@@ -539,8 +536,10 @@ test('L26: the finding history is refreshed before the notice is published', asy
 
   const assessment = await handOffCorrectionLease(client, pull, REPOSITORY, 'main', { now: DUE });
   assert.ok(calls.evidenceReads >= 2, 'the finding history is re-read before publishing');
-  assert.equal(assessment?.state, 'superseded', 'the notice it composed is no longer the true one');
-  assert.equal(calls.posted.length, 0, 'and the forbidden third-head instruction is never published');
+  assert.equal(assessment?.state, 'notify', 'additional history does not change the correction remedy');
+  assert.equal(calls.posted.length, 1);
+  assert.match(calls.posted[0].body, /push one new head/u);
+  assert.doesNotMatch(calls.posted[0].body, /close this PR/u);
 });
 
 // L27-L28 — Codex findings on `0a1c7f3`.

@@ -26,7 +26,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { guardAgainstCurrentHeadFinding, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
-import { REVIEW_RESET_AFTER_FINDING_HEADS, assessReviewScope } from './review-efficiency.mjs';
+import { assessReviewScope } from './review-efficiency.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
 const HEAD = '76f2d00b4d43b0b1290a5904322290a3cb68ce63';
@@ -415,7 +415,6 @@ test('O7: the safety boundaries this unit must not move are unchanged', () => {
   ]);
   const gate = readFileSync(GATE, 'utf8');
   assert.match(gate, /const STATUS_CONTEXT = 'codex-current-head';/u);
-  assert.equal(REVIEW_RESET_AFTER_FINDING_HEADS, 2);
 
   // Routing is a pure read of the PR body: it publishes no status, moves no
   // draft, and merges nothing. Anything it touched would be a boundary change.
@@ -520,26 +519,15 @@ test('C3: exactly ONE marker is required, not merely one distinct owner', async 
   assert.equal(parseCorrectionOwner('<!-- correction-owner: claude -->').state, 'declared');
 });
 
-test('C4: an exhausted unit is never asked for another head on its own branch', async () => {
-  // The replacement instruction says "close this PR without another correction
-  // head" and the shared non-awakenable suffix then said "…until a new head
-  // appears on this branch". Following the suffix produces the prohibited third
-  // correction head instead of the required replacement. C11 removed the head
-  // claim from the suffix entirely, so the contradiction cannot return by any
-  // path — this probe keeps the property pinned on the replacement reason.
+test('C4: legacy replacement reasons now instruct the declared owner to fix forward', async () => {
   const { correctionRouting, parseCorrectionOwner } = await ownerModule();
   const cursor = parseCorrectionOwner('<!-- correction-owner: cursor -->');
-
   const replacement = correctionRouting({
     declaration: cursor, head: HEAD, detail: '2 finding-bearing heads',
     reason: 'replacement', pullRequestNumber: 352,
   });
-  assert.match(replacement.instruction, /replacement/iu, 'it still demands a replacement');
-  assert.doesNotMatch(
-    replacement.instruction,
-    /new head (appears|on this branch)|push (a|one) new head/iu,
-    'and never asks for another head on the exhausted branch',
-  );
+  assert.match(replacement.instruction, /push one new head/iu);
+  assert.doesNotMatch(replacement.instruction, /close this PR|open a.*replacement/iu);
 
   // The ordinary correction path still asks for one new head, and still carries
   // the honest note about who has to start the session — the fix is wording, not
@@ -701,7 +689,7 @@ test('C9: the replacement handoff names the declared owner, not Claude', async (
   // fragile.
   const agents = readFileSync(new URL('../AGENTS.md', import.meta.url), 'utf8');
   const handoff = agents.slice(agents.indexOf('## Review → fix handoff'));
-  const secondHead = handoff.slice(handoff.indexOf('On the second finding-bearing head'));
+  const secondHead = handoff.slice(handoff.indexOf('On every finding-bearing head'));
   const directive = secondHead.slice(0, secondHead.indexOf('\n- '));
 
   // The property is who is INSTRUCTED, not whether a name appears: the directive
@@ -712,11 +700,7 @@ test('C9: the replacement handoff names the declared owner, not Claude', async (
     'the replacement action must not be assigned to Claude unconditionally',
   );
   assert.match(directive, /declared (correction )?owner/iu, 'it names the declared owner');
-  // The action at the head count is now correcting IN PLACE, and the replacement path
-  // survives for a unit that is genuinely wrong — ownership must bind to both, which is
-  // this test's property: whoever acts, it is the declared owner and not Claude by default.
-  assert.match(directive, /keeps\s+correcting THAT pull request/u, 'it states the in-place action');
-  assert.match(directive, /closes the exhausted PR/u, 'and still binds the replacement path to that owner');
+  assert.match(directive, /continues fixing/u, 'the same owner continues on this PR');
 });
 
 test('C10: the documented meaning of correction_stalled matches what routing emits', async () => {
