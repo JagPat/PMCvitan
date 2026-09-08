@@ -1,5 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { OrgsParticipant } from '../orgs/orgs.participant';
+import { assignmentStillBinds } from './assignment-eligibility';
 import { emitEvent } from '../platform/events';
 import type { Actor } from '../common/actor';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
@@ -15,11 +17,63 @@ import type { EmittedEventMeta } from '../platform/outbox/registry';
  * projection consumer dispatches on `inspection.*`, that appended event is what lets the ordered cursor
  * REFRESH the projection row from canonical state — the correction's core invariant. The events are
  * signal-only (they deduplicate with the foreign command's own socket invalidation; the foreign command
- * owns any push). A leaf provider (no injected dependencies) — `emitEvent` is a pure platform function, so
- * this creates no DI cycle with the services that call it.
+ * owns any push). `emitEvent` is a pure platform function, so this creates no DI cycle with the services
+ * that call it; its ONE injected dependency, `OrgsParticipant`, is itself dependency-free, so the
+ * no-cycle property this provider used to get from having no dependencies at all still holds.
  */
 @Injectable()
 export class InspectionParticipant {
+  constructor(private readonly orgs: OrgsParticipant) {}
+
+  /**
+   * MAY THIS ACTOR CHANGE THIS INSPECTION'S EVIDENCE? — the binding-assignment rule at the third
+   * authority surface (#571 round 9, finding 1).
+   *
+   * `submit` refuses a non-assignee while the assignment binds, and the read boundary keeps the
+   * checklist off their field view. Evidence mutation was the surface neither covers: an upload
+   * checks only that the item is contained by the inspection, and a delete checks only that the
+   * media row belongs to the caller's project. So the window this PR itself opens — a stranded
+   * assignment hands engineer B the checklist and its item ids, then the assignee is reactivated —
+   * left B able to attach misleading photos to, or PERMANENTLY DELETE evidence from, work that had
+   * become somebody else's again. Delete is the sharp end: the bytes do not come back.
+   *
+   * Asked here rather than in `media` because the rule is inspections-owned, and asked through the
+   * SAME `assignmentStillBinds` the submit guard and the read boundary use, so a fourth statement of
+   * it cannot drift from the other three. `forUpdate` locks the standing rows for the same reason
+   * the submit transaction does: the answer must not be overtaken between the check and the write it
+   * authorises.
+   *
+   * An UNASSIGNED inspection is untouched — the route's role gate is the whole guard, as it has
+   * always been for evidence — and so is the assignee acting on their own work.
+   */
+  async assertEvidenceMutable(
+    tx: Prisma.TransactionClient,
+    params: { projectId: string; inspectionId: string; actorUserId: string },
+  ): Promise<void> {
+    const { projectId, inspectionId, actorUserId } = params;
+    const insp = await tx.inspection.findUnique({ where: { id: inspectionId }, select: { projectId: true, assigneeId: true } });
+    if (!insp || insp.projectId !== projectId) return; // containment is the callers' own check
+    if (!insp.assigneeId || insp.assigneeId === actorUserId) return;
+    if (await assignmentStillBinds(this.orgs, tx, projectId, insp.assigneeId, { forUpdate: true })) {
+      throw new ForbiddenException('This inspection is assigned to someone else — only its assignee can change its photo evidence.');
+    }
+  }
+
+  /**
+   * The same question for a MEDIA row that may or may not be inspection evidence — the shape
+   * `MediaService.remove` already uses for every other module's disposability rule
+   * (`assertMediaDisposable`). A media row linked to no inspection is not this module's business.
+   */
+  async assertEvidenceDisposable(
+    tx: Prisma.TransactionClient,
+    params: { projectId: string; mediaId: string; actorUserId: string },
+  ): Promise<void> {
+    const { projectId, mediaId, actorUserId } = params;
+    const links = await tx.inspectionEvidence.findMany({ where: { projectId, mediaId }, select: { inspectionId: true } });
+    for (const inspectionId of new Set(links.map((l) => l.inspectionId))) {
+      await this.assertEvidenceMutable(tx, { projectId, inspectionId, actorUserId });
+    }
+  }
   /**
    * Create the closing inspection for a completion claim (edge 1) and append `inspection.closing_created`
    * in the SAME transaction, so the projection observes the new review. ONE default sign-off item makes

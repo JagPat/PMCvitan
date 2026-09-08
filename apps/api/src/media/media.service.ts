@@ -126,6 +126,11 @@ export class MediaService {
         // inspections participant, which writes the inspection-owned InspectionEvidence row AND appends
         // `inspection.evidence_added`, so the inspections.inbox projection observes the new evidence.
         if (input.inspectionId && input.inspectionItemId) {
+          // #571 round 9, finding 1 — containment is not authority. `assertEvidenceTarget` above
+          // proves the item belongs to the inspection and the inspection to this project; it says
+          // nothing about whether this actor may change THIS inspection's evidence. Asked here,
+          // inside the transaction that writes the link, so the answer cannot be overtaken.
+          await this.inspectionParticipant.assertEvidenceMutable(tx, { projectId, inspectionId: input.inspectionId, actorUserId: user.sub });
           evs.push(await this.inspectionParticipant.addEvidence(tx, { projectId, actor, inspectionId: input.inspectionId, inspectionItemId: input.inspectionItemId, mediaId: created.id }));
         }
         events = evs;
@@ -206,6 +211,10 @@ export class MediaService {
       // Phase 5 Task 3 (§D): nor one cited as MEASUREMENT evidence — a measurement is immutable
       // and becomes a payable quantity, so this is the strictest case of the same rule.
       await this.commercialParticipant.assertMediaDisposable(tx, projectId, id);
+      // #571 round 9, finding 1 — and the same rule for ASSIGNED inspection evidence: while an
+      // assignment binds, only its assignee may destroy the photos that stand behind that work.
+      // This is the sharpest case of the whole assignment rule, because a delete does not come back.
+      await this.inspectionParticipant.assertEvidenceDisposable(tx, { projectId, mediaId: id, actorUserId: user.sub });
       // Task 10 (Module 3) correction — unlink any inspection-owned evidence FIRST (participant appends
       // `inspection.evidence_removed` when a link existed), THEN delete the media row, so the projection
       // observes the removal. `null` when this media was not item-level evidence.

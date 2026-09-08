@@ -78,6 +78,32 @@ BEGIN
       'Inspection % cannot be submitted right now: this project''s readiness is held by another transaction, so the assignee''s standing cannot be judged. Retry.',
       NEW."id";
   END IF;
+  -- AND IT LOCKS THE ASSIGNEE'S MEMBERSHIP ROW, because the advisory key alone does not reach
+  -- every reactivation (#571 round 9, finding 2). `phase6_t4b2_membership_guard` returns BEFORE
+  -- `phase6_try_readiness` for an ordinary inactive -> active ENGINEER transition — it takes the
+  -- readiness key only when the judged set is non-empty, and that set gains 'pmc' for such a
+  -- transition only when the user is also an org owner/admin (`20271015000000`). So a direct
+  -- reactivation of a plain engineer holds no advisory key at all, and the try-lock above would
+  -- succeed while that reactivation commits underneath this statement: assignee A active and
+  -- binding again, submitter B recorded forever.
+  --
+  -- A ROW lock closes it in both orders and needs no cooperation from the other writer, which is
+  -- the point — this fence exists for writers that cooperate with nothing. If the reactivation has
+  -- not yet run, it must wait for this transaction and then meets a submitted row; if it is in
+  -- flight, this waits for it and the EXISTS below sees A active and refuses. No deadlock is
+  -- reachable: this row lock is only ever taken AFTER the advisory key was acquired, so no
+  -- membership writer that takes the key can be holding it while waiting on this row.
+  --
+  -- Stated honestly, and it is the same caveat `OrgsParticipant.hasProjectRoleStanding` records for
+  -- its own `forUpdate`: `FOR UPDATE` locks rows that EXIST. It therefore closes the
+  -- change-of-an-existing-row race, which is the shape a stranded assignee's return actually takes
+  -- (a soft `status = 'removed'` or a re-role, both UPDATEs of the same
+  -- `(projectId, userId)` row, and `MembersService.add` upserts onto it). A membership INSERTED for
+  -- a user who has never had one on this project is not serialized — that direction only ever
+  -- grants standing AFTER this decision, to somebody who was not the assignee when it was made.
+  PERFORM 1 FROM public."Membership" m
+   WHERE m."projectId" = NEW."projectId" AND m."userId" = NEW."assigneeId"
+     FOR UPDATE;
   IF EXISTS (
     SELECT 1 FROM public."Membership" m
      WHERE m."projectId" = NEW."projectId"

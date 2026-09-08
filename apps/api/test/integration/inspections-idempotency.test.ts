@@ -4,6 +4,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { InspectionsService } from '../../src/inspections/inspections.service';
 import { InspectionsQueryService } from '../../src/inspections/inspections.query';
+import { MediaService } from '../../src/media/media.service';
 import type { AuthUser } from '../../src/common/auth';
 
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
@@ -22,6 +23,7 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
   let f: TwoProjectFixture;
   let svc: InspectionsService;
   let reads: InspectionsQueryService;
+  let media: MediaService;
   let projSeq = 0;
 
   const asPmc = (sub: string, projectId: string): AuthUser => ({ sub, role: 'pmc', projectId }) as AuthUser;
@@ -31,6 +33,7 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     f = await createTwoProjectFixture(t.prisma);
     svc = t.app.get(InspectionsService);
     reads = t.app.get(InspectionsQueryService);
+    media = t.app.get(MediaService);
   });
   afterAll(async () => {
     await f?.cleanup();
@@ -40,6 +43,11 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     const pids = { startsWith: 'it-inidem-' };
     await sanctionedReset(t.prisma, ['DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor', 'ProjectionGeneration', 'InspectionsProjection'], { cascade: true });
     await t.prisma.commandExecution.deleteMany({ where: { projectId: pids } });
+    // #571 round 9 — this file's probes are the first here to create MEDIA (the evidence-authority
+    // arms), and media/evidence rows reference the inspection items below. Cleared first, or the
+    // item delete fails on its FK and every later test in the file inherits a dirty database.
+    await t.prisma.inspectionEvidence.deleteMany({ where: { projectId: pids } });
+    await t.prisma.media.deleteMany({ where: { projectId: pids } });
     await t.prisma.inspectionItem.deleteMany({ where: { inspection: { projectId: pids } } });
     await t.prisma.inspection.deleteMany({ where: { projectId: pids } });
     await t.prisma.notification.deleteMany({ where: { projectId: pids } });
@@ -560,6 +568,113 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     // the engineer who did the work was served `checklist: null`
     expect(slice.checklist?.id).toBe(insp.id);
     expect(slice.openChecklists).toEqual([]);
+  });
+
+
+  /**
+   * ROUND 9, FINDING 1 — containment is not authority, and evidence was the third surface.
+   *
+   * `submit` refuses a non-assignee while the assignment binds and the read boundary keeps the
+   * checklist off their field view — and evidence mutation checked neither. The window this PR
+   * itself opens makes it reachable: a stranded assignment hands engineer B the checklist and its
+   * item ids, the assignee is reactivated, and B's stale screen could still attach photos to, or
+   * DELETE photos from, work that had become somebody else's again. Delete is the sharp end.
+   */
+  it('ROUND 9 — a binding assignment refuses another engineer’s evidence upload AND delete', async () => {
+    const { p, pmcA } = await freshProject();
+    const held = `it-inidem-u-r9held-${projSeq}`;
+    const rival = `it-inidem-u-r9rival-${projSeq}`;
+    for (const [id, name] of [[held, 'Held'], [rival, 'Rival']] as const) {
+      await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
+    }
+    await svc.create(p, createInput({ title: 'Evidence authority' }), asPmc(pmcA, p), 'k-r9e-1');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Evidence authority' }, include: { items: true } });
+    const item = insp.items[0]!;
+    const asUser = (sub: string) => ({ sub, role: 'engineer', projectId: p }) as AuthUser;
+    const upload = (sub: string) => media.create(p, asUser(sub), {
+      kind: 'inspection', mime: 'image/png',
+      data: Buffer.from('abcd').toString('base64'),
+      inspectionId: insp.id, inspectionItemId: item.id,
+    });
+
+    // UNASSIGNED: unchanged — the route's role gate is the whole guard, as it always was
+    const beforeAssign = await upload(rival);
+    expect(beforeAssign.id).toBeTruthy();
+
+    await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: held } });
+
+    // ASSIGNED and binding: the rival may neither add evidence…
+    await expect(upload(rival)).rejects.toBeInstanceOf(ForbiddenException);
+    // …nor destroy what is already there — RED before this round, where remove checked only the
+    // media row's projectId and would have deleted the assignee's evidence permanently
+    await expect(media.remove(beforeAssign.id, asUser(rival))).rejects.toBeInstanceOf(ForbiddenException);
+    expect(await t.prisma.media.findUnique({ where: { id: beforeAssign.id } })).not.toBeNull();
+
+    // precise, not merely strict: the ASSIGNEE does both on their own work
+    const own = await upload(held);
+    expect(own.id).toBeTruthy();
+    expect(await media.remove(own.id, asUser(held))).toBe(true);
+
+    // and once the assignment stops binding, the replacement engineer may act again
+    await t.prisma.membership.updateMany({ where: { projectId: p, userId: held }, data: { status: 'removed' } });
+    const afterStrand = await upload(rival);
+    expect(afterStrand.id).toBeTruthy();
+    expect(await media.remove(afterStrand.id, asUser(rival))).toBe(true);
+  });
+
+  /**
+   * ROUND 9, FINDING 2 — the advisory key does not reach a direct ENGINEER reactivation.
+   *
+   * `phase6_t4b2_membership_guard` takes the readiness key only when its judged set is non-empty,
+   * and an ordinary inactive -> active engineer transition adds to that set only for an org
+   * owner/admin. So a raw reactivation holds no advisory key and the fence's try-lock succeeds while
+   * it commits underneath. The row lock closes it without needing the other writer to cooperate.
+   */
+  it('ROUND 9 — the fence LOCKS the assignee’s membership row, so a raw reactivation cannot interleave', async () => {
+    const { p, pmcA } = await freshProject();
+    const gone = `it-inidem-u-r9gone-${projSeq}`;
+    const rival = `it-inidem-u-r9rival2-${projSeq}`;
+    for (const [id, name] of [[gone, 'Gone'], [rival, 'Rival']] as const) {
+      await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
+    }
+    await svc.create(p, createInput({ title: 'Row-locked fence' }), asPmc(pmcA, p), 'k-r9l-1');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Row-locked fence' } });
+    await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: gone } });
+    await t.prisma.membership.updateMany({ where: { projectId: p, userId: gone }, data: { status: 'removed' } });
+
+    const { PrismaClient } = await import('@prisma/client');
+    const other = new PrismaClient();
+    // The blocked statement is STARTED inside the other transaction and AWAITED after it commits.
+    // Awaiting it inside would hold that transaction open past Prisma's timeout, and the resulting
+    // ROLLBACK would let the submit through for the wrong reason — the probe passing on a
+    // reactivation that never happened.
+    let blocked: Promise<number> | null = null;
+    try {
+      // The raw reactivation holds the assignee's membership ROW and takes no advisory key — the
+      // writer shape the previous head's fence could not see.
+      await other.$transaction(async (tx2) => {
+        await tx2.$executeRawUnsafe(
+          `UPDATE "Membership" SET "status" = 'active' WHERE "projectId" = $1 AND "userId" = $2`, p, gone,
+        );
+        blocked = t.prisma.$executeRaw`
+          UPDATE "Inspection" SET "submitted" = true, "submittedById" = ${rival} WHERE "id" = ${insp.id}`;
+        blocked.catch(() => {}); // the rejection is asserted below, not here
+        // it is genuinely WAITING on the row, not deciding on the pre-reactivation picture
+        await expect(Promise.race([
+          blocked.then(() => 'decided', () => 'decided'),
+          new Promise((r) => setTimeout(() => r('waiting'), 1200)),
+        ])).resolves.toBe('waiting');
+      });
+      // the reactivation is committed; the fence now re-reads and finds A binding
+      await expect(blocked!).rejects.toThrow(/only its assignee may submit it/i);
+    } finally {
+      await other.$disconnect();
+    }
+    const after = await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } });
+    expect(after.submitted).toBe(false);
+    expect(after.submittedById).toBe(null);
   });
 
 });
