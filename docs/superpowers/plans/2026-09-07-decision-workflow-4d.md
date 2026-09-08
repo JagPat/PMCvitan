@@ -45,13 +45,17 @@ remains the user's decision to give in their own voice; the plan carries
 the default until then. The lineage tables below keep every earlier
 decline and both reverted folds as history.
 
-This document REPLACES PR #572 (`Replaces: #572` — labelled
-`review-replacement-required` by the orchestrator, so the ledger holds its
-obligation; a labelled unit closed at the limit stays a pending obligation
+This document REPLACES PR #572 in content and declares `Replaces: #568`
+in the ledger: #572 closed at the limit BEFORE the orchestrator evaluated its
+second finding-bearing head (CI on that head never reached the gate), so it
+carries no `review-replacement-required` label and holds no ledger
+obligation, while #568 — labelled by the orchestrator before it closed — is
+the obligation #572 claimed as its unmerged replacement and never
+discharged; a labelled unit closed at the limit stays a pending obligation
 until a MERGED unit names it, one merge discharging one — the accepted gap
-of `docs/reviews/replacement-lineage-repair.md`; #567's obligation was
-discharged by #569's merge and #559's by #570's, and #520–#566 were
-unlabelled by hand on 2026-09-08 per #569's record, not by this lineage).
+of `docs/reviews/replacement-lineage-repair.md` (#567's obligation was
+discharged by #569's merge and #559's by #570's; #520–#566 were unlabelled
+by hand on 2026-09-08 per #569's record, not by this lineage).
 #572 was the FIFTEENTH outing of the NARROWED plan: it drew two findings on
 its first head (`8b50b52`: the standard writer's frozen pair, the unkeyed
 `requestChange`), folded on its one correction `e2fd243e` by a second

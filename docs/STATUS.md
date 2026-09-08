@@ -32,7 +32,9 @@ probe table P28–P42, and the FIVE-PR staging (the dark migration 4d-i, the dar
 comment 5569586836) RESTORED: the lifted-gate fold of #568's head `b0d5399` rested on an in-session
 selection GitHub Watch records as its own keystroke (#482 comment 5581275205), so it is REVERSED
 here and `AGENTS.md` is left exactly as `main` carries it — the reservation retirement 4d-iii).
-It replaces #572 (`Replaces: #572`) — the narrowed plan's fifteenth outing, closed at its second
+It replaces #572 in content and declares `Replaces: #568` in the ledger (#572 closed at the limit
+before the orchestrator labelled it; #568's labelled obligation is the one it claimed and never
+discharged) — the narrowed plan's fifteenth outing, closed at its second
 finding-bearing head (`8b50b52` two findings, folded on `e2fd243e` by a second Claude session
 answering the orchestrator's Auto-fix handoff, that head also committing a `node_modules` symlink
 removed on `8acf586`; two more on `e2fd243e`) — which replaced #568 (the fourteenth: `55144a3` four
@@ -604,9 +606,10 @@ self-naming convention every 4c and 4d unit followed). `reviewed_merge` stays `f
 Runner invariants: `assessRunnerState` → `pr:<this>` while open; `assessPostMergeRunnerState` →
 simulated, allowed, `task:4`; `detectStatusDrift` with the self-named `open_pr` live → no drift.
 
-**The ledger, read off the label.** #572 was labelled `review-replacement-required` by the
-orchestrator, so #572 is the obligation this PR settles; #568's obligation is carried inside it
-(#572 declared `Replaces: #568` and never merged). #567's obligation was
+**The ledger, read off the label.** #568 was labelled `review-replacement-required` by the
+orchestrator before it closed and is the obligation this PR settles: #572 claimed it as
+`Replaces: #568`, never merged, and closed at the limit BEFORE the gate evaluated its second
+finding-bearing head, so #572 itself holds no label and no ledger obligation. #567's obligation was
 discharged by #569's merge (a content-less ledger discharge, `AGENTS.md` alone) and #559's by
 #570's; #520–#566 were unlabelled by hand at 06:05 UTC on 2026-09-08 per #569's record. A
 labelled unit closed at the limit stays a pending obligation until a MERGED unit names it, one
