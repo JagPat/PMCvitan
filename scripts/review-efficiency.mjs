@@ -159,14 +159,30 @@ export function assessReplacementLineage({
   // rather than a silence.
 
   if (declaration.kind === 'source') {
-    const requirement = pending.find(
+    let requirement = pending.find(
       ({ pullRequest: source }) => source?.number === declaration.source,
     );
     if (!requirement) {
-      return {
-        allowed: false,
-        detail: `Replaces: #${declaration.source} does not name a review unit awaiting replacement`,
-      };
+      // Voluntary replacements have no retired round-limit label. Validate the
+      // actual source and a stated benefit instead of requiring that label.
+      const source = replacementPullRequests.find(pr => pr.number === declaration.source);
+      const repository = pullRequest?.base?.repo?.full_name;
+      const justified = /^[\t ]*Replacement reason:[\t ]*\S[^\r\n]*$/imu.test(
+        String(pullRequest?.body ?? ''),
+      );
+      if (!source || !justified || !repository || source.state !== 'closed'
+          || source.merged_at || source.merged
+          || !isLineageBase(source.base?.ref)
+          || source.base?.repo?.full_name !== repository
+          || source.head?.repo?.full_name !== repository
+          || settlementOf(source.number, replacementPullRequests)) {
+        return {
+          allowed: false,
+          detail: `Replaces: #${declaration.source} needs a closed, unmerged same-repository main source `
+            + 'and a concrete Replacement reason; an already settled source cannot be replaced again',
+        };
+      }
+      requirement = { pullRequest: source };
     }
     if (requirement.pullRequest.state !== 'closed') {
       return {

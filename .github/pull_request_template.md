@@ -21,6 +21,9 @@ owner declarations and review continuity. Change the leading markers when that
 contract requires it and explain the concrete boundary in this review unit.
 The checklist and matrix below record evidence against that shared contract.
 
+For an exceptional voluntary replacement, also provide `Replacement reason:`
+with the concrete scope or approach benefit; preserve findings and proof links.
+
 ## Pre-review checklist
 
 - [ ] `concurrency-serialization` — locks precede guarded reads; race probes use barriers and assert the terminal invariant.

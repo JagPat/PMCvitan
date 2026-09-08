@@ -96,6 +96,14 @@ Each of these cost the loop a round or a cycle, and each was a case of trusting 
 signal that does not carry the thing it appears to carry. They are recorded so the
 next reader pays the cost once rather than again.
 
+### Review continuity supersedes the former round budget
+
+The former two-head rule caused unresolved work to move through replacement PRs
+without advancing `main`. The user retired that rule on 2026-09-08. Historical
+`replacement_required` comments and labels are not instructions to close a PR.
+Read current findings and gate state, fix forward with one owner, and verify the
+new head. Repeated findings warrant a root-cause audit, not a new PR number.
+
 ### PR-body markers are invisible in every rendered view
 
 `<!-- review-size: … -->`, `<!-- migration-scope: … -->` and
@@ -252,3 +260,32 @@ owner's. The resulting exact settings are:
 
 Do not add `codex-current-head` before the workflow is present on the default
 branch; doing so would intentionally block every PR, including the bootstrap PR.
+
+## External Dependencies
+
+The Codex GitHub review integration, GitHub Actions, and Claude Code web Auto-fix
+operate without the owner's computer. Codex and Claude use the owner's product
+subscriptions; GitHub stores no AI API key. Claude Auto-fix must be enabled on the
+PR before the laptop is unavailable. If that subscription-backed session stops,
+the GitHub gate deliberately leaves the PR unmerged rather than silently falling
+back to an unreviewed path.
+
+## Review continuity
+
+The gate records review history without rejecting another correction head merely
+because earlier heads received findings. Current-head findings still fail
+`codex-current-head` and return the existing PR to draft. The watchdog routes the
+same declared owner to fix forward; it never orders closure based on a round count.
+Obsolete round-limit failures request the existing gate recovery workflow, which
+rechecks CI and current-head review rather than clearing the status directly.
+
+Historical replacement labels no longer block unrelated `Replaces: none` work.
+Explicit replacement declarations retain their existing provenance checks so
+previously carried findings stay traceable. A replacement is exceptional and must
+explain a concrete scope or approach benefit; it receives full applicable CI and a
+fresh comprehensive review. No finding is dismissed and no clean signal is inherited.
+
+Voluntary replacements without a historical round-limit label must include a
+concrete `Replacement reason:` alongside `Replaces: #N`; the source must be a
+closed, unmerged PR from this repository targeting `main`, with findings and
+proofs preserved in both PRs. Do not replace an already settled source.

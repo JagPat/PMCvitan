@@ -1359,7 +1359,9 @@ export async function publishCurrentHeadFinding(
       attempt,
       owner: notice.owner ?? 'undeclared',
       correctionState: noticeState(notice),
-      next: notice.instruction,
+      next: reset.rootCauseAdvisory
+        ? `Perform a root-cause audit of the repeated findings and add stronger proofs. ${notice.instruction}`
+        : notice.instruction,
     }),
   );
   return { state: 'changes_required', allowed: false, detail };

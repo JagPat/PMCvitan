@@ -282,7 +282,7 @@ test('an exhausted review unit cannot be bypassed by fresh work without declared
   assert.equal(declared.allowed, true);
 });
 
-test('replacement declarations must name a closed unit awaiting replacement', () => {
+test('replacement declarations must identify an actual source', () => {
   const result = assessReviewScope(pullRequest({
     number: 347,
     body: preReviewBody().replace('Replaces: none', 'Replaces: #999'),
@@ -294,7 +294,7 @@ test('replacement declarations must name a closed unit awaiting replacement', ()
     replacementPullRequests: [],
   });
   assert.equal(result.allowed, false);
-  assert.match(result.detail, /#999.*awaiting replacement/iu);
+  assert.match(result.detail, /#999.*closed, unmerged same-repository main source/iu);
 });
 
 test('a merged declared replacement fulfills its source requirement', () => {
@@ -806,7 +806,12 @@ test('agent guidance and the PR template share the executable policy vocabulary'
   ]);
 
   for (const entrypoint of [agents, claude, loop]) {
+    // The limits and the fix-forward rule are asserted against docs/POLICY.md below: the
+    // entrypoints now POINT at the contract instead of restating it, so requiring the
+    // numbers here would pin the duplication this consolidation removes.
     assert.match(entrypoint, /POLICY\.md/u);
+    // The retired convergence-packet vocabulary must not creep back into agent guidance.
+    assert.doesNotMatch(entrypoint, /Review-Convergence: complete/u);
   }
   const contract = await readFile(new URL('../docs/POLICY.md', import.meta.url), 'utf8');
   const policy = await import('./review-policy.mjs');
