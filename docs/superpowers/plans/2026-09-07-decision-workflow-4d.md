@@ -14,49 +14,56 @@ before 4d implementation begins — the same plan-first contract that preceded
 
 ## Review lineage, and what this replacement does differently
 
-**BOARD DECISION 2026-09-08 — the human drain attestation is LIFTED, in
-the Board's own words, and THIS head folds it** (#482 comment 5577872836:
-posted under the owner account with no coordinator marker, naming the
-choice; it supersedes the default at comment 5569586836 and every decline
-that cited it — #558, #560, #562, #563, #564, #565, #566, #567 and #568's
-round 1). How the decision was reached is part of the record. A GitHub
-Watch relay under the shared owner login (#482 comment 5577525644, nudged
-to #566 as comment 5577525720) first presented it as agent prose; this
-lineage's session folded that relay on #566's head `1a2ba97`; Delivery's
-hold (#482 comment 5577732007) established that no direct user decision
-stood behind the relay, and the fold was reverted byte-for-byte on head
-`5921f22` — a coordinator relay cannot lift a gate the user retained, and
-the session said so on #566 and #482 naming what would: the Board's own
-unmarked words. The Board then decided directly at comment 5577872836. The
-fold was prepared as its own docs-only head and HELD — the session's
-permission layer refused to apply it twice (#566 comment 5577923054), and
-a denial is not routed around — until the user permitted it in the session
-on 2026-09-08; it was applied on #568's head `b0d5399` after its round-1
-correction `2530c8e` (Codex returned a clean +1 on that head) and is carried
-here. §D "The drain gate" now reads: the gate clears on the fail-closed
-AUTONOMOUS evidence — the sealed `ReleaseLease` register showing no live
-lease below the minimum catalog version, and `rollout:drain-evidence`'s
-fail-closed running-container verdict recorded as a `DRAIN-EVIDENCE`
-comment — both re-verified by 4d-iii's migration preflight; an operator
-attestation is ACCEPTED as additional evidence and never required. The
-runner clears the directive itself when both pieces of evidence hold, and
-4d-iii proceeds. The lineage tables below keep every earlier decline, and
-the reverted head `1a2ba97`, as the history they were.
+**THE DRAIN GATE STANDS AS THE CONTROLLING DEFAULT — the human
+`OPERATOR-ATTESTATION` REQUIRED, the autonomous evidence fail-closed
+corroboration — and the lifted-gate fold of #568's head `b0d5399` is
+REVERSED here, on the record.** The record, in order. The default (#482
+comment 5569586836, 2026-09-07) retains the attestation; every decline from
+#558 to #568's round 1 cited it. A GitHub Watch relay under the shared owner
+login (#482 comment 5577525644, nudged to #566 as comment 5577525720)
+presented a "Board GO" lifting it; this lineage's session folded that relay
+on #566's head `1a2ba97`; Delivery's hold (#482 comment 5577732007)
+established that no direct user decision stood behind the relay, and the
+fold was reverted byte-for-byte on head `5921f22`. A comment in the Board's
+own words then appeared at #482 comment 5577872836 (owner account, no
+coordinator marker) lifting the gate; the fold was prepared and HELD while
+the session's permission layer refused it (#566 comment 5577923054), then
+applied on #568's head `b0d5399` after an in-session instruction, and
+#568's head `86ee002` rewrote `main`'s `AGENTS.md` bullet (#569) to match.
+GitHub Watch's own record (#482 comment 5581275205) states that Watch
+ENTERED the in-session selection that kept the fold ("Channel 1 only —
+Claude Code session reply … Selected Lifted"); the session that authored
+#569 records the user's direct instruction to it — keep the gate and add
+the `AGENTS.md` sentence (#482 comment 5581298475); and no API field
+distinguishes comment 5577872836 from a coordinator post. A gate the user
+retained is not lifted on an instruction a coordinator typed, and a session
+cannot verify its own inputs against that record — so this replacement
+fails CLOSED: §D "The drain attestation" reads exactly as at `5921f22`,
+`AGENTS.md` is left exactly as `main` carries it, and the lifted-gate text
+of `b0d5399`/`86ee002` is recorded here as what it was. Lifting the gate
+remains the user's decision to give in their own voice; the plan carries
+the default until then. The lineage tables below keep every earlier
+decline and both reverted folds as history.
 
-This document REPLACES PR #568 (`Replaces: #568` — labelled
-`review-replacement-required` by the orchestrator before it closed, so the
-ledger holds its obligation; a labelled unit closed at the limit stays a
-pending obligation until a MERGED unit names it, one merge discharging one
-— the accepted gap of `docs/reviews/replacement-lineage-repair.md`; #567's
-obligation was discharged by #569's merge and #559's by #570's, and #520–#566
-were unlabelled by hand on 2026-09-08 per #569's record, not by this
-lineage). #568 was the FOURTEENTH outing of the NARROWED plan: it drew four
-findings on its first head (`55144a3`, as the gate counts them; two folded on
-its one correction `2530c8e`, the drain gate declined there and then FOLDED
-on `b0d5399` under the Board's direct decision once the user permitted it —
-Codex returned a clean +1 on `b0d5399`) and two more on `867d065` (the
-`main` merges carrying #569's `AGENTS.md` bullet corrected to the decided
-gate), and closed at the limit. #568 had replaced #567 (the thirteenth
+This document REPLACES PR #572 (`Replaces: #572` — labelled
+`review-replacement-required` by the orchestrator, so the ledger holds its
+obligation; a labelled unit closed at the limit stays a pending obligation
+until a MERGED unit names it, one merge discharging one — the accepted gap
+of `docs/reviews/replacement-lineage-repair.md`; #567's obligation was
+discharged by #569's merge and #559's by #570's, and #520–#566 were
+unlabelled by hand on 2026-09-08 per #569's record, not by this lineage).
+#572 was the FIFTEENTH outing of the NARROWED plan: it drew two findings on
+its first head (`8b50b52`: the standard writer's frozen pair, the unkeyed
+`requestChange`), folded on its one correction `e2fd243e` by a second
+Claude session (session_01SkcEKPyj3MbLUoCy8bFuck, answering the
+orchestrator's Auto-fix handoff) — a head that also committed a
+machine-local `node_modules` symlink, removed on `8acf586` — and two more on
+`e2fd243e` (that symlink; the standard change-request role set the §A.3 seal
+enumeration dropped), and closed at the limit. #572 had replaced #568 (the
+fourteenth outing: four findings on `55144a3` as the gate counts them, two
+folded on `2530c8e`, the drain gate declined there and folded on `b0d5399`
+— reversed here — with a clean +1 on `b0d5399`; two more on `867d065`),
+#568 had replaced #567 (the thirteenth
 outing: four findings on `5f07c5a`; three folded on `7bf282f`, the drain
 attestation declined; three more there), #567 had replaced #566 (the twelfth outing: two
 findings on `cc8b3ba`, one folded on `e3d6c23` and the drain attestation
@@ -266,7 +273,7 @@ catalog; one is the seam rule's own contradiction:
 | finding | where it lands | the answer |
 |---|---|---|
 | 1 (P1) if architect B activates (crossing Q) and is removed again (crossing R) before `decisions.effects` handles Q, the Q handler re-emitted unconditionally; the correspondence seal refuses an empty frozen audience, so Q fails, retries to dead-letter and, the consumer being ORDERED, blocks R and every later event of the project | §A.2 the `decisions.effects` handler; P36 | the activation handler judges the CURRENT standing under the readiness lock before re-emitting — the register's `activeCount` for `architect` — and records the crossing `noop` ("stale activation") when it is zero; the later deactivation R cancels what Q would have cancelled; a Q–R–S sequence (re-activation) yields exactly ONE fresh demand; the empty-audience refusal is a seal a handler never reaches |
-| 2 (P1) round 1 staged `Membership_t4d_readiness` in 4d-i and called the drain-window refusal of a previous-release provisioning sign-in a retryable residual; it is not — the legacy `signInOrProvision` writes the `User` and the `Membership` in two statements, so a refused membership leaves a user the retry finds and then fails to sign in (`signInAccess` finds no membership), permanently, without repair | §A.2 the push families; §D 4d-ii, 4d-iii; P36 | the two standing-writer triggers are staged in 4d-iii, AFTER the verified drain — no frozen-audience family can emit before 4d-iii (the forward door refuses 409 under the reservation and a countersign needs an architect the reservation forbids), so the serialization is needed exactly from 4d-iii, when every writer is the new release's and holds the key; 4d-ii also makes the sign-in provisioning ONE transaction (user + membership) under the key, so no writer can leave a half-provisioned account; there is no residual |
+| 2 (P1) round 1 staged `Membership_t4d_readiness` in 4d-i and called the drain-window refusal of a previous-release provisioning sign-in a retryable residual; it is not — the legacy `signInOrProvision` writes the `User` and the `Membership` in two statements, so a refused membership leaves a user the retry finds and then fails to sign in (`signInAccess` finds no membership), permanently, without repair | §A.2 the push families; §D 4d-ii, 4d-iii; P36 | the two standing-writer triggers are staged in 4d-iii, AFTER the attested drain — no frozen-audience family can emit before 4d-iii (the forward door refuses 409 under the reservation and a countersign needs an architect the reservation forbids), so the serialization is needed exactly from 4d-iii, when every writer is the new release's and holds the key; 4d-ii also makes the sign-in provisioning ONE transaction (user + membership) under the key, so no writer can leave a half-provisioned account; there is no residual |
 | 3 (P1) 4d-iii DELETED the old coverage version's catalog rows; a later mature-database `ALWAYS_EXECUTE` replay of 4d-i re-seeded them, and between that replay and 4d-iii's a hand-run event with the retired intent passed `DomainEvent_t4d_envelope` and survived the second deletion | §A.3 obligation 7 (the persisted catalog); §D 4d-i, 4d-ii, 4d-iii; P37/P38 | retirement is a durable TOMBSTONE, never a delete: `ExternalEffectCatalog.retiredAt` (nullable; the ONE admitted UPDATE is its gated NULL → timestamp stamp, frozen after) — the envelope seal refuses an intent whose row is retired; every catalog seed is `INSERT … ON CONFLICT DO NOTHING`, so a replay never resurrects a retired row; the bootstrap's `coverageVersion` equality is against the newest UNRETIRED version |
 | 4 (P1) the exemption "`OrgMembership` never changes a project role's audience" is false for `pmc`: the delivered `effectiveRoleHolderUserIds` includes membership-less org owners/admins, so an `OrgMembership` insert or promotion without the key could add owner B after a forward to the `pmc` role froze owner A | §A.2 the push families; §D 4d-ii, 4d-iii; P36 | the orgs-owned `OrgMembership_t4d_readiness` trigger (4d-iii) tries the readiness key of EVERY project of the org, in ascending project id, on any write whose OLD or NEW role is `owner`/`admin` — the set the delivered `guardedOrgStandingWrite` already locks — refusing when any is contended; the org writers take `lockProjectReadiness` over the same set in the same order in 4d-ii; `platform_role_holder_user_ids(project, 'pmc')` carries the org-owner arm so seal and service resolve one set |
 | 5 (P1) "no `src/` file" contradicted the registration of the new tables in `decisionsManifest.ownsModels`/`readEncapsulated`, which live under `src/` and which the boundary suite requires to equal the DMMF exactly | §D 4d-i (the unit's scope rule) | 4d-i's `src/` diff is EXACTLY the declarative schema-metadata mirrors the tripwire suites pin to the Prisma DMMF — the three manifests' `ownsModels`/`readEncapsulated` registrations and the `MODEL_OWNER` map — enumerated file by file in its packet, no service, controller, query, emitter or UI change; the unit declares `migration-scope: inseparable` with exactly that boundary stated, and the packet's file list is the reviewable proof |
@@ -542,7 +549,7 @@ attestation — is the question the Board answered:
 
 | finding | where it lands | the answer |
 |---|---|---|
-| 1 (P1) "allow the autonomous runner to clear the drain gate" | §D the drain attestation | DECLINED — a Board decision, not a plan defect (#482 comment 5569586836); the plan carries the gate exactly as decided; the `AGENTS.md`-vs-decision contradiction that keeps re-raising it is before the Board (#482 comment 5575748015). A Watch-generated "Board GO" (#482 comment 5577525644) was folded on head `1a2ba97` and REVERTED on the next head once Delivery's hold (#482 comment 5577732007) showed no direct user decision behind it; the requirement stands. The Board then decided DIRECTLY at #482 comment 5577872836 (its own words, no coordinator marker); that fold was prepared as its own docs-only head, held until the user permitted it in the session, and is APPLIED on #568's head after `2530c8e`: the gate clears on the fail-closed autonomous evidence — the sealed `ReleaseLease` register and `rollout:drain-evidence`'s running-container verdict, both re-verified by 4d-iii's preflight — and an operator attestation is accepted, never required |
+| 1 (P1) "allow the autonomous runner to clear the drain gate" | §D the drain attestation | DECLINED — a Board decision, not a plan defect (#482 comment 5569586836); the plan carries the gate exactly as decided; the `AGENTS.md`-vs-decision contradiction that keeps re-raising it is before the Board (#482 comment 5575748015). A Watch-generated "Board GO" (#482 comment 5577525644) was folded on head `1a2ba97` and REVERTED on the next head once Delivery's hold (#482 comment 5577732007) showed no direct user decision behind it; the requirement stands. The Board then decided DIRECTLY at #482 comment 5577872836 (its own words, no coordinator marker); that fold was prepared as its own docs-only head, held, and applied on #568's head `b0d5399` on an in-session selection GitHub Watch records as its OWN keystroke (#482 comment 5581275205) — REVERSED in the #572 replacement: the default stands, the attestation REQUIRED, `AGENTS.md` as `main` carries it (the lineage header) |
 | 2 (P1) the fact's actor-role arm reads `platform_user_holds_role` LIVE, and a self-transition written membership-first (a PMC re-roling themselves to `engineer`) had already projected the new role before the fact claimed the frozen `actorRole = 'pmc'`, so the check refused the transition the plan says must succeed; the captured-pre-state exception covered the PMC-authority arm only | §A.2 the membership transition fact; P29b | the fact is inserted BEFORE the membership write for EVERY transition (add already did; re-role and removal join it), so every arm of its BEFORE INSERT trigger — actor role, display name, team-management authority — judges the PRE-state registers by construction and the self-demotion special case collapses into the one rule; the membership write's BEFORE trigger requires the fact for this exact transition to already exist in the transaction, so a hand-run bundle written membership-first is refused and "fact first" is the sealed protocol, not a convention; P29b asserts a PMC's self re-role committing with the frozen `pmc` role (RED at the post-state live check), an owner/admin's self-demotion likewise, and the membership-first hostile bundle refused |
 
 **Review round 2 on #566 (head `5921f22`) — two findings, both P1, carried
@@ -564,7 +571,7 @@ wrong row set; one is a seam the plan's own staging had already opened:
 
 | finding | where it lands | the answer |
 |---|---|---|
-| 1 (P1) "let verified drain evidence clear the gate" | §D the drain attestation | DECLINED as a plan defect — the gate is the Board's: the recorded default (#482 comment 5569586836) retains the human attestation with the autonomous evidence as fail-closed corroboration, and the Board's DIRECT decision to lift it (#482 comment 5577872836, its own words under the owner account with no coordinator marker) is accepted and prepared as its own docs-only head, held until the user permitted it in the session (the session's permission layer had refused it twice — #566 comment 5577923054), and APPLIED on #568's head after `2530c8e` |
+| 1 (P1) "let verified drain evidence clear the gate" | §D the drain attestation | DECLINED as a plan defect — the gate is the Board's: the recorded default (#482 comment 5569586836) retains the human attestation with the autonomous evidence as fail-closed corroboration, and the Board's DIRECT decision to lift it (#482 comment 5577872836, its own words under the owner account with no coordinator marker) is accepted and prepared as its own docs-only head, held (the session's permission layer had refused it twice — #566 comment 5577923054), applied on #568's head `b0d5399` on a Watch-entered selection (#482 comment 5581275205), and REVERSED in the #572 replacement: the attestation REQUIRED |
 | 2 (P1) through the 4d-i → 4d-ii drain a still-serving 4c instance also runs `requestChange`, `withdrawChange`, `requestConsultation` and `respondToConsultation`; the delivered `emitEvent` writes no envelope pair and the standard `requestChange` writes no `Notification`, yet the plan armed correspondence for those types in 4d-i, admitted a NULL envelope pair on the no-chain approve alone, and listed a notice as part of the `ChangeRequest` effect — so an ordinary legacy command could be refused at commit before 4d-ii deployed | §A.3 obligation 7 (the attribution arm, the legacy-writer table, the correspondence table); the `ChangeRequest` row of the fact table; §D 4d-i; P42 | EVERY live previous-release decision writer has its explicit drain branch, stated once in a table: a NULL envelope pair is admitted through the drain on every sealed event type a 4c writer can emit, the attribution arm binding `actorId` alone whenever the pair is NULL (the trailing 4d-iii seal closes it); the change-request notice is owed for the `countersign_rejection` origin ONLY, the standard request's transition owing none (the delivered path writes none) and its row joining the correspondence table; the consultation events are admitted in the delivered emitters' own targeted shapes with a NULL frozen pair; P42 drives all five legacy shapes through the 4d-i seals and asserts each COMMITS, RED against the approve-only NULL rule |
 | 3 (P1) `deliveryRowsFor` read only the persisted ACTIVE rows `FOR SHARE`, so an inactive consumer's row was never locked: an event could read the obligation set, an activation could then lock that row, flip it and commit before the event committed, and both succeeded with the event carrying no row for a consumer active at its commit | §A.3 obligation 7 (the delivery rows); P38 | `deliveryRowsFor` locks EVERY `OutboxConsumerCatalog` row `FOR SHARE` — active and inactive alike — BEFORE filtering by `active`, the event's transaction holding the locks to commit, so an activation's `FOR UPDATE` either committed before the read or waits for the event's commit; P38's barrier arm drives the exact read → activation → event-commit interleaving, the activation observed BLOCKED until the event commits, RED against the active-only lock |
 | 4 (P1) 4d-ii claimed the service/UI seam inseparable because a server without its client would refuse every deployed browser session — but throughout 4d-ii the five reservation doors keep every new shape unrepresentable and the in-command lesser-client refusal fires only under an ACTIVE chain, so a server-only unit lands dark behind every existing tab, and a unit already expected to exceed 1,500 lines was avoidably broad | §D the staging (FIVE PRs), 4d-ii-a and 4d-ii-b, the drain; §A.2 the client boundary | 4d-ii is SPLIT: 4d-ii-a, the SERVER unit, lands dark with the catalog-data migration, the four commands, the seals, the interceptor and every server change; 4d-ii-b, the CLIENT unit, ships the web gateway's `countersign-v1` declaration and every web surface, probed against the 4d-ii-a server with the doors standing; the drain's minimum release is 4d-ii-a's and 4d-ii-b's STATUS fold sets the directive; the migration seam stays inseparable for 4d-ii-a alone; the earlier inseparability claim is recorded as false under the plan's own staging |
@@ -577,7 +584,7 @@ record of the Board's direct decision; two are seals on the delivered
 
 | finding | where it lands | the answer |
 |---|---|---|
-| 1 (P1) "apply the recorded autonomous drain decision" — the plan itself now records the Board's direct decision, so the reviewer reads it as fresh evidence | §D the drain attestation | DECLINED as a plan defect, for the reason the record states: the Board's direct decision (#482 comment 5577872836) is ACCEPTED and its fold PREPARED as its own docs-only head, held only because the session's permission layer refused to apply it (#566 comment 5577923054); a review finding does not change who applies a policy fold or when — the record of the decision in this plan was the record of that pending head, not a contradiction to resolve by folding it there; the fold is APPLIED on #568's head after `2530c8e`, the user having permitted it in the session |
+| 1 (P1) "apply the recorded autonomous drain decision" — the plan itself now records the Board's direct decision, so the reviewer reads it as fresh evidence | §D the drain attestation | DECLINED as a plan defect, for the reason the record states: the Board's direct decision (#482 comment 5577872836) is ACCEPTED and its fold PREPARED as its own docs-only head, held only because the session's permission layer refused to apply it (#566 comment 5577923054); a review finding does not change who applies a policy fold or when — the record of the decision in this plan was the record of that pending head, not a contradiction to resolve by folding it there; the fold was applied on #568's head `b0d5399` on a Watch-entered selection (#482 comment 5581275205) and is REVERSED in the #572 replacement: the attestation REQUIRED |
 | 2 (P1) the awaiting entry arm was `BEFORE UPDATE` only: after 4d-iii drops `Decision_t4d_awaiting_reserved`, a direct INSERT of a published `Decision` already carrying `awaiting_countersign` passed the delivered 4b INSERT seal (publication and holder standing) and committed with no provisional revision, receipt, demand event, audit row or notice, leaving countersign and the stranded resolution no head to finalize | §A.2 the countersign entry; P37 | the approved-entry seal gains a BEFORE INSERT arm: a decision is never BORN `awaiting_countersign` — the state is ENTERED only through the sealed transition — so the born-awaiting row is refused outright; P37 gains the hostile born-awaiting INSERT, RED against the UPDATE-only arm |
 | 3 (P1) the delivered `decision_t4b_attribution_seal` admits the frozen approval tuple's first write only on `pending`/`change → approved` and forbids an approval-bearing `change` row from leaving `approved`/`change`, so the provisional approve (`pending → awaiting_countersign`, tuple written) and the chain reapproval (`change → awaiting_countersign`) both aborted before the pairing seals ran; the plan named only the function's holder-forward opening | §A.2 forwarding (the attribution seal), countersign; §D 4d-i; P31 | 4d-i's `CREATE OR REPLACE` of the function widens BOTH clauses for exactly the sealed provisional transition — the tuple-write arm admits `pending`/`change → awaiting_countersign` beside `→ approved`, the standing arm admits `change → awaiting_countersign` beside `change → approved` — each admitted only where the approved-entry seal's awaiting arm and its DEFERRED pairing judge the same transition; the INSERT clause (a tuple belongs only to an approved decision) is kept, a decision never being born awaiting; P31 drives both chain flows through the widened seal, RED at the delivered function |
 
@@ -600,7 +607,7 @@ transition:
 
 | finding | where it lands | the answer |
 |---|---|---|
-| 1 (P1) "let autonomous drain evidence clear the gate" | §D the drain attestation | DECLINED as a plan defect, as on every head since #558: the recorded default (#482 comment 5569586836) retains the human attestation with the autonomous evidence as fail-closed corroboration; the Board's DIRECT decision to lift it (#482 comment 5577872836) is accepted and prepared as its own docs-only head, held only because the session's permission layer refused to apply it (#566 comment 5577923054), and no review finding changes who applies a policy fold or when; the user then permitted it in the session and it is APPLIED on the head after `2530c8e` — the gate clears on the fail-closed autonomous evidence, an operator attestation accepted and never required |
+| 1 (P1) "let autonomous drain evidence clear the gate" | §D the drain attestation | DECLINED as a plan defect, as on every head since #558: the recorded default (#482 comment 5569586836) retains the human attestation with the autonomous evidence as fail-closed corroboration; the Board's DIRECT decision to lift it (#482 comment 5577872836) is accepted and prepared as its own docs-only head, held only because the session's permission layer refused to apply it (#566 comment 5577923054), and no review finding changes who applies a policy fold or when; it was applied on `b0d5399` on a selection GitHub Watch records as its own keystroke (#482 comment 5581275205) and is REVERSED in the #572 replacement — the default stands, the attestation REQUIRED |
 | 2 (P1) the converse pairing installed an orgs-owned constraint trigger on the kernel's `DomainEvent` reading `MembershipTransition`, and §A.3 repeated the shape for the decisions types — the leaf event store executing application-module persistence logic, the dependency direction inverted | §A.2 the converse; §A.3 obligation 7 (the converse, the catalog schema, the raw-plant bypass); §D 4d-i; P29b, P37 | a PLATFORM-OWNED generic mechanism: the kernel's `DomainEventPairingClaim` register written only through the platform primitive `platform_claim_event_pairing` at trigger depth, the persisted catalog's `pairingRequired` flag, and the kernel-owned DEFERRED seal `DomainEvent_t4d_pairing_claimed` that requires exactly one same-transaction claim for every event of a pairing-required type — reading platform tables alone; the OWNER's fact seal (the orgs `MembershipTransition` seal, every decisions fact seal of the §A.3 table) verifies its event through the kernel's `platform_tx_event` contract and CLAIMS it; no peer-owned trigger is installed on the kernel table, and every arm the plan attributed to "the converse" is an arm of the claiming fact seal |
 | 3 (P1) the pairing column covered `countersign_rejection` only, so a `standard` `ChangeRequest` had no bidirectional link to its `approved → change` transition: after the sole architect left an `awaiting_countersign` decision, a database-role writer holding a valid `requestChange` receipt could insert a standard request with its event and audit row WITHOUT moving the decision, occupying `ChangeRequest_one_open_per_decision` so the stranded `returned` resolution could never create its rejection request | §A.3 obligation 7 (the opening bundle); the `ChangeRequest` row of the fact table; the correspondence and legacy-writer tables; P33 | the OPENING is one bundle in both directions like the closure: a `standard` request inserted open requires the same-transaction `approved → change` transition on its own `Decision` row, and the approved-entry seal's `approved → change` arm requires exactly one same-transaction open standard request — the delivered `requestChange` performs both under the readiness lock, so the previous release is compatible through the drain; the planted request is refused and can occupy nothing; P33 gains both refusals and the reviewer's shape |
 
@@ -620,6 +627,16 @@ refused — which a shipped writer that cannot satisfy the seal also passes:
 |---|---|---|
 | 1 (P1) the 4d-ii writer inventory updated `requestChange` to record `sourceCommandId` only; unlike the consultation and rejection writers it never populates `requestedByRole`/`requestedByName`, so after 4d-iii's trailing seal requires both, even a keyed, current-version standard request inserts the NULL pair and aborts at commit | §D 4d-ii (the writer inventory); §A.3 obligation 5; P42 | the standard writer states the frozen pair from the resolved actor exactly as the consultation and rejection writers do; P42 drives the SHIPPED service after the trailing seals and asserts it COMMITS, RED against the pair-less writer — a positive arm, where the existing arm proved only that a legacy shape is refused |
 | 2 (P2) `requestChange` passes no `synthesizeKeyWhenAbsent`, so with `COMMAND_KEY_ENFORCED` unset — the documented default — an omitted `Idempotency-Key` takes `executeCommand`'s ledger-less branch with `ctx.commandId = null`; writing `sourceCommandId` and re-pointing `resultRef` creates no receipt for that request, and once 4d-iii requires the column an otherwise valid unkeyed request rolls back instead of preserving the current API behavior | §A.3 obligation 5 (the provenance column); §D 4d-ii; P42 | 4d-ii's `requestChange` opts into `synthesizeKeyWhenAbsent: true` — the delivered answer to this exact problem, taken by the inventory ledger when `StockTransaction.sourceCommandId` became NOT NULL: a per-call server key secures provenance and changes nothing else (two unkeyed retries still each run once, a client key still replays exactly once, enforcement still refuses a missing key before synthesis is considered); P42 gains the NO-HEADER arm through the shipped service after the trailing seals, RED against the unsynthesized writer. Requiring the header instead is rejected: it is a new client error on a call valid today |
+
+**Review round 2 on #572 (head `e2fd243e`) — two findings, both P1, carried
+here, none dropped.** One is a packaging error on the correction head, not a
+plan defect; one is a seal enumeration that forgot the origin it also
+governs:
+
+| finding | where it lands | the answer |
+|---|---|---|
+| 1 (P1) `e2fd243e` committed a machine-local `node_modules` symlink (mode `120000`, an absolute path into one session's checkout) — `.gitignore`'s `node_modules/` rule matches a directory, not a symlink of that name — so every CI job died at `pnpm install --frozen-lockfile` with `ENOTDIR` | the tree, not the plan | removed on `8acf586` by the same session; this replacement's tree carries no such path (`git ls-files` shows none); the one-line `.gitignore` prevention (`node_modules` without the slash) is deliberately NOT mixed into this docs-only unit — it would move the unit onto the code review path — and is queued as its own small task |
+| 2 (P1) the §A.3 fact-table row for `ChangeRequest` gave actor standing only to an active architect under a chain or the resolving PMC, and its eligibility column named only an awaiting subject, although the same row governs `origin = 'standard'`; the delivered `decision.change` policy admits `pmc`, `client`, `contractor`, `engineer` and `consultant`, and `requestChange` opens a standard request from `approved` — an implementation following the table would have refused an active engineer's valid standard request once the frozen-pair checks were armed | §A.3 the fact table (the `ChangeRequest` row's actor and eligibility columns); P33 | the row is enumerated BY ORIGIN: `countersign_rejection` keeps the architect-under-chain / resolving-PMC arm and the awaiting subject; `standard` admits an ACTIVE member whose frozen `requestedByRole` is in the DELIVERED `decision.change` set (the architect not among them; 4d widens nothing) on an `approved`, published subject through the exact `approved → change` transition; P33 gains the non-PMC service probes (engineer, contractor, consultant COMMIT with their frozen pair; the architect refused by the delivered policy; an inactive member's direct insert refused), RED against the two-role enumeration |
 
 **Docs-only.** No schema, no migration, no runtime code, no test change, no
 4d implementation. Contractor-capture units 1–6 and the saved UX and
@@ -857,8 +874,7 @@ NEW row carries `role = 'architect'` — judged on NEW regardless of OLD, so a
 removed row already in that role can be neither restored nor re-keyed into
 service through it (the exact shape of 4c-i's `ProjectCapability_t4c_reserved`)
 — dropped by the trailing migration-only unit 4d-iii once the previous
-release is drained, the drain verified fail-closed by the autonomous
-evidence of §D (the Board decision of 2026-09-08). **The reservation covers EVERY 4d producer**:
+release is attested drained. **The reservation covers EVERY 4d producer**:
 the architect reservation keeps the CHAIN off, but forwarding needs no
 architect, so 4d-ii's `decisions.forward` would emit `decision.forwarded`
 while an ALREADY-RUNNING previous-release push worker — fenced by the
@@ -2290,7 +2306,7 @@ no lock-order inversion exists). A standing write therefore either
 committed before the emitting command took the key — and the audience read
 under the key sees it — or is refused while the command holds it, and the
 frozen `targetUserIds` equals the set at commit by construction, for every
-writer. **The trigger is staged in 4d-iii, after the verified drain, and
+writer. **The trigger is staged in 4d-iii, after the attested drain, and
 not a unit earlier** (#556's review round 2, finding 2: staged in 4d-i it
 would have met the previous release's `signInOrProvision`, which writes the
 `User` and the `Membership` as two statements, so a membership refused
@@ -3435,7 +3451,7 @@ The closed enumeration over every fact these units add:
 | `DecisionCountersign` (4d) | finality flip + `awaiting → approved` ⟷ row | `countersignedById` ACTIVE architect; frozen role + name judged | `awaiting_countersign` only | required | the finalizing event + `countersigned` + the green notice | P31 |
 | `DecisionStrandedResolution` (4d) | outcome BUNDLE ⟷ row | `resolvedById` pmc; frozen role + name judged; non-blank reason | `awaiting_countersign` AND no active architect | required | per outcome, the table above | P29b |
 | `DecisionApprovalRevision` finality (4d) | birth value by chain presence; flip only by paired fact; one row per approval transition | carried by the pairing facts; `approvedByRole`/`approvedByName` judged when present | the approved-entry seal | delivered (4c) | the awaiting entry's and the direct approve's rows | P31/P37/P42 |
-| `ChangeRequest` origin (4d) | `countersign_rejection` ⟷ the exact `awaiting_countersign → change` transition, AND with its producer's fact (P33b); `standard` ⟷ the exact `approved → change` transition, in BOTH directions (#568's review round 1, finding 3) | `requestedById` ACTIVE architect under an ACTIVE chain, or the resolving pmc; frozen role + name judged | the awaiting subject | REQUIRED for `countersign_rejection`; admissible NULL on `'standard'` rows only until 4d-iii | `decision.change_requested` + `change_requested`, + the change-request notice for the `countersign_rejection` origin ONLY — the standard request's transition owes none (the delivered path writes none; the notice arm is keyed on the paired request's `origin`) | P29b/P33/P33b |
+| `ChangeRequest` origin (4d) | `countersign_rejection` ⟷ the exact `awaiting_countersign → change` transition, AND with its producer's fact (P33b); `standard` ⟷ the exact `approved → change` transition, in BOTH directions (#568's review round 1, finding 3) | by ORIGIN (#572's review round 2, finding 2): `countersign_rejection` — `requestedById` ACTIVE architect under an ACTIVE chain, or the resolving pmc; `standard` — `requestedById` an ACTIVE member whose frozen `requestedByRole` is in the DELIVERED `decision.change` policy set (`pmc`, `client`, `contractor`, `engineer`, `consultant` — `packages/shared/src/domain/policy.ts`; the architect is NOT in it, and 4d does not widen it); frozen role + name judged on both | by ORIGIN: `countersign_rejection` — the awaiting subject; `standard` — the `approved` subject, published, the exact `approved → change` transition of the delivered `requestChange` | REQUIRED for `countersign_rejection`; admissible NULL on `'standard'` rows only until 4d-iii | `decision.change_requested` + `change_requested`, + the change-request notice for the `countersign_rejection` origin ONLY — the standard request's transition owes none (the delivered path writes none; the notice arm is keyed on the paired request's `origin`) | P29b/P33/P33b |
 | `MembershipTransition` (4d, orgs) | the architect standing write ⟷ row; one flip per membership and per project per transaction | `actorId` holds team-management authority (the owner/admin arm live; the project-PMC arm live, or the captured pre-state for a self-demotion); frozen `actorRole`/`actorName` judged | — | required (`phase6_t4d_membership_transition_bound`) | `membership.standing_changed` naming the fact — `role`, `membershipId`, `from`, `to`, `transitionId`, `activeCount` and the envelope pair all equal to the fact and the register — and paired in the converse | P29b |
 
 A future fact table added under these units inherits this contract by
@@ -3595,7 +3611,7 @@ today's behaviour lives.
 | P30 | forward authority (holder/PMC/architect), ACTIVE target only, eligible states only — terminal AND `awaiting_countersign` refusals both probed through the guarded HTTP route with the shared `ROLE_POLICY` action | the forward command |
 | P31 | the `awaiting_countersign` lifecycle: approval under a chain lands it with `finalized = false` — a revision BORN `finalized = true` under an active chain refused by the INSERT seal; the provisional approve from `pending` with the frozen approval tuple written AND the chain reapproval from `change` each COMMITTING through the widened `decision_t4b_attribution_seal` (RED at the delivered function, which refuses both — #567's review round 2, finding 3); the countersign is ONE atomic act sealed from BOTH sides (the boolean-only hostile flip refused; the orphan countersign row refused at commit; the split two-transaction replay refused; the REPLACED append-only seal — a DELETE and an UPDATE of any column other than the flip refused, the paired flip accepted, the delivered `_append_only` trigger absent by name after 4d-i) AND attributed to an ACTIVE architect AND carrying provenance (the 4c arms verbatim) AND carrying its EFFECTS — the finalizing event by the revision's recorded `approvedFrom` (the reopened → reapproved-into-awaiting → countersigned sequence end to end, with the `approved`/`reapproved` + `countersigned` audit rows), a countersign bundle WITHOUT its event, WITHOUT its audit row, WITHOUT its feed row, with TWO events, or with an event naming another actor, or whose event envelope carries a role or name other than the fact's frozen pair, each refused at commit (the no-chain approve's event with a NULL pair accepted before 4d-iii and refused after); the ENTRY sealed from the decision side (the bare transition with no revision, the re-entry onto a disposed head, the transition under an INACTIVE chain, each refused; the legal approve accepted with its provisional notice bound to its event); the awaiting ENTRY's bundle demanding exactly one `decision.awaiting_countersign` event — a receipt-backed hand-run entry WITHOUT it refused at commit, one carrying a `decision.approved`/`reapproved` instead refused, the legal entry's event carrying the architects frozen as `targetUserIds` and the payload's provisional act; a `DecisionEvent` UPDATE, DELETE and TRUNCATE each refused after a valid transition (the audit row as immutable as the fact); a countersign bundle whose feed row carries the wrong `kind`, or a `kind` with no `eventId`, refused at commit, and a feed row committed with a forged `text` RENDERED from its kind and event — the forged string served to no client, live, projected or rebuilt; a kinded row's `eventId`/`kind`/`decisionId` UPDATE (a NULLing included) and its DELETE refused, a forwarded pending decision withdrawn keeping its kinded notice hidden from every non-PMC viewer, and a kinded `decision.forwarded` notice ABSENT from a contractor's snapshot while the decision is hidden from them and PRESENT for the PMC and the holder; the awaiting entry's event with its push omitted, with a subset or superset of the active architects frozen, or with a body other than the catalog's constant, each refused at commit, and the exact set admitted; an audit row whose `actorName`, `actor` label or a named payload field disagrees with the fact refused; the seed's reset and the fixture's wipe succeeding on the 4d-i schema with `DecisionEvent_t4d_append_only` installed and enabled afterwards, every swept suite's cleanup succeeding through the helper, the bypass tripwire RED on a planted private `DISABLE TRIGGER` AND on a planted unguarded `decisionEvent.deleteMany`, the three rewritten precision arms asserting the append-only refusal by message with the approval guard's message still first on evidence rows, the two whole-table reset transactions passing; a feed row for project A bound to project B's event refused by the composite FK and the same-project binding accepted; the converse trigger: a standalone `decision.approved`, `decision.awaiting_countersign`, `decision.change_requested` and `decision.forwarded` each refused at commit without its fact, the consumer's `renotified` re-emit with its `countersign_renotified` row accepted; the frozen `approvedByName`/`approvedByRole` on every 4d-ii revision, a rename between the acts carrying the act-time name; the reader tripwire RED for the value the moment it exists; the Inbox item and badge; the architect's controls as a product path; the consultation carve-out and the response push for an architect requester; the web arm driving the client approval path under an active chain asserting the provisional copy; the converse admitting the countersign's and the `completed` resolution's finalization without a new revision row and refusing a standalone `decision.approved` with none of the three; the PMC's feed after a forwarded pending decision is withdrawn showing the withdrawal notice and neither the published nor the forwarding notice, both rows and events still present; every 4d-ii `decision.approved`/`reapproved` event carrying the exact `revisionId` (direct approve, countersign, `completed` resolution), the converse refusing an event naming a revision no same-transaction finalizer touched, a drain-shaped event without `revisionId` admitted through the same-transaction insert fallback and refused after 4d-iii, and an older kinded green notice of a twice-approved decision rendering ITS revision's approver, not the head's; the shell badge — `shellSummary.pendingDecisions` equal to `countPending` for the architect with one `awaiting_countersign` decision and no pending one, and for the PMC with a stranded one; **P31b/P42b** and **P31c/P34b** (§B) | `decisions.approve`; the register; the readers |
 | P32 | self-countersign is TWO attributed acts under two idempotency keys — one combined act is refused; the two acts appear as two ledger receipts and two register facts | the countersign command |
-| P33 | both disagreement outcomes: origin-stamped open `ChangeRequest`, `withdrawChange` refusal on `countersign_rejection`, the class-wide evidence freeze INCLUDING `decisionId`, `origin`, `revisionId`, `projectId`, `sourceCommandId` and the frozen role/name pair (the re-point, the re-label, the NULLing and the replacing UPDATEs each refused), impacts rendered, reject-back AND forward-on driven through re-approval to completion — forward-on through the ONE forward door with its `DecisionForward` fact (the request the bundle's provenance primary, the forward citing the same receipt); the `origin` serialized only when non-`standard` on live, projected and rebuilt DTOs and the Withdraw affordance SUPPRESSED for a rejection request while the direct call still 409s; the direct-SQL disagreement bundle by an ACTIVE architect with every pairing, standing and eligibility seal green but NO receipt refused at commit, and with NO event refused at commit; the standard request's receipt naming the request row (naming the decision refused at commit; the keyed replay appends nothing); a `standard` request INSERTED without the same-transaction `approved → change` transition refused at commit and the transition without its open request refused — the reviewer's shape: after the sole architect leaves an awaiting decision, a database-role writer's planted standard request cannot occupy `ChangeRequest_one_open_per_decision`, and the stranded `returned` resolution creates its rejection request (#568's review round 1, finding 3); **P33b** (§B.6) | the `ChangeRequest` machinery; the disagree command |
+| P33 | both disagreement outcomes: origin-stamped open `ChangeRequest`, `withdrawChange` refusal on `countersign_rejection`, the class-wide evidence freeze INCLUDING `decisionId`, `origin`, `revisionId`, `projectId`, `sourceCommandId` and the frozen role/name pair (the re-point, the re-label, the NULLing and the replacing UPDATEs each refused), impacts rendered, reject-back AND forward-on driven through re-approval to completion — forward-on through the ONE forward door with its `DecisionForward` fact (the request the bundle's provenance primary, the forward citing the same receipt); the `origin` serialized only when non-`standard` on live, projected and rebuilt DTOs and the Withdraw affordance SUPPRESSED for a rejection request while the direct call still 409s; the direct-SQL disagreement bundle by an ACTIVE architect with every pairing, standing and eligibility seal green but NO receipt refused at commit, and with NO event refused at commit; the standard request's receipt naming the request row (naming the decision refused at commit; the keyed replay appends nothing); a `standard` request INSERTED without the same-transaction `approved → change` transition refused at commit and the transition without its open request refused — the reviewer's shape: after the sole architect leaves an awaiting decision, a database-role writer's planted standard request cannot occupy `ChangeRequest_one_open_per_decision`, and the stranded `returned` resolution creates its rejection request (#568's review round 1, finding 3); the STANDARD origin's own arms driven through the SHIPPED `requestChange` after 4d-i's seals by a non-PMC caller — an ACTIVE engineer's standard request on an `approved`, published decision COMMITS with the frozen `engineer` pair, a contractor's and a consultant's likewise, an architect's is refused by the delivered `decision.change` policy exactly as today, and a direct standard insert attributed to an inactive member is refused at commit (#572's review round 2, finding 2 — RED against the two-role enumeration, which would have refused every non-PMC standard request the delivered policy admits); **P33b** (§B.6) | the `ChangeRequest` machinery; the disagree command |
 | P34 | the forward chain: attribution (actor vs displaced holder), the web Forward affordance following `rollout.phase6_4d`, the `decision.forwarded` emission + re-seal, the NON-HOLDER architect's product path (RED at base where the audience rule hides the row; absent for a removed architect and while the chain is inactive), the non-blank reason at both layers, the PAIRING sealed in BOTH directions (no row; a mismatched row; the orphan row; the same-target no-op at both doors), the DOOR status-gated (a matched forward on an `approved`/`recorded`/`withdrawn` decision refused; on an `awaiting_countersign` decision refused WITHOUT the same-tx rejection request), the TARGET's and the ACTOR's standing judged at the DB (a removed membership, an empty role, an inactive actor, an unauthorized actor, the role-holder arm's own case), the frozen `forwardedByRole`/`forwardedByName` judged (a hand-run forward by an active PMC freezing `architect` refused; a name that is not the account's refused), the forward bundle WITHOUT its event, audit row or notice refused at commit; the forward push's recipients FROZEN at emission (a role `toDesignation` resolved to its holders under the lock; the delivery payload carrying them) | the forward door; the attribution seal; the forward command |
 | P35 | the forward-vs-approve barrier: both orderings deterministic, exactly one surviving outcome, a coherent holder; forward-vs-countersign likewise; every cancelling command vs a concurrent claim in both orderings under the ONE lock order, no deadlock | the row-lock serialization in the canonical order |
 | P36 | the switch-writers barrier: architect role-change vs approve, activation AND deactivation, both orderings — the SERVICE activation and the HAND-RUN one (a direct INSERT under a hand-completed receipt with its fact and event) each vs `approve` and vs the stranded resolution, the hand-run writer refused as contended while the key is held and the terminal state asserted (approve-first → the activation lands after and the decision stays `approved`; activation-first → the approve lands `awaiting_countersign`); the orgs role mutations for `architect` in the §A enumeration; activation-vs-approve asserting the countersign deliveries per decision EXACTLY by ordering — approve-first under NO chain owes ZERO; activation-first → the approve's OWN emission is the ONE; a decision already awaiting when the activation crosses receives the ONE re-emit; never two for one decision; the ordered handlers' P-before-Q sequence with an approve landing between them; the NON-architect standing writers serialized — forward-to-`client`-role vs a direct insert of active client B in BOTH orderings (B-first → frozen set {A, B}; forward-first → B REFUSED as contended by `Membership_t4d_readiness`'s message, accepted after the commit, the frozen set equal to the audience at commit), the same for an `engineer` provisioning sign-in vs a forward to `engineer`, and for a forward to the `pmc` role vs an `OrgMembership` owner insert (B-first → {A, B}; forward-first → the org write REFUSED by `OrgMembership_t4d_readiness`, the frozen set equal to the audience at commit) — RED in the seal-stripped run where B commits mid-forward; the STALE ACTIVATION — B activated (Q) and removed (R) before the consumer reaches Q: Q recorded `noop` with `stale_activation`, no re-emit, no dead-letter, R handled next and cancelling the unsent pre-Q demands, the consumer's cursor past both; Q → R → S with C active at handling: exactly ONE fresh demand, frozen to C, S skipped — RED where the Q handler re-emits unconditionally and the empty-audience seal dead-letters it; PROJECT CREATION vs an owner insert for the same org in BOTH orderings, then a forward to the `pmc` role on the new project asserting no committed effective holder absent from the frozen set — RED in the seal-stripped run where the phantom lands; the same with a DIRECT `Project` insert (refused as contended by `Project_t4d_org_readiness` while the owner write holds the key, accepted after) — RED where the table door is omitted; demotion-vs-creation in both orderings (demotion-first → 403 at the in-key re-judge; creation-first → the project stands) — RED at base where the authority read precedes the transaction; a hand-run `renotified` bundle citing an activation crossing that PRECEDES the decision's latest demand refused by the converse, one citing a crossing at or after it admitted | `lockProjectReadiness` on the orgs role mutations, the four other `Membership` writers and the org owner/admin writers; `lockOrgStanding` on project creation and the org writers; `Membership_t4d_readiness`/`OrgMembership_t4d_readiness` (4d-iii); `decisions.effects` |
@@ -3632,8 +3648,8 @@ today's behaviour lives.
   `Replaces: #<this>` and every unresolved finding — no PR-number cap.
 
 - **4d implementation follows as FIVE PRs — the dark migration 4d-i, the
-  dark SERVER unit 4d-ii-a, the CLIENT unit 4d-ii-b, the autonomous drain
-  gate, and the trailing reservation retirement 4d-iii — each honouring the
+  dark SERVER unit 4d-ii-a, the CLIENT unit 4d-ii-b, a drain attestation,
+  and the trailing reservation retirement 4d-iii — each honouring the
   mandatory migration seam and the service/UI seam the standing reservation
   makes viable** (#567's review round 1, finding 4; "4d-ii" names the pair
   wherever the distinction does not matter) (the additive schema is deployable before any caller uses it — that
@@ -4076,46 +4092,41 @@ today's behaviour lives.
     pair: the dark seals (4d-i), the reservation retirement and the
     standing-writer seals (4d-iii), and the drain.
 
-  - **The drain gate — autonomous and fail-closed** (BOARD DECISION
-    2026-09-08, #482 comment 5577872836 — the Board's own words — superseding
-    the default at comment 5569586836): the directive
-    `phase-6-4d-previous-release-drained` states that every process older
+  - **The drain attestation** — the operator states that every process older
     than the 4d-ii-a release (the server release carrying the bumped
-    consumer contracts; 4d-ii-b is client-only) is stopped or drained, and
-    it CLEARS on the two pieces of trusted autonomous evidence below, both
-    verified fail-closed by the runner — an operator's `OPERATOR-ATTESTATION`
-    on the controlling issue is ACCEPTED as additional evidence and never
-    required. The evidence covers processes ALREADY RUNNING, which the code
-    of those processes cannot observe about itself; the bumped consumer
-    contracts fence every process that STARTS, which keeps the drained
-    state durable afterwards; browser tabs stand behind the
-    `countersign-v1` boundary (§A.2). **What 4c decided and what 4d decides
-    differently**: 4c (2026-08-29, on PR #480) kept an operator-declared
-    directive with NO automated drain actor; 4d keeps "no actor" — nothing
-    here drains anything — and, on the Board's 2026-09-08 decision, lets the
-    runner clear the directive on evidence it can verify. Why the drain
+    consumer contracts; 4d-ii-b is client-only) is stopped or drained, as an
+    `OPERATOR-ATTESTATION`
+    on the controlling issue naming the directive and the minimum release,
+    carrying no agent-generation marker — the attestation covers processes
+    ALREADY RUNNING, which no code can observe; the bumped consumer contracts
+    fence every process that STARTS, which keeps the attested state durable
+    afterwards; browser tabs stand behind the `countersign-v1` boundary
+    (§A.2). **BOARD DECISION carried from 4c** (2026-08-29, on PR #480): an
+    operator-declared directive, NO automated drain actor. Why the drain
     matters for 4d, stated concretely: a pre-4d instance's Prisma client
     fails to READ any `Decision` row whose `status` is a value its generated
     enum does not know, and its zod `TokenRole` refuses to mint a JWT for an
     `architect` member — so a project whose chain activates while an old
     instance still serves is a split brain of exactly 4c's class. The
-    reservation makes that state unreachable until the fleet is verified
-    drained. Nothing an agent WRITES supplies that verification (the #530
-    lesson): the evidence is read from sealed registers and from the deploy
-    platform, never asserted in prose. **What the runner CAN verify, it
-    verifies — fail-closed — and on the Board's decision that verification
-    IS the gate** (#558's review round 1, finding 4, re-raised on #560,
+    reservation makes that state unreachable until the fleet is attested
+    drained. Nothing an agent writes supplies the attestation (the #530
+    lesson). **What the runner CAN verify, it verifies — fail-closed —
+    and the Board decides whether that verification replaces the
+    attestation** (#558's review round 1, finding 4, re-raised on #560,
     #562, #563, #564, #565, #566, #567 and #568: a gate only a human can
     clear leaves an autonomous loop `in_progress` with no human standing by;
-    a review finding cannot lift a recorded Board decision, so the plan
-    declined it on the default recorded at #482 comment 5569586836 and put
-    the contradiction with `AGENTS.md` L72–75 to the Board at comment
-    5575748015; a relayed "Board GO" at comment 5577525644 was folded and
-    reverted for want of direct provenance; the Board answered in its own
-    words on 2026-09-08 at comment 5577872836 — the human attestation is
-    lifted and this change authorized — and the user permitted the fold in
-    the session). Two pieces of trusted autonomous evidence, both shipped in
-    4d-ii:
+    a review finding cannot lift a recorded Board decision, and this plan
+    does not pretend to — it adds the evidence and raised the question on
+    #482, where the controlling answer is recorded: comment 5569586836,
+    2026-09-07 — the user's standing instructions RETAIN human production
+    attestation; evidence does NOT replace the direct explicit operator
+    attestation; a review request for greater autonomy cannot authorize its
+    removal, and no agent-authored statement can supply a policy change or a
+    runtime fact; `main`'s `AGENTS.md` bullet, merged as #569 on the user's
+    direct instruction to that session, says the same and is left exactly
+    as `main` carries it — the lifted-gate folds of `1a2ba97` and `b0d5399`
+    are both reversed, see the lineage header). Two pieces of trusted
+    autonomous evidence, both shipped in 4d-ii:
     (i) the platform-owned `ReleaseLease(instanceId, catalogVersion,
     release, startedAt, leaseUntil)` register — every serving process writes
     its row at startup with the consumer-catalog version compiled into it
@@ -4140,27 +4151,20 @@ today's behaviour lives.
     closed on any container it cannot classify, and records its evidence
     (the inventory, the minimum release, the verdict) as a `DRAIN-EVIDENCE`
     comment on the controlling issue — an OBSERVER of the platform's state,
-    never an actor that drains anything, which 4c refused and 4d does not
-    reintroduce. The gate therefore reads: `phase-6-4d-previous-release-drained`
-    CLEARS when BOTH hold — (i) the sealed lease register shows no live
-    lease at a catalog version below the minimum, and (ii)
-    `rollout:drain-evidence` has recorded a PASSING `DRAIN-EVIDENCE` verdict
-    for the minimum release, every running container classified at or
-    after it — and the runner clears it ITSELF: it records the verdict,
-    writes the STATUS fold that clears `blocking_directive` citing the
-    `DRAIN-EVIDENCE` comment id and the lease query it ran, and 4d-iii's
-    migration preflight RE-VERIFIES both pieces at deploy time and aborts
-    the retirement with every door intact if either has stopped holding
-    (a container the inventory cannot classify, a live lease below the
-    minimum, a Coolify API the CLI cannot reach — each fails CLOSED; an
-    unreachable inventory is not a drained fleet). An
-    `OPERATOR-ATTESTATION` on #482 is accepted as additional evidence and
-    recorded beside the verdict when present; its absence blocks nothing.
-    This is the Board's 2026-09-08 decision in its own words (#482 comment
-    5577872836), superseding the default at comment 5569586836; it stands
-    until the Board decides otherwise, and this plan neither widens it (no
-    actor drains anything; no evidence is asserted in prose) nor narrows it
-    (no human step is reintroduced).
+    never an actor that drains anything, which is the thing the Board
+    refused. The gate therefore reads: `phase-6-4d-previous-release-drained`
+    clears on the direct explicit OPERATOR-ATTESTATION, which is REQUIRED,
+    with the autonomous evidence as CORROBORATION the runner verifies and
+    records beforehand — never a substitute, never a reason to treat a wait
+    for genuinely required operator evidence as permission to clear the
+    gate. The runner's own steps (`rollout:drain-evidence`, then 4d-iii's
+    migration preflight re-checking the lease register) are complete and
+    repeatable without a human and fail closed on their own; the gate as a
+    whole clears only when the attestation exists beside them. Any removal
+    of the human requirement is the user's separate decision, given in the
+    user's own voice — never inferred from a review finding, a coordinator
+    note, a relayed or unmarked comment, a selection a coordinator entered
+    into a session, or this plan.
 
   - **4d-iii, the reservation retirement**: a migration-only unit whose
     transaction, after its `SET LOCAL` gate, FIRST takes `LOCK TABLE

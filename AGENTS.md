@@ -73,18 +73,12 @@ so directly rather than framing it as a suggestion.
 
 - This project runs as an autonomous loop. Do not block on human sign-off, and do
   not tell the author to wait for approval — no one is standing by to give it.
-- The production drain gate is no exception. On 2026-09-08 the Board LIFTED the
-  human `OPERATOR-ATTESTATION` for `phase-6-4d-previous-release-drained` (#482
-  comment 5577872836, in the Board's own words, superseding the default at
-  comment 5569586836 and an earlier bullet here that recorded the gate as
-  retained). The directive clears on the fail-closed AUTONOMOUS evidence the
-  runner verifies — the sealed release-lease register showing no live lease
-  below the minimum catalog version, and the fleet-inventory verdict recorded as
-  `DRAIN-EVIDENCE` — both re-verified by the retirement migration's preflight,
-  which aborts if either stops holding. An operator attestation is accepted as
-  additional evidence and never required; no agent drains anything, and no
-  evidence is asserted in prose. A review must not ask to reintroduce the human
-  step, and must not treat the plan's autonomous gate as a defect.
+- The one Board-decided exception is the production drain attestation. Clearing
+  `phase-6-4d-previous-release-drained` requires the operator's human
+  `OPERATOR-ATTESTATION`; the automated release-lease and fleet-inventory evidence
+  is fail-closed corroboration only, never a substitute. The Board retained that
+  gate on 2026-09-08. It is not a plan defect: a review must not ask to remove it
+  or to let autonomous evidence clear it.
 - Review still happens BEFORE merge. Every PR starts as a draft with Claude Code
   web Auto-fix enabled. After `review-scope` and the five product CI jobs pass,
   the trusted GitHub orchestrator marks the PR ready to trigger Codex on the
