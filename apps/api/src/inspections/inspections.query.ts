@@ -43,9 +43,9 @@ export class InspectionsQueryService {
    * placedInspections), baked for `role` (PMC-only review queue, pmc/engineer placement) with each item's
    * evidence as fresh signed serve paths. Served from LIVE canonical state.
    */
-  async snapshotSlice(projectId: string, role: string): Promise<InspectionsSlices> {
+  async snapshotSlice(projectId: string, role: string, viewerId?: string): Promise<InspectionsSlices> {
     const base = await computeInspectionsBase(this.prisma, projectId);
-    return bakeInspections(base, { role, evidencePath: this.evidencePath });
+    return bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId });
   }
 
   /**
@@ -60,7 +60,7 @@ export class InspectionsQueryService {
    * no-op-bootstrapped (no row), lagging or blocked generation returns `generation: null` and the caller
    * falls back to the canonical live slice.
    */
-  async projectionSlice(projectId: string, role: string): Promise<{ slices: InspectionsSlices; generation: number | null }> {
+  async projectionSlice(projectId: string, role: string, viewerId?: string): Promise<{ slices: InspectionsSlices; generation: number | null }> {
     const gen = await readServableGeneration(this.prisma, INSPECTIONS_PROJECTION, projectId);
     const empty: InspectionsSlices = { checklist: null, openChecklists: [], reviews: [], review: null, reinspectionCreated: false, placedInspections: [] };
     if (!gen) return { slices: empty, generation: null };
@@ -72,7 +72,7 @@ export class InspectionsQueryService {
     // A caught-up generation with NO row yet is not authoritative-empty data — fall back to canonical.
     if (!row) return { slices: empty, generation: null };
     const base = row.dto as unknown as InspectionsBase;
-    return { slices: bakeInspections(base, { role, evidencePath: this.evidencePath }), generation: gen.generation };
+    return { slices: bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId }), generation: gen.generation };
   }
 
   /**
@@ -82,12 +82,12 @@ export class InspectionsQueryService {
    * rebuilt) — additive and correct, never empty during warm-up. `source` tells the client which path
    * served it (the slices are byte-identical either way).
    */
-  async moduleInspections(projectId: string, role: string): Promise<InspectionsModuleResult> {
-    const proj = await this.projectionSlice(projectId, role);
+  async moduleInspections(projectId: string, role: string, viewerId?: string): Promise<InspectionsModuleResult> {
+    const proj = await this.projectionSlice(projectId, role, viewerId);
     if (proj.generation !== null) {
       return { ...proj.slices, source: 'projection', generation: proj.generation };
     }
-    const live = await this.snapshotSlice(projectId, role);
+    const live = await this.snapshotSlice(projectId, role, viewerId);
     return { ...live, source: 'live', generation: null };
   }
 

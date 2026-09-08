@@ -27,12 +27,13 @@ const entry = (over: Partial<InspectionBaseEntry> & { id: string }): InspectionB
   activityId: null,
   activityName: null,
   reinspectionOfId: null,
+  assigneeId: null,
   items: [{ id: `${over.id}-i1`, name: 'Verify', order: 0, state: null, photos: 0, note: '', result: null, swatch: null, rejected: false, mediaIds: [] }],
   ...over,
 });
 
-const bake = (inspections: InspectionBaseEntry[], role: string) =>
-  bakeInspections({ inspections } as InspectionsBase, { role, evidencePath: (id) => `/evidence/${id}` });
+const bake = (inspections: InspectionBaseEntry[], role: string, viewerId?: string) =>
+  bakeInspections({ inspections } as InspectionsBase, { role, evidencePath: (id) => `/evidence/${id}`, viewerId });
 
 describe('bakeInspections — issued checklists are visible', () => {
   it('carries EVERY open checklist, not just one', () => {
@@ -113,5 +114,42 @@ describe('inspection ids order by issue sequence, not by padding', () => {
     const submitted = (id: string) => entry({ id, kind: 'review', submitted: true, by: 'Eng' });
     const slices = bake([submitted('INSP-023'), submitted('INSP-22')], 'pmc');
     expect(slices.reviews.map((r) => r.id)).toEqual(['INSP-22', 'INSP-023']);
+  });
+});
+
+/**
+ * A rejected inspection creates a re-inspection ASSIGNED to whoever submitted the original — named
+ * corrective work, not the site's. The field view is deliberately ungated by ROLE, but that is not a
+ * reason to hand engineer B engineer A's remedial work: B could fill it, submit it, and be recorded
+ * as the person who did it. Carrying every open checklist to every engineer is what made that
+ * reachable, so the boundary that carries them is where the assignment has to be honoured.
+ */
+describe('assigned corrective work stays with its assignee', () => {
+  const assigned = (id: string, assigneeId: string | null) => entry({ id, assigneeId, reinspectionOfId: 'INSP-0' });
+
+  it('offers an engineer their own assigned re-inspection and the unassigned work, not a colleague’s', () => {
+    const rows = [assigned('INSP-1', 'eng-a'), assigned('INSP-2', 'eng-b'), entry({ id: 'INSP-3' })];
+    const a = bake(rows, 'engineer', 'eng-a');
+    expect(a.openChecklists.map((c) => c.id)).toEqual(['INSP-1', 'INSP-3']);
+    const b = bake(rows, 'engineer', 'eng-b');
+    expect(b.openChecklists.map((c) => c.id)).toEqual(['INSP-2', 'INSP-3']);
+  });
+
+  it('does not open a colleague’s assigned work as the field view’s default either', () => {
+    // the singular slice is chosen from the same filtered set — otherwise the list hides it and the
+    // screen still opens it
+    const slices = bake([assigned('INSP-1', 'eng-b'), entry({ id: 'INSP-2' })], 'engineer', 'eng-a');
+    expect(slices.checklist?.id).toBe('INSP-2');
+  });
+
+  it('shows the PMC everything, because they issued it and must see what is outstanding', () => {
+    const rows = [assigned('INSP-1', 'eng-a'), assigned('INSP-2', 'eng-b'), entry({ id: 'INSP-3' })];
+    expect(bake(rows, 'pmc').openChecklists.map((c) => c.id)).toEqual(['INSP-1', 'INSP-2', 'INSP-3']);
+  });
+
+  it('leaves UNASSIGNED checklists everybody’s — the common case, unchanged', () => {
+    const rows = [entry({ id: 'INSP-1' }), entry({ id: 'INSP-2' })];
+    expect(bake(rows, 'engineer', 'eng-a').openChecklists.map((c) => c.id)).toEqual(['INSP-1', 'INSP-2']);
+    expect(bake(rows, 'engineer', 'eng-z').openChecklists.map((c) => c.id)).toEqual(['INSP-1', 'INSP-2']);
   });
 });

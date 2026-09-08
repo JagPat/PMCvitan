@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { InspectionsService } from '../../src/inspections/inspections.service';
@@ -126,4 +126,50 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     await svc.create(p, createInput(), asPmc(pmcA, p), undefined);
     expect(await t.prisma.inspection.count({ where: { projectId: p } })).toBe(1);
   });
+
+  /**
+   * A rejected inspection creates a re-inspection ASSIGNED to whoever submitted the original. The
+   * submitter of record is the person who did the work, so a second engineer submitting it would put
+   * the wrong name on somebody's corrective work. The read boundary keeps it off their field view;
+   * this is the enforcement behind it, because a client is not an authorization boundary.
+   */
+  it('submit: assigned corrective work is refused for anyone but its assignee, and accepted for them', async () => {
+    const { p, pmcA } = await freshProject();
+    const engA = `it-inidem-u-engA-${projSeq}`;
+    const engB = `it-inidem-u-engB-${projSeq}`;
+    for (const [id, name] of [[engA, 'Eng A'], [engB, 'Eng B']] as const) {
+      await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
+    }
+    const asEng = (sub: string): AuthUser => ({ sub, role: 'engineer', projectId: p }) as AuthUser;
+
+    await svc.create(p, createInput({ title: 'Assigned QA' }), asPmc(pmcA, p), 'k-assign-1');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p }, include: { items: true } });
+    // the work is named: this checklist is engineer A's
+    await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: engA } });
+    const items = insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' }));
+
+    await expect(svc.submit(p, insp.id, { items }, asEng(engB), 'k-assign-b'))
+      .rejects.toBeInstanceOf(ForbiddenException);
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } })).submitted).toBe(false);
+
+    // not merely strict: its assignee submits it
+    await svc.submit(p, insp.id, { items }, asEng(engA), 'k-assign-a');
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } })).submitted).toBe(true);
+  });
+
+  it('submit: an UNASSIGNED checklist is unchanged — the role gate is the whole guard, as before', async () => {
+    const { p, pmcA } = await freshProject();
+    const eng = `it-inidem-u-engC-${projSeq}`;
+    await t.prisma.user.create({ data: { id: eng, projectId: p, role: 'engineer', name: 'Eng C', email: `${eng}@t.local` } });
+    await t.prisma.membership.create({ data: { projectId: p, userId: eng, role: 'engineer', status: 'active' } });
+
+    await svc.create(p, createInput({ title: 'Site QA' }), asPmc(pmcA, p), 'k-unassigned-1');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p }, include: { items: true } });
+    expect(insp.assigneeId).toBe(null);
+    await svc.submit(p, insp.id, { items: insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) },
+      { sub: eng, role: 'engineer', projectId: p } as AuthUser, 'k-unassigned-sub');
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } })).submitted).toBe(true);
+  });
+
 });

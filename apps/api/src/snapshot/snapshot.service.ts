@@ -82,7 +82,7 @@ export class SnapshotService {
       decisionSlicePromise.then((s) => this.activitiesQuery.snapshotSlice(projectId, { decisionStatuses: s.statuses, decisionDrafts: s.drafts, decisionDeciders: s.deciders, withdrawnReasonVisible: role === 'pmc' })),
       // Task 10 (Module 3) — the role-gated inspection slices come from the module's query (the same
       // per-viewer/role serialization moved there verbatim, so byte-identical), never a direct read.
-      this.inspectionsQuery.snapshotSlice(projectId, role),
+      this.inspectionsQuery.snapshotSlice(projectId, role, userId),
       // Task 10 — the daily-log slice (latest log core + project-wide materials) comes from the
       // module's query, never a direct `prisma.dailyLog`/`prisma.siteMaterial` read. The progress
       // PHOTOS remain the snapshot's to compose from media (below), so the DTO stays byte-identical.

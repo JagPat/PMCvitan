@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { useStore, getInitialState } from '@/store/store';
+import { useStore, getInitialState, checklistFrozen } from '@/store/store';
 import { emptyProjectData } from '@/store/projectScope';
 import type { ApiGateway, ApiSnapshot, ModuleInspections } from '@/data/apiGateway';
 import { enabledScreensFor, SCREEN_MODULE } from '@/lib/screens';
@@ -218,6 +218,83 @@ describe('Task 10 (Module 3) — module-owned inspections read (XOR)', () => {
     await flush();
     expect(s().checklist?.id).toBe('INSP-1');
     expect(s().selectedChecklistId).toBe(null);
+  });
+
+  it('refuses to switch while an ONLINE submit is unresolved, so the submitted checklist stays frozen', async () => {
+    // The regression this replaces: `selectChecklist` called `reconcileSubmission`, whose `else`
+    // arm fires the moment the record stops naming the checklist in the slot. Switching away and
+    // back reset it to idle/attempt 0 twice — the submitted checklist became editable with its
+    // request still open, and `isThisAttempt()` then discarded that submit's own response.
+    const both = [checklist('INSP-1'), checklist('INSP-2')].map((c) => ({
+      ...c, items: [{ ...c.items[0], state: 'pass' as const, photos: 1 }],
+    }));
+    let release: () => void = () => {};
+    const pending = new Promise<void>((r) => { release = r; });
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot({ checklist: both[0], openChecklists: both })),
+      inspections: vi.fn(),
+      submitInspection: vi.fn().mockReturnValue(pending),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+
+    void s().submitInspection();
+    await flush();
+    expect(s().submission).toMatchObject({ inspectionId: 'INSP-1', status: 'submitting' });
+    const attempt = s().submission.attempt;
+    expect(checklistFrozen(s())).toBe(true);
+
+    // the switch is refused while that submit is open
+    s().selectChecklist('INSP-2');
+    expect(s().checklist?.id).toBe('INSP-1');
+    expect(checklistFrozen(s())).toBe(true);
+    expect(s().submission.attempt).toBe(attempt);
+
+    release();
+    await flush();
+  });
+
+  it('a QUEUED offline submit does not block switching — its freeze is rebuilt from the outbox', async () => {
+    // The counterpart: only the in-memory `submitting` status is singular. A queued submit is
+    // durable, so switching away and back re-derives its freeze and must stay permitted.
+    const both = [checklist('INSP-1'), checklist('INSP-2')];
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot({ checklist: both[0], openChecklists: both })),
+      inspections: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    useStore.setState({ outbox: [{ t: 'submitInspection', inspectionId: 'INSP-1', items: [] } as never] });
+    useStore.setState({ submission: { inspectionId: 'INSP-1', generation: s().projectScopeGeneration, status: 'queued', attempt: 0 } });
+    expect(checklistFrozen(s())).toBe(true);
+
+    s().selectChecklist('INSP-2');
+    expect(s().checklist?.id).toBe('INSP-2');
+    expect(checklistFrozen(s()), 'the unsubmitted other checklist is editable').toBe(false);
+
+    s().selectChecklist('INSP-1');
+    expect(s().checklist?.id).toBe('INSP-1');
+    expect(checklistFrozen(s()), 'the queued freeze is rebuilt from the durable outbox').toBe(true);
+    expect(s().submission.status).toBe('queued');
+  });
+
+  it('an older server serving a SUBMITTED checklist yields an empty outstanding list, not a false one', async () => {
+    // When nothing is open the API deliberately serves the oldest SUBMITTED checklist so a finished
+    // one stays readable. Wrapping that in the compatibility fallback reported completed work as out
+    // on site and awaiting the engineer. An older server cannot tell us about a second open
+    // checklist, and an empty list is the honest answer to that.
+    const done = { ...checklist('INSP-9'), submitted: true };
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot({ checklist: done })),
+      inspections: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().checklist?.id).toBe('INSP-9');       // still readable
+    expect(s().openChecklists).toEqual([]);          // but not "out on site"
   });
 
   it('the outstanding list is PROJECT data — a scope teardown empties it', async () => {

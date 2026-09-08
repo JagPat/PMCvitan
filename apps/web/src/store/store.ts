@@ -14,7 +14,7 @@
 
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
-import { castDraft } from 'immer';
+import { castDraft, current } from 'immer';
 import {
   SEED_ACTIVITIES,
   SEED_CHECKLIST,
@@ -791,6 +791,23 @@ function overlayChecklistMarks(s: AppState): void {
  * submitted, or belonging to a project this scope has moved away from — is DROPPED rather than
  * pinning the slot to a checklist that is no longer outstanding.
  */
+/**
+ * Write the checklist in the edit slot back over its entry in the outstanding list.
+ *
+ * Field STATE and NOTE survive a switch through `checklistMarks`, which the engineer's own edits
+ * record per inspection. The demo path's photo counter and local evidence thumbnails do not: they
+ * live only on the checklist object, so switching away and back restored a clean clone from the list
+ * and silently dropped them — and a failed item whose only photo vanished cannot be submitted at all.
+ * Mirroring the slot back before it is replaced keeps the list the single source the switch reads
+ * from, rather than adding a second per-inspection record for two fields.
+ */
+function parkEditSlot(s: AppState): void {
+  const c = s.checklist;
+  if (!c) return;
+  const i = s.openChecklists.findIndex((o) => o.id === c.id);
+  if (i >= 0) s.openChecklists[i] = structuredClone(current(c)) as Checklist;
+}
+
 function ownerOfEditSlot(
   open: readonly Checklist[],
   fallback: Checklist | null,
@@ -1204,7 +1221,13 @@ export const useStore = create<Store>()(
           // would have left the second issued checklist invisible on the path nearly every
           // deployment uses — the fix would only have worked once the non-default module read was
           // switched on. The fallback covers a client that outran its server.
-          const open = snap.openChecklists ?? (snap.checklist ? [snap.checklist] : []);
+          // The fallback covers a client deployed ahead of its API. It must NOT wrap a submitted
+          // checklist: when nothing is open the server deliberately serves the oldest SUBMITTED one
+          // so a finished checklist stays readable, and wrapping that would report completed work as
+          // out on site and awaiting the engineer. An older server simply cannot tell us about a
+          // second open checklist, and an empty list is the honest answer to that.
+          const open = snap.openChecklists
+            ?? (snap.checklist && !snap.checklist.submitted ? [snap.checklist] : []);
           s.openChecklists = [...open];
           const owner = ownerOfEditSlot(open, snap.checklist ?? null, s.selectedChecklistId);
           s.checklist = owner.checklist;
@@ -2216,14 +2239,32 @@ export const useStore = create<Store>()(
       // plain checklist, and a draft proxy is not a safe `structuredClone` source.
       const target = get().openChecklists.find((c) => c.id === id);
       if (!target || get().checklist?.id === id) return;
+      // An ONLINE submit in flight owns the submission record, and that record holds ONE
+      // inspection. `reconcileSubmission` below would retire it — its `else` arm fires the moment
+      // `sub.inspectionId` stops matching the checklist in the slot — leaving the submitted
+      // checklist editable while its request is still open and stamping `attempt: 0`, so
+      // `isThisAttempt()` discards the response when it lands. A `queued` offline submit has no
+      // such problem: its freeze is rebuilt from the DURABLE outbox on every reconcile, so it
+      // survives any number of switches. Refusing the switch for the seconds an online submit is
+      // unresolved is therefore exactly the restriction the defect needs, and it leaves the
+      // submission lifecycle — eleven gate rounds of it — untouched.
+      const sub = get().submission;
+      if (sub.status === 'submitting' && sub.generation === get().projectScopeGeneration) {
+        get().flash('Finishing the submit — you can switch checklists in a moment.');
+        return;
+      }
       const fresh = structuredClone(target);
       set((s) => {
+        // keep whatever the engineer has done to the checklist they are leaving — including the demo
+        // path's photo counter and thumbnails, which no mark records
+        parkEditSlot(s);
         s.selectedChecklistId = id;
         s.checklist = fresh;
         // server truth + THIS inspection's unsubmitted intent — the same rule a refresh applies.
         overlayChecklistMarks(s);
-        // the freeze is per-inspection: a checklist with a queued submit must open frozen, and one
-        // without must not inherit the previous checklist's freeze.
+        // the freeze is per-inspection: a checklist with a QUEUED submit must open frozen, and one
+        // without must not inherit the previous checklist's freeze. Safe here precisely because the
+        // guard above has already excluded the one status this single record cannot survive.
         reconcileSubmission(s);
       });
     },
@@ -2300,8 +2341,17 @@ export const useStore = create<Store>()(
         set((s) => {
           s.outbox.push({ t: 'uploadEvidence', scope: ctx.scope, clientKey });
           s.syncQueue.push('Evidence photo');
-          const it = s.checklist?.items[idx];
-          if (it) { it.photos += 1; it.evidence = [...(it.evidence ?? []), dataUrl]; }
+          // The local thumbnail belongs to the checklist the photo was CAPTURED on, and the edit
+          // slot can have moved during the IndexedDB write. `evidenceContextStillCurrent` guards
+          // the SCOPE (project + generation), which a switch between two checklists of the same
+          // project does not change — so without this the mirror lands on whatever checklist is in
+          // the slot now, at the same index, showing one inspection's photo under another. The
+          // durable row is unaffected either way: its `meta` names the captured inspection and item,
+          // so the upload and the reconcile stay correct and the count below still belongs to this
+          // scope's pending set. Only the optimistic thumbnail is skipped, and the next refresh
+          // renders it in the right place.
+          const it = s.checklist?.id === c.id ? s.checklist.items[idx] : undefined;
+          if (it && it.id === item.id) { it.photos += 1; it.evidence = [...(it.evidence ?? []), dataUrl]; }
           s.pendingEvidenceCount += 1;
         });
         persistOutbox();
@@ -2473,10 +2523,17 @@ export const useStore = create<Store>()(
         s.checklist.submitted = true;
         s.submission = { inspectionId: null, generation: s.projectScopeGeneration, status: 'idle', attempt: 0 };
         delete s.checklistMarks.byInspection[s.checklist.id];
-        // a submitted checklist is no longer outstanding: drop it from the open set (and from the
-        // selection, if it held it) so the demo path agrees with what the server would serve.
-        s.openChecklists = s.openChecklists.filter((c) => c.id !== s.checklist!.id);
-        if (s.selectedChecklistId === s.checklist.id) s.selectedChecklistId = null;
+        // a submitted checklist is no longer outstanding: drop it from the open set so the demo path
+        // agrees with what the server would serve. The edit slot must MOVE with it — leaving the
+        // submitted checklist in the slot drops the open count to one, which hides the picker and
+        // makes the checklist still out on site unreachable. The server path has no such problem: its
+        // next snapshot re-picks the slot from the open set.
+        const submittedId = s.checklist.id;
+        s.openChecklists = s.openChecklists.filter((c) => c.id !== submittedId);
+        if (s.selectedChecklistId === submittedId) s.selectedChecklistId = null;
+        const next = s.openChecklists[0];
+        // `current` first: `next` is an immer draft, and a draft proxy is not a cloneable source
+        if (next) { s.checklist = structuredClone(current(next)) as Checklist; s.selectedChecklistId = next.id; }
         // demo (no API): the submitted checklist enters the PMC review queue,
         // mapping each item's pass/fail state to a PASS/FAIL result.
         if (!s.reviews.some((r) => r.id === s.checklist!.id)) {
