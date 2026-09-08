@@ -1,7 +1,7 @@
 # Decision workflow, unit 4d — the architect, forwarding and countersign: the plan
 
-**Status: PLANNING — this is the docs-only 4d plan unit the merged 4b plan's
-§E order requires** (`docs/superpowers/plans/2026-08-14-decision-workflow-4b.md`
+**Status: PLANNING — this is the docs-only 4d plan unit the merged 4b plan's §E order requires**
+(`docs/superpowers/plans/2026-08-14-decision-workflow-4b.md`
 §E: "the 4d plan unit (STARTING MATERIAL: the §C orchestration design at
 `6a53aae` + §D obligations 4–6) → 4d implementation"), reached exactly when
 the 4c plan said it would be (`2026-08-29-decision-workflow-4c.md` §D: "4d …
