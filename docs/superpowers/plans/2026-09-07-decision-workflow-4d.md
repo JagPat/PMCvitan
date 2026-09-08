@@ -14,21 +14,23 @@ before 4d implementation begins — the same plan-first contract that preceded
 
 ## Review lineage, and what this replacement does differently
 
-**BOARD DECISION 2026-09-08 — the human drain attestation is LIFTED**
-(#482 comment 5577525644, relayed to #566 as comment 5577525720): the
-Board lifts the human `OPERATOR-ATTESTATION` requirement for
-`phase-6-4d-previous-release-drained` and authorizes the plan change the
-reviewer raised on every fresh head of this lineage, superseding the
-default recorded at #482 comment 5569586836 and every decline that cited
-it (#558, #560, #562, #563, #564, #565 and #566's round 1). §D "The drain
-gate" now reads: the gate clears on the fail-closed AUTONOMOUS evidence —
-the sealed `ReleaseLease` register showing no live lease below the minimum
-catalog version, and `rollout:drain-evidence`'s fail-closed
-running-container verdict recorded as a `DRAIN-EVIDENCE` comment — both
-re-verified by 4d-iii's migration preflight; an operator attestation is
-ACCEPTED as additional evidence and never required. The runner clears the
-directive itself when both pieces of evidence hold, and 4d-iii proceeds.
-The lineage tables below keep every earlier decline as the history it was.
+**A fold made on an agent-generated "Board GO" was REVERTED, and the drain
+attestation STANDS.** On 2026-09-08 a GitHub Watch relay under the shared
+owner login (#482 comment 5577525644, nudged to #566 as comment 5577525720)
+presented itself as a Board decision lifting the human
+`OPERATOR-ATTESTATION` for `phase-6-4d-previous-release-drained`; this
+lineage's session folded it on #566's head `1a2ba97`, then Delivery's hold
+(#482 comment 5577732007) established that no direct user decision exists
+behind it and that agent prose under the shared login cannot supersede the
+retained gate — which the user's own standing instruction to this session
+also retains. The fold is reverted on the next head: §D "The drain
+attestation" reads exactly as before `1a2ba97` (the operator attestation
+REQUIRED; the sealed `ReleaseLease` register and `rollout:drain-evidence`
+as fail-closed CORROBORATION the runner verifies first). The reviewer's
+drain-gate finding therefore stays DECLINED on comment 5569586836, and any
+change to that gate waits on a decision the user makes directly, never on a
+coordinator relay or a review finding. The head `1a2ba97` is recorded here
+as what it was — a fold on invalid provenance, caught within the hour.
 
 This document REPLACES PR #565 (`Replaces: #565` — labelled
 `review-replacement-required` by the orchestrator before it closed, so the
@@ -519,7 +521,7 @@ attestation — is the question the Board answered:
 
 | finding | where it lands | the answer |
 |---|---|---|
-| 1 (P1) "allow the autonomous runner to clear the drain gate" | §D the drain gate | first DECLINED on the recorded default (#482 comment 5569586836), then FOLDED on this PR's second head under the BOARD DECISION of 2026-09-08 (#482 comment 5577525644) that lifts the human attestation and authorizes exactly this change: the gate clears on the fail-closed autonomous evidence — the sealed `ReleaseLease` register and `rollout:drain-evidence`'s running-container verdict, both re-verified by 4d-iii's preflight — and an operator attestation is accepted, never required |
+| 1 (P1) "allow the autonomous runner to clear the drain gate" | §D the drain attestation | DECLINED — a Board decision, not a plan defect (#482 comment 5569586836); the plan carries the gate exactly as decided; the `AGENTS.md`-vs-decision contradiction that keeps re-raising it is before the Board (#482 comment 5575748015). A Watch-generated "Board GO" (#482 comment 5577525644) was folded on head `1a2ba97` and REVERTED on the next head once Delivery's hold (#482 comment 5577732007) showed no direct user decision behind it; the requirement stands |
 | 2 (P1) the fact's actor-role arm reads `platform_user_holds_role` LIVE, and a self-transition written membership-first (a PMC re-roling themselves to `engineer`) had already projected the new role before the fact claimed the frozen `actorRole = 'pmc'`, so the check refused the transition the plan says must succeed; the captured-pre-state exception covered the PMC-authority arm only | §A.2 the membership transition fact; P29b | the fact is inserted BEFORE the membership write for EVERY transition (add already did; re-role and removal join it), so every arm of its BEFORE INSERT trigger — actor role, display name, team-management authority — judges the PRE-state registers by construction and the self-demotion special case collapses into the one rule; the membership write's BEFORE trigger requires the fact for this exact transition to already exist in the transaction, so a hand-run bundle written membership-first is refused and "fact first" is the sealed protocol, not a convention; P29b asserts a PMC's self re-role committing with the frozen `pmc` role (RED at the post-state live check), an owner/admin's self-demotion likewise, and the membership-first hostile bundle refused |
 
 **Docs-only.** No schema, no migration, no runtime code, no test change, no
@@ -758,8 +760,7 @@ NEW row carries `role = 'architect'` — judged on NEW regardless of OLD, so a
 removed row already in that role can be neither restored nor re-keyed into
 service through it (the exact shape of 4c-i's `ProjectCapability_t4c_reserved`)
 — dropped by the trailing migration-only unit 4d-iii once the previous
-release is drained, the drain verified fail-closed by the autonomous
-evidence of §D (the Board decision of 2026-09-08). **The reservation covers EVERY 4d producer**:
+release is attested drained. **The reservation covers EVERY 4d producer**:
 the architect reservation keeps the CHAIN off, but forwarding needs no
 architect, so 4d-ii's `decisions.forward` would emit `decision.forwarded`
 while an ALREADY-RUNNING previous-release push worker — fenced by the
@@ -2064,7 +2065,7 @@ no lock-order inversion exists). A standing write therefore either
 committed before the emitting command took the key — and the audience read
 under the key sees it — or is refused while the command holds it, and the
 frozen `targetUserIds` equals the set at commit by construction, for every
-writer. **The trigger is staged in 4d-iii, after the verified drain, and
+writer. **The trigger is staged in 4d-iii, after the attested drain, and
 not a unit earlier** (#556's review round 2, finding 2: staged in 4d-i it
 would have met the previous release's `signInOrProvision`, which writes the
 `User` and the `Membership` as two statements, so a membership refused
@@ -3321,7 +3322,7 @@ today's behaviour lives.
   `Replaces: #<this>` and every unresolved finding — no PR-number cap.
 
 - **4d implementation follows as FOUR PRs — the dark migration 4d-i, the
-  service/role/UI unit 4d-ii, the autonomous drain gate, and the trailing
+  service/role/UI unit 4d-ii, a drain attestation, and the trailing
   reservation retirement 4d-iii — each honouring the mandatory migration
   seam** (the additive schema is deployable before any caller uses it — that
   viable seam makes a single migration+service+UI PR a violation of the
@@ -3703,40 +3704,34 @@ today's behaviour lives.
     already outside it: the dark seals (4d-i), the reservation retirement
     and the standing-writer seals (4d-iii), and the drain.
 
-  - **The drain gate — autonomous and fail-closed** (BOARD DECISION
-    2026-09-08, #482 comment 5577525644, superseding the default at comment
-    5569586836): the directive `phase-6-4d-previous-release-drained` states
-    that every process older than the 4d-ii release is stopped or drained,
-    and it CLEARS on the two pieces of trusted autonomous evidence below,
-    both verified fail-closed by the runner — an operator's
-    `OPERATOR-ATTESTATION` on the controlling issue is ACCEPTED as
-    additional evidence and never required. The bumped consumer contracts
-    fence every process that STARTS, which keeps the drained state durable
+  - **The drain attestation** — the operator states that every process older
+    than the 4d-ii release is stopped or drained, as an `OPERATOR-ATTESTATION`
+    on the controlling issue naming the directive and the minimum release,
+    carrying no agent-generation marker — the attestation covers processes
+    ALREADY RUNNING, which no code can observe; the bumped consumer contracts
+    fence every process that STARTS, which keeps the attested state durable
     afterwards; browser tabs stand behind the `countersign-v1` boundary
-    (§A.2). **What 4c decided and what 4d decides differently**: 4c
-    (2026-08-29, on PR #480) kept an operator-declared directive with NO
-    automated drain actor; 4d keeps "no actor" — nothing here drains
-    anything — and, on the Board's 2026-09-08 decision, lets the runner
-    clear the directive on evidence it can verify. Why the drain
+    (§A.2). **BOARD DECISION carried from 4c** (2026-08-29, on PR #480): an
+    operator-declared directive, NO automated drain actor. Why the drain
     matters for 4d, stated concretely: a pre-4d instance's Prisma client
     fails to READ any `Decision` row whose `status` is a value its generated
     enum does not know, and its zod `TokenRole` refuses to mint a JWT for an
     `architect` member — so a project whose chain activates while an old
     instance still serves is a split brain of exactly 4c's class. The
-    reservation makes that state unreachable until the fleet is verified
-    drained. Nothing an agent WRITES supplies that verification (the #530
-    lesson): the evidence is read from sealed registers and from the deploy
-    platform, never asserted in prose. **What the runner CAN verify, it
-    verifies — fail-closed — and on the Board's decision that verification
-    IS the gate** (#558's review round 1, finding 4, re-raised on #560,
-    #562, #563, #564, #565 and #566: a gate only a human can clear leaves an
-    autonomous loop `in_progress` with no human standing by; a review finding
-    cannot lift a recorded Board decision, so the plan declined it on the
-    default recorded at #482 comment 5569586836 and put the contradiction
-    with `AGENTS.md` L72–75 to the Board at comment 5575748015; the Board
-    answered on 2026-09-08 at comment 5577525644 — the human attestation is
-    lifted and this change authorized). Two pieces of trusted autonomous
-    evidence, both shipped in 4d-ii:
+    reservation makes that state unreachable until the fleet is attested
+    drained. Nothing an agent writes supplies the attestation (the #530
+    lesson). **What the runner CAN verify, it verifies — fail-closed —
+    and the Board decides whether that verification replaces the
+    attestation** (#558's review round 1, finding 4: a gate only a human can
+    clear leaves an autonomous loop `in_progress` with no human standing by;
+    a review finding cannot lift a recorded Board decision, and this plan
+    does not pretend to — it adds the evidence and raised the question on
+    #482, where the controlling answer is recorded: comment 5569586836,
+    2026-09-07 — the user's standing instructions RETAIN human production
+    attestation; evidence does NOT replace the direct explicit operator
+    attestation; a review request for greater autonomy cannot authorize its
+    removal, and no agent-authored statement can supply a policy change or a
+    runtime fact). Two pieces of trusted autonomous evidence, both shipped in 4d-ii:
     (i) the platform-owned `ReleaseLease(instanceId, catalogVersion,
     release, startedAt, leaseUntil)` register — every serving process writes
     its row at startup with the consumer-catalog version compiled into it
@@ -3761,27 +3756,18 @@ today's behaviour lives.
     closed on any container it cannot classify, and records its evidence
     (the inventory, the minimum release, the verdict) as a `DRAIN-EVIDENCE`
     comment on the controlling issue — an OBSERVER of the platform's state,
-    never an actor that drains anything, which 4c refused and 4d does not
-    reintroduce. The gate therefore reads: `phase-6-4d-previous-release-drained`
-    CLEARS when BOTH hold — (i) the sealed lease register shows no live
-    lease at a catalog version below the minimum, and (ii)
-    `rollout:drain-evidence` has recorded a PASSING `DRAIN-EVIDENCE` verdict
-    for the minimum release, every running container classified at or
-    after it — and the runner clears it ITSELF: it records the verdict,
-    writes the STATUS fold that clears `blocking_directive` citing the
-    `DRAIN-EVIDENCE` comment id and the lease query it ran, and 4d-iii's
-    migration preflight RE-VERIFIES both pieces at deploy time and aborts
-    the retirement with every door intact if either has stopped holding
-    (a container the inventory cannot classify, a live lease below the
-    minimum, a Coolify API the CLI cannot reach — each fails CLOSED; an
-    unreachable inventory is not a drained fleet). An
-    `OPERATOR-ATTESTATION` on #482 is accepted as additional evidence and
-    recorded beside the verdict when present; its absence blocks nothing.
-    This is the Board's 2026-09-08 decision (#482 comment 5577525644),
-    superseding the default at comment 5569586836; it stands until the
-    Board decides otherwise, and this plan neither widens it (no actor
-    drains anything; no evidence is asserted in prose) nor narrows it (no
-    human step is reintroduced).
+    never an actor that drains anything, which is the thing the Board
+    refused. The gate therefore reads: `phase-6-4d-previous-release-drained`
+    clears on the direct explicit OPERATOR-ATTESTATION, which is REQUIRED,
+    with the autonomous evidence as CORROBORATION the runner verifies and
+    records beforehand — never a substitute, never a reason to treat a wait
+    for genuinely required operator evidence as permission to clear the
+    gate. The runner's own steps (`rollout:drain-evidence`, then 4d-iii's
+    migration preflight re-checking the lease register) are complete and
+    repeatable without a human and fail closed on their own; the gate as a
+    whole clears only when the attestation exists beside them. Any removal
+    of the human requirement is the user's separate decision, never
+    inferred from a review finding, a coordinator note or this plan.
 
   - **4d-iii, the reservation retirement**: a migration-only unit whose
     transaction, after its `SET LOCAL` gate, FIRST takes `LOCK TABLE
