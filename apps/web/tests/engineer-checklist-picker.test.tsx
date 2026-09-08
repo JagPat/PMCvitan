@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup, fireEvent, act } from '@testing-library/react';
+import { render, cleanup, fireEvent, act, waitFor } from '@testing-library/react';
 import type { Checklist } from '@vitan/shared';
 
 /**
@@ -152,6 +152,22 @@ describe('the engineer can open every checklist that is out on site', () => {
     expect(useStore.getState().checklist?.id).toBe('INSP-2');
     expect(useStore.getState().checklist?.items[0].photos).toBe(0);
     expect(useStore.getState().checklist?.items[0].evidence ?? []).toEqual([]);
+  });
+
+  it('a file set on the input WITHOUT the camera gesture is still captured, against the slot', async () => {
+    // The acceptance suites populate the hidden input directly rather than clicking the camera, so
+    // the pinned target is absent. Making the pin mandatory dropped every one of those captures in
+    // silence — the photo simply never arrived. The fallback is the edit slot at item 0, which is
+    // what this handler resolved to before the pin existed.
+    const both = [checklist('INSP-1', 'Rebar'), checklist('INSP-2', 'Shuttering')];
+    const { view, useStore } = await mount(both, both[0], { demo: true });
+
+    const input = view.getByTestId('evidence-file-input') as HTMLInputElement;
+    Object.defineProperty(input, 'files', { value: [new File(['x'], 'p.jpg', { type: 'image/jpeg' })], configurable: true });
+    act(() => { fireEvent.change(input); }); // the real FileReader resolves on a later task
+    await waitFor(() => expect(useStore.getState().checklist?.items[0].photos).toBe(1));
+
+    expect(useStore.getState().checklist?.id).toBe('INSP-1');
   });
 
   it('a demo photo survives leaving the checklist and coming back', async () => {

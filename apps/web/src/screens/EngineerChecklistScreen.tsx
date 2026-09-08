@@ -61,11 +61,18 @@ export function EngineerChecklistScreen() {
     fileRef.current?.click();
   };
   const onPicked = (file: File | null) => {
-    const t = target.current;
-    if (!file || !t) return;
+    if (!file || !checklist) return;
+    // The pin is the AUTHORITY when the camera was opened through `pickEvidence`, which is the only
+    // route the app itself offers. A file can still arrive on the input without that gesture — the
+    // acceptance suites populate it directly — and refusing those captures would silently drop a
+    // photo, so the fallback is the edit slot at item 0: exactly what this handler resolved to
+    // before the pin existed. It is a fallback, never a correction: a pinned target is used as
+    // pinned even when the slot has moved on, which is the whole point.
+    const t = target.current ?? { inspectionId: checklist.id, idx: 0 };
     const reader = new FileReader();
     reader.onload = () => { void addChecklistEvidence(t.idx, String(reader.result), t.inspectionId); };
     reader.readAsDataURL(file);
+    target.current = null; // one capture per gesture — the next file needs its own pin or the fallback
     if (fileRef.current) fileRef.current.value = '';
   };
 
