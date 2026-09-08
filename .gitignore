@@ -1,4 +1,9 @@
-node_modules/
+# NOT `node_modules/`. A trailing slash matches a DIRECTORY only, so a symlink or a plain
+# file of that name is left untracked-but-not-ignored and `git add -A` stages it. One did:
+# a committed `node_modules` symlink dangles on a runner and `pnpm install` then fails at
+# `mkdir node_modules` with ENOTDIR, taking down every job before a test runs. Without the
+# slash the real directory is still ignored, at any depth.
+node_modules
 dist/
 dist-ssr/
 build/
