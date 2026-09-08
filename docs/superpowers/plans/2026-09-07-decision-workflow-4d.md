@@ -856,6 +856,39 @@ test this sets itself: the next round should not be able to find an obligation
 a resolver writer owes and does not carry, because there is no longer a place
 to carry them one at a time.
 
+### Review round 8 (head `e9b496a1`) — three findings, and the fourth round from the previous round's fix
+
+| finding | where it lands | the answer |
+|---|---|---|
+| 1 (P1) the delivered `members.add` looks the user up and CREATES a missing one BEFORE its membership transaction, so two requests with the same `Idempotency-Key` for a new email can both see no user, one creates it, and the other fails on the uniqueness constraint before reserving or replaying the receipt — the keyed replay this plan promises covering only the half after the identity exists | §A.3 obligation 6; §D 4d-ii-a's writer inventory; P29b | 4d-ii-a moves the lookup AND the create inside `executeCommand.run`, so the whole add is one atomic replayable unit |
+| 2 (P1) `ChangeRequest_t4d_provenance_required` is INSERT-time and checks the requester half only, while BOTH closures — the withdrawal and the re-approval — happen by UPDATE; so the closure set rounds 5–7 specified was enforced by nothing, and a direct closure setting `resolvedById` alone meets every seal this plan installs | §A.3 obligations 3, 5 and 6; §D 4d-iii; P42 | the seal gains an UPDATE ARM requiring the COMPLETE closure set whenever `resolvedById` goes NULL → non-NULL, all four columns then immutable together; P42 gains the direct-closure hostile probe in three shapes |
+| 3 (P2) `outbox:consumer` mutates a GLOBAL register but was required to run through a ledger whose `CommandScope` admits only a project or an org — so it would key a global mutation on an arbitrary tenant, and per-org scoping would let one activation key execute once per organisation against a single global `seq` | §A.2 the activation register; `platform/commands.ts` | it is an OPERATOR PROTOCOL, not a ledger command: idempotency comes from the register's own `(consumer, seq)` uniqueness with `ON CONFLICT DO NOTHING` under the catalog row lock — stronger here than a receipt, and it does not widen the receipt model for every command to serve the one that does not fit it |
+
+**Finding 2 is the fourth consecutive round produced by the previous round's
+fix, and it is the one that names what the first three were missing.**
+
+Round 5 wrote a hand list of writers. Round 6 replaced it with a derivation over
+the column. Round 7 replaced the enumerated obligations with a set every writer
+inherits. Each of those was a real improvement and each held. But all three were
+corrections to the SPECIFICATION — to the sentence describing what a closure
+owes — and not one of them asked the next question down: **what enforces it, on
+which operation?** The answer was: nothing, on none. The only seal on
+`ChangeRequest` fires on INSERT, and a closure is an UPDATE. Three rounds of
+increasingly well-derived obligations were being written into a space no seal
+reached.
+
+So round 8's change is not a fifth refinement of who-owes-what. It adds the
+enforcement question to the §A.3 walk itself: **for every obligation, name the
+operations its seal fires on, and an obligation whose seal does not cover every
+operation that can breach it is a defect of the same kind as omitting the
+obligation outright.** A rule with no enforcer on the reachable operation is a
+comment.
+
+The test that sets itself is the sharpest one yet, and deliberately so: the next
+round should not be able to find an obligation in this plan that no seal
+enforces on the operation that performs it — because the table's own walk now
+asks.
+
 **Docs-only.** No schema, no migration, no runtime code, no test change, no
 4d implementation. Contractor-capture units 1–6 and the saved UX and
 performance work stay Board-gated and are not mixed in.
@@ -2993,7 +3026,18 @@ before it. Each fact table carries:
    `decisions.withdrawChange` AND `decisions.approve` (its re-approval closure
    branch) are covered (#572's review round 6, finding 1); `MembershipTransition`
    is `required`, so `members.add`, `members.updateRole` and `members.remove`
-   are covered. TEN commands. **The derivation is per COLUMN, and each
+   are covered — and for `members.add` the receipt must cover the IDENTITY
+   PROVISIONING too (#572's review round 8, finding 1): the delivered command
+   looks the user up and CREATES a missing one before its membership
+   transaction (`members.service.ts`), so two requests carrying the same
+   `Idempotency-Key` for a new email can both observe no user, one creates it,
+   and the other fails on the user uniqueness constraint before it ever
+   reserves or replays the receipt — the keyed replay this plan promises
+   covering only the half of the operation that happens after the identity
+   exists, and any later failure inside the command leaving a provisioned
+   identity outside the receipt's transaction. 4d-ii-a moves the lookup AND
+   the create inside `executeCommand.run`, so the whole add is one atomic,
+   replayable unit. TEN commands. **The derivation is per COLUMN, and each
    column's writers are derived in turn from the column that column
    qualifies** — two corrections, one round apart, and the second is the first
    applied to itself. Round 5 forced the per-COLUMN half: reading it per table
@@ -3448,7 +3492,24 @@ before it. Each fact table carries:
    actorId, at)` register — its rows written under the `SET LOCAL` gate by a
    migration (4d-ii registers `decisions.effects` INACTIVE; 4d-iii appends
    its activation after the drain) or by the operator `outbox:consumer`
-   command through the ledger, `seq` monotone per consumer, `reason` NOT
+   command — which is an OPERATOR PROTOCOL, deliberately NOT a ledger command
+   (#572's review round 8, finding 3). The delivered `CommandScope` admits a
+   project or an org and nothing else (`platform/commands.ts`), and this
+   register is GLOBAL: keying its receipt on a tenant would either attach a
+   global mutation to an arbitrary project, or — scoped per org — let the same
+   activation key execute once per organisation against a single global `seq`,
+   which is worse than not using the ledger at all. Inventing a global scope
+   for one operator action would widen the receipt model for every command to
+   serve the one command that does not fit it. So idempotency comes from the
+   register's OWN key instead, which this unit already specifies and which is
+   stronger here than a receipt would be: `(consumer, seq)` is unique, `seq`
+   is monotone per consumer, the insert is `ON CONFLICT DO NOTHING`, and the
+   BEFORE INSERT trigger takes the catalog row `FOR UPDATE` — so a repeated
+   activation is a no-op by construction rather than by a remembered receipt,
+   and the append-only attributable row is the audit trail a receipt would
+   otherwise have carried. Every other statement in this plan about that
+   command running "through the ledger" is superseded by this paragraph.
+   `seq` monotone per consumer, `reason` NOT
    NULL under the `DecisionForward.reason` discipline (zod trims and
    requires length ≥ 1; the CHECK rejects a value that is empty once every
    ASCII whitespace character is stripped — #560's review round 2, finding
@@ -3977,6 +4038,19 @@ A future fact table added under these units inherits this contract by
 default: omitting an obligation is a defect by construction, and each unit's
 review packet walks this table for every fact it ships.
 
+**AND EVERY OBLIGATION NAMES THE OPERATIONS ITS SEAL FIRES ON** (#572's review
+round 8, finding 2). An obligation is not specified until something enforces it
+on the operation that can violate it, and this plan spent three rounds
+improving the SENTENCE describing what a closure owes while the only seal on
+its table fired on INSERT — an operation a closure never performs. Rounds 5, 6
+and 7 each corrected the specification a level up (a hand list, then the derived
+writer set, then the derived obligation set) and none of them asked what
+enforced any of it. So the walk now carries the enforcement question beside the
+obligation: for each row of this table, an obligation whose seal does not cover
+every operation that can breach it — INSERT, UPDATE, DELETE, TRUNCATE — is a
+defect of the same kind as omitting the obligation outright. A rule with no
+enforcer on the reachable operation is a comment.
+
 **And every actor-standing arm in the column above states its WINDOW
 DISPOSITION** (#572's review round 5, finding 3). §A.2 states the window rule
 as a property — through the 4d-i → 4d-iii window no seal a window writer can
@@ -4152,7 +4226,7 @@ today's behaviour lives.
 | P39 | the delivered orphan guard EXTENDED: removing or re-roling the NAMED holder, or the last active member of a ROLE designation, of an `awaiting_countersign` decision refused at BOTH layers (409 through `holdsOpenDecisions`; the DB guard on the hostile direct write); removing the LAST ARCHITECT NOT refused — it deactivates the chain (P29b) — INCLUDING when that architect is the named holder or the last member of the architect ROLE designation an awaiting decision names (the one named exemption), while a named holder who is an architect but not the last is refused naming the pending countersign, and a `pending`/`change` decision designated to the role still refuses removing its last architect | `holdsOpenDecisions` + `phase6_t4b2_membership_guard`, open set widened |
 | P40 | the send boundary per family (§A.2): the claim-time re-target (the `deciderPushTarget` read taking the decision row lock); the invalidation-vs-claim barrier in both orderings for the decider, forward, countersign (the frozen-set arms), user-targeted and consultation families; the direct-transition arm and the fan-out arm; the archive arm — the delivery dropped with the mark at the pre-send barrier and NOTHING re-notified on restoration, the awaiting decision served to the architect's next read; the responded family's target-aware re-judge; the withdraw-vs-respond barrier in both orderings; the delivery row after a partial fan-out `succeeded`/`dispatch` with NO mark, marked only when every resolved recipient is stale; the consultee push surviving each; the residual stated per family | the consumer's per-recipient hook; the cancellation inventory |
 | P41 | the delivered 4c lock-order + terminal-state probe EXTENDED to the transitions 4d adds that CLOSE the consultation-open set: `consultation.request` and `consultation.respond` vs the COUNTERSIGN, vs the `completed` stranded resolution, and vs the standard `withdrawChange`, each in BOTH orderings under the canonical lock order, asserting the TERMINAL invariant directly — consultation-first leaves the historical consultation/response standing and the finalizer commits `approved` beside it; finalize-first returns 409 with NO consultation row, NO response row and NO `consultation_*` effect; the `returned` resolution and the countersign REJECTION land `change`, which stays in the open set, so the same probe asserts the consultation ACCEPTED after them; no deadlock abort in either ordering | `decisions.service.ts` `requestConsultation` / `respondToConsultation` (the delivered 4c commands — there is no `consultations.service.ts`); `decisions.countersign`, `resolveStrandedCountersign`, `withdrawChange` |
-| P42 | the finality candidate key over the ACTUAL provenance columns: provenance onto an unfinalized revision unrepresentable (both spec tables); `finalized → false` under reference refused by the FK; the additive backfill leaves every legacy revision `finalized = true` and every legacy spec row `revisionFinalized = true`, proven over the legacy fixture in `upgrade-proof.sh`; the DEFAULTS hold through the drain — a revision, a material spec and a labour spec inserted WITHOUT the new columns all succeed on the 4d-i schema and land `true`, a `ChangeRequest` inserted WITHOUT `projectId` is filled from its decision and one naming another project's id is refused by the composite FK, a `Notification` inserted WITHOUT `eventId` succeeds; 4d-iii's drop of the defaults probed by the same inserts then failing AND by a current-version provenance write through the SHIPPED writers — create, revise AND cancel, material and labour — succeeding with `revisionFinalized = true` from the widened `approvedRef` (RED at base); 4d-iii's trailing seals — a NULL-`sourceCommandId` standard request refused while the legacy NULL rows survive, AND the SHIPPED `decisions.approve` driven from `change` after the trailing seals, closing a `standard` request and, in a second arm, a `countersign_rejection` one, each COMMITTING with a non-NULL `resolvedByCommandId` AND a non-NULL frozen `resolvedByRole`/`resolvedByName` pair on the row it closed, its receipt binding accepted through the closure's `decisionId` arm (#572's review rounds 6 and 7 — RED three ways, each alone: against a writer taught only the withdrawal path, against one taught the column but not the frozen pair, and against a binding rule admitting only the row or a bundle primary, where an ordinary re-approval rolls back at the seal); the SHIPPED `decisions.withdrawChange` driven after the trailing seals asserting the SAME three (#572's review round 7, finding 2's sweep — its receipt also names the decision, so it fails the unextended binding exactly as the re-approval does); the SHIPPED `decisions.requestChange` driven THROUGH the service after the trailing seals in BOTH key shapes — with an `Idempotency-Key` and with NO header at all under the documented default (`COMMAND_KEY_ENFORCED` unset) — each COMMITTING with a non-NULL `sourceCommandId` (the client's key, or the synthesized server key) and a non-NULL frozen `requestedByRole`/`requestedByName` pair, so the seals are proven PRECISE and not merely strict: RED against the unsynthesized writer on the no-header arm and against the pair-less writer on both (#572's review round 1, findings 1 and 2 — the arm above tested only that legacy-shaped rows are refused, which a writer that cannot satisfy the seal also passes); a decision notification without `eventId` or without `kind` refused while legacy rows survive; a new `DecisionApprovalRevision` without `approvedByName` or `approvedByRole` refused while the legacy NULL rows survive (a receipt-backed no-chain approval after the drain cannot lose its attribution); the retired catalog version's intent refused; **P42b** with P31b (§B.4); the five live previous-release decision writers — the no-chain approve, the standard `requestChange`, `withdrawChange`, `requestConsultation` and `respondToConsultation` — each driven as its exact 4c-shaped bundle (a NULL envelope pair, no `sourceCommandId` and no notice on the standard request, `dispatch: {}` where the delivered emitter sends nothing, the delivered targeted shapes on the consultation events) through the 4d-i seals and asserted to COMMIT, then after 4d-iii refused exactly where a trailing seal requires what the shape lacks (RED against a NULL rule admitting the approve alone); the drain-window interleaving — a `Project` INSERT and an owner/admin `OrgMembership` INSERT under the barrier in both orderings during the 4d-i → 4d-iii window leaving no `pmc` row, 4d-iii's re-projection restoring it behind the table fence before any door installs, that repair issued under `vitan.phase6_4d_standing_reprojection` and the SAME repair statements refused both WITHOUT the gate and with the gate but without the fence (#572's review round 5, finding 4 — RED against an ungated repair, which the writer-depth seal refuses, and proving the gate narrow rather than merely present), and a direct-SQL `Project` + owner/admin `OrgMembership` pair started AFTER the fence observed BLOCKED in `pg_stat_activity`, the migration committing its repair and its doors, the pair then meeting the doors — exactly ONE commits, the other is REFUSED by its door's message, the refused statement RETRIED after the winner commits succeeds, the terminal state holds the `pmc` row, both resume orders (the pair started BEFORE the fence delays the fence until it ends and IS repaired); 4d-iii over a `decisions.effects` an operator activated then deactivated — the retirement re-activating at the next sequence and verifying the head, a retirement whose verification fails leaving every door installed, a replay over an active head appending nothing | `DecisionApprovalRevision_provenance_target_key` widened + the two spec FKs re-targeted; the trailing seals |
+| P42 | the finality candidate key over the ACTUAL provenance columns: provenance onto an unfinalized revision unrepresentable (both spec tables); `finalized → false` under reference refused by the FK; the additive backfill leaves every legacy revision `finalized = true` and every legacy spec row `revisionFinalized = true`, proven over the legacy fixture in `upgrade-proof.sh`; the DEFAULTS hold through the drain — a revision, a material spec and a labour spec inserted WITHOUT the new columns all succeed on the 4d-i schema and land `true`, a `ChangeRequest` inserted WITHOUT `projectId` is filled from its decision and one naming another project's id is refused by the composite FK, a `Notification` inserted WITHOUT `eventId` succeeds; 4d-iii's drop of the defaults probed by the same inserts then failing AND by a current-version provenance write through the SHIPPED writers — create, revise AND cancel, material and labour — succeeding with `revisionFinalized = true` from the widened `approvedRef` (RED at base); 4d-iii's trailing seals — a NULL-`sourceCommandId` standard request refused while the legacy NULL rows survive, AND the SHIPPED `decisions.approve` driven from `change` after the trailing seals, closing a `standard` request and, in a second arm, a `countersign_rejection` one, each COMMITTING with a non-NULL `resolvedByCommandId` AND a non-NULL frozen `resolvedByRole`/`resolvedByName` pair on the row it closed, its receipt binding accepted through the closure's `decisionId` arm (#572's review rounds 6 and 7 — RED three ways, each alone: against a writer taught only the withdrawal path, against one taught the column but not the frozen pair, and against a binding rule admitting only the row or a bundle primary, where an ordinary re-approval rolls back at the seal); the SHIPPED `decisions.withdrawChange` driven after the trailing seals asserting the SAME three (#572's review round 7, finding 2's sweep — its receipt also names the decision, so it fails the unextended binding exactly as the re-approval does); the UPDATE-ARM hostile probe (#572's review round 8, finding 2): a DIRECT closure setting `resolvedById` alone — the decision restored, the event and audit row appended, every other seal satisfied — REFUSED at the trailing seal's UPDATE arm, and the same closure refused again with the receipt but WITHOUT the frozen resolver pair and with the pair but WITHOUT the receipt, so the arm is proven to require the set and not merely one of it; RED against an INSERT-only seal, which every one of those closures passes because it inserts nothing; the SHIPPED `decisions.requestChange` driven THROUGH the service after the trailing seals in BOTH key shapes — with an `Idempotency-Key` and with NO header at all under the documented default (`COMMAND_KEY_ENFORCED` unset) — each COMMITTING with a non-NULL `sourceCommandId` (the client's key, or the synthesized server key) and a non-NULL frozen `requestedByRole`/`requestedByName` pair, so the seals are proven PRECISE and not merely strict: RED against the unsynthesized writer on the no-header arm and against the pair-less writer on both (#572's review round 1, findings 1 and 2 — the arm above tested only that legacy-shaped rows are refused, which a writer that cannot satisfy the seal also passes); a decision notification without `eventId` or without `kind` refused while legacy rows survive; a new `DecisionApprovalRevision` without `approvedByName` or `approvedByRole` refused while the legacy NULL rows survive (a receipt-backed no-chain approval after the drain cannot lose its attribution); the retired catalog version's intent refused; **P42b** with P31b (§B.4); the five live previous-release decision writers — the no-chain approve, the standard `requestChange`, `withdrawChange`, `requestConsultation` and `respondToConsultation` — each driven as its exact 4c-shaped bundle (a NULL envelope pair, no `sourceCommandId` and no notice on the standard request, `dispatch: {}` where the delivered emitter sends nothing, the delivered targeted shapes on the consultation events) through the 4d-i seals and asserted to COMMIT, then after 4d-iii refused exactly where a trailing seal requires what the shape lacks (RED against a NULL rule admitting the approve alone); the drain-window interleaving — a `Project` INSERT and an owner/admin `OrgMembership` INSERT under the barrier in both orderings during the 4d-i → 4d-iii window leaving no `pmc` row, 4d-iii's re-projection restoring it behind the table fence before any door installs, that repair issued under `vitan.phase6_4d_standing_reprojection` and the SAME repair statements refused both WITHOUT the gate and with the gate but without the fence (#572's review round 5, finding 4 — RED against an ungated repair, which the writer-depth seal refuses, and proving the gate narrow rather than merely present), and a direct-SQL `Project` + owner/admin `OrgMembership` pair started AFTER the fence observed BLOCKED in `pg_stat_activity`, the migration committing its repair and its doors, the pair then meeting the doors — exactly ONE commits, the other is REFUSED by its door's message, the refused statement RETRIED after the winner commits succeeds, the terminal state holds the `pmc` row, both resume orders (the pair started BEFORE the fence delays the fence until it ends and IS repaired); 4d-iii over a `decisions.effects` an operator activated then deactivated — the retirement re-activating at the next sequence and verifying the head, a retirement whose verification fails leaving every door installed, a replay over an active head appending nothing | `DecisionApprovalRevision_provenance_target_key` widened + the two spec FKs re-targeted; the trailing seals |
 
 ## §D — Staging, review unit, and order
 
@@ -4739,10 +4813,21 @@ today's behaviour lives.
     ALL FIVE reservation doors with their shared function, drops the two
     kept finality defaults (`finalized`, `revisionFinalized` — after the
     drain only writers that state the pin remain), installs the TRAILING
-    INSERT-time seals — `ChangeRequest_t4d_provenance_required`:
-    `sourceCommandId` AND the frozen
+    seals — `ChangeRequest_t4d_provenance_required`, in TWO ARMS because this
+    table is written by two different OPERATIONS and an INSERT-time seal
+    reaches only one of them (#572's review round 8, finding 2). **The INSERT
+    arm**: `sourceCommandId` AND the frozen
     `requestedByRole`/`requestedByName` pair required on every new
-    `ChangeRequest` row whatever its origin (#560's review round 2, finding
+    `ChangeRequest` row whatever its origin. **The UPDATE arm**: whenever
+    `resolvedById` goes from NULL to non-NULL — which is what a CLOSURE is,
+    for the withdrawal and the re-approval alike — the COMPLETE closure set of
+    §A.3 must be present in the same statement (`resolvedByCommandId` and the
+    frozen `resolvedByRole`/`resolvedByName` pair), all four then immutable
+    together exactly as the requester's are. Without that arm rounds 5 through
+    7 specified a closure set that NOTHING enforced: a direct closure could set
+    `resolvedById` alone, restore the decision and append its event, and meet
+    every seal this plan installs — because the only seal on the table fires on
+    a row a closure never inserts (#560's review round 2, finding
     1: the inventory named the receipt and not the pair, so the actor-id-only
     correspondence branch this unit is stated to close would have stayed
     open for a standard request), **with the seed's DL-003 plant rewritten
