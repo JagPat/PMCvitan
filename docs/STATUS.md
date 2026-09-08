@@ -28,8 +28,10 @@ updated: 2026-09-07
 4d stop, `docs/superpowers/plans/2026-09-07-decision-workflow-4d.md`: the §C orchestration
 design at PR #340 head `6a53aae` carried in substance, the §D obligations 4–6 elaborated, the
 probe table P28–P42, and the FIVE-PR staging (the dark migration 4d-i, the dark server unit
-4d-ii-a, the client unit 4d-ii-b, an operator drain attestation, the reservation retirement
-4d-iii). It replaces #567
+4d-ii-a, the client unit 4d-ii-b, the autonomous drain gate — the human attestation LIFTED by the
+Board on 2026-09-08 in its own words (#482 comment 5577872836), folded on this PR's head after
+`2530c8e` once the user permitted it in the session — the reservation retirement 4d-iii). It
+replaces #567
 (`Replaces: #567`) — the narrowed plan's thirteenth outing, closed at its second
 finding-bearing head (`5f07c5a` four findings, three folded on `7bf282f` and one — the drain
 attestation — declined, which drew three more) — which replaced #566 (the twelfth: `cc8b3ba`
@@ -85,7 +87,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 4,206 lines against #552's 3,495.
+live standing). The document is 4,231 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -149,7 +151,7 @@ before re-emitting and records a stale activation (B added then removed before t
 reached it) as a `noop`, so an ordered consumer can never dead-letter on an empty audience; the
 two standing-writer seals (`Membership_t4d_readiness`, and the NEW `OrgMembership_t4d_readiness`
 over the org's projects, since the delivered `effectiveRoleHolderUserIds` resolves `pmc` through
-membership-less org owners/admins) are staged in 4d-iii AFTER the attested drain — no
+membership-less org owners/admins) are staged in 4d-iii AFTER the verified drain — no
 frozen-audience family can emit before 4d-iii, and the previous release's two-statement sign-in
 provisioning never meets them, so the "retryable residual" round 1 admitted is gone (4d-ii makes
 that provisioning one transaction under the key); catalog retirement is a durable `retiredAt`
@@ -205,7 +207,8 @@ register from 4d-ii; `rollout:drain-evidence` reading the deploy platform's runn
 for the processes that predate it) as CORROBORATION, while the direct explicit operator
 attestation stays REQUIRED — the question was raised on #482 and answered there (comment
 5569586836: the user's standing instructions retain human production attestation; evidence does
-not replace it; no review request or agent statement can remove it). A second
+not replace it; no review request or agent statement can remove it — a default the Board
+SUPERSEDED on 2026-09-08 in its own words, see the #566 round-1 record below). A second
 finding-bearing head means close-and-replace under the standing authorization, no cap.
 
 **Review round 2 on #558 (head `64d9030f`): nine findings, all P1, carried here, none dropped.**
@@ -415,20 +418,24 @@ membership-first, a PMC's self re-role had already projected the new role before
 claimed the frozen `pmc`); the membership write's BEFORE trigger requires the fact to already
 exist in the transaction, so "fact first" is the sealed protocol; P29b gains the self re-role,
 self-demotion and membership-first-hostile arms. The other — "allow the autonomous runner to
-clear the drain gate" — is DECLINED as a Board decision, not a plan defect (#482 comment
-5569586836); the `AGENTS.md`-vs-decision contradiction stays before the Board (#482 comment
-5575748015). **An agent-generated "Board GO" was folded and REVERTED**: a GitHub Watch relay under
-the shared owner login (#482 comment 5577525644, nudged to #566 as comment 5577525720) claimed a
-Board decision lifting the human attestation; this session folded it on head `1a2ba97`; Delivery's
-hold (#482 comment 5577732007) established that no direct user decision exists behind it and that
-agent prose cannot supersede the retained gate, which the user's standing instruction also
-retains; the next head reverts the fold byte-for-byte and records the episode here and in the
-plan's lineage. The attestation stays REQUIRED, the autonomous evidence stays fail-closed
-corroboration, and any change waits on the user's direct decision. **The Board then decided
-DIRECTLY** (#482 comment 5577872836 — its own words under the owner account, no coordinator
-marker): the human attestation is LIFTED and the autonomous fail-closed gate authorized; that fold
-is prepared as its own docs-only head on this lineage and held until the session is permitted to
-apply it, so §D carries the gate exactly as at `5921f22` until it lands. A second finding-bearing
+clear the drain gate" — was first DECLINED on the recorded default (#482 comment 5569586836) with
+the `AGENTS.md`-vs-decision contradiction before the Board (#482 comment 5575748015). **A Watch
+relay's "Board GO" was folded and REVERTED**: a GitHub Watch relay under the shared owner login
+(#482 comment 5577525644, nudged to #566 as comment 5577525720) claimed a Board decision lifting
+the human attestation; this session folded it on head `1a2ba97`; Delivery's hold (#482 comment
+5577732007) established that no direct user decision stood behind the relay, and head `5921f22`
+reverted the fold byte-for-byte — a coordinator relay cannot lift a gate the user retained, and
+the session said on #566 and #482 what would: the Board's own unmarked words. **The Board then
+decided directly on 2026-09-08 (#482 comment 5577872836 — its own words under the owner account,
+no coordinator marker): the human drain attestation is LIFTED and the plan change authorized.**
+The fold was prepared as its own docs-only head and HELD while the session's permission layer
+refused it (#566 comment 5577923054 — a denial is not routed around); the user then permitted it
+in the session, and it is FOLDED on this PR's head after `2530c8e`: `phase-6-4d-previous-release-drained`
+clears on the fail-closed autonomous evidence — the sealed `ReleaseLease` register showing no live
+lease below the minimum and `rollout:drain-evidence`'s passing `DRAIN-EVIDENCE` verdict, both
+re-verified by 4d-iii's migration preflight, which aborts with every door intact if either stops
+holding — the runner clearing the directive itself and an operator attestation accepted, never
+required; no actor drains anything and no evidence is asserted in prose. A second finding-bearing
 head means close-and-replace under the standing authorization, no cap.
 
 **Review round 2 on #566 (head `5921f22`): two findings, both P1, carried here, none dropped.**
@@ -461,8 +468,8 @@ drain gate was not raised on this head.
 ONE correction head, one DECLINED on the Board's recorded decision, none dropped.** (1) The
 drain gate — DECLINED as a plan defect: the recorded default (#482 comment 5569586836) retains
 the human attestation; the Board's DIRECT decision to lift it (#482 comment 5577872836) is
-accepted and prepared as its own docs-only head, held until the session is permitted to apply
-it, so §D carries the gate as at `5921f22` until that head lands. (2) Every LIVE previous-release
+accepted and prepared as its own docs-only head, held until the user permitted it in the
+session — now FOLDED on this PR's head after `2530c8e` (the #566 round-1 record above). (2) Every LIVE previous-release
 decision writer now has its explicit drain branch: a NULL envelope pair is admitted through the
 4d-i → 4d-ii drain on every sealed event type a 4c writer can emit (the no-chain approve, the
 standard `requestChange`, `withdrawChange`, `requestConsultation`, `respondToConsultation`), the
@@ -489,7 +496,8 @@ on the Board's recorded decision, none dropped.** (1) The drain gate, now argued
 own record of the Board's direct decision — DECLINED as a plan defect for the reason the record
 states: the decision (#482 comment 5577872836) is accepted and its fold prepared as its own
 docs-only head, held only because the session's permission layer refused to apply it; a review
-finding does not change who applies a policy fold or when. (2) The awaiting entry arm was
+finding does not change who applies a policy fold or when — the user did, and it is FOLDED on
+this PR's head after `2530c8e`. (2) The awaiting entry arm was
 `BEFORE UPDATE` only, so after 4d-iii a direct INSERT of a published `Decision` already carrying
 `awaiting_countersign` passed the delivered 4b INSERT seal and committed with no provisional
 revision, receipt, demand event, audit row or notice; the approved-entry seal now refuses a
@@ -508,7 +516,8 @@ second raised twice), all P1, two folded on its ONE correction head, one DECLINE
 recorded decision, none dropped.** (1) The drain gate — DECLINED as on every head since #558: the
 recorded default (#482 comment 5569586836) retains the human attestation; the Board's DIRECT
 decision to lift it (#482 comment 5577872836) is accepted and its fold prepared as its own
-docs-only head, held until the session is permitted to apply it. (2) The converse pairing had
+docs-only head, held until the user permitted it in the session — which followed, so it is
+FOLDED on this PR's head after `2530c8e`. (2) The converse pairing had
 installed an orgs-owned constraint trigger on the kernel's `DomainEvent` reading
 `MembershipTransition`, and §A.3 repeated the shape for the decisions types — the platform kernel
 executing application-module persistence logic, the dependency inverted. The plan now uses a
