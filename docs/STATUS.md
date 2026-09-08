@@ -97,7 +97,7 @@ seams the delivered surface proves safe, each with its argument in the plan's §
 `Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
 cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
 and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
-live standing). The document is 4,318 lines against #552's 3,495.
+live standing). The document is 4,364 lines against #552's 3,495.
 
 **Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
 its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
@@ -109,8 +109,8 @@ persisted, versioned `ExternalEffectCatalog` seeded by 4d-i, widened by 4d-ii, t
 append-only seal; the owner/admin authority arm is judged live for self-transitions; and the feed row
 carries a structured `Notification.kind` the seal binds to the event with every reader rendering a
 kinded row from kind, event and fact. Each is the plan's own rule applied where one instance was
-unstated; the plan's round-1 table names all seven. A second finding-bearing head means
-close-and-replace under the standing authorization, no cap.
+unstated; the plan's round-1 table names all seven. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
 
 **Review round 1 on #555 (head `3e5a85a2`): five findings, all P1, folded on its ONE correction
 head** — the feed-row correspondence reads through a platform-owned `platform_tx_notification`
@@ -119,8 +119,8 @@ the seal binds; the sanctioned reset gains a membership path (transition facts, 
 under their seals disabled by name); every direct `DecisionEvent` reset bypass is swept into
 `wipeDecisionEvents` with a tripwire; and the repository's raw `DomainEvent` probes move to an
 allocating `insertRawEvent` fixture or a named legacy-plant bypass with a tripwire. None is a content
-question; each is an integration seam the narrowed rule crosses. A second finding-bearing head means
-close-and-replace under the standing authorization, no cap.
+question; each is an integration seam the narrowed rule crosses. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
 
 **Review round 2 on #555 (head `41ea41d2`): four findings, all P1, carried here, none dropped.**
 The kernel's `EventActor` is widened to the full `Actor` so the compiler enumerates every emitter,
@@ -138,8 +138,8 @@ bypasses named — under a tripwire that enumerates statements rather than bypas
 `Notification(projectId, eventId)` is a SAME-PROJECT composite FK to a new
 `DomainEvent(projectId, eventId)` candidate key, so a feed row bound to another project's event is
 unrepresentable. None is a content question the boundary answers; each is the rule one instance
-short. A second finding-bearing head means close-and-replace under the standing authorization,
-no cap.
+short. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
 
 **Review round 1 on #556 (head `bb307c74`): three findings, all P1, folded on its ONE
 correction head.** Every `Membership` writer outside `members.service` is enumerated (the sign-in
@@ -152,8 +152,8 @@ readiness-locked command and a frozen push audience equals the set at commit by 
 drain-window residual is stated); and 4d-i is MIGRATION-ONLY — `prisma/`, `test/`, `scripts/`,
 no `src/` file — with the emitter plumbing (`emitEvent`'s envelope write, the widened
 `EventActor`, the full `AttributionActor`, the identity contract) moved to 4d-ii where the
-transitions that need it ship. A second finding-bearing head means close-and-replace under the
-standing authorization, no cap.
+transitions that need it ship. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
 
 **Review round 2 on #556 (head `dd2da64b`): five findings, all P1, carried here, none dropped.**
 The `decisions.effects` activation handler judges the CURRENT standing under the readiness lock
@@ -170,8 +170,8 @@ tombstone, never a delete, with every seed `ON CONFLICT DO NOTHING`, so a mature
 rule is corrected to "EXACTLY the declarative schema-metadata mirrors the boundary suite pins to
 the DMMF" (the manifests' `ownsModels`/`readEncapsulated` registrations and `MODEL_OWNER`),
 declared `migration-scope: inseparable` with that boundary stated. None is a content question
-the boundary answers. A second finding-bearing head means close-and-replace under the standing
-authorization, no cap.
+the boundary answers. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
 
 **Review round 1 on #557 (head `3327f761`): five findings (three P1, two P2), folded on its
 ONE correction head.** The converse for the finalizing event admits the countersign's and the
@@ -183,8 +183,8 @@ emitter persisting the requester's actual role; ONE org-level readiness key (`lo
 envelope attribution bind the frozen pair WHERE the fact carries one and `actorId` alone for a
 drain-window fact with a NULL pair (the branch 4d-iii closes); and the kinded feed readers
 suppress a withdrawn decision's ACTIONABLE kinds for the PMC while the rows and events stay as
-evidence. A second finding-bearing head means close-and-replace under the standing
-authorization, no cap.
+evidence. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
 
 **Review round 2 on #557 (head `6d5545ce`): four findings (two P1, two P2), carried here, none
 dropped.** The org-level key gains its TABLE door — the orgs-owned `Project_t4d_org_readiness`
@@ -199,8 +199,8 @@ consultation requester's role is FROZEN on the fact — 4d-i's nullable
 `DecisionConsultation.requestedByRole`, written by 4d-ii's `consultation.request` under the
 seal's requester arm and read by the `respond` emitter — rather than resolved at response time.
 Each is a second-order consequence of a round-1 fold; none is a content question the boundary
-answers. A second finding-bearing head means close-and-replace under the standing authorization,
-no cap.
+answers. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
 
 **Review round 1 on #558 (head `a07f78b7`): seven findings, all P1, folded on its ONE
 correction head.** The `renotified` converse branch binds to its CROSSING (`crossingEventId` +
@@ -502,8 +502,8 @@ gateway's `countersign-v1` declaration and every web surface, probed against the
 with the doors standing); the drain's minimum release is 4d-ii-a's and 4d-ii-b's fold sets the
 directive; the earlier inseparability claim is recorded as false under the plan's own staging
 (the doors keep every new shape unrepresentable and the lesser-client refusal fires only under an
-active chain). A second finding-bearing head means close-and-replace under the standing
-authorization, no cap.
+active chain). (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
 
 **Review round 2 on #567 (head `7bf282f`): three findings, all P1, two carried here, one DECLINED
 on the Board's recorded decision, none dropped.** (1) The drain gate, now argued from the plan's
@@ -522,8 +522,8 @@ transition — and P37 gains the hostile born-awaiting INSERT. (3) The delivered
 `approved`/`change`, so the provisional approve and the chain reapproval both aborted before the
 pairing seals ran; 4d-i's `CREATE OR REPLACE` now widens both clauses for exactly the sealed
 provisional transition, the INSERT clause kept, and P31 drives both chain flows through the
-widened function, RED at the delivered one. A second finding-bearing head means
-close-and-replace under the standing authorization, no cap.
+widened function, RED at the delivered one. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
 
 **Review round 1 on this PR, #568 (head `55144a3`): four findings as the gate counts them (the
 second raised twice), all P1, two folded on its ONE correction head, one DECLINED on the Board's
@@ -570,8 +570,8 @@ no event is inserted); P28b gains the RED probe that the single-name bypass is r
 `DomainEventPairingClaim` no-TRUNCATE seal §A.2 declares and the reset truncates with
 `DomainEvent`, so every reset reaching the register would have aborted;
 `DomainEventPairingClaim_t4d_no_truncate` is the SIXTEENTH entry and the register joins the
-reset's table list beside `DomainEvent` and `Notification`. A second finding-bearing head means
-close-and-replace under the standing authorization, no cap.
+reset's table list beside `DomainEvent` and `Notification`. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
 
 **Review round 1 on #572 (head `8b50b52`): two findings (one P1, one P2), folded on its ONE
 correction head `e2fd243e` by a SECOND Claude session (session_01SkcEKPyj3MbLUoCy8bFuck,
@@ -591,8 +591,9 @@ also committed a machine-local `node_modules` symlink by mistake (a worktree bui
 **Review round 2 on #572 (head `e2fd243e`): two findings, both P1, carried here, none dropped.**
 (1) The `node_modules` symlink — a packaging error on the tree, not a plan defect: gone from this
 replacement's tree (`git ls-files` shows no such path); the one-line `.gitignore` prevention
-(`node_modules` without the slash) landed on `e3e2828` by the same session and is carried here as
-the unit's single non-documentation line. (2) The §A.3 fact-table
+(`node_modules` without the slash) landed on `e3e2828` by the same session and was carried here
+until #574 merged the same rule with its `review-scope` tripwire (`main` `279499e`, merged into
+this branch), so this unit is docs-only again — the plan and STATUS. (2) The §A.3 fact-table
 row for `ChangeRequest` gave actor standing only to an architect under a chain or the resolving
 PMC and named only an awaiting subject, although the row governs `origin = 'standard'` too; the
 delivered `decision.change` policy admits `pmc`, `client`, `contractor`, `engineer` and
@@ -600,8 +601,28 @@ delivered `decision.change` policy admits `pmc`, `client`, `contractor`, `engine
 `standard` arm admits an ACTIVE member whose frozen role is in the delivered set (the architect
 not among them; 4d widens nothing) on an `approved`, published subject through the exact
 `approved → change` transition — and P33 gains the non-PMC service probes, RED against the
-two-role enumeration. A second finding-bearing head means close-and-replace under the standing
-authorization, no cap.
+two-role enumeration. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
+
+**Review round 3 on #572 (head `c2e0840`): four findings, all P1, folded on this branch, none
+dropped.** (1) The plan's §D staging rule still directed close-and-replace at a second
+finding-bearing head — the protocol #578 retired; it now states fix-forward on this branch, a
+replacement admitted only for a concrete change of scope or approach with a `Replacement
+reason:`, and every historical "close-and-replace" sentence in this file is rewritten as the
+record it is. (2) The `standard` change-request arm required an ACTIVE member, but the delivered
+`ProjectAccessService` authorizes a membership-less org owner/admin as `pmc` and `decision.change`
+admits `pmc`; the arm is now judged by `platform_user_holds_role` over the register's derived `pmc`
+row exactly as obligation 3 judges every fact, with P33's membership-less owner/admin service probe
+(COMMITS) beside the no-standing direct insert (refused). (3) The architect's exact `ROLE_POLICY`
+set still listed `decision.change` while the §A.3 contract excludes the architect from a standard
+request; `decision.change` leaves the set (ELEVEN actions; the architect's change path is
+`decision.disagree`) and P28's equality pin asserts its absence. (4) 4d-ii-a turns the three
+membership mutations into ledger commands with a NOT NULL `sourceCommandId`, but deployed tabs
+call those routes with no `Idempotency-Key`; all three opt into `synthesizeKeyWhenAbsent: true` —
+the answer `requestChange` took in round 1 — and P29b gains the three no-header arms against the
+4d-ii-a server plus the keyed replay arms. Head `c2e0840` also merged `main` `f050bcd` (#578);
+this correction merges `main` `279499e` (#574), whose `.gitignore` rule supersedes the duplicate
+line this branch carried, leaving the unit docs-only.
 
 **What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
 again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
@@ -621,8 +642,10 @@ lineage from #568 is history above, not a ledger claim. No label is applied or
 cleared by this lineage.
 
 **What follows, and what does not.** After this plan clears its own exact-head review, 4d
-implementation begins with 4d-i from the `main` that carries it; a second finding-bearing head
-here means close-and-replace again under the same authorization, with no cap. No 4d
+implementation begins with 4d-i from the `main` that carries it; further findings here are
+folded on this branch whatever the head count (#578 retired the forced close-and-replace; the
+Board's decision for this unit is fix-forward, #482 comment 5585712971), a replacement admitted
+only for a concrete change of scope or approach with a recorded `Replacement reason:`. No 4d
 implementation is started by this PR. Contractor-capture units 1–6 stay Board-gated; the P3005
 correction stays in the maintenance queue; no UX, performance, Site Map or photo-capture work;
 #530, #531 and #532 stay closed.
