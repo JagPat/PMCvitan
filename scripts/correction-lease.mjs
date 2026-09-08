@@ -1,3 +1,10 @@
+import {
+  CORRECTION_LEASE_GRACE_MS,
+  isRetryableReviewFailureDescription,
+  STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT,
+} from './review-policy.mjs';
+export { CORRECTION_LEASE_GRACE_MS, STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT } from './review-policy.mjs';
+
 // The correction LEASE: a bounded, idempotent watch over one owed correction.
 //
 // A failing required status returns the PR to draft and the controller publishes
@@ -20,7 +27,6 @@
 // `codex-current-head`, draft state, auto-merge, or Codex.
 import { createHash } from 'node:crypto';
 
-import { isRetryableReviewFailureDescription } from './review-efficiency.mjs';
 import {
   AWAKENABLE_FROM_GITHUB,
   CORRECTION_STALLED,
@@ -30,25 +36,12 @@ import {
 
 export const CORRECTION_LEASE_MARKER = '<!-- autonomous-correction-lease:';
 export const ACTIONS_BOT_LOGIN = 'github-actions[bot]';
-export const CORRECTION_STATUS_CONTEXT = 'codex-current-head';
-
-// How long an owed correction may show no movement before the lease is
-// reported. The handoff watchdog runs hourly, so a notice lands 45-105 minutes
-// after the failure — comfortably longer than a real correction round takes to
-// produce its first push, and far shorter than the silent hours this replaces.
-export const CORRECTION_LEASE_GRACE_MS = Number(
-  process.env.CORRECTION_LEASE_GRACE_MS ?? 45 * 60_000,
-);
 
 // Which failures on the required status are an OWED CORRECTION, classified by
 // the PREFIX the review gate writes rather than by the prose after it.
 //
-// The prose is exactly where the previous draft went wrong. It matched only the
-// two Codex-finding sentences, so the round-limit failure — the ONE state whose
-// remedy is a replacement PR rather than another head — never reached the lease
-// at all, and `replacement_required` was unreachable in the shipped code while
-// being documented as a state the watchdog reports. Prefixes are the gate's own
-// vocabulary: `review:`, `scope:`, `ci:` are corrections someone owes.
+// Prefixes are the gate's vocabulary: review, scope and CI failures owe a
+// correction unless the shared policy classifies them as gate recovery.
 const OWED_REASON_BY_PREFIX = new Map([
   ['review', 'review'],
   ['scope', 'scope'],
@@ -57,16 +50,8 @@ const OWED_REASON_BY_PREFIX = new Map([
 // `recovery:` is the gate asking ITSELF to retry, not an agent to fix anything.
 const SELF_HEALING_PREFIXES = new Set(['recovery']);
 
-// Some `review:` failures are not corrections at all: the gate publishes them
-// when it did not reach a verdict — the integration did not answer, the evidence
-// moved under it, required CI changed mid-review, a bootstrap review was
-// requested. All four are recovered by RE-DISPATCHING the gate, so no agent owes
-// anything, no lease opens, and the watchdog performs that dispatch instead
-// (see `handOffCorrectionLease`).
-//
-// The list lives in `review-efficiency.mjs` and the GATE reads the same one, so
-// a fifth retryable failure cannot be added there and silently become an
-// actionable correction here.
+// Retryable descriptions come from review-policy.mjs, shared with the gate.
+// These open no correction lease; handOffCorrectionLease requests gate recovery.
 /**
  * The correction reason a failing required status implies, or null when the
  * status is not an owed correction.

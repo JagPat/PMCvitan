@@ -1,3 +1,6 @@
+import { LINEAGE_BASE_REF } from './review-policy.mjs';
+export { LINEAGE_BASE_REF } from './review-policy.mjs';
+
 // Lineage policy shared by the review-state leaf and the review-efficiency leaf.
 //
 // It lives below both because both are consumed independently by the orchestration
@@ -9,7 +12,6 @@
 // unit as a matter of course, and a squash merge leaves the reviewed head off the
 // post-merge history by construction, so ancestry against the moving tip refuses
 // ordinary valid work. See docs/reviews/replacement-lineage-repair.md.
-export const LINEAGE_BASE_REF = 'main';
 
 // A base is MUTABLE, so every placement that acts on one reads it again at its own
 // moment rather than trusting an earlier read.

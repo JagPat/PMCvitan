@@ -1,14 +1,12 @@
+import { PRODUCT_CHECKS, GATE_CHECKS } from './review-policy.mjs';
+export { PRODUCT_CHECKS, GATE_CHECKS } from './review-policy.mjs';
+
 // Shared rules for reading a head's check-run history.
 //
 // The battery plan and the review gate both answer "do this head's product jobs
 // cover the current attempt?" — and rounds 4-9 of the PR #249 review kept
 // finding the same defect implemented differently on the two sides. These rules
 // live here once so the two cannot drift apart again.
-
-export const PRODUCT_CHECKS = ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'];
-
-// The dependency-free jobs the product jobs are gated on via `needs`.
-export const GATE_CHECKS = ['review-scope', 'battery-plan'];
 
 export function isSkipped(run) {
   return run?.status === 'completed' && run?.conclusion === 'skipped';

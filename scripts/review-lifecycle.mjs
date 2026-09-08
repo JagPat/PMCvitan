@@ -1,18 +1,7 @@
-// The review lifecycle: reviewing → convergence_audit → restructure_required →
-// replacement_reviewing.
-//
-// The convergence protocol (AGENTS.md) stops ORDINARY PATCHING after two
-// finding-bearing heads and demands one batched architectural audit. That is the
-// right move once. It is not a fixed point: PR #257 produced findings on five
-// consecutive heads, three of them regressions introduced by the previous
-// correction, because a concept spread across several sites was being fixed two
-// sites at a time. Repeating "batch and audit" cannot converge that — the review
-// unit itself is wrong, and the remedy is to restructure it.
-//
-// This module answers one question: has this review unit spent enough rounds to
-// prove that another correction head is the wrong instrument? It never dismisses
-// a finding and never clears a head. Its only outcomes are "keep reviewing" and
-// "stop; restructure".
+// Review-history observations and legacy metrics readers. Only
+// observeReviewLifecycle/lifecycleAdvisory are consumed by the live gate.
+// Legacy assessRestructure is retained for historical metrics tests; it does not
+// govern whether an unresolved PR stays open. See docs/POLICY.md.
 import {
   codexFindingHeads,
   findingHeadSeverity,

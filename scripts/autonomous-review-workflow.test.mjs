@@ -1372,7 +1372,7 @@ test('workflow gives one exact-head run sole ownership of review and merge', asy
   assert.doesNotMatch(workflow, /pull_request_target:/);
 });
 
-test('the trusted owner enforces the review-round reset after CI and before Codex promotion', async () => {
+test('the trusted owner observes review history after CI without requiring replacement', async () => {
   const gate = await readFile(
     new URL('./autonomous-review-gate.mjs', import.meta.url),
     'utf8',
@@ -1384,13 +1384,7 @@ test('the trusted owner enforces the review-round reset after CI and before Code
   assert.ok(checks >= 0);
   assert.ok(reset > checks);
   assert.ok(review > reset);
-  assert.match(gate, /state: 'replacement_required'/u);
-  // The `Replaces: #<n>` sentence moved into scripts/correction-owner.mjs so it
-  // is phrased for the PR's DECLARED correction owner rather than for Claude
-  // unconditionally. What the gate must still do is ASK for it on this path —
-  // the rendered instruction is asserted below, in the behavioural probe.
-  // Derived from the REFRESHED pull request (`live`), not the run-start
-  // snapshot: an owner marker edited mid-run must change who the notice names.
+  assert.doesNotMatch(gate, /state: 'replacement_required'/u);
   assert.doesNotMatch(gate, /correctionNotice\(live, \{ detail, reason: 'replacement' \}\)/u);
   assert.match(gate, /assessReviewScope\(pullRequest,/u);
   assert.match(gate, /state: 'scope_required'/u);
@@ -1596,36 +1590,11 @@ test('Codex review records and inline comments are fully paginated', async () =>
   }
 });
 
-test('the trusted client persists the replacement requirement as a repository label', async () => {
-  const originalFetch = globalThis.fetch;
-  const calls = [];
-  globalThis.fetch = async (url, options = {}) => {
-    calls.push({ url, method: options.method, body: options.body });
-    if (options.method === 'GET' && url.includes('/labels/review-replacement-required')) {
-      return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 });
-    }
-    return new Response('{}', {
-      status: url.endsWith('/labels') ? 201 : 200,
-    });
-  };
-  try {
-    const client = new reviewGate.GitHubClient({
-      repository: 'JagPat/PMCvitan',
-      token: 'test-token',
-    });
-    await client.markReplacementRequired(346);
-    assert.ok(calls.some((call) =>
-      call.method === 'POST'
-      && call.url.endsWith('/repos/JagPat/PMCvitan/labels')));
-    const assignment = calls.find((call) =>
-      call.method === 'POST'
-      && call.url.endsWith('/repos/JagPat/PMCvitan/issues/346/labels'));
-    assert.deepEqual(JSON.parse(assignment.body), {
-      labels: ['review-replacement-required'],
-    });
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+test('the trusted client has no automatic round-limit label writer', () => {
+  const client = new reviewGate.GitHubClient({ repository: 'JagPat/PMCvitan', token: 'test-token' });
+  assert.equal(client.markReplacementRequired, undefined);
+  assert.equal(client.ensureReplacementRequiredLabel, undefined);
+  assert.equal(typeof client.replacementLineage, 'function');
 });
 
 test('multiple historical finding heads do not block the next correction', async () => {
@@ -1951,7 +1920,10 @@ test('workflow recovery is exact-head serialized and has terminal time budget', 
   // the pair moving together: raising a gate window without the budget starves
   // the recovery job of the time its own arithmetic promises.
   assert.match(workflow, /timeout-minutes:\s*105/);
-  assert.match(gate, /CHECK_TIMEOUT_MS \?\? 40 \* 60_000/);
+  const policy = await import('./review-policy.mjs');
+  const budget = Number(/timeout-minutes:\s*(105)/u.exec(workflow)[1]) * 60_000;
+  assert.ok(budget > policy.CHECK_TIMEOUT_MS + policy.MAX_REVIEW_ATTEMPTS * policy.REVIEW_TIMEOUT_MS);
+  assert.match(gate, /CHECK_TIMEOUT_MS/u);
 });
 
 test('operator recovery documents the required current head SHA', async () => {
@@ -1966,16 +1938,16 @@ test('operator recovery documents the required current head SHA', async () => {
   assert.match(recovery, /-f terminal_status_id="\$TERMINAL_STATUS_ID"/);
 });
 
-test('documented recovery jq selects an authorized review status id', async () => {
+test('documented recovery command uses controller authorization for the status id', async () => {
   const runbook = await readFile(autonomousLoopPath, 'utf8');
   const recovery = runbook.slice(
     runbook.indexOf('## Recovery'),
     runbook.indexOf('## GitHub Enforcement'),
   );
-  const expression = recovery.match(/--jq '([^']+)'/u)?.[1];
-  assert.ok(expression, 'recovery command must include a jq expression');
+  const expression = recovery.match(/node --input-type=module -e '([^']+)'/u)?.[1];
+  assert.ok(expression, 'recovery command must import controller authorization');
 
-  const runExpression = (statuses) => spawnSync('jq', ['-r', expression], {
+  const runExpression = (statuses) => spawnSync(process.execPath, ['--input-type=module', '-e', expression], {
     encoding: 'utf8',
     input: JSON.stringify([statuses]),
   });
