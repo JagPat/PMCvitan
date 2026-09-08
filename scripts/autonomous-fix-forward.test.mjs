@@ -79,10 +79,42 @@ test('voluntary replacement cannot discard reason, source state, base or reposit
   assert.equal(voluntaryReplacement({}, {number:569}).allowed, false);
 });
 
+test('a placeholder reason does not buy a voluntary replacement', () => {
+  // The provenance path existed and validated nothing: the first version tested only that SOME
+  // non-whitespace followed the label, so `n/a` cleared the canonical requirement to record a
+  // concrete scope or approach benefit. These are the shapes that carry no claim at all.
+  for (const reason of ['n/a', 'na', 'none', 'TBD', 'todo', 'x', '-', '?', 'see above', 'same',
+                        'scope', 'approach', 'replacement', 'test']) {
+    assert.equal(
+      voluntaryReplacement({}, { body: `Replaces: #570\nReplacement reason: ${reason}` }).allowed,
+      false,
+      `placeholder reason "${reason}" must not clear the provenance path`,
+    );
+  }
+  // …and a fragment too short to state anything is refused on the same ground
+  assert.equal(voluntaryReplacement({}, {body:'Replaces: #570\nReplacement reason: two concerns'}).allowed, false);
+});
+
+test('a reason that names a concrete scope or approach benefit is admitted', () => {
+  // The floor is not a quality judgement — a gate cannot tell whether a stated benefit is real,
+  // and pretending to would be worse than refusing placeholders. These clear it without trying.
+  for (const reason of [
+    'Splits the migration from the service work so each is reviewable alone.',
+    'Retargets onto the correct base branch after main moved underneath it.',
+    'Two unrelated concerns were mixed; this carries only the readiness fix.',
+  ]) {
+    assert.equal(
+      voluntaryReplacement({}, { body: `Replaces: #570\nReplacement reason: ${reason}` }).allowed,
+      true,
+      `concrete reason "${reason}" must be admitted`,
+    );
+  }
+});
+
 test('a merged successor prevents a second voluntary replacement of the same source', () => {
   const source = { ...pr, number:570, state:'closed', merged_at:null };
   const result = assessReplacementLineage({
-    pullRequest: { ...pr, number:580, body:'Replaces: #570\nReplacement reason: Narrow the scope.' },
+    pullRequest: { ...pr, number:580, body:'Replaces: #570\nReplacement reason: Narrow the scope to the migration seam alone.' },
     requiredReplacements: [],
     replacementPullRequests: [source, {
       number:579, state:'closed', merged_at:'2026-09-08T00:00:00Z',

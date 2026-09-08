@@ -1,3 +1,27 @@
+import {
+  REVIEW_SCOPE_ENFORCE_AFTER_PR,
+  PRE_REVIEW_ENFORCE_AFTER_PR,
+  STANDARD_MAX_FILES,
+  STANDARD_MAX_CHANGED_LINES,
+  REPLACEMENT_REQUIRED_LABEL,
+  REQUIRED_PRE_REVIEW_CHECKS,
+  REQUIRED_INVARIANTS,
+  STATUS_DOCUMENT,
+  CODEX_LOGIN,
+  isRetryableReviewFailureDescription,
+} from './review-policy.mjs';
+export {
+  REVIEW_SCOPE_ENFORCE_AFTER_PR,
+  PRE_REVIEW_ENFORCE_AFTER_PR,
+  STANDARD_MAX_FILES,
+  STANDARD_MAX_CHANGED_LINES,
+  REPLACEMENT_REQUIRED_LABEL,
+  REQUIRED_PRE_REVIEW_CHECKS,
+  REQUIRED_INVARIANTS,
+  STATUS_DOCUMENT,
+  isRetryableReviewFailureDescription,
+} from './review-policy.mjs';
+
 // The deferral-phase check shares docs/STATUS.md's own state vocabulary rather than keeping
 // a second copy of it — see phaseHasOpenWork.
 import { OPEN_TASK_STATES } from './autonomous-status-state.mjs';
@@ -7,22 +31,9 @@ import { LINEAGE_BASE_REF, isLineageBase } from './lineage-policy.mjs';
 // the cheap gate and the merge boundary cannot disagree about who owns a fix.
 import { correctionOwnerProblem } from './correction-owner.mjs';
 
-export const REVIEW_SCOPE_ENFORCE_AFTER_PR = 246;
-export const PRE_REVIEW_ENFORCE_AFTER_PR = 345;
-export const STANDARD_MAX_FILES = 20;
-export const STANDARD_MAX_CHANGED_LINES = 1_500;
-export const REPLACEMENT_REQUIRED_LABEL = 'review-replacement-required';
 // Legacy convergence packets retain their parsing threshold; the live gate
 // never closes or blocks a PR based on the number of reviewed heads.
 export const CONVERGENCE_AFTER_FINDING_HEADS = 2;
-
-export const REQUIRED_PRE_REVIEW_CHECKS = [
-  'concurrency-serialization',
-  'old-release-migration-compatibility',
-  'trigger-alternate-writers',
-  'authorization-tenancy',
-  'ci-reproduce-first',
-];
 
 // How many finding-bearing heads a DOCS-ONLY review may take before the still-open
 // questions must be handed to probes.
@@ -48,25 +59,12 @@ export const REQUIRED_PRE_REVIEW_CHECKS = [
 // one place a verification can exist.
 export const PLAN_REVIEW_ROUND_CAP = 3;
 
-export const REQUIRED_INVARIANTS = [
-  'authorization-tenancy',
-  'civil-time-lifecycle',
-  'concurrency-idempotency',
-  'data-integrity-conservation',
-  'offline-reconciliation',
-  'ui-server-parity',
-];
-
-const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
 const LARGE_MARKER = '<!-- review-size: justified-large -->';
 const INSEPARABLE_MIGRATION_MARKER = '<!-- migration-scope: inseparable -->';
 const CONVERGENCE_PACKET = /^docs\/reviews\/[^/]*convergence[^/]*\.md$/iu;
 const MIGRATION_FILE = /^apps\/api\/prisma\/migrations\/[^/]+\/migration\.sql$/u;
 const SERVICE_OR_UI_FILE = /^(?:apps\/api\/src|apps\/web\/src|packages\/shared\/src)\//u;
 const REPLACES_DECLARATION = /^[\t ]*replaces:[\t ]*(none|#\d+)[\t ]*$/gimu;
-// The state file `deferralPhases` reads. Named here because the gate must also notice when a
-// PR CHANGES it — see the phase check in assessConvergence.
-export const STATUS_DOCUMENT = 'docs/STATUS.md';
 
 function finiteCount(value) {
   const count = Number(value);
@@ -110,6 +108,40 @@ export function settlementOf(source, replacementPullRequests = []) {
     && isLineageBase(candidate?.base?.ref)
     && candidate.number > source
     && replacementSource(candidate.body) === source) ?? null;
+}
+
+// A voluntary replacement must "record a concrete scope or approach benefit" (POLICY.md).
+// The first version of this check tested only that SOME non-whitespace followed the label, so
+// `Replacement reason: n/a` cleared it — the provenance path existed and validated nothing.
+//
+// What a gate can honestly enforce is a FLOOR, not a judgement. It cannot tell whether a stated
+// benefit is real; a reviewer does that. What it can refuse is the shapes that carry no claim at
+// all: a known placeholder token, and a fragment too short to be a statement of anything. Both
+// refusals name what is missing, so an author who meant it can say it properly rather than guess.
+const REPLACEMENT_REASON_PLACEHOLDERS = new Set([
+  'n/a', 'n.a.', 'na', 'none', 'nil', 'nothing', 'no reason', 'reason', 'placeholder', 'tbd', 'tba',
+  'todo', 'to do', 'x', 'xx', 'xxx', '-', '--', '---', '.', '?', '??', 'test', 'testing', 'asdf',
+  'same', 'same as above', 'see above', 'see below', 'as discussed', 'as above', 'duplicate',
+  'replacement', 'replaces', 'scope', 'approach', 'refactor', 'cleanup', 'fix',
+]);
+
+/** The text after `Replacement reason:`, or null when the line is absent. */
+export function replacementReasonOf(body) {
+  const match = /^[\t ]*Replacement reason:[\t ]*(\S[^\r\n]*)$/imu.exec(String(body ?? ''));
+  return match ? match[1].trim() : null;
+}
+
+/** Does the body state a replacement reason that clears the placeholder floor? */
+export function statesConcreteReplacementReason(body) {
+  const reason = replacementReasonOf(body);
+  if (!reason) return false;
+  const normalized = reason.toLowerCase().replace(/[\s.!,;:]+$/u, '').trim();
+  if (REPLACEMENT_REASON_PLACEHOLDERS.has(normalized)) return false;
+  // A benefit is a claim about scope or approach, which takes a sentence to make. Six words and
+  // twenty characters is the floor a placeholder cannot reach and a real reason clears without
+  // trying — deliberately low, because the check is not the reviewer.
+  const words = normalized.split(/\s+/u).filter((word) => /[a-z0-9]/u.test(word));
+  return words.length >= 6 && normalized.replace(/\s+/gu, '').length >= 20;
 }
 
 export function assessReplacementLineage({
@@ -169,9 +201,7 @@ export function assessReplacementLineage({
       // actual source and a stated benefit instead of requiring that label.
       const source = replacementPullRequests.find(pr => pr.number === declaration.source);
       const repository = pullRequest?.base?.repo?.full_name;
-      const justified = /^[\t ]*Replacement reason:[\t ]*\S[^\r\n]*$/imu.test(
-        String(pullRequest?.body ?? ''),
-      );
+      const justified = statesConcreteReplacementReason(pullRequest?.body);
       if (!source || !justified || !repository || source.state !== 'closed'
           || source.merged_at || source.merged
           || !isLineageBase(source.base?.ref)
@@ -181,7 +211,8 @@ export function assessReplacementLineage({
         return {
           allowed: false,
           detail: `Replaces: #${declaration.source} needs a closed, unmerged same-repository main source `
-            + 'and a concrete Replacement reason; an already settled source cannot be replaced again',
+            + 'and a concrete Replacement reason naming the scope or approach benefit — a placeholder '
+            + 'such as "n/a" does not state one; an already settled source cannot be replaced again',
         };
       }
       requirement = { pullRequest: source };
@@ -458,31 +489,6 @@ export function findingHeadSeverity(comments, reviews = []) {
     else severity.set(head, 'minor');
   }
   return severity;
-}
-
-// The review gate's own retryable terminal failures, by the description it
-// publishes. ONE definition, because two consumers read it: the gate decides
-// whether to re-dispatch, and the correction watchdog decides whether anyone
-// owes a correction at all. An earlier draft recognised only the timeout, so the
-// other three drew an actionable "push a new head" for a failure a new head
-// cannot fix — it would invalidate the exact head the gate is trying to recover.
-// The review gate's own retryable terminal failures, by the description it
-// publishes. ONE definition, because two consumers read it: the gate decides
-// whether to re-dispatch, and the correction watchdog decides whether anyone
-// owes a correction at all — for these, nobody does, so it opens no lease.
-const RETRYABLE_REVIEW_FAILURES = [
-  'Codex review timed out',
-  'Codex evidence changed during final verification',
-  'review: Required CI changed during current-head Codex review',
-  'review: bootstrap exact-head review requested',
-];
-
-export function isRetryableReviewFailureDescription(description) {
-  const text = String(description ?? '');
-  // Re-evaluate failures written by the retired round-reset gate. This does
-  // not clear a status: the ordinary CI and current-head review guards run again.
-  return /^review: \d+ finding-bearing heads reached the review-round limit\b/u.test(text)
-    || RETRYABLE_REVIEW_FAILURES.some((marker) => text.includes(marker));
 }
 
 export function codexFindingHeads(comments, reviews = []) {

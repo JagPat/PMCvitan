@@ -1,3 +1,22 @@
+import {
+  requiredChecksForPullRequest,
+  reviewHistoryPolicy,
+  MAX_REVIEW_ATTEMPTS,
+  CHECK_TIMEOUT_MS,
+  REVIEW_TIMEOUT_MS,
+  POLL_INTERVAL_MS,
+  REQUIRED_CHECKS,
+  STATUS_CONTEXT,
+} from './review-policy.mjs';
+export {
+  requiredChecksForPullRequest,
+  MAX_REVIEW_ATTEMPTS,
+  CHECK_TIMEOUT_MS,
+  REVIEW_TIMEOUT_MS,
+  POLL_INTERVAL_MS,
+  REQUIRED_CHECKS,
+} from './review-policy.mjs';
+
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
@@ -18,7 +37,6 @@ import {
   codexFindingHeads,
   PRE_REVIEW_ENFORCE_AFTER_PR,
   REPLACEMENT_REQUIRED_LABEL,
-  REVIEW_SCOPE_ENFORCE_AFTER_PR,
 } from './review-efficiency.mjs';
 import {
   PRODUCT_CHECKS,
@@ -31,61 +49,9 @@ import {
   recency,
 } from './check-run-coverage.mjs';
 
-export const REQUIRED_CHECKS = [
-  'review-scope',
-  'battery-plan',
-  'web',
-  'api',
-  'e2e',
-  'api-e2e',
-  'upgrade-proof',
-];
-export const MAX_REVIEW_ATTEMPTS = 2;
-
-const STATUS_CONTEXT = 'codex-current-head';
 const RECOVERY_CONTEXT_PREFIX = 'codex-recovery-request/';
 const COMMENT_MARKER = '<!-- autonomous-review-state -->';
 const API_ROOT = 'https://api.github.com';
-// The settle window must exceed the LONGEST required CI job. When this was
-// tuned to 25 minutes the api battery's INTEGRATION step ran ~11-13 minutes;
-// since the compiled migrate.sh production-runner proofs joined the job
-// (Schedule B1 baseline + schema enforcement, steps 14-15), the api JOB
-// end-to-end measures ~28 minutes — six consecutive runs on PRs #443-#449
-// landed between 27.9 and 28.6 — so EVERY early wake (e.g. a metadata-only
-// `edited` CI run completing while the synchronize run's battery was still
-// going) expired the window and published a false "Checks did not settle"
-// block that only healed when the real run's completion re-triggered the
-// workflow. PR #444 hit exactly that on 2026-08-26. 40 minutes restores the
-// same headroom ratio the 25-minute value was chosen for, and costs nothing
-// when checks are already green. The workflow's terminal budget
-// (auto-merge.yml timeout-minutes) is derived from this constant — change
-// them together.
-const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 40 * 60_000);
-// Codex reviews of this repository land 13-23 minutes after their
-// draft-to-ready trigger (measured over PR #337's ten rounds). A 15-minute
-// attempt window expired before nearly every real review, burning the retry
-// on a review that was already in flight and ending runs in a false
-// "timed out after two attempts" terminal state minutes before the review
-// arrived. 25 minutes covers the observed latency; the two-attempt budget
-// still bounds the run.
-const REVIEW_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS ?? 25 * 60_000);
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 15_000);
-
-export function requiredChecksForPullRequest(pullRequestNumber) {
-  if (
-    Number.isInteger(pullRequestNumber)
-    && pullRequestNumber > 0
-    && pullRequestNumber <= REVIEW_SCOPE_ENFORCE_AFTER_PR
-  ) {
-    // Neither job exists on pre-policy branches; requiring them would strand
-    // an older PR on a check it cannot emit.
-    return REQUIRED_CHECKS.filter(
-      (name) => name !== 'review-scope' && name !== 'battery-plan',
-    );
-  }
-  return REQUIRED_CHECKS;
-}
-
 // Identify the CI attempt a check run belongs to. `check_suite.id` is the
 // authoritative grouping key — every job of one workflow run shares a check
 // suite — and it does not depend on URL shape. The URL parse stays as a
@@ -590,31 +556,6 @@ export class GitHubClient {
     );
   }
 
-  async ensureReplacementRequiredLabel() {
-    const path = `/repos/${this.repository}/labels/${encodeURIComponent(REPLACEMENT_REQUIRED_LABEL)}`;
-    try {
-      await this.request(path);
-    } catch (error) {
-      if (!(error instanceof Error) || !error.message.includes('(404)')) throw error;
-      await this.request(`/repos/${this.repository}/labels`, {
-        method: 'POST',
-        body: {
-          name: REPLACEMENT_REQUIRED_LABEL,
-          color: 'b60205',
-          description: 'Review-round limit reached; a declared replacement is required',
-        },
-      });
-    }
-  }
-
-  async markReplacementRequired(number) {
-    await this.ensureReplacementRequiredLabel();
-    await this.request(`/repos/${this.repository}/issues/${number}/labels`, {
-      method: 'POST',
-      body: { labels: [REPLACEMENT_REQUIRED_LABEL] },
-    });
-  }
-
   async replacementLineage() {
     const label = encodeURIComponent(REPLACEMENT_REQUIRED_LABEL);
     const [issues, pullRequests] = await Promise.all([
@@ -636,9 +577,6 @@ export class GitHubClient {
     );
     return { requiredReplacements, replacementPullRequests: pullRequests };
   }
-
-  // A file's text AT a ref. Used for the convergence packet, whose CONTENT carries the
-  // deferral ledger — a filename alone cannot show that the ledger exists.
 
   reactions(number) {
     return this.request(
@@ -1167,19 +1105,9 @@ export async function enforceReviewConvergence(
     client.reviews(pullRequest.number),
   ]);
   const findingHeads = codexFindingHeads(comments, reviews);
-  const findingHeadCount = findingHeads.length;
   const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (!live) return { state: 'superseded', allowed: false, superseded: true };
-  // Review history is telemetry, never a reason to close unresolved work.
-  // Current-head findings and CI are enforced independently below.
-  return {
-    state: 'reviewing',
-    required: false,
-    allowed: true,
-    findingHeadCount,
-    findingHeads,
-    ...(findingHeadCount >= 2 ? { rootCauseAdvisory: true, threshold: 2 } : {}),
-  };
+  return reviewHistoryPolicy(findingHeads);
 }
 
 export async function enforceReviewScope(client, pullRequest, expectedHead) {
@@ -1264,10 +1192,6 @@ export async function revalidateFinalReviewPolicy(
   if (convergence.superseded) {
     return { ...convergence, state: 'superseded' };
   }
-  if (!convergence.allowed) {
-    return { ...convergence, state: 'replacement_required' };
-  }
-
   const finding = await guardAgainstCurrentHeadFinding(
     client, pullRequest, expectedHead, null,
   );
