@@ -1,5 +1,7 @@
+import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 
 import {
   assessReviewScope,
@@ -46,6 +48,7 @@ export async function run({
   token = process.env.GITHUB_TOKEN,
   repository = process.env.GITHUB_REPOSITORY,
   fetchImpl = globalThis.fetch,
+  listTreeImpl = trackedTreeEntries,
 } = {}) {
   if (!eventPath) throw new Error('GITHUB_EVENT_PATH is required');
   const event = JSON.parse(await readFile(eventPath, 'utf8'));
@@ -100,7 +103,90 @@ export async function run({
     }
   }
 
-  return { ...result, status: statusResult };
+  // The tracked tree itself, checked HERE for the same reason: this is the one
+  // job that runs BEFORE `pnpm install`, so it is the only place a packaging
+  // defect can be named instead of reported five times as an install failure.
+  const treeResult = assessTrackedTree(await listTreeImpl());
+  if (treeResult.allowed) {
+    console.log(`review-scope: tracked tree carries no dependency path (${treeResult.inspected} entries)`);
+  } else {
+    console.error(`::error title=Tracked tree::${treeResult.detail}`);
+    process.exitCode = 1;
+  }
+
+  return { ...result, status: statusResult, tree: treeResult };
+}
+
+const DEPENDENCY_DIRECTORY = 'node_modules';
+const SYMLINK_MODE = '120000';
+
+/**
+ * Every index entry of the checked-out tree, as `git ls-files --stage` reports
+ * it — the MODE is the point: a symlink is `120000`, and a symlink is exactly
+ * what the ignore rule `node_modules/` (directory-only) does not cover.
+ *
+ * Read from the repository this module lives in, not the working directory,
+ * matching the STATUS read above.
+ */
+export async function trackedTreeEntries(execImpl = promisify(execFile)) {
+  const { stdout } = await execImpl('git', ['ls-files', '--stage', '-z'], {
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return parseTrackedTree(stdout);
+}
+
+export function parseTrackedTree(stdout) {
+  return String(stdout)
+    .split('\0')
+    .filter((record) => record.length > 0)
+    .map((record) => {
+      const tab = record.indexOf('\t');
+      const [mode] = record.slice(0, tab).split(' ');
+      return { mode, path: record.slice(tab + 1) };
+    });
+}
+
+/**
+ * No tracked path may have a `node_modules` component, whatever its mode.
+ *
+ * PR #572 head `e2fd243e` carried a root `node_modules` SYMLINK (mode 120000,
+ * pointing at one developer's absolute workspace path): `.gitignore` said
+ * `node_modules/`, which matches only a directory, so `git add -A` staged it
+ * without complaint. On the runner the checkout materialised a dangling link and
+ * every `pnpm install --frozen-lockfile` died with ENOTDIR — five jobs, twice,
+ * before a single product test ran. The ignore rule is now `node_modules` (any
+ * type, any depth); this check is the tripwire behind it, for a `git add -f`
+ * or an ignore rule edited back, and it names the cause in the one job that
+ * runs before install.
+ *
+ * Exact component match: `docs/node_modules-notes.md` is not a dependency path.
+ */
+export function assessTrackedTree(entries) {
+  if (!Array.isArray(entries)) {
+    return {
+      allowed: false,
+      inspected: 0,
+      detail: 'the tracked tree could not be listed, so a committed dependency path cannot be ruled out',
+    };
+  }
+  const offenders = entries.filter((entry) =>
+    String(entry?.path ?? '').split('/').includes(DEPENDENCY_DIRECTORY));
+  if (offenders.length === 0) {
+    return { allowed: true, inspected: entries.length, offenders: [] };
+  }
+  const named = offenders.slice(0, 5).map((entry) =>
+    `${entry.path}${entry.mode === SYMLINK_MODE ? ' (symlink)' : ''}`);
+  const more = offenders.length > named.length ? ` and ${offenders.length - named.length} more` : '';
+  return {
+    allowed: false,
+    inspected: entries.length,
+    offenders,
+    detail: `${offenders.length} tracked path(s) under a \`${DEPENDENCY_DIRECTORY}\` component: `
+      + `${named.join(', ')}${more}. A checkout materialises them on every runner and `
+      + '`pnpm install` fails with ENOTDIR before any product test runs; remove them from the '
+      + 'index (`git rm --cached`) — never change the application Node version for this.',
+  };
 }
 
 /**
