@@ -28,7 +28,7 @@ export class InspectionsController {
   @Get()
   @RolesFor('project.read')
   read(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
-    return this.inspectionsQuery.moduleInspections(projectId, user.role);
+    return this.inspectionsQuery.moduleInspections(projectId, user.role, user.sub);
   }
 
   /** Issue a stage checklist — the PMC/architect defines what gets inspected. */

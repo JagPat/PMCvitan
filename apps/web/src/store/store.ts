@@ -14,7 +14,7 @@
 
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
-import { castDraft } from 'immer';
+import { castDraft, current } from 'immer';
 import {
   SEED_ACTIVITIES,
   SEED_CHECKLIST,
@@ -791,6 +791,23 @@ function overlayChecklistMarks(s: AppState): void {
  * submitted, or belonging to a project this scope has moved away from — is DROPPED rather than
  * pinning the slot to a checklist that is no longer outstanding.
  */
+/**
+ * Write the checklist in the edit slot back over its entry in the outstanding list.
+ *
+ * Field STATE and NOTE survive a switch through `checklistMarks`, which the engineer's own edits
+ * record per inspection. The demo path's photo counter and local evidence thumbnails do not: they
+ * live only on the checklist object, so switching away and back restored a clean clone from the list
+ * and silently dropped them — and a failed item whose only photo vanished cannot be submitted at all.
+ * Mirroring the slot back before it is replaced keeps the list the single source the switch reads
+ * from, rather than adding a second per-inspection record for two fields.
+ */
+function parkEditSlot(s: AppState): void {
+  const c = s.checklist;
+  if (!c) return;
+  const i = s.openChecklists.findIndex((o) => o.id === c.id);
+  if (i >= 0) s.openChecklists[i] = structuredClone(current(c)) as Checklist;
+}
+
 function ownerOfEditSlot(
   open: readonly Checklist[],
   fallback: Checklist | null,
@@ -1204,7 +1221,13 @@ export const useStore = create<Store>()(
           // would have left the second issued checklist invisible on the path nearly every
           // deployment uses — the fix would only have worked once the non-default module read was
           // switched on. The fallback covers a client that outran its server.
-          const open = snap.openChecklists ?? (snap.checklist ? [snap.checklist] : []);
+          // The fallback covers a client deployed ahead of its API. It must NOT wrap a submitted
+          // checklist: when nothing is open the server deliberately serves the oldest SUBMITTED one
+          // so a finished checklist stays readable, and wrapping that would report completed work as
+          // out on site and awaiting the engineer. An older server simply cannot tell us about a
+          // second open checklist, and an empty list is the honest answer to that.
+          const open = snap.openChecklists
+            ?? (snap.checklist && !snap.checklist.submitted ? [snap.checklist] : []);
           s.openChecklists = [...open];
           const owner = ownerOfEditSlot(open, snap.checklist ?? null, s.selectedChecklistId);
           s.checklist = owner.checklist;
@@ -2232,6 +2255,9 @@ export const useStore = create<Store>()(
       }
       const fresh = structuredClone(target);
       set((s) => {
+        // keep whatever the engineer has done to the checklist they are leaving — including the demo
+        // path's photo counter and thumbnails, which no mark records
+        parkEditSlot(s);
         s.selectedChecklistId = id;
         s.checklist = fresh;
         // server truth + THIS inspection's unsubmitted intent — the same rule a refresh applies.
@@ -2497,10 +2523,17 @@ export const useStore = create<Store>()(
         s.checklist.submitted = true;
         s.submission = { inspectionId: null, generation: s.projectScopeGeneration, status: 'idle', attempt: 0 };
         delete s.checklistMarks.byInspection[s.checklist.id];
-        // a submitted checklist is no longer outstanding: drop it from the open set (and from the
-        // selection, if it held it) so the demo path agrees with what the server would serve.
-        s.openChecklists = s.openChecklists.filter((c) => c.id !== s.checklist!.id);
-        if (s.selectedChecklistId === s.checklist.id) s.selectedChecklistId = null;
+        // a submitted checklist is no longer outstanding: drop it from the open set so the demo path
+        // agrees with what the server would serve. The edit slot must MOVE with it — leaving the
+        // submitted checklist in the slot drops the open count to one, which hides the picker and
+        // makes the checklist still out on site unreachable. The server path has no such problem: its
+        // next snapshot re-picks the slot from the open set.
+        const submittedId = s.checklist.id;
+        s.openChecklists = s.openChecklists.filter((c) => c.id !== submittedId);
+        if (s.selectedChecklistId === submittedId) s.selectedChecklistId = null;
+        const next = s.openChecklists[0];
+        // `current` first: `next` is an immer draft, and a draft proxy is not a cloneable source
+        if (next) { s.checklist = structuredClone(current(next)) as Checklist; s.selectedChecklistId = next.id; }
         // demo (no API): the submitted checklist enters the PMC review queue,
         // mapping each item's pass/fail state to a PASS/FAIL result.
         if (!s.reviews.some((r) => r.id === s.checklist!.id)) {

@@ -37,6 +37,10 @@ export interface InspectionBaseEntry {
   activityId: string | null;
   activityName: string | null;
   reinspectionOfId: string | null;
+  /** Whose corrective work this is, when it is anybody's in particular. A re-inspection ALWAYS has
+   *  one (it defaults to whoever submitted the rejected inspection); an issued checklist may not.
+   *  Carried so the read boundary can keep one engineer's assigned work off another's field view. */
+  assigneeId: string | null;
   items: {
     id: string;
     name: string;
@@ -117,6 +121,7 @@ export async function computeInspectionsBase(
       activityId: i.activityId,
       activityName: i.activityName, // inspection-owned label (Task 10 Module 3 correction)
       reinspectionOfId: i.reinspectionOfId,
+      assigneeId: i.assigneeId,
       items: i.items.map((it) => ({
         id: it.id,
         name: it.name,
@@ -166,9 +171,9 @@ export function bakeInspections(
   base: InspectionsBase,
   // `role` is the viewer's role as a string (the API `Role` includes 'worker', wider than the shared
   // `Role`) — the AUTH-02 gating is a plain equality check, so a string keeps both sides compatible.
-  opts: { role: string; evidencePath: (mediaId: string) => string },
+  opts: { role: string; evidencePath: (mediaId: string) => string; viewerId?: string },
 ): InspectionsSlices {
-  const { role, evidencePath } = opts;
+  const { role, evidencePath, viewerId } = opts;
   const isPmc = role === 'pmc';
   const canSeeInspections = role === 'pmc' || role === 'engineer';
   const all = base.inspections;
@@ -200,13 +205,23 @@ export function bakeInspections(
   // the field view asked `find` for a single row, so the other was issued work that no surface
   // showed — and the PMC who issued it could not see it either, because `reviews` carries only
   // SUBMITTED inspections. (Not role-gated — this is the field view, same visibility as below.)
-  const openRows = all.filter((i) => i.kind === 'checklist' && !i.submitted).sort(byId);
+  //
+  // ASSIGNED work stays with its assignee. A rejected inspection creates a re-inspection assigned to
+  // whoever submitted the original — that is somebody's named corrective work, not the site's. The
+  // field view is ungated by ROLE on purpose, but showing engineer B engineer A's assigned
+  // re-inspection is a different thing: B could fill it, submit it, and be recorded as the person
+  // who did A's remedial work. An UNASSIGNED checklist is still everybody's, which is the common
+  // case and unchanged. The PMC sees all of it — they issue this work and must see what is
+  // outstanding, which is the whole point of the list.
+  const mine = (i: InspectionBaseEntry): boolean =>
+    isPmc || i.assigneeId === null || i.assigneeId === viewerId;
+  const openRows = all.filter((i) => i.kind === 'checklist' && !i.submitted && mine(i)).sort(byId);
   const openChecklists: Checklist[] = openRows.map(toChecklist);
 
   // The one the field view opens by default: the oldest open checklist, else the oldest submitted
   // one so a finished checklist stays readable. Chosen from a SORTED list — `find` over the
   // unordered read returned a planner-dependent row, so two runs could disagree.
-  const checklistRow = openRows[0] ?? all.filter((i) => i.kind === 'checklist').sort(byId)[0];
+  const checklistRow = openRows[0] ?? all.filter((i) => i.kind === 'checklist' && mine(i)).sort(byId)[0];
   const checklist: Checklist | null = checklistRow ? toChecklist(checklistRow) : null;
 
   // The review queue: any submitted-but-undecided inspection, sorted by id. AUTH-02: PMC-only.

@@ -80,4 +80,36 @@ describe('the engineer can open every checklist that is out on site', () => {
     act(() => { fireEvent.click(view.getByTestId('checklist-tab-INSP-2')); });
     expect(useStore.getState().checklist?.items[0].state).toBe('fail');
   });
+
+  it('demo submit moves the field view to the checklist still out on site', async () => {
+    // In demo mode the submitted checklist leaves `openChecklists` but used to stay in the slot.
+    // With one open entry left the picker hides, so the remaining checklist became unreachable —
+    // the exact disappearance this change exists to end, reintroduced at the other end.
+    const both = [checklist('INSP-1', 'Rebar'), checklist('INSP-2', 'Shuttering')].map((c) => ({
+      ...c, items: [{ ...c.items[0], state: 'pass' as const, photos: 1 }],
+    }));
+    const { view, useStore } = await mount(both, both[0]);
+    await act(async () => { await useStore.getState().submitInspection(); });
+
+    expect(useStore.getState().openChecklists.map((c) => c.id)).toEqual(['INSP-2']);
+    expect(useStore.getState().checklist?.id).toBe('INSP-2');
+    expect(useStore.getState().checklist?.submitted).toBe(false);
+    expect(view.getByTestId('checklist-title').textContent).toBe('Shuttering');
+  });
+
+  it('a demo photo survives leaving the checklist and coming back', async () => {
+    // `addPhoto` and the demo evidence branch write only the checklist in the slot — neither field
+    // is a `checklistMarks` record — so a switch used to restore a clean clone and drop them. A
+    // failed item whose only photo vanished cannot be submitted at all.
+    const both = [checklist('INSP-1', 'Rebar'), checklist('INSP-2', 'Shuttering')];
+    const { view, useStore } = await mount(both, both[0]);
+    act(() => { useStore.getState().addPhoto(0); });
+    expect(useStore.getState().checklist?.items[0].photos).toBe(1);
+
+    act(() => { fireEvent.click(view.getByTestId('checklist-tab-INSP-2')); });
+    expect(useStore.getState().checklist?.items[0].photos).toBe(0);
+
+    act(() => { fireEvent.click(view.getByTestId('checklist-tab-INSP-1')); });
+    expect(useStore.getState().checklist?.items[0].photos).toBe(1);
+  });
 });

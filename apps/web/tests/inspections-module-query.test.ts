@@ -280,6 +280,23 @@ describe('Task 10 (Module 3) — module-owned inspections read (XOR)', () => {
     expect(s().submission.status).toBe('queued');
   });
 
+  it('an older server serving a SUBMITTED checklist yields an empty outstanding list, not a false one', async () => {
+    // When nothing is open the API deliberately serves the oldest SUBMITTED checklist so a finished
+    // one stays readable. Wrapping that in the compatibility fallback reported completed work as out
+    // on site and awaiting the engineer. An older server cannot tell us about a second open
+    // checklist, and an empty list is the honest answer to that.
+    const done = { ...checklist('INSP-9'), submitted: true };
+    const gw = {
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot({ checklist: done })),
+      inspections: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().checklist?.id).toBe('INSP-9');       // still readable
+    expect(s().openChecklists).toEqual([]);          // but not "out on site"
+  });
+
   it('the outstanding list is PROJECT data — a scope teardown empties it', async () => {
     // `openChecklists` holds project-contained inspection ids. Left out of the scope teardown it
     // would render one site's outstanding work under another after a switch.

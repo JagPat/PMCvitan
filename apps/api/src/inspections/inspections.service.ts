@@ -1,5 +1,5 @@
 import {
-  Inject, BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+  Inject, BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
@@ -114,6 +114,15 @@ export class InspectionsService {
     // items the request carries.
     if (insp.decided) throw new BadRequestException('This inspection has already been decided.');
     if (insp.submitted) throw new BadRequestException('This checklist has already been submitted and is awaiting review.');
+    // ASSIGNED work is submitted by its assignee and nobody else. A re-inspection is named corrective
+    // work — its assignee defaults to whoever submitted the rejected inspection — and the submitter is
+    // recorded as the person who did it, so letting a second engineer submit it would put the wrong
+    // name on somebody's remedial work. No PMC exemption: the reject path's own rule is that a PMC
+    // takes the work by naming THEMSELVES the assignee (`pmcSelfExplicit`), which this then honours.
+    // An UNASSIGNED checklist is unchanged — the role gate on the route is the whole guard, as before.
+    if (insp.assigneeId && insp.assigneeId !== user.sub) {
+      throw new ForbiddenException('This inspection is assigned to someone else — only its assignee can submit it.');
+    }
     if (insp.items.length === 0) throw new BadRequestException('This inspection has no checklist items to submit.');
 
     // gate finding 3: the payload addresses ROWS by id — labels are not unique.
