@@ -18,9 +18,16 @@ The trusted default-branch controller rechecks policy and exact-head evidence be
 promotion and merge. The handoff workflow processes merged work, conflicts and
 correction leases, recovering missed events through its durable cursor.
 
+`review-scope` is the only job that runs BEFORE `pnpm install`, which is why it —
+and not the five install jobs — is where a tracked `node_modules` path of any type
+is refused. PR #572 carried one as a symlink and failed five install jobs twice
+before anything named the cause; the check now says it once, in the one place that
+can say it early.
+
 Ownership errors and wake limitations are explained in POLICY: a declared Cursor
 owner is routed but not awakenable; an invalid declaration is correction_stalled.
 Use live PRs and STATUS for the current position; do not maintain a second timeline here.
+
 
 ## Recovery
 
