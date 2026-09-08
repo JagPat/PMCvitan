@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
@@ -248,14 +248,24 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     }
     await svc.create(p, createInput({ title: 'Raced QA' }), asPmc(pmcA, p), 'k-cas-1');
     const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Raced QA' }, include: { items: true } });
-    expect(insp.assigneeId).toBe(null); // B's read sees it unassigned
+    expect(insp.assigneeId).toBe(null);
 
-    // …and the assignment lands before B's transaction starts (the interleaving the latch allows)
+    // The assignment lands in the window BETWEEN the guard's read and the transaction. The window is
+    // reproduced by making the guard's own read return the pre-assignment row it legitimately could
+    // have read a moment earlier, while the committed row already carries the assignment — which is
+    // exactly the state the finding describes, and the only part of the interleaving that matters.
+    // Waiting for a real scheduler to produce it would make the probe timing-dependent for no gain.
     await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: engA } });
+    const stale = { ...insp, assigneeId: null };
+    const findUnique = vi.spyOn(t.prisma.inspection, 'findUnique').mockResolvedValueOnce(stale as never);
 
-    await expect(svc.submit(p, insp.id, { items: insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) },
-      { sub: engB, role: 'engineer', projectId: p } as AuthUser, 'k-cas-sub'))
-      .rejects.toThrow(/changed while submitting/i);
+    try {
+      await expect(svc.submit(p, insp.id, { items: insp.items.map((it) => ({ id: it.id, state: 'pass' as const, photos: 0, note: '' })) },
+        { sub: engB, role: 'engineer', projectId: p } as AuthUser, 'k-cas-sub'))
+        .rejects.toThrow(/changed while submitting/i);
+    } finally {
+      findUnique.mockRestore();
+    }
 
     // nothing was recorded: the work is still A's, and still open for A to do
     const after = await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } });
