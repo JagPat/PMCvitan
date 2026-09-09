@@ -2557,3 +2557,215 @@ CREATE TRIGGER "ReleaseLease_t4d_sealed" BEFORE UPDATE OR DELETE ON "ReleaseLeas
 DROP TRIGGER IF EXISTS "ReleaseLease_t4d_no_truncate" ON "ReleaseLease";
 CREATE TRIGGER "ReleaseLease_t4d_no_truncate" BEFORE TRUNCATE ON "ReleaseLease"
   FOR EACH STATEMENT EXECUTE FUNCTION platform_t4d_register_no_truncate();
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────
+-- PART 3f — THE DELIVERED SEALS, WIDENED
+-- ────────────────────────────────────────────────────────────────────────────────────────────
+--
+-- Everything above ADDS. This part CHANGES delivered behaviour, so each edit states what it
+-- opens and why the opening cannot be used for anything else.
+
+-- ── the holder freeze gains exactly ONE opening ──────────────────────────────────────────────
+-- `decision_t4b_attribution_seal` is the trigger that ACTUALLY freezes the holder — its
+-- published-or-attributed arm refuses any change to `deciderKind` or `deciderMembershipId`. Not
+-- `phase6_t4b2_decision_seal`, whose arms are the role arms; naming the wrong one is how a
+-- previous round's fix reached the wrong object.
+--
+-- THREE changes, in ONE `CREATE OR REPLACE`, and nothing else moves:
+--
+--   (1) THE FORWARD DOOR. The holder freeze admits a change accompanied by a same-transaction
+--       `DecisionForward` row whose `fromDesignation` EQUALS the OLD holder columns, whose
+--       `toDesignation` EQUALS the NEW ones, and whose two designations DIFFER. Mere row
+--       presence is forgeable — a hostile transaction could insert a forward naming unrelated
+--       designations and re-home the holder to a third member — so the seal compares the
+--       transition to its evidence FIELD-FOR-FIELD, and the forward's own INSERT seal compares
+--       `from` against the decision's CURRENT holder. Together they force the order: the
+--       forward is written FIRST, the holder moves second, and neither is valid without the
+--       other.
+--
+--   (2) THE TUPLE-WRITE ARM admits `→ awaiting_countersign` beside `→ approved`. Under a chain
+--       the approval is PROVISIONAL: the tuple is written by the provisional act exactly as the
+--       finalizing act wrote it, and the delivered arm — which admits the tuple's first write
+--       only on `pending`/`change → approved` — would abort that transition before any 4d
+--       pairing seal ran (#567's review round 2, finding 3).
+--
+--   (3) THE STANDING ARM admits `change → awaiting_countersign` beside `change → approved`, and
+--       ONLY from `change`. The chain reapproval leaves `change` provisionally; an `approved`
+--       decision never returns to awaiting, so that direction stays refused.
+--
+-- The INSERT clause is KEPT unchanged: a tuple belongs only to an approved decision, because a
+-- decision is never BORN awaiting — the approved-entry seal's INSERT arm below refuses that
+-- outright, and the seed plants no such row.
+CREATE OR REPLACE FUNCTION decision_t4b_attribution_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+  v_writes_tuple BOOLEAN;
+  v_forwarded    BOOLEAN;
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    IF NEW."id" IS DISTINCT FROM OLD."id"
+       OR NEW."projectId" IS DISTINCT FROM OLD."projectId" THEN
+      RAISE EXCEPTION 'phase6-4b: decision register identity is frozen from birth (%).', OLD."id";
+    END IF;
+
+    -- Round 1 (Codex F1): publication is a permanent register fact. Without this arm the holder
+    -- freeze below could be unlocked in two transactions — clear `publishedAt`, then rewrite the
+    -- holder while `OLD."publishedAt" IS NULL`. Nothing in the product ever un-publishes a
+    -- decision (publish is a one-way `publishedAt IS NULL` transition), so refusing it costs the
+    -- compatibility writer nothing and removes the nullable value's power to reopen the seal.
+    IF OLD."publishedAt" IS NOT NULL AND NEW."publishedAt" IS NULL THEN
+      RAISE EXCEPTION 'phase6-4b: a published decision cannot be un-published — publication is permanent (%).', OLD."id";
+    END IF;
+
+    -- Phase 6 unit 4d-i, change (1): the ONE opening in the holder freeze. Evaluated only when
+    -- the holder actually moves, so an ordinary update pays nothing for it.
+    v_forwarded := FALSE;
+    IF (NEW."deciderKind" IS DISTINCT FROM OLD."deciderKind"
+        OR NEW."deciderMembershipId" IS DISTINCT FROM OLD."deciderMembershipId") THEN
+      v_forwarded := EXISTS (
+        SELECT 1 FROM "DecisionForward" f
+         WHERE f."projectId" = OLD."projectId" AND f."decisionId" = OLD."id"
+           AND f."fromDesignationKind" = OLD."deciderKind"::text
+           AND f."fromDesignationMembershipId" IS NOT DISTINCT FROM OLD."deciderMembershipId"
+           AND f."toDesignationKind" = NEW."deciderKind"::text
+           AND f."toDesignationMembershipId" IS NOT DISTINCT FROM NEW."deciderMembershipId"
+      );
+    END IF;
+
+    -- Round 1 (Codex F1): the freeze must not rest on the current nullable publication value
+    -- alone. An approval tuple, approval/change standing, or a migration stamp each name the
+    -- holder just as durably as publication does — an unpublished row carrying any of them
+    -- would otherwise let its current holder drift away from the frozen approval claim, making
+    -- the trusted evidence contradict itself. None of the four can be cleared first to reopen
+    -- this arm: publication is permanent (above), the tuple is frozen and approval/change
+    -- standing cannot be left (below), and the stamp is migration-owned and sealed.
+    IF (
+         OLD."publishedAt" IS NOT NULL
+      OR OLD."approvedDeciderKind" IS NOT NULL
+      OR OLD."status"::text IN ('approved', 'change', 'withdrawn')
+      OR EXISTS (SELECT 1 FROM "DecisionLegacyApproval" l WHERE l."decisionId" = OLD."id")
+    ) AND (
+         NEW."deciderKind" IS DISTINCT FROM OLD."deciderKind"
+      OR NEW."deciderMembershipId" IS DISTINCT FROM OLD."deciderMembershipId"
+    ) AND NOT v_forwarded THEN
+      RAISE EXCEPTION 'phase6-4b: a published or attributed decision keeps its holder — the decider tuple is frozen (%). Phase 6 unit 4d opens exactly one door: a same-transaction "DecisionForward" row recording THIS hand-off, from the holder the decision actually carries to the one it is moving to.', OLD."id";
+    END IF;
+
+    IF OLD."approvedDeciderKind" IS NOT NULL AND (
+         NEW."approvedDeciderKind" IS DISTINCT FROM OLD."approvedDeciderKind"
+      OR NEW."approvedDeciderMembershipId" IS DISTINCT FROM OLD."approvedDeciderMembershipId"
+      OR NEW."approvedDeciderLabel" IS DISTINCT FROM OLD."approvedDeciderLabel"
+    ) THEN
+      RAISE EXCEPTION 'phase6-4b: approval attribution is frozen once written (%).', OLD."id";
+    END IF;
+
+    -- An approval can reopen to `change` and close back to `approved`; it cannot be laundered
+    -- into a status that says the approval never happened. Tupleless old-writer rows are covered
+    -- by the status itself and by their migration stamp.
+    --
+    -- Phase 6 unit 4d-i, change (3): `change → awaiting_countersign` joins the permitted
+    -- destinations, and ONLY from `change` — the chain reapproval leaves `change`
+    -- provisionally, while an `approved` decision never returns to awaiting.
+    IF OLD."status"::text IN ('approved', 'change')
+       AND NEW."status"::text NOT IN ('approved', 'change')
+       AND NOT (OLD."status"::text = 'change' AND NEW."status"::text = 'awaiting_countersign') THEN
+      RAISE EXCEPTION 'phase6-4b: an approval-bearing decision cannot leave approved/change standing (%).', OLD."id";
+    END IF;
+
+    v_writes_tuple := OLD."approvedDeciderKind" IS NULL
+      AND NEW."approvedDeciderKind" IS NOT NULL;
+    -- Phase 6 unit 4d-i, change (2): a PROVISIONAL approval writes the tuple exactly as the
+    -- finalizing act would, so `→ awaiting_countersign` joins `→ approved` here.
+    IF v_writes_tuple AND NOT (
+      OLD."status"::text IN ('pending', 'change')
+      AND NEW."status"::text IN ('approved', 'awaiting_countersign')
+    ) THEN
+      RAISE EXCEPTION 'phase6-4b: approval attribution may first be written only by an approval transition (%).', OLD."id";
+    END IF;
+  ELSE
+    v_writes_tuple := NEW."approvedDeciderKind" IS NOT NULL;
+    IF v_writes_tuple AND NEW."status"::text <> 'approved' THEN
+      RAISE EXCEPTION 'phase6-4b: an inserted approval tuple belongs only to an approved decision (%).', NEW."id";
+    END IF;
+  END IF;
+
+  IF v_writes_tuple THEN
+    IF NEW."approvedDeciderKind" IS DISTINCT FROM NEW."deciderKind"
+       OR NEW."approvedDeciderMembershipId" IS DISTINCT FROM NEW."deciderMembershipId" THEN
+      RAISE EXCEPTION 'phase6-4b: approval attribution must freeze the decision holder tuple (%).', NEW."id";
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END $$;
+
+-- ── the approved-entry seal ──────────────────────────────────────────────────────────────────
+-- Every entry into `awaiting_countersign` is sealed FROM THE DECISION SIDE: legal only FROM
+-- `pending`/`change`, and only under an ACTIVE chain. Its INSERT arm refuses a decision BORN
+-- awaiting outright (#567's review round 2, finding 2): after 4d-iii drops
+-- `Decision_t4d_awaiting_reserved`, a direct INSERT of a published row already carrying the
+-- status would pass the delivered 4b INSERT seal — which judges publication and holder standing
+-- — and commit with no provisional revision, receipt, demand event, audit row or notice. That is
+-- a head the countersign and the stranded resolution could never finalize. The state is ENTERED
+-- through the sealed transition, never born.
+CREATE OR REPLACE FUNCTION phase6_t4d_approved_entry_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW."status"::text = 'awaiting_countersign' THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: decision % may not be BORN `awaiting_countersign` — the state is entered by the sealed provisional-approval transition, and a row inserted straight into it carries no provisional revision, no receipt and no demand event, so nothing could ever finalize it',
+        NEW."id";
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF NEW."status"::text = 'awaiting_countersign' AND OLD."status"::text <> 'awaiting_countersign' THEN
+    IF OLD."status"::text NOT IN ('pending', 'change') THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: decision % may not enter `awaiting_countersign` from `%` — a provisional approval is made from an OPEN decision',
+        OLD."id", OLD."status";
+    END IF;
+    IF platform_role_standing(OLD."projectId", 'architect') = 0 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: project % holds no ACTIVE architect, so decision % cannot enter `awaiting_countersign` — with the chain off an approval lands `approved` directly, and a decision left awaiting a countersigner who does not exist is stranded from birth',
+        OLD."projectId", OLD."id";
+    END IF;
+  END IF;
+  RETURN NEW;
+END $$;
+
+-- NAMED so it sorts AFTER both `Decision_t4d_architect_reserved` and
+-- `Decision_t4d_awaiting_reserved`. PostgreSQL fires same-kind triggers in NAME order, and while
+-- the reservation stands the DOOR must be the thing that refuses — its message names the drain
+-- directive an operator can act on, where this seal would report "no active architect", which is
+-- true but sends the reader somewhere else. `entry` sorts after `architect`/`awaiting`;
+-- `approved_entry` would have sorted before both.
+DROP TRIGGER IF EXISTS "Decision_t4d_approved_entry" ON "Decision";
+DROP TRIGGER IF EXISTS "Decision_t4d_entry_seal" ON "Decision";
+CREATE TRIGGER "Decision_t4d_entry_seal" BEFORE INSERT OR UPDATE ON "Decision"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_approved_entry_seal();
+
+-- ── the LAST reservation door ────────────────────────────────────────────────────────────────
+-- `DecisionForward` is reserved with the other four (§A.2). Forwarding needs no architect, so
+-- without this door 4d-ii's `decisions.forward` would emit `decision.forwarded` while an
+-- ALREADY-RUNNING previous-release push worker — fenced by the consumer version bump only when
+-- it RESTARTS — could still claim that delivery, know no `forward` family, and take the
+-- unguarded send path. Dropped by the same single 4d-iii statement as the other four.
+DO $$
+DECLARE tg pg_trigger;
+BEGIN
+  IF phase6_t4d_retired() THEN RETURN; END IF;
+
+  SELECT * INTO tg FROM pg_trigger
+   WHERE tgname = 'DecisionForward_t4d_reserved'
+     AND tgrelid = '"DecisionForward"'::regclass AND NOT tgisinternal;
+  IF NOT FOUND THEN
+    CREATE TRIGGER "DecisionForward_t4d_reserved" BEFORE INSERT ON "DecisionForward"
+      FOR EACH ROW EXECUTE FUNCTION phase6_t4d_reserved('DecisionForward');
+  ELSIF tg.tgenabled <> 'O'
+     OR tg.tgfoid::regproc::text <> 'phase6_t4d_reserved'
+     OR tg.tgtype <> 7 THEN               -- EXACTLY ROW(1) + BEFORE(2) + INSERT(4)
+    RAISE EXCEPTION
+      'phase6 4d-i: DecisionForward_t4d_reserved exists but does not reserve the table (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P6T4D.',
+      tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
+  END IF;
+END $$;
