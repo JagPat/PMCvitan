@@ -1015,6 +1015,43 @@ mirrors or backfills — `ProjectRoleStanding`, `ProjectUserStanding`,
 backfill over pre-existing rows; `OutboxConsumerActivation` was the one that
 did not, and that is finding 3.
 
+### Review round 21 (head `776b362e`) — three P1s, two of them round 20's own weak arm
+
+| # | classification | why that class |
+|---|---|---|
+| 1 | **regression introduced by a fix** | round 20 put the weak converse on the IMMEDIATE trigger, re-committing the outage round 15's finding 2 had already diagnosed |
+| 2 | **genuinely new** | the forward door gates on status and never on publication, and an unpublished draft is `status = 'pending'` |
+| 3 | **regression introduced by a fix** | round 20's weak arm asked for "some event naming the decision", which any event satisfies |
+
+None duplicate, none incorrect.
+
+**Findings 1 and 3 are the same edit failing twice, and finding 1 is the worse
+of the two.** Round 20 cited `decisions.service.ts:534`/`:546`, `:863`/`:865`
+and `:924`/`:926` as proof that the running release satisfies a weak converse —
+and those line numbers say the audit row is written BEFORE the event, which is
+precisely why an IMMEDIATE arm cannot see it. The evidence quoted in support of
+the placement refutes the placement. Round 15 had already established the
+split — immediate for what must be immediate, deferred for what needs the
+finished transaction — and round 20 moved a new arm onto the wrong side of it
+without re-deriving the timing, four rounds after the rule was written down.
+
+Finding 3 is the other half: "weak" was allowed to mean "loose". A converse that
+asks for the existence of any event, rather than the RIGHT event, admits an
+`approved` row beside a `decision.published` and makes it immutable. The weak
+arm is now a kind-to-event-type map; it is weaker than the full converse only in
+omitting the FACT and the TRANSITION, not in what it accepts as a companion.
+
+**Finding 2 is the round's real new ground.** The forward door asks which STATE
+a decision is in and never whether it was PUBLISHED, and an unpublished draft is
+`status = 'pending'` — created that way at `decisions.service.ts:194`, stamped
+`publishedAt` only at `:213`. So a PMC could forward a draft: the holder
+mutation, an IMMUTABLE `DecisionForward`, the event, the notice and the push all
+commit, and the target cannot see the decision at all, because
+`decisionVisibleToViewer` keeps a draft private to its author. The delivered code
+draws this line one command over — `assertConsultationEligible` refuses
+`publishedAt === null` at `:58` — and the forward door is the sibling that did
+not. Publication is now required at the command and at both DB doors.
+
 ### Review round 20 (head `a69b0671`) — two P1s: one declined on its mechanism, one accepted and closed earlier than planned
 
 | # | classification | why that class |
@@ -1949,9 +1986,24 @@ refused at commit (a DEFERRED constraint trigger) unless the SAME
 transaction carries the matching holder mutation, exactly as the holder
 trigger checks it from the decision side; an orphan row would fabricate
 immutable handoff evidence for a handoff that never happened. **The DOOR is
-status-gated**: forwarding is legal only in states the NEW HOLDER can act on
-— `pending` and `change`, CAS'd on status at the command AND required by both
-DB doors; terminal states refuse; `awaiting_countersign` is EXCLUDED from
+status-gated AND PUBLICATION-gated**: forwarding is legal only in states the NEW
+HOLDER can act on — `pending` and `change`, CAS'd on status at the command AND
+required by both DB doors — **and only on a PUBLISHED decision, `publishedAt IS
+NOT NULL`, at the command and at both doors** (#572's review round 21,
+finding 2). Status alone is not the question, because an unpublished DRAFT also
+carries `status = 'pending'` (`decisions.service.ts:194` creates it that way and
+`:213` stamps `publishedAt` only on publication), and a draft is its author's
+private workspace: `decisionVisibleToViewer` hides it, so the target of a
+forward could not see the decision they had just been made the holder of. Every
+effect would still commit — the holder mutation, the IMMUTABLE `DecisionForward`
+row, the event, the notice and the push — handing someone an action item that
+renders as nothing and routing round the draft-only `updateDraft` workflow that
+exists for exactly this state. The delivered code already draws this line one
+command over: `assertConsultationEligible` refuses when `publishedAt === null`
+(`decisions.service.ts:58`), and the forward door is the sibling that did not.
+P30 gains the unpublished-`pending` row: the forward REFUSED at the command and,
+planted directly, refused at both doors, with no `DecisionForward`, no holder
+change, no event and no push; terminal states refuse; `awaiting_countersign` is EXCLUDED from
 the generic command (that status is the ARCHITECT's action item) and the DB
 door admits `awaiting_countersign → change` ONLY when the transaction also
 carries the `countersign_rejection` request (the disagreement's forward-on,
@@ -4643,10 +4695,12 @@ before it. Each fact table carries:
    `platform_claim_event_pairing` and EVERY legitimate re-notification would
    have aborted at commit as unclaimed. The arm is installed in **4d-i** and not
    later, by round 11's own rule: the claiming seal belongs to the unit that
-   makes the event pairing-required, never a subsequent one. Beside it, 4d-i's INSERT arm carries the WEAK CONVERSE for all eight listed
-   audit kinds — a same-transaction `DomainEvent` naming the row's decision,
-   which the running release satisfies and a standalone plant cannot (round 20,
-   finding 2). It claims for
+   makes the event pairing-required, never a subsequent one. Beside it — on a SEPARATE, DEFERRED trigger, never this immediate one —
+   4d-i creates `DecisionEvent_t4d_correspondence` with the WEAK CONVERSE for all
+   eight listed audit kinds: a same-transaction `DomainEvent` OF THE KIND'S OWN
+   EVENT TYPE naming the row's decision, which the running release satisfies and
+   a standalone plant cannot (round 20 finding 2; round 21 findings 1 and 3). It
+   claims for
    `countersign_renotified` and nothing else CLAIMS — no other audit kind is a
    claimant, and a second claim for one event is refused by the register's
    per-event UNIQUE.
@@ -4749,14 +4803,36 @@ before it. Each fact table carries:
    the previous release lacks the 4d ENVELOPE PAIR and the 4d FACTS, but it does
    emit its event in the same transaction as its audit row, every time —
    `decisions.service.ts:534` then `:546` (approve and reapprove), `:863` then
-   `:865` (`change_requested`), `:924` then `:926` (`change_withdrawn`). 4d-i
-   therefore installs the WEAK arm on all eight kinds: an audit row of a listed
-   kind requires a same-transaction `DomainEvent` naming its decision — satisfied
-   by the running release as written, unsatisfiable by a standalone plant, and
-   trivially satisfied by 4d-ii's own writers for the four kinds the previous
-   release never writes. 4d-iii then TIGHTENS the same trigger to the full
-   correspondence (the fact and its transition beside the event) rather than
-   introducing it. What this cannot reach is the cohort written BEFORE 4d-i:
+   `:865` (`change_requested`), `:924` then `:926` (`change_withdrawn`).
+
+   **So 4d-i CREATES `DecisionEvent_t4d_correspondence` — the DEFERRED
+   constraint trigger — carrying the WEAK arm, and 4d-iii replaces its body with
+   the full one** (#572's review round 21, finding 1). Round 20 put this arm on
+   `DecisionEvent_t4d_append_only`, which is IMMEDIATE, and cited those very line
+   numbers as the evidence that the running release satisfies it. They prove the
+   opposite for an immediate trigger: at the audit row's INSERT the event does
+   not exist yet, so every ordinary approval, change request and withdrawal would
+   be refused from 4d-i — the identical outage round 15's finding 2 diagnosed for
+   the FULL converse, re-committed four rounds later by moving an arm without
+   re-deriving its timing. The immediate trigger keeps only what must be
+   immediate: the UPDATE and DELETE refusals, and the pairing claim.
+
+   **And the weak arm is KIND-MATCHED, not merely event-present** (#572's review
+   round 21, finding 3). "Some same-transaction event naming this decision" is
+   satisfied by ANY event on that decision, so a writer could append an `approved`
+   audit row beside a catalog-valid `decision.published` — an event that owes no
+   approval fact — and the row would commit, become immutable, and inflate
+   `priorApprovals` and every later revision number exactly as the standalone
+   plant would. Each kind therefore names the event type it may accompany:
+   `approved` → `decision.approved`, `reapproved` → `decision.reapproved`,
+   `change_requested` → `decision.change_requested`, `change_withdrawn` →
+   `decision.change_withdrawn` (the four the delivered service emits beside their
+   audit rows, at the lines above), `countersigned` → `decision.countersigned`,
+   `forwarded` → `decision.forwarded`, `stranded_resolved` → the stranded
+   resolution's own event, and `countersign_renotified` →
+   `decision.awaiting_countersign`. 4d-iii then adds the FACT and its TRANSITION
+   to the same trigger; what moves earlier is only the pair the previous release
+   already writes. What this cannot reach is the cohort written BEFORE 4d-i:
    those rows predate every seal, they are the legacy class this plan already
    treats as unprovable, and no trigger installed later can validate them — said
    here rather than left as an implied claim of completeness. **The sanctioned
@@ -5998,12 +6074,12 @@ today's behaviour lives.
     round 2, finding 1); and only then drops
     ALL FIVE reservation doors with their shared function, drops the two
     kept finality defaults (`finalized`, `revisionFinalized` — after the
-    drain only writers that state the pin remain), **TIGHTENS the audit converse
-    into `DecisionEvent_t4d_correspondence`, a DEFERRED INSERT constraint trigger
-    carrying the FULL converse §A.3 states — 4d-i already installed the weak arm
-    (a same-transaction `DomainEvent`), so this stage adds the fact and its
-    transition rather than introducing the rule (#572's review round 20,
-    finding 2)** — each of the EIGHT listed audit kinds
+    drain only writers that state the pin remain), **REPLACES the body of
+    `DecisionEvent_t4d_correspondence` — the DEFERRED INSERT constraint trigger
+    4d-i created — with the FULL converse §A.3 states: 4d-i already carries the
+    kind-matched same-transaction event, so this stage adds the FACT and its
+    TRANSITION rather than introducing the rule or the trigger (#572's review
+    round 20 finding 2; round 21 findings 1 and 3)** — each of the EIGHT listed audit kinds
     (`countersign_renotified` among them, #572's review round 19)
     requiring its fact, its transition and its `DomainEvent` in the same
     transaction, judged AT COMMIT because the delivered writers insert the audit
