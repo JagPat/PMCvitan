@@ -31,6 +31,12 @@ export const platformManifest: ModuleManifest = {
     'outboxConsumerCatalog',
     'outboxOperatorAction',
     'outboxCutoverState',
+    // Phase 6 task 4d unit 4d-i (§D Part 0) — the durable retirement marker. One row per retired
+    // rollout unit, written only by the retiring migration under its `SET LOCAL` gate, and read
+    // by every marker-aware statement in the 4d-i migration to decide whether it is installing a
+    // fresh reservation or replaying over a database that has already retired it. Platform-owned
+    // because it is rollout evidence about the deployment, not about any module's domain.
+    'rolloutRetirement',
   ],
   dependsOn: [],
   // Phase 6 unit 4b, round-6 Codex F6 — the push spine asks TWO orgs-owned questions through

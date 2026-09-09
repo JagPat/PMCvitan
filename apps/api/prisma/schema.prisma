@@ -30,6 +30,12 @@ enum DecisionStatus {
   // conversion), paired bidirectionally with `deciderKind='none'` by CHECK, its published
   // evidence frozen like the withdrawn seal network's. Riding the enum for the same reason.
   recorded
+  // Phase 6 task 4d unit 4d-i (§A.2) — the provisional approval parked for an architect's
+  // countersign. RESERVED between 4d-i and 4d-iii: the value exists so the schema is deployable,
+  // and `Decision_t4d_awaiting_reserved` makes it unreachable until the chain's seals are
+  // installed. Riding the enum for the same reason `withdrawn` and `recorded` do — every reader
+  // keyed by DecisionStatus fails to compile until it answers for the new value.
+  awaiting_countersign
 }
 
 // Phase 6 task 4b expansion — the current holder and frozen approval tuple share this
@@ -40,6 +46,10 @@ enum DeciderKind {
   pmc
   member
   none
+  // Phase 6 task 4d unit 4d-i (§A.2) — the ROLE-held designation: the decision is countersigned
+  // by whoever holds the project's architect standing at the act, not by a named user. RESERVED
+  // between 4d-i and 4d-iii by `Decision_t4d_architect_reserved`.
+  architect
 }
 
 enum ActivityStatus {
@@ -324,6 +334,24 @@ model OutboxCutoverState {
   sealedBy        String
   reason          String
   updatedAt       DateTime @updatedAt
+}
+
+// Phase 6 task 4d unit 4d-i (§D Part 0) — THE DURABLE RETIREMENT MARKER. One row per retired
+// rollout unit (`unit = 'phase6-4d'` is the only one 4d writes), and the fact every marker-aware
+// statement in the 4d-i migration reads to decide which body it installs: on a fresh database or
+// an ordinary upgrade the marker is absent and 4d-i installs the reservation doors and the WEAK
+// seal bodies; on a P3005 baseline REPLAY of a mature database that 4d-iii already retired, the
+// marker is present and 4d-i installs no door and the POST-retirement bodies instead. Without it
+// a replay re-creates a reservation and aborts on rows that are legitimately there.
+//
+// Sealed on its own surface rather than as a row on `OutboxOperatorAction`, whose 4c-iii-r
+// verifier (`verifyMarkerSeals`) keeps a CLOSED trigger inventory a fourth trigger would fail:
+// INSERT gated to the retiring transaction's `SET LOCAL vitan.phase6_4d_retire = 'on'` flag,
+// UPDATE and DELETE refused, TRUNCATE refused, both text columns non-blank by CHECK.
+model RolloutRetirement {
+  unit      String   @id
+  retiredAt DateTime @default(now())
+  retiredBy String
 }
 
 // Phase 2 Task 6 — a database consumer records one ProcessedEvent per (consumer, eventId) IN THE
