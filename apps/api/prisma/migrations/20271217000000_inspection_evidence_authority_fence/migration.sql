@@ -67,14 +67,25 @@ BEGIN
   -- UNASSIGNED evidence is unchanged: the route's role gate is its whole guard, as it always was.
   IF v_assignee IS NULL THEN RETURN v_row; END IF;
 
-  -- The same readiness fence the submit trigger takes, for the same reason and with the same
-  -- try-and-refuse shape: a blocking acquisition here could invert a lock order against a writer
-  -- holding the key and waiting on these rows.
-  IF NOT pg_try_advisory_xact_lock(hashtextextended('readiness:' || v_project, 0)) THEN
-    RAISE EXCEPTION
-      'Inspection % evidence cannot be attached right now: this project''s readiness is held by another transaction, so the assignee''s standing cannot be judged. Retry.',
-      v_inspection;
-  END IF;
+  -- NO READINESS LOCK HERE, and the asymmetry with the submit fence is deliberate (#571 round 11).
+  -- Round 10 gave this fence the submit fence's try-and-refuse readiness acquisition by SYMMETRY,
+  -- without noticing that the same line costs nothing there and a great deal here. The submit path
+  -- enters this trigger from a service that ALREADY holds the project's readiness key, so its
+  -- try-acquire is re-entrant within the same transaction and free. `MediaService` takes no
+  -- readiness lock at all — so acquiring it here would take a PROJECT-WIDE lock inside every photo
+  -- upload and hold it to commit, putting every readiness writer (submit, decide, start, complete)
+  -- behind uploads that never used to touch that key.
+  --
+  -- It bought nothing to pay for. What serializes this judgement against a concurrent standing
+  -- change is the `FOR UPDATE` on the assignee's membership row inside
+  -- `inspection_assignment_binds` — which exists precisely because #571's round 9, finding 2
+  -- established that the advisory lock ALONE was insufficient (an ordinary engineer reactivation
+  -- takes no readiness key, so it never met the fence there). Any writer of that membership row
+  -- must take the row lock, so a concurrent change either commits before this read or waits behind
+  -- it. The readiness key adds no ordering this fence's answer depends on.
+  --
+  -- The submit fence keeps its acquisition: it is a Codex remedy (round 8, finding 1), it is free
+  -- on that path, and `inspections.contract.test.ts` pins the split so neither half drifts.
 
   -- A STRANDED assignment binds nobody, and evidence returns to the ordinary role gate — the same
   -- answer the service and the read boundary give.

@@ -72,8 +72,12 @@ describe('Task 10 — the inspections module implements its shared command/query
    * because a second spelling fails silently: the day the prefix changes, one caller stops
    * serializing against the other and every test still passes. SQL cannot import the helper, so the
    * pin is here — derived from the helper rather than from a literal.
+   *
+   * ROUND 11 splits the two fences apart on this point, and the test name says so. Taking the key
+   * is right for SUBMIT and wrong for EVIDENCE, for a reason neither fence's own text shows: the
+   * price of the line depends on whether the CALLER already holds that lock.
    */
-  it('the writer fence takes the SAME advisory key as lockProjectReadiness', () => {
+  it('the SUBMIT fence takes the readiness key; the EVIDENCE fence deliberately does not', () => {
     const sql = readFileSync(
       join(__dirname, '../../prisma/migrations/20271216000000_inspection_submit_authority_fence/migration.sql'),
       'utf8',
@@ -85,10 +89,20 @@ describe('Task 10 — the inspections module implements its shared command/query
     const prefix = readinessLockKey('');
     expect(sql, 'the submit fence must try-acquire the readiness advisory lock before judging')
       .toContain(`pg_try_advisory_xact_lock(hashtextextended('${prefix}' || NEW."projectId", 0))`);
-    // #571 round 10 — the evidence fence takes the SAME key, derived the same way
-    expect(evidence, 'the evidence fence must try-acquire the same readiness advisory lock')
-      .toContain(`pg_try_advisory_xact_lock(hashtextextended('${prefix}' || v_project, 0))`);
-    // and both must TRY rather than wait — a blocking acquisition here can invert a lock order
+
+    // #571 round 11 — and the EVIDENCE fence must NOT take it, which is the opposite of what round
+    // 10 wrote. The two paths pay different prices for the same line: `submit` enters its trigger
+    // from a service already holding this key, so the acquisition is re-entrant and free, while
+    // `MediaService` holds no readiness lock — so acquiring it there takes a PROJECT-WIDE lock
+    // inside every photo upload and holds it to commit, queueing every readiness writer behind
+    // uploads. It bought nothing either: what serializes the fence against a concurrent standing
+    // change is the `FOR UPDATE` on the membership row inside `inspection_assignment_binds`, added
+    // because round 9's finding 2 established the advisory lock alone was insufficient. This pin
+    // is the asymmetry itself, so restoring the lock by symmetry a second time fails here.
+    expect(evidence, 'the evidence fence must NOT acquire the readiness key — the membership row lock orders it')
+      .not.toMatch(/advisory_xact_lock/u);
+
+    // and the submit fence must TRY rather than wait — a blocking acquisition can invert a lock order
     expect(sql + evidence).not.toMatch(/[^_]pg_advisory_xact_lock\(/u);
   });
 
