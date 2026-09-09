@@ -1015,6 +1015,43 @@ mirrors or backfills — `ProjectRoleStanding`, `ProjectUserStanding`,
 backfill over pre-existing rows; `OutboxConsumerActivation` was the one that
 did not, and that is finding 3.
 
+### Review round 15 (head `8582992f`) — three P1s; two are round 14's OWN two root causes, one round later
+
+| finding | where it lands | the answer |
+|---|---|---|
+| 1 (P1) §A makes `platform_user_orchestration_authority` depend on the new `ProjectOrg` register and §D's closed 4d-i inventory never creates, feeds, backfills or seals it — nor lists its no-TRUNCATE entry — so the staged build reaches the 4d-iii switch with the derivation's source absent and every membership-less PMC action failing | §D 4d-i; `TRUNCATE_SEALS` | the register lands in the inventory in FULL — table, primitive, `Project` trigger, backfill, writer-depth seal, cascade arm, immutable `orgId`, `platform:verify`, and the SEVENTEENTH truncate seal |
+| 2 (P1) the audit converse was written into the IMMEDIATE `DecisionEvent_t4d_append_only`, but the delivered writers insert the audit row BEFORE they emit (`decisions.service.ts:534`, `:863`, `:924`), so its INSERT arm looks for an event the transaction has not written and rejects every approval, change request and withdrawal after 4d-iii | §A.3 obligation 7; §D 4d-iii; P31 | a SEPARATE DEFERRED constraint trigger, `DecisionEvent_t4d_correspondence`, judged at commit — the same split round 4's finding 1 made for `Notification_t4d_binding`. The immediate trigger keeps the UPDATE/DELETE freeze and the 4d-i pairing claim, which cannot be deferred. The seed learns one new name |
+| 3 (P1) the consultation cycle is a revision COUNT, and 4d breaks it in both directions: a consultation requested while awaiting survives the countersign (which appends no revision) and is answerable again after a `requestChange` reopen; one requested while `pending` dies the moment the provisional revision is inserted, though the open set now includes `awaiting_countersign` and its push is deliberately left uncancelled | §A.2 (the cycle); P25d | the cycle counts FINALIZED approvals, at both the freeze (`:638`) and the comparison (`:765`). Legacy needs no migration — the backfill leaves every pre-4d revision `finalized = true`, so the two counts agree on every decision that predates the chain |
+
+**Findings 1 and 2 are round 14's own two root causes, committed on round 14's
+own fixes.** Root cause one was *a contract that names no installer is not
+installed* — and the `ProjectOrg` register, added in that very round to fix
+finding 1, went into §A and not into §D. Root cause two was *a contract that
+cannot be executed is not a contract* — and the audit converse, corrected in
+round 13 and carried into §D by round 14, cannot execute against the delivered
+writers, which insert before they emit. Writing the rule and applying it to the
+material in the same batch are different acts, and this round is the evidence
+that the second does not follow from the first.
+
+So the three questions become a CHECKLIST DISCHARGED PER CORRECTION, not a
+principle stated once at the end of a round. For every arm this plan adds or
+changes, in the same edit that changes it:
+
+> 1. the §D unit line that installs it — quoted, not assumed;
+> 2. every value it reads, with the register or column each comes from, and
+>    whether that source exists in the SAME unit or earlier;
+> 3. the delivered writers it must admit, named with file and line, and the
+>    ORDER in which they write — because a correspondence arm judged at the
+>    wrong instant refuses the writer it was built to protect;
+> 4. and, for anything with a probe, whether the probe can execute against the
+>    correct implementation (#580's own round 2, finding 3, on the sibling unit).
+
+Finding 3 is the round's only NEW-DOMAIN finding, and it is the more valuable
+one: it is not a sweep, it is a real behavioural consequence of introducing a
+revision that approves nothing and an approval that appends no revision. The
+paragraph it corrects claimed the cycle semantics "need no new rule" and
+reasoned only up to the countersign, never past it.
+
 ### Review round 14 (head `1722764c`) — seven findings, and TWO root causes, one of them round 13's own
 
 | finding | where it lands | the answer |
@@ -2786,13 +2823,48 @@ the `respond` emitter reads the frozen requester role and binds the
 response intent's `roles` to it. P38's arm asserts an architect requester's response push carries
 `roles: ['architect']`, a PMC requester's is byte-identical to today's, and
 a requester re-roled between request and response is pushed under the
-request-time role. The cycle
-semantics need no new rule: a consultation requested while awaiting freezes
-`openCycle` at the count that INCLUDES the provisional approval; the
-countersign appends NO revision (finality is a flip on the existing head),
-so such a consultation stays cycle-valid until the decision leaves the open
-set; a later re-approval appends the next revision and closes the cycle
-exactly as 4c's P25d proves.
+request-time role.
+
+**The cycle semantics DO need a new rule, and it is the finality flag**
+(#572's review round 15, finding 3). The delivered cycle is a revision COUNT —
+`decisionApprovalRevision.count({ where: { decisionId } })`, frozen into
+`openCycle` at `decisions.service.ts:638` and compared at `:765` — and 4d
+breaks that count in both directions, because it introduces a revision that is
+inserted without approving anything and an approval that appends no revision:
+
+- **A consultation requested while `awaiting_countersign` is answerable again
+  after the decision reopens.** Its `openCycle` includes the provisional
+  revision; the countersign only flips `finalized` and appends nothing, so the
+  count does not move; a later standard `requestChange` reopens the decision to
+  `change`, which IS in the open set, and the delivered predicate finds the
+  count still equal — so a question closed by an approval that already happened
+  is live again in the NEXT cycle. The paragraph this replaces asserted the
+  opposite ("stays cycle-valid until the decision leaves the open set") and
+  reasoned only about the countersign, never about what comes after it.
+- **The inverse fails too.** A consultation requested while `pending` freezes
+  `openCycle` at the pre-approval count; the provisional approval then INSERTS
+  its unfinalized revision and the count moves — so the question is cycle-dead
+  the instant the decision enters `awaiting_countersign`, although 4d widens the
+  open set to include that state and DELIBERATELY leaves the request push
+  uncancelled. The consultee is pushed a question the service will refuse.
+
+So the cycle counts FINALIZED approvals — `count({ where: { decisionId,
+finalized: true } })` — at BOTH sites, the freeze at `:638` and the comparison
+at `:765`, which must move together. Then the provisional insert does not move
+the cycle (nothing has been approved), the countersign's flip does (something
+has), and a reopen does not resurrect a question the approval closed. All four
+paths hold: requested-while-pending survives into `awaiting_countersign`;
+requested-while-awaiting closes at the countersign; neither is answerable after
+a reopen; and an unchained approval closes its cycle exactly as 4c's P25d
+proves, because outside a chain the row is born `finalized = true`. **Legacy
+data needs no migration**: 4d's additive backfill leaves every pre-existing
+revision `finalized = true`, so for every decision that predates the chain the
+finalized count EQUALS the total count and every `openCycle` frozen before 4d
+keeps the meaning it was written with. P25d gains both sequences — request
+before provisional approval, answered after the countersign-widened open set
+admits it; and request while awaiting, refused after the countersign and
+refused again after a `requestChange` reopen — RED against the count-all rule,
+which fails the first and admits the second.
 
 **A provisional approval must not be TRUSTABLE as a final one**: the
 register is a provenance TARGET, so the row carries `finalized` — born `true`
@@ -4334,8 +4406,32 @@ before it. Each fact table carries:
    COMMITTING, the same row inserted with the claim trigger absent refused as
    unclaimed, and a second claimant for that event refused on the UNIQUE.
 
-   **And 4d-iii gives the SAME trigger its INSERT converse, because an
-   append-only register that anyone may append to is not evidence** (#572's
+   **And 4d-iii gives the register an INSERT converse — as a SEPARATE DEFERRED
+   constraint trigger, `DecisionEvent_t4d_correspondence`, never as another arm
+   of the immediate one** (#572's review round 15, finding 2). Round 13 wrote
+   the converse into the immediate trigger, and the delivered writers insert the
+   audit row BEFORE they emit: `decisions.service.ts:534` (approve/reapprove),
+   `:863` (`requestChange`) and `:924` (`withdrawChange`) each call
+   `decisionEvent.create` and reach `emitEvent` several statements later, in the
+   same transaction. An IMMEDIATE BEFORE INSERT arm fires at the `create` and
+   looks for a `DomainEvent` that this transaction has not written yet — so it
+   would reject EVERY approval, change request and withdrawal after 4d-iii,
+   which is a production outage installed by a seal meant to catch a forger.
+   Deferred to commit, the arm sees the finished transaction and judges what
+   the writer actually built. This plan already made exactly this split once —
+   round 4's finding 1 divided `Notification_t4d_binding` by trigger timing for
+   the notice-before-event ordering — and the same reasoning applies here for
+   the same reason. **The immediate trigger keeps what must be immediate**: the
+   UPDATE and DELETE refusals, and the 4d-i INSERT arm's pairing claim, which
+   cannot be deferred because a claim is made AT the insert. **The seed learns
+   ONE new name**: its `DecisionEvent` plants now disable
+   `DecisionEvent_t4d_correspondence` beside `DecisionEvent_t4d_append_only` in
+   the same `DO $$ … pg_trigger … DISABLE TRIGGER` block — round 13 said the
+   reset "learns no new name", and with the split that is no longer true; the
+   honest statement is one name, in the file that already lists the other.
+
+   The converse exists because an
+   append-only register that anyone may append to is not evidence (#572's
    review round 13, finding 2). An UPDATE-and-DELETE seal protects a row that
    exists and says nothing about a row that should not. A database-role writer
    inserting an `approved` or `reapproved` row AFTER the legitimate approval
@@ -4986,6 +5082,22 @@ today's behaviour lives.
     `countersign_renotified` partial unique; the platform-owned `ProjectRoleStanding` register
     with its writer-depth seal, its project-cascade arm, the orgs-owned
     `Project_t4d_deleting` flag trigger and `ProjectRoleStanding_t4d_no_truncate`,
+    **the platform-owned `ProjectOrg(projectId PRIMARY KEY, orgId)` register in
+    FULL — the table, the generic platform primitive that writes it, the
+    orgs-owned `Project` AFTER INSERT trigger that calls it from its own row,
+    the backfill from `Project` under the same `SET LOCAL` gate as the other
+    registers, the writer-depth seal (a depth-1 write refused, the nested
+    standing-trigger write admitted), the project-cascade arm (depth +
+    `Project_t4d_deleting`), the IMMUTABLE `orgId` (any UPDATE refused), the
+    `platform:verify` offline comparison against `Project`, and its
+    `ProjectOrg_t4d_no_truncate` seal** (#572's review round 15, finding 1:
+    round 14 added this register to §A, where
+    `platform_user_orchestration_authority` and every race-free arm now depend
+    on it, and did not add a single one of those artifacts to this closed
+    inventory — so an implementation following the stages would reach the
+    4d-iii switch with the derivation's project-to-org source absent and every
+    membership-less PMC action failing, which is precisely the defect round 14
+    named ROOT CAUSE ONE and then committed on its own fix),
     backfilled to one `architect` row per project at zero;
     `Membership_t4d_no_truncate`; the orgs-owned `MembershipTransition` fact
     (registered in `orgsManifest.ownsModels`/`readEncapsulated`) with its
@@ -5106,7 +5218,7 @@ today's behaviour lives.
     role could not honour), UPDATE and DELETE refused, no-TRUNCATE — and
     `verifyMarkerSeals` is probed UNCHANGED after 4d-i and 4d-iii. Every
     statement is `IF NOT EXISTS`/`IF EXISTS`/`CREATE OR REPLACE` so a
-    partial apply retries. `TRUNCATE_SEALS` gains SIXTEEN entries across
+    partial apply retries. `TRUNCATE_SEALS` gains SEVENTEEN entries across
     4d-i and 4d-ii — the three fact tables,
     `ProjectRoleStanding_t4d_no_truncate`, `Membership_t4d_no_truncate`,
     `MembershipTransition_t4d_no_truncate`, `ChangeRequest_t4d_no_truncate`,
@@ -5121,7 +5233,8 @@ today's behaviour lives.
     finding 2) and `DomainEventPairingClaim_t4d_no_truncate` (#568's review
     round 2, finding 2: the register §A.2 declares non-truncatable and the
     reset truncates with `DomainEvent` was missing from the closed
-    inventory, so every reset reaching it would have aborted) —
+    inventory, so every reset reaching it would have aborted) and
+    `ProjectOrg_t4d_no_truncate` (#572's review round 15, finding 1) —
     while `RolloutRetirement` (a rollout fact, never test data), the
     consumer catalog with its activation register and the lease register
     (bootstrap and rollout evidence) are deliberately NOT in the reset's
@@ -5495,10 +5608,14 @@ today's behaviour lives.
     round 2, finding 1); and only then drops
     ALL FIVE reservation doors with their shared function, drops the two
     kept finality defaults (`finalized`, `revisionFinalized` — after the
-    drain only writers that state the pin remain), **WIDENS
-    `DecisionEvent_t4d_append_only`'s INSERT arm with the converse §A.3 states**
-    — each of the seven listed audit kinds requiring its fact, its transition
-    and its `DomainEvent` in the same transaction, with the fabricated
+    drain only writers that state the pin remain), **installs
+    `DecisionEvent_t4d_correspondence`, a DEFERRED INSERT constraint trigger
+    carrying the converse §A.3 states** — each of the seven listed audit kinds
+    requiring its fact, its transition and its `DomainEvent` in the same
+    transaction, judged AT COMMIT because the delivered writers insert the audit
+    row before they emit (#572's review round 15, finding 2), with the seed's
+    `DecisionEvent` plants disabling this name beside
+    `DecisionEvent_t4d_append_only`, and with the fabricated
     standalone insert of each kind as its hostile probe and the revision
     sequence asserted unmoved (#572's review round 14, finding 4: round 13 wrote
     the converse into the contract and this staged inventory installed only the
