@@ -13,7 +13,7 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
-task_state: in_progress
+task_state: merged
 work_item: none
 reviewed_merge: 1fb8f531
 open_pr: none
@@ -64,13 +64,27 @@ and the `outbox:consumer` operator protocol.
 
 **What moves in this flip.** `reviewed_merge` advances to `1fb8f531`; `open_pr` returns to `none`
 (#572 is merged, and a stale pointer would park the runner on finished work — the same drift the
-4c-v handoff reported at its own boundary). `task_state` stays `in_progress` and `task` stays `4`:
-unlike the 4c-v record this is NOT a terminal handoff, because task 4's remaining scope is the 4d
-IMPLEMENTATION units and the plan describing them has only just landed. With `open_pr: none`,
-`task_state: in_progress` and `blocking_directive: none`, `assessRunnerState` resolves to `task:4`
-— begin 4d-i from the `main` that carries the plan — and never reaches `next_task`, which is why
-that key is left as it stands. This record never names itself as `open_pr`, per the STATUS-only
-handoff shape #536 and #494 established.
+4c-v handoff reported at its own boundary). `task_state` becomes `merged` with `work_item: none`,
+so the resolver hands off to the NAMED `next_task` rather than re-entering the unit that just
+landed. `task: 4` stays: task 4 is not finished — its remaining scope is the 4d IMPLEMENTATION
+units — and `merged` here is this unit's terminal record, exactly the sense #536 used it in at the
+4c/4d boundary. `next_task` stays `phase-6-task-4d` because it names the task STOP, and 4d-i is
+the next work under it. This record never names itself as `open_pr`, per the STATUS-only handoff
+shape #536 and #494 established.
+
+**`merged` rather than `in_progress`, and the machinery decided it, not taste.** An earlier draft
+of this record used `task_state: in_progress` on the reasoning that task 4 is unfinished. That is
+true of the TASK and false of the FIELD, and it had a consequence the reasoning missed: the drift
+shepherd recognises a post-merge landing by one of three shapes — `isHandoffShape`,
+`isNoneFlipShape`, `isDirectiveLandingShape` — and every one of them requires either a TERMINAL
+`task_state` or a named `blocking_directive`. A record with `in_progress`, `open_pr: none` and no
+directive matches none of them, so while its own PR was open the hourly shepherd read its
+`open_pr: none` as drift and advised pointing `open_pr` at that PR's own number: the #303 trap,
+which `scripts/autonomous-status-state.test.mjs` records as a P1 whose advice a previous author
+took. The shepherd posted exactly that advice against this record's first head, which is how the
+error was caught. Run against the delivered predicates: `in_progress` → all three shapes false and
+the shepherd FIRES; `merged` → `isHandoffShape` true and the shepherd stays QUIET, resolving to
+`next_task:phase-6-task-4d`.
 
 **The unit's own history, recorded because its review count is unusual.** #572 was the narrowed
 plan's fifteenth outing and took 26 review rounds, fixed forward on one PR throughout (the Board's
