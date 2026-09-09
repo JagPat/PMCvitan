@@ -1015,6 +1015,56 @@ mirrors or backfills — `ProjectRoleStanding`, `ProjectUserStanding`,
 backfill over pre-existing rows; `OutboxConsumerActivation` was the one that
 did not, and that is finding 3.
 
+### Review round 14 (head `1722764c`) — seven findings, and TWO root causes, one of them round 13's own
+
+| finding | where it lands | the answer |
+|---|---|---|
+| 1 (P1) the race-free derivation cannot be IMPLEMENTED by a decisions-owned seal: `OrgUserAuthority` is keyed by `orgId`, the seal holds only `projectId`, and no register carried the mapping — so every decisions-owned arm taking that derivation either reads an orgs table (forbidden) or skips the join and accepts an owner of an UNRELATED org | §A.2 the race-free registers; §D 4d-i; P29b | `ProjectOrg(projectId, orgId)`, platform-owned, written by the `Project` trigger from its own row — race-free for the same reason `OrgUserAuthority` is. The join happens inside the kernel; no decisions seal reaches an orgs table. `orgId` immutable, cascade arm, no-TRUNCATE seal. P29b gains the cross-org stranger, REFUSED |
+| 2 (P2) the 4d-ii inventory still claims the activation register, its mirror and `outbox:consumer`, which #580 canonically owns | §D 4d-ii | only 4d's consumer REGISTRATION and delivery changes stay; the prerequisite owns the rest, and this unit reads the ACTIVE set it defines |
+| 3 (P1) the `countersign_renotified` audit row is the pairing CLAIMANT for a pairing-required `decision.awaiting_countersign`, but there was no INSERT trigger on `DecisionEvent` at all — so nothing could call `platform_claim_event_pairing` and every legitimate re-notification would abort as unclaimed | §A.3 obligation 7 (the audit row); §D 4d-i; P29b | 4d-i installs the trigger as BEFORE **INSERT OR** UPDATE OR DELETE, its INSERT arm claiming for that one kind — by round 11's own rule, the claimant's seal belongs to the unit that makes the event pairing-required |
+| 4 (P1) §A now promises the audit INSERT converse and the 4d-iii staged inventory installs only the `ChangeRequest` seal | §D 4d-iii | the inventory installs the widened arm with its hostile probes and the revision sequence asserted unmoved |
+| 5 (P2) §A adds the notification INSERT converse and the 4d-ii inventory teaches writers only to POPULATE the columns | §D 4d-ii | the catalog-data migration extends `Notification_t4d_binding_bound` with the converse, with the late-insert probe |
+| 6 (P1) the revision birth seal requires the recorded actor to HOLD the decision's holder designation, but the delivered `approve` lets a `pmc` approve on a client's or named member's behalf and records `onBehalfOf` — so 4d-i would reject an existing legitimate approval the legacy-writer table promises still commits | §A.3 (the revision's birth seal); §D 4d-i; P37 | the seal judges the PAIR `(actor, onBehalfOf)`, which is what the service judges. A NULL `onBehalfOf` still demands the holder; a forged one from a non-`pmc` is refused by the `pmc` half |
+| 7 (P1) the 4d-ii inventory still sends `requestChange` to copy its frozen pair from the pre-transaction `resolveActor` read | §D 4d-ii | obligation 3's corrected contract, in full, on this writer too |
+
+**Root cause one: a contract that names no installer is not installed.**
+Findings 2, 4, 5 and 7 are all the same, and it is round 13's own finding 4 —
+which I fixed at the single line it named. §A states what a seal must do; §D
+states what each unit installs; an implementer follows §D. A correction written
+only into §A is a correction nobody performs, and four of this round's seven are
+that. It has now happened on the notification converse, the audit converse, the
+`requestChange` attribution and the activation ownership, in ONE round, from ONE
+previous round's corrections.
+
+**Root cause two: a contract that cannot be executed is not a contract.**
+Findings 1, 3 and 6 are the other kind, and they are worse, because each reads
+as a complete rule. Finding 1 names a register the seal cannot key into. Finding
+3 names a claimant with no trigger to claim from. Finding 6 names an authority
+narrower than the writer it must admit. Each was written where the rule is READ
+and never checked against what would have to EXIST to run it, or against what
+already runs today.
+
+So the standing check, which is three questions asked of EVERY seal arm and not
+of the one a finding names:
+
+> 1. **Which unit installs this arm?** Name it in §D's inventory, or the arm
+>    does not exist. A contract corrected in §A is not delivered until the
+>    staged unit that installs it says so.
+> 2. **What does it READ, and where does each value come from?** Every input
+>    must be reachable from the arm's own module and its own keys. A predicate
+>    over a register the seal cannot key into is not a strict rule, it is an
+>    unimplementable one — and the tempting repair is to drop the join, which
+>    silently widens the rule instead of narrowing it.
+> 3. **Which DELIVERED writers must it still admit?** Name them and check the
+>    shipped code. A seal that refuses a legitimate write that runs today is a
+>    production incident with a review's blessing.
+
+Rounds 9 through 14 have found the previous round's fix defective on
+transaction, unit, domain, operation, direction — and now on INSTALLATION and
+EXECUTABILITY. The first five were about what a rule says; these two are about
+whether anything performs it and whether it can be performed at all, which is
+why the check above is now three questions and is applied per arm.
+
 ### Review round 13 (head `f274d3dd`) — five findings; three are round 12's rule applied to ONE seal instead of its class
 
 | finding | where it lands | the answer |
@@ -2016,12 +2066,51 @@ membership-less `pmc` from the RACE-FREE registers, and the switch onto the
 fanned-out rows is made by 4d-iii AFTER the fenced re-projection has proven
 them equal to the orgs truth, inside the same transaction, before the doors
 close. The race-free registers are `OrgUserAuthority` (org-keyed, written
-by the `OrgMembership` trigger from its own row, no cross-table read) and
-the MEMBERSHIP-GRANTED rows of `ProjectUserStanding` (a `Membership` row's
+by the `OrgMembership` trigger from its own row, no cross-table read),
+**`ProjectOrg` (project-keyed, written by the `Project` trigger from its own
+row, no cross-table read)** and the MEMBERSHIP-GRANTED rows of
+`ProjectUserStanding` (a `Membership` row's
 project is committed before the row can exist, by its FK); only the fan-out
 of membership-less owners/admins across projects — the `Project` INSERT
 reading `OrgMembership`, the `OrgMembership` INSERT reading `Project` —
-races. Three arms meet a window writer, each disposed: **(i)** the
+races.
+
+**`ProjectOrg` exists because the race-free derivation could not otherwise be
+IMPLEMENTED by a decisions-owned seal** (#572's review round 14, finding 1).
+The derivation asks for an `OrgUserAuthority` owner/admin row, and that register
+is keyed by `orgId` while a decisions seal holds only the decision's
+`projectId` — and no register this plan described carried the mapping. The
+orgs-owned `MembershipTransition` seal has always been fine, because it reads
+`Project.orgId` from its OWN module's row; every decisions-owned arm that
+inherited the same derivation — the `ChangeRequest` standard requester arm, the
+withdrawal closure arm, the approval revision's pair validation, and now the
+frozen-role resolution of round 12's finding 3 — had no legal way to reach the
+org, and a derivation that SKIPPED the join would have accepted an owner or
+admin of an UNRELATED organisation as `pmc` on this project. The rule the plan
+has stated since #561's round 1, finding 1 — no decisions- or platform-owned
+trigger reads an orgs table — is not the obstacle; it is what made the omission
+invisible, because each arm was written as though the kernel read already
+carried the tenancy.
+
+So the mapping is PROJECTED, exactly as standing and identity are:
+`ProjectOrg(projectId PRIMARY KEY, orgId)`, platform-owned, written ONLY by the
+generic platform primitive the orgs-owned `Project` AFTER INSERT trigger calls
+from its own row, backfilled in 4d-i from `Project` and verified offline by
+`platform:verify` like the others. `orgId` is IMMUTABLE — the seal refuses any
+UPDATE of it, a project does not change organisation, and if that ever becomes a
+product operation it is a migration with its own unit, not a silent re-tenanting
+of every fact that cites the old org. The register carries the same writer-depth
+seal (a depth-1 write refused, a nested write from the standing trigger
+admitted), the same project-cascade arm (depth + `Project_t4d_deleting`) and a
+statement-level no-TRUNCATE seal in `TRUNCATE_SEALS` as its siblings. With it,
+`platform_user_orchestration_authority` and every arm taking the race-free
+derivation resolve `projectId → orgId → OrgUserAuthority` INSIDE the kernel,
+touching no orgs table, and the join is race-free for the reason the other two
+are: both registers are written from their writer's OWN row. P29b gains the
+cross-org negative — an owner of a DIFFERENT organisation, with a genuine
+`OrgUserAuthority` row and no membership on this project, REFUSED by every arm
+that takes the derivation, and the project's own owner admitted — RED against a
+derivation with no tenancy join, which admits the stranger. Three arms meet a window writer, each disposed: **(i)** the
 consultation request seal's requester arm STAYS `phase6_user_decision_authority`
 through the window — 4d-i's `CREATE OR REPLACE` widens the open set alone,
 and 4d-iii re-points the arm onto `platform_user_orchestration_authority`
@@ -4218,9 +4307,32 @@ before it. Each fact table carries:
    `DecisionEvent_no_withdrawn_approval` guard, and no seal against UPDATE or
    DELETE — a direct writer could delete or rewrite a `countersigned`,
    `stranded_resolved` or `forwarded` row after its transition committed.
-   4d-i installs `DecisionEvent_t4d_append_only`, a BEFORE UPDATE OR DELETE
-   trigger refusing every UPDATE and DELETE on the register (no service path
-   mutates a `DecisionEvent` — the writer sweep pins it).
+   4d-i installs `DecisionEvent_t4d_append_only` as a BEFORE **INSERT OR**
+   UPDATE OR DELETE trigger. Its UPDATE and DELETE arms refuse every such write
+   on the register (no service path mutates a `DecisionEvent` — the writer sweep
+   pins it). **Its 4d-i INSERT arm exists for one reason and does one thing: it
+   is the PAIRING CLAIMANT for the re-notification branch** (#572's review round
+   14, finding 3). When `decisions.effects` handles a 0 → 1 architect crossing it
+   inserts a `countersign_renotified` audit row as the claimed primary fact of a
+   pairing-required `decision.awaiting_countersign` event — that designation is
+   round 4's finding 5 and round 9's finding 1, and it is the ONE branch whose
+   only fact is an audit row. A claim is made by a trigger on the claimant, and
+   there was no INSERT trigger on this table at all, so nothing could call
+   `platform_claim_event_pairing` and EVERY legitimate re-notification would
+   have aborted at commit as unclaimed. The arm is installed in **4d-i** and not
+   later, by round 11's own rule: the claiming seal belongs to the unit that
+   makes the event pairing-required, never a subsequent one. It claims for
+   `countersign_renotified` and does nothing else — no other audit kind is a
+   claimant, and a second claim for one event is refused by the register's
+   per-event UNIQUE.
+
+   That the CONVERSE below arrives only in 4d-iii is deliberate and is not the
+   same arm: a claim must exist from the moment pairing does, while a converse
+   that demands a fact and a transition cannot be installed until the previous
+   release has drained. P29b's re-notification arms gain the claim assertion —
+   the crossing's `countersign_renotified` row claiming its event and
+   COMMITTING, the same row inserted with the claim trigger absent refused as
+   unclaimed, and a second claimant for that event refused on the UNIQUE.
 
    **And 4d-iii gives the SAME trigger its INSERT converse, because an
    append-only register that anyone may append to is not evidence** (#572's
@@ -4632,9 +4744,32 @@ each carried question to its probe. The full rows:
    the "approval act" half; 4d-i's BEFORE INSERT birth seal adds the chain
    half and a DEFERRED pairing that the same transaction carries the
    decision's approval transition (`pending`/`change` → `approved` under no
-   chain, → `awaiting_countersign` under a chain) whose recorded actor holds
-   decider standing for the decision's CURRENT holder designation, WITH its
-   effects (obligation 7) — and the REVERSE: every transition INTO
+   chain, → `awaiting_countersign` under a chain) whose recorded actor satisfies
+   the DELIVERED approval authority — the decision's CURRENT holder designation,
+   **OR a `pmc` acting on that holder's behalf with the revision's `onBehalfOf`
+   naming the designation they stood in for** (#572's review round 14,
+   finding 6) — WITH its effects (obligation 7).
+
+   **The on-behalf arm is the delivered path, not a concession**:
+   `DecisionsService.approve` computes `onBehalfOf` for a client- or
+   named-member-held decision approved by someone who is neither the named nor
+   the role decider, records it on the revision and in the event payload, and
+   announces it in words (`decisions.service.ts` — *"approved … on behalf of the
+   client"*, never disguised). A seal demanding that the recorded actor HOLD the
+   holder designation refuses exactly that approval, because a PMC holds neither
+   the client's role nor the named member's identity — so 4d-i would have
+   rejected an existing, legitimate, already-shipped no-chain approval while the
+   legacy-writer table promises every one of them still commits. The seal judges
+   the PAIR `(actor, onBehalfOf)` against the designation, which is what the
+   service judges; a NULL `onBehalfOf` still demands the holder themself, so the
+   arm widens nothing for a writer that does not use it, and a forged
+   `onBehalfOf` from a non-`pmc` actor is refused by the `pmc` half. P37 gains
+   both holder shapes — a client-held and a named-member-held decision approved
+   by the PMC on their behalf, each COMMITTING with its `onBehalfOf` recorded,
+   RED against the holder-only rule, which rolls both back — beside the holder's
+   own approval and a non-PMC stranger's, refused.
+
+   And the REVERSE: every transition INTO
    `awaiting_countersign` carries its same-transaction provisional revision,
    undisposed, or is refused at commit, so a bare status flip cannot
    manufacture a countersign demand with no head to finalize. RED SITE: the
@@ -5063,7 +5198,15 @@ today's behaviour lives.
     checklist still named the process-local copy the standalone emitters do
     not have); every decisions notification writer minting its event id up
     front, passing it through `EmitInput.eventId` and stamping the notice's
-    `eventId` and `kind`, every feed reader (the
+    `eventId` and `kind`, **with this unit's catalog-data migration EXTENDING
+    `Notification_t4d_binding_bound` with the same-transaction INSERT converse
+    §A.3 now states** — a row whose `eventId` is non-NULL admitted only when
+    that `DomainEvent` is inserted in the same transaction, and zero rows
+    required for the no-notice branches — and its hostile probe, the late
+    kinded insert against a committed no-notice event (#572's review round 14,
+    finding 5: round 13 wrote the converse into the contract and taught this
+    inventory only to POPULATE the columns, so an implementation following the
+    staged list still admitted the undeletable planted notice), every feed reader (the
     snapshot builder, the `decisions.inbox` fold and rebuild) rendering a
     kinded row from its kind, event and frozen fact under the renderer
     tripwire and filtering it through `decisionVisibleToViewer` for its bound
@@ -5076,8 +5219,17 @@ today's behaviour lives.
     unfinalized head, with the material and labour create/revise writers
     spreading it explicitly, the two cancellation copies carrying it forward,
     and the writer sweep; `requestChange` recording `sourceCommandId` AND
-    the frozen `requestedByRole`/`requestedByName` pair from the resolved
-    actor — the STANDARD writer stating the pair exactly as the consultation
+    the frozen `requestedByRole`/`requestedByName` pair resolved INSIDE
+    `executeCommand.run` under §A.3 obligation 3's uniform contract — the NAME
+    from `UserIdentity` with the identity row `FOR UPDATE`, the ROLE by the
+    window disposition — and NOT copied from the pre-transaction `resolveActor`
+    read (#572's review round 14, finding 7: round 13 carried the corrected
+    contract onto the four NEW commands and left this delivered one saying
+    "from the resolved actor", so a display-name change committing between
+    `resolveActor` and the request's own transaction would make the trailing
+    seal reject a valid standard request — the same defect round 12 fixed for
+    the facts, surviving on the one writer that predates them) — the STANDARD
+    writer stating the pair exactly as the consultation
     and rejection writers already do, so the trailing seal 4d-iii installs
     meets a writer that satisfies it rather than one that cannot (#572's
     review round 1, finding 1: round 2 on #560 moved the SEAL's inventory to
@@ -5122,10 +5274,16 @@ today's behaviour lives.
     review round 1, finding 7: this checklist said "writing", contradicting
     the sealed-evidence rule); the delivery-row rewrite — the platform's
     `deliveryRowsFor` projection called by `materializeDeliveries` and
-    `expandMissingDeliveries`, `deliveryFor` retired, the
-    `OutboxConsumerActivation` register with the frozen `active` mirror,
-    the operator `outbox:consumer` activation command, and the
-    `DomainEvent_t4d_deliveries`, `OutboxDelivery_t4d_bound` and
+    `expandMissingDeliveries`, `deliveryFor` retired — the
+    `OutboxConsumerActivation` register, its frozen `active` mirror and the
+    operator `outbox:consumer` command are NOT this unit's: #580 owns them
+    canonically and lands first, and this unit READS the ACTIVE set they define
+    (#572's review round 14, finding 2: this list still claimed all three while
+    §A names the prerequisite and the text below already relies on that
+    prerequisite's catalog-INSERT trigger, so an implementation following it
+    would redefine or duplicate delivered schema, seals and operator behaviour).
+    What stays here is 4d's own consumer REGISTRATION and its delivery changes:
+    the `DomainEvent_t4d_deliveries`, `OutboxDelivery_t4d_bound` and
     `OutboxDelivery_t4d_frozen` seals installed by THIS unit's catalog-data
     migration beside the rule columns it writes (§A.3 obligation 7 —
     #560's review round 1, findings 1, 2, 4 and 6); the kinded feed query
@@ -5337,7 +5495,16 @@ today's behaviour lives.
     round 2, finding 1); and only then drops
     ALL FIVE reservation doors with their shared function, drops the two
     kept finality defaults (`finalized`, `revisionFinalized` — after the
-    drain only writers that state the pin remain), installs the TRAILING
+    drain only writers that state the pin remain), **WIDENS
+    `DecisionEvent_t4d_append_only`'s INSERT arm with the converse §A.3 states**
+    — each of the seven listed audit kinds requiring its fact, its transition
+    and its `DomainEvent` in the same transaction, with the fabricated
+    standalone insert of each kind as its hostile probe and the revision
+    sequence asserted unmoved (#572's review round 14, finding 4: round 13 wrote
+    the converse into the contract and this staged inventory installed only the
+    `ChangeRequest` seal, so an implementation following the stages still
+    permitted the late `approved` row that becomes immutable and inflates the
+    next approval's version) — and installs the TRAILING
     seals — `ChangeRequest_t4d_provenance_required`, in FOUR ARMS because this
     table is written by four different OPERATIONS and an INSERT-time seal
     reaches only one of them (#572's review round 8, finding 2; round 12,
