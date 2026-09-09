@@ -18,9 +18,51 @@ work_item: none
 reviewed_merge: f5da6654
 open_pr: 572
 next_task: phase-6-task-4d
-blocking_directive: none
-updated: 2026-09-08
+blocking_directive: phase-6-4d-unit1-prerequisite
+updated: 2026-09-09
 ```
+
+### Directive `phase-6-4d-unit1-prerequisite` — 4d implementation waits for the activation unit
+
+**What it blocks.** Starting 4d-i. The 4d plan was split into four
+dependency-ordered units on JagPat's instruction; unit 1 — the outbox consumer
+activation register, its mirror and the `outbox:consumer` protocol — is carried
+by #580 and lands first. 4d-ii registers `decisions.effects` into that register
+and relies on its catalog-INSERT trigger for the consumer's activation head;
+4d-iii appends the activation and verifies that head. None of it exists on
+`main` until #580 merges.
+
+**Why it is recorded HERE and NOW, not promised for later** (#572's review
+rounds 17 and 18). Round 17 answered this hazard with a post-merge obligation —
+"if this plan merges first, the merging change carries the directive" — and that
+was wrong for the reason this repository keeps finding: nothing installs it.
+`assessPostMergeRunnerState` clears the merged PR's `open_pr` and calls
+`assessRunnerState`; it synthesizes no directive and has no hook that could. So
+if #572 merged first with `blocking_directive: none`, the resolver would return
+`task:4` and a producer could start 4d-i with the register absent. The directive
+has to be in the file before the merge, because the merge is when it is read.
+
+Round 17 also argued that setting it early would park #572's own review loop,
+since a directive from `in_progress` outranks `open_pr` in
+`assessRunnerState`. That ordering is real, but the conclusion was wrong on the
+balance of costs: the directive points a producer at #580 — work that is
+genuinely next and genuinely blocking — while #572 is shepherded by its
+correction owner and its exact-head gate, neither of which reads this key. The
+error it prevents is a 4d-i implementation with no activation register; the
+error it risks is a producer doing the right work in the right order.
+
+**Completion test.** The directive is DISCHARGED when
+`docs/superpowers/plans/2026-09-09-outbox-consumer-activation.md` is present on
+`main` — a file's presence, not a claim about PR numbers, and checkable by
+anyone at any moment.
+
+**Merge-order resolution.** #580's STATUS entry and this one touch the same
+keys, so whichever merges second resolves the conflict, and the rule is that the
+resolved state must be TRUE at that moment: the directive stands iff that file
+is absent from `main`. If #580 lands first — the intended order — this branch's
+directive is dropped in the same resolution, because a directive naming a
+satisfied prerequisite would park the runner on finished work, which is the
+mirror of the hazard it exists to prevent.
 
 ### The 4d PLAN unit — the NARROWED plan, carried on #572 and fixed forward, docs-only
 

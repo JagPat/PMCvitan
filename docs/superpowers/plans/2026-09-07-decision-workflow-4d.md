@@ -1015,6 +1015,37 @@ mirrors or backfills — `ProjectRoleStanding`, `ProjectUserStanding`,
 backfill over pre-existing rows; `OutboxConsumerActivation` was the one that
 did not, and that is finding 3.
 
+### Review round 18 (head `b7e6610e`) — one P1: my own round-17 answer was prose
+
+| # | classification | why that class |
+|---|---|---|
+| 1 | **unfixed recurrence** | round 17's finding, unclosed: the correction was a promise about a future change rather than a change, and this commit still records `blocking_directive: none` |
+
+Correct, and conceded without qualification. Round 17 answered a merge-ordering
+hazard with a post-merge obligation and no installer — the same defect this plan
+named as ROOT CAUSE ONE in round 14 and then committed twice more. A rule that
+executes at merge time must exist in the file before the merge; there is no hook
+in `assessPostMergeRunnerState` that could write it, and I did not check whether
+one existed before promising it.
+
+**The trace, run rather than argued.** ENFORCEMENT POINT:
+`assessRunnerState`, reading `blocking_directive`. STAGES: with the directive
+absent, the post-merge simulation for this PR returned `task:4`; with it
+present, it returns `directive:phase-6-4d-unit1-prerequisite`. Both were
+executed against `scripts/autonomous-status-state.mjs` on this working tree, not
+reasoned about. CONSUMERS: the runner's next-step resolution only — the
+exact-head gate and the correction owner do not read the key, which is what
+makes round 17's "it would park the review loop" objection weaker than the
+hazard it was weighed against.
+
+**And the correction creates a mirror hazard, which is closed in the same
+edit**: a directive naming a prerequisite that has since landed would park the
+runner on finished work. So STATUS carries the directive's COMPLETION TEST — the
+activation plan present on `main` — and the merge-order resolution rule, since
+#580's STATUS entry and this one touch the same keys and whichever merges second
+resolves them. The resolved state must be true at that moment: the directive
+stands iff the file is absent.
+
 ### Review round 17 (head `e264fb47`) — one P1: the split's own ordering, unenforced
 
 | # | classification | why that class |
@@ -5608,17 +5639,31 @@ today's behaviour lives.
 
     So **4d-i does not begin until the activation unit is on `main`**, stated
     here as the staging precondition and checkable as a file's presence rather
-    than as a claim about PR numbers. If this plan merges first, the merging
-    change carries `blocking_directive: phase-6-4d-unit1-prerequisite` into
-    STATUS, which is what makes the runner's next step "land the prerequisite"
-    instead of "start 4d-i": on an `in_progress` task a directive OUTRANKS
-    `open_pr` and every task branch (`scripts/autonomous-status-state.mjs` — the
-    directive branch returns before the `open_pr` branch), so the same key is
-    the right instrument at that moment and the WRONG one now, while this PR is
-    the open work item under active correction — set today it would park this
-    PR's own review loop behind a directive nobody is working. That asymmetry is
-    the reason it is written here as a post-merge obligation and not applied to
-    STATUS in this change.
+    than as a claim about PR numbers — **and `docs/STATUS.md` carries
+    `blocking_directive: phase-6-4d-unit1-prerequisite` NOW, in this change**
+    (#572's review round 18, finding 1, correcting round 17's own answer).
+    Round 17 wrote the directive as a POST-MERGE obligation — "if this plan
+    merges first, the merging change carries it" — and that is a contract naming
+    no installer, the exact defect this plan has now recorded three times:
+    `assessPostMergeRunnerState` clears the merged PR's `open_pr` and calls
+    `assessRunnerState`, synthesizing nothing, so a merge with
+    `blocking_directive: none` resolves to `task:4` and 4d-i can start with the
+    register absent. A key that is read at merge time has to be in the file
+    before the merge.
+
+    Round 17's second argument — that setting it early parks this PR's own
+    review loop, since a directive from `in_progress` outranks `open_pr` — has a
+    true premise and a wrong conclusion. The ordering is real, but the balance
+    of costs is not close: the directive points a producer at #580, which is
+    genuinely the next and genuinely blocking work, while this PR is shepherded
+    by its correction owner and its exact-head gate, neither of which reads that
+    key. Run against the delivered module, the post-merge simulation for this PR
+    now returns `directive:phase-6-4d-unit1-prerequisite` rather than `task:4` —
+    executable evidence, not an assertion. STATUS also carries the directive's
+    completion test (that file present on `main`) and the merge-order resolution
+    rule, so a directive naming a SATISFIED prerequisite cannot survive #580
+    landing first and park the runner on finished work — the mirror hazard this
+    correction would otherwise create.
 
     **The half of the finding that is not mine to act on**: its first remedy is
     to land #580 before this commit, and merging is Board-only in this
