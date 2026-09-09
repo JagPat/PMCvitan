@@ -1015,7 +1015,7 @@ mirrors or backfills — `ProjectRoleStanding`, `ProjectUserStanding`,
 backfill over pre-existing rows; `OutboxConsumerActivation` was the one that
 did not, and that is finding 3.
 
-### Review round 24 (head `b1742d48`) — six findings; ONE is round 23's own, and three are the reunification doing its job
+### Review round 24 (head `b1742d48`) — SEVEN findings; ONE is round 23's own, three are the reunification doing its job, and one I dropped from my own count
 
 | # | classification | why that class |
 |---|---|---|
@@ -1025,6 +1025,19 @@ did not, and that is finding 3.
 | 4 (P1) | **unfixed recurrence** | round 12's own rule — enumerate the OPERATIONS, not the columns — unfixed on a seal added after it |
 | 5 (P1) | **missed related path** | the obligation race was closed twice for ACTIVATION of an existing row and never asked of REGISTRATION of a new one |
 | 6 (P1) | **missed related path** | the companion's round-4 finding 2 put its migration in `ALWAYS_EXECUTE`; this stage's activation branch was never re-asked under replay |
+| 7 (P1) | **missed related path** | the closure arm was built out over four rounds and each one asked whether the columns were PRESENT, never whether their two values agree |
+
+**Finding 7 was dropped from my own enumeration, and that is recorded here as
+its own failure.** The gate reported SEVEN current-head findings; I answered
+six, wrote "six findings" in this heading and "none is declined" beneath it, and
+pushed. Nobody declined finding 7 — it was simply missing from a list I called
+complete, which is the exact defect this ledger has now recorded four times
+(round 23 finding 2; the companion's round 4 findings 1 and 3). The count was
+available and authoritative in the gate's own comment and I did not reconcile
+against it. So the check gains the counterpart to *a completeness claim is
+re-run, not inherited*: **reconcile the answered set against the REPORTED COUNT
+before pushing — from the gate's number, never from the notifications that
+happened to arrive.**
 
 Each was reproduced against the repository before acceptance; none is declined
 and none is a duplicate. **Three of the six (2, 3 and 6) are cross-document
@@ -1069,14 +1082,26 @@ code. So event authoring and catalog INSERT take one shared registration
 barrier, SHARE for the reader and EXCLUSIVE for the inserter, ahead of the
 per-row locks and inside the one canonical lock order.
 
-**Findings 4 and 6, and what they have in common with 1.** All three are seals
+**Finding 7 — four rounds asking the wrong half of the question.**
+`ChangeRequest.status` and `resolution` are unconstrained text in the delivered
+schema (`schema.prisma:2453`, `:2457`), and the closure arm — built out over
+rounds 8, 12, 13 and 16 — required only that the closure SET be complete. So a
+receipt-holding writer reproduces an entire valid reapproval bundle and stores
+`status = 'resolved'` with `resolution = 'withdrawn'`: every arm passes, and the
+row is immutable under the freeze while contradicting the transition, the event
+and the audit row it exists to corroborate. The delivered writers use exactly
+two pairs, so the arm admits exactly those two, with the legacy NULL allowance
+kept explicit and narrow.
+
+**Findings 4, 6 and 7, and what they have in common with 1.** All four are seals
 or branches whose PREDICATE was written for the shape the author had in mind
 rather than for every operation that can reach it: a binding arm conditional on
 the column a forger simply omits; an activation branch conditional on a mirror
 an operator may legitimately have flipped; a converse admitting kinds the stage
-cannot legitimately produce. The rule this plan minted in round 12 covers all
-three, and finding 4 is that rule unfixed on a seal added after it — which is
-worth recording plainly rather than filing as three unrelated fixes.
+cannot legitimately produce; a closure arm counting columns instead of reading
+what they say. The rule this plan minted in round 12 covers all four, and
+finding 4 is that rule unfixed on a seal added after it — worth recording
+plainly rather than filing as four unrelated fixes.
 
 **Contract, inventory and proof move together.** CONTRACT: §A.3's weak-body
 restriction, the birth-writes-its-rule statement, the operation-shaped notice
@@ -1085,7 +1110,8 @@ INVENTORY: 4d-i's rule freeze is on UPDATE and not INSERT; 4d-ii's catalog-data
 migration owns existing rules only; 4d-iii's activation is initial-run only.
 PROOF: P31 keeps the pair table but drives it against the 4d-iii body and gains
 the window arms — each 4d-only kind refused at 4d-i; P32 gains the NULL and the
-mismatched `decisionId`; P38 gains the event-vs-registration barrier, the
+mismatched `decisionId`; P33 gains both crossed status/resolution pairs beside
+the two truthful ones; P38 gains the event-vs-registration barrier, the
 operator-pair/direct-pair split, and the replay over a deliberately deactivated
 consumer.
 
@@ -6550,7 +6576,33 @@ today's behaviour lives.
     provenance was minted before the act it claims to record. Requiring the set
     empty while open, and the transition NULL → complete at the closure, binds
     the receipt to the closing statement, which is what "the closure carries its
-    OWN receipt" was always meant to say. **The delivered writers already comply
+    OWN receipt" was always meant to say.
+
+    **AND the closure arm binds each `status` to its own `resolution`, not
+    merely to a non-NULL one** (#572's review round 24, finding 7). Both columns
+    are unconstrained text in the delivered schema — `status String
+    @default("open")` and `resolution String?`, the latter carrying only the
+    comment `'reapproved' | 'withdrawn'; null on backfilled legacy rows`
+    (`schema.prisma:2453`, `:2457`) — so "a complete set" admits a row whose two
+    halves contradict each other. A receipt-holding writer reproduces an
+    otherwise valid REAPPROVAL bundle — the revision, the event, the audit row,
+    a truthful resolver pair, a real receipt — and stores `status = 'resolved'`
+    with `resolution = 'withdrawn'`, or the inverse on a withdrawal; every arm
+    passes, and the complete set is then immutable under the freeze while the
+    row contradicts the transition, the event and the audit evidence it exists
+    to corroborate. The delivered writers use exactly two pairs and the arm
+    admits exactly those two: `('resolved', 'reapproved')` from the reapproval
+    closure (`decisions.service.ts:492-494`) and `('withdrawn', 'withdrawn')`
+    from `withdrawChange` (`:919-922`). `('open', NULL)` stays the only open
+    shape, and the LEGACY allowance is explicit and narrow — a pre-4d row whose
+    `resolution` is NULL is untouched, since those rows predate the seal and are
+    the unprovable cohort this plan already names, but no NEW closure may write
+    a NULL resolution. P33's evidence-freeze arms gain both CROSSED pairs, each
+    REFUSED at commit with the decision's state unchanged, beside the two
+    truthful pairs committing — RED against the both-present predicate, which
+    admits all four.
+
+    **The delivered writers already comply
     and this is checkable**: `requestChange` and the `returned` resolution's
     bundle insert an open row and supply no resolver column at all — the schema
     defaults every one of them to NULL — and the seed's DL-003 plant inserts
