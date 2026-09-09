@@ -1015,6 +1015,59 @@ mirrors or backfills — `ProjectRoleStanding`, `ProjectUserStanding`,
 backfill over pre-existing rows; `OutboxConsumerActivation` was the one that
 did not, and that is finding 3.
 
+### Review round 26 (head `37f182a3`) — two findings, both the TAIL of my own fixes, and the smallest round since 19
+
+| # | classification | why that class |
+|---|---|---|
+| 1 (P1) | **regression introduced by a fix** | round 25 moved the barrier's EXCLUSIVE half into a trigger and left the SHARE half in a TypeScript helper, so a direct writer bypasses it |
+| 2 (P1) | **regression introduced by a fix** | rounds 23 and 24 changed WHEN a standalone audit row is refused; P31 kept the old "admitted before 4d-iii" sentence beside the new arms |
+
+Two comments, gate count two, reconciled before folding. Neither declined,
+neither duplicate. Both fixes touch §A, §D and §C per the obligation round 25
+minted; the three-column record is below.
+
+**Finding 1 — half a barrier is not a barrier.** Round 25 was right that an
+advisory key with no installer is not installed, and then installed only one of
+its two halves in the database. `deliveryRowsFor` is a TypeScript helper, so the
+SHARE half only covers writers that go through the platform's emitter; a direct
+`DomainEvent` writer with a receipt never calls it. The deferred
+`DomainEvent_t4d_deliveries` seal then scans the catalog holding no key, a
+registration takes the uncontended exclusive key and commits, and the event
+commits owing that consumer nothing — the exact interleaving the barrier was
+introduced to close, reachable by the exact writer class this plan's seals exist
+for. So the seal takes the SHARE key itself, at the head of its deferred body.
+The rule is round 12's, applied to a lock rather than a column: **the
+enforcement point is the seal, never the caller** — and an application helper is
+a convenience, not a barrier. The advisory lock is reentrant, so the helper may
+keep taking it early for lock-ordering hygiene at no cost.
+
+**Finding 2 — and this one lands on the rule I minted last round.** Round 25
+made it an obligation that a change to §A must move §D and §C in the same edit.
+Round 24 changed WHEN standalone audit rows are refused — from 4d-iii to 4d-i —
+in the contract and in the inventory, and left P31's sentence saying "REFUSED
+after 4d-iii … admitted before it". The new arms were APPENDED to that
+paragraph, so the old expectation and its replacement sat two lines apart, which
+is the companion document's round-4 finding 3 defect (a superseded sentence left
+standing beside its replacement) reaching the proof table. An implementation
+following P31 would have kept the forgery window open or written a suite that
+contradicts its own contract.
+
+That is worth stating plainly: **the round that minted the three-site rule broke
+it in the round that followed, on the site the rule exists to protect.** The
+obligation is not wrong, but "touch §C" is not the same as "re-read §C and
+delete what the change falsified" — appending an arm is the easy half. So the
+obligation gains its second clause: **when an edit changes WHEN or WHETHER
+something is refused, the probe's existing sentences are re-read and the
+falsified ones deleted, not left beside the new ones.** The same edit also
+corrects the round-24 arms' RED baseline, which named round 21's map and not
+round 23's unrestricted pair table — the thing those arms actually go red
+against at 4d-i.
+
+| finding | §A (contract) | §D (installer) | §C (proof) |
+|---|---|---|---|
+| 1 | both halves taken in the database, by the seals | `DomainEvent_t4d_deliveries` takes SHARE at the head of its deferred body, beside the INSERT trigger round 25 named | P38's event-vs-registration arm now covers the DIRECT writer, not only the emitter path |
+| 2 | unchanged — round 24's contract was already right | unchanged — round 24's inventory was already right | P31's superseded sentence DELETED and replaced with refusal from 4d-i; the RED baseline corrected to name round 23's pair table |
+
 ### Review round 25 (head `3fee6bc4`) — eight findings, and FIVE are my own rounds 22–24 landing in §A and not §D
 
 | # | classification | why that class |
@@ -4875,10 +4928,28 @@ before it. Each fact table carries:
 
    So event authoring and catalog INSERT take ONE shared barrier — a
    transaction-scoped advisory lock on a single catalog-registration key, taken
-   in SHARE mode by the event's `deliveryRowsFor` before it reads the obligation
-   set and in EXCLUSIVE mode by any `OutboxConsumerCatalog` INSERT — which
-   serializes a registration against every in-flight event without serializing
-   events against each other.
+   in SHARE mode before the obligation set is read and in EXCLUSIVE mode by any
+   `OutboxConsumerCatalog` INSERT — which serializes a registration against
+   every in-flight event without serializing events against each other.
+
+   **BOTH halves are taken in the DATABASE, by the seals, not by the callers**
+   (#572's review round 26, finding 1, completing round 25's finding 7). Round 25
+   moved the EXCLUSIVE half into a trigger and left the SHARE half assigned to
+   `deliveryRowsFor` — a TypeScript helper — which closes the race only for
+   writers that go through the platform's own emitter. A direct `DomainEvent`
+   writer with a receipt inserts its bundle without calling that helper at all:
+   the deferred `DomainEvent_t4d_deliveries` seal scans the catalog holding no
+   shared key, a registration takes the UNCONTENDED exclusive key and commits,
+   and the event then commits owing that consumer nothing. Half a barrier in the
+   database and half in the application is not a barrier — it is the same
+   *cover the OPERATION, not the caller* rule this plan minted in round 12,
+   applied to a lock instead of a column. So `DomainEvent_t4d_deliveries` takes
+   the registration key in SHARE mode ITSELF, at the head of its deferred body,
+   before it scans; `deliveryRowsFor` may still take it early for lock-ordering
+   hygiene, and the advisory lock is reentrant so a second acquisition in the
+   same transaction is free. The seal is the enforcement point, the helper is a
+   convenience, and every writer — emitter, migration, direct — is serialized by
+   the same object.
 
    **The EXCLUSIVE half is installed by a named trigger, not left to the
    inserting caller** (#572's review round 25, finding 7). Naming a key and
@@ -4903,7 +4974,10 @@ before it. Each fact table carries:
    — the event either carrying that consumer's row or the registration having
    waited, never the event committing without it, in both orderings and RED
    against the row-locks-only design, which admits the gap because the row did
-   not exist to be locked;
+   not exist to be locked; **driven twice, once through the platform
+   emitter and once by a DIRECT receipt-backed `DomainEvent` writer that never
+   calls `deliveryRowsFor`** (round 26, finding 1) — the second RED against a
+   barrier whose SHARE half lives in the helper rather than in the seal;
    the platform-owned BEFORE INSERT trigger `OutboxDelivery_t4d_bound`
    requires EVERY row's `deliveryAction` to equal the action its consumer's
    persisted rule derives for the event, whatever the consumer's activation
@@ -5340,9 +5414,20 @@ before it. Each fact table carries:
    DISABLE TRIGGER` protocol under this seal's name — the name both files
    already disable before deleting, so no new name is learned, only a second
    site for one they know. P31 gains the fabricated standalone insert of each
-   listed kind, REFUSED after 4d-iii with the decision's revision sequence
-   unmoved, admitted before it, and the seed's plants committing inside their
-   named bypass with the seal enabled afterwards. **And it gains the table above,
+   listed kind, **REFUSED from 4d-i — not from 4d-iii** (#572's review round 26,
+   finding 2): this sentence predated the weak converse and said "admitted
+   before it", which the round-23 and round-24 corrections made false. From
+   4d-i the four legacy kinds require their matching event and the four 4d-only
+   kinds are refused outright, so a standalone audit row of ANY listed kind is
+   refused the moment the seal exists, with the decision's revision sequence
+   unmoved; the only rows outside validation are the pre-4d-i legacy cohort,
+   which no trigger installed later can reach. Leaving the old expectation
+   standing would have certified an implementation that keeps the
+   audit-forgery window those two rounds closed, or produced a test suite that
+   contradicts its own contract — the superseded-sentence-beside-its-replacement
+   defect, on the PROOF site of a fix whose contract and inventory I had already
+   corrected. And the seed's plants commit inside their named bypass with the
+   seal enabled afterwards. **And it gains the table above,
    driven row by row from 4d-i** (round 23, finding 1): every (kind, status) pair
    COMMITTING with its named event — the provisional approve's
    `approved`/`reapproved` beside `decision.awaiting_countersign`, the
@@ -5351,7 +5436,10 @@ before it. Each fact table carries:
    different types, the `returned` outcome's two audit rows satisfied by its ONE
    event, and `forwarded` under each status the holder mutation leaves — each RED
    against round 21's kind → type map, which refuses the first four outright and
-   demands a `decision.countersigned` that no catalog defines; beside them the
+   demands a `decision.countersigned` that no catalog defines, **and the whole
+   table driven at 4d-i RED against round 23's unrestricted pair table, which
+   admits a `countersigned` row on an ordinary direct approve through the
+   window** (round 24, finding 1); beside them the
    PAIR-MISMATCH arms, an `approved` row beside `decision.published` and an
    `approved` row beside `decision.approved` on a decision committed
    `awaiting_countersign`, both REFUSED, which is the looseness round 21 was
