@@ -1015,6 +1015,69 @@ mirrors or backfills — `ProjectRoleStanding`, `ProjectUserStanding`,
 backfill over pre-existing rows; `OutboxConsumerActivation` was the one that
 did not, and that is finding 3.
 
+### Review round 25 (head `3fee6bc4`) — eight findings, and FIVE are my own rounds 22–24 landing in §A and not §D
+
+| # | classification | why that class |
+|---|---|---|
+| 1 (P2) | **unfixed recurrence** | the companion's round 4 put `requestToken` under the whitespace discipline and CLAIMED P-A7; P-A7 exercises `reason` and `actorId` only |
+| 2 (P2) | **regression introduced by a fix** | round 22 moved `phase_plan` onto this plan in the Now block; a staging paragraph still instructs a handoff to keep it on the completed 4c plan |
+| 3 (P1) | **genuinely new** | 4d-ii stamps `eventId`/`kind` while a 4c replica still serves the stored `text`/`color` cache, which nothing freezes |
+| 4 (P1) | **regression introduced by a fix** | round 23 made Part 1 marker-aware and left `RolloutRetirement`'s creation in Part 3 — a fresh install queries a relation that does not exist |
+| 5 (P2) | **regression introduced by a fix** | round 23 added the marker's own no-TRUNCATE seal and did not re-derive the closed seventeen-entry registry that is supposed to know every seal |
+| 6 (P1) | **regression introduced by a fix** | round 24 corrected §A on rule initialization and left §D saying `syncConsumerCatalog` never writes rules |
+| 7 (P1) | **regression introduced by a fix** | round 24's registration barrier names an advisory key and no installer; §D inventories only the delivery seals |
+| 8 (P1) | **unfixed recurrence** | the window rule is stated generally and re-pointed two pair checks; the clause EVERY fact's pair check reads still judges `pmc` from the fanned-out register |
+
+All eight reproduced before acceptance; none declined, none duplicate. The count
+was reconciled against the review itself before this fold — eight comments,
+eight answers — which is the check round 24 finding 7 produced after one was
+dropped.
+
+**The root cause is mine and it is one thing: I changed the CONTRACT and not the
+INVENTORY.** Findings 2, 4, 5, 6 and 7 are all rounds 22–24's own corrections,
+and four of the five have the same shape — §A gained the rule, §D kept the old
+one, and §D is the list an implementation follows. Round 24's commit message
+asserted that "contract, inventory and proof move together"; for findings 6 and
+7 that was not true when I wrote it. The plan's oldest recorded root cause — *a
+contract that names no installer is not installed* — was committed twice more by
+the very edits that were fixing other instances of it, and finding 7 is the
+purest form: an advisory key with no trigger to take it.
+
+So the discipline stops being a sentence and becomes a per-edit obligation, in
+the same form the marker-aware sweep took in round 23: **an edit that adds or
+changes a mechanism in §A is not finished until it has named the STAGE and the
+STATEMENT that installs it in §D and the ARM that proves it in §C, in that same
+edit — and the round's own record says which of the three each fix touched.**
+The table above is the first application; every fix below lists its three sites.
+
+| finding | §A (contract) | §D (installer) | §C (proof) |
+|---|---|---|---|
+| 1 | the token's whitespace discipline, already there | — (no new statement) | P-A7 gains the token, mutation-tested independently |
+| 2 | — | the staging paragraph now describes the committed Now block | the Now-block invariants, unchanged and already executable |
+| 3 | `text`/`color` join the kinded-row freeze | 4d-ii's freeze arm | P32 gains both rewrites refused, and both admitted on a kind-less row |
+| 4 | — | **Part 0**, a permanent marker transaction before Part 1 | P28b's replay arm, which needs the marker to exist to be run at all |
+| 5 | — | `TRUNCATE_SEALS` is EIGHTEEN, and the registry is separated from the reset's table list | the seal-coverage tripwire, which reads the registry |
+| 6 | initialization vs verification, already corrected in round 24 | the 4d-ii checklist now carries BOTH halves | `syncConsumerCatalog`'s own drift refusal, and P-A11 |
+| 7 | the barrier, already stated in round 24 | `OutboxConsumerCatalog_t4d_registration_barrier`, BEFORE INSERT | P38's event-vs-registration arm, which round 24 added |
+| 8 | the pair-check clause carries the window exception inline | the same seals, re-pointed at 4d-iii as the other two are | P29b's window request, which the plan already promises COMMITS |
+
+**Finding 8 is the one worth reading twice.** The window rule was minted in round
+4, stated as a general prohibition, and used to re-point the approval and change
+request pair checks. Obligation 3's clause — which every fact's pair check reads,
+the consultation request's included — kept naming `ProjectUserStanding` alone. So
+the rule existed, was correct, was cited, and was not applied at one of its own
+sites; and the site it missed refuses a request the delivered service authorises
+and the probe table promises will commit. A general rule left unapplied at one of
+its sites is not a rule, which is why the exception now sits inline in the clause
+instead of three sections above it.
+
+**Finding 3 is the only genuinely new one, and it is a disclosure.** Through the
+drain both releases serve; the 4c replica renders from the stored `text`/`color`
+because it has no structured renderer. Freezing the binding and leaving the cache
+writable means a forged cache is served by the old replica for the length of the
+drain while every new reader sees the truth. The freeze covers all six columns on
+a kinded row, and only on a kinded row.
+
 ### Review round 24 (head `b1742d48`) — SEVEN findings; ONE is round 23's own, three are the reunification doing its job, and one I dropped from my own count
 
 | # | classification | why that class |
@@ -4102,7 +4165,24 @@ before it. Each fact table carries:
    `pmc` row the orgs trigger derives for the membership-less org
    owner/admin too (the token role `AuthService.signInAccess` and the
    project access path issue such an actor; the register row is the
-   evidence, and no separate label is recorded or demanded) — AND its
+   evidence, and no separate label is recorded or demanded) — **EXCEPT
+   through the window, where a `pmc` claim is judged by the RACE-FREE
+   derivation and not by that register** (#572's review round 25, finding 8).
+   The window rule is stated generally three sections above — *through the
+   window, NOTHING a window caller reaches may judge a user's `pmc` standing
+   from the fanned-out row* — and the approval revision's and the change
+   request's pair checks were both re-pointed onto the `ProjectOrg` /
+   `OrgUserAuthority` derivation for it. THIS clause, which every fact's pair
+   check reads, was left naming the register alone, so the CONSULTATION
+   request's frozen `requestedByRole = 'pmc'` would be refused for exactly the
+   org owner/admin the delivered requester-authority arm admits — and P29b
+   promises that window request COMMITS. So the arm reads: an
+   `OrgUserAuthority` owner/admin row for that actor's org AND no
+   membership-granted row for them on that project, until 4d-iii re-points it
+   onto the repaired register after the re-projection. A general rule left
+   unapplied at one of its own sites is not a rule; it is the fourth time this
+   plan has recorded that, and it is why the clause now carries the exception
+   inline rather than relying on a reader to remember the section above — AND its
    frozen `<act>ByName` must equal the account's display name read by the
    kernel's `platform_user_display_name(userId)` over the `UserIdentity`
    register at the act — **and the command must READ that name inside its own
@@ -4798,7 +4878,20 @@ before it. Each fact table carries:
    in SHARE mode by the event's `deliveryRowsFor` before it reads the obligation
    set and in EXCLUSIVE mode by any `OutboxConsumerCatalog` INSERT — which
    serializes a registration against every in-flight event without serializing
-   events against each other. It is taken BEFORE the per-row `FOR SHARE` locks,
+   events against each other.
+
+   **The EXCLUSIVE half is installed by a named trigger, not left to the
+   inserting caller** (#572's review round 25, finding 7). Naming a key and
+   assigning its acquisition to nobody is this plan's own root cause — *a
+   contract that names no installer is not installed* — and it would leave the
+   race exactly where it was for any writer that does not volunteer: a
+   database-role writer, or a migration, inserting a default-active row while an
+   event holds the shared key over the catalog it already read. So
+   `OutboxConsumerCatalog_t4d_registration_barrier`, a BEFORE INSERT trigger on
+   `OutboxConsumerCatalog`, takes `pg_advisory_xact_lock` on the registration key
+   in EXCLUSIVE mode for EVERY insert — `syncConsumerCatalog`'s creates, the
+   catalog-data migration's, and any direct writer's alike — and it is named in
+   4d-ii's staged inventory beside the delivery seals rather than only here. It is taken BEFORE the per-row `FOR SHARE` locks,
    so the order is registration key → catalog rows, one direction, and it joins
    the ONE canonical lock order §A.3 states rather than sitting beside it.
 
@@ -5366,6 +5459,22 @@ before it. Each fact table carries:
    `Notification_t4d_binding` below freezes `projectId` and `eventId` so it
    cannot be reached by update either; and the key proves a shared PROJECT,
    not a shared DECISION, so a SECOND platform-owned trigger —
+   **The kinded row's LEGACY CACHE is frozen with it** (#572's review round 25,
+   finding 3). 4d-ii stamps `eventId` and `kind` onto the existing approval and
+   consultation writers while a 4c API is still serving — the drain is exactly
+   the interval where both releases run — and that older replica has no
+   structured renderer, so it serves the stored `text` and `color` verbatim.
+   Leaving those two columns writable on a kinded row lets a database-role
+   writer rewrite the cache AFTER commit and have the legacy replica disclose
+   the forged copy for the whole drain, while every new reader, rendering from
+   the event, sees nothing wrong. So `text` and `color` join `projectId`,
+   `eventId`, `kind` and `decisionId` in the kinded-row freeze: on a row
+   carrying `kind`, all six are immutable from the moment it is written. Rows
+   with no `kind` are untouched — the legacy shape stays editable exactly as
+   today — and the freeze is therefore reachable only by rows 4d itself
+   creates. P32 gains the post-commit `text` rewrite and the `color` rewrite on
+   a kinded row, both REFUSED, and the same two on a kind-less row COMMITTING.
+
    `Notification_t4d_binding_bound`, DEFERRABLE INITIALLY DEFERRED on INSERT,
    checked at COMMIT — reads the platform's own two tables and requires that a
    kinded row bound to an event whose `entityType = 'Decision'` CARRY a
@@ -5791,8 +5900,14 @@ today's behaviour lives.
   `f5da6654` (the last REVIEWED merge; #536 was a STATUS record),
   `next_task` stays `phase-6-task-4d` (the id names the task stop; this
   narrative binds what starts at it — 4d-i, only after this plan clears),
-  `phase_plan` stays the 4c plan until this plan CLEARS, when the
-  implementation's first fold moves it. Runner invariants over the parsed
+  `phase_plan` NAMES THIS PLAN — corrected in round 22 off
+  `2026-08-29-decision-workflow-4c.md`, which is complete and merged, and
+  already committed that way in the Now block above (#572's review round 25,
+  finding 2: this paragraph still instructed a handoff to keep the pointer on
+  4c "until this plan CLEARS", which would either restore a finished plan as the
+  runner's active source or move a pointer that has already moved). The
+  authoritative statement is the Now block; this narrative describes it and
+  never contradicts it. Runner invariants over the parsed
   Now block: `assessRunnerState` → `pr:<this>` while open;
   `assessPostMergeRunnerState` → simulated, allowed, `task:4`;
   `detectStatusDrift` with the self-named `open_pr` live → no drift. It
@@ -5840,7 +5955,18 @@ today's behaviour lives.
     its packet lists every `src/` path it touches with the registry line each
     adds — the reviewable proof that nothing else moved; any other `src/`
     path in its diff is a scope finding. ONE additive
-    migration file in THREE parts, ordered so no window opens. **Part 1, the doors transaction**:
+    migration file in FOUR parts, ordered so no window opens. **Part 0, the
+    marker transaction** (#572's review round 25, finding 4 — correcting round
+    23's own fix): `RolloutRetirement(unit TEXT PRIMARY KEY, retiredAt,
+    retiredBy)` with its seals, created and COMMITTED FIRST, because every
+    marker-aware statement in this file reads it — the transient reservation
+    block of Part 1 included — and on a fresh database the relation does not yet
+    exist when Part 1 runs. Round 23 made Part 1 marker-aware and left the table
+    in Part 3, so a fresh install would abort on a missing relation while
+    dropping the query would restore the mature-replay downgrade the marker was
+    introduced to prevent. The table is permanent and unconditional, so it
+    belongs before every conditional thing that consults it; Part 3's inventory
+    below no longer creates it. **Part 1, the doors transaction**:
     the shared refusal function `phase6_t4d_reserved()` and the two
     TEXT-judged `Decision` doors (`Decision_t4d_architect_reserved`,
     `Decision_t4d_awaiting_reserved`), committed FIRST. **Part 2, the enum
@@ -6108,8 +6234,17 @@ today's behaviour lives.
     role could not honour), UPDATE and DELETE refused, no-TRUNCATE — and
     `verifyMarkerSeals` is probed UNCHANGED after 4d-i and 4d-iii. Every
     statement is `IF NOT EXISTS`/`IF EXISTS`/`CREATE OR REPLACE` so a
-    partial apply retries. `TRUNCATE_SEALS` gains SEVENTEEN entries across
-    4d-i and 4d-ii — the three fact tables,
+    partial apply retries. `TRUNCATE_SEALS` gains EIGHTEEN entries across
+    4d-i and 4d-ii — `RolloutRetirement_t4d_no_truncate` among them (#572's
+    review round 25, finding 5: the count said seventeen, the marker's own seal
+    was required a few lines above, and the paragraph then claimed it was
+    "registered so the coverage tripwire knows every seal" while omitting it
+    from the only registry that does the knowing). The registry is the seal
+    INVENTORY the coverage tripwire reads; it is not the reset's table list, and
+    the two are separate — `RolloutRetirement`, the consumer catalog with its
+    activation register, and the lease register are registered here AND excluded
+    from every sanctioned reset's table list, so their seals are never disabled
+    by a reset and the tripwire still sees them. The eighteen: the three fact tables,
     `ProjectRoleStanding_t4d_no_truncate`, `Membership_t4d_no_truncate`,
     `MembershipTransition_t4d_no_truncate`, `ChangeRequest_t4d_no_truncate`,
     `ExternalEffectCatalog_t4d_no_truncate`, `Notification_t4d_no_truncate`
@@ -6278,11 +6413,21 @@ today's behaviour lives.
     frozen request-time role, and `consultation.request` writing
     `requestedByRole` under the seal's requester arm; the `ReleaseLease`
     writer (startup registration + lease renewal) and the
-    `rollout:drain-evidence` CLI; `syncConsumerCatalog` VERIFYING each
-    consumer's persisted `dispatchRule`/`subscribedEventTypes` against the
-    compiled contract and refusing on drift, never writing them (#560's
-    review round 1, finding 7: this checklist said "writing", contradicting
-    the sealed-evidence rule); the delivery-row rewrite — the platform's
+    `rollout:drain-evidence` CLI; `syncConsumerCatalog` INITIALIZING a row's
+    `dispatchRule`/`subscribedEventTypes` from the compiled contract when it
+    CREATES that row, and VERIFYING an EXISTING row's persisted rule against the
+    compiled contract, refusing on drift and never rewriting it — the two halves
+    stated separately because they are different operations (#560's review round
+    1, finding 7 established the verify-only half against a checklist that said
+    "writing" of every row, and it stands for rows that already exist; #572's
+    review round 24 finding 2 established the creation half, since this function
+    is the DELIVERED creator that the shipped suites call at runtime; #572's
+    review round 25, finding 6 is that §A carried the correction and this
+    inventory — the list an implementation follows — still said "never writing
+    them", which would have left every runtime-created consumer ruleless);
+    the named `OutboxConsumerCatalog_t4d_registration_barrier` BEFORE INSERT
+    trigger taking the registration key EXCLUSIVE on every catalog insert
+    (#572's review round 25, finding 7 — §A named the key and no installer); the delivery-row rewrite — the platform's
     `deliveryRowsFor` projection called by `materializeDeliveries` and
     `expandMissingDeliveries`, `deliveryFor` retired — the
     `OutboxConsumerActivation` register, its frozen `active` mirror and the
