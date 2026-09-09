@@ -13,14 +13,45 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
 task: 4
-task_state: merged
+task_state: in_progress
 work_item: none
 reviewed_merge: f5da6654
-open_pr: none
+open_pr: 580
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-05
+updated: 2026-09-09
 ```
+
+### 4d unit 1 of 4 — the outbox consumer activation register, docs-only, on #580
+
+**What this PR is.** `docs/superpowers/plans/2026-09-09-outbox-consumer-activation.md`:
+the append-only attributable `OutboxConsumerActivation` register, its
+`OutboxConsumerCatalog.active` mirror and the `outbox:consumer` operator protocol. It
+specifies a schema, a migration and a command; it ships none of them. No runtime code, no
+migration, no test change.
+
+**Why STATUS moves here.** This is a TASK-BEARING change and the serialized runner reads
+this file to decide what to do next. Left at `task_state: merged` / `open_pr: none` /
+`next_task: phase-6-task-4d`, the resolver has no record that a 4d unit is in progress and
+can schedule a second producer for the same next task (#580's review round 1, finding 1).
+`open_pr` now names the unit that lands FIRST.
+
+**The four-unit split, and why #580 rather than #572 is `open_pr`.** The 4d plan
+(`docs/superpowers/plans/2026-09-07-decision-workflow-4d.md`, PR #572) was split into four
+dependency-ordered units on JagPat's instruction. Unit 1 — this register — has NO dependency
+on the other three and all three depend on it: 4d's obligation set is judged from the ACTIVE
+consumer set, and this register is what defines that set. So it lands first, and it is the
+open PR a runner should shepherd. **#572 stays open and carries units 2–4** (kernel pairing
++ registers; `ChangeRequest` provenance + closure authority; the decision workflow states)
+with its own review history intact — no PR was closed or recreated for the split, and every
+finding keeps its original round and PR in each document's own ledger. #572 carries its own
+STATUS entry naming itself as `open_pr`; the two entries touch the same YAML key, so
+whichever merges second resolves the conflict in favour of the PR still open. Correction
+owner on both: `claude`. There is one producer, not two.
+
+**Not gated by this unit.** Merging and deploying stay the Board's. The standing 4d
+directives on #572 — the operator drain attestation among them — are unchanged by the split
+and are not restated here.
 
 ### Unit 4c-v merged — 4c is COMPLETE. The §E handoff to the 4d PLAN unit is the recorded next step.
 
