@@ -248,3 +248,106 @@ END $$;
 
 ALTER TYPE "DeciderKind" ADD VALUE IF NOT EXISTS 'architect';
 ALTER TYPE "DecisionStatus" ADD VALUE IF NOT EXISTS 'awaiting_countersign';
+
+-- ════════════════════════════════════════════════════════════════════════════════════════════
+-- PART 3 — THE SEAL-AND-AUDIT TRANSACTION
+-- ════════════════════════════════════════════════════════════════════════════════════════════
+--
+-- Part 3 opens with BOTH orgs-owned RESERVATIONS and only then audits (§D, and #558's review
+-- round 2, finding 9). The ordering is the whole point and is stated once here:
+--
+--   * `CREATE TRIGGER` on "Membership" takes ACCESS EXCLUSIVE on that table, so every concurrent
+--     membership writer blocks until this transaction ends.
+--   * That lock cannot block a concurrent `User(role = 'architect')` creation, so the transaction
+--     ALSO takes `LOCK TABLE "User" IN SHARE ROW EXCLUSIVE MODE` and installs the FIFTH door
+--     (#558's review round 1, finding 5). Without it a still-serving `ensure-accounts` could
+--     commit its user AFTER the audit counted zero, be refused only at its membership upsert,
+--     and leave a residual identity behind a migration that recorded success.
+--   * Only after BOTH locks are held does the audit count. Auditing FIRST would leave the
+--     classic gap: a row inserted after the count observed zero and before `CREATE TRIGGER`
+--     took its lock would be grandfathered past the reservation.
+--
+-- The audit RAISES with a bounded sample and rolls the WHOLE transaction back, the triggers
+-- included. It never re-roles and never deletes: the operator repair is a RE-ROLE through the
+-- ordinary team command (docs/RUNBOOK.md §P6T4D), then
+-- `prisma migrate resolve --rolled-back`, then redeploy.
+
+-- ── the "Membership" and "User" doors ────────────────────────────────────────────────────────
+-- Judged on NEW regardless of OLD, so a soft-removed row already spelling `architect` can be
+-- neither restored nor re-keyed into service through it — the exact shape of 4c-i's
+-- `ProjectCapability_t4c_reserved`. `Membership.role` and `User.role` are unconstrained TEXT
+-- columns, so these are string comparisons and need no cast.
+--
+-- The "User" lock is taken BEFORE its trigger, so the ordering is stated rather than left as a
+-- side effect of the DDL: SHARE ROW EXCLUSIVE conflicts with every ordinary writer and with
+-- itself, which is what the audit needs, and the `CREATE TRIGGER` that follows escalates to
+-- ACCESS EXCLUSIVE anyway.
+DO $$
+DECLARE tg pg_trigger;
+BEGIN
+  IF phase6_t4d_retired() THEN RETURN; END IF;
+
+  SELECT * INTO tg FROM pg_trigger
+   WHERE tgname = 'Membership_t4d_architect_reserved'
+     AND tgrelid = '"Membership"'::regclass AND NOT tgisinternal;
+  IF NOT FOUND THEN
+    CREATE TRIGGER "Membership_t4d_architect_reserved" BEFORE INSERT OR UPDATE ON "Membership"
+      FOR EACH ROW WHEN (NEW."role" = 'architect')
+      EXECUTE FUNCTION phase6_t4d_reserved('Membership.role = architect');
+  ELSIF tg.tgenabled <> 'O'
+     OR tg.tgfoid::regproc::text <> 'phase6_t4d_reserved'
+     OR tg.tgtype <> 23 THEN           -- EXACTLY ROW(1) + BEFORE(2) + INSERT(4) + UPDATE(16)
+    RAISE EXCEPTION
+      'phase6 4d-i: Membership_t4d_architect_reserved exists but does not reserve the role (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P6T4D.',
+      tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
+  END IF;
+
+  LOCK TABLE "User" IN SHARE ROW EXCLUSIVE MODE;
+
+  SELECT * INTO tg FROM pg_trigger
+   WHERE tgname = 'User_t4d_architect_reserved'
+     AND tgrelid = '"User"'::regclass AND NOT tgisinternal;
+  IF NOT FOUND THEN
+    CREATE TRIGGER "User_t4d_architect_reserved" BEFORE INSERT OR UPDATE ON "User"
+      FOR EACH ROW WHEN (NEW."role" = 'architect')
+      EXECUTE FUNCTION phase6_t4d_reserved('User.role = architect');
+  ELSIF tg.tgenabled <> 'O'
+     OR tg.tgfoid::regproc::text <> 'phase6_t4d_reserved'
+     OR tg.tgtype <> 23 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: User_t4d_architect_reserved exists but does not reserve the role (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P6T4D.',
+      tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
+  END IF;
+END $$;
+
+-- ── the diagnostic-first audit ───────────────────────────────────────────────────────────────
+-- ANY status counts: the ordinary team removal sets `status = 'removed'` and leaves `role` in
+-- place, so a soft-removed row aborts identically. `User.role` is counted because the dev-session
+-- fallback reads it verbatim.
+DO $$
+DECLARE
+  v_memberships BIGINT;
+  v_users       BIGINT;
+  v_sample      TEXT;
+BEGIN
+  IF phase6_t4d_retired() THEN RETURN; END IF;
+
+  SELECT count(*) INTO v_memberships FROM "Membership" WHERE "role" = 'architect';
+  SELECT count(*) INTO v_users       FROM "User"       WHERE "role" = 'architect';
+
+  IF v_memberships > 0 OR v_users > 0 THEN
+    SELECT string_agg(line, E'\n') INTO v_sample FROM (
+      (SELECT 'Membership ' || m."id" || ' (project ' || m."projectId"
+              || ', user ' || m."userId" || ', status ' || m."status" || ')' AS line
+         FROM "Membership" m WHERE m."role" = 'architect' ORDER BY m."id" LIMIT 10)
+      UNION ALL
+      (SELECT 'User ' || u."id" || ' (' || COALESCE(u."email", '<no email>') || ')' AS line
+         FROM "User" u WHERE u."role" = 'architect' ORDER BY u."id" LIMIT 10)
+    ) s;
+    RAISE EXCEPTION
+      'phase6 4d-i ABORT: % "Membership" row(s) and % "User" row(s) already spell the reserved role `architect`. Nothing validated that value before this migration, so the reservation would leave them in place and arm the chain the instant the role is understood. Refusing to commit; nothing was installed. Sample (max 10 of each):%',
+      v_memberships, v_users,
+      E'\n' || v_sample
+        || E'\nSee docs/RUNBOOK.md §P6T4D for the repair: RE-ROLE through the team command, then `prisma migrate resolve --rolled-back`, then redeploy.';
+  END IF;
+END $$;
