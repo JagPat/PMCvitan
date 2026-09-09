@@ -1015,6 +1015,78 @@ mirrors or backfills — `ProjectRoleStanding`, `ProjectUserStanding`,
 backfill over pre-existing rows; `OutboxConsumerActivation` was the one that
 did not, and that is finding 3.
 
+### Review round 23 (head `41a2f52b`) — two P1s, BOTH round 21's own fixes
+
+| # | classification | why that class |
+|---|---|---|
+| 1 | **regression introduced by a fix** | round 21's finding 3 closed a loose converse by writing a kind → event-type FUNCTION; the correspondence table refutes it in four of eight entries, and it would refuse every chain transition at commit |
+| 2 | **regression introduced by a fix** | round 21's finding 1 gave 4d-i a `CREATE` whose body 4d-iii replaces — the exact shape round 16's marker-aware rule quantifies over — without joining that set or re-deriving the sweep sentence that counted it |
+
+**On the ordering**: this review ran against `41a2f52b`, the head BEFORE round
+22's reunification commit, and arrived after it. Nothing round 22 changed
+touches the correspondence seal, so both findings apply unaltered to the current
+head; they are numbered 23 because 22 is already taken by a scope instruction
+that was not a review round.
+
+Both reproduced against the repository before acceptance; neither is a duplicate
+and neither is declined. Round 21 fixed two defects in this one seal and
+introduced two more, which makes the audit converse the third mechanism in this
+plan to produce a finding in three consecutive rounds.
+
+**Finding 1, traced.** PRODUCERS of an audit row: the five service paths the
+correspondence table enumerates. CONSUMERS of the rule: the deferred trigger
+alone. ENFORCEMENT POINT: `DecisionEvent_t4d_correspondence`'s weak body, at
+commit. STAGES: 4d-i installs it, 4d-ii-a is the first stage whose server writes
+chain transitions, 4d-iii replaces the body. The table at §A.3 says a provisional
+approve writes `approved`/`reapproved` beside `decision.awaiting_countersign` and
+NO `decision.approved`; a countersign writes `countersigned` beside
+`decision.approved`/`decision.reapproved`; a `stranded_resolved` accompanies
+`decision.approved`/`reapproved` on the `completed` outcome and
+`decision.change_requested` on the `returned` one. Round 21's map demands
+`decision.approved` for the first, a `decision.countersigned` for the second —
+a type `packages/shared/src/platform/events.ts` does not define and 4d does not
+add — and "the stranded resolution's own event" for the third, which does not
+exist. A kind → type FUNCTION cannot be right here: one kind appears under two
+event types and one event type under three kinds. What the deferred arm can
+actually read at commit is the audit row, the decision's COMMITTED `status` and
+the transaction's events, so the arm is keyed on the PAIR, and §A.3 now carries
+that pair table closed — any pair not in it refused. The window is checked
+against the delivered writers rather than assumed: all four shapes the running
+release writes appear in it, `withdrawChange` included, whose `updateMany` sets
+`status: 'approved'` at `decisions.service.ts:911-913`.
+
+**Finding 2, traced.** PRODUCER of the hazard: `ALWAYS_EXECUTE`, which re-runs
+4d-i's raw SQL on a P3005 baseline of a mature database. CONSUMER: whatever body
+the live trigger ends up carrying. ENFORCEMENT POINT: the `RolloutRetirement`
+marker, which 4d-i already reads for the reservation doors and for the
+consultation seal. STAGE: the gap between a replayed 4d-i and 4d-iii's own
+replace — not instantaneous, and unbounded if the deploy stalls there. Round
+16's sweep found "exactly one other statement of this shape … and no others",
+and that sentence was TRUE when it ran and FALSE five rounds later, because
+round 21 added a statement of exactly that shape and did not re-run the count.
+So the seal joins the marker-aware set, and the sweep is replaced by an
+OBLIGATION — a statement added to 4d-i's permanent portion whose body a later
+unit replaces joins the set in the same edit, with the enumeration re-derived
+there. *A completeness claim is re-run, not inherited*: this plan family has now
+recorded that three times, here and in the companion document's round 4 findings
+1 and 3.
+
+**Contract, inventory and proof move together, and tracing the installers found
+a third gap.** The CONTRACT is §A.3's pair table and the marker-aware
+obligation. The INVENTORY is where this went wrong before: following the
+trigger to the stage that installs it showed that 4d-i's staged list — the one
+an implementation follows — named `DecisionEvent_t4d_append_only` and never
+gained the `CREATE` for the correspondence trigger at all, five rounds after
+round 21 introduced it in §A and named it only in 4d-iii's REPLACE. That is *a
+contract that names no installer is not installed*, on this plan's own material
+for the fourth time, and it is fixed in this edit rather than left for the round
+that would have found it. The seal is also added to the reset protocol's name
+list, where §A.3's "the seed learns ONE new name" was owed and unpaid. The PROOF
+is P31, which gains the pair table driven row by row from 4d-i — each row RED
+against round 21's map — plus the two pair-mismatch refusals that keep round
+21's own point; and P28b's replay arm, which gains the audit row admitted by a
+downgraded weak seal and refused by the marker-aware one.
+
 ### Round 22 — not a review round: the four-unit split is REVERSED, on instruction
 
 JagPat: *"close #580 and take the whole 4d plan back to one unit."* This is a
@@ -4796,9 +4868,11 @@ before it. Each fact table carries:
    later, by round 11's own rule: the claiming seal belongs to the unit that
    makes the event pairing-required, never a subsequent one. Beside it — on a SEPARATE, DEFERRED trigger, never this immediate one —
    4d-i creates `DecisionEvent_t4d_correspondence` with the WEAK CONVERSE for all
-   eight listed audit kinds: a same-transaction `DomainEvent` OF THE KIND'S OWN
-   EVENT TYPE naming the row's decision, which the running release satisfies and
-   a standalone plant cannot (round 20 finding 2; round 21 findings 1 and 3). It
+   eight listed audit kinds: a same-transaction `DomainEvent` naming the row's
+   decision whose type is the one the row's TRANSITION emits — derived from the
+   audit kind AND the decision's committed status, never from the kind alone
+   (round 20 finding 2; round 21 findings 1 and 3; round 23 finding 1) — which
+   the running release satisfies and a standalone plant cannot. It
    claims for
    `countersign_renotified` and nothing else CLAIMS — no other audit kind is a
    claimant, and a second claim for one event is refused by the register's
@@ -4922,16 +4996,64 @@ before it. Each fact table carries:
    audit row beside a catalog-valid `decision.published` — an event that owes no
    approval fact — and the row would commit, become immutable, and inflate
    `priorApprovals` and every later revision number exactly as the standalone
-   plant would. Each kind therefore names the event type it may accompany:
-   `approved` → `decision.approved`, `reapproved` → `decision.reapproved`,
-   `change_requested` → `decision.change_requested`, `change_withdrawn` →
-   `decision.change_withdrawn` (the four the delivered service emits beside their
-   audit rows, at the lines above), `countersigned` → `decision.countersigned`,
-   `forwarded` → `decision.forwarded`, `stranded_resolved` → the stranded
-   resolution's own event, and `countersign_renotified` →
-   `decision.awaiting_countersign`. 4d-iii then adds the FACT and its TRANSITION
-   to the same trigger; what moves earlier is only the pair the previous release
-   already writes. What this cannot reach is the cohort written BEFORE 4d-i:
+   plant would.
+
+   **The permitted event type is derived from the TRANSITION, not from the audit
+   kind alone** (#572's review round 23, finding 1, correcting round 21's own
+   fix). Round 21 wrote a kind → type function, and the correspondence table
+   below refutes it in four of its eight entries: a provisional approve writes an
+   `approved`/`reapproved` audit row beside `decision.awaiting_countersign` and
+   NO `decision.approved`; a countersign writes `countersigned` beside
+   `decision.approved`/`decision.reapproved`; `decision.countersigned` is not a
+   type at all, in the delivered catalog (`packages/shared/src/platform/events.ts`
+   carries exactly four decision types) or in 4d's additions; and
+   `stranded_resolved` has no "own event" — it accompanies
+   `decision.approved`/`reapproved` on the `completed` outcome and
+   `decision.change_requested` on the `returned` one. A kind → type FUNCTION
+   cannot express any of that, because the same kind appears under two event
+   types and the same event type under three kinds. Round 21 fixed the looseness
+   and installed a map that would have REFUSED every chain transition at commit —
+   the outage it had just diagnosed, one axis over.
+
+   What the deferred arm can read at commit is the audit row, the decision's
+   COMMITTED `status`, and the transaction's events; a 4d FACT it cannot read,
+   which is the whole reason this arm is weak. The pair (kind, committed status)
+   is enough, and it is read straight off the correspondence table:
+
+   | audit `DecisionEvent.type` | `Decision.status` at commit | required same-transaction `DomainEvent.eventType` |
+   |---|---|---|
+   | `approved` | `awaiting_countersign` | `decision.awaiting_countersign` |
+   | `approved` | `approved` | `decision.approved` |
+   | `reapproved` | `awaiting_countersign` | `decision.awaiting_countersign` |
+   | `reapproved` | `approved` | `decision.reapproved` |
+   | `countersigned` | `approved` | `decision.approved` or `decision.reapproved` |
+   | `stranded_resolved` | `approved` | `decision.approved` or `decision.reapproved` |
+   | `stranded_resolved` | `change` | `decision.change_requested` |
+   | `change_requested` | `change` | `decision.change_requested` |
+   | `change_withdrawn` | `approved` | `decision.change_withdrawn` |
+   | `forwarded` | any | `decision.forwarded` |
+   | `countersign_renotified` | `awaiting_countersign` | `decision.awaiting_countersign` |
+
+   Any (kind, status) pair not in this table is REFUSED — the table is closed,
+   not a set of hints. Two entries are worth stating because they are the ones a
+   function would get wrong: the `returned` resolution writes BOTH
+   `stranded_resolved` and `change_requested` in one transaction with ONE
+   `decision.change_requested`, and both rows are satisfied by it; `forwarded` is
+   the one kind whose status is unconstrained, because the holder mutation leaves
+   the status where it was.
+
+   **The window is checked against the delivered writers, not assumed.** The
+   previous release reaches exactly four of these rows — approve from `pending`
+   (`approved` / `approved` / `decision.approved`), reapprove from `change`
+   (`reapproved` / `approved` / `decision.reapproved`), `requestChange`
+   (`change_requested` / `change` / `decision.change_requested`) and
+   `withdrawChange`, whose `updateMany` sets `status: 'approved'`
+   (`decisions.service.ts:911-913`) beside its `change_withdrawn` row and
+   `decision.change_withdrawn` event — so every ordinary transaction of the
+   running release commits under this arm from 4d-i, and every chain transition
+   commits under it from 4d-ii-a, when the server that writes them ships. 4d-iii
+   then adds the FACT and its TRANSITION to the same trigger; what moves earlier
+   is only the pair the previous release already writes. What this cannot reach is the cohort written BEFORE 4d-i:
    those rows predate every seal, they are the legacy class this plan already
    treats as unprovable, and no trigger installed later can validate them — said
    here rather than left as an implied claim of completeness. **The sanctioned
@@ -4943,7 +5065,20 @@ before it. Each fact table carries:
    site for one they know. P31 gains the fabricated standalone insert of each
    listed kind, REFUSED after 4d-iii with the decision's revision sequence
    unmoved, admitted before it, and the seed's plants committing inside their
-   named bypass with the seal enabled afterwards.
+   named bypass with the seal enabled afterwards. **And it gains the table above,
+   driven row by row from 4d-i** (round 23, finding 1): every (kind, status) pair
+   COMMITTING with its named event — the provisional approve's
+   `approved`/`reapproved` beside `decision.awaiting_countersign`, the
+   countersign's `countersigned` beside `decision.approved`/`reapproved`, the
+   `completed` and `returned` resolutions' `stranded_resolved` beside their two
+   different types, the `returned` outcome's two audit rows satisfied by its ONE
+   event, and `forwarded` under each status the holder mutation leaves — each RED
+   against round 21's kind → type map, which refuses the first four outright and
+   demands a `decision.countersigned` that no catalog defines; beside them the
+   PAIR-MISMATCH arms, an `approved` row beside `decision.published` and an
+   `approved` row beside `decision.approved` on a decision committed
+   `awaiting_countersign`, both REFUSED, which is the looseness round 21 was
+   right to close.
 
    The register is its legacy `actor` label rows
    included. **The sanctioned resets learn the seal by name** (#554's review
@@ -5539,7 +5674,16 @@ today's behaviour lives.
     and the platform-owned, gate-written `ExternalEffectCatalog` seeded with
     the current compiled catalog as literal SQL under its tripwire, with
     `ExternalEffectCatalog_t4d_no_truncate` (§A.3 obligation 7); the
-    decisions-owned `DecisionEvent_t4d_append_only` seal; `Notification.kind`
+    decisions-owned `DecisionEvent_t4d_append_only` seal and, beside it, the
+    decisions-owned DEFERRED `DecisionEvent_t4d_correspondence` constraint
+    trigger carrying the WEAK converse — the (kind, committed status) table §A.3
+    closes — installed MARKER-AWARE, so a replay over a retired database gets the
+    full 4d-iii body instead (**self-found while tracing round 23's two findings
+    through their installers**: round 21 introduced this trigger in §A and named
+    it in 4d-iii's replace, and this staged list — the one an implementation
+    follows — never gained the CREATE, which is *a contract that names no
+    installer is not installed* on the plan's own material for the fourth time);
+    `Notification.kind`
     beside `Notification.eventId`; the four nullable, frozen
     consultation attribution columns — `DecisionConsultation.requestedByRole`/
     `requestedByName` and `DecisionConsultationResponse.respondedByRole`/
@@ -5613,7 +5757,8 @@ today's behaviour lives.
     reapproval revision and its closing request (#572's review round 5,
     finding 2); the reset protocol in
     `prisma/seed.ts` and `test/integration/fixtures.ts` gaining
-    `DecisionEvent_t4d_append_only`, the pairing-claim register's seals (the
+    `DecisionEvent_t4d_append_only` and `DecisionEvent_t4d_correspondence`
+    (§A.3's "one new name", stated there and owed here), the pairing-claim register's seals (the
     claims truncated with `DomainEvent`), the membership path (transition facts,
     then memberships, under their seals disabled by name), the three NEW
     fact tables — `DecisionStrandedResolution`, `DecisionCountersign`,
@@ -5710,14 +5855,45 @@ today's behaviour lives.
     already the mechanism 4d-i uses to decide it must install no reservation
     door on a replayed mature database (#560's review round 2, finding 5's
     sibling); this finding is that the same question was asked of the DOORS and
-    not of the function bodies beside them. The sweep over 4d-i's permanent
-    portion found exactly one other statement of this shape — the participant's
-    `effectiveRoleHolderUserIds` wrapper, which is switched by
-    `rollout.phase6_4d` reading `open` rather than by a replace, and is
-    therefore already monotonic — and no others. P28b's replay arm gains it: the
+    not of the function bodies beside them.
+
+    **The marker-aware set holds TWO statements, and the rule that keeps it
+    complete is stated here rather than left to a sweep that ages**
+    (#572's review round 23, finding 2). Round 16 swept 4d-i's permanent portion,
+    found the consultation seal plus the participant's
+    `effectiveRoleHolderUserIds` wrapper — which is switched by
+    `rollout.phase6_4d` reading `open` rather than by a replace, and is therefore
+    already monotonic — and wrote "and no others". That was true when it ran and
+    became FALSE five rounds later, when round 21 gave 4d-i
+    `DecisionEvent_t4d_correspondence` with the WEAK body and 4d-iii a replace
+    with the FULL converse: exactly the shape this paragraph quantifies over,
+    added without re-deriving the sentence that counted it. On a P3005 baseline
+    replay of a mature post-4d-iii database an unconditional create DOWNGRADES
+    the live seal to the weak body, and an audit row carrying the right event
+    type but NO fact and NO transition commits and becomes immutable history
+    until 4d-iii's own replace runs — which, if the deploy stalls or fails, it
+    does not. So `DecisionEvent_t4d_correspondence` joins the consultation seal:
+    4d-i's create reads the SAME `RolloutRetirement` marker and installs the
+    POST-retirement body — the full fact-and-transition converse — when the
+    marker is present, the weak body only when it is absent.
+
+    **And the sweep is replaced by an OBLIGATION, because a count is a fact about
+    one moment and this one has now aged into a false claim once.** Any statement
+    added to 4d-i's permanent portion whose body a later unit replaces joins the
+    marker-aware set IN THE SAME EDIT, and this paragraph's enumeration is
+    re-derived there — the standing form of *a completeness claim is re-run, not
+    inherited*, which this plan family has now recorded three times (this
+    finding; the companion document's round 4 findings 1 and 3). The set today is
+    the consultation request seal and `DecisionEvent_t4d_correspondence`, plus the
+    wrapper that needs no marker.
+
+    P28b's replay arm gains BOTH: the
     4d-i migration re-run against a post-4d-iii database, with the architect
     consultation request COMMITTING afterwards, RED against the unconditional
-    replace, which refuses it. That marker is one row in a NEW, sealed platform table
+    replace, which refuses it; and, on that same replayed database, an audit row
+    inserted with a catalog-valid event of the right type but no fact and no
+    transition REFUSED afterwards — RED against the unconditional create, which
+    admits it because the weak body is all that survives the replay. That marker is one row in a NEW, sealed platform table
     `RolloutRetirement(unit TEXT PRIMARY KEY, retiredAt, retiredBy)` created
     by 4d-i's permanent portion — NOT a row on `OutboxOperatorAction`, whose
     4c-iii-r verifier (`verifyMarkerSeals`) keeps a CLOSED trigger inventory
@@ -6156,9 +6332,14 @@ today's behaviour lives.
     drain only writers that state the pin remain), **REPLACES the body of
     `DecisionEvent_t4d_correspondence` — the DEFERRED INSERT constraint trigger
     4d-i created — with the FULL converse §A.3 states: 4d-i already carries the
-    kind-matched same-transaction event, so this stage adds the FACT and its
-    TRANSITION rather than introducing the rule or the trigger (#572's review
-    round 20 finding 2; round 21 findings 1 and 3)** — each of the EIGHT listed audit kinds
+    TRANSITION-derived same-transaction event, so this stage adds the FACT and
+    its TRANSITION rather than introducing the rule or the trigger (#572's review
+    round 20 finding 2; round 21 findings 1 and 3; round 23 finding 1, which
+    replaced round 21's kind → type function with the (kind, committed status)
+    table §A.3 closes). **This body is the one 4d-i's own MARKER-AWARE create
+    installs when `RolloutRetirement` is already present** (round 23, finding 2),
+    so a P3005 baseline replay of a mature database cannot downgrade the live
+    seal to the weak body while waiting for this stage to run** — each of the EIGHT listed audit kinds
     (`countersign_renotified` among them, #572's review round 19)
     requiring its fact, its transition and its `DomainEvent` in the same
     transaction, judged AT COMMIT because the delivered writers insert the audit
