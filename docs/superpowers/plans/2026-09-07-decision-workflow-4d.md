@@ -752,7 +752,7 @@ and one is STATUS advertising a retired replacement chain in the present tense.
 | finding | where it lands | the answer |
 |---|---|---|
 | 1 (P1) §D's 4d-i inventory still assigned the same-decision INSERT arm to `Notification_t4d_binding`, though §A split the timings into `Notification_t4d_binding_bound` (deferred, INSERT) and `Notification_t4d_binding` (immediate, freeze) a round earlier — so following the inventory recreates the trigger PostgreSQL cannot make, or drops the binding | §D 4d-i (the inventory); §A.2 the feed row; P31 | the inventory names `Notification_t4d_binding_bound` and says which object it is NOT, since the freeze appears two lines above it in the same list |
-| 2 (P1) §D's inventory still directed EVERY decisions-owned fact seal to claim its event, the blanket rule §A replaced in round 4 with the per-branch primary-fact rule — so a returned resolution's `DecisionStrandedResolution` and `ChangeRequest`, sharing `decision.change_requested`, would both claim it and abort a VALID bundle on the register's per-event UNIQUE | §D 4d-i (the inventory); §A.3 obligation 7; P29b/P37 | the inventory states the claim per BRANCH — the primary fact claims, every other fact in the bundle is verification-only — and names the bundles the blanket rule would have aborted |
+| 2 (P1) §D's inventory still directed EVERY decisions-owned fact seal to claim its event, the blanket rule §A replaced in round 4 with the per-branch primary-fact rule — so a returned resolution's `DecisionStrandedResolution` and `ChangeRequest`, sharing `decision.change_requested`, would both claim it and abort a VALID bundle on the register's per-event UNIQUE | §D 4d-i (the inventory); §A.3 obligation 7; P29b/P37 | the inventory states the claim per BRANCH — the primary fact claims, every other fact in the bundle is verification-only — and names the bundles the blanket rule would have aborted (round 9 finding 1 then replaced the hand-named primaries with the derivation and gave the §A.3 correspondence table a CLAIMANT column) |
 | 3 (P1) the §A.3 `ChangeRequest` `standard` actor arm judged `pmc` through the fanned-out `ProjectUserStanding` register with no window disposition, which is the one thing §A.2's own window rule forbids a window-reachable writer to do; the same omission reached the NEW frozen closer-pair validation on `withdrawChange` | §A.2 the window rule; §A.3 the `ChangeRequest` row; §D 4d-ii/4d-iii; P29b/P33 | both arms take the RACE-FREE authority derivation through the window and are re-pointed by 4d-iii with the rest — AND the fact table's actor-standing column now states a WINDOW DISPOSITION per row, so the rule is walked where the arms are instead of asserted once in prose |
 | 4 (P1) 4d-iii's fenced re-projection must INSERT and DELETE register rows from the migration — a depth-1 write the registers' writer-depth seal exists to refuse, and the seal admitted only nested writes plus the backfill's gate — so the migration whose purpose is to close the drain window is refused and rolls back | §A.2 the kernel read (the writer-depth seal); §D 4d-iii; P42 | a SECOND named gated arm, `vitan.phase6_4d_standing_reprojection`, admitted only while the 4d-iii table fence is held, only toward the snapshotted orgs truth, and only on the two per-user registers; P42 asserts the ungated and unfenced statements refused, so the gate is proven narrow |
 | 5 (P1) a `standard` withdrawal's only `sourceCommandId` names the earlier `requestChange`, so the round-4 frozen resolver pair proves attribution and NOT that a `decisions.withdrawChange` receipt was ever reserved: a database-role writer sets a TRUTHFUL pair, restores the decision, appends the event and audit row, and satisfies every seal without the ledger protocol | §A.2 the withdrawal bundle; §A.3 obligations 5 and 6; P33 | the closure carries its own `resolvedByCommandId` — the column the `countersign_rejection` origin gets from its resolution FACT and the factless standard origin lacked — with its composite FK, one-use UNIQUE and 4d-iii requirement; the obligation-6 derivation becomes PER COLUMN and yields NINE commands; P33 gains the no-receipt hostile arm |
@@ -862,7 +862,7 @@ to carry them one at a time.
 |---|---|---|
 | 1 (P1) the delivered `members.add` looks the user up and CREATES a missing one BEFORE its membership transaction, so two requests with the same `Idempotency-Key` for a new email can both see no user, one creates it, and the other fails on the uniqueness constraint before reserving or replaying the receipt — the keyed replay this plan promises covering only the half after the identity exists | §A.3 obligation 6; §D 4d-ii-a's writer inventory; P29b | 4d-ii-a moves the lookup AND the create inside `executeCommand.run`, so the whole add is one atomic replayable unit |
 | 2 (P1) `ChangeRequest_t4d_provenance_required` is INSERT-time and checks the requester half only, while BOTH closures — the withdrawal and the re-approval — happen by UPDATE; so the closure set rounds 5–7 specified was enforced by nothing, and a direct closure setting `resolvedById` alone meets every seal this plan installs | §A.3 obligations 3, 5 and 6; §D 4d-iii; P42 | the seal gains an UPDATE ARM requiring the COMPLETE closure set whenever `resolvedById` goes NULL → non-NULL, all four columns then immutable together; P42 gains the direct-closure hostile probe in three shapes |
-| 3 (P2) `outbox:consumer` mutates a GLOBAL register but was required to run through a ledger whose `CommandScope` admits only a project or an org — so it would key a global mutation on an arbitrary tenant, and per-org scoping would let one activation key execute once per organisation against a single global `seq` | §A.2 the activation register; `platform/commands.ts` | it is an OPERATOR PROTOCOL, not a ledger command: idempotency comes from the register's own `(consumer, seq)` uniqueness with `ON CONFLICT DO NOTHING` under the catalog row lock — stronger here than a receipt, and it does not widen the receipt model for every command to serve the one that does not fit it |
+| 3 (P2) `outbox:consumer` mutates a GLOBAL register but was required to run through a ledger whose `CommandScope` admits only a project or an org — so it would key a global mutation on an arbitrary tenant, and per-org scoping would let one activation key execute once per organisation against a single global `seq` | §A.2 the activation register; `platform/commands.ts` | it is an OPERATOR PROTOCOL, not a ledger command, and it does not widen the receipt model for every command to serve the one that does not fit it. The idempotency half of this answer was WRONG and round 9 finding 2 replaced it: `(consumer, seq)` uniqueness under the catalog row lock gives ORDERING safety, not retry idempotency, because the head-lock trigger raises on a stale sequence before `ON CONFLICT DO NOTHING` is reached. The command now asserts the intended STATE — `seq` off the operator surface, an explicit already-in-the-requested-state no-op under the same lock |
 
 **Finding 2 is the fourth consecutive round produced by the previous round's
 fix, and it is the one that names what the first three were missing.**
@@ -888,6 +888,84 @@ The test that sets itself is the sharpest one yet, and deliberately so: the next
 round should not be able to find an obligation in this plan that no seal
 enforces on the operation that performs it — because the table's own walk now
 asks.
+
+### Review round 9 (head `2b031707`) — two findings, and BOTH are the previous round's fix
+
+| finding | where it lands | the answer |
+|---|---|---|
+| 1 (P1) the per-branch claimant rule named its primaries in a hand LIST — `decisions.disagree`, `resolveStrandedCountersign`, the re-notification audit row — while the sentence four lines above that list identified the REAPPROVAL as a fourth bundle sharing one event and never named its claimant. So the implementation cannot tell which seal calls `platform_claim_event_pairing` for `decision.reapproved`: claiming from both the `DecisionApprovalRevision` and the closing `ChangeRequest` aborts on the per-event UNIQUE, each deferring to the other leaves the event unclaimed | §A.3 obligation 7 (the claim); the §A.3 correspondence table; §D 4d-iii (the `resultRef` shapes); P29b | the primary is DERIVED, not listed: **the fact present on EVERY instance of the branch**, since a fact written on only some arms would leave the other arm's event unclaimed. The reapproval's revision claims and its closure verifies, because the revision is written from `pending` and `change` alike while the closure exists only on the `change` arm — and the same derivation reproduces every primary the list had named. The correspondence table gains a CLAIMANT column, so a branch added without one is visible in the table |
+| 2 (P2) round 8's own answer — `(consumer, seq)` uniqueness with `ON CONFLICT DO NOTHING` under the catalog row lock makes a repeated activation "a no-op by construction" — is false. The head-lock trigger requires `NEW.seq = activationSeq + 1`, so a retry re-deriving the sequence appends a SECOND fact and a retry resending its original sequence is refused as stale before `ON CONFLICT` is reached | §A.2 the activation register; the round-8 ledger row above; P29b | the operator asserts the STATE, not a sequence: `seq` leaves the operator surface entirely, and under the same row lock the command either observes the mirror already at the requested `active` and appends nothing, or appends at the derived next sequence. The trigger's check stays as the floor under DIRECT writers |
+
+**Both findings are the previous round's fix, and together they say something
+round 8 did not.** Round 8's lesson was about ENFORCEMENT — an obligation whose
+seal does not fire on the operation that breaches it is a defect. Both of these
+pass that test: the claimant rule has a seal (the kernel's pairing seal, on the
+operation that matters), and the activation register has one. They fail one step
+earlier and one step later instead.
+
+Finding 1 fails EARLIER: the rule was under-specified, so no seal could be
+written from it. And it fails in the way this plan has now failed four times —
+rounds 5, 6, 7 and 8 each replaced a hand list with a derivation, and the
+claimant primaries were a hand list that survived every one of those rounds
+because each round fixed the list in front of it rather than the habit. A list
+is not made safe by being short or by being right today.
+
+Finding 2 fails LATER: the seal exists and fires, and the claim made ABOUT it
+was simply not true of it. Round 8 asserted an idempotency property of a
+mechanism whose own trigger — added two rounds earlier, for a different
+finding — contradicts it. Nothing in the walk checks a claimed property against
+the mechanism it is claimed of.
+
+So round 9 adds the two questions the walk was missing on either side of
+enforcement:
+
+> **Before the seal:** any rule that selects ONE thing out of a set — a
+> claimant, a primary, an owner — must state the PROPERTY that selects it, and
+> the inventory that closes over the set must carry the selection as a column.
+> A list of the selections made so far is a defect however complete it looks.
+>
+> **After the seal:** any idempotency, ordering or exclusivity property this
+> plan CLAIMS of a mechanism must be re-derived against that mechanism's own
+> constraints as written here, naming the specific check that grants it. A
+> property that no named constraint grants is a wish.
+
+**Both questions were then walked over this plan, not merely stated.**
+
+The FIRST found one further selection rule and no others: every remaining
+"exactly ONE" in this plan is a constraint on outcomes (one commits, one
+exists, one demand is emitted), not a rule choosing one member of a set, so
+the claimant was the only hand list of its kind. That is a result, not an
+absence of effort — the question is worth keeping precisely because the next
+branch added to the correspondence table will meet it.
+
+The SECOND found a real one, unprompted, in the same shape as finding 2 and
+in a place no reviewer has raised: **the 4d-i standing backfill's replay.**
+That arm exists because #560's review round 2, finding 5 observed that a
+depth-only seal would refuse the replay's own insert and make 4d-i
+unreplayable. The arm as written admits the gated depth-1 write "ONLY as a
+zero-count insert for a project that has no row" — and pairs it with
+`INSERT … ON CONFLICT DO NOTHING`. Those two cannot both be load-bearing. A
+BEFORE INSERT trigger fires on the speculatively inserted row BEFORE the
+conflict is detected, so on any replay over a database where the projects of
+the original backfill still hold their rows, the seal's "has no row" clause
+is false for every one of them and the trigger raises — the `ON CONFLICT`
+clause never reached, and the replay this arm was added to enable aborting
+exactly as it did before the arm existed. Whether 4d-i replays at all then
+rests on an unstated detail of the elided statement.
+
+So the plan states it rather than leaving it to the ellipsis: **the backfill
+statement carries the exclusion and the seal judges VALUES only.** The insert
+selects the projects that have no row (`WHERE NOT EXISTS`), so the trigger
+never sees an insert for a project that already has one, and the seal's gated
+arm admits a depth-1 zero-count `architect` insert under the gate without any
+predicate on the target row's absence. Dropping that clause costs nothing: a
+gated zero-count insert onto a project that already has a row is discarded by
+the unique index anyway, so the clause was never doing the security work its
+wording implied — it was only making the replay's outcome depend on which of
+two mutually blind mechanisms ran first. P29b's backfill-replay arm gains the
+mature-database shape: the replay run over a database that already holds a row
+for every original project AND a project created since, committing, with the
+new project's row inserted and no existing row touched.
 
 **Docs-only.** No schema, no migration, no runtime code, no test change, no
 4d implementation. Contractor-capture units 1–6 and the saved UX and
@@ -1465,15 +1543,24 @@ that would go negative into a refusal, never a clamp; the statement-level
 both registered in `TRUNCATE_SEALS`, so the rows the register counts cannot
 vanish beneath it. 4d-i backfills one `architect` row per project from a
 count taken in the migration (zero, which the audit proves) through an
-EXPLICIT gated writer arm of the seal — `INSERT … ON CONFLICT DO NOTHING`
-under `SET LOCAL vitan.phase6_4d_standing_backfill = 'on'`, the seal
-admitting a depth-1 write ONLY under that gate and ONLY as a zero-count
-insert for a project that has no row — so every `ALWAYS_EXECUTE` replay
-re-runs the backfill for a project created since (a project without an
-architect membership has no row until its first standing write) and
-commits, while the same statement outside the gate is refused (#560's
-review round 2, finding 5: the depth-only seal would have refused the
-replay's own insert and made 4d-i unreplayable);
+EXPLICIT gated writer arm of the seal — `INSERT … SELECT … WHERE NOT EXISTS
+(the project's row) … ON CONFLICT DO NOTHING` under `SET LOCAL
+vitan.phase6_4d_standing_backfill = 'on'`, the seal admitting a depth-1 write
+ONLY under that gate and ONLY as a zero-count `architect` insert — a
+VALUES-only condition, with no predicate on the target row's absence — so
+every `ALWAYS_EXECUTE` replay re-runs the backfill for a project created since
+(a project without an architect membership has no row until its first standing
+write) and commits, while the same statement outside the gate is refused
+(#560's review round 2, finding 5: the depth-only seal would have refused the
+replay's own insert and made 4d-i unreplayable). **The exclusion belongs to the
+STATEMENT and not to the seal** (#572's review round 9, the sweep behind
+finding 2): a seal clause reading "for a project that has no row" is evaluated
+by a BEFORE INSERT trigger on the speculatively inserted row, which fires
+BEFORE the conflict is detected — so on a mature database it would raise for
+every project of the original backfill and the `ON CONFLICT` clause would never
+be reached, re-breaking the very replay this arm exists for. The clause was
+also doing no security work, since a gated zero-count insert onto an existing
+row is discarded by the unique index regardless;
 `upgrade-proof.sh` asserts register = count over the legacy fixture, P29b
 asserts it after EVERY transition shape (insert, activate, soft-remove,
 restore, re-role in and out, through the service; the project cascade), and
@@ -1894,12 +1981,33 @@ event (the returned resolution; a reapproval) would have two seals claim it
 and abort on the UNIQUE. The rule is therefore stated per branch, not per
 seal: **the branch's PRIMARY fact claims, and every other fact in the bundle
 is verification-only** — it verifies the event through `platform_tx_event`
-and does not claim it. The primary is already named elsewhere in this plan
-for the bundles that have one (the reject-back/forward-on REQUEST for
-`decisions.disagree`, the RESOLUTION row for `resolveStrandedCountersign`),
-it is the audit row for the re-notification branch above, and a branch this
-plan adds without naming its claimant is a defect. P29b/P37 assert both
-failure shapes: an unclaimed event aborts, and a doubly-claimed one aborts.
+and does not claim it. **Which fact is primary is DERIVED, not listed**
+(#572's review round 9, finding 1). The list this paragraph used to carry
+named `decisions.disagree`, `resolveStrandedCountersign` and the
+re-notification branch — while the sentence four lines above it identified
+the REAPPROVAL as a fourth bundle sharing one event, and never named its
+claimant. A hand list of primaries is the same defect round 6 replaced with
+a derived writer set and round 8 replaced with a derived obligation set,
+arriving a third time in a third place.
+
+The primary is **the fact present on EVERY instance of the branch** — the
+one whose absence would mean the transition did not happen. That is forced
+rather than preferred: a fact written on only SOME arms cannot be the
+claimant, because the other arm's event would then be unclaimed and the
+kernel would abort it. It settles the reapproval — the direct approve writes
+its `DecisionApprovalRevision` from `pending` and from `change` alike, while
+the `ChangeRequest` CLOSURE exists only on the `change` arm, so the REVISION
+claims and the closure verifies — and it reproduces every primary the list
+had named by hand: the reject-back/forward-on REQUEST (both disagreement
+shapes write one), the RESOLUTION row (both outcomes write one, while its
+`ChangeRequest` exists only on `returned`), and the re-notification's audit
+row (its only fact). The correspondence table below carries the claimant in
+its own column for every transition this unit seals, so a branch added
+without one is VISIBLE in the table rather than trusted to a promise — and
+that table is closed over the pairing-required decisions types by
+construction, since `pairingRequired` is seeded from exactly the types it
+lists. P29b/P37 assert both failure shapes: an unclaimed event aborts, and a
+doubly-claimed one aborts.
 
 The OWNER supplies the claim: the orgs-owned `MembershipTransition` seal,
 having verified its event through `platform_tx_event` (the fact-side arm
@@ -3367,8 +3475,10 @@ before it. Each fact table carries:
       paragraph's `resultRef` rule does not yet reach.
 
    On (3): `phase6_t4d_provenance_bound` admits a `resultRef` naming the row
-   itself or the bundle's PRIMARY fact, and the primaries named above are for
-   `disagree` and `resolveStrandedCountersign`. A closure has neither shape.
+   itself or the bundle's PRIMARY fact — the fact §A.3 derives as present on
+   every instance of the branch, which for the two branches that reach this
+   rule is the reject-back/forward-on REQUEST and the RESOLUTION row. A
+   closure has neither shape.
    BOTH its writers complete their receipts with `resultRef: decisionId`
    (`decisions.service.ts` — `approve` and `withdrawChange` alike), and neither
    the `ChangeRequest.id` nor the revision id equals a decision id, so writing
@@ -3501,14 +3611,41 @@ before it. Each fact table carries:
    which is worse than not using the ledger at all. Inventing a global scope
    for one operator action would widen the receipt model for every command to
    serve the one command that does not fit it. So idempotency comes from the
-   register's OWN key instead, which this unit already specifies and which is
-   stronger here than a receipt would be: `(consumer, seq)` is unique, `seq`
-   is monotone per consumer, the insert is `ON CONFLICT DO NOTHING`, and the
-   BEFORE INSERT trigger takes the catalog row `FOR UPDATE` — so a repeated
-   activation is a no-op by construction rather than by a remembered receipt,
-   and the append-only attributable row is the audit trail a receipt would
-   otherwise have carried. Every other statement in this plan about that
-   command running "through the ledger" is superseded by this paragraph.
+   register instead — but from the STATE it asserts, not from its key (#572's
+   review round 9, finding 2, correcting round 8's own answer). Round 8 claimed
+   `(consumer, seq)` uniqueness with `ON CONFLICT DO NOTHING` made a repeated
+   activation "a no-op by construction". It does not, and the reason is the
+   head-lock arm added for #561's review round 1, finding 5: the BEFORE INSERT
+   trigger requires `NEW.seq = activationSeq + 1`. A retry after a lost response
+   therefore fails BOTH ways — one that re-derives `activationSeq + 1` from the
+   advanced head passes the trigger and appends a SECOND activation fact, and
+   one that resends its original `seq` is REFUSED with a stale sequence by that
+   trigger, which raises before `ON CONFLICT DO NOTHING` could absorb anything.
+   The answer confused ORDERING safety, which the head lock does give, with
+   RETRY idempotency, which it never did.
+
+   The identity a retry needs is the one the operator actually holds: **the
+   STATE being asked for**, never a sequence they must guess. So `seq` leaves
+   the operator surface entirely. The command takes the consumer plus the
+   intended `active` and its `reason`, and inside ONE transaction holding that
+   consumer's `OutboxConsumerCatalog` row `FOR UPDATE` it either (a) observes
+   the mirror ALREADY at the requested `active`, appends NOTHING, and returns
+   the existing head fact — the explicit already-in-the-requested-state no-op
+   — or (b) appends at `activationSeq + 1` derived under that same lock. A lost
+   response is then a true no-op whichever way it is retried, and the
+   stale-sequence refusal becomes unreachable because no caller ever names a
+   sequence. A genuine flip-flop still appends every fact, since each request's
+   state differs from the head at the time. The trigger keeps
+   `NEW.seq = activationSeq + 1` unchanged as the floor under DIRECT writers,
+   which is what it was for. The no-op reports the state truthfully even when
+   another operator set it, and the append-only attributable row stays the audit
+   trail a receipt would otherwise have carried — including who actually caused
+   the change, which a no-op must not overwrite. P29b asserts the pair:
+   `outbox:consumer` issued TWICE with the same intent appends exactly one fact
+   and leaves both the mirror and `activationSeq` unmoved on the second, and an
+   activate → deactivate → activate sequence appends three. Every other statement
+   in this plan about that command running "through the ledger" is superseded by
+   this paragraph.
    `seq` monotone per consumer, `reason` NOT
    NULL under the `DecisionForward.reason` discipline (zod trims and
    requires length ≥ 1; the CHECK rejects a value that is empty once every
@@ -3980,18 +4117,18 @@ before it. Each fact table carries:
 
    The correspondence table, closed over every transition 4d seals:
 
-   | transition | event (`DomainEvent.eventType`) | audit (`DecisionEvent.type`) | feed row | actor bound to (id, frozen role AND name, on event, audit row and fact) | armed |
-   |---|---|---|---|---|---|
-   | `pending`/`change → awaiting_countersign` (the provisional approve) | `decision.awaiting_countersign` — the ONE event of this transition (payload: the provisional act; intent: the countersign demand with the architects frozen as `targetUserIds`); a `decision.approved`/`reapproved` at this transition is REFUSED (finality is the finalizer's row) | `approved` / `reapproved` (the act happened and is attributable) | the provisional notice, `kind = 'decision.awaiting_countersign'` | the head revision's `approvedById` | 4d-i (no pre-4d writer can reach the state) |
-   | `awaiting_countersign → approved` by countersign | `decision.approved` / `decision.reapproved` by the revision's `approvedFrom` | `countersigned` | the green approved notice | `countersignedById` | 4d-i |
-   | `awaiting_countersign → approved` by `completed` resolution | the same, by `approvedFrom` | `stranded_resolved` | the green approved notice | `resolvedById` | 4d-i |
-   | `awaiting_countersign → change` by disagreement (reject-back or forward-on) | `decision.change_requested` | `change_requested` | the change-request notice | `requestedById` | 4d-i |
-   | `awaiting_countersign → change` by `returned` resolution | `decision.change_requested` | `stranded_resolved` + `change_requested` | the change-request notice | `resolvedById` = `requestedById` | 4d-i |
-   | the holder mutation (forward, generic or forward-on) | `decision.forwarded` | `forwarded` | the forward notice | `forwardedById` | 4d-i |
-   | `pending`/`change → approved` with NO chain (the direct approve) | `decision.approved` / `decision.reapproved` | `approved` / `reapproved` | the green approved notice | the head revision's `approvedById` | event + audit row from 4d-i (the delivered `approve` writes both in-transaction, so the previous release is compatible through the drain); the feed row's `eventId` binding from 4d-iii, since the previous release writes the row without it |
-   | `approved → change` by the standard `requestChange` (the delivered path, `origin = 'standard'`; the request and the transition paired in BOTH directions — #568's review round 1, finding 3) | `decision.change_requested` | `change_requested` | — (the delivered path writes none) | the receipt's actor | event + audit row + the `ChangeRequest` row from 4d-i (delivered, in-transaction; the envelope pair NULL and `sourceCommandId` NULL through the drain) |
-   | `change → approved` by standard `withdrawChange` | `decision.change_withdrawn` | `change_withdrawn` | — (the delivered path writes none) | the receipt's actor | event + audit row from 4d-i (delivered, in-transaction) |
-   | the architect standing flip on `Membership` | `membership.standing_changed` naming the fact — payload `transitionId`, `membershipId`, `role`, `from`, `to`, `activeCount` ALL bound to the fact and the register; paired in the CONVERSE by the kernel's generic pairing seal, the fact's own seal claiming the event (§A.2) | — (orgs; the fact is the audit) | — | the fact's `actorId` and frozen `actorRole`/`actorName`, on the event envelope | 4d-i (no pre-4d writer can flip the role) |
+   | transition | event (`DomainEvent.eventType`) | audit (`DecisionEvent.type`) | feed row | actor bound to (id, frozen role AND name, on event, audit row and fact) | CLAIMANT — the fact present on EVERY instance of this branch, which calls `platform_claim_event_pairing`; every other fact in the bundle verifies through `platform_tx_event` and does NOT claim | armed |
+   |---|---|---|---|---|---|---|
+   | `pending`/`change → awaiting_countersign` (the provisional approve) | `decision.awaiting_countersign` — the ONE event of this transition (payload: the provisional act; intent: the countersign demand with the architects frozen as `targetUserIds`); a `decision.approved`/`reapproved` at this transition is REFUSED (finality is the finalizer's row) | `approved` / `reapproved` (the act happened and is attributable) | the provisional notice, `kind = 'decision.awaiting_countersign'` | the head revision's `approvedById` | the PROVISIONAL `DecisionApprovalRevision` (born `finalized = false`) | 4d-i (no pre-4d writer can reach the state) |
+   | `awaiting_countersign → approved` by countersign | `decision.approved` / `decision.reapproved` by the revision's `approvedFrom` | `countersigned` | the green approved notice | `countersignedById` | the `DecisionCountersign` row (written on both `approvedFrom` arms; the `ChangeRequest` closure only on the `change` arm, so it verifies) | 4d-i |
+   | `awaiting_countersign → approved` by `completed` resolution | the same, by `approvedFrom` | `stranded_resolved` | the green approved notice | `resolvedById` | the `DecisionStrandedResolution` row (written on both outcomes) | 4d-i |
+   | `awaiting_countersign → change` by disagreement (reject-back or forward-on) | `decision.change_requested` | `change_requested` | the change-request notice | `requestedById` | the reject-back/forward-on `ChangeRequest` (both disagreement shapes write one) | 4d-i |
+   | `awaiting_countersign → change` by `returned` resolution | `decision.change_requested` | `stranded_resolved` + `change_requested` | the change-request notice | `resolvedById` = `requestedById` | the `DecisionStrandedResolution` row — NOT its paired `ChangeRequest`, which exists only on the `returned` outcome | 4d-i |
+   | the holder mutation (forward, generic or forward-on) | `decision.forwarded` | `forwarded` | the forward notice | `forwardedById` | the `DecisionForward` fact | 4d-i |
+   | `pending`/`change → approved` with NO chain (the direct approve) | `decision.approved` / `decision.reapproved` | `approved` / `reapproved` | the green approved notice | the head revision's `approvedById` | the `DecisionApprovalRevision` (born `finalized = true`) — written from `pending` and from `change` alike, while the `ChangeRequest` CLOSURE of the `reapproved` arm exists only when approving from `change`, so the revision claims and the closure verifies (#572's review round 9, finding 1) | event + audit row from 4d-i (the delivered `approve` writes both in-transaction, so the previous release is compatible through the drain); the feed row's `eventId` binding from 4d-iii, since the previous release writes the row without it |
+   | `approved → change` by the standard `requestChange` (the delivered path, `origin = 'standard'`; the request and the transition paired in BOTH directions — #568's review round 1, finding 3) | `decision.change_requested` | `change_requested` | — (the delivered path writes none) | the receipt's actor | the `ChangeRequest` INSERT | event + audit row + the `ChangeRequest` row from 4d-i (delivered, in-transaction; the envelope pair NULL and `sourceCommandId` NULL through the drain) |
+   | `change → approved` by standard `withdrawChange` | `decision.change_withdrawn` | `change_withdrawn` | — (the delivered path writes none) | the receipt's actor | the `ChangeRequest` CLOSURE (the UPDATE arm round 8 added to `ChangeRequest_t4d_provenance_required`) | event + audit row from 4d-i (delivered, in-transaction) |
+   | the architect standing flip on `Membership` | `membership.standing_changed` naming the fact — payload `transitionId`, `membershipId`, `role`, `from`, `to`, `activeCount` ALL bound to the fact and the register; paired in the CONVERSE by the kernel's generic pairing seal, the fact's own seal claiming the event (§A.2) | — (orgs; the fact is the audit) | — | the fact's `actorId` and frozen `actorRole`/`actorName`, on the event envelope | the `MembershipTransition` fact (§A.2) | 4d-i (no pre-4d writer can flip the role) |
 
    A `DecisionEvent` written by the service for a transition this table does
    not list (the delivered `issued`, `drafted`, `draft_updated`,
@@ -4213,7 +4350,7 @@ today's behaviour lives.
 |---|---|---|
 | P28 | the role in every mirror: `TokenRole`, both zod enums, `PushRole`, `KNOWN_ROLES`, the manifest permissions, `ROLE_POLICY` (the exact row set), the schema comment, the web role lists and pickers; the DESIGNATION in every mirror (`DeciderKind`, `DECIDER_KINDS`, the shared type, `viewerIsDecider`, `deciderNoun`, the picker, the audience selectors, the `deciderPush` architect arm and the `deciderPushTarget` arm — a published architect-designated decision's RECIPIENTS are every active architect's links and no client link, RED at base where the fallthrough targets `client`); the widened targeted-catalog ceilings; `countPending`'s architect and awaiting arms; a decision published to an architect holder and a consultation requested from an architect end to end; **P28b** the dark delivery — the five reservation doors (the `User` door installed under the `User` table lock before the audit), the `Membership`/`User` audits barrier-probed in both orderings on the shipped file — the `User` writer too (writer-first → ABORT; migration-first → REFUSED), the abort → re-role → `migrate resolve --rolled-back` → redeploy recovery driven through the REAL runner for an active row, `ensure-accounts` refusing an `ACCOUNTS_JSON` with an `architect` entry before any row is written (no `User`, no `Membership`) while the `pmc`-only file provisions and the `AUTO_ENSURE_ACCOUNTS=true` boot over the refused file fails closed naming the entry, a soft-removed row and a dev `User` fixture, the service refusals BEFORE any write (an architect added by a NEW email while reserved → 409 and ZERO `User` rows; after 4d-iii the member is created), the dev session refusing `architect` before either branch while reserved and the synthetic fallback never minting it, and the `ALWAYS_EXECUTE` replay arms — a post-4d-iii database holding an active architect replays 4d-i, finds the marker, installs no door and no refusal function, aborts nothing; a pre-4d-iii database still installs and audits; the `ROLE_POLICY` EQUALITY pin — `architect` in an action's role list iff the action is one of the eleven — `decision.change` NOT among them (#572's review round 3, finding 3) — a widening onto any commercial or payment action, `decision.change` re-admitted, and an omitted read all RED | the role vocabulary, the designation contract, the reservation, the audit, the runner |
 | P29 | no-active-architect byte-identity: with no architect membership ever, approve lands `approved` directly with `finalized = true`, forward works for holder/PMC and is refused for the missing role's authority, `countersignRequired` is absent, a `standard` origin is omitted, the whole 4b/4c surface is byte-identical (the wire-shape tripwire); **P29c** mixed-version byte-identity — with the reservation ARMED every project is chain-off, no row can be `awaiting_countersign`, no membership can be `architect`, no `DecisionForward` row, `decision.forwarded` delivery or architect-designated row (draft or published) can exist, no Forward renders, every read a pre-4d instance performs sees only values its enums know; and the STALE-CLIENT arms — every strip / refuse / additive-ignorable classification of the completeness tripwire exercised for `recorded-v1` and `countersign-v1`, the activation-between-check-and-approve barrier in both orderings, an architect signing in through EACH token-minting route refused for the lesser client and served for the newer, after 4d-iii | the whole 4b/4c surface; the interceptor; the four in-command contract checks |
-| P29b | removed-architect deactivation + the stranded decision: the chain deactivates for NEW approvals; `decisions.resolveStrandedCountersign` drives BOTH outcomes with their bundles and their effects (the `completed` outcome emitting by `approvedFrom`; the `returned` bundle's request authored by the resolving PMC and admitted by P33b; the returned-resolution bundle MISSING its request refused; a whitespace-only reason refused at zod AND the CHECK); the bare hostile awaiting flip under the INACTIVE chain refused without the fact; refused while an architect is still active; the architect-reappears race deterministic; the departed-holder `returned` with a target re-homing into `change` with the forward fact, without one refused; the EMPTIED ROLE designation likewise — the sole architect approves an architect-designated decision and leaves under the exemption, the `returned` with a named active target re-homes with a forward FROM the role and the open-holder rule never fires, without one refused 400 (RED against the named-holder-only rule, which let the transition reach the seal and be refused there); the window-rule race fixture — the `Project` INSERT and the owner/admin `OrgMembership` INSERT resumed in both orders before the doors exist, the owner left without the fanned-out `pmc` row — then the owner's consultation request COMMITTING under the delivered requester arm, their `MembershipTransition` with `actorRole = 'pmc'` COMMITTING under the race-free derivation, and a delivered `pmc` push resolved on that project INCLUDING them, the same three after 4d-iii's re-projection through the repaired register (RED against the 4d-i re-point, a fact seal reading the fanned-out row alone, and a participant wrapping the register while reserved); the RE-NOTIFICATION — approve → A removed → B added, exactly one new `decision.awaiting_countersign` delivery per still-awaiting decision, B and only B receives it, the `countersign_renotified` audit row naming the crossing event and the transition; the HAND-RUN sequence — A removed and B added by receipt-backed direct bundles carrying their events: the same one delivery and the same audit row; A-active/B-added: no crossing, nothing re-emitted, B's Inbox item present; the register after EVERY transition shape, written only through `platform_role_standing_apply` from the orgs-owned trigger (a direct call at statement depth refused; a direct write refused); the crossing event on every architect activation/deactivation and the second session's tab refreshing its modal copy; the ineligible-actor fact refused; a fact whose `actorRole` the actor does not hold, or whose `actorName` is not the account's, refused, and the pair frozen against a later rename or re-role; an org owner/admin with an active architect membership re-roling and adding THEMSELVES through the service accepted by the seal (the owner/admin arm live), a PMC's self-demotion accepted with the fact judged before the flip (the live read IS the pre-state), a PMC's self re-role to `engineer` committing with the frozen `actorRole = 'pmc'` (RED at the post-state live check), a hostile bundle writing the membership BEFORE its fact refused by the membership seal, a fact claiming a role its actor does not hold refused, a contractor's self-transition refused; every direct-write refusal of §A.2's membership paragraph — the whole-event binding arms (`role: 'engineer'`, a non-active `to`, a `from` or `membershipId` not the fact's, an envelope pair not the fact's) each refused at commit and the standalone crossing event with no fact refused by the kernel's pairing seal as unclaimed, a direct write to the claim register and a statement-depth call of `platform_claim_event_pairing` refused, a second claim for one event refused (#568's review round 1, finding 2), with `decisions.effects` asserted to record NO delivery for any of them; the NO-HEADER arms — each of `members.add`, `members.updateRole` and `members.remove` driven against the 4d-ii-a server exactly as a deployed tab calls it, with NO `Idempotency-Key` under the documented default, COMMITTING its `MembershipTransition` with a non-NULL synthesized `sourceCommandId` and its receipt (RED against the keyless writer, which rolls back at the fact insert), and each driven WITH a client key replaying exactly once (#572's review round 3, finding 4); the cascade probes; the backfill REPLAY — 4d-i re-run over a database holding a project created since, without an architect, inserting that project's zero row under the gate and committing, the same insert outside the gate refused; the per-user registers — `ProjectUserStanding` and `UserIdentity` equal to the orgs truth after every membership shape (activate, deactivate, remove, restore, re-role in and out), an org owner/admin gain and loss fanned out over every project of the org, a new project seeded with the org's owners and admins, a display-name change, and the project cascade, with a direct write to either register refused; an org owner/admin gaining an active `engineer` membership losing the membership-less `pmc` row and regaining it when that membership ends; a user provisioned after 4d-i holding an identity row from the insert and their later fact accepted; an org owner/admin holding an active `engineer` membership recording a `MembershipTransition` with `actorRole = 'engineer'` and committing (authority from the `OrgUserAuthority` row), the same fact with `actorRole = 'pmc'` refused, a plain engineer's refused for want of authority; the delivered `approve`'s notice-then-emit order committing under the deferred FK, a notice naming an event that never arrives refused at commit; a legitimate `decisions.effects` re-emission after crossing Q accepted with its own event excluded from the latest-demand lookup; `OrgUserAuthority` equal to the orgs truth after an owner/admin insert, promotion, demotion and removal, and after 4d-i's backfill; a forward to a `client` role designation with a live holder admitted and to one without refused | the stranded command; the standing register; `decisions.effects`; the membership seals |
+| P29b | removed-architect deactivation + the stranded decision: the chain deactivates for NEW approvals; `decisions.resolveStrandedCountersign` drives BOTH outcomes with their bundles and their effects (the `completed` outcome emitting by `approvedFrom`; the `returned` bundle's request authored by the resolving PMC and admitted by P33b; the returned-resolution bundle MISSING its request refused; a whitespace-only reason refused at zod AND the CHECK); the bare hostile awaiting flip under the INACTIVE chain refused without the fact; refused while an architect is still active; the architect-reappears race deterministic; the departed-holder `returned` with a target re-homing into `change` with the forward fact, without one refused; the EMPTIED ROLE designation likewise — the sole architect approves an architect-designated decision and leaves under the exemption, the `returned` with a named active target re-homes with a forward FROM the role and the open-holder rule never fires, without one refused 400 (RED against the named-holder-only rule, which let the transition reach the seal and be refused there); the window-rule race fixture — the `Project` INSERT and the owner/admin `OrgMembership` INSERT resumed in both orders before the doors exist, the owner left without the fanned-out `pmc` row — then the owner's consultation request COMMITTING under the delivered requester arm, their `MembershipTransition` with `actorRole = 'pmc'` COMMITTING under the race-free derivation, and a delivered `pmc` push resolved on that project INCLUDING them, the same three after 4d-iii's re-projection through the repaired register (RED against the 4d-i re-point, a fact seal reading the fanned-out row alone, and a participant wrapping the register while reserved); the RE-NOTIFICATION — approve → A removed → B added, exactly one new `decision.awaiting_countersign` delivery per still-awaiting decision, B and only B receives it, the `countersign_renotified` audit row naming the crossing event and the transition; the HAND-RUN sequence — A removed and B added by receipt-backed direct bundles carrying their events: the same one delivery and the same audit row; A-active/B-added: no crossing, nothing re-emitted, B's Inbox item present; the register after EVERY transition shape, written only through `platform_role_standing_apply` from the orgs-owned trigger (a direct call at statement depth refused; a direct write refused); the crossing event on every architect activation/deactivation and the second session's tab refreshing its modal copy; the ineligible-actor fact refused; a fact whose `actorRole` the actor does not hold, or whose `actorName` is not the account's, refused, and the pair frozen against a later rename or re-role; an org owner/admin with an active architect membership re-roling and adding THEMSELVES through the service accepted by the seal (the owner/admin arm live), a PMC's self-demotion accepted with the fact judged before the flip (the live read IS the pre-state), a PMC's self re-role to `engineer` committing with the frozen `actorRole = 'pmc'` (RED at the post-state live check), a hostile bundle writing the membership BEFORE its fact refused by the membership seal, a fact claiming a role its actor does not hold refused, a contractor's self-transition refused; every direct-write refusal of §A.2's membership paragraph — the whole-event binding arms (`role: 'engineer'`, a non-active `to`, a `from` or `membershipId` not the fact's, an envelope pair not the fact's) each refused at commit and the standalone crossing event with no fact refused by the kernel's pairing seal as unclaimed, a direct write to the claim register and a statement-depth call of `platform_claim_event_pairing` refused, a second claim for one event refused (#568's review round 1, finding 2); the CLAIMANT DERIVATION exercised on the branch whose bundle the hand list had missed (#572's review round 9, finding 1) — a direct approve from `change` COMMITTING its valid REAPPROVAL bundle (`DecisionApprovalRevision` + the `ChangeRequest` closure around one `decision.reapproved`) with the revision the sole claimant and the closure verification-only, the same approve from `pending` committing with the same claimant and NO closure at all (which is why the closure cannot be the claimant), the closure ALSO claiming refused on the register's per-event UNIQUE, and the closure claiming INSTEAD of the revision refused as unclaimed on the `pending` arm; with `decisions.effects` asserted to record NO delivery for any of them; the NO-HEADER arms — each of `members.add`, `members.updateRole` and `members.remove` driven against the 4d-ii-a server exactly as a deployed tab calls it, with NO `Idempotency-Key` under the documented default, COMMITTING its `MembershipTransition` with a non-NULL synthesized `sourceCommandId` and its receipt (RED against the keyless writer, which rolls back at the fact insert), and each driven WITH a client key replaying exactly once (#572's review round 3, finding 4); the cascade probes; the backfill REPLAY — 4d-i re-run over a MATURE database that already holds a row for every project of the original backfill AND a project created since without an architect, committing: the new project's zero row inserted under the gate, no existing row touched, and the same insert outside the gate refused (#572's review round 9's sweep — RED against a seal arm predicated on the target row's ABSENCE, whose BEFORE INSERT trigger raises on every already-present project before `ON CONFLICT DO NOTHING` is reached, so the replay aborts on exactly the databases replay exists for); the OPERATOR ACTIVATION's retry identity (#572's review round 9, finding 2) — `outbox:consumer` issued TWICE with the same intended state appending exactly ONE fact and leaving both the mirror and `activationSeq` unmoved on the second, an activate → deactivate → activate sequence appending three, and the no-op reporting the head fact of whoever actually set it (RED against the sequence-carrying command, which either appends a second fact or is refused as stale); the per-user registers — `ProjectUserStanding` and `UserIdentity` equal to the orgs truth after every membership shape (activate, deactivate, remove, restore, re-role in and out), an org owner/admin gain and loss fanned out over every project of the org, a new project seeded with the org's owners and admins, a display-name change, and the project cascade, with a direct write to either register refused; an org owner/admin gaining an active `engineer` membership losing the membership-less `pmc` row and regaining it when that membership ends; a user provisioned after 4d-i holding an identity row from the insert and their later fact accepted; an org owner/admin holding an active `engineer` membership recording a `MembershipTransition` with `actorRole = 'engineer'` and committing (authority from the `OrgUserAuthority` row), the same fact with `actorRole = 'pmc'` refused, a plain engineer's refused for want of authority; the delivered `approve`'s notice-then-emit order committing under the deferred FK, a notice naming an event that never arrives refused at commit; a legitimate `decisions.effects` re-emission after crossing Q accepted with its own event excluded from the latest-demand lookup; `OrgUserAuthority` equal to the orgs truth after an owner/admin insert, promotion, demotion and removal, and after 4d-i's backfill; a forward to a `client` role designation with a live holder admitted and to one without refused | the stranded command; the standing register; `decisions.effects`; the membership seals |
 | P30 | forward authority (holder/PMC/architect), ACTIVE target only, eligible states only — terminal AND `awaiting_countersign` refusals both probed through the guarded HTTP route with the shared `ROLE_POLICY` action | the forward command |
 | P31 | the `awaiting_countersign` lifecycle: approval under a chain lands it with `finalized = false` — a revision BORN `finalized = true` under an active chain refused by the INSERT seal; the provisional approve from `pending` with the frozen approval tuple written AND the chain reapproval from `change` each COMMITTING through the widened `decision_t4b_attribution_seal` (RED at the delivered function, which refuses both — #567's review round 2, finding 3); the countersign is ONE atomic act sealed from BOTH sides (the boolean-only hostile flip refused; the orphan countersign row refused at commit; the split two-transaction replay refused; the REPLACED append-only seal — a DELETE and an UPDATE of any column other than the flip refused, the paired flip accepted, the delivered `_append_only` trigger absent by name after 4d-i) AND attributed to an ACTIVE architect AND carrying provenance (the 4c arms verbatim) AND carrying its EFFECTS — the finalizing event by the revision's recorded `approvedFrom` (the reopened → reapproved-into-awaiting → countersigned sequence end to end, with the `approved`/`reapproved` + `countersigned` audit rows), a countersign bundle WITHOUT its event, WITHOUT its audit row, WITHOUT its feed row, with TWO events, or with an event naming another actor, or whose event envelope carries a role or name other than the fact's frozen pair, each refused at commit (the no-chain approve's event with a NULL pair accepted before 4d-iii and refused after); the ENTRY sealed from the decision side (the bare transition with no revision, the re-entry onto a disposed head, the transition under an INACTIVE chain, each refused; the legal approve accepted with its provisional notice bound to its event); the awaiting ENTRY's bundle demanding exactly one `decision.awaiting_countersign` event — a receipt-backed hand-run entry WITHOUT it refused at commit, one carrying a `decision.approved`/`reapproved` instead refused, the legal entry's event carrying the architects frozen as `targetUserIds` and the payload's provisional act; a `DecisionEvent` UPDATE, DELETE and TRUNCATE each refused after a valid transition (the audit row as immutable as the fact); a countersign bundle whose feed row carries the wrong `kind`, or a `kind` with no `eventId`, refused at commit, and a feed row committed with a forged `text` RENDERED from its kind and event — the forged string served to no client, live, projected or rebuilt; a kinded row's `eventId`/`kind`/`decisionId` UPDATE (a NULLing included) and its DELETE refused, a forwarded pending decision withdrawn keeping its kinded notice hidden from every non-PMC viewer, and a kinded `decision.forwarded` notice ABSENT from a contractor's snapshot while the decision is hidden from them and PRESENT for the PMC and the holder; the awaiting entry's event with its push omitted, with a subset or superset of the active architects frozen, or with a body other than the catalog's constant, each refused at commit, and the exact set admitted; an audit row whose `actorName`, `actor` label or a named payload field disagrees with the fact refused; the seed's reset and the fixture's wipe succeeding on the 4d-i schema with `DecisionEvent_t4d_append_only` installed and enabled afterwards, every swept suite's cleanup succeeding through the helper, the bypass tripwire RED on a planted private `DISABLE TRIGGER` AND on a planted unguarded `decisionEvent.deleteMany`, the three rewritten precision arms asserting the append-only refusal by message with the approval guard's message still first on evidence rows, the two whole-table reset transactions passing; a feed row for project A bound to project B's event refused by the composite FK and the same-project binding accepted; the converse trigger: a standalone `decision.approved`, `decision.awaiting_countersign`, `decision.change_requested` and `decision.forwarded` each refused at commit without its fact, the consumer's `renotified` re-emit with its `countersign_renotified` row accepted; the frozen `approvedByName`/`approvedByRole` on every 4d-ii revision, a rename between the acts carrying the act-time name; the reader tripwire RED for the value the moment it exists; the Inbox item and badge; the architect's controls as a product path; the consultation carve-out and the response push for an architect requester; the web arm driving the client approval path under an active chain asserting the provisional copy; the converse admitting the countersign's and the `completed` resolution's finalization without a new revision row and refusing a standalone `decision.approved` with none of the three; the PMC's feed after a forwarded pending decision is withdrawn showing the withdrawal notice and neither the published nor the forwarding notice, both rows and events still present; every 4d-ii `decision.approved`/`reapproved` event carrying the exact `revisionId` (direct approve, countersign, `completed` resolution), the converse refusing an event naming a revision no same-transaction finalizer touched, a drain-shaped event without `revisionId` admitted through the same-transaction insert fallback and refused after 4d-iii, and an older kinded green notice of a twice-approved decision rendering ITS revision's approver, not the head's; the shell badge — `shellSummary.pendingDecisions` equal to `countPending` for the architect with one `awaiting_countersign` decision and no pending one, and for the PMC with a stranded one; **P31b/P42b** and **P31c/P34b** (§B) | `decisions.approve`; the register; the readers |
 | P32 | self-countersign is TWO attributed acts under two idempotency keys — one combined act is refused; the two acts appear as two ledger receipts and two register facts | the countersign command |
