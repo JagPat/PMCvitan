@@ -1,4 +1,5 @@
 import { useRef, type CSSProperties } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore, checklistFrozen } from '@/store/store';
 import { EmptyState, Eyebrow, StatTile, Button, LocationContext, EditState } from '@/components';
 import { Camera } from '@/lib/icons';
@@ -24,6 +25,11 @@ function toggleStyle(active: boolean, solid: string, text: string): CSSPropertie
 
 export function EngineerChecklistScreen() {
   const checklist = useStore((s) => s.checklist);
+  // EVERY checklist issued to this site, so a second one is work the engineer can actually open
+  // rather than a count they can only read. `checklist` is one OF these — the picker below is how
+  // they move the edit slot between them.
+  const openChecklists = useStore(useShallow((s) => s.openChecklists));
+  const selectChecklist = useStore((s) => s.selectChecklist);
   // gate round 8: once a submit is dispatched (submitting / queued) or the server
   // confirms it submitted, the checklist is FROZEN — every input is read-only.
   const frozen = useStore((s) => checklistFrozen(s));
@@ -44,16 +50,29 @@ export function EngineerChecklistScreen() {
   const unavailable = inspectionsLoad === 'error';
   // one hidden file input, re-targeted per item (Task 4: photos are REAL evidence rows)
   const fileRef = useRef<HTMLInputElement>(null);
-  const targetIdx = useRef(0);
+  // The capture target is the item AND the checklist it belongs to. More than one checklist can be out
+  // on site, and reading the file is asynchronous — an engineer who switches tabs while the read runs
+  // would otherwise have the photo land on the checklist that arrived in the slot, at the same index.
+  // Pinned when the camera opens; read back in the handler and carried to the store.
+  const target = useRef<{ inspectionId: string; idx: number } | null>(null);
   const pickEvidence = (i: number) => {
-    targetIdx.current = i;
+    if (!checklist) return;
+    target.current = { inspectionId: checklist.id, idx: i };
     fileRef.current?.click();
   };
   const onPicked = (file: File | null) => {
-    if (!file) return;
+    if (!file || !checklist) return;
+    // The pin is the AUTHORITY when the camera was opened through `pickEvidence`, which is the only
+    // route the app itself offers. A file can still arrive on the input without that gesture — the
+    // acceptance suites populate it directly — and refusing those captures would silently drop a
+    // photo, so the fallback is the edit slot at item 0: exactly what this handler resolved to
+    // before the pin existed. It is a fallback, never a correction: a pinned target is used as
+    // pinned even when the slot has moved on, which is the whole point.
+    const t = target.current ?? { inspectionId: checklist.id, idx: 0 };
     const reader = new FileReader();
-    reader.onload = () => { void addChecklistEvidence(targetIdx.current, String(reader.result)); };
+    reader.onload = () => { void addChecklistEvidence(t.idx, String(reader.result), t.inspectionId); };
     reader.readAsDataURL(file);
+    target.current = null; // one capture per gesture — the next file needs its own pin or the fallback
     if (fileRef.current) fileRef.current.value = '';
   };
 
@@ -84,6 +103,21 @@ export function EngineerChecklistScreen() {
   const doneCount = checklist.items.filter((it) => it.state).length;
   const photoCount = checklist.items.reduce((a, it) => a + it.photos, 0);
 
+  /**
+   * WHOSE work a refused photo belongs to, in the words the engineer already uses for it: the item's
+   * own name, and the checklist's title when the row is not from the one on screen. Resolved from
+   * `openChecklists` (the outstanding set this screen already holds) and falling back to the stored
+   * ids when the checklist has since been submitted and left that list — a name that no longer
+   * resolves is still better than no name, because Delete here is permanent.
+   */
+  const evidenceOrigin = (inspectionId: string, itemId: string): string => {
+    const owner = openChecklists.find((c) => c.id === inspectionId);
+    const itemName = owner?.items.find((it) => it.id === itemId)?.name;
+    const where = itemName ?? `item ${itemId}`;
+    if (inspectionId === checklist.id) return `on this checklist — ${where}`;
+    return `on ${owner?.title ?? inspectionId} — ${where}`;
+  };
+
   const set = (i: number, v: Exclude<ItemState, null>) => () => setItem(i, v);
 
   return (
@@ -91,12 +125,49 @@ export function EngineerChecklistScreen() {
       <div className={styles.mobileScreen} style={{ flex: 1, paddingBottom: 20 }}>
         <div style={{ padding: '10px 0 14px' }}>
           <Eyebrow size={9}>TODAY'S INSPECTION</Eyebrow>
-          <div style={{ fontWeight: 700, fontSize: 21, marginTop: 4, lineHeight: 1.2 }}>{checklist.title}</div>
+          <div data-testid="checklist-title" style={{ fontWeight: 700, fontSize: 21, marginTop: 4, lineHeight: 1.2 }}>{checklist.title}</div>
           {/* WHERE this check is carried out — the filed trail, tappable back to the Site Map. */}
           <div style={{ marginTop: 4 }}>
             <LocationContext nodeId={checklist.nodeId} fallback={checklist.zone} compact testId="checklist-place" />
           </div>
           <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{checklist.date}</div>
+          {/* More than one checklist is out on this site. Before this, the engineer saw only the
+              oldest and the rest were invisible work — so the picker is the whole point of the
+              list, not decoration. Unsubmitted marks on the one they leave are kept, so moving
+              between them costs nothing. */}
+          {openChecklists.length > 1 && (
+            <div data-testid="checklist-picker" style={{ marginTop: 12 }}>
+              <Eyebrow size={9}>{openChecklists.length} CHECKLISTS OUT — TAP TO SWITCH</Eyebrow>
+              <div style={{ display: 'flex', gap: 7, marginTop: 7, flexWrap: 'wrap' }}>
+                {openChecklists.map((c) => {
+                  const active = c.id === checklist.id;
+                  return (
+                    <button
+                      key={c.id}
+                      onClick={() => selectChecklist(c.id)}
+                      aria-current={active ? 'true' : undefined}
+                      data-testid={`checklist-tab-${c.id}`}
+                      style={{
+                        padding: '7px 11px',
+                        borderRadius: 9,
+                        fontFamily: 'var(--font-sans)',
+                        fontWeight: 600,
+                        fontSize: 12,
+                        textAlign: 'left',
+                        cursor: active ? 'default' : 'pointer',
+                        border: active ? '1px solid var(--ink, #23211c)' : '1px solid rgba(35,33,28,.15)',
+                        background: active ? 'var(--ink, #23211c)' : '#fff',
+                        color: active ? '#fff' : 'var(--muted)',
+                      }}
+                    >
+                      {c.title}
+                      <span style={{ display: 'block', fontWeight: 500, fontSize: 11, opacity: 0.8 }}>{c.zone}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <StatTile label="DONE" value={`${doneCount}/${checklist.items.length}`} />
             <StatTile label="PHOTOS" value={photoCount} />
@@ -184,12 +255,27 @@ export function EngineerChecklistScreen() {
             {pendingEvidenceCount} photo{pendingEvidenceCount === 1 ? '' : 's'} saved offline — will upload when signal returns
           </div>
         )}
+        {/* The refused-photo list is PROJECT-WIDE and the checklist picker above is not, so a row on
+            this screen can belong to a checklist the engineer is no longer looking at. Delete here is
+            the one non-server path that drops bytes for good, and `upload rejected (400)` alone never
+            said whose work was about to be destroyed — so every row names its checklist and item, and
+            a row from another checklist says so outright (#571 round 7, finding 4). Filtering them out
+            instead would have hidden the other checklist's failures entirely, which is the same defect
+            the picker exists to fix: work nobody can see is work nobody can recover. */}
         {failedEvidence.length > 0 && (
           <div style={{ marginTop: 12, background: '#FBF0EF', border: '1px solid #E7CBC7', borderRadius: 12, padding: '11px 13px' }} data-testid="evidence-failed">
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--red-solid)', letterSpacing: '.1em' }}>PHOTOS THE SERVER REFUSED — CHOOSE FOR EACH</div>
             {failedEvidence.map((f) => (
               <div key={f.clientKey} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-                <span style={{ flex: 1, fontSize: 12.5 }}>{f.reason}</span>
+                <span style={{ flex: 1, fontSize: 12.5 }} data-testid={`evidence-failed-${f.clientKey}`}>
+                  {f.reason}
+                  <span
+                    style={{ display: 'block', fontSize: 11, color: 'var(--muted)' }}
+                    data-testid={`evidence-failed-where-${f.clientKey}`}
+                  >
+                    {evidenceOrigin(f.inspectionId, f.inspectionItemId)}
+                  </span>
+                </span>
                 <button onClick={() => void retryFailedEvidence(f.clientKey)} data-testid={`evidence-retry-${f.clientKey}`} style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid var(--ink)', background: '#fff', cursor: 'pointer', fontSize: 12 }}>Retry</button>
                 <button onClick={() => void deleteFailedEvidence(f.clientKey)} data-testid={`evidence-delete-${f.clientKey}`} style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid var(--red-solid)', color: 'var(--red-solid)', background: '#fff', cursor: 'pointer', fontSize: 12 }}>Delete</button>
               </div>

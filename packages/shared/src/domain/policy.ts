@@ -187,6 +187,15 @@ export const ROLE_POLICY = {
   'phase.manage': ['pmc'],
   'node.manage': ['pmc'],
   'inspection.create': ['pmc'],
+  // Deliberately NOT widened to `contractor`, and `CORRECTIVE_ROLES` is narrowed to match.
+  //
+  // An earlier head granted it, because `decide` admitted a contractor assignee whose work no
+  // caller could then submit. That grant was the wrong half of the fix: authority without a
+  // surface. A contractor has no checklist screen (`screensFor`), no inbox checklist task, a
+  // redirected `/site/checklist` route, and no `media.upload` grant — so a contractor assignee
+  // marking an item FAILED cannot attach the photo `submit` requires and could never finish the
+  // work. Building that surface is a product addition, not a correction to a read-path defect.
+  // The dead end is closed at its source instead: corrective work is assigned to an engineer.
   'inspection.submit': ['engineer', 'pmc'],
   'inspection.decide': ['pmc'],
   'dailyLog.start': ['engineer', 'pmc'],

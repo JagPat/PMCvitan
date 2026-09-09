@@ -23,7 +23,14 @@ export const inspectionsManifest: ModuleManifest = {
   ownsModels: ['inspection', 'inspectionItem', 'inspectionsProjection', 'inspectionEvidence'],
   readEncapsulated: ['inspection', 'inspectionItem', 'inspectionsProjection', 'inspectionEvidence'],
   dependsOn: [],
-  workflowParticipants: ['activities'],
+  // #571 round 8, finding 3 adds `orgs`: the corrective-assignment rule asks whether a named
+  // assignee still holds ACTIVE standing in a corrective role, and `Membership`/`Project`/
+  // `OrgMembership` are orgs-owned — the owner answers, through `OrgsParticipant`
+  // (`effectiveRoleHolderUserIds` for the read boundary, `hasProjectRoleStanding` for the submit
+  // guard). Cycle-exempt exactly as `labour → orgs` is: `orgs.dependsOn` reaches inspections
+  // (project initialization reads `InspectionsQueryService.allIds`), so an inspections → orgs READ
+  // edge would close a cycle; the participant channel does not, and `dependsOn` stays empty.
+  workflowParticipants: ['activities', 'orgs'],
   producesEvents: [
     'inspection.created',
     'inspection.submitted',

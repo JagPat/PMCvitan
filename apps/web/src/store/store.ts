@@ -14,7 +14,7 @@
 
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
-import { castDraft } from 'immer';
+import { castDraft, current } from 'immer';
 import {
   SEED_ACTIVITIES,
   SEED_CHECKLIST,
@@ -112,14 +112,17 @@ export interface IssueDecisionPayload extends Omit<NewDecisionInput, 'options'> 
 /** A single unsubmitted local field edit: the value the engineer set and the
  *  monotonic revision at which they set it (gate round 6). */
 export interface FieldMark<T> { rev: number; value: T; }
-/** Unsubmitted per-field checklist edits, keyed by inspection-item id, scoped to
- *  ONE (inspection, scope-generation). `rev` is a monotonic counter shared across
- *  all fields so a later edit always outranks an earlier one. */
+/** Unsubmitted per-field checklist edits, keyed by inspection id then inspection-item id, scoped to
+ *  ONE scope-generation. `rev` is a monotonic counter shared across all fields so a later edit always
+ *  outranks an earlier one.
+ *
+ *  Keyed by INSPECTION rather than holding one at a time: with more than one checklist issued the
+ *  engineer can move between them, and a single-inspection record dropped the other's unsubmitted
+ *  work the moment they typed in the second. */
 export interface ChecklistMarks {
-  inspectionId: string | null; // the inspection these edits belong to (null = none)
   generation: number;          // the projectScopeGeneration they were made under
-  rev: number;                 // monotonic edit counter
-  byItem: Record<string, { state?: FieldMark<ItemState>; note?: FieldMark<string> }>;
+  rev: number;                 // monotonic edit counter, shared across inspections
+  byInspection: Record<string, Record<string, { state?: FieldMark<ItemState>; note?: FieldMark<string> }>>;
 }
 
 /** The submission lifecycle of the checklist (gate round 8). Once the engineer
@@ -287,6 +290,14 @@ export interface AppState {
   /** the Site Map's pending focus when it is entered from a location breadcrumb (project-owned) */
   placeFocus: string | null;
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
+  /** EVERY open (issued, unsubmitted) checklist. `checklist` is the one the field view opens;
+   *  this is the whole outstanding set, so a second issued checklist no longer hides the first
+   *  and the PMC who issued them can see what is still out on site. */
+  openChecklists: Checklist[];
+  /** Which open checklist the engineer chose to work on; null ⇒ whichever one the server serves as
+   *  the default. Held rather than derived so it SURVIVES a snapshot refresh: without it every
+   *  background refresh would drag them back to the server's default mid-inspection. */
+  selectedChecklistId: string | null;
   // Unsubmitted per-field checklist edits (gate round 6). The engineer's marks
   // live only in this client until they submit; any snapshot refresh — this
   // upload's own OR a concurrent useApiSync `changed` refresh — would otherwise
@@ -323,8 +334,13 @@ export interface AppState {
   online: boolean;
   syncQueue: string[];
   outbox: OutboxOp[];
-  /** FAILED evidence (terminal non-dedupe rejection) awaiting the user's Retry/Delete (Task 4) */
-  failedEvidence: { clientKey: string; reason: string; mime: string }[];
+  /** FAILED evidence (terminal non-dedupe rejection) awaiting the user's Retry/Delete (Task 4),
+   *  each row still carrying WHICH work it belongs to. `inspectionId` /
+   *  `inspectionItemId` are kept because Delete on this list is the one non-server path that drops
+   *  bytes permanently, and the panel is project-wide while the checklist picker is not: without the
+   *  association, switching to checklist B put A's retained photo under a Delete button labelled only
+   *  `upload rejected (400)` (#571 round 7, finding 4). */
+  failedEvidence: { clientKey: string; reason: string; mime: string; inspectionId: string; inspectionItemId: string }[];
   /** evidence photos durably saved offline, awaiting upload (Task 4) */
   pendingEvidenceCount: number;
   access: AccessState;
@@ -414,11 +430,17 @@ export interface AppActions {
   setChangeCost: (v: string) => void;
   setChangeTime: (v: string) => void;
   // inspection (engineer checklist)
+  /** Move the edit slot to another OPEN checklist. Unsubmitted work on the one being left is not
+   *  lost: marks are recorded per inspection, so switching back restores it. A no-op for an id that
+   *  is not currently outstanding. */
+  selectChecklist: (id: string) => void;
   setItem: (idx: number, val: Exclude<ItemState, null>) => void;
   addPhoto: (idx: number) => void;
   /** Capture REAL evidence for a checklist item (Task 4): durably stored (IndexedDB)
    *  BEFORE any success message, uploaded now or on reconnect, exactly once. */
-  addChecklistEvidence: (idx: number, dataUrl: string) => Promise<void>;
+  /** `capturedOn` is the checklist the photo was TAKEN on, pinned by the caller before the async
+   *  file read — the edit slot can move while it runs. */
+  addChecklistEvidence: (idx: number, dataUrl: string, capturedOn?: string) => Promise<void>;
   /** The user's Retry on a failed evidence photo — re-queues with the SAME clientKey. */
   retryFailedEvidence: (clientKey: string) => Promise<void>;
   /** The user's explicit Delete of a failed evidence photo — the ONLY non-server path that drops bytes. */
@@ -724,15 +746,109 @@ function recordChecklistMark(
 ): void {
   if (!itemId) return;
   const m = s.checklistMarks;
-  if (m.inspectionId !== inspectionId || m.generation !== s.projectScopeGeneration) {
-    m.inspectionId = inspectionId;
+  if (m.generation !== s.projectScopeGeneration) {
+    // a re-auth or project switch strands the old session's edits (gate round-4 finding 3)
     m.generation = s.projectScopeGeneration;
-    m.byItem = {};
+    m.byInspection = {};
+    m.rev = 0;
   }
-  const entry = (m.byItem[itemId] ??= {});
+  const byItem = (m.byInspection[inspectionId] ??= {});
+  const entry = (byItem[itemId] ??= {});
   const rev = ++m.rev;
   if (field === 'state') entry.state = { rev, value: value as ItemState };
   else entry.note = { rev, value: value as string };
+}
+
+/**
+ * Overlay the engineer's UNSUBMITTED per-field marks for whatever checklist now owns the edit slot.
+ *
+ * ONE rule serving two callers, because they must not disagree about what the engineer is looking
+ * at: a snapshot refresh (which replaces the server's copy underneath them) and a deliberate switch
+ * to another open checklist. In both cases the rendered checklist is server truth plus this
+ * engineer's latest intent for THAT inspection, and nothing else. Each field carries the value the
+ * engineer set, so an intentional clear (state→null, note→'') is restored as faithfully as a set —
+ * no value-guessing, which cannot tell an intentional clear from a background wipe (gate round 6).
+ */
+function overlayChecklistMarks(s: AppState): void {
+  const c = s.checklist;
+  if (!c) return;
+  const m = s.checklistMarks;
+  if (m.generation !== s.projectScopeGeneration) return;
+  const byItem = m.byInspection[c.id];
+  if (!byItem) return;
+  if (c.submitted) {
+    // gate round 7: the SERVER confirms this inspection is submitted — the marks are now
+    // server-owned. Drop the records and take server truth. Until this ack lands (a pending or
+    // REJECTED submit leaves the server checklist `submitted: false`) the records are retained and
+    // overlaid, so unconfirmed work survives a failed submit + a refresh.
+    delete m.byInspection[c.id];
+    return;
+  }
+  for (const it of c.items) {
+    if (!it.id) continue;
+    const edit = byItem[it.id];
+    if (edit?.state) it.state = edit.state.value;
+    if (edit?.note) it.note = edit.note.value;
+  }
+}
+
+/**
+ * Which checklist owns the edit slot after a read: the engineer's chosen one while it is still
+ * open, else the server's default (the oldest open one). A selection that has left the open set —
+ * submitted, or belonging to a project this scope has moved away from — is DROPPED rather than
+ * pinning the slot to a checklist that is no longer outstanding.
+ */
+/**
+ * The outstanding set a read serves — from EITHER endpoint, by one rule.
+ *
+ * `openChecklists` is this release's field. A client deployed ahead of its API talks to a server
+ * that has never heard of it, and the honest answer to "what else is out on site?" from such a
+ * server is the one checklist it does return — but ONLY while that checklist is still open. When
+ * nothing is open the server deliberately serves the oldest SUBMITTED one so a finished checklist
+ * stays readable, and wrapping THAT would report completed work as outstanding and awaiting the
+ * engineer. An older server simply cannot tell us about a second open checklist, and an empty list
+ * is the honest answer to that.
+ *
+ * Written once and shared because it was written twice and diverged: the snapshot branch derived the
+ * fallback and the module branch coerced the missing field to `[]`, so a client-first rollout in
+ * `moduleQuery` mode reported no work out on site while the same response carried an unsubmitted
+ * checklist (#571 round 7, finding 5). The two branches differ in WHERE the payload comes from and
+ * in nothing else, so the compatibility rule cannot live inside either of them.
+ */
+const outstandingFrom = (
+  openChecklists: readonly Checklist[] | undefined,
+  checklist: Checklist | null | undefined,
+): Checklist[] => (openChecklists ? [...openChecklists] : (checklist && !checklist.submitted ? [checklist] : []));
+
+/**
+ * Write the checklist in the edit slot back over its entry in the outstanding list.
+ *
+ * Field STATE and NOTE survive a switch through `checklistMarks`, which the engineer's own edits
+ * record per inspection. The demo path's photo counter and local evidence thumbnails do not: they
+ * live only on the checklist object, so switching away and back restored a clean clone from the list
+ * and silently dropped them — and a failed item whose only photo vanished cannot be submitted at all.
+ * Mirroring the slot back before it is replaced keeps the list the single source the switch reads
+ * from, rather than adding a second per-inspection record for two fields.
+ */
+function parkEditSlot(s: AppState): void {
+  const c = s.checklist;
+  if (!c) return;
+  const i = s.openChecklists.findIndex((o) => o.id === c.id);
+  if (i >= 0) s.openChecklists[i] = structuredClone(current(c)) as Checklist;
+}
+
+function ownerOfEditSlot(
+  open: readonly Checklist[],
+  fallback: Checklist | null,
+  selectedId: string | null,
+): { checklist: Checklist | null; selectedId: string | null } {
+  const chosen = selectedId ? open.find((c) => c.id === selectedId) : undefined;
+  // Cloned either way. The slot's checklist is EDITED in place, and it must never share an object
+  // with an entry in the outstanding list — a payload that happened to serve the same checklist
+  // under both keys would otherwise let a field edit rewrite the list the picker renders.
+  return chosen
+    ? { checklist: structuredClone(chosen) as Checklist, selectedId }
+    : { checklist: fallback ? (structuredClone(fallback) as Checklist) : null, selectedId: null };
 }
 
 /** Is the current checklist FROZEN against edits (gate round 8)? True once the
@@ -741,11 +857,34 @@ function recordChecklistMark(
  *  (state, note, photo, evidence) consults this so nothing changes the payload once
  *  it has been dispatched. */
 export function checklistFrozen(
-  s: Pick<AppState, 'checklist' | 'submission' | 'projectScopeGeneration'>,
+  s: Pick<AppState, 'checklist' | 'submission' | 'projectScopeGeneration' | 'outbox'>,
 ): boolean {
-  const c = s.checklist;
+  return inspectionFrozen(s, s.checklist);
+}
+
+/** The same freeze rule, asked about a NAMED checklist rather than whichever one is in the edit slot.
+ *  An evidence capture is answered for the checklist the photo was TAKEN on, which an async read can
+ *  outlive — judging it against the slot would let a submitted checklist accept a photo (or a frozen
+ *  slot refuse one that belongs to an editable checklist behind it). */
+export function inspectionFrozen(
+  s: Pick<AppState, 'submission' | 'projectScopeGeneration' | 'outbox'>,
+  c: Checklist | null | undefined,
+): boolean {
   if (!c) return false;
   if (c.submitted) return true;
+  // THE DURABLE QUEUED SUBMIT IS ASKED FIRST, because the slot below can be describing a DIFFERENT
+  // checklist (#571 round 10, finding 3). This function was already made per-checklist — that was
+  // the round-4 fix — but its evidence stayed the SINGLE `submission` slot, and `reconcileSubmission`
+  // repoints that slot at whichever checklist the read is about. So: queue A's submit offline, switch
+  // to B, and the slot describes B; a photo for A whose `FileReader` is still running then finds
+  // `inspectionFrozen(s, A)` false and mutates A's items and queues its evidence AFTER A's payload
+  // was frozen. On reconnect the submit op precedes that upload, so a failed item loses the evidence
+  // its submission needed, or evidence lands on an already-submitted record.
+  //
+  // The outbox is the durable fact and `reconcileSubmission` already derives the slot's `queued`
+  // status from exactly this predicate — asking it here is the same question at the same source, so
+  // a checklist with a queued submit is frozen whether or not it currently owns the slot.
+  if (s.outbox.some((op) => op.t === 'submitInspection' && op.inspectionId === c.id)) return true;
   const sub = s.submission;
   return (
     sub.inspectionId === c.id &&
@@ -904,7 +1043,9 @@ export function getInitialState(): AppState {
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     placeFocus: null,
     checklist: structuredClone(SEED_CHECKLIST),
-    checklistMarks: { inspectionId: null, generation: 0, rev: 0, byItem: {} },
+    openChecklists: [structuredClone(SEED_CHECKLIST)],
+    selectedChecklistId: null,
+    checklistMarks: { generation: 0, rev: 0, byInspection: {} },
     submission: { inspectionId: null, generation: 0, status: 'idle', attempt: 0 },
     reviews: [structuredClone(SEED_REVIEW)],
     activeReviewId: null,
@@ -1127,42 +1268,39 @@ export const useStore = create<Store>()(
         // to whatever checklist now owns the slot, so mark preservation is source-independent.
         const inspModule = inspectionsReadMode() === 'moduleQuery';
         if (!inspModule) {
-          s.checklist = snap.checklist ?? null;
+          // The snapshot serves the whole outstanding set too. It is the DEFAULT read path
+          // (`VITE_INSPECTIONS_READ` unset), so a list derived here from the single `checklist`
+          // would have left the second issued checklist invisible on the path nearly every
+          // deployment uses — the fix would only have worked once the non-default module read was
+          // switched on. The fallback covers a client that outran its server.
+          // The old-server fallback is `outstandingFrom` — the SAME rule the module branch below
+          // takes, because "the server did not send the field" means the same thing on both.
+          const open = outstandingFrom(snap.openChecklists, snap.checklist);
+          s.openChecklists = open;
+          const owner = ownerOfEditSlot(open, snap.checklist ?? null, s.selectedChecklistId);
+          s.checklist = owner.checklist;
+          s.selectedChecklistId = owner.selectedId;
         } else if (inspectionsResult) {
-          s.checklist = inspectionsResult.checklist ?? null;
+          // A CLIENT-FIRST rollout reaches a previous-release API here too: that endpoint returns
+          // `checklist` and has no `openChecklists` at all, and coercing the missing field to `[]`
+          // told the PMC no work was out on site while the very same response carried an unsubmitted
+          // checklist. Same rule, same function as the snapshot branch above.
+          const open = outstandingFrom(inspectionsResult.openChecklists, inspectionsResult.checklist);
+          s.openChecklists = open;
+          const owner = ownerOfEditSlot(open, inspectionsResult.checklist ?? null, s.selectedChecklistId);
+          s.checklist = owner.checklist;
+          s.selectedChecklistId = owner.selectedId;
           s.inspectionsLoad = 'ready';
           s.inspectionsSource = inspectionsResult.source;
         } else if (inspectionsResult === null) {
           s.inspectionsLoad = 'error';
         }
-        // gate round 6: overlay the engineer's UNSUBMITTED per-field edits back
-        // onto the fresh server checklist. This is the ONE place marks survive a
-        // refresh — the upload's own snapshot AND every background useApiSync
-        // `changed` refresh flow through here, so preservation is uniform. Only
-        // edits for THIS inspection made under the CURRENT scope generation apply
-        // (a re-auth or project switch bumps the generation, stranding the old
-        // session's edits — gate round-4 finding 3). Each field carries the value
-        // the engineer set, so an intentional clear (state→null, note→'') is
-        // restored as faithfully as a set — no value-guessing (gate round 6).
-        const marks = s.checklistMarks;
-        if (s.checklist && marks.inspectionId === s.checklist.id && marks.generation === s.projectScopeGeneration) {
-          if (s.checklist.submitted) {
-            // gate round 7: the SERVER confirms this inspection is submitted — the
-            // marks are now server-owned. Drop the records and take server truth.
-            // Until this ack lands (a pending or REJECTED submit leaves the server
-            // checklist `submitted: false`), the records are retained and overlaid
-            // below, so unconfirmed work survives a failed submit + a refresh.
-            marks.inspectionId = null;
-            marks.byItem = {};
-          } else {
-            for (const it of s.checklist.items) {
-              if (!it.id) continue;
-              const edit = marks.byItem[it.id];
-              if (edit?.state) it.state = edit.state.value;
-              if (edit?.note) it.note = edit.note.value;
-            }
-          }
-        }
+        // gate round 6: overlay the engineer's UNSUBMITTED per-field edits back onto the fresh
+        // server checklist. This is the ONE place marks survive a refresh — the upload's own
+        // snapshot AND every background useApiSync `changed` refresh flow through here, so
+        // preservation is uniform. `overlayChecklistMarks` is also what a deliberate switch between
+        // open checklists calls, so both paths restore intent by exactly the same rule.
+        overlayChecklistMarks(s);
         // gate round 8: re-derive the submission freeze from this fresh server
         // truth + the durable outbox. A background `changed` refresh mid-submit
         // must keep the checklist frozen; a reload rebuilds a queued submit's
@@ -1583,7 +1721,8 @@ export const useStore = create<Store>()(
         if (!scopeStillCurrent(projScope)) return; // the project switched mid-read
         if (evidenceScope() !== scope || get().activeProjectId !== projectId || outboxKey() !== storageKey) return;
 
-        const failed = entries.filter((e) => e.status === 'failed').map((e) => ({ clientKey: e.clientKey, reason: e.failReason ?? 'upload rejected', mime: e.mime }));
+        // the stored entry has always known its checklist and item — carry them, do not discard them
+        const failed = entries.filter((e) => e.status === 'failed').map((e) => ({ clientKey: e.clientKey, reason: e.failReason ?? 'upload rejected', mime: e.mime, inspectionId: e.inspectionId, inspectionItemId: e.inspectionItemId }));
         const pending = entries.filter((e) => e.status === 'pending'); // only pending rows earn a replay op
         let reconstructed = false;
         set((s) => {
@@ -2148,6 +2287,40 @@ export const useStore = create<Store>()(
     setChangeTime: (v) => set((s) => { s.modal.changeTime = v; }),
 
     // ---- engineer checklist (a null checklist = none issued; every action no-ops) ----
+    selectChecklist: (id) => {
+      // read the target from FINALIZED state, not from inside the recipe: the clone must be of a
+      // plain checklist, and a draft proxy is not a safe `structuredClone` source.
+      const target = get().openChecklists.find((c) => c.id === id);
+      if (!target || get().checklist?.id === id) return;
+      // An ONLINE submit in flight owns the submission record, and that record holds ONE
+      // inspection. `reconcileSubmission` below would retire it — its `else` arm fires the moment
+      // `sub.inspectionId` stops matching the checklist in the slot — leaving the submitted
+      // checklist editable while its request is still open and stamping `attempt: 0`, so
+      // `isThisAttempt()` discards the response when it lands. A `queued` offline submit has no
+      // such problem: its freeze is rebuilt from the DURABLE outbox on every reconcile, so it
+      // survives any number of switches. Refusing the switch for the seconds an online submit is
+      // unresolved is therefore exactly the restriction the defect needs, and it leaves the
+      // submission lifecycle — eleven gate rounds of it — untouched.
+      const sub = get().submission;
+      if (sub.status === 'submitting' && sub.generation === get().projectScopeGeneration) {
+        get().flash('Finishing the submit — you can switch checklists in a moment.');
+        return;
+      }
+      const fresh = structuredClone(target);
+      set((s) => {
+        // keep whatever the engineer has done to the checklist they are leaving — including the demo
+        // path's photo counter and thumbnails, which no mark records
+        parkEditSlot(s);
+        s.selectedChecklistId = id;
+        s.checklist = fresh;
+        // server truth + THIS inspection's unsubmitted intent — the same rule a refresh applies.
+        overlayChecklistMarks(s);
+        // the freeze is per-inspection: a checklist with a QUEUED submit must open frozen, and one
+        // without must not inherit the previous checklist's freeze. Safe here precisely because the
+        // guard above has already excluded the one status this single record cannot survive.
+        reconcileSubmission(s);
+      });
+    },
     setItem: (idx, val) =>
       set((s) => {
         const c = s.checklist;
@@ -2158,11 +2331,29 @@ export const useStore = create<Store>()(
         recordChecklistMark(s, c.id, it.id, 'state', it.state);
       }),
     addPhoto: (idx) => set((s) => { if (checklistFrozen(s)) return; const it = s.checklist?.items[idx]; if (it) it.photos += 1; }),
-    addChecklistEvidence: async (idx, dataUrl) => {
-      const c = get().checklist;
+    addChecklistEvidence: async (idx, dataUrl, capturedOn) => {
+      // THE PHOTO BELONGS TO THE CHECKLIST IT WAS TAKEN ON. Reading the file is asynchronous, and the
+      // engineer can move the edit slot while it runs (more than one checklist is out on site — that is
+      // the whole point of the picker). Re-reading the slot here addressed the OTHER checklist at the
+      // same item index, so the durable upload named the wrong inspection and item: a photo filed as
+      // evidence against work it is not evidence of. `capturedOn` is pinned at the moment the camera
+      // was opened; the checklist is resolved from it, falling back to the slot only for a caller that
+      // pins nothing.
+      const resolveCaptured = (): Checklist | null => {
+        const st = get();
+        if (!capturedOn) return st.checklist;
+        if (st.checklist?.id === capturedOn) return st.checklist;
+        return st.openChecklists.find((o) => o.id === capturedOn) ?? null;
+      };
+      const c = resolveCaptured();
       const item = c?.items[idx];
-      if (!c || !item) return;
-      if (checklistFrozen(get())) { get().flash('This inspection is submitted — no more changes.'); return; } // gate round 8
+      if (!c || !item) {
+        // The checklist the photo was taken on is no longer outstanding (submitted, decided, or the
+        // project moved). Say so rather than dropping the capture in silence.
+        if (capturedOn) get().flash('That checklist is no longer open — the photo was not attached.');
+        return;
+      }
+      if (inspectionFrozen(get(), c)) { get().flash('This inspection is submitted — no more changes.'); return; } // gate round 8
       const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
       if (!m) {
         get().flash('Could not read that photo — please try again.');
@@ -2175,12 +2366,34 @@ export const useStore = create<Store>()(
         get().flash('That photo is too large (over 4 MB) — retake at a lower resolution.');
         return;
       }
+      // ONE rule for every local thumbnail this function writes. Round 4 fixed the offline branch
+      // to mirror onto the CAPTURED checklist wherever it lives and left the demo branch addressing
+      // the edit slot, so round 5 found the same defect one branch over: a demo capture that
+      // finished reading after a switch updated neither copy and still said "Photo attached", and
+      // the engineer who switched back saw no evidence on a FAILED item they then could not submit.
+      // Fixing the reported branch again would leave the next one, so the rule lives here once.
+      //
+      // Both copies are written on purpose. `ownerOfEditSlot` structuredClones the slot precisely so
+      // it never shares an object with its `openChecklists` entry, so the captured checklist exists
+      // as two independent copies and a write to one alone makes them disagree until the next apply.
+      const mirrorCapture = (s: AppState): void => {
+        const apply = (target: Checklist | undefined): void => {
+          const it = target?.items[idx];
+          if (!it) return;
+          // Server-backed rows carry ids and are matched by them. A demo checklist's items may have
+          // none, and there the index within the already-id-matched checklist IS the identity.
+          if (item.id && it.id !== item.id) return;
+          it.photos += 1;
+          it.evidence = [...(it.evidence ?? []), dataUrl];
+        };
+        if (s.checklist?.id === c.id) apply(s.checklist);
+        apply(s.openChecklists.find((o) => o.id === c.id));
+      };
       // demo (no gateway): the counter + a local thumbnail are the whole story
       if (!gateway) {
-        set((s) => {
-          const it = s.checklist?.items[idx];
-          if (it) { it.photos += 1; it.evidence = [...(it.evidence ?? []), dataUrl]; }
-        });
+        // Demo has no durable row, so these copies ARE the record — which is exactly why declining
+        // to write loses the photo outright rather than merely delaying it.
+        set(mirrorCapture);
         get().flash('Photo attached (demo).');
         return;
       }
@@ -2221,8 +2434,19 @@ export const useStore = create<Store>()(
         set((s) => {
           s.outbox.push({ t: 'uploadEvidence', scope: ctx.scope, clientKey });
           s.syncQueue.push('Evidence photo');
-          const it = s.checklist?.items[idx];
-          if (it) { it.photos += 1; it.evidence = [...(it.evidence ?? []), dataUrl]; }
+          // The local thumbnail belongs to the checklist the photo was CAPTURED on, and the edit slot
+          // can have moved during the IndexedDB write. `evidenceContextStillCurrent` guards the SCOPE
+          // (project + generation), which a switch between two checklists of the same project does
+          // not change — so addressing the slot lands one inspection's photo under another.
+          //
+          // DECLINING to write was not enough. Offline there is no refresh to correct it: the
+          // engineer switches back and the captured checklist still reads `photos: 0` with no
+          // evidence, so a FAILED item cannot be queued for submission until signal returns, even
+          // though its durable row is already queued. So the mirror is applied to the CAPTURED
+          // checklist wherever it lives — the slot when it is still there, and its own
+          // `openChecklists` entry when the engineer has moved on. Both are the same inspection;
+          // `overlayChecklistMarks` and `ownerOfEditSlot` reconcile them on the next apply.
+          mirrorCapture(s);
           s.pendingEvidenceCount += 1;
         });
         persistOutbox();
@@ -2393,23 +2617,28 @@ export const useStore = create<Store>()(
         if (!s.checklist) return;
         s.checklist.submitted = true;
         s.submission = { inspectionId: null, generation: s.projectScopeGeneration, status: 'idle', attempt: 0 };
-        s.checklistMarks.inspectionId = null;
-        s.checklistMarks.byItem = {};
+        delete s.checklistMarks.byInspection[s.checklist.id];
+        // THE REVIEW IS BUILT FIRST, from the checklist that was actually submitted. The advance below
+        // replaces `s.checklist` with the next OPEN one, so reading the slot afterwards filed the
+        // still-unsubmitted checklist into the PMC's queue — with PASS/FAIL results derived from marks
+        // nobody had made — and lost the submitted one entirely. `current` first: `s.checklist` is an
+        // immer draft, and the advance mutates the slot out from under any reference kept into it.
+        const submitted = structuredClone(current(s.checklist)) as Checklist;
         // demo (no API): the submitted checklist enters the PMC review queue,
         // mapping each item's pass/fail state to a PASS/FAIL result.
-        if (!s.reviews.some((r) => r.id === s.checklist!.id)) {
+        if (!s.reviews.some((r) => r.id === submitted.id)) {
           s.reviews.push({
-            id: s.checklist.id,
-            title: s.checklist.title,
-            zone: s.checklist.zone,
+            id: submitted.id,
+            title: submitted.title,
+            zone: submitted.zone,
             // the review inherits the checklist's FILED location, not just its legacy zone
             // text: a checklist raised against a room is reviewed at that room, and dropping
             // `nodeId` here would leave every demo-path review reading as unplaced.
-            ...(s.checklist.nodeId ? { nodeId: s.checklist.nodeId } : {}),
+            ...(submitted.nodeId ? { nodeId: submitted.nodeId } : {}),
             by: 'Site Engineer',
-            date: s.checklist.date,
+            date: submitted.date,
             decided: false,
-            items: s.checklist.items.map((it) => ({
+            items: submitted.items.map((it) => ({
               name: it.name,
               result: it.state === 'fail' ? 'FAIL' : 'PASS',
               swatch: 'concrete',
@@ -2418,6 +2647,16 @@ export const useStore = create<Store>()(
             })),
           });
         }
+        // a submitted checklist is no longer outstanding: drop it from the open set so the demo path
+        // agrees with what the server would serve. The edit slot must MOVE with it — leaving the
+        // submitted checklist in the slot drops the open count to one, which hides the picker and
+        // makes the checklist still out on site unreachable. The server path has no such problem: its
+        // next snapshot re-picks the slot from the open set.
+        s.openChecklists = s.openChecklists.filter((c) => c.id !== submitted.id);
+        if (s.selectedChecklistId === submitted.id) s.selectedChecklistId = null;
+        const next = s.openChecklists[0];
+        // `current` first: `next` is an immer draft, and a draft proxy is not a cloneable source
+        if (next) { s.checklist = structuredClone(current(next)) as Checklist; s.selectedChecklistId = next.id; }
       });
       get().flash('Inspection submitted to the architect for review.');
     },

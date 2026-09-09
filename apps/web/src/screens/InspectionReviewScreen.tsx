@@ -5,7 +5,7 @@ import { selectActiveReview } from '@/store/selectors';
 import { Eyebrow, ResultChip, Button, LocationContext, EditState } from '@/components';
 import { IssueChecklistModal } from '@/screens/modals/IssueChecklistModal';
 import { X, Plus } from '@/lib/icons';
-import { swatch as swatchGradient, can, type Review } from '@vitan/shared';
+import { swatch as swatchGradient, can, type Checklist, type Review } from '@vitan/shared';
 import { resolveMediaUrl, inspectionsReadMode } from '@/data/apiGateway';
 import styles from './responsive.module.css';
 
@@ -21,6 +21,7 @@ export function InspectionReviewScreen() {
   // inspections awaiting review" until a read has actually SUCCEEDED; while it loads show a loading state;
   // on failure show an unavailable/Retry boundary. In snapshot mode `inspectionsLoad` stays 'idle' and
   // these gates never trigger.
+  const openChecklists = useStore(useShallow((s) => s.openChecklists));
   const inspectionsLoad = useStore((s) => s.inspectionsLoad);
   const requestFreshSnapshot = useStore((s) => s.requestFreshSnapshot);
   const moduleOwned = inspectionsReadMode() === 'moduleQuery';
@@ -59,6 +60,7 @@ export function InspectionReviewScreen() {
         <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>
           No inspections awaiting review. Submitted checklists and closing inspections land here.
         </div>
+        <OutstandingChecklists items={openChecklists} />
       </div>
     );
   }
@@ -204,6 +206,39 @@ export function InspectionReviewScreen() {
             <div style={{ textAlign: 'center', fontSize: 11.5, color: 'var(--faint)', marginTop: 9 }}>{summary}</div>
           </>
         )}
+      </div>
+      <OutstandingChecklists items={openChecklists} />
+    </div>
+  );
+}
+
+/**
+ * Checklists that have been ISSUED and are still out on site — filled in the field, not yet
+ * submitted back. They are not in the review queue (nothing to review yet) and they used to
+ * appear nowhere at all: the read carried one checklist, so issuing a second hid the first,
+ * and the PMC who issued them saw none of them. Shown with a count, so "how many are open"
+ * is answerable from the screen the PMC issues them on.
+ */
+function OutstandingChecklists({ items }: { items: Checklist[] }) {
+  if (!items.length) return null;
+  return (
+    <div style={{ marginTop: 26 }} data-testid="outstanding-checklists">
+      <Eyebrow>
+        OUT ON SITE · {items.length} AWAITING THE ENGINEER
+      </Eyebrow>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+        {items.map((c) => (
+          <div
+            key={c.id}
+            data-testid={`outstanding-checklist-${c.id}`}
+            style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', padding: '11px 13px', borderRadius: 10, border: '1px solid rgba(35,33,28,.12)', background: '#fff' }}
+          >
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--faint)' }}>{c.id}</span>
+            <span style={{ fontSize: 13.5, color: 'var(--ink)', flex: 1, minWidth: 160 }}>{c.title}</span>
+            <span style={{ fontSize: 12, color: 'var(--muted)' }}>{c.items.length} item{c.items.length === 1 ? '' : 's'}</span>
+            <LocationContext nodeId={c.nodeId} fallback={c.zone} />
+          </div>
+        ))}
       </div>
     </div>
   );
