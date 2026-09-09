@@ -1015,6 +1015,48 @@ mirrors or backfills — `ProjectRoleStanding`, `ProjectUserStanding`,
 backfill over pre-existing rows; `OutboxConsumerActivation` was the one that
 did not, and that is finding 3.
 
+### Review round 16 (head `3a3dd090`) — three P1s, classified and traced before correction
+
+JagPat directed that every finding be CLASSIFIED before another correction push,
+that each accepted one be traced through every producer, consumer, enforcement
+point and deployment stage, that contract, implementation inventory and
+behavioural proof move together, and that a duplicate or incorrect finding get
+an evidence-backed answer rather than more code. This round is the first worked
+that way.
+
+| # | classification | why that class |
+|---|---|---|
+| 1 | **regression introduced by a fix** | round 13's finding 1 refused the row born CLOSED and said nothing about what an OPEN row may carry, so the closure provenance became forgeable one step earlier |
+| 2 | **missed related path** | the replay question was asked of 4d-i's reservation DOORS (marker-aware) and never of the `CREATE OR REPLACE` statements beside them, whose bodies a later unit replaces |
+| 3 | **regression introduced by a fix** | round 15's finding 3 moved two of the cycle's sites and called the rule discharged |
+
+No finding this round was a duplicate, and none was incorrect: each was
+reproduced against the delivered code before it was accepted — the resolver
+columns' schema defaults for 1, the `RolloutRetirement` marker's own placement
+for 2, and the five counting sites plus `viewerIsConsultee` for 3. **One
+finding's literal instruction WAS wrong and is answered rather than followed**:
+finding 3 asks that "every cycle producer and reader" be converted, and two
+revision counts in the same service must not move —
+`decisions.service.ts:1147`, which refuses withdrawal of a decision carrying
+approval evidence (a provisional approval IS evidence, and converting it would
+make a decision awaiting countersign withdrawable), and `:511`'s
+`priorApprovals`, which counts `DecisionEvent` rows to allocate the next version
+and is not a cycle count at all. Both are now named in the trace so the sweep
+cannot be "finished" by breaking them.
+
+**The traces** are carried where the rules are, not here: finding 1's producers
+(`requestChange`, the `returned` bundle, the seed plant) and their compliance
+with the empty-closure-set rule sit in §D 4d-iii; finding 2's deployment stages
+(fresh, upgrade, P3005 replay over a retired database, partial-deploy recovery)
+and the one-other-statement sweep sit in §D 4d-i; finding 3's nine-site
+producer/consumer/enforcement table sits in §A.2 beside the cycle rule, with the
+4d-ii inventory line naming the same sites and P25d proving them.
+
+Contract, inventory and proof were edited together for all three, which is the
+specific discipline the previous four rounds lacked: rounds 13, 14 and 15
+produced seven findings between them whose entire content was that §A had moved
+and §D had not.
+
 ### Review round 15 (head `8582992f`) — three P1s; two are round 14's OWN two root causes, one round later
 
 | finding | where it lands | the answer |
@@ -2849,8 +2891,41 @@ inserted without approving anything and an approval that appends no revision:
   uncancelled. The consultee is pushed a question the service will refuse.
 
 So the cycle counts FINALIZED approvals — `count({ where: { decisionId,
-finalized: true } })` — at BOTH sites, the freeze at `:638` and the comparison
-at `:765`, which must move together. Then the provisional insert does not move
+finalized: true } })` — at EVERY producer and EVERY reader, which must move
+together (#572's review round 16, finding 3; round 15 changed two of them and
+called the rule discharged, which is the trace this table now carries):
+
+| site | role in the rule | disposition |
+| --- | --- | --- |
+| `decisions.service.ts:638` | PRODUCER — freezes `openCycle` at request | finalized-only |
+| `decisions.service.ts:764` | ENFORCEMENT — the response predicate | finalized-only |
+| `decisions.query.ts:348` | ENFORCEMENT — the claim-time push predicate, re-read under the delivery lock | finalized-only |
+| `decision-serialize.ts:96` | PRODUCER — `approvalCycle` on the DTO | finalized-only |
+| `decisions.query.ts:203` | the PROJECTION carries `approvalCycle` into its fold | recomputed from the same rule; the REBUILD must agree, and a pre-4d-ii relay writing the old meaning is the #571 round-4 finding-3 shape — the projection's own version guard is what keeps it out |
+| `packages/shared/src/domain/decider.ts:57` `viewerIsConsultee` | CONSUMER — compares `c.openCycle` with the current cycle | code unchanged; its INPUT is the DTO field above, so it moves with it on BOTH sides |
+| `decision-serialize.ts:176` | CONSUMER — SERVER-side decision visibility | via `viewerIsConsultee` |
+| `apps/web/src/store/selectors.ts:57` and `:83` | CONSUMER — CLIENT-side decision visibility | via the DTO field; server and client must compute the same number or the `ui-server-parity` invariant breaks |
+| `apps/web/src/components/ConsultationThread.tsx:47` | CONSUMER — the response control | via the DTO field |
+
+**The consequence is larger than a hidden control.** `viewerIsConsultee` gates
+VISIBILITY, not just the button: with `openCycle` finalized-only and
+`approvalCycle` still a total, a consultee stops seeing the decision at all
+while it sits in `awaiting_countersign` — on the client, through
+`selectors.ts`, and on the server, through `decision-serialize.ts:176` — while
+the corrected API predicate would accept their answer. That is a server/client
+parity break as well as a lost affordance.
+
+**And TWO revision counts in the same service must NOT move, which is why
+"convert every count" is the wrong instruction and this table names roles
+instead.** `decisions.service.ts:1147` counts revisions to refuse withdrawing a
+decision that carries approval evidence — a PROVISIONAL approval IS approval
+evidence, and a decision awaiting countersign must not become withdrawable, so
+that count stays total; converting it would destroy a countersign in flight.
+`decisions.service.ts:511`'s `priorApprovals` counts `DecisionEvent` rows, not
+revisions, and allocates the next version — every revision occupies a version
+whether or not it is finalized, so it is untouched by this rule and protected by
+round 13's own INSERT converse. Both are enumerated here so a later reader does
+not "finish the sweep" by breaking them. Then the provisional insert does not move
 the cycle (nothing has been approved), the countersign's flip does (something
 has), and a reopen does not resurrect a question the approval closed. All four
 paths hold: requested-while-pending survives into `awaiting_countersign`;
@@ -2864,7 +2939,17 @@ keeps the meaning it was written with. P25d gains both sequences — request
 before provisional approval, answered after the countersign-widened open set
 admits it; and request while awaiting, refused after the countersign and
 refused again after a `requestChange` reopen — RED against the count-all rule,
-which fails the first and admits the second.
+which fails the first and admits the second. **And it proves the READERS, not
+only the API** (#572's review round 16, finding 3): in the first sequence the
+consultee's DTO carries the decision with `approvalCycle` equal to their
+`openCycle` while it sits in `awaiting_countersign`, `viewerIsConsultee` returns
+true on BOTH sides, the decision is present in the client's own selector output
+and the response control is rendered, and the claim-time push predicate at
+`decisions.query.ts:348` still finds the standing consultation — each RED
+against a reader left on the total count, where the consultee loses the decision
+from view and the delivery is dropped while the API would accept the answer. The
+two counts that must NOT move are asserted too: a decision awaiting countersign
+stays UNWITHDRAWABLE, and the next approval's version is unchanged.
 
 **A provisional approval must not be TRUSTABLE as a final one**: the
 register is a provenance TARGET, so the row carries `finalized` — born `true`
@@ -5206,7 +5291,39 @@ today's behaviour lives.
     primitives, the register) run unconditionally and re-runnably, while the
     TRANSIENT block — all FIVE reservation triggers, their SHARED refusal
     function and the audit — runs only when the durable RETIREMENT MARKER is
-    absent. That marker is one row in a NEW, sealed platform table
+    absent.
+
+    **"Unconditionally and re-runnably" is not the same as MONOTONIC, and every
+    `CREATE OR REPLACE` in the permanent portion whose body a LATER unit
+    replaces must be marker-aware** (#572's review round 16, finding 2). The
+    instance is the consultation request seal: 4d-i replaces its function to
+    widen the open set while KEEPING the delivered
+    `phase6_user_decision_authority` requester arm (the window rule), and
+    4d-iii replaces it again to re-point that arm onto
+    `platform_user_orchestration_authority` after the fenced re-projection. On a
+    fresh install and an ordinary upgrade that order is correct. On a P3005
+    BASELINE REPLAY over a MATURE, already-retired database — the case
+    `ALWAYS_EXECUTE` exists for — 4d-i runs again and its unconditional replace
+    DOWNGRADES the live seal to the pre-4d-iii body, and the corrected arm does
+    not come back until the later 4d-iii migration reaches its own re-point. The
+    gap is not instantaneous: 4d-iii's transaction acquires the table fence and
+    performs the re-projection first, so a deploy that stalls or fails there
+    leaves the 4d-i transaction COMMITTED and every serving instance refusing
+    every architect consultation request until someone recovers it. So each such
+    statement reads the SAME `RolloutRetirement` marker the transient block
+    reads, and installs the POST-retirement body when the marker is present —
+    the replace becomes monotonic rather than merely idempotent. The marker is
+    already the mechanism 4d-i uses to decide it must install no reservation
+    door on a replayed mature database (#560's review round 2, finding 5's
+    sibling); this finding is that the same question was asked of the DOORS and
+    not of the function bodies beside them. The sweep over 4d-i's permanent
+    portion found exactly one other statement of this shape — the participant's
+    `effectiveRoleHolderUserIds` wrapper, which is switched by
+    `rollout.phase6_4d` reading `open` rather than by a replace, and is
+    therefore already monotonic — and no others. P28b's replay arm gains it: the
+    4d-i migration re-run against a post-4d-iii database, with the architect
+    consultation request COMMITTING afterwards, RED against the unconditional
+    replace, which refuses it. That marker is one row in a NEW, sealed platform table
     `RolloutRetirement(unit TEXT PRIMARY KEY, retiredAt, retiredBy)` created
     by 4d-i's permanent portion — NOT a row on `OutboxOperatorAction`, whose
     4c-iii-r verifier (`verifyMarkerSeals`) keeps a CLOSED trigger inventory
@@ -5328,6 +5445,13 @@ today's behaviour lives.
     `platform_role_holder_user_ids` — for `architect` from this unit, for
     `pmc`/`client` once `rollout.phase6_4d` reads `open` (the window rule of
     §A.2); the `withdrawChange` refusal;
+    **the CONSULTATION CYCLE converted to finalized-only at every producer and
+    reader named in §A.2's trace — `decisions.service.ts:638` and `:764`,
+    `decisions.query.ts:348` and its projection fold at `:203`,
+    `decision-serialize.ts:96` — with `viewerIsConsultee` and the two client
+    selectors moving with the DTO field they read, and with
+    `decisions.service.ts:1147` and `:511` DELIBERATELY unchanged for the
+    reasons stated there** (#572's review round 16, finding 3);
     `decisions.approvedRef` returning `revisionFinalized` and refusing an
     unfinalized head, with the material and labour create/revise writers
     spreading it explicitly, the two cancellation copies carrying it forward,
@@ -5627,8 +5751,27 @@ today's behaviour lives.
     reaches only one of them (#572's review round 8, finding 2; round 12,
     finding 1). **The INSERT arm**: `sourceCommandId` AND the frozen
     `requestedByRole`/`requestedByName` pair required on every new
-    `ChangeRequest` row whatever its origin — AND `status <> 'open'` on INSERT
-    is REFUSED OUTRIGHT (#572's review round 13, finding 1). Round 12 named this
+    `ChangeRequest` row whatever its origin; `status <> 'open'` on INSERT
+    is REFUSED OUTRIGHT (#572's review round 13, finding 1); **AND an inserted
+    row must carry the CLOSURE SET EMPTY — `resolvedById`, `resolvedAt`,
+    `resolution`, `resolvedByCommandId`, `resolvedByRole` and `resolvedByName`
+    all NULL — with the closure arm admitting only a NULL → COMPLETE transition
+    of that set in the closing statement** (#572's review round 16, finding 1).
+    Round 13 refused the row born closed and said nothing about what an OPEN row
+    may carry, which leaves the closure provenance forgeable one step earlier:
+    a receipt-holding writer inserts a correctly paired, genuinely open request
+    with the resolver columns ALREADY populated — a receipt it reserved at
+    insert time, a truthful pair for itself — and later flips `status` alone.
+    The closure arm fires on that flip, reads a complete set in `NEW`, finds
+    every column present and every value truthful, and admits a closure whose
+    provenance was minted before the act it claims to record. Requiring the set
+    empty while open, and the transition NULL → complete at the closure, binds
+    the receipt to the closing statement, which is what "the closure carries its
+    OWN receipt" was always meant to say. **The delivered writers already comply
+    and this is checkable**: `requestChange` and the `returned` resolution's
+    bundle insert an open row and supply no resolver column at all — the schema
+    defaults every one of them to NULL — and the seed's DL-003 plant inserts
+    `requestedById` alone, so this arm refuses nothing that runs today. Round 12 named this
     operation and then ADMITTED it, on obligations: a row born closed "carries a
     closure and owes what a closure owes". Naming an operation is only half the
     question; the other half is whether it is LEGAL AT ALL, and this one is not.
