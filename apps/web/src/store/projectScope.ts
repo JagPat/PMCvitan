@@ -70,6 +70,13 @@ export interface ProjectDataState {
    *  on every scope change: another project's Site Map can never open at this project's node. */
   placeFocus: string | null;
   checklist: Checklist | null;
+  /** EVERY issued, unsubmitted checklist for THIS project. Project data like `checklist` itself:
+   *  an inspection id is project-contained, so carrying the list across a switch would show one
+   *  site's outstanding work under another. */
+  openChecklists: Checklist[];
+  /** Which open checklist the engineer chose to work on (null ⇒ the server's default, the oldest).
+   *  A project-contained id, so it tears down with the list it indexes. */
+  selectedChecklistId: string | null;
   reviews: Review[];
   activeReviewId: string | null;
   reinspectionCreated: boolean;
@@ -154,6 +161,8 @@ export function emptyProjectData(): ProjectDataState {
     nodes: [],
     placeFocus: null,
     checklist: null,
+    openChecklists: [],
+    selectedChecklistId: null,
     reviews: [],
     activeReviewId: null,
     reinspectionCreated: false,

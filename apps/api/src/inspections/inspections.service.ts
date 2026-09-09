@@ -1,5 +1,5 @@
 import {
-  Inject, BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+  Inject, BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
@@ -20,10 +20,21 @@ import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { ActivityParticipant } from '../activities/activity.participant';
+import {
+  CORRECTIVE_ROLES, CORRECTIVE_ROLES_PHRASE, assignmentStillBinds, holdsCorrectiveRole,
+} from './assignment-eligibility';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 
-/** Corrective work is executed by these roles — a reinspection assignee must hold one
- *  as an ACTIVE membership (a PMC may assign themselves EXPLICITLY; see decide()). */
-const CORRECTIVE_ROLES = ['engineer', 'contractor'];
+/** The corrective-assignment rule lives in ONE module ({@link assignment-eligibility}) and every site
+ *  that asks about a named assignee calls it. Re-exported here because `inspections.contract.test.ts`
+ *  and the service's own refusal prose have always named it through this file, and the pin those tests
+ *  make is on the VALUE, not on where it is imported from. */
+export { CORRECTIVE_ROLES } from './assignment-eligibility';
+
+/** ONE refusal sentence for the binding-assignment rule. Stated once because the rule is now checked
+ *  twice on the submit path — an early read for a friendly 403, and the authoritative re-read inside
+ *  the transaction — and two hand-written copies would eventually tell the caller two things. */
+const ASSIGNED_TO_SOMEONE_ELSE = 'This inspection is assigned to someone else — only its assignee can submit it.';
 
 /** Default correction window: decide-day + N civil days (PMC-overridable per decide). */
 const DEFAULT_DUE_IN_DAYS = 3;
@@ -41,6 +52,10 @@ export class InspectionsService {
     // the Activity write stays in the activities module while this decision orchestrates
     // it in ONE transaction with the inspection CAS.
     private readonly activities: ActivityParticipant,
+    // #571 round 8, finding 3 — `Membership` is orgs-owned, so the question "does this assignment
+    // still bind?" is asked of its OWNER through the cycle-exempt participant channel, never of the
+    // table. The manifest declares the `orgs` workflow-participant edge for exactly this.
+    private readonly orgs: OrgsParticipant,
   ) {}
 
   /** PMC issues a stage checklist — becomes the engineer's current field checklist.
@@ -114,6 +129,33 @@ export class InspectionsService {
     // items the request carries.
     if (insp.decided) throw new BadRequestException('This inspection has already been decided.');
     if (insp.submitted) throw new BadRequestException('This checklist has already been submitted and is awaiting review.');
+    // ASSIGNED work is submitted by its assignee and nobody else. A re-inspection is named corrective
+    // work — its assignee defaults to whoever submitted the rejected inspection — and the submitter is
+    // recorded as the person who did it, so letting a second engineer submit it would put the wrong
+    // name on somebody's remedial work. No PMC exemption: the reject path's own rule is that a PMC
+    // takes the work by naming THEMSELVES the assignee (`pmcSelfExplicit`), which this then honours.
+    //
+    // Every role `decide` may assign can reach this route (CORRECTIVE_ROLES is a subset of the
+    // `inspection.submit` ceiling, pinned in CI), so an assigned inspection always has exactly one
+    // caller who can submit it and no assignment can dead-end. An UNASSIGNED checklist is unchanged —
+    // the role gate on the route is the whole guard, as before.
+    //
+    // The assignment binds ONLY WHILE ITS ASSIGNEE CAN STILL DO THE WORK — `bindingAssigneeIds`, the
+    // one statement of that rule, which the READ boundary calls with the same argument so a checklist
+    // this will accept from engineer B is exactly the checklist B can open (#571 round 7, finding 1).
+    //
+    // THIS COPY IS THE EARLY, FRIENDLY ANSWER, NOT THE AUTHORITY. It reads outside the transaction so
+    // a refusal is a 403 with a sentence in it rather than a conflict raised from inside a command,
+    // and it can be stale by the time the write lands: `MembersService.add`/`updateRole` take the
+    // project's readiness key and can reactivate the assignee between this read and the CAS, which
+    // pins only the unchanged `assigneeId` (#571 round 7, finding 2). The BINDING check is re-taken
+    // below, inside the transaction and after `lockProjectReadiness`, where no membership change can
+    // interleave. Both call the same function, so the two can only disagree about TIME.
+    if (insp.assigneeId && insp.assigneeId !== user.sub) {
+      if (await assignmentStillBinds(this.orgs, this.prisma, projectId, insp.assigneeId)) {
+        throw new ForbiddenException(ASSIGNED_TO_SOMEONE_ELSE);
+      }
+    }
     if (insp.items.length === 0) throw new BadRequestException('This inspection has no checklist items to submit.');
 
     // gate finding 3: the payload addresses ROWS by id — labels are not unique.
@@ -146,15 +188,52 @@ export class InspectionsService {
       run: async (tx) => {
         // submission moves the linked chain's tip state — a readiness write (finding 1)
         await lockProjectReadiness(tx, projectId);
+        // The inspection row BEFORE the membership row, the one order every inspection path takes
+        // (#571 round 12, finding 1). Round 12 settled this order at the evidence fence, in the
+        // participant and in `decide`, and an audit of the remaining writers found SUBMIT still
+        // taking them the other way round: the binding check below locks `Membership` first, and
+        // the CAS at the end is what locks the inspection. That is the inversion the round-12 fix
+        // exists to remove, one writer short of removing it. Locking here costs nothing — this
+        // transaction updates the row regardless — and the CAS on `assigneeId` stays exactly as it
+        // was, because it is what makes the observed-unassigned case precise for the READER.
+        await tx.$executeRaw`SELECT 1 FROM "Inspection" WHERE "id" = ${inspectionId} AND "projectId" = ${projectId} FOR UPDATE`;
+        // THE AUTHORITATIVE BINDING CHECK (#571 round 7, finding 2). The guard before the transaction
+        // reads memberships unlocked, so its answer can be overtaken: `MembersService.add`/`updateRole`
+        // take THIS key before they write, so an assignee observed ineligible there can be reactivated
+        // as an engineer and committed while this command is still assembling — and the CAS below pins
+        // only `assigneeId`, which such a reactivation never touches. The submitter would then be
+        // recorded against work the rule had just made exclusive again.
+        //
+        // Re-taken HERE, under the key, that interleaving cannot happen: every membership change to
+        // this project is serialized against this transaction, so whichever order they take, the two
+        // agree about who held the work at commit. Same function as the early guard and the read
+        // boundary — one rule, asked at the moment the answer is written down.
+        if (insp.assigneeId && insp.assigneeId !== user.sub) {
+          // `forUpdate` locks the standing rows the answer rests on, so a re-role or reactivation
+          // of the existing membership waits for this transaction — the owner's own lock, on top of
+          // the readiness key already held above.
+          if (await assignmentStillBinds(this.orgs, tx, projectId, insp.assigneeId, { forUpdate: true })) {
+            throw new ForbiddenException(ASSIGNED_TO_SOMEONE_ELSE);
+          }
+        }
         // write each ROW its own result — (id, inspectionId) keeps containment even
         // against a raced id (gate finding 3: never keyed by non-unique name)
         for (const dbIt of insp.items) {
           const s = submitted.get(dbIt.id)!;
           await tx.inspectionItem.updateMany({ where: { id: dbIt.id, inspectionId }, data: { state: s.state, photos: s.photos, note: s.note } });
         }
-        // CAS: one submit wins; a concurrent submit/decide makes count 0 → 409
+        // CAS: one submit wins; a concurrent submit/decide makes count 0 → 409.
+        //
+        // `assigneeId` is in the predicate because the guard above read it OUTSIDE this
+        // transaction, and the value can legitimately change in between: the freeze trigger is a
+        // one-way LATCH, so `null → someone` is permitted (it is assignment, not reassignment).
+        // Without this arm an unassigned checklist that acquires an assignee after the guard runs
+        // would keep that assignment and record a DIFFERENT person as its submitter — the exact
+        // misattribution the guard exists to prevent, reached by racing it rather than by passing
+        // it. Prisma renders `assigneeId: null` as `IS NULL`, so the observed-unassigned case is
+        // pinned as precisely as the observed-assigned one, and a change either way makes count 0.
         const { count } = await tx.inspection.updateMany({
-          where: { id: inspectionId, projectId, submitted: false, decided: false },
+          where: { id: inspectionId, projectId, submitted: false, decided: false, assigneeId: insp.assigneeId },
           data: { submitted: true, by: actor.actorName, submittedById: actor.actorId, submittedByName: actor.actorName },
         });
         if (count === 0) throw new ConflictException('The inspection changed while submitting — reload and retry');
@@ -266,8 +345,8 @@ export class InspectionsService {
       if (!assigneeId) {
         throw new BadRequestException(
           insp.closing
-            ? 'This closing inspection has no recorded completer to assign — name an eligible assignee (an active engineer or contractor).'
-            : 'No assignee could be derived — name an eligible assignee (an active engineer or contractor).',
+            ? `This closing inspection has no recorded completer to assign — name an eligible assignee (${CORRECTIVE_ROLES_PHRASE}).`
+            : `No assignee could be derived — name an eligible assignee (${CORRECTIVE_ROLES_PHRASE}).`,
         );
       }
 
@@ -290,6 +369,13 @@ export class InspectionsService {
           // rejection opens a linked correction chain — a readiness write (finding 1);
           // the readiness lock precedes the membership row lock (uniform order)
           await lockProjectReadiness(tx, projectId);
+          // The inspection row BEFORE the membership row — the one order every path through
+          // inspection evidence and assignment takes (#571 round 12, finding 1). This transaction
+          // updates the row below anyway; taking its lock here rather than there is what keeps a
+          // service decide from deadlocking against the evidence fence, which must lock the
+          // inspection first because its early return on an absent assignment is what a concurrent
+          // `null → A` races.
+          await tx.$executeRaw`SELECT 1 FROM "Inspection" WHERE "id" = ${inspectionId} AND "projectId" = ${projectId} FOR UPDATE`;
           // The assignee must be eligible AT COMMIT TIME (Codex Task 5 gate P1):
           // the membership row is read LOCKED inside THIS transaction, so a
           // concurrent removal/role change has a defined order — it either commits
@@ -299,12 +385,18 @@ export class InspectionsService {
             Prisma.sql`SELECT "status", "role" FROM "Membership" WHERE "projectId" = ${projectId} AND "userId" = ${assigneeId} FOR UPDATE`,
           );
           const pmcSelfExplicit = input.assigneeId === user.sub && user.role === 'pmc' && membership?.role === 'pmc';
-          const eligible = membership?.status === 'active' && (CORRECTIVE_ROLES.includes(membership.role) || pmcSelfExplicit);
+          // `holdsCorrectiveRole` is the SAME predicate the submit guard and the read boundary apply,
+          // so assignment-time and binding-time can never drift apart. The one difference is stated
+          // rather than duplicated: a PMC naming THEMSELVES is admitted HERE, because that is a rule
+          // about who may be written down, not about whether the written name excludes everyone else.
+          // Their assignment binds nobody afterwards — they hold no checklist screen — which is why
+          // the submit and read sites deliberately do not repeat this arm.
+          const eligible = holdsCorrectiveRole(membership) || (membership?.status === 'active' && pmcSelfExplicit);
           if (!eligible) {
             throw new BadRequestException(
               input.assigneeId === undefined
-                ? 'The recorded completer no longer holds an ACTIVE engineer or contractor membership on this project — name an explicit eligible assignee.'
-                : 'The assignee must hold an ACTIVE engineer or contractor membership on this project (a PMC may assign themselves explicitly).',
+                ? `The recorded completer no longer holds ${CORRECTIVE_ROLES_PHRASE} membership on this project — name an explicit eligible assignee.`
+                : `The assignee must hold ${CORRECTIVE_ROLES_PHRASE} membership on this project (a PMC may assign themselves explicitly).`,
             );
           }
           // CAS: one decision wins; the loser gets a deterministic 409

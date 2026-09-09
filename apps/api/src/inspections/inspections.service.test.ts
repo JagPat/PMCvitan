@@ -238,13 +238,13 @@ describe('InspectionsService — evidence + linked reinspections (Phase 1 Task 4
     const base: Insp = { id: 'INSP-21', projectId: 'ambli', submitted: true, decided: false, submittedById: 'u1', items: [item('i1', 'Drain slope', { result: 'FAIL' })] };
     // not a member at all
     const a = make({ ...base, items: [...base.items] }, { members: [] });
-    await expect(a.svc.decide('ambli', 'INSP-21', { approve: false, rejectedItemIds: ['i1'], assigneeId: 'u-ghost' } as never, a.pmc)).rejects.toThrow(/active engineer or contractor/i);
+    await expect(a.svc.decide('ambli', 'INSP-21', { approve: false, rejectedItemIds: ['i1'], assigneeId: 'u-ghost' } as never, a.pmc)).rejects.toThrow(/active engineer/i);
     // a CLIENT does not execute corrective site work
     const b = make({ ...base, items: [...base.items] }, { members: [{ projectId: 'ambli', userId: 'u-client', role: 'client', status: 'active' }] });
-    await expect(b.svc.decide('ambli', 'INSP-21', { approve: false, rejectedItemIds: ['i1'], assigneeId: 'u-client' } as never, b.pmc)).rejects.toThrow(/active engineer or contractor/i);
+    await expect(b.svc.decide('ambli', 'INSP-21', { approve: false, rejectedItemIds: ['i1'], assigneeId: 'u-client' } as never, b.pmc)).rejects.toThrow(/active engineer/i);
     // an INACTIVE engineer is not eligible either
     const c = make({ ...base, items: [...base.items] }, { members: [{ projectId: 'ambli', userId: 'u1', role: 'engineer', status: 'removed' }] });
-    await expect(c.svc.decide('ambli', 'INSP-21', { approve: false, rejectedItemIds: ['i1'] } as never, c.pmc)).rejects.toThrow(/active engineer or contractor/i);
+    await expect(c.svc.decide('ambli', 'INSP-21', { approve: false, rejectedItemIds: ['i1'] } as never, c.pmc)).rejects.toThrow(/active engineer/i);
   });
 
   it('a PMC may take the corrective work by naming THEMSELVES explicitly', async () => {
@@ -331,18 +331,20 @@ describe('InspectionsService — closing sign-off controls the activity (Phase 1
   it('completer role changed to an INELIGIBLE one since the claim: the default is refused (400); an eligible explicit assignee succeeds; an ineligible explicit one does not', async () => {
     const members: Member[] = [
       { projectId: 'ambli', userId: 'u1', role: 'client', status: 'active' }, // engineer → client since the claim
-      { projectId: 'ambli', userId: 'u-con', role: 'contractor', status: 'active' },
+      // an ACTIVE ENGINEER is the eligible explicit assignee: CORRECTIVE_ROLES no longer admits a
+      // contractor, because a contractor cannot reach the submit route the assignment depends on.
+      { projectId: 'ambli', userId: 'u-eng2', role: 'engineer', status: 'active' },
     ];
     // default (no explicit assignee) → refused with the completer-specific message
     const a = make(closingInsp(), { activity: claimedAct(), members: [...members] });
     await expect(a.svc.decide('ambli', 'INSP-40', { approve: false, rejectedItemIds: ['i1'] } as never, a.pmc)).rejects.toThrow(/recorded completer/i);
     // naming the now-client completer explicitly is still refused
     const b = make(closingInsp(), { activity: claimedAct(), members: [...members] });
-    await expect(b.svc.decide('ambli', 'INSP-40', { approve: false, rejectedItemIds: ['i1'], assigneeId: 'u1' } as never, b.pmc)).rejects.toThrow(/active engineer or contractor/i);
-    // an ACTIVE contractor named explicitly resolves it
+    await expect(b.svc.decide('ambli', 'INSP-40', { approve: false, rejectedItemIds: ['i1'], assigneeId: 'u1' } as never, b.pmc)).rejects.toThrow(/active engineer/i);
+    // an ACTIVE ENGINEER named explicitly resolves it
     const c = make(closingInsp(), { activity: claimedAct(), members: [...members] });
-    await c.svc.decide('ambli', 'INSP-40', { approve: false, rejectedItemIds: ['i1'], assigneeId: 'u-con' } as never, c.pmc);
-    expect((c.created[0] as Record<string, unknown>).assigneeId).toBe('u-con');
+    await c.svc.decide('ambli', 'INSP-40', { approve: false, rejectedItemIds: ['i1'], assigneeId: 'u-eng2' } as never, c.pmc);
+    expect((c.created[0] as Record<string, unknown>).assigneeId).toBe('u-eng2');
     expect(c.insp.decided).toBe(true);
   });
 
@@ -356,18 +358,18 @@ describe('InspectionsService — closing sign-off controls the activity (Phase 1
 
   it('a LEGACY zero-item closing may be REJECTED: no recorded completer → an explicit assignee is required; the child gets the default sign-off item', async () => {
     const activity = claimedAct({ status: 'done', completionRequestedById: null });
-    const members: Member[] = [{ projectId: 'ambli', userId: 'u-con', role: 'contractor', status: 'active' }];
+    const members: Member[] = [{ projectId: 'ambli', userId: 'u-eng2', role: 'engineer', status: 'active' }];
     // zero items + no completer + no explicit assignee → 400 naming the gap
     const a = make(closingInsp({ id: 'INSP-ACT-31-close', items: [], submittedById: null }), { activity: { ...activity }, members: [...members] });
     await expect(a.svc.decide('ambli', 'INSP-ACT-31-close', { approve: false, rejectedItemIds: [] } as never, a.pmc)).rejects.toThrow(/no recorded completer/i);
     // with an explicit eligible assignee the rejection reopens the DONE activity — an
     // attributable PMC decision (never a migration guess) — and yields workable items
     const b = make(closingInsp({ id: 'INSP-ACT-31-close', items: [], submittedById: null }), { activity, members });
-    await b.svc.decide('ambli', 'INSP-ACT-31-close', { approve: false, rejectedItemIds: [], assigneeId: 'u-con' } as never, b.pmc);
+    await b.svc.decide('ambli', 'INSP-ACT-31-close', { approve: false, rejectedItemIds: [], assigneeId: 'u-eng2' } as never, b.pmc);
     expect(activity.status).toBe('in_progress');
     const child = b.created[0] as Record<string, unknown> & { items: { create: Array<{ name: string }> } };
     expect(child.items.create.map((i) => i.name)).toEqual(['Work complete and acceptable']);
-    expect(child.assigneeId).toBe('u-con');
+    expect(child.assigneeId).toBe('u-eng2');
   });
 
   it('an ORDINARY zero-rejected reject stays a 400 — the closing escape hatch never leaks to normal inspections', async () => {

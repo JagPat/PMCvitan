@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { INSPECTIONS_COMMANDS, INSPECTIONS_QUERIES, type InspectionsModuleResult } from '@vitan/shared';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { INSPECTIONS_COMMANDS, INSPECTIONS_QUERIES, rolesFor, type InspectionsModuleResult } from '@vitan/shared';
 import { inspectionsManifest } from './inspections.manifest';
 import { InspectionsQueryService } from './inspections.query';
-import { InspectionsService } from './inspections.service';
+import { CORRECTIVE_ROLES, InspectionsService } from './inspections.service';
+import { readinessLockKey } from '../common/readiness-lock';
 
 /**
  * Phase 2 Task 10 (Module 3) — the inspections module is reachable ONLY through its shared contract
@@ -16,6 +19,91 @@ import { InspectionsService } from './inspections.service';
 describe('Task 10 — the inspections module implements its shared command/query contract', () => {
   it('the manifest commands EQUAL the shared command contract', () => {
     expect(inspectionsManifest.commands).toEqual([...INSPECTIONS_COMMANDS]);
+  });
+
+  /**
+   * A rejection names the assignee of the corrective re-inspection, and `decide` admits any
+   * CORRECTIVE_ROLES holder. The assignee is then the ONLY caller `submit` accepts — so a role that
+   * may be named an assignee but cannot reach the route is corrective work NOBODY can hand back:
+   * its assignee is refused at the door and everybody else is refused by the assignee check. The
+   * ceiling is asserted against the assignee set rather than a literal list, so widening either one
+   * without the other fails here.
+   */
+  it('every role a rejection may ASSIGN can reach the submit route', () => {
+    const ceiling = rolesFor('inspection.submit');
+    for (const role of CORRECTIVE_ROLES) expect(ceiling).toContain(role);
+  });
+
+  /**
+   * ROUND 7, FINDING 3 — the same rule, stated at two boundaries, has to stay ONE rule.
+   *
+   * `Inspection_submit_authority` restates the binding-assignment rule in SQL, because a rolling
+   * deployment's previous-release replica is a writer this deployment does not control and the
+   * database is the only boundary it shares. That copy exists to be a floor UNDER the service rule,
+   * never a different rule: if the TypeScript set gained a role the SQL list did not, the trigger
+   * would reject submits this release deliberately accepts, and every such submit would fail with a
+   * database error nobody could act on. Pinned by reading the migration, so the two lists cannot
+   * drift without this failing.
+   */
+  it('the writer fences name EXACTLY the CORRECTIVE_ROLES the service enforces, in ONE place', () => {
+    const migrations = join(__dirname, '../../prisma/migrations');
+    const submit = readFileSync(join(migrations, '20271216000000_inspection_submit_authority_fence/migration.sql'), 'utf8');
+    const evidence = readFileSync(join(migrations, '20271217000000_inspection_evidence_authority_fence/migration.sql'), 'utf8');
+
+    // #571 round 10 — the SUBMIT and EVIDENCE fences ask the same question, so the predicate is
+    // extracted into `inspection_assignment_binds` and stated ONCE. A second fence carrying its own
+    // copy of the role list is exactly how the two would come to disagree, so the pin asserts both
+    // that the list is right AND that there is only one of it.
+    const roleLists = [...(submit + evidence).matchAll(/m\."role" IN \(([^)]*)\)/gu)];
+    expect(roleLists, 'the corrective-role list must appear EXACTLY once across the fences').toHaveLength(1);
+    const sqlRoles = roleLists[0]![1].split(',').map((r) => r.trim().replace(/^'|'$/gu, ''));
+    expect(sqlRoles.sort()).toEqual([...CORRECTIVE_ROLES].sort());
+
+    // and both fences must actually reach it
+    expect(submit, 'the submit fence must ask the shared predicate').toContain('inspection_assignment_binds(');
+    expect(evidence, 'the evidence fence must ask the shared predicate').toContain('inspection_assignment_binds(');
+  });
+
+  /**
+   * ROUND 8, FINDING 1 — the fence's lock must be THE readiness lock, not one that looks like it.
+   *
+   * The trigger takes the project's readiness key before it reads `Membership`, and it must spell
+   * that key exactly as `readinessLockKey` does. `readiness-lock.ts` exported that helper precisely
+   * because a second spelling fails silently: the day the prefix changes, one caller stops
+   * serializing against the other and every test still passes. SQL cannot import the helper, so the
+   * pin is here — derived from the helper rather than from a literal.
+   *
+   * ROUND 11 splits the two fences apart on this point, and the test name says so. Taking the key
+   * is right for SUBMIT and wrong for EVIDENCE, for a reason neither fence's own text shows: the
+   * price of the line depends on whether the CALLER already holds that lock.
+   */
+  it('the SUBMIT fence takes the readiness key; the EVIDENCE fence deliberately does not', () => {
+    const sql = readFileSync(
+      join(__dirname, '../../prisma/migrations/20271216000000_inspection_submit_authority_fence/migration.sql'),
+      'utf8',
+    );
+    const evidence = readFileSync(
+      join(__dirname, '../../prisma/migrations/20271217000000_inspection_evidence_authority_fence/migration.sql'),
+      'utf8',
+    );
+    const prefix = readinessLockKey('');
+    expect(sql, 'the submit fence must try-acquire the readiness advisory lock before judging')
+      .toContain(`pg_try_advisory_xact_lock(hashtextextended('${prefix}' || NEW."projectId", 0))`);
+
+    // #571 round 11 — and the EVIDENCE fence must NOT take it, which is the opposite of what round
+    // 10 wrote. The two paths pay different prices for the same line: `submit` enters its trigger
+    // from a service already holding this key, so the acquisition is re-entrant and free, while
+    // `MediaService` holds no readiness lock — so acquiring it there takes a PROJECT-WIDE lock
+    // inside every photo upload and holds it to commit, queueing every readiness writer behind
+    // uploads. It bought nothing either: what serializes the fence against a concurrent standing
+    // change is the `FOR UPDATE` on the membership row inside `inspection_assignment_binds`, added
+    // because round 9's finding 2 established the advisory lock alone was insufficient. This pin
+    // is the asymmetry itself, so restoring the lock by symmetry a second time fails here.
+    expect(evidence, 'the evidence fence must NOT acquire the readiness key — the membership row lock orders it')
+      .not.toMatch(/advisory_xact_lock/u);
+
+    // and the submit fence must TRY rather than wait — a blocking acquisition can invert a lock order
+    expect(sql + evidence).not.toMatch(/[^_]pg_advisory_xact_lock\(/u);
   });
 
   it('the manifest queries EQUAL the shared query contract', () => {
@@ -55,7 +143,7 @@ describe('Task 10 — the inspections module implements its shared command/query
       ].sort(),
     );
     // the atomic activity↔inspection edges stay WORKFLOW contracts (participant), not cross-module reads.
-    expect(inspectionsManifest.workflowParticipants).toEqual(['activities']);
+    expect(inspectionsManifest.workflowParticipants).toEqual(['activities', 'orgs']);
     // no cross-module read dependency: every consumer reads inspection through THIS module's query.
     expect(inspectionsManifest.dependsOn).toEqual([]);
   });

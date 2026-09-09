@@ -1,0 +1,29 @@
+-- inspections.inbox → catalogVersion 2: the projection base gained `assigneeId`.
+--
+-- WHY A MIGRATION AT ALL. This unit ships no schema change and no new fact. It changes one COMPILED
+-- number, and `syncConsumerCatalog` refuses to reinterpret a persisted consumer row silently — it
+-- CREATEs a missing row and ASSERTs an existing one, never UPDATEs ("a changed contract requires an
+-- explicit migration"). Without this file every upgraded process aborts at bootstrap with
+-- `contract drift for 'inspections.inbox'`. A consumer's compiled contract and its persisted
+-- version are inseparable by construction: they land in the same deployment or one of them is wrong.
+--
+-- WHAT THE VERSION IS FOR. The serialized inspection base now carries `assigneeId`, and the read
+-- gates on it: an entry is offered to a non-PMC viewer only when it is unassigned (`null`) or
+-- assigned to them. A generation materialized by the v1 serializer stores entries with NO such key,
+-- so `assigneeId` reads back `undefined` — neither `null` nor any viewer's id. Serving it would
+-- give every engineer an EMPTY field view, and reading `undefined` as "unassigned" instead would
+-- reopen the hole the assignment rule closed (engineer B offered engineer A's corrective work) for
+-- as long as the stale row lived, which is indefinitely if no inspection event refreshes it.
+--
+-- Stamping v2 makes such a generation non-servable (`readServableGeneration` refuses
+-- `catalogVersion < catalogVersionFor`), so the module read falls back to the CANONICAL live slice,
+-- which is always current and always carries the column. Nothing is lost and no repair step is
+-- required — the ordinary `projection:rebuild` stamps a fresh generation at v2 and the projection
+-- resumes serving. Existing `ProjectionGeneration` rows already carry the version they were built
+-- at (20271116000000 backfilled the column and installed the stamp), so they need no statement here.
+--
+-- Guarded by the version it moves FROM, so a re-run is a no-op rather than a second bump, and a
+-- database whose consumers were never registered (a fresh install, where `syncConsumerCatalog` will
+-- CREATE the row at the compiled version) is untouched. Retry-safe by that guard alone.
+UPDATE "OutboxConsumerCatalog" SET "catalogVersion" = 2
+ WHERE "consumer" = 'inspections.inbox' AND "catalogVersion" = 1;

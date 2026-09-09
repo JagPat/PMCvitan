@@ -84,6 +84,15 @@ export class MediaService {
     }
     if (input.inspectionId) {
       await this.inspections.assertEvidenceTarget(projectId, input.inspectionId, input.inspectionItemId);
+      // AUTHORITY BEFORE BYTES (#571 round 10, finding 2). The authoritative check runs inside the
+      // transaction below, where it cannot be overtaken — but `storage.put` has already written the
+      // object by then, and the rollback that follows a refusal does not reach the bucket. A caller
+      // refused here would still have persisted the bytes, and could do it again with a fresh
+      // `clientKey` for as long as they liked: 403 after 403, each one leaving an unreferenced object
+      // behind. This preflight is a CHEAP EARLY NO, not the authority — it reads outside any
+      // transaction and may be stale, exactly like the submit path's pre-transaction guard, and the
+      // in-transaction recheck below is what actually decides.
+      await this.inspectionParticipant.assertEvidenceMutable(this.prisma as unknown as Prisma.TransactionClient, { projectId, inspectionId: input.inspectionId, actorUserId: user.sub, forUpdate: false });
     }
     const bytes = Buffer.from(input.data, 'base64');
     const key = this.storage.keyFor(projectId, input.kind, input.mime);
@@ -126,20 +135,50 @@ export class MediaService {
         // inspections participant, which writes the inspection-owned InspectionEvidence row AND appends
         // `inspection.evidence_added`, so the inspections.inbox projection observes the new evidence.
         if (input.inspectionId && input.inspectionItemId) {
-          evs.push(await this.inspectionParticipant.addEvidence(tx, { projectId, actor, inspectionId: input.inspectionId, inspectionItemId: input.inspectionItemId, mediaId: created.id }));
+          // #571 round 9, finding 1 — containment is not authority. `assertEvidenceTarget` above
+          // proves the item belongs to the inspection and the inspection to this project; it says
+          // nothing about whether this actor may change THIS inspection's evidence. Asked here,
+          // inside the transaction that writes the link, so the answer cannot be overtaken.
+          const { observedAssigneeId } = await this.inspectionParticipant.assertEvidenceMutable(tx, { projectId, inspectionId: input.inspectionId, actorUserId: user.sub });
+          // the value the authorisation saw travels WITH the write it authorised (#571 round 11, F1)
+          evs.push(await this.inspectionParticipant.addEvidence(tx, { projectId, actor, inspectionId: input.inspectionId, inspectionItemId: input.inspectionItemId, mediaId: created.id, observedAssigneeId }));
         }
         events = evs;
         return created;
       });
     } catch (e) {
       // a concurrent replay of the same clientKey landed first — return ITS row
-      // (the unique is the DB proof the photo persisted exactly once)
+      // (the unique is the DB proof the photo persisted exactly once). The winner's object IS
+      // this key's bytes for the same clientKey, so nothing is orphaned on this path.
       if (input.clientKey && e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
         const winner = await this.prisma.media.findUniqueOrThrow({
           where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
           select: { id: true },
         });
         return { id: winner.id, url: this.signed.mediaPath(winner.id) };
+      }
+      // THE ROLLBACK DOES NOT REACH THE BUCKET (#571 round 11, finding 3). The preflight above is
+      // deliberately advisory, so the authoritative in-transaction check is the one that can refuse
+      // a request whose bytes are already stored: an inactive assignee reactivated between the two
+      // is exactly that interleaving, and it left one unreferenced object per refusal.
+      //
+      // BUT A REJECTED `$transaction` DOES NOT PROVE A ROLLBACK (#571 round 12, finding 2). Round 11
+      // wrote that every failure here means "the transaction rolled back and NOTHING references this
+      // key", and named a lost connection as one of them. A connection lost AFTER PostgreSQL commits
+      // rejects the client promise over rows that are durable — so the unconditional cleanup that
+      // sentence justified would delete the object those committed rows reference and destroy the
+      // evidence permanently. The claim was the failure mode: an assumption about the database's
+      // state, asserted from the client's error rather than checked against the database.
+      //
+      // So the cleanup is EARNED, not assumed. The object is removed only once a fresh read proves
+      // no row references its key. A read that itself fails leaves the object alone — an orphan to
+      // sweep is a cost; a deleted photo behind a committed row is not recoverable, and where the two
+      // are not distinguishable the harmless one is the only admissible guess.
+      if (key) {
+        const persisted = await this.prisma.media
+          .findFirst({ where: { projectId, storageKey: key }, select: { id: true } })
+          .catch(() => ({ id: 'unknown' }) as { id: string });
+        if (!persisted) await this.storage.remove(key).catch(() => {});
       }
       throw e;
     }
@@ -206,10 +245,14 @@ export class MediaService {
       // Phase 5 Task 3 (§D): nor one cited as MEASUREMENT evidence — a measurement is immutable
       // and becomes a payable quantity, so this is the strictest case of the same rule.
       await this.commercialParticipant.assertMediaDisposable(tx, projectId, id);
+      // #571 round 9, finding 1 — and the same rule for ASSIGNED inspection evidence: while an
+      // assignment binds, only its assignee may destroy the photos that stand behind that work.
+      // This is the sharpest case of the whole assignment rule, because a delete does not come back.
+      const observedEvidence = await this.inspectionParticipant.assertEvidenceDisposable(tx, { projectId, mediaId: id, actorUserId: user.sub });
       // Task 10 (Module 3) correction — unlink any inspection-owned evidence FIRST (participant appends
       // `inspection.evidence_removed` when a link existed), THEN delete the media row, so the projection
       // observes the removal. `null` when this media was not item-level evidence.
-      const evidenceEv = await this.inspectionParticipant.removeEvidence(tx, { projectId, actor, mediaId: id });
+      const evidenceEv = await this.inspectionParticipant.removeEvidence(tx, { projectId, actor, mediaId: id, observed: observedEvidence });
       await tx.media.delete({ where: { id } });
       const removedEv = await emitEvent(tx, { projectId, actor, eventType: 'media.removed', entityType: 'Media', entityId: id, effectKey: 'media.removed', dispatch: {} });
       return evidenceEv ? [evidenceEv, removedEv] : [removedEv];

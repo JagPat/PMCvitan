@@ -37,6 +37,10 @@ export interface InspectionBaseEntry {
   activityId: string | null;
   activityName: string | null;
   reinspectionOfId: string | null;
+  /** Whose corrective work this is, when it is anybody's in particular. A re-inspection ALWAYS has
+   *  one (it defaults to whoever submitted the rejected inspection); an issued checklist may not.
+   *  Carried so the read boundary can keep one engineer's assigned work off another's field view. */
+  assigneeId: string | null;
   items: {
     id: string;
     name: string;
@@ -56,9 +60,14 @@ export interface InspectionsBase {
   inspections: InspectionBaseEntry[];
 }
 
-/** The five per-viewer/role inspection slices the snapshot's inspection keys carry. */
+/** The per-viewer/role inspection slices the snapshot's inspection keys carry. */
 export interface InspectionsSlices {
   checklist: Checklist | null;
+  /** EVERY open (issued, unsubmitted) checklist, oldest id first. `checklist` is one of these —
+   *  the single row the field view opens by default — and carrying only that one was a defect:
+   *  a second issued checklist hid the first, and the PMC who issued them saw none of them
+   *  (`reviews` carries SUBMITTED inspections only). Same visibility as `checklist`. */
+  openChecklists: Checklist[];
   reviews: Review[];
   review: Review | null;
   reinspectionCreated: boolean;
@@ -112,6 +121,7 @@ export async function computeInspectionsBase(
       activityId: i.activityId,
       activityName: i.activityName, // inspection-owned label (Task 10 Module 3 correction)
       reinspectionOfId: i.reinspectionOfId,
+      assigneeId: i.assigneeId,
       items: i.items.map((it) => ({
         id: it.id,
         name: it.name,
@@ -130,6 +140,29 @@ export async function computeInspectionsBase(
 }
 
 /**
+ * Order two inspection ids the way a human reads them: by the numeric suffix, not by its characters.
+ *
+ * The two id producers disagree about padding. `nextSeqId('INSP-', …)` mints three-digit ids
+ * (`INSP-023`); the seeded rows carry unpadded ones (`INSP-18`, `INSP-21`, `INSP-22`), and both
+ * shapes live in the same project. Under a plain `localeCompare` the padded id sorts FIRST —
+ * `'INSP-023' < 'INSP-22'` because `'0' < '2'` — so the newest checklist would be the one the
+ * field view opens by default and the outstanding list would read newest-first for part of its
+ * range and oldest-first for the rest. Comparing the suffix as a number orders them by issue
+ * sequence regardless of padding; ids whose suffix is not a number (or whose prefix differs) fall
+ * back to the string order, which is still total and still reproducible.
+ */
+export function compareInspectionIds(a: string, b: string): number {
+  const split = (id: string): { prefix: string; n: number | null } => {
+    const m = /^(.*?)(\d+)$/u.exec(id);
+    return m ? { prefix: m[1], n: Number(m[2]) } : { prefix: id, n: null };
+  };
+  const x = split(a);
+  const y = split(b);
+  if (x.n !== null && y.n !== null && x.prefix === y.prefix && x.n !== y.n) return x.n - y.n;
+  return a.localeCompare(b);
+}
+
+/**
  * Bake the stored base into the five per-viewer/role slices the snapshot and the module read both emit.
  * A pure function of (base, viewer role, signer), so projection-served and live-served slices are
  * identical whenever the base is. `evidencePath` mints each item's fresh signed serve paths.
@@ -138,41 +171,94 @@ export function bakeInspections(
   base: InspectionsBase,
   // `role` is the viewer's role as a string (the API `Role` includes 'worker', wider than the shared
   // `Role`) — the AUTH-02 gating is a plain equality check, so a string keeps both sides compatible.
-  opts: { role: string; evidencePath: (mediaId: string) => string },
+  opts: {
+    role: string;
+    evidencePath: (mediaId: string) => string;
+    viewerId?: string;
+    /** The assignees whose assignments still BIND, from `bindingAssigneeIds` — the ONE statement of
+     *  that rule, resolved by the caller because it is a live membership fact and this function is
+     *  pure over the stored base (a base that embedded it would go stale the moment a membership
+     *  changed, with no `inspection.*` event to refresh it). REQUIRED, not defaulted: a caller that
+     *  forgot it would silently serve the pre-round-7 behaviour, which is the defect itself. */
+    bindingAssignees: ReadonlySet<string>;
+  },
 ): InspectionsSlices {
-  const { role, evidencePath } = opts;
+  const { role, evidencePath, viewerId, bindingAssignees } = opts;
   const isPmc = role === 'pmc';
   const canSeeInspections = role === 'pmc' || role === 'engineer';
   const all = base.inspections;
 
-  // The engineer's CURRENT checklist: prefer an open (unsubmitted) one — a freshly issued checklist
-  // supersedes an already-submitted earlier one in the field view. (Not role-gated — the field view.)
-  const checklistRow = all.find((i) => i.kind === 'checklist' && !i.submitted) ?? all.find((i) => i.kind === 'checklist');
-  const checklist: Checklist | null = checklistRow
-    ? {
-        id: checklistRow.id,
-        title: checklistRow.title,
-        zone: checklistRow.zone,
-        nodeId: checklistRow.nodeId ?? undefined, // location spine
-        date: checklistRow.date,
-        submitted: checklistRow.submitted,
-        items: checklistRow.items.map(
-          (it): ChecklistItem => ({
-            id: it.id, // the capture flow links evidence uploads to THIS item (Task 4)
-            name: it.name,
-            state: it.state as ItemState,
-            photos: it.photos,
-            note: it.note,
-            evidence: it.mediaIds.map(evidencePath),
-          }),
-        ),
-      }
-    : null;
+  // Issued checklists. `computeInspectionsBase` reads them with no `orderBy`, so row order is
+  // whatever the planner returns: every choice made here sorts first, or it is not reproducible.
+  // Sorted by id like the review queue below, so the two slices order consistently.
+  const byId = (a: InspectionBaseEntry, b: InspectionBaseEntry) => compareInspectionIds(a.id, b.id);
+  const toChecklist = (row: InspectionBaseEntry): Checklist => ({
+    id: row.id,
+    title: row.title,
+    zone: row.zone,
+    nodeId: row.nodeId ?? undefined, // location spine
+    date: row.date,
+    submitted: row.submitted,
+    items: row.items.map(
+      (it): ChecklistItem => ({
+        id: it.id, // the capture flow links evidence uploads to THIS item (Task 4)
+        name: it.name,
+        state: it.state as ItemState,
+        photos: it.photos,
+        note: it.note,
+        evidence: it.mediaIds.map(evidencePath),
+      }),
+    ),
+  });
+
+  // EVERY open checklist, not one of them. Issuing a second checklist used to hide the first:
+  // the field view asked `find` for a single row, so the other was issued work that no surface
+  // showed — and the PMC who issued it could not see it either, because `reviews` carries only
+  // SUBMITTED inspections. (Not role-gated — this is the field view, same visibility as below.)
+  //
+  // ASSIGNED work stays with its assignee. A rejected inspection creates a re-inspection assigned to
+  // whoever submitted the original — that is somebody's named corrective work, not the site's. The
+  // field view is ungated by ROLE on purpose, but showing engineer B engineer A's assigned
+  // re-inspection is a different thing: B could fill it, submit it, and be recorded as the person
+  // who did A's remedial work. An UNASSIGNED checklist is still everybody's, which is the common
+  // case and unchanged. The PMC sees all of it — they issue this work and must see what is
+  // outstanding, which is the whole point of the list.
+  //
+  // AND IT STOPS BEING THEIRS WHEN THEY CAN NO LONGER DO IT. `submit` accepts a replacement engineer
+  // the moment the named assignee stops holding an active corrective membership — removed, re-roled,
+  // or a PMC who took the work by naming themselves and has no checklist screen to fill it on. Read
+  // and write must answer that with the SAME predicate: a checklist `submit` will take from engineer
+  // B is a checklist B has to be able to find and open, and filtering here on the stored id alone
+  // left the only eligible callers unable to reach the work at all (#571 round 7, finding 1). So the
+  // filter asks whether the assignment BINDS, not whether the column is set — `bindingAssignees` is
+  // the same `bindingAssigneeIds` answer the submit guard takes, resolved once per read.
+  const mine = (i: InspectionBaseEntry): boolean =>
+    isPmc || i.assigneeId === null || i.assigneeId === viewerId || !bindingAssignees.has(i.assigneeId);
+  const openRows = all.filter((i) => i.kind === 'checklist' && !i.submitted && mine(i)).sort(byId);
+  const openChecklists: Checklist[] = openRows.map(toChecklist);
+
+  // The one the field view opens by default: the oldest open checklist, else the oldest submitted
+  // one so a finished checklist stays readable. Chosen from a SORTED list — `find` over the
+  // unordered read returned a planner-dependent row, so two runs could disagree.
+  //
+  // THE ASSIGNMENT FILTER APPLIES TO OPEN WORK ONLY (#571 round 8, finding 2). `mine` answers "may
+  // I DO this?", and a submitted checklist is a record of work already done — so judging the
+  // fallback by it made a live rule reach backwards over history. The case: engineer B legitimately
+  // submits a checklist stranded by assignee A, A is later reactivated, and A's assignment starts
+  // binding again — retroactively hiding from B the record of work B actually performed, down to
+  // `checklist: null` when it is the project's only one. Restricting the fallback to SUBMITTED rows
+  // fixes that and cannot re-open the round-3 defect it was guarding: an OPEN checklist that is
+  // somebody else's is excluded by this filter, and one that is the viewer's own is already in
+  // `openRows`, so this branch is only reached when there are none. Nothing is widened that the
+  // module does not already show — `placedInspections` carries every inspection, submitted and
+  // assigned included, to every pmc/engineer viewer.
+  const checklistRow = openRows[0] ?? all.filter((i) => i.kind === 'checklist' && i.submitted).sort(byId)[0];
+  const checklist: Checklist | null = checklistRow ? toChecklist(checklistRow) : null;
 
   // The review queue: any submitted-but-undecided inspection, sorted by id. AUTH-02: PMC-only.
   const reviews: Review[] = all
     .filter((i) => i.submitted && !i.decided)
-    .sort((a, b) => a.id.localeCompare(b.id))
+    .sort((a, b) => compareInspectionIds(a.id, b.id))
     .map(
       (i): Review => ({
         id: i.id,
@@ -221,6 +307,7 @@ export function bakeInspections(
 
   return {
     checklist,
+    openChecklists,
     reviews: isPmc ? reviews : [],
     review: isPmc ? (reviews[0] ?? null) : null, // deprecated single (first pending) — back-compat
     reinspectionCreated: isPmc ? reinspectionCreated : false,

@@ -140,7 +140,15 @@ describe('Phase 2 Task 7 — module registry', () => {
       // inside their own transaction — the orgs → decisions half of the bidirectional
       // orgs ⇄ decisions channel (cycle-exempt; decisions already declares `orgs`).
       orgs: ['nodes', 'activities', 'inspections', 'decisions'], // project-init instantiates each owning module
-      inspections: ['activities'], // the closing-inspection decide writes the activity sign-off
+      // the closing-inspection decide writes the activity sign-off; #571 round 8 (Codex P1) adds
+      // `orgs` — the corrective-assignment rule asks whether a named assignee still holds ACTIVE
+      // standing in a corrective role, and `Membership` is orgs-owned, so the OWNER answers through
+      // OrgsParticipant (`effectiveRoleHolderUserIds` at the read boundary,
+      // `hasProjectRoleStanding` under the submit transaction's lock). Cycle-exempt for the same
+      // reason as every row here: orgs.dependsOn reaches inspections (project initialization reads
+      // `InspectionsQueryService.allIds`), so an inspections → orgs READ edge would close a cycle
+      // and the participant channel does not.
+      inspections: ['activities', 'orgs'],
       // Phase 4 Task 2 — the labour commercial chain validates the reused procurement Vendor/
       // ProjectVendor binding through ProcurementParticipant.assertVendorBound (+ resolveOrgVendor):
       // a CYCLE-EXEMPT labour → procurement workflow edge, not a dependsOn read, so labour stays a
