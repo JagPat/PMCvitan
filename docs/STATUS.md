@@ -11,16 +11,718 @@ narrative and may lag behind reality.
 
 ```yaml
 phase: 6
-phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
+phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
-task_state: merged
+task_state: in_progress
 work_item: none
 reviewed_merge: f5da6654
-open_pr: none
+open_pr: 572
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-05
+updated: 2026-09-09
 ```
+
+### Directive `phase-6-4d-unit1-prerequisite` — WITHDRAWN, and why
+
+**It is no longer set.** The directive existed to stop 4d-i implementation from
+starting against a `main` that lacked the outbox consumer activation register,
+in the case where #572 merged before #580 — the two PRs the 4d plan had been
+split across. On JagPat's instruction (2026-09-09, "close #580 and take the
+whole 4d plan back to one unit") that split is REVERSED: the activation
+document, `docs/superpowers/plans/2026-09-09-outbox-consumer-activation.md`, is
+carried in #572 itself — every round, finding and answer verbatim, with only a
+header note and its `## Review unit` section corrected to say where it now lives
+— and #580 is closed. One unit cannot land half of itself, so there is no merge
+order left to guard and no prerequisite left to name.
+
+**Removing it is what keeps this file TRUE.** A directive naming a prerequisite
+that is not a work item anyone can pick up would park the runner on work that
+cannot be done — the mirror hazard the directive's own completion test was
+written against. `phase_plan` is corrected in the same edit: it pointed at
+`2026-08-29-decision-workflow-4c.md`, a plan that is complete and merged, while
+the open work is the 4d plan.
+
+**What survives.** The dependency the directive expressed is real and is now
+INTERNAL to one unit, enforced by migration order rather than by merge order:
+4d-i installs the register, its seals and its baseline backfill; 4d-ii registers
+`decisions.effects` into the catalog and takes its activation head from the
+catalog-INSERT trigger; 4d-iii appends the activation after the drain. The 4d
+plan's round 22 records the reversal, and its rounds 17 and 18 keep their
+sections under a SUPERSEDED banner, because the defects they named — a contract
+naming no installer, a rule left in prose — remain rules this repository holds.
+
+### The 4d PLAN unit — the NARROWED plan, carried on #572 and fixed forward, docs-only
+
+**What this PR is.** The docs-only 4d plan unit the merged 4b plan's §E order names as the first
+4d stop, `docs/superpowers/plans/2026-09-07-decision-workflow-4d.md`: the §C orchestration
+design at PR #340 head `6a53aae` carried in substance, the §D obligations 4–6 elaborated, the
+probe table P28–P42, and the FIVE-PR staging (the dark migration 4d-i, the dark server unit
+4d-ii-a, the client unit 4d-ii-b, an operator drain attestation — the controlling default (#482
+comment 5569586836) RESTORED: the lifted-gate fold of #568's head `b0d5399` rested on an in-session
+selection GitHub Watch records as its own keystroke (#482 comment 5581275205), so it is REVERSED
+here and `AGENTS.md` is left exactly as `main` carries it — the reservation retirement 4d-iii).
+**Its ledger line is `Replaces: none`, and the replacement chain recited below is HISTORY, not a live obligation.** The close-and-replace rule that minted that chain is retired on `main` (#578 at `f050bcd`); the #559/#567/#568 labels were removed on the Board's instruction at 11:36 UTC on 2026-09-08. Nothing in this entry asks a runner to open, claim or carry a replacement — the chain is recorded so the review history stays readable, and reading it as current work is the mistake this paragraph exists to prevent (#572 review round 5).
+
+It is carried on #572 itself, FIXED FORWARD (Board decision, #482 comment 5585712971; the forced
+close-and-replace retired on `main` by #578 at `f050bcd`) — the #575 replacement that first carried
+this head was closed back into #572 by a coordinator at 11:28 UTC on 2026-09-08, its commits kept;
+the ledger line is `Replaces: none` (the #559/#567/#568 labels were removed on the Board's
+instruction at 11:36 UTC) — #572 being the narrowed plan's fifteenth outing, which drew findings
+on two heads (`8b50b52` two findings, folded on `e2fd243e` by a second Claude session
+answering the orchestrator's Auto-fix handoff, that head also committing a `node_modules` symlink
+removed on `8acf586`; two more on `e2fd243e`) — which replaced #568 (the fourteenth: `55144a3` four
+findings as the gate counts them, two folded on `2530c8e`, the drain gate declined there and
+folded on `b0d5399` — reversed here — with a clean +1 on `b0d5399`; two more on `867d065`, the
+`main` merges), which replaced #567 (the
+thirteenth: `5f07c5a` four findings, three folded on `7bf282f` and the drain attestation
+declined, three more there), which replaced #566 (the twelfth: `cc8b3ba`
+two findings, one folded on `e3d6c23` and the drain attestation declined, a relay-based drain
+fold `1a2ba97` reverted on `5921f22`, two more there), which replaced #565 (the eleventh: `5871826` three findings, two folded on `89bd230` and the
+drain attestation declined, one more there), which replaced #564 (the
+tenth: `93349e6` one finding — the drain attestation — declined and recorded on `2a47037`,
+three more there), which replaced #563 (the ninth: `6bf75a36`
+five findings, four folded on `01706fe` and the drain attestation declined, one more there),
+which replaced #562 (the
+eighth: `be56b941` six findings, five folded on `2f493f8f` and the drain attestation declined,
+five more there), which replaced #561 (the
+seventh: `b2e556c3` seven folded on `d5646595`, nine more there), which replaced #560 (the
+sixth: `01c6e819` eleven findings, ten folded on `847b5c40` and one — the drain
+attestation — declined on the Board's recorded decision, six more there), which replaced #558
+(the fifth: `a07f78b7` seven folded on `96ba845b`/`64d9030f`, nine more there), which
+replaced #557 (the fourth: `3327f761` five folded on `6d5545ce`, four more there), which
+replaced #556 (the third: `bb307c74` three folded on `dd2da64b`, five more there), which
+replaced #555 (the second: `3e5a85a2` five folded on `41ea41d2`, four more there), which
+replaced #554 (the first: `cbfdaacb` seven folded on `82a497a5`, seven more there), which
+replaced #552, the fifteenth replacement of the ORIGINAL unit (#537 through #552, sixteen PRs,
+thirty-two Codex rounds, one hundred and sixty-eight findings). Opened from `main` `d7eed4ce` under the
+standing continuation authorization (#482 comment 5563944111, 2026-09-07: no PR-number cap;
+close-and-replace continues; "reduce the review unit at safe dependency seams; preserve the
+obligations ledger").
+
+**Review round 2 on #554 (head `82a497a5`): seven findings, all P1, carried here.** The stream
+counter's transition is sealed one-to-one with the events (`ProjectEventStream_t4d_allocation` +
+a deferred allocation pairing); the frozen-audience push is bound to the transition's owed shape
+(the catalog's constant body, `targetUserIds` equal to the set the orgs primitive
+`phase6_role_holder_user_ids` resolves at commit); the sanctioned resets in `prisma/seed.ts` and
+`test/integration/fixtures.ts` gain the `DecisionEvent` append-only seal by name; the `Membership`
+standing trigger is ORGS-owned and writes through a generic platform primitive
+`platform_role_standing_apply`; the feed row's binding is frozen and an owed notice cannot be
+deleted (the withdraw retires kind-less rows only); the audit row's whole attribution and named
+payload fields correspond to the fact; and every kinded feed row is filtered through
+`decisionVisibleToViewer` before rendering. The plan's §A.3 now STATES the boundary these rounds
+kept probing: a seal proves what happened is recorded coherently on every named field; free
+content written by a holder of the application's own database role is trusted as every delivered
+4a–4c surface trusts it, and 4d narrows that trust wherever a reader can derive from a fact.
+
+**What is different, and why it is not the same plan re-rolled.** Rounds 19–32 — fourteen rounds,
+sixty-one findings — all landed on one round-19 commitment: that the database ADMITS a hand-run
+bundle and must therefore PRODUCE its side effects itself (a PL/pgSQL twin of `emitEvent`, a
+notification twin, seal-written audit rows, a count-based emitter handoff, a claim-time notice
+register, a relay lease refactor). Every one of those findings was a divergence between a
+PL/pgSQL reproduction of the service and the service — an OPEN class. The replacement makes ONE
+design pass: a seal VERIFIES the complete same-transaction bundle (fact, event, audit row, bound
+feed row) and REFUSES anything less; it never emits (the plan's §A.3 obligation 7). The three
+round-32 findings on #552's head `4b9a648f` are answered by that rule, by recipients frozen at
+emission, and by a staged `Notification.eventId` — none dropped. Four mechanisms are withdrawn at
+seams the delivered surface proves safe, each with its argument in the plan's §A.4 ledger: the
+`Decision` reserved-value repair (the state is unrepresentable — enum types), the consumer
+cutover (its hazard retired in round 21), archived-project parking (the delivered 4c drop rule),
+and the receipt `actorRole`/`actorName` pair (the owning fact seal judges the frozen pair against
+live standing). The document is 4,364 lines against #552's 3,495.
+
+**Review round 1 on #554 (head `cbfdaacb`): seven Codex findings (six P1, one P2), folded on
+its ONE correction head** — the awaiting entry's bundle now demands the `decision.awaiting_countersign`
+event and refuses an approval event there; the kernel seals its own event envelope at INSERT
+(`DomainEvent_t4d_envelope`: the position this transaction allocated, the intent corresponding to a
+persisted, versioned `ExternalEffectCatalog` seeded by 4d-i, widened by 4d-ii, the old version retired by
+4d-iii); a trailing 4d-iii seal requires `approvedByName`/`approvedByRole` on every new revision;
+`MembershipTransition` freezes and validates `actorRole`/`actorName`; `DecisionEvent` gains an
+append-only seal; the owner/admin authority arm is judged live for self-transitions; and the feed row
+carries a structured `Notification.kind` the seal binds to the event with every reader rendering a
+kinded row from kind, event and fact. Each is the plan's own rule applied where one instance was
+unstated; the plan's round-1 table names all seven. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
+
+**Review round 1 on #555 (head `3e5a85a2`): five findings, all P1, folded on its ONE correction
+head** — the feed-row correspondence reads through a platform-owned `platform_tx_notification`
+contract; `DomainEvent` gains nullable `actorRole`/`actorName` envelope columns `emitEvent` writes and
+the seal binds; the sanctioned reset gains a membership path (transition facts, then memberships,
+under their seals disabled by name); every direct `DecisionEvent` reset bypass is swept into
+`wipeDecisionEvents` with a tripwire; and the repository's raw `DomainEvent` probes move to an
+allocating `insertRawEvent` fixture or a named legacy-plant bypass with a tripwire. None is a content
+question; each is an integration seam the narrowed rule crosses. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
+
+**Review round 2 on #555 (head `41ea41d2`): four findings, all P1, carried here, none dropped.**
+The kernel's `EventActor` is widened to the full `Actor` so the compiler enumerates every emitter,
+and `CommercialParticipant.AttributionActor` carries the `actorRole`/`actorName` pair through the
+commercial, procurement, labour and inventory seams (round 1's claim that `resolveActor` reaches
+every emitter did not hold for `announceMoneyMoved`); the `membership.standing_changed` event is
+bound WHOLE to its fact — `role`, `membershipId`, `from`, `to`, `transitionId`, `activeCount` and
+the envelope pair — and obligation 7 gains its CONVERSE for every sealed event type (an event
+without its same-transaction fact is refused by the event-owning module's deferred trigger on the
+kernel table, the delivered `phase6_t4b2_membership_guard` shape), so a standalone crossing event
+cannot fabricate a re-notification; every `DecisionEvent` UPDATE/DELETE site in `test/` and
+`scripts/` is enumerated by category — the unguarded cleanups round 1 missed routed through
+`wipeDecisionEvents`, the three benign-mutation precision arms rewritten, the whole-table reset
+bypasses named — under a tripwire that enumerates statements rather than bypasses; and
+`Notification(projectId, eventId)` is a SAME-PROJECT composite FK to a new
+`DomainEvent(projectId, eventId)` candidate key, so a feed row bound to another project's event is
+unrepresentable. None is a content question the boundary answers; each is the rule one instance
+short. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
+
+**Review round 1 on #556 (head `bb307c74`): three findings, all P1, folded on its ONE
+correction head.** Every `Membership` writer outside `members.service` is enumerated (the sign-in
+provisioning, project creation, the seed, `ensure-accounts`) and `ensure-accounts` validates its
+`ACCOUNTS_JSON` before the first write, refusing an `architect` entry with no partial write;
+the orgs-owned `Membership_t4d_readiness` trigger rides `phase6_try_readiness` on every
+`Membership` row write of every role, so every standing writer serializes with every
+readiness-locked command and a frozen push audience equals the set at commit by construction
+(the four writers outside `members.service` take `lockProjectReadiness` in 4d-ii; the
+drain-window residual is stated); and 4d-i is MIGRATION-ONLY — `prisma/`, `test/`, `scripts/`,
+no `src/` file — with the emitter plumbing (`emitEvent`'s envelope write, the widened
+`EventActor`, the full `AttributionActor`, the identity contract) moved to 4d-ii where the
+transitions that need it ship. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
+
+**Review round 2 on #556 (head `dd2da64b`): five findings, all P1, carried here, none dropped.**
+The `decisions.effects` activation handler judges the CURRENT standing under the readiness lock
+before re-emitting and records a stale activation (B added then removed before the consumer
+reached it) as a `noop`, so an ordered consumer can never dead-letter on an empty audience; the
+two standing-writer seals (`Membership_t4d_readiness`, and the NEW `OrgMembership_t4d_readiness`
+over the org's projects, since the delivered `effectiveRoleHolderUserIds` resolves `pmc` through
+membership-less org owners/admins) are staged in 4d-iii AFTER the attested drain — no
+frozen-audience family can emit before 4d-iii, and the previous release's two-statement sign-in
+provisioning never meets them, so the "retryable residual" round 1 admitted is gone (4d-ii makes
+that provisioning one transaction under the key); catalog retirement is a durable `retiredAt`
+tombstone, never a delete, with every seed `ON CONFLICT DO NOTHING`, so a mature-database
+`ALWAYS_EXECUTE` replay of 4d-i cannot reopen retired envelope coverage; and 4d-i's "no `src/`"
+rule is corrected to "EXACTLY the declarative schema-metadata mirrors the boundary suite pins to
+the DMMF" (the manifests' `ownsModels`/`readEncapsulated` registrations and `MODEL_OWNER`),
+declared `migration-scope: inseparable` with that boundary stated. None is a content question
+the boundary answers. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
+
+**Review round 1 on #557 (head `3327f761`): five findings (three P1, two P2), folded on its
+ONE correction head.** The converse for the finalizing event admits the countersign's and the
+`completed` resolution's flip of the existing revision (no new revision row) beside the direct
+approve's insert; the `decision.consultation_responded` catalog ceiling widens with the `respond`
+emitter persisting the requester's actual role; ONE org-level readiness key (`lockOrgStanding`,
+`phase6_try_org_readiness`) taken by project creation and FIRST by every owner/admin
+`OrgMembership` writer closes the phantom a per-project key could not; the audit-row and
+envelope attribution bind the frozen pair WHERE the fact carries one and `actorId` alone for a
+drain-window fact with a NULL pair (the branch 4d-iii closes); and the kinded feed readers
+suppress a withdrawn decision's ACTIONABLE kinds for the PMC while the rows and events stay as
+evidence. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
+
+**Review round 2 on #557 (head `6d5545ce`): four findings (two P1, two P2), carried here, none
+dropped.** The org-level key gains its TABLE door — the orgs-owned `Project_t4d_org_readiness`
+BEFORE INSERT trigger (4d-iii) tries the org key on every `Project` insert, so a direct insert
+cannot slip past an org write's enumeration; `createProject` re-judges the creator's owner/admin
+standing UNDER `lockOrgStanding` before the insert (the pre-transaction read had let a
+concurrently demoted admin create); every 4d-ii `decision.approved`/`reapproved` event carries
+the exact finalized `revisionId` (the direct approve, the countersign, the `completed`
+resolution) so the converse binds on a durable key and an older kinded green notice renders ITS
+revision's approver, with a drain fallback for previous-release events until 4d-iii; and the
+consultation requester's role is FROZEN on the fact — 4d-i's nullable
+`DecisionConsultation.requestedByRole`, written by 4d-ii's `consultation.request` under the
+seal's requester arm and read by the `respond` emitter — rather than resolved at response time.
+Each is a second-order consequence of a round-1 fold; none is a content question the boundary
+answers. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
+
+**Review round 1 on #558 (head `a07f78b7`): seven findings, all P1, folded on its ONE
+correction head.** The `renotified` converse branch binds to its CROSSING (`crossingEventId` +
+`transitionId` verified through the new kernel read `platform_event`, unique per decision and
+crossing, the same push-shape check as the provisional approve); the standard request closure
+and the `change → approved` restoration are sealed as one bundle in both directions; a kinded
+notice binds only an event ABOUT its decision (`Notification_t4d_binding` INSERT arm on
+`entityType`/`entityId`); a FIFTH reservation door, `User_t4d_architect_reserved`, installed
+under a `User` table lock before the audit; the kinded feed reads each notice and its decision's
+status in ONE statement; the platform-owned `DomainEvent_t4d_deliveries` seal requires every
+registered consumer's delivery row at commit against a PERSISTED `dispatchRule`; and the drain
+gate gains the trusted autonomous evidence the runner can verify fail-closed (the `ReleaseLease`
+register from 4d-ii; `rollout:drain-evidence` reading the deploy platform's running containers
+for the processes that predate it) as CORROBORATION, while the direct explicit operator
+attestation stays REQUIRED — the question was raised on #482 and answered there (comment
+5569586836: the user's standing instructions retain human production attestation; evidence does
+not replace it; no review request or agent statement can remove it — a default the Board
+SUPERSEDED on 2026-09-08 in its own words, see the #566 round-1 record below). The forced
+close-and-replace at the second finding-bearing head was retired on `main` by #578 (`f050bcd`) on
+2026-09-08; this unit is fixed forward on #572 by Board decision (#482 comment 5585712971).
+
+**Review round 2 on #558 (head `64d9030f`): nine findings, all P1, carried here, none dropped.**
+The `renotified` converse requires the cited crossing to be the 0 → 1 activation (payload
+`activeCount = 1`, `to` active); `expandMissingDeliveries` keeps its role for every event that
+predates a consumer's REGISTRATION (the 4d-i → 4d-ii interval included) while the delivery seal
+binds only consumers registered at the event's commit; 4d-iii's replay re-drops all FIVE doors by
+name; the one-snapshot feed read runs the owner-provided notification and decision queries inside
+ONE REPEATABLE READ transaction (no cross-module join); §A.2's forwarding paragraph states the
+canonical lock order (readiness → `Project` → `Membership` → the subject's delivery rows →
+`Decision`); the `open → resolved` closure pairs with its reapproval transition in both
+directions beside the `withdrawn` pairing; `dispatchRule`/`subscribedEventTypes` are written only
+by the gated catalog-data migration, frozen, and VERIFIED by `syncConsumerCatalog` at startup;
+`Notification_t4d_no_truncate` joins `TRUNCATE_SEALS` (nine), the sanctioned reset truncates
+`DomainEvent` with `Notification`, and `notification`/`changeRequest` cleanups go through named
+helpers under the statement tripwire; and §D's Part 3 opens with BOTH reservations before either
+audit. Seven are second-order consequences of round 1's folds and two are the plan's own earlier
+text contradicting its later rule; none is a content question the boundary answers.
+
+**Review round 1 on #560 (head `01c6e819`): eleven findings (nine P1, two P2), ten
+folded on its ONE correction head, one DECLINED on the Board's recorded decision, none dropped.**
+The delivery seal's obligation set is the ACTIVE set at commit, judged from the append-only,
+attributable `OutboxConsumerActivation` register whose trigger is the only writer of the frozen
+`active` mirror (`registeredAt` frozen and out of every seal); `expandMissingDeliveries` keeps
+its delivered all-missing contract for every currently-active consumer, so a reactivated
+consumer's cursor never stalls; the delivery rows are a pure function of the event and the
+PERSISTED catalog (`deliveryRowsFor`, called by materialization and expansion alike;
+`deliveryFor` retired), so a standalone CLI with no registry writes the same rows a booted API
+does, and a `dispatch` row's `payload`/`subject` are bound to the immutable intent at insert and
+frozen after (`OutboxDelivery_t4d_bound`/`_frozen`, only lease/status columns and the 4a
+cancellation mark mutable); the seal, the rule columns, the register and the rewrite ship
+TOGETHER in 4d-ii (not migration-only 4d-i, where the seal would have refused the unchanged
+CLIs), with `decisions.effects` registered INACTIVE there and ACTIVATED by 4d-iii's appended row
+after the drain; `requiresPush`/`pushBody` join the enumerated `ExternalEffectCatalog` schema;
+the 4d-ii checklist says `syncConsumerCatalog` VERIFIES (never writes) and the feed read is the
+two owner queries in one REPEATABLE READ transaction (no join); 4d-ii MUST carry the
+`justified-large` packet with both seams argued; `Notification_t4d_no_truncate` is named in the
+nine-entry list; the legacy-plant bypass names the converse trigger too and the outbox probes'
+standalone `decision.approved` plants move to an unpaired announcement family. The eleventh —
+"remove the mandatory human drain attestation" — is DECLINED as a Board decision, not a plan
+defect: it was raised on #482 and answered there (comment 5569586836); the plan carries the gate
+exactly as decided and its removal is the user's separate decision.
+
+**Review round 2 on #560 (head `847b5c40`): six findings (five P1, one P2), carried here, none
+dropped.** 4d-iii's trailing INSERT-time seals require the frozen `requestedByRole`/
+`requestedByName` pair beside `sourceCommandId` on every new `ChangeRequest` row, so the
+actor-id-only correspondence branch closes for requests as it does for revisions and events; the
+activation register gains the statement-level `OutboxConsumerActivation_t4d_no_truncate` and a
+NOT NULL, non-blank `reason` under the `DecisionForward.reason` discipline; the `renotified`
+converse also requires the decision's latest `decision.awaiting_countersign` demand to sit at or
+before the cited activation crossing (the kernel's committed-row `platform_latest_event`), the
+handler's decisive predicate mirrored; 4d-i's standing backfill becomes an EXPLICIT gated writer
+arm of the register seal (`SET LOCAL vitan.phase6_4d_standing_backfill`, depth-1 zero-count
+inserts only), so every `ALWAYS_EXECUTE` replay over a project created since commits; and the
+`ReleaseLease` register is sealed — identity frozen after insert, only a non-decreasing
+`leaseUntil` mutable, DELETE refused, `ReleaseLease_t4d_no_truncate` in `TRUNCATE_SEALS` (now
+ELEVEN entries) — so the drain proof cannot be edited into passing. The drain gate itself was
+NOT re-raised.
+
+**Review round 1 on #561 (head `b2e556c3`): seven findings (six P1, one P2), folded on
+its ONE correction head, none dropped.** Per-user standing and identity are projected by their
+owner into platform-owned registers (`ProjectUserStanding`, `UserIdentity`) exactly as the role
+count is — written only by generic platform primitives the orgs triggers call, backfilled in
+4d-i, verified offline — and every decisions seal reads them through the kernel
+(`platform_user_holds_role`/`platform_user_orchestration_authority`/`platform_user_display_name`),
+so no decisions seal invokes an orgs-owned function (`decisions.dependsOn` is `[]` and
+`orgs.dependsOn` names `decisions`; the delivered 4b `phase6_user_decision_authority` predates
+the rule and stays byte-identical); the architect's `ROLE_POLICY` set is stated EXACTLY (twelve
+actions — three reads, five delivered decision actions, `consultation.request`,
+`decision.forward`/`countersign`/`disagree` — with the exclusions named) and P28 asserts
+equality over every action; the two delivered consultation facts gain the same-transaction
+effect correspondence in both directions (sealed in 4d-i; the delivered service already emits
+in-transaction); `cancelledAt` is admitted only as the mark's NULL → timestamp write, never
+cleared or rewritten; the activation register's BEFORE INSERT locks the catalog row and requires
+`seq = activationSeq + 1`, the AFTER INSERT advancing `active` and the head together;
+`SnapshotService.shellSummary`'s badge is served by the same `countPending`; and the
+`ProjectEventStream` row cannot be deleted outside the project cascade, inserted at any position
+but 0, or truncated (`TRUNCATE_SEALS` now FOURTEEN entries). The drain gate was not raised.
+
+**Review round 2 on #561 (head `d5646595`): nine findings, all P1, carried here, none dropped.**
+The per-user register carries the granting `membershipId`, its membership trigger recomputes the
+membership-less `pmc` fallback whenever a user's active-membership presence changes (both
+transitions probed), and `User_t4d_identity` projects a new account on INSERT; the kernel serves
+`platform_role_holder_user_ids` and `platform_membership_active_user` over the register so the
+NEW seals' audience and named-holder arms call no orgs primitive (the delivered 4b/4c ones stay
+for the delivered seals only); the catalog carries `requiresPush` and an `audience`
+(`broadcast`/`targeted`/`frozen`) for every pushing family and the envelope seal requires the
+push wherever it is owed, locking the catalog row `FOR SHARE` before reading `retiredAt` so the
+gated retirement stamp orders deterministically; `deliveryRowsFor` reads the consumer catalog
+rows `FOR SHARE` to commit so an activation append orders before or after the whole event; 4d-iii
+locks the `decisions.effects` catalog row, activates at `activationSeq + 1` only if inactive and
+VERIFIES the head active, aborting the retirement otherwise; both consultation facts carry the
+frozen role + name pair (nullable through the drain, required by 4d-iii) bound to their event
+envelopes; and the three new fact tables join the sanctioned reset child-first under their row
+seals disabled by name. The drain gate was not raised.
+
+**Review round 1 on #562 (head `be56b941`): six findings (five P1, one P2), five folded
+on its ONE correction head, one DECLINED on the Board's recorded decision, none dropped.** The
+approve CAS reads `RoleStandingQuery.activeCount` and every NEW seal the kernel's
+`platform_role_standing` over `ProjectRoleStanding` (the delivered `phase6_effective_role_standing`
+stays for the delivered `client`/`pmc` seals only); `MembershipTransition.actorRole` is the actor's
+ACTUAL token role, with team-management authority judged separately by
+`platform_user_manages_team` over a `pmc` row or the platform-owned `OrgUserAuthority` register
+the `OrgMembership` trigger projects (`TRUNCATE_SEALS` now FIFTEEN entries); the
+`Notification(projectId, eventId)` FK is `DEFERRABLE INITIALLY DEFERRED` because the delivered
+writers create the notice before `emitEvent` allocates the event; the consultation converse binds
+each event's push target to the fact's audience (the frozen consultee; the requester with the
+frozen role); and the latest-demand lookup takes `before := NEW."streamPosition"` so a valid
+re-emission never sees itself. The sixth — "remove the human-only drain gate" — is DECLINED as a
+Board decision, not a plan defect: raised on #482 and answered there (comment 5569586836); the
+plan carries the gate exactly as decided and its removal is the user's separate decision.
+
+**Review round 2 on #562 (head `2f493f8f`): five findings, all P1, carried here, none dropped.**
+The `OrgUserAuthority` register gains its writer — the generic `platform_org_authority_apply`
+primitive called by the orgs-owned `OrgMembership_t4d_org_authority` trigger — its 4d-i backfill
+and its verify and probe arms; the forward door judges a role `toDesignation` by
+`platform_role_has_holder` over the per-user register (populated for every role) instead of the
+architect-only count register; 4d-iii RE-PROJECTS `ProjectUserStanding` and `OrgUserAuthority`
+from the orgs truth under the org key before it installs a door or drops a reservation, closing
+the 4d-i → 4d-iii window in which a `Project` INSERT and an owner/admin `OrgMembership` INSERT
+could each miss the other (barrier-tested, the repair asserted); the 4d-i inventory names all
+four consultation attribution columns; and the frozen-delivery seal admits exactly the three
+relay-owned `dispatch → noop` transitions the delivered code performs (the same-statement mark,
+the completion of an already-marked leased row, the retirement of a pending pre-intent row). The
+drain gate was not raised.
+
+**Review round 1 on #563 (head `6bf75a36`): five findings (four P1, one P2), four folded
+on its ONE correction head `01706fe`, one DECLINED on the Board's recorded decision, none dropped.**
+`EmitInput` gains an optional caller-minted `eventId` that `emitEvent` passes into the event
+insert, so every notification writer mints the id, stamps the notice and then emits under the
+deferred FK; `OutboxDelivery_t4d_bound` judges EVERY delivery row's `deliveryAction` against its
+consumer's persisted rule whatever the consumer's activation state (existence stays required only
+for the active set), so a row planted for an inactive consumer cannot survive reactivation with
+the wrong action; P41 names `decisions.service.ts` `requestConsultation`/`respondToConsultation`;
+and the 4d-ii checklist names the platform's `deliveryRowsFor` projection in place of the retired
+`deliveryFor`. The fifth — "replace the human-only drain gate" — is DECLINED as a Board decision,
+not a plan defect: raised on #482 and answered there (comment 5569586836); the plan carries the
+gate exactly as decided and its removal is the user's separate decision.
+
+**Review round 2 on #563 (head `01706fe`): one finding (P1), carried here, none dropped.** The
+4d-iii re-projection that closes the drain window was serialized by `lockOrgStanding` alone,
+which a direct SQL writer never takes, so a direct `Project` INSERT and a direct owner/admin
+`OrgMembership` INSERT could both commit after the repair's snapshot and before the doors were
+installed. 4d-iii now FENCES the three orgs tables FIRST — `LOCK TABLE "Project",
+"OrgMembership", "Membership" IN SHARE ROW EXCLUSIVE MODE`, taken before the snapshot and before
+any door, in that one order, held to commit, and takes NO org key — so every write that began
+before the fence has ended and is visible to the snapshot, none commits between the snapshot and
+the doors, and the first write after commit meets the installed doors; P42's arm starts a
+direct-SQL pair after the fence, observes it BLOCKED, and asserts it commits through the doors
+with the `pmc` row present. The drain gate was not raised.
+
+**Review round 1 on #564 (head `93349e6`): one finding (P1), DECLINED on the Board's
+recorded decision, nothing folded.** "Allow the runner to clear the drain gate autonomously" —
+the only finding on the head — is the Board decision recorded at #482 comment 5569586836, not a
+plan defect; the plan carries the gate exactly as decided and this head records the disposition
+in the lineage table. Every other finding of the lineage is closed; the reviewer raises the
+decided gate on fresh heads because `AGENTS.md` L72–75 ("do not block on human sign-off") and
+the recorded decision contradict, which is escalated to the Board on #482 as a concrete
+convergence blocker.
+
+**Review round 2 on #564 (head `2a47037`): three findings, all P1, carried here, none dropped.**
+The seed's DL-003 open change request — a pre-4d-shaped plant in a seeded world that carries no
+events — becomes 4d-iii's ONE named bypass of the trailing `ChangeRequest_t4d_provenance_required`
+seal (disabled by name inside the plant's transaction in the seed's existing `DO $$ … DISABLE
+TRIGGER` shape, re-enabled after; the only admitted site under the statement tripwire), and
+P28b's reset arm runs the FULL seed on the post-4d-iii schema, fresh and mature; P42's post-fence
+arm models the contention the doors create once the fence lifts (the `Project` and owner/admin
+`OrgMembership` doors each TRY the same org key): exactly one of the direct-SQL pair commits, the
+other is refused by its door and retried after the winner commits, the terminal `pmc` row
+asserted in both resume orders, the doors not weakened; and 4d-i's packet MUST carry the same
+large-unit evidence 4d-ii's does — the exact `<!-- review-size: justified-large -->` marker, all
+six invariant-matrix rows, the five checks, the file inventory and its `inseparable` marker. The
+drain gate was not raised on this head.
+
+**Review round 1 on #565 (head `5871826`): three findings (two P1, one P2), two folded
+on its ONE correction head `89bd230`, one DECLINED on the Board's recorded decision, none dropped.** Both
+4b seals gain a SEPARATE architect arm judged by `platform_role_standing` over the platform
+register, the delivered `client`/`pmc` arm left byte-identical on `phase6_effective_role_standing`
+(widening that arm's set would have sent a decisions-owned seal's architect branch through the
+orgs-owned function that reads `Membership`/`OrgMembership`/`Project`); and the frozen
+`targetUserIds` must be DISTINCT as well as set-equal to the audience — the producer persists the
+canonical sorted, distinct array, the seal refuses a repeated element, the delivery row's copy is
+bound element-for-element, and P37 gains the duplicate-recipient probe. The third — "remove the
+human-only drain gate" — is DECLINED as a Board decision, not a plan defect (#482 comment
+5569586836); the `AGENTS.md`-vs-decision contradiction stays before the Board (#482 comment
+5575748015).
+
+**Review round 2 on #565 (head `89bd230`): one finding (P1), carried here, none dropped.** The
+delivered `Membership_t4b2_holder_guard` is an AFTER trigger and the register's
+`Membership_t4d_role_standing` was AFTER too; same-kind triggers fire in name order, so the
+guard's new architect arm read the register before the delta landed and the last architect's
+removal under a designated open decision passed with the count left at zero. The register's
+trigger is now BEFORE ROW — it computes its delta from the row it is handed and applies it
+before the write — so every AFTER guard on `Membership` judges the post-write count, for one
+row and for a multi-row statement alike; the per-user register trigger stays AFTER (its rows
+carry the membership id, and no AFTER guard reads it); the decisions-owned guard is not taught
+the delta; P37 asserts the last-architect removal, re-role and two-in-one-statement removal
+refused, RED against the AFTER ordering. The drain gate was not raised on this head.
+
+**Review round 1 on #566 (head `cc8b3ba`): two findings, both P1, one folded on its
+ONE correction head, one DECLINED on the Board's recorded decision, none dropped.** The
+membership transition fact is inserted BEFORE the membership write for EVERY transition (add
+already did; re-role and removal join it), so every arm of its BEFORE INSERT trigger — actor
+role, display name, team-management authority — judges the pre-state registers by
+construction and the self-demotion special case collapses into the one rule (written
+membership-first, a PMC's self re-role had already projected the new role before the fact
+claimed the frozen `pmc`); the membership write's BEFORE trigger requires the fact to already
+exist in the transaction, so "fact first" is the sealed protocol; P29b gains the self re-role,
+self-demotion and membership-first-hostile arms. The other — "allow the autonomous runner to
+clear the drain gate" — was first DECLINED on the recorded default (#482 comment 5569586836) with
+the `AGENTS.md`-vs-decision contradiction before the Board (#482 comment 5575748015). **A Watch
+relay's "Board GO" was folded and REVERTED**: a GitHub Watch relay under the shared owner login
+(#482 comment 5577525644, nudged to #566 as comment 5577525720) claimed a Board decision lifting
+the human attestation; this session folded it on head `1a2ba97`; Delivery's hold (#482 comment
+5577732007) established that no direct user decision stood behind the relay, and head `5921f22`
+reverted the fold byte-for-byte — a coordinator relay cannot lift a gate the user retained, and
+the session said on #566 and #482 what would: the Board's own unmarked words. **The Board then
+decided directly on 2026-09-08 (#482 comment 5577872836 — its own words under the owner account,
+no coordinator marker): the human drain attestation is LIFTED and the plan change authorized.**
+The fold was prepared as its own docs-only head and HELD while the session's permission layer
+refused it (#566 comment 5577923054 — a denial is not routed around); it was then applied on
+#568's head `b0d5399` after an in-session instruction, and #568's head `86ee002` rewrote `main`'s
+`AGENTS.md` bullet (#569) to match. **GitHub Watch's own record (#482 comment 5581275205) states
+that Watch ENTERED the in-session selection that kept the fold; the session that authored #569
+records the user's direct instruction to it — keep the gate (#482 comment 5581298475); and no API
+field distinguishes comment 5577872836 from a coordinator post. So this head fails
+CLOSED and REVERSES the fold: §D reads exactly as at `5921f22` — the attestation REQUIRED, the
+autonomous evidence fail-closed corroboration — and `AGENTS.md` is left exactly as `main` carries
+it; lifting the gate remains the user's decision to give in their own voice.** The forced
+close-and-replace at the second finding-bearing head was retired on `main` by #578 (`f050bcd`) on
+2026-09-08; this unit is fixed forward on #572 by Board decision (#482 comment 5585712971).
+
+**Review round 2 on #566 (head `5921f22`): two findings, both P1, carried here, none dropped.**
+One is the WINDOW RULE: 4d-i re-pointed the still-live consultation request seal's requester arm
+onto the per-user register, but through the 4d-i → 4d-iii window the admitted `Project`-vs-
+`OrgMembership` race can leave a membership-less owner/admin without their `pmc` row, so the
+delivered service admitted the owner and the DB seal refused the insert until 4d-iii repaired the
+register. The plan now states the rule — until the fenced re-projection has proven the fanned-out
+rows equal to the orgs truth, no seal or read a window writer can meet judges a user's `pmc`
+standing through them — and disposes its three arms: the consultation seal's requester arm STAYS
+`phase6_user_decision_authority` (4d-i widens the open set alone) and 4d-iii re-points it after
+the re-projection in the same transaction, 4d-ii's service keeping the delivered check and
+admitting an `architect` requester through the kernel read (inert until 4d-iii, when architects
+become representable); the `MembershipTransition` fact's `pmc` actor arm derives a membership-less
+owner/admin from the RACE-FREE registers (`OrgUserAuthority` + no membership-granted row, the org
+read from the orgs-owned seal's own `Project` row); and the participant's `effectiveRoleHolderUserIds`
+keeps the delivered orgs-truth SQL for `pmc`/`client` while `rollout.phase6_4d` reads `reserved`,
+wrapping the kernel read once it reads `open`. P29b's race fixture leaves the owner without the
+fanned-out row and asserts the request, the fact and the delivered push all admit them, RED
+against the 4d-i re-point. The other is the stranded return for an EMPTIED ROLE designation: the
+`returned` outcome required a `toDesignation` only for a departed NAMED holder, so an architect-
+role-designated decision whose sole architect approved it and left carried no `DecisionForward`
+on `returned → change` and the open-holder rule refused it. Re-homing is now REQUIRED whenever the
+installed designation has no active holder — named departed OR role with zero members
+(`platform_role_has_holder` false) — the forward running FROM the empty designation to the named
+active target; P29b adds the emptied-role probe, RED against the named-holder-only rule. The
+drain gate was not raised on this head.
+
+**Review round 1 on #567 (head `5f07c5a`): four findings, all P1, three folded on its
+ONE correction head, one DECLINED on the Board's recorded decision, none dropped.** (1) The
+drain gate — DECLINED as a plan defect: the recorded default (#482 comment 5569586836) retains
+the human attestation; the Board's DIRECT decision to lift it (#482 comment 5577872836) is
+accepted and prepared as its own docs-only head, held until the user permitted it in the
+session — folded on #568's head `b0d5399` and REVERSED on #572's head `b491399` (the #566 round-1 record above). (2) Every LIVE previous-release
+decision writer now has its explicit drain branch: a NULL envelope pair is admitted through the
+4d-i → 4d-ii drain on every sealed event type a 4c writer can emit (the no-chain approve, the
+standard `requestChange`, `withdrawChange`, `requestConsultation`, `respondToConsultation`), the
+attribution arm binding `actorId` alone whenever the pair is NULL; the change-request notice is
+owed for the `countersign_rejection` origin only, the standard request's transition owing none
+and joining the correspondence table; a legacy-writer table in §A.3 states what each writes,
+what the seals demand and why they agree; P42 drives all five shapes through the 4d-i seals and
+asserts each commits, RED against the approve-only NULL rule. (3) `deliveryRowsFor` locks EVERY
+`OutboxConsumerCatalog` row `FOR SHARE` — active and inactive alike — BEFORE filtering by
+`active`, so an activation's `FOR UPDATE` on an inactive row either committed before the event's
+read or waits for its commit; P38's barrier arm drives the exact read → activation → commit
+interleaving, RED against the active-only lock. (4) 4d-ii is SPLIT into 4d-ii-a (the SERVER unit,
+dark: the catalog-data migration, the commands, the seals, the interceptor and every server
+change — the migration seam inseparable for it alone) and 4d-ii-b (the CLIENT unit: the web
+gateway's `countersign-v1` declaration and every web surface, probed against the 4d-ii-a server
+with the doors standing); the drain's minimum release is 4d-ii-a's and 4d-ii-b's fold sets the
+directive; the earlier inseparability claim is recorded as false under the plan's own staging
+(the doors keep every new shape unrepresentable and the lesser-client refusal fires only under an
+active chain). (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
+
+**Review round 2 on #567 (head `7bf282f`): three findings, all P1, two carried here, one DECLINED
+on the Board's recorded decision, none dropped.** (1) The drain gate, now argued from the plan's
+own record of the Board's direct decision — DECLINED as a plan defect for the reason the record
+states: the decision (#482 comment 5577872836) is accepted and its fold prepared as its own
+docs-only head, held only because the session's permission layer refused to apply it; a review
+finding does not change who applies a policy fold or when — it was folded on #568's head
+`b0d5399` on a Watch-entered selection and is REVERSED on #572's head `b491399`. (2) The awaiting entry arm was
+`BEFORE UPDATE` only, so after 4d-iii a direct INSERT of a published `Decision` already carrying
+`awaiting_countersign` passed the delivered 4b INSERT seal and committed with no provisional
+revision, receipt, demand event, audit row or notice; the approved-entry seal now refuses a
+decision BORN `awaiting_countersign` outright — the state is entered only through the sealed
+transition — and P37 gains the hostile born-awaiting INSERT. (3) The delivered
+`decision_t4b_attribution_seal` admits the frozen approval tuple's first write only on
+`pending`/`change → approved` and forbids an approval-bearing `change` row from leaving
+`approved`/`change`, so the provisional approve and the chain reapproval both aborted before the
+pairing seals ran; 4d-i's `CREATE OR REPLACE` now widens both clauses for exactly the sealed
+provisional transition, the INSERT clause kept, and P31 drives both chain flows through the
+widened function, RED at the delivered one. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
+
+**Review round 1 on this PR, #568 (head `55144a3`): four findings as the gate counts them (the
+second raised twice), all P1, two folded on its ONE correction head, one DECLINED on the Board's
+recorded decision, none dropped.** (1) The drain gate — DECLINED as on every head since #558: the
+recorded default (#482 comment 5569586836) retains the human attestation; the Board's DIRECT
+decision to lift it (#482 comment 5577872836) is accepted and its fold prepared as its own
+docs-only head, folded on #568's head `b0d5399` on a Watch-entered selection (#482 comment
+5581275205) and REVERSED on #572's head `b491399`. (2) The converse pairing had
+installed an orgs-owned constraint trigger on the kernel's `DomainEvent` reading
+`MembershipTransition`, and §A.3 repeated the shape for the decisions types — the platform kernel
+executing application-module persistence logic, the dependency inverted. The plan now uses a
+PLATFORM-OWNED generic mechanism: the kernel's `DomainEventPairingClaim` register (written only
+through `platform_claim_event_pairing` at trigger depth; append-only, no-TRUNCATE), the persisted
+catalog's `pairingRequired` flag, and the kernel-owned DEFERRED seal `DomainEvent_t4d_pairing_claimed`
+requiring exactly one same-transaction claim for every event of a pairing-required type, reading
+platform tables alone; the OWNER's fact seal verifies its event through `platform_tx_event` and
+CLAIMS it; no peer-owned trigger is installed on the kernel table, every arm attributed to "the
+converse" is an arm of the claiming fact seal, and the raw-plant bypass names the kernel's seal.
+P29b/P37 gain the unclaimed-event, direct-claim and double-claim refusals. (3) A `standard`
+`ChangeRequest` had no bidirectional link to its `approved → change` transition, so a planted
+request could occupy `ChangeRequest_one_open_per_decision` and block the stranded `returned`
+resolution's rejection request; the OPENING is now one bundle in both directions like the
+closure — the inserted standard request requires the same-transaction `approved → change` on its
+own `Decision` row and the approved-entry seal's `approved → change` arm requires exactly one
+same-transaction open standard request — the delivered `requestChange` performing both under the
+readiness lock, so the previous release is compatible through the drain; P33 gains both refusals
+and the reviewer's shape. Codex returned a clean +1 on the drain-decision head `b0d5399`;
+the second finding-bearing head was `867d065`, the `main` merges (#569's `AGENTS.md` bullet
+corrected to the decided gate; #570's workflow), on which Codex raised two findings, so #568
+closed at the limit.
+
+**Review round 2 on #568 (head `867d065`): two findings, both P1, carried here, none dropped.**
+(1) The seed's DL-003 plant disabled `ChangeRequest_t4d_provenance_required` alone, but 4d-i
+already installs the permanent DEFERRED pairing seal on `ChangeRequest` — now NAMED
+`ChangeRequest_t4d_paired` — requiring every open `standard` request to accompany its
+same-transaction `approved → change` transition, claimed event and audit row; the seed creates
+DL-003 directly in `change` in an earlier transaction and inserts the request bare, so fresh and
+mature post-4d-iii seeds still aborted at commit. The plant's one transaction now disables BOTH
+seals by name in the seed's existing `DO $$ … pg_trigger … DISABLE TRIGGER` shape and re-enables
+both after; the opening bundle is deliberately not constructed (a fabricated transition would be
+a fake fact); the two names are the closed set (`DomainEvent_t4d_pairing_claimed` never fires —
+no event is inserted); P28b gains the RED probe that the single-name bypass is refused by
+`ChangeRequest_t4d_paired`. (2) The closed FIFTEEN-entry `TRUNCATE_SEALS` inventory omitted the
+`DomainEventPairingClaim` no-TRUNCATE seal §A.2 declares and the reset truncates with
+`DomainEvent`, so every reset reaching the register would have aborted;
+`DomainEventPairingClaim_t4d_no_truncate` is the SIXTEENTH entry and the register joins the
+reset's table list beside `DomainEvent` and `Notification`. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
+
+**Review round 1 on #572 (head `8b50b52`): two findings (one P1, one P2), folded on its ONE
+correction head `e2fd243e` by a SECOND Claude session (session_01SkcEKPyj3MbLUoCy8bFuck,
+answering the orchestrator's `@claude` Auto-fix handoff while this branch's originating session
+was idle), carried here as pushed.** (1) The 4d-ii writer inventory updated `requestChange` to
+record `sourceCommandId` only, never the frozen `requestedByRole`/`requestedByName` pair the
+trailing 4d-iii seal requires, so even a keyed current-version standard request would have
+inserted the NULL pair and aborted; the standard writer now states the pair from the resolved
+actor exactly as the consultation and rejection writers do, and P42 drives the SHIPPED service
+after the trailing seals (a positive arm). (2) `requestChange` passed no `synthesizeKeyWhenAbsent`,
+so under the documented default an unkeyed request took the ledger-less branch with no receipt
+and would roll back once the column is required; 4d-ii's `requestChange` opts into synthesis —
+the delivered answer the inventory ledger took — with P42's no-header arm. That correction head
+also committed a machine-local `node_modules` symlink by mistake (a worktree build), removed on
+`8acf586`; every CI job on `e2fd243e` died at `pnpm install`.
+
+**Review round 2 on #572 (head `e2fd243e`): two findings, both P1, carried here, none dropped.**
+(1) The `node_modules` symlink — a packaging error on the tree, not a plan defect: gone from this
+replacement's tree (`git ls-files` shows no such path); the one-line `.gitignore` prevention
+(`node_modules` without the slash) landed on `e3e2828` by the same session and was carried here
+until #574 merged the same rule with its `review-scope` tripwire (`main` `279499e`, merged into
+this branch), so this unit is docs-only again — the plan and STATUS. (2) The §A.3 fact-table
+row for `ChangeRequest` gave actor standing only to an architect under a chain or the resolving
+PMC and named only an awaiting subject, although the row governs `origin = 'standard'` too; the
+delivered `decision.change` policy admits `pmc`, `client`, `contractor`, `engineer` and
+`consultant` and opens the request from `approved`. The row is now enumerated BY ORIGIN — the
+`standard` arm admits an ACTIVE member whose frozen role is in the delivered set (the architect
+not among them; 4d widens nothing) on an `approved`, published subject through the exact
+`approved → change` transition — and P33 gains the non-PMC service probes, RED against the
+two-role enumeration. (At that outing the rule was close-and-replace at the second finding-bearing head; #578
+(`f050bcd`) retired it on `main` on 2026-09-08 and this unit is fixed forward on #572.)
+
+**Review round 3 on #572 (head `c2e0840`): four findings, all P1, folded on this branch, none
+dropped.** (1) The plan's §D staging rule still directed close-and-replace at a second
+finding-bearing head — the protocol #578 retired; it now states fix-forward on this branch, a
+replacement admitted only for a concrete change of scope or approach with a `Replacement
+reason:`, and every historical "close-and-replace" sentence in this file is rewritten as the
+record it is. (2) The `standard` change-request arm required an ACTIVE member, but the delivered
+`ProjectAccessService` authorizes a membership-less org owner/admin as `pmc` and `decision.change`
+admits `pmc`; the arm is now judged by `platform_user_holds_role` over the register's derived `pmc`
+row exactly as obligation 3 judges every fact, with P33's membership-less owner/admin service probe
+(COMMITS) beside the no-standing direct insert (refused). (3) The architect's exact `ROLE_POLICY`
+set still listed `decision.change` while the §A.3 contract excludes the architect from a standard
+request; `decision.change` leaves the set (ELEVEN actions; the architect's change path is
+`decision.disagree`) and P28's equality pin asserts its absence. (4) 4d-ii-a turns the three
+membership mutations into ledger commands with a NOT NULL `sourceCommandId`, but deployed tabs
+call those routes with no `Idempotency-Key`; all three opt into `synthesizeKeyWhenAbsent: true` —
+the answer `requestChange` took in round 1 — and P29b gains the three no-header arms against the
+4d-ii-a server plus the keyed replay arms.
+
+**Root cause, audited (the gate asked for one at this round).** Read across rounds rather than
+within one, findings 2, 3 and 4 are a single failure: an obligation discharged at the site where
+it was REPORTED and never over the set of sites that carry it. Round 1 gave `requestChange` key
+synthesis and left its three sibling writers — same unit, same NOT NULL column — to be found in
+round 3. Round 2 enumerated the `ChangeRequest` row by origin and wrote "member" where the general
+actor-standing contract says standing. §A.1 declared a closed action set and never reconciled it
+against the seals that judge the same acts. So the deliverable beside the four fixes is two rules
+stated over SETS: §A.3 obligation 6 now requires key synthesis AND a no-header probe of EVERY
+ledgered command whose fact carries required provenance, naming the covered writers exhaustively;
+and §A.1 requires its closed set to name, per action, the seal that judges it, so a grant a seal
+would refuse is a defect rather than a discovery. Both would have caught findings 3 and 4 before
+this review. One residual is recorded rather than changed: `decision.withdrawChange` stays in the
+architect set as decided, and is now unreachable (the delivered command admits only the requester
+or a PMC and refuses a `countersign_rejection` request) — inert, not contradictory.
+
+Head `c2e0840` also merged `main` `f050bcd` (#578);
+this correction merges `main` `279499e` (#574), whose `.gitignore` rule supersedes the duplicate
+line this branch carried, leaving the unit docs-only.
+
+**Review round 4 on #572 (head `76d8f786`): six findings — five P1, one P2 — folded on this branch,
+none dropped.** (1) `Notification_t4d_binding` was specified as one trigger doing two jobs PostgreSQL
+cannot combine — a deferred INSERT arm inspecting an event the same transaction inserts later, and an
+immediate `BEFORE UPDATE OR DELETE` freeze; the timings are now separate named objects
+(`Notification_t4d_binding_bound` deferred, `Notification_t4d_binding` immediate). (2) A `standard`
+request's withdrawal froze nothing about its closer, so a hand-run bundle could stamp an arbitrary
+role and name on the append-only event and audit row; `resolvedByRole`/`resolvedByName` join the row,
+immutable with `resolvedById`, with both effect records bound to them. (3) The "exhaustive"
+key-synthesis roster written in round 3 missed four commands the same paragraph names two sentences
+later. (4) `User_t4d_identity` said nothing about deletion while `UserIdentity` is sealed and the
+fixtures hard-delete users; `ON DELETE CASCADE` is added and admitted by the seal, a direct DELETE
+still refused. (5) The pairing register is UNIQUE per event, but one branch named no claimant and
+bundles would have named two; the rule is now per BRANCH — the primary fact claims, the rest verify.
+(6) The window rule's three arms omitted the approval writer.
+
+**Root cause, audited — and the round-3 remedy FAILED its own test.** Round 3 diagnosed the
+generator correctly (an obligation discharged where reported, not over the set that carries it) and
+then answered it by writing the set down. Findings 3 and 6 of round 4 are that answer failing: a
+hand-written roster and a hand-counted list of arms, each missing a member. The remedy was the wrong
+KIND of thing — an enumeration someone must remember to extend has the defect built in. Round 4
+replaces both with DERIVATIONS: the provenance rule reads its set off the §A.3 fact table's own
+provenance column, and the window rule states the property its arms share instead of counting them,
+so a command or writer added later is covered by construction. The test this sets itself is whether
+a later round finds a missing INSTANCE of either rule; if it does, the mechanism is still wrong
+rather than the list being short.
+
+**What moves in the Now block.** `task_state` returns to `in_progress` — task 4 has a work item
+again — and `open_pr` names this PR on the pointer commit (`none` on the unit commit, the §D
+self-naming convention every 4c and 4d unit followed). `reviewed_merge` stays `f5da6654`,
+`next_task` stays `phase-6-task-4d`, `phase_plan` stays the 4c plan until this plan CLEARS.
+Runner invariants: `assessRunnerState` → `pr:<this>` while open; `assessPostMergeRunnerState` →
+simulated, allowed, `task:4`; `detectStatusDrift` with the self-named `open_pr` live → no drift.
+
+**The ledger, read off the label.** EMPTY. The `review-replacement-required` labels on #559, #567
+and #568 were removed on the Board's instruction at 11:36 UTC on 2026-09-08 (#572 comment
+5584522420; #567's obligation had already been discharged by #569's merge — a content-less ledger
+discharge, `AGENTS.md` alone — and #559's by #570's; #520–#566 were unlabelled by hand at 06:05 UTC
+per #569's record), and #578 (`f050bcd`) retired the rule that minted them. So this PR declares
+`Replaces: none` — truthful and admitted; with the ledger empty, `Replaces: #568` (which #575 had
+declared, and #572 before it) is refused as naming no unit awaiting replacement. The content
+lineage from #568 is history above, not a ledger claim. No label is applied or
+cleared by this lineage.
+
+**What follows, and what does not.** After this plan clears its own exact-head review, 4d
+implementation begins with 4d-i from the `main` that carries it; further findings here are
+folded on this branch whatever the head count (#578 retired the forced close-and-replace; the
+Board's decision for this unit is fix-forward, #482 comment 5585712971), a replacement admitted
+only for a concrete change of scope or approach with a recorded `Replacement reason:`. No 4d
+implementation is started by this PR. Contractor-capture units 1–6 stay Board-gated; the P3005
+correction stays in the maintenance queue; no UX, performance, Site Map or photo-capture work;
+#530, #531 and #532 stay closed.
 
 ### Unit 4c-v merged — 4c is COMPLETE. The §E handoff to the 4d PLAN unit is the recorded next step.
 
