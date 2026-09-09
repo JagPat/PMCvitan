@@ -11,58 +11,45 @@ narrative and may lag behind reality.
 
 ```yaml
 phase: 6
-phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
+phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: f5da6654
 open_pr: 572
 next_task: phase-6-task-4d
-blocking_directive: phase-6-4d-unit1-prerequisite
+blocking_directive: none
 updated: 2026-09-09
 ```
 
-### Directive `phase-6-4d-unit1-prerequisite` — 4d implementation waits for the activation unit
+### Directive `phase-6-4d-unit1-prerequisite` — WITHDRAWN, and why
 
-**What it blocks.** Starting 4d-i. The 4d plan was split into four
-dependency-ordered units on JagPat's instruction; unit 1 — the outbox consumer
-activation register, its mirror and the `outbox:consumer` protocol — is carried
-by #580 and lands first. 4d-ii registers `decisions.effects` into that register
-and relies on its catalog-INSERT trigger for the consumer's activation head;
-4d-iii appends the activation and verifies that head. None of it exists on
-`main` until #580 merges.
+**It is no longer set.** The directive existed to stop 4d-i implementation from
+starting against a `main` that lacked the outbox consumer activation register,
+in the case where #572 merged before #580 — the two PRs the 4d plan had been
+split across. On JagPat's instruction (2026-09-09, "close #580 and take the
+whole 4d plan back to one unit") that split is REVERSED: the activation
+document, `docs/superpowers/plans/2026-09-09-outbox-consumer-activation.md`, is
+carried in #572 itself — every round, finding and answer verbatim, with only a
+header note and its `## Review unit` section corrected to say where it now lives
+— and #580 is closed. One unit cannot land half of itself, so there is no merge
+order left to guard and no prerequisite left to name.
 
-**Why it is recorded HERE and NOW, not promised for later** (#572's review
-rounds 17 and 18). Round 17 answered this hazard with a post-merge obligation —
-"if this plan merges first, the merging change carries the directive" — and that
-was wrong for the reason this repository keeps finding: nothing installs it.
-`assessPostMergeRunnerState` clears the merged PR's `open_pr` and calls
-`assessRunnerState`; it synthesizes no directive and has no hook that could. So
-if #572 merged first with `blocking_directive: none`, the resolver would return
-`task:4` and a producer could start 4d-i with the register absent. The directive
-has to be in the file before the merge, because the merge is when it is read.
+**Removing it is what keeps this file TRUE.** A directive naming a prerequisite
+that is not a work item anyone can pick up would park the runner on work that
+cannot be done — the mirror hazard the directive's own completion test was
+written against. `phase_plan` is corrected in the same edit: it pointed at
+`2026-08-29-decision-workflow-4c.md`, a plan that is complete and merged, while
+the open work is the 4d plan.
 
-Round 17 also argued that setting it early would park #572's own review loop,
-since a directive from `in_progress` outranks `open_pr` in
-`assessRunnerState`. That ordering is real, but the conclusion was wrong on the
-balance of costs: the directive points a producer at #580 — work that is
-genuinely next and genuinely blocking — while #572 is shepherded by its
-correction owner and its exact-head gate, neither of which reads this key. The
-error it prevents is a 4d-i implementation with no activation register; the
-error it risks is a producer doing the right work in the right order.
-
-**Completion test.** The directive is DISCHARGED when
-`docs/superpowers/plans/2026-09-09-outbox-consumer-activation.md` is present on
-`main` — a file's presence, not a claim about PR numbers, and checkable by
-anyone at any moment.
-
-**Merge-order resolution.** #580's STATUS entry and this one touch the same
-keys, so whichever merges second resolves the conflict, and the rule is that the
-resolved state must be TRUE at that moment: the directive stands iff that file
-is absent from `main`. If #580 lands first — the intended order — this branch's
-directive is dropped in the same resolution, because a directive naming a
-satisfied prerequisite would park the runner on finished work, which is the
-mirror of the hazard it exists to prevent.
+**What survives.** The dependency the directive expressed is real and is now
+INTERNAL to one unit, enforced by migration order rather than by merge order:
+4d-i installs the register, its seals and its baseline backfill; 4d-ii registers
+`decisions.effects` into the catalog and takes its activation head from the
+catalog-INSERT trigger; 4d-iii appends the activation after the drain. The 4d
+plan's round 22 records the reversal, and its rounds 17 and 18 keep their
+sections under a SUPERSEDED banner, because the defects they named — a contract
+naming no installer, a rule left in prose — remain rules this repository holds.
 
 ### The 4d PLAN unit — the NARROWED plan, carried on #572 and fixed forward, docs-only
 
