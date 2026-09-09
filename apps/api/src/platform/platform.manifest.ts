@@ -49,6 +49,13 @@ export const platformManifest: ModuleManifest = {
     'projectUserStanding',
     'userIdentity',
     'orgUserAuthority',
+    // Phase 6 task 4d unit 4d-i — the external-effect catalog as DATA (what a seal reads when it
+    // needs to know whether an event owed a claim), the drain attestation's release lease, and
+    // the generic per-event pairing register. All three are kernel infrastructure and all three
+    // are DARK: nothing reads or writes them until 4d-ii.
+    'externalEffectCatalog',
+    'releaseLease',
+    'domainEventPairingClaim',
   ],
   dependsOn: [],
   // Phase 6 unit 4b, round-6 Codex F6 — the push spine asks TWO orgs-owned questions through

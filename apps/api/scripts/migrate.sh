@@ -186,6 +186,31 @@ report_4c_iiir_migration_failure() {
   echo "[migrate] Full detail: docs/RUNBOOK.md §P64CIIIR."
 }
 
+# The 4d-i twin (§D). 4d-i opens with a DIAGNOSTIC-FIRST audit: it installs the five reservation
+# doors, then counts `Membership` and `User` rows already spelling the reserved role `architect`
+# and ABORTS with a bounded sample if either count is non-zero. The abort follows the committed
+# door and enum statements, Prisma records the attempt as FAILED, and a plain redeploy therefore
+# stops at P3009 — so the recovery is printed here rather than left to an operator reading a
+# swallowed transaction error.
+#
+# The repair is a RE-ROLE, never a soft removal and never a repair engine: the still-serving
+# pre-4d client reads `Membership.role` as the plain string it is, so the ordinary team role
+# command re-roles each offending row to the role the member actually holds. The aborted attempt
+# installed nothing, so that UPDATE is free.
+report_4d_i_migration_failure() {
+  printf '%s\n' "$1" | grep -q '20271220000000_phase6_t4d_i_dark_migration' || return 0
+  echo "[migrate] That failure is the 4d-i dark migration. Its own message is swallowed by the"
+  echo "[migrate] aborted transaction, so the recovery is repeated here:"
+  echo "[migrate]   1. RE-ROLE every \`Membership\` and \`User\` row spelling \`architect\` to the role"
+  echo "[migrate]      the member actually holds (the ordinary team role command; a row that never"
+  echo "[migrate]      legitimately existed is deleted, subject to the 4b holder guards)"
+  echo "[migrate]   2. prisma migrate resolve --rolled-back 20271220000000_phase6_t4d_i_dark_migration"
+  echo "[migrate]      (without this the next deploy stops at P3009 — the schema rolled back, but the"
+  echo "[migrate]       failed attempt is still recorded)"
+  echo "[migrate]   3. redeploy; the audit then sees zero and the reservation installs"
+  echo "[migrate] Full detail: docs/RUNBOOK.md §P6T4D."
+}
+
 out=$(npx prisma migrate deploy 2>&1)
 code=$?
 echo "$out"
@@ -384,7 +409,8 @@ if echo "$out" | grep -q "P3005"; then
 20271205000000_inspections_inbox_v2_assignee
 20271210000000_inspection_assignee_frozen
 20271216000000_inspection_submit_authority_fence
-20271217000000_inspection_evidence_authority_fence"
+20271217000000_inspection_evidence_authority_fence
+20271220000000_phase6_t4d_i_dark_migration"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
@@ -488,6 +514,7 @@ if echo "$out" | grep -q "P3005"; then
     printf '%s\n' "$baseline_out"
     echo "[migrate] migrate deploy failed on the P3005 baseline path — refusing to start."
     report_4c_iiir_migration_failure "$baseline_out"
+    report_4d_i_migration_failure "$baseline_out"
     exit 1
   fi
   printf '%s\n' "$baseline_out"
@@ -557,4 +584,5 @@ fi
 echo "[migrate] migrate deploy failed — refusing to start (no db push fallback in production)"
 
 report_4c_iiir_migration_failure "$out"
+report_4d_i_migration_failure "$out"
 exit $code

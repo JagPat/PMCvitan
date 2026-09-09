@@ -1831,3 +1831,729 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DROP TRIGGER IF EXISTS "ChangeRequest_t4d_no_truncate" ON "ChangeRequest";
 CREATE TRIGGER "ChangeRequest_t4d_no_truncate" BEFORE TRUNCATE ON "ChangeRequest"
   FOR EACH STATEMENT EXECUTE FUNCTION phase6_t4d_fact_no_truncate();
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────
+-- PART 3c — THE ORGS-OWNED MembershipTransition FACT
+-- ────────────────────────────────────────────────────────────────────────────────────────────
+--
+-- The architect chain is armed and disarmed by ORDINARY TEAM ACTS — a PMC adds an architect
+-- member, or the last one leaves — so the standing change is a fact with the same seven
+-- obligations every other 4d fact carries (§A.3). Without it "the chain turned on" is a count
+-- with no attributable act behind it.
+--
+-- THREE COLUMN DETERMINATIONS THE PLAN LEAVES OPEN, recorded here rather than left implicit.
+-- §A.3's effect row names the payload fields (`role`, `membershipId`, `from`, `to`,
+-- `transitionId`, `activeCount`) and §D names the frozen pair, the FKs, the one-use UNIQUE and
+-- the seals, but not the domain of `from`/`to`:
+--
+--   (i)   `role` is the role whose STANDING changed, not the membership's current role — a
+--         re-role writes the fact for the role LEFT and the role ENTERED.
+--   (ii)  `fromStanding`/`toStanding` are `held` / `not_held`: whether the membership held
+--         `role` with ACTIVE standing. Statuses (`invited`/`active`/`removed`) would not do —
+--         a re-role changes standing without changing status, and an `invited → removed`
+--         change moves status without ever touching standing.
+--   (iii) `activeCount` is the register's count AFTER the transition, which is what
+--         `platform_role_standing` returns at the same instant and therefore what the
+--         correspondence check can compare.
+--
+-- "ONE FLIP PER MEMBERSHIP AND PER PROJECT PER TRANSACTION" is enforced as one flip per
+-- membership per RECEIPT. A transaction has no column to key on; a command does, every
+-- ledgered write carries one, and each command is one transaction — so the UNIQUE says the
+-- same thing in a form the database can hold.
+
+CREATE TABLE IF NOT EXISTS "MembershipTransition" (
+    "id"              TEXT NOT NULL,
+    "projectId"       TEXT NOT NULL,
+    "membershipId"    TEXT NOT NULL,
+    "userId"          TEXT NOT NULL,
+    "role"            TEXT NOT NULL,
+    "fromStanding"    TEXT NOT NULL,
+    "toStanding"      TEXT NOT NULL,
+    "activeCount"     INTEGER NOT NULL,
+    "actorId"         TEXT NOT NULL,
+    "actorRole"       TEXT NOT NULL,
+    "actorName"       TEXT NOT NULL,
+    "at"              TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "sourceCommandId" TEXT NOT NULL,
+    CONSTRAINT "MembershipTransition_pkey" PRIMARY KEY ("id")
+);
+
+CREATE INDEX IF NOT EXISTS "MembershipTransition_projectId_membershipId_idx"
+  ON "MembershipTransition"("projectId", "membershipId");
+CREATE UNIQUE INDEX IF NOT EXISTS "MembershipTransition_source_command_key"
+  ON "MembershipTransition"("projectId", "sourceCommandId");
+-- one flip per membership per receipt (see the determination above)
+CREATE UNIQUE INDEX IF NOT EXISTS "MembershipTransition_one_flip_key"
+  ON "MembershipTransition"("projectId", "membershipId", "sourceCommandId");
+
+DO $$ BEGIN
+  ALTER TABLE "MembershipTransition" ADD CONSTRAINT "MembershipTransition_standing_check"
+    CHECK ("fromStanding" IN ('held', 'not_held') AND "toStanding" IN ('held', 'not_held')
+           AND "fromStanding" <> "toStanding");
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE "MembershipTransition" ADD CONSTRAINT "MembershipTransition_activeCount_check"
+    CHECK ("activeCount" >= 0);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE "MembershipTransition" ADD CONSTRAINT "MembershipTransition_actorRole_present_check"
+    CHECK (btrim("actorRole", E' \t\n\x0B\f\r') <> '');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE "MembershipTransition" ADD CONSTRAINT "MembershipTransition_actorName_present_check"
+    CHECK (btrim("actorName", E' \t\n\x0B\f\r') <> '');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- The project's own deletion CASCADES through both references. The append-only seal admits that
+-- cascade explicitly (trigger depth plus the `Project_t4d_deleting` flag), exactly as the
+-- registers admit theirs — a `NO ACTION` here would make a project undeletable the moment one
+-- membership had ever changed standing.
+DO $$ BEGIN
+  ALTER TABLE "MembershipTransition" ADD CONSTRAINT "MembershipTransition_projectId_fkey"
+    FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE "MembershipTransition" ADD CONSTRAINT "MembershipTransition_actorId_fkey"
+    FOREIGN KEY ("actorId") REFERENCES "User"("id") ON DELETE NO ACTION ON UPDATE NO ACTION;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE "MembershipTransition" ADD CONSTRAINT "MembershipTransition_projectId_sourceCommandId_fkey"
+    FOREIGN KEY ("projectId", "sourceCommandId") REFERENCES "CommandExecution"("projectId", "id")
+    ON DELETE NO ACTION ON UPDATE NO ACTION;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- DEFERRED because the fact and the membership are written in ONE transaction in either order:
+-- an ADD may write the transition before the `Membership` row exists, and an immediate FK would
+-- refuse the very act the fact records. It does NOT need to survive a departure, because the
+-- ordinary team removal is SOFT — it sets `status = 'removed'` and leaves the row (and its
+-- `role`) in place, which is the same fact the reservation audit above relies on. A project's
+-- own deletion takes both rows together through the cascade.
+DO $$ BEGIN
+  ALTER TABLE "MembershipTransition" ADD CONSTRAINT "MembershipTransition_projectId_membershipId_fkey"
+    FOREIGN KEY ("projectId", "membershipId") REFERENCES "Membership"("projectId", "id")
+    ON DELETE CASCADE ON UPDATE NO ACTION DEFERRABLE INITIALLY DEFERRED;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- ── obligation 1, with the project-cascade exception ─────────────────────────────────────────
+-- The fact is immutable and undeletable, EXCEPT as part of the project's own deletion (#572's
+-- review round 12, finding 5). Without that arm a project that had ever changed a membership's
+-- standing could never be deleted, and the shared fixture teardown deletes projects.
+--
+-- The exception is TWO local facts, both required, exactly as 4c-iii established: trigger depth
+-- above 1 (an RI cascade runs the child delete at depth 2 — measured), AND the transaction-local
+-- flag the orgs-owned `Project_t4d_deleting` trigger sets. Depth alone would admit any other
+-- trigger's delete; the flag alone would admit a DIRECT delete issued later in the same
+-- transaction, which is at depth 1 and stays refused.
+CREATE OR REPLACE FUNCTION phase6_t4d_membership_transition_immutable() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF pg_trigger_depth() > 1
+       AND coalesce(current_setting('phase6.t4d_project_delete', true), '') = 'on' THEN
+      RETURN OLD;
+    END IF;
+    RAISE EXCEPTION
+      'phase6 4d-i: MembershipTransition % is the attributable record of a standing change and may not be DELETED — the chain turning on or off is evidence, not bookkeeping. (A cascade from the project''s own deletion is permitted; this is a direct delete.)',
+      OLD."id";
+  END IF;
+  RAISE EXCEPTION
+    'phase6 4d-i: MembershipTransition % is immutable — a writer that can rewrite who changed whose standing, or from what to what, can present one team act as another',
+    OLD."id";
+END $$;
+
+DROP TRIGGER IF EXISTS "MembershipTransition_t4d_append_only" ON "MembershipTransition";
+CREATE TRIGGER "MembershipTransition_t4d_append_only"
+  BEFORE UPDATE OR DELETE ON "MembershipTransition"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_membership_transition_immutable();
+
+DROP TRIGGER IF EXISTS "MembershipTransition_t4d_no_truncate" ON "MembershipTransition";
+CREATE TRIGGER "MembershipTransition_t4d_no_truncate"
+  BEFORE TRUNCATE ON "MembershipTransition"
+  FOR EACH STATEMENT EXECUTE FUNCTION phase6_t4d_fact_no_truncate();
+
+-- ── obligation 3: the ACTOR must hold team-management authority ──────────────────────────────
+-- THREE arms, and the third is not a loophole but the only way a real act can be recorded:
+--
+--   (a) an org owner/admin of THIS project's organisation — the tenancy-joined derivation, so
+--       an owner of an unrelated org is refused;
+--   (b) an active project `pmc`;
+--   (c) SELF-DEMOTION. An actor who is the SUBJECT of a transition that REMOVES standing
+--       (`toStanding = 'not_held'`) is admitted even when arms (a) and (b) no longer hold —
+--       because by the time the seal runs the standing they are giving up may already be gone,
+--       and the whole act is them giving it up. Refusing it would make the last owner
+--       permanently unable to step down. It is narrow by construction: it admits only a
+--       transition whose subject IS the actor and whose direction is LOSS.
+--
+-- The frozen `actorRole`/`actorName` pair is judged by the same shared helper every other 4d
+-- fact uses, so the window disposition for a membership-less `pmc` claim is identical here.
+CREATE OR REPLACE FUNCTION phase6_t4d_membership_transition_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_self_demotion BOOLEAN;
+BEGIN
+  v_self_demotion := (NEW."actorId" = NEW."userId" AND NEW."toStanding" = 'not_held');
+
+  IF NOT v_self_demotion
+     AND NOT platform_user_orchestration_authority(NEW."projectId", NEW."actorId")
+     AND NOT platform_user_holds_role(NEW."projectId", NEW."actorId", 'pmc') THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: MembershipTransition % attributes a standing change on project % to user %, who holds neither owner/admin authority in the project''s organisation nor active `pmc` standing on it, and is not the subject stepping down — team management is an authorized act',
+      NEW."id", NEW."projectId", NEW."actorId";
+  END IF;
+
+  PERFORM phase6_t4d_actor_bound(NEW."projectId", NEW."actorId", NEW."actorRole",
+                                 NEW."actorName", 'MembershipTransition ' || NEW."id");
+
+  -- `activeCount` is the register's count AFTER the transition, and the membership standing
+  -- trigger is BEFORE ROW, so by the time this INSERT seal runs the delta is already applied.
+  IF NEW."activeCount" IS DISTINCT FROM platform_role_standing(NEW."projectId", NEW."role") THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: MembershipTransition % records `%` standing at % on project %, but the register holds % — the fact and the register are the same truth and a fact that disagrees with it is evidence of nothing',
+      NEW."id", NEW."role", NEW."activeCount", NEW."projectId",
+      platform_role_standing(NEW."projectId", NEW."role");
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "MembershipTransition_t4d_seal" ON "MembershipTransition";
+CREATE TRIGGER "MembershipTransition_t4d_seal" BEFORE INSERT ON "MembershipTransition"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_membership_transition_seal();
+
+-- ── obligation 6: the receipt binding ────────────────────────────────────────────────────────
+-- Named `phase6_t4d_membership_transition_bound` by §D. It is the single-fact shape — a
+-- membership command writes ONE transition and its receipt names it — so it does not need the
+-- bundle widening the decisions facts take.
+CREATE OR REPLACE FUNCTION phase6_t4d_membership_transition_bound() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE c RECORD;
+BEGIN
+  SELECT "status", "resultRef" INTO c FROM "CommandExecution"
+   WHERE "projectId" = NEW."projectId" AND "id" = NEW."sourceCommandId";
+  IF NOT FOUND OR c."status" <> 'succeeded' THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: MembershipTransition % cites a command that did not succeed in this transaction — the receipt must be COMPLETED by the command that wrote the fact',
+      NEW."id";
+  END IF;
+  IF c."resultRef" IS DISTINCT FROM NEW."id" THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: the command cited by MembershipTransition % names result %, not this fact — a receipt for another result cannot be borrowed',
+      NEW."id", COALESCE(c."resultRef", '<null>');
+  END IF;
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS "MembershipTransition_t4d_provenance_bound" ON "MembershipTransition";
+CREATE CONSTRAINT TRIGGER "MembershipTransition_t4d_provenance_bound"
+  AFTER INSERT ON "MembershipTransition" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_membership_transition_bound();
+
+-- ── obligation 2: the ARCHITECT standing write is paired with its fact, PERMANENTLY ──────────
+-- Orgs-owned, on the orgs table, and NOT retired by 4d-iii: after the reservation is dropped an
+-- architect membership becomes writable, and from that moment every arrival and departure of
+-- architect standing must carry its attributable record or the chain can be armed by a write
+-- nobody performed.
+--
+-- DEFERRED, and judged from the MEMBERSHIP side: the transition row may be written before or
+-- after the membership write inside the command's transaction. The converse direction — a fact
+-- with no standing change — is judged by the `activeCount` comparison in the INSERT seal above,
+-- which reads the register the membership trigger has already moved.
+CREATE OR REPLACE FUNCTION phase6_t4d_membership_architect_paired() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+  v_before     BOOLEAN := (TG_OP <> 'INSERT' AND OLD."role" = 'architect' AND OLD."status" = 'active');
+  v_after      BOOLEAN := (TG_OP <> 'DELETE' AND NEW."role" = 'architect' AND NEW."status" = 'active');
+  v_project    TEXT;
+  v_membership TEXT;
+  v_direction  TEXT;
+BEGIN
+  IF v_before = v_after THEN RETURN NULL; END IF;
+
+  -- OLD and NEW are records, and plpgsql has no expression that picks between two of them, so
+  -- the fields are read explicitly per operation rather than through a CASE over the rows.
+  IF TG_OP = 'DELETE' THEN
+    v_project := OLD."projectId"; v_membership := OLD."id";
+  ELSE
+    v_project := NEW."projectId"; v_membership := NEW."id";
+  END IF;
+  v_direction := CASE WHEN v_after THEN 'held' ELSE 'not_held' END;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM "MembershipTransition" mt
+     WHERE mt."projectId" = v_project AND mt."membershipId" = v_membership
+       AND mt."role" = 'architect' AND mt."toStanding" = v_direction
+  ) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: membership % on project % moved architect standing to `%` in this transaction with no MembershipTransition recording it — the chain is armed and disarmed by attributable ACTS, never by a bare row write',
+      v_membership, v_project, v_direction;
+  END IF;
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS "Membership_t4d_architect_provenance" ON "Membership";
+CREATE CONSTRAINT TRIGGER "Membership_t4d_architect_provenance"
+  AFTER INSERT OR UPDATE OR DELETE ON "Membership" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_membership_architect_paired();
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────
+-- PART 3e — THE KERNEL ENVELOPE, THE EFFECT CATALOG, AND THE RELEASE LEASE
+-- ────────────────────────────────────────────────────────────────────────────────────────────
+
+-- ── the envelope columns, DARK ───────────────────────────────────────────────────────────────
+-- §A.3 obligation 7 compares a fact's frozen `<act>ByRole`/`<act>ByName` pair against the
+-- EVENT's envelope, and the delivered envelope carries neither (#555's review round 1,
+-- finding 2). They land here as nullable columns the delivered `20261015000000` append-only
+-- trigger already freezes, and NOTHING writes them until 4d-ii hands `emitEvent` the actor. A
+-- NULL pair is admitted through the drain on every sealed event type, because the previous
+-- release writes events and knows nothing about these columns.
+ALTER TABLE "DomainEvent" ADD COLUMN IF NOT EXISTS "actorRole" TEXT;
+ALTER TABLE "DomainEvent" ADD COLUMN IF NOT EXISTS "actorName" TEXT;
+
+-- The candidate key `Notification.eventId`'s same-project composite FK references. Additive and
+-- VACUOUSLY SATISFIABLE — `eventId` is already the primary key — so it can reject no row.
+CREATE UNIQUE INDEX IF NOT EXISTS "DomainEvent_project_event_key"
+  ON "DomainEvent"("projectId", "eventId");
+
+-- ── the notice binding ───────────────────────────────────────────────────────────────────────
+-- A notice is a DERIVED communication artifact; the event is the fact. Binding a notice to the
+-- event it announces makes "this notice is about that act" a database truth rather than a
+-- display-text match. Both nullable: legacy notices and every notice the previous release writes
+-- carry neither.
+ALTER TABLE "Notification" ADD COLUMN IF NOT EXISTS "kind" TEXT;
+ALTER TABLE "Notification" ADD COLUMN IF NOT EXISTS "eventId" TEXT;
+
+DO $$ BEGIN
+  ALTER TABLE "Notification" ADD CONSTRAINT "Notification_projectId_eventId_fkey"
+    FOREIGN KEY ("projectId", "eventId") REFERENCES "DomainEvent"("projectId", "eventId")
+    ON DELETE NO ACTION ON UPDATE NO ACTION;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- ONE notice per event, PARTIAL so the legacy and drain-window rows (which carry no `eventId`)
+-- stay out of it. Prisma cannot express a predicate on `@@unique`, so it lives in SQL only.
+CREATE UNIQUE INDEX IF NOT EXISTS "Notification_event_key"
+  ON "Notification"("projectId", "eventId") WHERE "eventId" IS NOT NULL;
+
+-- ── the external-effect catalog, as DATA ─────────────────────────────────────────────────────
+-- The catalog is compiled into the server today (`apps/api/src/platform/external-effects.ts`),
+-- which is exactly why a seal cannot read it: a trigger judging whether an event owed a push has
+-- no way to ask a TypeScript constant. It is projected here as rows, seeded from the CURRENT
+-- compiled catalog as literal SQL, and a tripwire in the suite compares the two so a catalog
+-- entry added in code without its row — or a row that drifts from code — fails a test rather
+-- than silently changing what the seals judge.
+--
+-- `retiredAt` is a ONE-WAY stamp, gated: an effect key leaves service by being retired, never by
+-- being deleted, so a historical event's key still resolves.
+CREATE TABLE IF NOT EXISTS "ExternalEffectCatalog" (
+    "effectKey"       TEXT NOT NULL,
+    "eventType"       TEXT NOT NULL,
+    "invalidate"      BOOLEAN NOT NULL,
+    "pushRoles"       JSONB,
+    "pushFamily"      TEXT,
+    -- §A.3 obligation 7's generic pairing: whether an event of this key must be CLAIMED by
+    -- exactly one fact. Seeded false; 4d-ii turns it on per key as its facts land.
+    "pairingRequired" BOOLEAN NOT NULL DEFAULT FALSE,
+    "retiredAt"       TIMESTAMP(3),
+    CONSTRAINT "ExternalEffectCatalog_pkey" PRIMARY KEY ("effectKey")
+);
+
+-- ── the release lease, DARK ──────────────────────────────────────────────────────────────────
+-- The drain attestation's evidence: which release is serving, since when, and under whose
+-- authority. Written by nothing until 4d-ii; its identity is frozen and its rows are neither
+-- deletable nor truncatable, because a lease that can be rewritten attests to nothing.
+CREATE TABLE IF NOT EXISTS "ReleaseLease" (
+    "id"            TEXT NOT NULL,
+    "release"       TEXT NOT NULL,
+    "acquiredAt"    TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "acquiredBy"    TEXT NOT NULL,
+    "heartbeatAt"   TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "releasedAt"    TIMESTAMP(3),
+    CONSTRAINT "ReleaseLease_pkey" PRIMARY KEY ("id")
+);
+CREATE INDEX IF NOT EXISTS "ReleaseLease_release_idx" ON "ReleaseLease"("release");
+
+DO $$ BEGIN
+  ALTER TABLE "ReleaseLease" ADD CONSTRAINT "ReleaseLease_release_present_check"
+    CHECK (btrim("release", E' \t\n\x0B\f\r') <> '');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE "ReleaseLease" ADD CONSTRAINT "ReleaseLease_acquiredBy_present_check"
+    CHECK (btrim("acquiredBy", E' \t\n\x0B\f\r') <> '');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- ── the generic pairing register ─────────────────────────────────────────────────────────────
+-- ONE claim per event, and the claim is supplied per BRANCH by that branch's PRIMARY fact — never
+-- by every fact in a bundle (§A.3, #568's review round 1, finding 2; #572's review round 5,
+-- finding 2). A blanket "every fact seal claims its events" aborts a VALID bundle: a returned
+-- stranded resolution's `DecisionStrandedResolution` and its `ChangeRequest` share one
+-- `decision.change_requested`, so two claimants would collide on the per-event UNIQUE below —
+-- the same collision a reapproval revision and its closing request would meet.
+CREATE TABLE IF NOT EXISTS "DomainEventPairingClaim" (
+    "projectId"   TEXT NOT NULL,
+    "eventId"     TEXT NOT NULL,
+    "claimedBy"   TEXT NOT NULL,
+    "claimedById" TEXT NOT NULL,
+    "claimedAt"   TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "DomainEventPairingClaim_pkey" PRIMARY KEY ("eventId")
+);
+CREATE INDEX IF NOT EXISTS "DomainEventPairingClaim_projectId_idx"
+  ON "DomainEventPairingClaim"("projectId");
+
+DO $$ BEGIN
+  ALTER TABLE "DomainEventPairingClaim" ADD CONSTRAINT "DomainEventPairingClaim_event_fkey"
+    FOREIGN KEY ("projectId", "eventId") REFERENCES "DomainEvent"("projectId", "eventId")
+    ON DELETE CASCADE ON UPDATE NO ACTION;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- The seed: the CURRENT compiled catalog, as literal SQL, generated from
+-- `apps/api/src/platform/external-effects.ts` rather than transcribed. `ON CONFLICT DO NOTHING`
+-- so an `ALWAYS_EXECUTE` replay adds keys that appeared since and never rewrites a row an
+-- operator or a later unit has moved.
+INSERT INTO "ExternalEffectCatalog" ("effectKey", "eventType", "invalidate", "pushRoles", "pushFamily") VALUES
+  ('activity.completion_requested', 'activity.completion_requested', true, '["pmc"]'::jsonb, NULL),
+  ('activity.created', 'activity.created', true, '["contractor","engineer"]'::jsonb, NULL),
+  ('activity.deleted', 'activity.deleted', true, NULL, NULL),
+  ('activity.labour_blocked', 'activity.labour_blocked', true, NULL, NULL),
+  ('activity.labour_unblocked', 'activity.labour_unblocked', true, NULL, NULL),
+  ('activity.material_blocked', 'activity.material_blocked', true, NULL, NULL),
+  ('activity.material_unblocked', 'activity.material_unblocked', true, NULL, NULL),
+  ('activity.override_granted', 'activity.override_granted', true, '["contractor","engineer"]'::jsonb, NULL),
+  ('activity.override_revoked', 'activity.override_revoked', true, NULL, NULL),
+  ('activity.signed_off', 'activity.signed_off', true, '["client","contractor"]'::jsonb, NULL),
+  ('activity.signoff_rejected', 'activity.signoff_rejected', true, NULL, NULL),
+  ('activity.started', 'activity.started', true, NULL, NULL),
+  ('activity.unfiled', 'activity.unfiled', true, NULL, NULL),
+  ('activity.updated', 'activity.updated', true, NULL, NULL),
+  ('activity_output.recorded', 'activity_output.recorded', true, NULL, NULL),
+  ('allocation.made', 'allocation.made', true, NULL, NULL),
+  ('allocation.released', 'allocation.released', true, NULL, NULL),
+  ('attendance.recorded', 'attendance.recorded', true, NULL, NULL),
+  ('attendance.revoked', 'attendance.revoked', true, NULL, NULL),
+  ('capacity.committed', 'capacity.committed', true, NULL, NULL),
+  ('capacity.defaulted', 'capacity.defaulted', true, NULL, NULL),
+  ('capacity.revised', 'capacity.revised', true, NULL, NULL),
+  ('commercial.money_moved', 'commercial.money_moved', true, NULL, NULL),
+  ('comparison.approved', 'comparison.approved', true, NULL, NULL),
+  ('dailylog.started', 'dailylog.started', true, NULL, NULL),
+  ('dailylog.submitted', 'dailylog.submitted', true, NULL, NULL),
+  ('decision.approved', 'decision.approved', true, '["contractor","engineer","pmc"]'::jsonb, NULL),
+  ('decision.change_requested', 'decision.change_requested', true, NULL, NULL),
+  ('decision.change_withdrawn', 'decision.change_withdrawn', true, NULL, NULL),
+  ('decision.consultation_requested', 'decision.consultation_requested', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'consultation_requested'),
+  ('decision.consultation_responded', 'decision.consultation_responded', true, '["pmc"]'::jsonb, 'consultation_responded'),
+  ('decision.drafted', 'decision.drafted', false, NULL, NULL),
+  ('decision.published', 'decision.published', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'decider'),
+  ('decision.reapproved', 'decision.reapproved', true, '["contractor","engineer","pmc"]'::jsonb, NULL),
+  ('decision.withdrawn', 'decision.withdrawn', true, NULL, NULL),
+  ('delivery.committed', 'delivery.committed', true, NULL, NULL),
+  ('delivery.defaulted', 'delivery.defaulted', true, NULL, NULL),
+  ('delivery.fulfilled', 'delivery.fulfilled', true, NULL, NULL),
+  ('delivery.revised', 'delivery.revised', true, NULL, NULL),
+  ('drawing.acknowledged', 'drawing.acknowledged', true, '["pmc"]'::jsonb, NULL),
+  ('drawing.activity_unlinked', 'drawing.activity_unlinked', true, NULL, NULL),
+  ('drawing.issued', 'drawing.issued', true, '["contractor","engineer"]'::jsonb, NULL),
+  ('drawing.issued_draft', 'drawing.issued', false, NULL, NULL),
+  ('drawing.published', 'drawing.published', true, '["contractor","engineer"]'::jsonb, NULL),
+  ('drawing.recipients_frozen', 'drawing.recipients_frozen', false, NULL, NULL),
+  ('drawing.refiled', 'drawing.refiled', true, NULL, NULL),
+  ('drawing.removed', 'drawing.removed', true, NULL, NULL),
+  ('drawing.revised', 'drawing.revised', true, '["contractor","engineer"]'::jsonb, NULL),
+  ('drawing.revised_draft', 'drawing.revised', false, NULL, NULL),
+  ('drawing.unfiled', 'drawing.unfiled', true, NULL, NULL),
+  ('inspection.approved', 'inspection.approved', true, '["client","contractor"]'::jsonb, NULL),
+  ('inspection.closing_created', 'inspection.closing_created', true, NULL, NULL),
+  ('inspection.created', 'inspection.created', true, '["engineer"]'::jsonb, NULL),
+  ('inspection.evidence_added', 'inspection.evidence_added', true, NULL, NULL),
+  ('inspection.evidence_removed', 'inspection.evidence_removed', true, NULL, NULL),
+  ('inspection.reinspection_created', 'inspection.reinspection_created', true, '["engineer"]'::jsonb, NULL),
+  ('inspection.rejected', 'inspection.rejected', true, NULL, NULL),
+  ('inspection.relabeled', 'inspection.relabeled', true, NULL, NULL),
+  ('inspection.submitted', 'inspection.submitted', true, NULL, NULL),
+  ('inspection.unfiled', 'inspection.unfiled', true, NULL, NULL),
+  ('issue.recorded', 'issue.recorded', true, NULL, NULL),
+  ('labour.comparison.approved', 'labour.comparison.approved', true, NULL, NULL),
+  ('labour.po.amended', 'labour.po.amended', true, NULL, NULL),
+  ('labour.po.cancelled', 'labour.po.cancelled', true, NULL, NULL),
+  ('labour.po.closed_short', 'labour.po.closed_short', true, NULL, NULL),
+  ('labour.po.issued', 'labour.po.issued', true, NULL, NULL),
+  ('labour.requisition.approved', 'labour.requisition.approved', true, NULL, NULL),
+  ('labour.requisition.submitted', 'labour.requisition.submitted', true, NULL, NULL),
+  ('labour_mismatch.recorded', 'labour_mismatch.recorded', true, NULL, NULL),
+  ('labour_mismatch.resolved', 'labour_mismatch.resolved', true, NULL, NULL),
+  ('labour_work.recorded', 'labour_work.recorded', true, NULL, NULL),
+  ('material.added', 'material.added', true, NULL, NULL),
+  ('material.mismatch_flagged', 'material.mismatch_flagged', true, '["contractor","pmc"]'::jsonb, NULL),
+  ('material.unfiled', 'material.unfiled', true, NULL, NULL),
+  ('media.refiled', 'media.refiled', true, NULL, NULL),
+  ('media.removed', 'media.removed', true, NULL, NULL),
+  ('media.uploaded', 'media.uploaded', true, NULL, NULL),
+  ('membership.added', 'membership.added', false, NULL, NULL),
+  ('membership.discipline_changed', 'membership.discipline_changed', false, NULL, NULL),
+  ('membership.removed', 'membership.removed', false, NULL, NULL),
+  ('membership.role_changed', 'membership.role_changed', false, NULL, NULL),
+  ('mismatch.resolved', 'mismatch.resolved', true, NULL, NULL),
+  ('node.created', 'node.created', true, NULL, NULL),
+  ('node.moved', 'node.moved', true, NULL, NULL),
+  ('node.published', 'node.published', true, NULL, NULL),
+  ('node.removed', 'node.removed', true, NULL, NULL),
+  ('node.renamed', 'node.renamed', true, NULL, NULL),
+  ('phase.created', 'phase.created', true, NULL, NULL),
+  ('phase.removed', 'phase.removed', true, NULL, NULL),
+  ('po.amended', 'po.amended', true, NULL, NULL),
+  ('po.cancelled', 'po.cancelled', true, NULL, NULL),
+  ('po.closed_short', 'po.closed_short', true, NULL, NULL),
+  ('po.issued', 'po.issued', true, NULL, NULL),
+  ('project.archived', 'project.archived', false, NULL, NULL),
+  ('project.created', 'project.created', false, NULL, NULL),
+  ('project.restored', 'project.restored', false, NULL, NULL),
+  ('project.updated', 'project.updated', false, NULL, NULL),
+  ('requirement.cancelled', 'requirement.cancelled', true, NULL, NULL),
+  ('requirement.created', 'requirement.created', true, NULL, NULL),
+  ('requirement.revised', 'requirement.revised', true, NULL, NULL),
+  ('requisition.approved', 'requisition.approved', true, NULL, NULL),
+  ('requisition.submitted', 'requisition.submitted', true, NULL, NULL),
+  ('skill_substitution.approved', 'skill_substitution.approved', true, NULL, NULL),
+  ('skill_substitution.revoked', 'skill_substitution.revoked', true, NULL, NULL),
+  ('stock.transacted', 'stock.transacted', true, NULL, NULL),
+  ('substitution.approved', 'substitution.approved', true, NULL, NULL),
+  ('substitution.revoked', 'substitution.revoked', true, NULL, NULL)
+ON CONFLICT ("effectKey") DO NOTHING;
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────
+-- PART 3d — THE GENERIC PAIRING MECHANISM AND THE KERNEL SEALS
+-- ────────────────────────────────────────────────────────────────────────────────────────────
+
+-- ── the pairing primitive ────────────────────────────────────────────────────────────────────
+-- Generic, platform-owned, and it decides nothing: a fact's seal calls it to say "this event is
+-- mine". The per-event primary key is what makes the claim EXCLUSIVE, so a second claimant meets
+-- a constraint rather than a rule someone has to remember.
+CREATE OR REPLACE FUNCTION platform_claim_event_pairing(
+  p_project TEXT, p_event TEXT, p_table TEXT, p_row TEXT
+) RETURNS VOID LANGUAGE plpgsql VOLATILE AS $$
+BEGIN
+  INSERT INTO "DomainEventPairingClaim" ("projectId", "eventId", "claimedBy", "claimedById")
+  VALUES (p_project, p_event, p_table, p_row);
+EXCEPTION WHEN unique_violation THEN
+  RAISE EXCEPTION
+    'phase6 4d-i: event % is already claimed by another fact — exactly ONE fact per event branch supplies the claim, and %.% is a second claimant. A bundle''s non-primary facts are verification-only.',
+    p_event, p_table, p_row;
+END $$;
+
+-- The register is projected from the facts that claim, so it takes the same writer-depth rule
+-- as the standing registers: a claim arrives from inside a fact's trigger, never from a
+-- statement someone typed.
+DROP TRIGGER IF EXISTS "DomainEventPairingClaim_t4d_writer" ON "DomainEventPairingClaim";
+CREATE TRIGGER "DomainEventPairingClaim_t4d_writer"
+  BEFORE INSERT OR UPDATE OR DELETE ON "DomainEventPairingClaim"
+  FOR EACH ROW EXECUTE FUNCTION platform_t4d_register_writer();
+
+DROP TRIGGER IF EXISTS "DomainEventPairingClaim_t4d_no_truncate" ON "DomainEventPairingClaim";
+CREATE TRIGGER "DomainEventPairingClaim_t4d_no_truncate"
+  BEFORE TRUNCATE ON "DomainEventPairingClaim"
+  FOR EACH STATEMENT EXECUTE FUNCTION platform_t4d_register_no_truncate();
+
+-- ── the kernel-owned pairing seal ────────────────────────────────────────────────────────────
+-- The converse of the claim: an event whose catalog entry says `pairingRequired` must be claimed
+-- by the time the transaction commits. DEFERRED, because the event is written before the fact
+-- that claims it. Owned by the KERNEL and driven by the CATALOG, so no peer module installs a
+-- trigger on the kernel's table (#568's review round 1, finding 2).
+--
+-- Judged through the catalog rather than a list of event types: a list is a roster to keep in
+-- step, and a roster is what this plan has repeatedly recorded failing.
+CREATE OR REPLACE FUNCTION platform_t4d_event_pairing_claimed() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_required BOOLEAN;
+BEGIN
+  SELECT c."pairingRequired" INTO v_required
+    FROM "ExternalEffectCatalog" c
+   WHERE c."eventType" = NEW."eventType" AND c."retiredAt" IS NULL
+   ORDER BY c."effectKey" LIMIT 1;
+  IF v_required IS DISTINCT FROM TRUE THEN RETURN NULL; END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM "DomainEventPairingClaim" k
+                  WHERE k."projectId" = NEW."projectId" AND k."eventId" = NEW."eventId") THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: event % of type `%` requires a pairing claim and none was made in this transaction — the catalog says an act of this type is recorded by a FACT, and an unclaimed event is an effect with no act behind it',
+      NEW."eventId", NEW."eventType";
+  END IF;
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS "DomainEvent_t4d_pairing_claimed" ON "DomainEvent";
+CREATE CONSTRAINT TRIGGER "DomainEvent_t4d_pairing_claimed"
+  AFTER INSERT ON "DomainEvent" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION platform_t4d_event_pairing_claimed();
+
+-- ── the ENVELOPE seal ────────────────────────────────────────────────────────────────────────
+-- The two new columns are EVIDENCE, so they are frozen the moment they are written and a NULL
+-- pair may never be filled in afterwards: a role or name added to a historical event would be a
+-- claim about an act nobody made at the time. The delivered `20261015000000` append-only trigger
+-- already refuses UPDATEs wholesale; this seal states the columns' own rule so a later unit that
+-- loosens that trigger cannot loosen this by accident.
+--
+-- It also pins the pair's COHERENCE: a human actor's role and name arrive together or not at
+-- all. A half-filled envelope would pass a fact's comparison on one half and silently skip the
+-- other.
+CREATE OR REPLACE FUNCTION platform_t4d_event_envelope() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF (NEW."actorRole" IS NULL) <> (NEW."actorName" IS NULL) THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: event % carries half an actor envelope (role %, name %) — the pair is written together or not at all, so a fact comparing it cannot pass on one half and skip the other',
+        NEW."eventId", COALESCE(NEW."actorRole", '<null>'), COALESCE(NEW."actorName", '<null>');
+    END IF;
+    IF NEW."actorRole" IS NOT NULL AND NEW."actorKind" <> 'human' THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: event % is a `%` event and may not carry a human actor envelope — a system actor has no role and no display name to freeze',
+        NEW."eventId", NEW."actorKind";
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF NEW."actorRole" IS DISTINCT FROM OLD."actorRole"
+     OR NEW."actorName" IS DISTINCT FROM OLD."actorName" THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: the actor envelope of event % is immutable — attributing a past act to a different role or name, or filling in a pair that was never recorded, is a claim about something nobody did',
+      OLD."eventId";
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "DomainEvent_t4d_envelope" ON "DomainEvent";
+CREATE TRIGGER "DomainEvent_t4d_envelope" BEFORE INSERT OR UPDATE ON "DomainEvent"
+  FOR EACH ROW EXECUTE FUNCTION platform_t4d_event_envelope();
+
+-- ── the NOTICE binding, split by TIMING ──────────────────────────────────────────────────────
+-- TWO objects, and the split is not stylistic (#572's review round 4, finding 1). The FREEZE is
+-- an immediate BEFORE UPDATE trigger: once a notice names an event and a kind, neither moves.
+-- The BINDING is a DEFERRED constraint trigger on INSERT: a notice written before its event, in
+-- the same transaction, must still be judged — and PostgreSQL cannot make a BEFORE trigger
+-- deferred, so one object cannot be both.
+CREATE OR REPLACE FUNCTION platform_t4d_notification_binding() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW."eventId" IS DISTINCT FROM OLD."eventId" THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: notice % is bound to event % and may not be re-pointed at % — a notice announces the act it was written for, and moving it makes it announce another',
+      OLD."id", COALESCE(OLD."eventId", '<null>'), COALESCE(NEW."eventId", '<null>');
+  END IF;
+  IF NEW."kind" IS DISTINCT FROM OLD."kind" THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: notice %''s kind (`%`) is evidence of WHAT was announced and may not be rewritten to `%`',
+      OLD."id", COALESCE(OLD."kind", '<null>'), COALESCE(NEW."kind", '<null>');
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "Notification_t4d_binding" ON "Notification";
+CREATE TRIGGER "Notification_t4d_binding" BEFORE UPDATE ON "Notification"
+  FOR EACH ROW EXECUTE FUNCTION platform_t4d_notification_binding();
+
+CREATE OR REPLACE FUNCTION platform_t4d_notification_binding_bound() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE e RECORD;
+BEGIN
+  IF NEW."eventId" IS NULL THEN
+    -- A legacy or drain-window notice, which carries no event. Admitted; 4d-iii is where a
+    -- kinded notice becomes required to name one.
+    IF NEW."kind" IS NOT NULL THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: notice % declares kind `%` but names no event — a KINDED notice is a derived artifact of a specific act, and one that names no act cannot be retired by identity',
+        NEW."id", NEW."kind";
+    END IF;
+    RETURN NULL;
+  END IF;
+
+  SELECT "projectId", "entityType", "entityId" INTO e FROM "DomainEvent"
+   WHERE "projectId" = NEW."projectId" AND "eventId" = NEW."eventId";
+  IF NOT FOUND THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: notice % names event %, which does not exist in project % at commit',
+      NEW."id", NEW."eventId", NEW."projectId";
+  END IF;
+  IF NEW."decisionId" IS NOT NULL
+     AND (e."entityType" <> 'Decision' OR e."entityId" IS DISTINCT FROM NEW."decisionId") THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: notice % is stamped with decision % but names an event about %/% — the stamp and the event must be about the same thing, or retiring the notice by identity retires the wrong one',
+      NEW."id", NEW."decisionId", e."entityType", e."entityId";
+  END IF;
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS "Notification_t4d_binding_bound" ON "Notification";
+CREATE CONSTRAINT TRIGGER "Notification_t4d_binding_bound"
+  AFTER INSERT ON "Notification" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION platform_t4d_notification_binding_bound();
+
+-- A notice is NOT append-only — the withdraw path deletes a now-false pending notice by
+-- identity, which is the whole reason `decisionId` and now `eventId` are stamped. What it may
+-- not be is TRUNCATED: the row seal above is a ROW trigger and never fires for TRUNCATE, so a
+-- wipe would erase the bindings the seal exists to protect. Its own message, because neither
+-- the fact wording ("append-only register") nor the register wording ("projected from the orgs
+-- tables") is true of a notice feed.
+CREATE OR REPLACE FUNCTION platform_t4d_notification_no_truncate() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION
+    'phase6 4d-i: "Notification" carries the event-binding seal and is never truncated — the row seal is a ROW trigger and does not fire for TRUNCATE, so a wipe would erase exactly the bindings it protects. The sanctioned reset (prisma/sanctioned-reset.ts) disables this trigger BY NAME, and truncates "Notification" TOGETHER WITH "DomainEvent".';
+END $$;
+
+DROP TRIGGER IF EXISTS "Notification_t4d_no_truncate" ON "Notification";
+CREATE TRIGGER "Notification_t4d_no_truncate" BEFORE TRUNCATE ON "Notification"
+  FOR EACH STATEMENT EXECUTE FUNCTION platform_t4d_notification_no_truncate();
+
+-- ── the catalog's own seals ──────────────────────────────────────────────────────────────────
+-- The catalog is what the pairing seal reads, so a writer who could delete a row could switch
+-- the seal off for a whole event type. `retiredAt` is a ONE-WAY stamp; every other column is
+-- frozen; the row is undeletable and the table untruncatable.
+CREATE OR REPLACE FUNCTION platform_t4d_effect_catalog_sealed() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: catalog entry `%` may not be DELETED — a historical event''s key must still resolve, and a missing row silently switches the pairing seal off for its whole event type. An effect leaves service by being RETIRED.',
+      OLD."effectKey";
+  END IF;
+  IF NEW."effectKey" IS DISTINCT FROM OLD."effectKey"
+     OR NEW."eventType" IS DISTINCT FROM OLD."eventType" THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: catalog entry `%` may not be re-keyed or re-typed — that is a delete and an insert wearing one row',
+      OLD."effectKey";
+  END IF;
+  IF OLD."retiredAt" IS NOT NULL AND NEW."retiredAt" IS DISTINCT FROM OLD."retiredAt" THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: catalog entry `%` was retired at % — retirement is a ONE-WAY stamp and un-retiring an effect would revive a dispatch plan the release no longer implements',
+      OLD."effectKey", OLD."retiredAt";
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "ExternalEffectCatalog_t4d_sealed" ON "ExternalEffectCatalog";
+CREATE TRIGGER "ExternalEffectCatalog_t4d_sealed"
+  BEFORE UPDATE OR DELETE ON "ExternalEffectCatalog"
+  FOR EACH ROW EXECUTE FUNCTION platform_t4d_effect_catalog_sealed();
+
+DROP TRIGGER IF EXISTS "ExternalEffectCatalog_t4d_no_truncate" ON "ExternalEffectCatalog";
+CREATE TRIGGER "ExternalEffectCatalog_t4d_no_truncate" BEFORE TRUNCATE ON "ExternalEffectCatalog"
+  FOR EACH STATEMENT EXECUTE FUNCTION platform_t4d_register_no_truncate();
+
+-- ── the release lease's seals ────────────────────────────────────────────────────────────────
+-- Identity frozen, no DELETE, no TRUNCATE (§D). A lease whose release or acquirer can be
+-- rewritten attests to nothing, and a drain attestation rests entirely on it.
+CREATE OR REPLACE FUNCTION platform_t4d_release_lease_sealed() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: release lease % may not be DELETED — the drain attestation rests on which release was serving and when, and a lease that can be removed attests to nothing',
+      OLD."id";
+  END IF;
+  IF NEW."id" IS DISTINCT FROM OLD."id"
+     OR NEW."release" IS DISTINCT FROM OLD."release"
+     OR NEW."acquiredAt" IS DISTINCT FROM OLD."acquiredAt"
+     OR NEW."acquiredBy" IS DISTINCT FROM OLD."acquiredBy" THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: release lease %''s identity (release %, acquired by % at %) is frozen — only the heartbeat and the release stamp move',
+      OLD."id", OLD."release", OLD."acquiredBy", OLD."acquiredAt";
+  END IF;
+  IF OLD."releasedAt" IS NOT NULL AND NEW."releasedAt" IS DISTINCT FROM OLD."releasedAt" THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: release lease % was released at % — that stamp is one-way, and un-releasing it would attest that a drained release was still serving',
+      OLD."id", OLD."releasedAt";
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "ReleaseLease_t4d_sealed" ON "ReleaseLease";
+CREATE TRIGGER "ReleaseLease_t4d_sealed" BEFORE UPDATE OR DELETE ON "ReleaseLease"
+  FOR EACH ROW EXECUTE FUNCTION platform_t4d_release_lease_sealed();
+
+DROP TRIGGER IF EXISTS "ReleaseLease_t4d_no_truncate" ON "ReleaseLease";
+CREATE TRIGGER "ReleaseLease_t4d_no_truncate" BEFORE TRUNCATE ON "ReleaseLease"
+  FOR EACH STATEMENT EXECUTE FUNCTION platform_t4d_register_no_truncate();

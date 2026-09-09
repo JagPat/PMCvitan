@@ -82,6 +82,16 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   // every one of them. The registers are here for the same reason one step removed — a reset
   // that wipes `Project` or `User` cascades into all five.
   { table: 'ChangeRequest', trigger: 'ChangeRequest_t4d_no_truncate' },
+  // Phase 6 unit 4d-i — the kernel side. `Notification` is NOT append-only (the withdraw path
+  // deletes a now-false pending notice by identity) but it may not be TRUNCATED, because the row
+  // seal that protects its event binding is a ROW trigger and does not fire for TRUNCATE. The
+  // catalog, the lease and the pairing claims are sealed for the same reason, and the claims are
+  // truncated together with `DomainEvent` — a claim outliving its event would refuse the next
+  // fact that legitimately claims a reused id.
+  { table: 'DomainEventPairingClaim', trigger: 'DomainEventPairingClaim_t4d_no_truncate' },
+  { table: 'ExternalEffectCatalog', trigger: 'ExternalEffectCatalog_t4d_no_truncate' },
+  { table: 'Notification', trigger: 'Notification_t4d_no_truncate' },
+  { table: 'ReleaseLease', trigger: 'ReleaseLease_t4d_no_truncate' },
   // Phase 6 unit 4d-i — the three append-only FACTS of the architect chain. A
   // `TRUNCATE "Decision" … CASCADE` reaches all three, and a statement trigger fires even on an
   // empty table, so a suite that never created a forward would still meet the seal in setup.
@@ -89,6 +99,7 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   { table: 'DecisionForward', trigger: 'DecisionForward_t4d_no_truncate' },
   { table: 'DecisionStrandedResolution', trigger: 'DecisionStrandedResolution_t4d_no_truncate' },
   { table: 'Membership', trigger: 'Membership_t4d_no_truncate' },
+  { table: 'MembershipTransition', trigger: 'MembershipTransition_t4d_no_truncate' },
   { table: 'OrgUserAuthority', trigger: 'OrgUserAuthority_t4d_no_truncate' },
   { table: 'ProjectOrg', trigger: 'ProjectOrg_t4d_no_truncate' },
   { table: 'ProjectRoleStanding', trigger: 'ProjectRoleStanding_t4d_no_truncate' },

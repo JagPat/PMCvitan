@@ -219,6 +219,14 @@ model DomainEvent {
   // as an external no-op; it never invents a historical push). PR C supplies the final per-command
   // catalog; PR B persists a compatibility intent (effectKey 'compat.task6').
   dispatchIntent  Json?
+  /// Phase 6 task 4d unit 4d-i (§A.3 obligation 7) — the actor ENVELOPE. A fact's frozen
+  /// `<act>ByRole`/`<act>ByName` pair is compared against the event that records the same act,
+  /// and the delivered envelope carried neither. DARK: nothing writes them until 4d-ii hands
+  /// `emitEvent` the actor, and a NULL pair is admitted through the drain on every sealed event
+  /// type, because the previous release writes events and knows nothing about these columns.
+  /// Written together or not at all, frozen once written, and legal only on a `human` actor.
+  actorRole       String?
+  actorName       String?
   // Composite tenant FK → Project(orgId, id): a forged organizationId (not the project's own
   // org) is rejected by the DB. RESTRICT — an append-only event outlives soft-deletes.
   tenant          Project          @relation(fields: [organizationId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: Cascade)
@@ -411,6 +419,35 @@ model ProjectUserStanding {
 model UserIdentity {
   userId      String @id
   displayName String
+}
+
+// Phase 6 task 4d unit 4d-i (§A.3) — the ORGS-owned record of a membership's STANDING change.
+// The architect chain is armed and disarmed by ordinary team acts, so the change is a fact with
+// the same seven obligations every other 4d fact carries; without it "the chain turned on" is a
+// count with no attributable act behind it.
+//
+// Three column determinations the plan leaves open, made in the migration and mirrored here:
+// `role` is the role whose standing changed (a re-role writes one fact for the role left and one
+// for the role entered); `fromStanding`/`toStanding` are `held`/`not_held` rather than membership
+// statuses (a re-role changes standing without changing status, and `invited → removed` changes
+// status without ever touching standing); `activeCount` is the register's count AFTER the
+// transition, which is what the correspondence check compares against.
+model MembershipTransition {
+  id              String   @id
+  projectId       String
+  membershipId    String
+  userId          String
+  role            String
+  fromStanding    String
+  toStanding      String
+  activeCount     Int
+  actorId         String
+  actorRole       String
+  actorName       String
+  at              DateTime @default(now())
+  sourceCommandId String
+
+  @@index([projectId, membershipId])
 }
 
 /// Team-management AUTHORITY, which is distinct from token ROLE: one row per org membership in
@@ -3044,7 +3081,65 @@ model Notification {
   // and a decision id is a plain stamp, never a join the feed depends on.
   decisionId String?
 
+  /// Phase 6 task 4d unit 4d-i — the EVENT this notice announces, and what kind of notice it is.
+  /// A notice is a derived communication artifact and the event is the fact, so binding the two
+  /// makes "this notice is about that act" a database truth rather than a display-text match.
+  /// Both nullable: legacy notices and every notice the previous release writes carry neither.
+  /// The one-notice-per-event UNIQUE is PARTIAL and lives in SQL only.
+  kind    String?
+  eventId String?
+
   @@index([decisionId])
+  @@index([projectId, eventId])
+}
+
+// Phase 6 task 4d unit 4d-i (§A.3 obligation 7) — the external-effect catalog, as DATA. It is
+// compiled into the server today, which is exactly why a seal cannot read it: a trigger judging
+// whether an event owed a claim has no way to ask a TypeScript constant. Seeded from the current
+// compiled catalog and pinned to it by a tripwire, so an entry added in code without its row —
+// or a row that drifts from code — fails a test rather than silently changing what the seals
+// judge. An effect leaves service by being RETIRED, never deleted: a historical event's key must
+// still resolve.
+model ExternalEffectCatalog {
+  effectKey       String    @id
+  eventType       String
+  invalidate      Boolean
+  pushRoles       Json?
+  pushFamily      String?
+  /// Whether an event of this type must be CLAIMED by exactly one fact. Seeded false; 4d-ii
+  /// turns it on per key as its facts land.
+  pairingRequired Boolean   @default(false)
+  retiredAt       DateTime?
+}
+
+// Phase 6 task 4d unit 4d-i (§D) — the drain attestation's evidence: which release is serving,
+// since when, and under whose authority. DARK until 4d-ii writes it. Identity frozen, rows
+// undeletable, table untruncatable — a lease that can be rewritten attests to nothing.
+model ReleaseLease {
+  id          String    @id
+  release     String
+  acquiredAt  DateTime  @default(now())
+  acquiredBy  String
+  heartbeatAt DateTime  @default(now())
+  releasedAt  DateTime?
+
+  @@index([release])
+}
+
+// Phase 6 task 4d unit 4d-i (§A.3) — the GENERIC pairing register. Exactly ONE fact per event
+// branch supplies the claim, and the per-event primary key is what makes that exclusive: a
+// second claimant meets a constraint rather than a rule someone has to remember. A blanket
+// "every fact claims its events" would abort a VALID bundle — a returned stranded resolution and
+// its change request share one `decision.change_requested` — so a bundle's non-primary facts are
+// verification-only.
+model DomainEventPairingClaim {
+  eventId     String   @id
+  projectId   String
+  claimedBy   String
+  claimedById String
+  claimedAt   DateTime @default(now())
+
+  @@index([projectId])
 }
 
 model AuditLog {

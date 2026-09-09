@@ -1175,6 +1175,72 @@ pre-4c approval and a lie for a post-4c one, and the provenance trigger judges o
 nulled row would keep its place in the count while becoming unprovable, which is the precise
 condition this seal exists to prevent.
 
+## §P6T4D. Phase 6 unit 4d-i — the deploy aborts on a reserved `architect` role
+
+`prisma migrate deploy` stops with a message beginning `phase6 4d-i ABORT:` and naming a count of
+`Membership` and `User` rows that already spell the role `architect`, with up to ten of each.
+
+### What happened, and what did NOT happen
+
+4d-i RESERVES the architect chain: between this migration and 4d-iii no row may carry
+`Membership.role = 'architect'`, `User.role = 'architect'`, `Decision.deciderKind = 'architect'` or
+`Decision.status = 'awaiting_countersign'`, and no `DecisionForward` row may be written. The
+reservation exists because the chain's seals are installed here while the SERVICE that understands
+them lands in 4d-ii; a row that entered the state in between would sit in a state nothing could
+resolve.
+
+`Membership.role` and `User.role` are unconstrained text columns. Nothing ever validated the value
+`architect`, because no vocabulary admitted it — so a row could already spell it, and the
+reservation, which judges only NEW rows, would leave it in place and arm the chain the instant the
+role is understood. The migration therefore installs the reservation doors FIRST (taking the locks
+that stop every concurrent writer), then counts, then aborts if the count is not zero.
+
+**Nothing was installed.** PostgreSQL DDL is transactional and the abort rolls the whole migration
+back: no doors, no `RolloutRetirement` table, no new enum values, no registers. What DOES survive
+is Prisma's record of a FAILED attempt, which is why a plain redeploy stops at P3009.
+
+**The audit counts rows in ANY status.** The ordinary team removal is soft — it sets
+`status = 'removed'` and leaves `role` in place — so a departed architect aborts identically to an
+active one. That is deliberate: a soft-removed row can be restored, and a restore past the
+reservation is exactly what it must not be able to do.
+
+### Repair — a RE-ROLE, never a removal
+
+1. **Re-role each named row.** Use the ordinary team role command to move each `Membership` to the
+   role the member actually holds. A dev `User` fixture is re-roled the same way. A row that never
+   legitimately existed may instead be deleted, subject to the delivered 4b holder guards, which
+   refuse deleting the named holder of an open decision — re-role that one.
+
+   Do NOT soft-remove instead: the audit counts removed rows too, and the next deploy would abort
+   on exactly the same row.
+
+2. **Clear the failed attempt.**
+
+   ```
+   prisma migrate resolve --rolled-back 20271220000000_phase6_t4d_i_dark_migration
+   ```
+
+   Without this the next deploy stops at P3009: the schema rolled back, but the failed attempt is
+   still recorded.
+
+3. **Redeploy.** The audit now sees zero and the reservation installs.
+
+`scripts/migrate.sh` prints these three steps itself (`report_4d_i_migration_failure`), because the
+migration's own message is swallowed by the aborted transaction.
+
+### The baseline path runs the audit too
+
+4d-i is in `ALWAYS_EXECUTE`, so a P3005 `db push` baseline replays it rather than marking it
+applied. That is required for correctness — the reservation and the audit are the whole point of
+the unit — and it means the same abort and the same repair apply on a baselined database.
+
+### The reservation is retired by 4d-iii, not by hand
+
+Do not drop the doors manually. 4d-iii drops all five in one statement after the previous release
+is attested drained, and writes the durable `RolloutRetirement` marker that makes every later
+replay of 4d-i skip the transient block. A hand-dropped door leaves no marker, so the next replay
+re-creates it — and on a mature database, aborts on the legitimate architect it finds.
+
 ## §P64CIIIR. Phase 6 unit 4c-iii-r — the deploy-time `decisions.inbox` repair
 
 `scripts/migrate.sh` runs `dist/platform/projections/inbox-repair.cli.js` after `prisma migrate
