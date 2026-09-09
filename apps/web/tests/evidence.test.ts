@@ -495,7 +495,7 @@ describe('replay lifecycle', () => {
       st.outbox = []; st.syncQueue = []; st.pendingEvidenceCount = 0;
       // Villa's OWN failed row happens to carry the same clientKey — the stale
       // delete must not sweep it out of Villa's Retry/Delete surface
-      st.failedEvidence = [{ clientKey: 'k-shared', reason: 'upload rejected (400)', mime: 'image/png' }];
+      st.failedEvidence = [{ clientKey: 'k-shared', reason: 'upload rejected (400)', mime: 'image/png', inspectionId: 'INSP-90', inspectionItemId: 'i1' }];
       st.toast = null;
     });
     release(null);
@@ -593,7 +593,7 @@ describe('replay lifecycle', () => {
       st.activeProjectId = 'villa';
       st.projectScopeGeneration += 1;
       st.outbox = []; st.syncQueue = []; st.pendingEvidenceCount = 0;
-      st.failedEvidence = [{ clientKey: 'k-villa-own', reason: 'upload rejected (400)', mime: 'image/png' }];
+      st.failedEvidence = [{ clientKey: 'k-villa-own', reason: 'upload rejected (400)', mime: 'image/png', inspectionId: 'INSP-90', inspectionItemId: 'i1' }];
       st.toast = null;
     });
     release(null);
@@ -1295,4 +1295,159 @@ describe('replay lifecycle', () => {
     expect(await getEvidence('anon', 'ambli', 'k-del')).toBeNull();
     expect(s().failedEvidence).toHaveLength(0);
   });
+
+  it('a checklist switch mid-write leaves the thumbnail on the checklist it was captured on', async () => {
+    // The offline arm writes its optimistic thumbnail AFTER awaiting the durable write, and
+    // `evidenceContextStillCurrent` guards the SCOPE — project + generation — which switching
+    // between two checklists of the SAME project does not change. Without the identity check the
+    // mirror lands on whatever checklist now occupies the edit slot, at the same index, showing one
+    // inspection's photo under another. The durable row is correct either way: its `meta` names the
+    // captured inspection and item.
+    s()._setGateway({ project: 'ambli', uploadMedia: vi.fn() } as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    seedChecklist();
+    const captured = s().checklist!;
+    const other: Checklist = {
+      id: 'INSP-91', title: 'Other check', zone: 'Basement', date: '03 Jul 2026', submitted: false,
+      items: [
+        { id: 'other-1', name: 'Slope', state: null, photos: 0, note: '' },
+        { id: 'other-2', name: 'Seal', state: null, photos: 0, note: '' },
+      ],
+    };
+    useStore.setState((st) => { st.openChecklists = [captured, other]; });
+
+    const evidenceStore = await import('@/data/evidenceStore');
+    const realPut = evidenceStore.putEvidence;
+    let release!: (v: unknown) => void;
+    const held = new Promise((r) => (release = r));
+    vi.spyOn(evidenceStore, 'putEvidence').mockImplementationOnce(async (entry) => {
+      await held; // the durable write is IN FLIGHT while the engineer switches checklists
+      return realPut(entry);
+    });
+
+    const capture = s().addChecklistEvidence(0, PX); // parks on the held write
+    s().selectChecklist('INSP-91');                  // same project, same generation
+    expect(s().checklist?.id).toBe('INSP-91');
+    release(null);
+    await capture;
+
+    // the OTHER checklist is untouched — no borrowed photo, no borrowed thumbnail
+    expect(s().checklist?.id).toBe('INSP-91');
+    expect(s().checklist?.items[0].photos).toBe(0);
+    expect(s().checklist?.items[0].evidence ?? []).toEqual([]);
+
+    // the durable row was still written, against the inspection it was captured on
+    const rows = await listEvidence('anon', 'ambli');
+    expect(rows.map((r) => r.inspectionId)).toContain('INSP-90');
+    expect(rows.find((r) => r.inspectionId === 'INSP-90')?.inspectionItemId).toBe('item-1');
+    // and it is queued for upload in this scope
+    expect(s().pendingEvidenceCount).toBe(1);
+
+    // ROUND 4 — AND IT LANDED ON THE CHECKLIST IT WAS CAPTURED ON.
+    //
+    // Declining to write to the wrong checklist was only half the rule. OFFLINE there is no refresh
+    // to put it right: the captured checklist keeps `photos: 0` with no evidence, so a FAILED item
+    // (this one is failed) cannot be queued for submission until signal returns — even though its
+    // durable row is already queued. The mirror belongs on the captured checklist's own outstanding
+    // entry, which is exactly where the engineer finds it when they switch back.
+    const back = s().openChecklists.find((c) => c.id === 'INSP-90')!;
+    expect(back.items[0].photos).toBe(1);
+    expect(back.items[0].evidence ?? []).toEqual([PX]);
+    // switching back shows it, so the failed item is submittable while still offline
+    s().selectChecklist('INSP-90');
+    expect(s().checklist?.items[0].photos).toBe(1);
+  });
+
+  it('ROUND 5 — a DEMO capture that finishes after a switch lands on the captured checklist too', async () => {
+    // Round 4 fixed the OFFLINE mirror and left the demo branch addressing the edit slot, so the
+    // same defect survived one branch over — which is the generator this round is correcting, not
+    // just the instance. Demo is the worse half: there is no durable row and no server to reconcile
+    // from, so the copies in the store ARE the record. Declining to write does not delay the photo,
+    // it loses it, while still reporting "Photo attached".
+    //
+    // No gateway is set: that is what selects the demo branch.
+    useStore.setState((st) => { st.online = true; });
+    seedChecklist();
+    const captured = s().checklist!;
+    const other: Checklist = {
+      id: 'INSP-92', title: 'Other demo check', zone: 'Terrace', date: '03 Jul 2026', submitted: false,
+      items: [
+        { id: 'demo-1', name: 'Fall', state: null, photos: 0, note: '' },
+        { id: 'demo-2', name: 'Rail', state: null, photos: 0, note: '' },
+      ],
+    };
+    useStore.setState((st) => { st.openChecklists = [captured, other]; });
+
+    // the capture is pinned to INSP-90 while the engineer has already moved to INSP-92
+    s().selectChecklist('INSP-92');
+    expect(s().checklist?.id).toBe('INSP-92');
+    await s().addChecklistEvidence(0, PX, 'INSP-90');
+
+    // the checklist in the slot borrows nothing
+    expect(s().checklist?.items[0].photos).toBe(0);
+    expect(s().checklist?.items[0].evidence ?? []).toEqual([]);
+
+    // and the CAPTURED checklist has it — RED before this round, where neither copy was written
+    const back = s().openChecklists.find((c) => c.id === 'INSP-90')!;
+    expect(back.items[0].photos).toBe(1);
+    expect(back.items[0].evidence ?? []).toEqual([PX]);
+    s().selectChecklist('INSP-90');
+    expect(s().checklist?.items[0].photos).toBe(1);
+    expect(s().checklist?.items[0].evidence ?? []).toEqual([PX]);
+  });
+
+  it('ROUND 5 — a DEMO capture with the captured checklist still in the slot writes it exactly once', async () => {
+    // The shared rule writes BOTH copies of the captured checklist on purpose (the slot is a
+    // structuredClone of its openChecklists entry, so a write to one alone makes them disagree).
+    // This pins that it is one increment per copy and not two on either — a double count would
+    // show a photo the engineer never took.
+    useStore.setState((st) => { st.online = true; });
+    seedChecklist();
+    const captured = s().checklist!;
+    useStore.setState((st) => { st.openChecklists = [captured]; });
+
+    await s().addChecklistEvidence(0, PX, 'INSP-90');
+
+    expect(s().checklist?.items[0].photos).toBe(1);
+    expect(s().checklist?.items[0].evidence ?? []).toEqual([PX]);
+    expect(s().openChecklists.find((c) => c.id === 'INSP-90')!.items[0].photos).toBe(1);
+  });
+
+
+  it('ROUND 10 — a queued submit freezes ITS checklist even when the slot describes another', async () => {
+    // The capture path already resolves the checklist the photo was TAKEN on (round 4) and asks the
+    // freeze about THAT checklist (round 8). Both right — and the freeze then read the single
+    // `submission` slot, which `reconcileSubmission` repoints at whichever checklist the last read
+    // was about. So: queue A's submit offline, switch to B, and a photo for A whose FileReader is
+    // still running found A unfrozen and mutated its items after A's payload had been frozen. On
+    // reconnect the submit op precedes that upload, so a failed item loses the evidence its
+    // submission needed. RED before the outbox arm in `inspectionFrozen`.
+    s()._setGateway({ project: 'ambli', submitInspection: vi.fn(), uploadMedia: vi.fn() } as unknown as ApiGateway);
+    seedChecklist();
+    // every item marked, or the submit is refused before it can queue
+    useStore.setState((st) => { st.checklist!.items[0].state = null; st.checklist!.items[1].state = null; });
+    s().setItem(0, 'pass'); s().setItem(1, 'pass');
+    useStore.setState((st) => { st.online = false; });
+    const a = s().checklist!;
+    const b = { ...a, id: 'INSP-91', items: a.items.map((it, i) => ({ ...it, id: `INSP-91-i${i + 1}` })) };
+    useStore.setState((st) => { st.openChecklists = [a, b]; });
+
+    // A's submit is queued offline — durable in the outbox
+    s().submitInspection();
+    expect(s().outbox.some((o) => o.t === 'submitInspection' && o.inspectionId === a.id)).toBe(true);
+
+    // the engineer moves to B, and the submission slot follows them
+    s().selectChecklist('INSP-91');
+    expect(s().checklist?.id).toBe('INSP-91');
+
+    // a photo for A, captured before the switch, arrives now
+    const before = s().openChecklists.find((c) => c.id === a.id)!.items[0].photos;
+    await s().addChecklistEvidence(0, PX, a.id);
+
+    // A is frozen by its own queued submit, whichever checklist owns the slot
+    expect(s().openChecklists.find((c) => c.id === a.id)!.items[0].photos).toBe(before);
+    expect(s().outbox.filter((o) => o.t === 'uploadEvidence')).toHaveLength(0);
+  });
+
+
 });

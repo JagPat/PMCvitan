@@ -1,5 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { OrgsParticipant } from '../orgs/orgs.participant';
+import { assignmentStillBinds } from './assignment-eligibility';
 import { emitEvent } from '../platform/events';
 import type { Actor } from '../common/actor';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
@@ -15,11 +17,121 @@ import type { EmittedEventMeta } from '../platform/outbox/registry';
  * projection consumer dispatches on `inspection.*`, that appended event is what lets the ordered cursor
  * REFRESH the projection row from canonical state — the correction's core invariant. The events are
  * signal-only (they deduplicate with the foreign command's own socket invalidation; the foreign command
- * owns any push). A leaf provider (no injected dependencies) — `emitEvent` is a pure platform function, so
- * this creates no DI cycle with the services that call it.
+ * owns any push). `emitEvent` is a pure platform function, so this creates no DI cycle with the services
+ * that call it; its ONE injected dependency, `OrgsParticipant`, is itself dependency-free, so the
+ * no-cycle property this provider used to get from having no dependencies at all still holds.
  */
 @Injectable()
 export class InspectionParticipant {
+  constructor(private readonly orgs: OrgsParticipant) {}
+
+  /**
+   * MAY THIS ACTOR CHANGE THIS INSPECTION'S EVIDENCE? — the binding-assignment rule at the third
+   * authority surface (#571 round 9, finding 1).
+   *
+   * `submit` refuses a non-assignee while the assignment binds, and the read boundary keeps the
+   * checklist off their field view. Evidence mutation was the surface neither covers: an upload
+   * checks only that the item is contained by the inspection, and a delete checks only that the
+   * media row belongs to the caller's project. So the window this PR itself opens — a stranded
+   * assignment hands engineer B the checklist and its item ids, then the assignee is reactivated —
+   * left B able to attach misleading photos to, or PERMANENTLY DELETE evidence from, work that had
+   * become somebody else's again. Delete is the sharp end: the bytes do not come back.
+   *
+   * Asked here rather than in `media` because the rule is inspections-owned, and asked through the
+   * SAME `assignmentStillBinds` the submit guard and the read boundary use, so a fourth statement of
+   * it cannot drift from the other three. `forUpdate` locks the standing rows for the same reason
+   * the submit transaction does: the answer must not be overtaken between the check and the write it
+   * authorises.
+   *
+   * An UNASSIGNED inspection is untouched — the route's role gate is the whole guard, as it has
+   * always been for evidence — and so is the assignee acting on their own work.
+   */
+  async assertEvidenceMutable(
+    tx: Prisma.TransactionClient,
+    params: { projectId: string; inspectionId: string; actorUserId: string; forUpdate?: boolean },
+  ): Promise<{ observedAssigneeId: string | null }> {
+    const { projectId, inspectionId, actorUserId, forUpdate = true } = params;
+    // THE INSPECTION ROW FIRST, THEN THE MEMBERSHIP ROW — one order for every path through this
+    // table (#571 round 12, finding 1). Round 11 pinned the observed assignee in the write's
+    // predicate instead of locking, precisely to avoid inverting `decide`'s order; round 12 then
+    // showed the DATABASE fence needs the lock anyway, because a trigger has no later write to pin
+    // and its early return on `assigneeId IS NULL` is exactly what a `null → A` assignment races.
+    // Two orders would deadlock a service write against a previous-release one in the rollout
+    // window the fence exists for, so the order is settled here and `decide` takes it too:
+    // readiness → inspection → membership.
+    const insp = forUpdate
+      ? (await tx.$queryRaw<Array<{ projectId: string; assigneeId: string | null }>>(
+          Prisma.sql`SELECT "projectId", "assigneeId" FROM "Inspection" WHERE "id" = ${inspectionId} FOR UPDATE`,
+        ))[0]
+      : await tx.inspection.findUnique({ where: { id: inspectionId }, select: { projectId: true, assigneeId: true } });
+    if (!insp || insp.projectId !== projectId) return { observedAssigneeId: null }; // containment is the callers' own check
+    // THE OBSERVED ASSIGNEE IS RETURNED BECAUSE READING IT IS NOT ENOUGH (#571 round 11, finding 1).
+    // The membership row lock this method takes below protects the assignee's STANDING; it protects
+    // nothing about `Inspection.assigneeId`, and in the two early-return cases it is never taken at
+    // all. The `null` case is the sharp one: the freeze trigger is a one-way latch, so `null → A` is
+    // a permitted assignment, and an alternate writer can make it between this read and the write
+    // this call authorises — leaving A's work with evidence B deleted, bytes included.
+    //
+    // The answer is the one `submit` already uses (round 5): pin the OBSERVED value in the write's
+    // own predicate rather than locking a second row. That keeps the fence atomic with the write and
+    // adds no lock, so it cannot invert the order `decide` takes (membership, then inspection).
+    if (!insp.assigneeId || insp.assigneeId === actorUserId) return { observedAssigneeId: insp.assigneeId };
+    // `forUpdate` defaults ON — every caller that decides a WRITE is inside a transaction. The one
+    // caller that passes `false` is the upload preflight, which runs outside one: locking standing
+    // rows there would take and immediately release a lock that protects nothing, and the decision
+    // it feeds is deliberately advisory (#571 round 10, finding 2).
+    if (await assignmentStillBinds(this.orgs, tx, projectId, insp.assigneeId, { forUpdate })) {
+      throw new ForbiddenException('This inspection is assigned to someone else — only its assignee can change its photo evidence.');
+    }
+    return { observedAssigneeId: insp.assigneeId };
+  }
+
+  /**
+   * The write-time half of `assertEvidenceMutable` (#571 round 11, finding 1) — the CAS `submit`
+   * performs inline, stated once here because evidence has two writers rather than one.
+   *
+   * Issued in the SAME statement-sequence as the evidence write it guards, against the value the
+   * authorisation actually saw. `IS NOT DISTINCT FROM` makes the observed-`null` case as precise as
+   * the observed-assigned one — exactly as Prisma's `assigneeId: null` renders `IS NULL` in the
+   * submit CAS — so an assignment that lands between the check and the write is caught either way,
+   * and the caller gets the same conflict a racing submitter gets rather than a silent success.
+   */
+  private async fenceObservedAssignee(
+    tx: Prisma.TransactionClient,
+    params: { projectId: string; inspectionId: string; observedAssigneeId: string | null },
+  ): Promise<void> {
+    const { projectId, inspectionId, observedAssigneeId } = params;
+    const [row] = await tx.$queryRaw<Array<{ ok: boolean }>>(
+      Prisma.sql`SELECT ("assigneeId" IS NOT DISTINCT FROM ${observedAssigneeId}) AS ok
+                   FROM "Inspection"
+                  WHERE "id" = ${inspectionId} AND "projectId" = ${projectId}
+                  FOR UPDATE`,
+    );
+    if (row && !row.ok) {
+      throw new ConflictException('This inspection was assigned while its evidence was being changed — reload and retry.');
+    }
+  }
+
+  /**
+   * The same question for a MEDIA row that may or may not be inspection evidence — the shape
+   * `MediaService.remove` already uses for every other module's disposability rule
+   * (`assertMediaDisposable`). A media row linked to no inspection is not this module's business.
+   */
+  async assertEvidenceDisposable(
+    tx: Prisma.TransactionClient,
+    params: { projectId: string; mediaId: string; actorUserId: string },
+  ): Promise<Array<{ inspectionId: string; observedAssigneeId: string | null }>> {
+    const { projectId, mediaId, actorUserId } = params;
+    const links = await tx.inspectionEvidence.findMany({ where: { projectId, mediaId }, select: { inspectionId: true } });
+    const observed: Array<{ inspectionId: string; observedAssigneeId: string | null }> = [];
+    for (const inspectionId of new Set(links.map((l) => l.inspectionId))) {
+      const { observedAssigneeId } = await this.assertEvidenceMutable(tx, { projectId, inspectionId, actorUserId });
+      observed.push({ inspectionId, observedAssigneeId });
+    }
+    // handed to `removeEvidence` so the DELETE is fenced against the assignment it was authorised
+    // under — one observation per inspection this media is evidence for (#571 round 11, finding 1)
+    return observed;
+  }
   /**
    * Create the closing inspection for a completion claim (edge 1) and append `inspection.closing_created`
    * in the SAME transaction, so the projection observes the new review. ONE default sign-off item makes
@@ -86,11 +198,30 @@ export class InspectionParticipant {
    * `inspection.evidence_added` — invoked on the media-create transaction. Idempotent on the
    * (item, media) unique. Returns the event meta so media-create dispatches it after commit.
    */
+  /**
+   * Declare WHO is changing evidence, for the database fence that judges it
+   * (`20271217000000`, #571 round 10, finding 1).
+   *
+   * `InspectionEvidence` carries no actor column, and a DELETE could not use one anyway — the row
+   * records who ADDED the evidence, never who is removing it. So the actor is a transaction-local
+   * setting, set by this release's writers and unknown to the previous release, whose evidence
+   * writes on assigned work the fence then refuses as unattributed.
+   *
+   * `set_config(..., true)` is LOCAL: it dies with the transaction and cannot leak into another
+   * session's write. Parameterised, never interpolated.
+   */
+  private declareEvidenceActor(tx: Prisma.TransactionClient, actorUserId: string): Promise<unknown> {
+    return tx.$executeRaw`SELECT set_config('vitan.inspection_evidence_actor', ${actorUserId}, true)`;
+  }
+
   async addEvidence(
     tx: Prisma.TransactionClient,
-    params: { projectId: string; actor: Actor; inspectionId: string; inspectionItemId: string; mediaId: string },
+    params: { projectId: string; actor: Actor; inspectionId: string; inspectionItemId: string; mediaId: string; observedAssigneeId?: string | null },
   ): Promise<EmittedEventMeta> {
-    const { projectId, actor, inspectionId, inspectionItemId, mediaId } = params;
+    const { projectId, actor, inspectionId, inspectionItemId, mediaId, observedAssigneeId } = params;
+    // the assignment this write was authorised under must still hold at the write (round 11, F1)
+    if (observedAssigneeId !== undefined) await this.fenceObservedAssignee(tx, { projectId, inspectionId, observedAssigneeId });
+    await this.declareEvidenceActor(tx, actor.actorId);
     await tx.inspectionEvidence.upsert({
       where: { inspectionItemId_mediaId: { inspectionItemId, mediaId } },
       create: { projectId, inspectionId, inspectionItemId, mediaId },
@@ -106,11 +237,21 @@ export class InspectionParticipant {
    */
   async removeEvidence(
     tx: Prisma.TransactionClient,
-    params: { projectId: string; actor: Actor; mediaId: string },
+    params: { projectId: string; actor: Actor; mediaId: string; observed?: Array<{ inspectionId: string; observedAssigneeId: string | null }> },
   ): Promise<EmittedEventMeta | null> {
-    const { projectId, actor, mediaId } = params;
+    const { projectId, actor, mediaId, observed } = params;
     const links = await tx.inspectionEvidence.findMany({ where: { projectId, mediaId }, select: { inspectionId: true } });
     if (links.length === 0) return null;
+    // Every inspection whose evidence this DELETE removes is fenced against the assignment its
+    // authorisation observed — the sharp half of round 11's finding 1, because these bytes do not
+    // come back. A media linked to an inspection the caller never authorised (a link created
+    // between the check and here) is caught by the same pass.
+    for (const { inspectionId } of links) {
+      const seen = observed?.find((o) => o.inspectionId === inspectionId);
+      if (!seen) throw new ConflictException('This photo became evidence for another inspection while it was being deleted — reload and retry.');
+      await this.fenceObservedAssignee(tx, { projectId, inspectionId, observedAssigneeId: seen.observedAssigneeId });
+    }
+    await this.declareEvidenceActor(tx, actor.actorId);
     await tx.inspectionEvidence.deleteMany({ where: { projectId, mediaId } });
     return emitEvent(tx, { projectId, actor, eventType: 'inspection.evidence_removed', entityType: 'Inspection', entityId: links[0].inspectionId, payload: { mediaId, unlinked: links.length }, effectKey: 'inspection.evidence_removed', dispatch: {} });
   }

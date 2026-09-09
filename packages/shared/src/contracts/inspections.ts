@@ -39,7 +39,11 @@ export type InspectionsQuery = (typeof INSPECTIONS_QUERIES)[number];
  * The COMPLETE HTTP result, defined ONCE here so the API's `InspectionsQueryService.moduleInspections`
  * and the web gateway model the SAME shape (no drifting duplicate). It carries the SAME five role-gated
  * inspection slices the snapshot's inspection keys do — baked per-viewer/role from ONE canonical base:
- *  • `checklist` — the engineer's current field checklist (all roles), evidence as fresh signed paths.
+ *  • `checklist` — the checklist the field view opens by default (all roles), evidence as fresh signed
+ *    paths. It is the first of `openChecklists`.
+ *  • `openChecklists` — EVERY issued, unsubmitted checklist (all roles). Carrying only the single
+ *    `checklist` was a defect: issuing a second one hid the first, and the PMC who issued them saw
+ *    none of them, since `reviews` carries SUBMITTED inspections only.
  *  • `reviews` / `review` — the PMC review queue (PMC only; empty/null otherwise). `review` is the
  *    deprecated single (first pending) back-compat field.
  *  • `reinspectionCreated` — PMC only.
@@ -51,6 +55,7 @@ export type InspectionsQuery = (typeof INSPECTIONS_QUERIES)[number];
  */
 export interface InspectionsModuleResult {
   readonly checklist: Checklist | null;
+  readonly openChecklists: readonly Checklist[];
   readonly reviews: readonly Review[];
   readonly review: Review | null;
   readonly reinspectionCreated: boolean;

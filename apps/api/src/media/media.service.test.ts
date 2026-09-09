@@ -73,6 +73,11 @@ function make(
   const inspectionParticipant = {
     addEvidence: vi.fn(async () => ({ eventId: 'ev-add' })),
     removeEvidence: vi.fn(async () => null),
+    // #571 round 9, finding 1 — the binding-assignment authority for evidence mutation. Permissive
+    // in this stub: these probes are about DELETE ORDERING, and the authority rule has its own
+    // live-PostgreSQL probes where a real assignment can exist.
+    assertEvidenceMutable: vi.fn(async () => undefined),
+    assertEvidenceDisposable: vi.fn(async () => undefined),
   } as unknown as InspectionParticipant;
   // Phase 3 Task 4 — no media under test is stock-ledger evidence, so the guard passes.
   const inventoryParticipant = { assertMediaDisposable: vi.fn(async () => {}) } as unknown as InventoryParticipant;

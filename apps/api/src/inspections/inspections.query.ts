@@ -4,6 +4,8 @@ import type { InspectionsModuleResult, ReadinessInspection } from '@vitan/shared
 import { PrismaService } from '../prisma.service';
 import { SignedUrlService } from '../media/signed-url.service';
 import { bakeInspections, computeInspectionsBase, type InspectionsBase, type InspectionsSlices } from './inspections-serialize';
+import { bindingAssigneeIds } from './assignment-eligibility';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 import { INSPECTIONS_PROJECTION } from './inspections.projection';
 import { readServableGeneration } from '../platform/projections/generation';
 import { nextSeqId } from '../domain/ids';
@@ -28,11 +30,24 @@ export interface InspectionChecklistStructure {
  * before storing an `inspectionId`. Per-viewer/role visibility and each item's fresh signed evidence paths
  * are baked at read time ({@link bakeInspections}); the boundary CI check enforces the encapsulation.
  */
+/**
+ * Is this stored projection base the shape THIS release's serializer produces? Every entry of a v2
+ * base carries `assigneeId` (a string or an explicit `null`); a v1 entry has no such key. Checked by
+ * key presence rather than truthiness, because `null` is a legitimate v2 value meaning unassigned.
+ */
+function isCurrentInspectionsBase(base: InspectionsBase): boolean {
+  const entries = (base as unknown as { inspections?: unknown[] }).inspections;
+  if (!Array.isArray(entries)) return false;
+  return entries.every((e) => e !== null && typeof e === 'object' && 'assigneeId' in (e as object));
+}
+
 @Injectable()
 export class InspectionsQueryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly signed: SignedUrlService,
+    // #571 round 8, finding 3 — the assignee-standing question goes to the model's OWNER.
+    private readonly orgs: OrgsParticipant,
   ) {}
 
   /** Bake an evidence media row's short-lived signed serve path (minted per read — never stored). */
@@ -43,9 +58,27 @@ export class InspectionsQueryService {
    * placedInspections), baked for `role` (PMC-only review queue, pmc/engineer placement) with each item's
    * evidence as fresh signed serve paths. Served from LIVE canonical state.
    */
-  async snapshotSlice(projectId: string, role: string): Promise<InspectionsSlices> {
+  async snapshotSlice(projectId: string, role: string, viewerId?: string): Promise<InspectionsSlices> {
     const base = await computeInspectionsBase(this.prisma, projectId);
-    return bakeInspections(base, { role, evidencePath: this.evidencePath });
+    return bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base) });
+  }
+
+  /**
+   * Which of this base's named assignees still HOLD their work — the live half of the read.
+   *
+   * Resolved here, per read, rather than stored in the base, because the base is a rebuildable
+   * PROJECTION refreshed by `inspection.*` events and this fact changes under `member.*` ones: a
+   * stored copy would keep a removed engineer's checklist hidden from every eligible replacement
+   * until something unrelated touched the inspection. Asking the membership table at read time makes
+   * the projection-served and live-served slices identical for the same reason they already are —
+   * the same function, the same argument — while keeping the stored bytes viewer-independent.
+   *
+   * One query per read, over the DISTINCT assignees actually present, and skipped entirely when the
+   * project has none (the common case: an issued checklist is nobody's in particular).
+   */
+  private bindingAssignees(projectId: string, base: InspectionsBase): Promise<Set<string>> {
+    const named = base.inspections.map((i) => i.assigneeId).filter((id): id is string => typeof id === 'string');
+    return bindingAssigneeIds(this.orgs, this.prisma, projectId, named);
   }
 
   /**
@@ -60,9 +93,9 @@ export class InspectionsQueryService {
    * no-op-bootstrapped (no row), lagging or blocked generation returns `generation: null` and the caller
    * falls back to the canonical live slice.
    */
-  async projectionSlice(projectId: string, role: string): Promise<{ slices: InspectionsSlices; generation: number | null }> {
+  async projectionSlice(projectId: string, role: string, viewerId?: string): Promise<{ slices: InspectionsSlices; generation: number | null }> {
     const gen = await readServableGeneration(this.prisma, INSPECTIONS_PROJECTION, projectId);
-    const empty: InspectionsSlices = { checklist: null, reviews: [], review: null, reinspectionCreated: false, placedInspections: [] };
+    const empty: InspectionsSlices = { checklist: null, openChecklists: [], reviews: [], review: null, reinspectionCreated: false, placedInspections: [] };
     if (!gen) return { slices: empty, generation: null };
 
     const row = await this.prisma.inspectionsProjection.findUnique({
@@ -72,7 +105,24 @@ export class InspectionsQueryService {
     // A caught-up generation with NO row yet is not authoritative-empty data — fall back to canonical.
     if (!row) return { slices: empty, generation: null };
     const base = row.dto as unknown as InspectionsBase;
-    return { slices: bakeInspections(base, { role, evidencePath: this.evidencePath }), generation: gen.generation };
+    // A V1-SHAPED ROW INSIDE A V2 GENERATION IS NOT SERVABLE.
+    //
+    // `catalogVersion` fences the GENERATION, and that is not the same as fencing its ROWS. During a
+    // rolling deploy a previous-release relay is still running; it re-syncs the consumer catalog only
+    // at startup, so it can apply the next `inspection.*` event and rewrite this row with the v1
+    // serializer AFTER a v2 generation is active. The generation stays stamped v2 and unfenced (the
+    // writer fence installed by `20271126000000` covers `DecisionProjection` only), so the version
+    // gate above lets it through — and every entry then lacks `assigneeId`, which `bakeInspections`
+    // reads as "assigned to nobody I can name" and filters out, emptying the field view for every
+    // non-PMC viewer.
+    //
+    // The stored bytes answer the question the stamp cannot, so ask them: a v2 base carries the key
+    // on every entry. A row that does not is from an older writer whatever the generation says, and
+    // the caller falls back to the canonical live read, which is always current. This is the read
+    // half of the fence; the write half (an `InspectionsProjection` writer trigger mirroring the
+    // decisions one) is a separate unit, and until it exists this is what keeps wrong data unserved.
+    if (!isCurrentInspectionsBase(base)) return { slices: empty, generation: null };
+    return { slices: bakeInspections(base, { role, evidencePath: this.evidencePath, viewerId, bindingAssignees: await this.bindingAssignees(projectId, base) }), generation: gen.generation };
   }
 
   /**
@@ -82,12 +132,12 @@ export class InspectionsQueryService {
    * rebuilt) — additive and correct, never empty during warm-up. `source` tells the client which path
    * served it (the slices are byte-identical either way).
    */
-  async moduleInspections(projectId: string, role: string): Promise<InspectionsModuleResult> {
-    const proj = await this.projectionSlice(projectId, role);
+  async moduleInspections(projectId: string, role: string, viewerId?: string): Promise<InspectionsModuleResult> {
+    const proj = await this.projectionSlice(projectId, role, viewerId);
     if (proj.generation !== null) {
       return { ...proj.slices, source: 'projection', generation: proj.generation };
     }
-    const live = await this.snapshotSlice(projectId, role);
+    const live = await this.snapshotSlice(projectId, role, viewerId);
     return { ...live, source: 'live', generation: null };
   }
 
