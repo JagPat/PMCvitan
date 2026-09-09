@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { ConflictException, ForbiddenException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { InspectionsService } from '../../src/inspections/inspections.service';
@@ -780,10 +781,12 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
    * could make it between the authorisation and the write, and B's delete then destroyed the
    * evidence — bytes included — of work that had just become A's.
    *
-   * `submit` already answered this in round 5, by pinning the OBSERVED `assigneeId` in its CAS
-   * predicate. Evidence has two writers rather than one, so the same fence is stated once in the
-   * participant and taken by both. This probe is the interleaving itself, with the assignment
-   * committed by a SECOND connection between the two halves.
+   * Round 11 answered this with `submit`'s CAS on the observed value. ROUND 12 then found the
+   * DATABASE fence had the identical shape and no later write to pin, so the inspection row is now
+   * LOCKED for the whole authorisation — one order, inspection before membership, on every path.
+   * That is strictly stronger: the racing assignment no longer interleaves and gets refused, it
+   * WAITS. This probe asserts that directly — the second connection's update observed BLOCKED in
+   * `pg_stat_activity` while the transaction runs, and committing only after it ends.
    */
   it('ROUND 11 — an assignment landing mid-delete refuses the delete instead of destroying the evidence', async () => {
     const { p, pmcA } = await freshProject();
@@ -810,23 +813,46 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
     // takes a different pooled connection and commits independently of it.
     const participant = t.app.get(InspectionParticipant);
     const realRemove = participant.removeEvidence.bind(participant);
+    let assignment: Promise<unknown> | undefined;
+    let settled = false;
     const spy = vi.spyOn(participant, 'removeEvidence').mockImplementation(async (...args) => {
-      await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: holder } });
+      // a second pooled connection attempts the migration's permitted `null → A` assignment
+      assignment = t.prisma.inspection
+        .update({ where: { id: insp.id }, data: { assigneeId: holder } })
+        .then((r) => { settled = true; return r; });
+      // it must BLOCK on the inspection row this transaction now holds. Condition-based, never a
+      // sleep: wait until PostgreSQL itself reports a backend waiting on a lock.
+      const deadline = Date.now() + 10_000;
+      let waiting = 0;
+      while (Date.now() < deadline && waiting === 0) {
+        const [row] = await t.prisma.$queryRaw<Array<{ n: bigint }>>(
+          Prisma.sql`SELECT count(*) AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND state = 'active'`,
+        );
+        waiting = Number(row?.n ?? 0);
+      }
+      expect(waiting, 'the racing assignment must be BLOCKED on the inspection row').toBeGreaterThan(0);
+      expect(settled, 'and must not have committed inside the authorisation window').toBe(false);
       return realRemove(...args);
     });
     try {
-      await expect(media.remove(shot.id, asUser(`it-inidem-u-r11o-${projSeq}`)))
-        .rejects.toBeInstanceOf(ConflictException);
+      // the delete proceeds — the inspection was genuinely unassigned for the WHOLE authorisation,
+      // which is what the row lock makes true rather than merely observed
+      expect(await media.remove(shot.id, asUser(`it-inidem-u-r11o-${projSeq}`))).toBe(true);
     } finally {
       spy.mockRestore();
     }
-    // the evidence, and its bytes, survive the assignment that landed mid-flight
-    expect(await t.prisma.inspectionEvidence.count({ where: { projectId: p, mediaId: shot.id } })).toBe(1);
-    expect(await t.prisma.media.count({ where: { projectId: p, id: shot.id } })).toBe(1);
-
-    // precise, not merely strict: the assignee's own delete still succeeds
-    expect(await media.remove(shot.id, asUser(holder))).toBe(true);
+    await assignment; // and the assignment lands AFTER, never inside the window
+    expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id } })).assigneeId).toBe(holder);
     expect(await t.prisma.inspectionEvidence.count({ where: { projectId: p, mediaId: shot.id } })).toBe(0);
+
+    // …and once the assignment IS in place, a stranger's delete is refused by the ordinary rule
+    const later = await media.create(p, asUser(holder), {
+      kind: 'inspection', mime: 'image/png', data: Buffer.from('r11b').toString('base64'),
+      inspectionId: insp.id, inspectionItemId: insp.items[0]!.id,
+    });
+    await expect(media.remove(later.id, asUser(`it-inidem-u-r11o-${projSeq}`)))
+      .rejects.toBeInstanceOf(ForbiddenException);
+    expect(await t.prisma.inspectionEvidence.count({ where: { projectId: p, mediaId: later.id } })).toBe(1);
   });
 
   /**

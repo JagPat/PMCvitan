@@ -71,9 +71,23 @@ DECLARE
 BEGIN
   v_project := NEW."projectId"; v_inspection := NEW."inspectionId"; v_row := NEW;
 
+  -- LOCKED, because the ABSENCE of an assignment is a fact with a lifetime (#571 round 12,
+  -- finding 1). Round 11 established this for the service — an unlocked read of `assigneeId`
+  -- followed by an early return lets an alternate writer perform the migration's permitted
+  -- `null → A` assignment in between — and then fixed only the service, leaving this fence with
+  -- the identical shape. The previous-release upload this trigger EXISTS to judge is exactly the
+  -- writer that would slip through it: it reads NULL, returns early, and commits unattributed
+  -- evidence onto work that is now A's.
+  --
+  -- The service pins the observed value in the write's own predicate; a trigger has no later
+  -- write to pin, so it takes the row lock instead and re-reads under it. That also settles the
+  -- LOCK ORDER for every path through this table — the inspection row BEFORE the membership row
+  -- `inspection_assignment_binds` takes — and the service reaches this trigger already holding
+  -- both, in that same order, so it adds nothing there.
   SELECT i."assigneeId" INTO v_assignee
-    FROM public."Inspection" i WHERE i."id" = v_inspection;
+    FROM public."Inspection" i WHERE i."id" = v_inspection FOR UPDATE;
   -- UNASSIGNED evidence is unchanged: the route's role gate is its whole guard, as it always was.
+  -- The lock above is what makes "unassigned" true at the write rather than true a moment ago.
   IF v_assignee IS NULL THEN RETURN v_row; END IF;
 
   -- NO READINESS LOCK HERE, and the asymmetry with the submit fence is deliberate (#571 round 11).

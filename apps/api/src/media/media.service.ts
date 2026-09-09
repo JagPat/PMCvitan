@@ -160,12 +160,26 @@ export class MediaService {
       // THE ROLLBACK DOES NOT REACH THE BUCKET (#571 round 11, finding 3). The preflight above is
       // deliberately advisory, so the authoritative in-transaction check is the one that can refuse
       // a request whose bytes are already stored: an inactive assignee reactivated between the two
-      // is exactly that interleaving, and it left one unreferenced object per refusal. Every failure
-      // after `storage.put` — the authority refusal, a constraint, a lost connection — now removes
-      // the object it wrote, because the transaction rolled back and NOTHING references this key.
-      // Best-effort and swallowed: a bucket that will not delete is an orphan to sweep, never a
-      // reason to convert a refusal into a different error (the delete path takes the same view).
-      if (key) await this.storage.remove(key).catch(() => {});
+      // is exactly that interleaving, and it left one unreferenced object per refusal.
+      //
+      // BUT A REJECTED `$transaction` DOES NOT PROVE A ROLLBACK (#571 round 12, finding 2). Round 11
+      // wrote that every failure here means "the transaction rolled back and NOTHING references this
+      // key", and named a lost connection as one of them. A connection lost AFTER PostgreSQL commits
+      // rejects the client promise over rows that are durable — so the unconditional cleanup that
+      // sentence justified would delete the object those committed rows reference and destroy the
+      // evidence permanently. The claim was the failure mode: an assumption about the database's
+      // state, asserted from the client's error rather than checked against the database.
+      //
+      // So the cleanup is EARNED, not assumed. The object is removed only once a fresh read proves
+      // no row references its key. A read that itself fails leaves the object alone — an orphan to
+      // sweep is a cost; a deleted photo behind a committed row is not recoverable, and where the two
+      // are not distinguishable the harmless one is the only admissible guess.
+      if (key) {
+        const persisted = await this.prisma.media
+          .findFirst({ where: { projectId, storageKey: key }, select: { id: true } })
+          .catch(() => ({ id: 'unknown' }) as { id: string });
+        if (!persisted) await this.storage.remove(key).catch(() => {});
+      }
       throw e;
     }
 

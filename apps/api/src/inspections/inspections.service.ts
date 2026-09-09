@@ -188,6 +188,15 @@ export class InspectionsService {
       run: async (tx) => {
         // submission moves the linked chain's tip state — a readiness write (finding 1)
         await lockProjectReadiness(tx, projectId);
+        // The inspection row BEFORE the membership row, the one order every inspection path takes
+        // (#571 round 12, finding 1). Round 12 settled this order at the evidence fence, in the
+        // participant and in `decide`, and an audit of the remaining writers found SUBMIT still
+        // taking them the other way round: the binding check below locks `Membership` first, and
+        // the CAS at the end is what locks the inspection. That is the inversion the round-12 fix
+        // exists to remove, one writer short of removing it. Locking here costs nothing — this
+        // transaction updates the row regardless — and the CAS on `assigneeId` stays exactly as it
+        // was, because it is what makes the observed-unassigned case precise for the READER.
+        await tx.$executeRaw`SELECT 1 FROM "Inspection" WHERE "id" = ${inspectionId} AND "projectId" = ${projectId} FOR UPDATE`;
         // THE AUTHORITATIVE BINDING CHECK (#571 round 7, finding 2). The guard before the transaction
         // reads memberships unlocked, so its answer can be overtaken: `MembersService.add`/`updateRole`
         // take THIS key before they write, so an assignee observed ineligible there can be reactivated
@@ -360,6 +369,13 @@ export class InspectionsService {
           // rejection opens a linked correction chain — a readiness write (finding 1);
           // the readiness lock precedes the membership row lock (uniform order)
           await lockProjectReadiness(tx, projectId);
+          // The inspection row BEFORE the membership row — the one order every path through
+          // inspection evidence and assignment takes (#571 round 12, finding 1). This transaction
+          // updates the row below anyway; taking its lock here rather than there is what keeps a
+          // service decide from deadlocking against the evidence fence, which must lock the
+          // inspection first because its early return on an absent assignment is what a concurrent
+          // `null → A` races.
+          await tx.$executeRaw`SELECT 1 FROM "Inspection" WHERE "id" = ${inspectionId} AND "projectId" = ${projectId} FOR UPDATE`;
           // The assignee must be eligible AT COMMIT TIME (Codex Task 5 gate P1):
           // the membership row is read LOCKED inside THIS transaction, so a
           // concurrent removal/role change has a defined order — it either commits

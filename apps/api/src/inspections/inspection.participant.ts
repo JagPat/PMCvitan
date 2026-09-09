@@ -51,7 +51,19 @@ export class InspectionParticipant {
     params: { projectId: string; inspectionId: string; actorUserId: string; forUpdate?: boolean },
   ): Promise<{ observedAssigneeId: string | null }> {
     const { projectId, inspectionId, actorUserId, forUpdate = true } = params;
-    const insp = await tx.inspection.findUnique({ where: { id: inspectionId }, select: { projectId: true, assigneeId: true } });
+    // THE INSPECTION ROW FIRST, THEN THE MEMBERSHIP ROW — one order for every path through this
+    // table (#571 round 12, finding 1). Round 11 pinned the observed assignee in the write's
+    // predicate instead of locking, precisely to avoid inverting `decide`'s order; round 12 then
+    // showed the DATABASE fence needs the lock anyway, because a trigger has no later write to pin
+    // and its early return on `assigneeId IS NULL` is exactly what a `null → A` assignment races.
+    // Two orders would deadlock a service write against a previous-release one in the rollout
+    // window the fence exists for, so the order is settled here and `decide` takes it too:
+    // readiness → inspection → membership.
+    const insp = forUpdate
+      ? (await tx.$queryRaw<Array<{ projectId: string; assigneeId: string | null }>>(
+          Prisma.sql`SELECT "projectId", "assigneeId" FROM "Inspection" WHERE "id" = ${inspectionId} FOR UPDATE`,
+        ))[0]
+      : await tx.inspection.findUnique({ where: { id: inspectionId }, select: { projectId: true, assigneeId: true } });
     if (!insp || insp.projectId !== projectId) return { observedAssigneeId: null }; // containment is the callers' own check
     // THE OBSERVED ASSIGNEE IS RETURNED BECAUSE READING IT IS NOT ENOUGH (#571 round 11, finding 1).
     // The membership row lock this method takes below protects the assignee's STANDING; it protects
