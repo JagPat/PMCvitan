@@ -1015,6 +1015,51 @@ mirrors or backfills — `ProjectRoleStanding`, `ProjectUserStanding`,
 backfill over pre-existing rows; `OutboxConsumerActivation` was the one that
 did not, and that is finding 3.
 
+### Review round 19 (head `afd236a4`) — one P1, DECLINED on its mechanism and folded on what its trace exposed
+
+| # | classification | why that class |
+|---|---|---|
+| 1 | **incorrect finding — with a real residue its trace exposed** | the fabricated DEMAND it describes is refused, by predicates specified since #558's round 1 and connected to the claimant by round 4's finding 5. But a lone forged audit row with NO demand is not, and that is a genuine gap |
+
+**The declined half, with the evidence.** The finding reasons that because the
+4d-i claim arm "does nothing else" and the 4d-iii converse enumerates seven
+kinds excluding `countersign_renotified`, a writer can insert a
+`decision.awaiting_countersign` plus the audit row and have the demand commit
+and be delivered. It cannot. The verification for this branch is not on the
+audit row at all — it is the ENTRY SEAL'S CONVERSE on the demand event, which is
+DEFERRED and judges the finished transaction against: `renotified`,
+`crossingEventId` and `transitionId` in the payload; `platform_event` proving a
+committed `membership.standing_changed` of this project, naming that transition,
+at an EARLIER position, and being the 0 → 1 activation rather than a 1 → 2;
+`platform_latest_event` proving the decision's latest demand sits at or before
+that crossing; exactly one same-transaction audit row naming the same crossing
+and transition; a partial UNIQUE index on `(decisionId, crossingEventId)`; and
+the push-shape check with a sorted, distinct audience equal to the active
+architects at commit. Those are #558 round 1 finding 1, #558 round 2 finding 1,
+#560 round 2 finding 3, #562 round 1 finding 6 and #565 round 1 finding 3 — five
+rounds of exactly this attack. The forged bundle fails them, and it fails them
+whether or not the claim was made, because a deferred constraint trigger does
+not care which other trigger already ran. **No code is added for the described
+defect**, per JagPat's instruction to answer an incorrect finding with evidence.
+
+**What the finding got right is the WORDING, and that is folded.** "It claims
+for `countersign_renotified` and does nothing else" reads, in isolation, as
+though nothing verifies — which is how it was read. The claim arm now says where
+verification lives and why the claimant is not the verifier here.
+
+**And the trace exposed a narrower gap the finding did not describe, which IS
+fixed.** The entry seal's converse fires on the DEMAND. It therefore judges
+every forged demand and nothing that arrives WITHOUT one. A lone
+`countersign_renotified` audit row — no `decision.awaiting_countersign` beside
+it — records a re-notification that never happened into an append-only register
+P29b reads as evidence of the crossing; the event-side converse has no event to
+fire on, and the partial UNIQUE index forbids only a second row per (decision,
+crossing), never a first. So `countersign_renotified` joins the 4d-iii
+enumeration as the eighth kind, requiring its demand, its crossing and its
+transition in the same transaction. That is the same rule the other seven carry,
+applied to the kind that was left out of it because it already had a claimer —
+which is what made it look verified.
+
 ### Review round 18 (head `b7e6610e`) — one P1: my own round-17 answer was prose
 
 | # | classification | why that class |
@@ -4553,6 +4598,27 @@ before it. Each fact table carries:
    claimant, and a second claim for one event is refused by the register's
    per-event UNIQUE.
 
+   **"Does nothing else" is about the CLAIM, not about verification, and the
+   sentence is corrected here because it read as though nothing verifies**
+   (#572's review round 19, finding 1 — declined on its stated mechanism, folded
+   on its wording). Everything a re-notification demand must prove is already
+   required, by the ENTRY SEAL'S CONVERSE on `decision.awaiting_countersign`
+   above, which is DEFERRED and therefore judges the finished transaction: the
+   payload's `renotified`, `crossingEventId` and `transitionId`;
+   `platform_event` proving the crossing is a committed
+   `membership.standing_changed` of this project naming that transition at an
+   EARLIER position and being the 0 → 1 ACTIVATION (`activeCount = 1`, `to` an
+   active architect, so a 1 → 2 cannot be cited); `platform_latest_event`
+   proving the decision's latest demand sits at or before that crossing; exactly
+   one same-transaction audit row naming the same crossing and transition; the
+   partial UNIQUE index making a second demand per (decision, crossing)
+   unrepresentable; and the push-shape check with its sorted, distinct audience.
+   A forged demand meets none of those, and that converse fires at commit
+   whether or not a claim was made — so the claimant is not the verifier for
+   this branch and was never asked to be. The claim arm exists because round
+   11's rule puts the claiming seal in the unit that makes the event
+   pairing-required; the verification lives where the predicates can be read.
+
    That the CONVERSE below arrives only in 4d-iii is deliberate and is not the
    same arm: a claim must exist from the moment pairing does, while a converse
    that demands a fact and a transition cannot be installed until the previous
@@ -4601,10 +4667,23 @@ before it. Each fact table carries:
    next genuine approval's version and corrupts the revision sequence as well as
    the history. The trailing arm therefore requires, for each of the audit kinds
    this plan's correspondence names (`approved`, `reapproved`, `countersigned`,
-   `stranded_resolved`, `forwarded`, `change_requested`, `change_withdrawn`),
-   its matching FACT, its transition and its `DomainEvent` in the SAME
-   transaction — the converse of the direction §A.3 already states, which asks
-   the fact for its audit row and never asked the audit row for its fact.
+   `stranded_resolved`, `forwarded`, `change_requested`, `change_withdrawn`
+   **and `countersign_renotified`** — EIGHT), its matching FACT, its transition
+   and its `DomainEvent` in the SAME transaction — the converse of the direction
+   §A.3 already states, which asks the fact for its audit row and never asked
+   the audit row for its fact.
+
+   **The eighth is round 19's real residue** — not the defect that finding
+   described, but one its trace exposed. The entry seal's converse fires on the
+   DEMAND, so it judges every forged demand and no forged row that arrives
+   WITHOUT one. A lone `countersign_renotified` audit row, planted with no
+   `decision.awaiting_countersign` beside it, records a re-notification that
+   never happened into an append-only register P29b reads as evidence of the
+   crossing: no demand, so nothing for the event-side converse to fire on, and
+   the partial UNIQUE index forbids only a SECOND row per (decision, crossing),
+   never a first. Requiring its demand, its crossing and its transition in the
+   same transaction closes it, for exactly the reason the other seven are
+   here.
 
    **It is a TRAILING seal, and the window is stated rather than glossed.** The
    previous release writes these rows with no envelope pair and no fact for the
@@ -5851,7 +5930,8 @@ today's behaviour lives.
     kept finality defaults (`finalized`, `revisionFinalized` — after the
     drain only writers that state the pin remain), **installs
     `DecisionEvent_t4d_correspondence`, a DEFERRED INSERT constraint trigger
-    carrying the converse §A.3 states** — each of the seven listed audit kinds
+    carrying the converse §A.3 states** — each of the EIGHT listed audit kinds
+    (`countersign_renotified` among them, #572's review round 19)
     requiring its fact, its transition and its `DomainEvent` in the same
     transaction, judged AT COMMIT because the delivered writers insert the audit
     row before they emit (#572's review round 15, finding 2), with the seed's
