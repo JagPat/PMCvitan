@@ -1015,6 +1015,46 @@ mirrors or backfills — `ProjectRoleStanding`, `ProjectUserStanding`,
 backfill over pre-existing rows; `OutboxConsumerActivation` was the one that
 did not, and that is finding 3.
 
+### Review round 11 (head `3e2db742`) — three findings, and the claimant column has now produced two
+
+| finding | where it lands | the answer |
+|---|---|---|
+| 1 (P1) round 9's claimant column gave `decision.change_withdrawn` to the UPDATE arm of `ChangeRequest_t4d_provenance_required`, which §D installs only in 4d-iii. That event is pairing-required from 4d-i, and BOTH the previous release and 4d-ii execute `withdrawChange` in the window between them — so the kernel sees no claim and rejects every withdrawal at commit; after 4d-iii the permanent seal and the trailing one would both claim and collide on the per-event UNIQUE | the §A.3 correspondence table (the column header + two rows) | the claimant is `ChangeRequest_t4d_paired`, the PERMANENT 4d-i pairing seal, with the trailing provenance trigger verification-only. The column header now carries the rule: the claiming seal must be installed by the unit that makes the event pairing-required, never a later one |
+| 2 (P1) round 10 added the requester-or-PMC predicate for a `standard` request closed to `withdrawn` and asked nothing about the OTHER origin on the same transition. The closure/restoration pairing covers `standard` alone, so a receipt-backed direct writer could withdraw an open `countersign_rejection` request with a truthful resolver set, leaving its decision in `change` — a state the service forbids and cannot recover, since reapproval requires exactly one open request | §D 4d-iii (the closure UPDATE arm); P33 | `open → withdrawn` is refused by ORIGIN before any authority is judged: a rejection request's only legal closures are the `resolved` its reapproval writes and the `returned` resolution's bundle. P33 gains the hostile direct update with a PMC resolver and every provenance column correct |
+| 3 (P2) obligation 3 argued that because the fact is written in the act's transaction, "at the act" and "at commit" are the same instant. `resolveActor` reads `User.name` BEFORE `executeCommand` opens that transaction, so a rename committing in between projects a new `UserIdentity` and the fact's trigger rolls back an authorized command against a stale frozen name | §A.3 obligation 3; P29b | the frozen pair is resolved INSIDE `executeCommand.run`, from the registers, with the identity row taken `FOR UPDATE` before the read. P29b gains the held-rename barrier in both resume orders |
+
+**Findings 1 and 2 are round 9's and round 10's own fixes, and the claimant
+column has now produced a finding in two consecutive rounds.** That column was
+round 9's answer to a hand list, and it was the right answer — but a table
+cell that names a FACT was never enough, because a claim is made by a SEAL,
+and a seal exists only from the unit that installs it. Round 10 caught a cell
+naming a fact a different TRANSACTION writes; round 11 catches one naming a
+seal a different UNIT installs. Same column, same shape, one axis apart.
+
+Finding 2 is the other recurring shape: a predicate added for the case a
+finding named, over a set whose other members were never visited. Round 6
+replaced a hand list of writers with a derivation for exactly this reason, and
+round 10's own remedy then went in as a hand-scoped predicate — `standard`
+only — without asking what the sibling origin does on that transition.
+
+So round 11 sharpens round 10's question rather than adding a fourth:
+
+> **Name the enforcer, its UNIT, and its whole domain.** For every rule:
+> which operation breaches it, which seal judges that operation, WHICH UNIT
+> installs that seal — and is it installed at every moment the rule must
+> hold, including the compatibility window? And over which values of every
+> discriminator the rule mentions? A predicate scoped to the one value a
+> finding named is a hand list with a single entry.
+
+**Walked.** Every claimant cell was re-checked for its seal's unit: the two
+`ChangeRequest` rows named a trailing trigger and are corrected; the
+membership row's `MembershipTransition` seal, the decisions fact seals and the
+audit-row claimant are all 4d-i, and the events they claim become
+pairing-required in the same unit. Every discriminator the closure arms
+mention was enumerated: `origin` has exactly two values and both are now
+stated on `open → withdrawn`; `outcome` has two and both are stated; the
+`approvedFrom` pair was settled in round 9.
+
 **Docs-only.** No schema, no migration, no runtime code, no test change, no
 4d implementation. Contractor-capture units 1–6 and the saved UX and
 performance work stay Board-gated and are not mixed in.
@@ -3143,8 +3183,28 @@ before it. Each fact table carries:
    evidence, and no separate label is recorded or demanded) — AND its
    frozen `<act>ByName` must equal the account's display name read by the
    kernel's `platform_user_display_name(userId)` over the `UserIdentity`
-   register at the act (the fact is written in the act's transaction, so
-   "at the act" and "at commit" are the same instant); a supplied role the
+   register at the act — **and the command must READ that name inside its own
+   transaction, from the register, with the identity row locked** (#572's
+   review round 11, finding 3). An earlier spelling of this clause argued that
+   "the fact is written in the act's transaction, so 'at the act' and 'at
+   commit' are the same instant". They are not: `resolveActor` reads
+   `User.name` BEFORE `executeCommand` opens its transaction, so a rename
+   committing in between projects a new `UserIdentity` value, and the fact's
+   INSERT trigger then compares a stale frozen name against the fresh register
+   and rolls back a command that was authorized and correct. The rename is not
+   hostile and the actor is not at fault — the failure is entirely an artifact
+   of reading the name outside the transaction that freezes it. So every 4d
+   fact writer resolves the frozen pair from `UserIdentity` and
+   `ProjectUserStanding` INSIDE `executeCommand.run`, taking the identity row
+   `FOR UPDATE` before it reads: a concurrent rename then either commits first
+   (and the fact freezes the NEW name, which is the truth at the act) or waits
+   behind this transaction (and the fact freezes the old one, equally true at
+   its act). The seal is unchanged — it still compares the frozen pair with the
+   register — because the comparison is now between two values read under the
+   same lock. P29b gains the barrier: a rename held open by a second session
+   while a fact-writing command runs, asserted to COMMIT in both resume orders
+   with the frozen name matching whichever rename won, RED against the
+   pre-transaction read, which rolls back; a supplied role the
    actor does not hold, or a supplied name that is not the account's, is
    refused at the FACT (the service command stays the authority; the seal
    is the hostile-path backstop; no decisions- or platform-owned trigger
@@ -4199,7 +4259,7 @@ before it. Each fact table carries:
 
    The correspondence table, closed over every transition 4d seals:
 
-   | transition | event (`DomainEvent.eventType`) | audit (`DecisionEvent.type`) | feed row | actor bound to (id, frozen role AND name, on event, audit row and fact) | CLAIMANT — the fact present on EVERY instance of this branch, which calls `platform_claim_event_pairing`; every other fact in the bundle verifies through `platform_tx_event` and does NOT claim | armed |
+   | transition | event (`DomainEvent.eventType`) | audit (`DecisionEvent.type`) | feed row | actor bound to (id, frozen role AND name, on event, audit row and fact) | CLAIMANT — the fact present on EVERY instance of this branch, and the SEAL that claims for it. The seal must be installed by the unit that makes the event pairing-required, never by a LATER one: a claimant named on a trailing 4d-iii trigger leaves every commit in the 4d-i → 4d-iii window unclaimed, and collides with the permanent seal afterwards (#572's review round 11, finding 1). Every other fact in the bundle verifies through `platform_tx_event` and does NOT claim | armed |
    |---|---|---|---|---|---|---|
    | `pending`/`change → awaiting_countersign` (the provisional approve) | `decision.awaiting_countersign` — the ONE event of this transition (payload: the provisional act; intent: the countersign demand with the architects frozen as `targetUserIds`); a `decision.approved`/`reapproved` at this transition is REFUSED (finality is the finalizer's row) | `approved` / `reapproved` (the act happened and is attributable) | the provisional notice, `kind = 'decision.awaiting_countersign'` | the head revision's `approvedById` | the PROVISIONAL `DecisionApprovalRevision` (born `finalized = false`) — and THIS is the transaction that carries the `ChangeRequest` closure on the `change` arm, verification-only beside the revision, since the `open → resolved` closure pairs with the transition that lands `awaiting_countersign` | 4d-i (no pre-4d writer can reach the state) |
    | `awaiting_countersign → approved` by countersign | `decision.approved` / `decision.reapproved` by the revision's `approvedFrom` | `countersigned` | the green approved notice | `countersignedById` | the `DecisionCountersign` row. Its bundle is the revision flip, this fact, the status transition and their effects — and NOTHING else: the open `ChangeRequest` of a `change`-cycle revision was already closed by the PROVISIONAL approve's transaction (§A.3's `open → resolved` pairing, round 4 finding 6), which is a different command and a different transaction, so naming the closure here would demand a fact this bundle cannot contain and reject every countersign following a change cycle (#572's review round 10, finding 2 — round 9's own cell) | 4d-i |
@@ -4208,8 +4268,8 @@ before it. Each fact table carries:
    | `awaiting_countersign → change` by `returned` resolution | `decision.change_requested` | `stranded_resolved` + `change_requested` | the change-request notice | `resolvedById` = `requestedById` | the `DecisionStrandedResolution` row — NOT its paired `ChangeRequest`, which exists only on the `returned` outcome | 4d-i |
    | the holder mutation (forward, generic or forward-on) | `decision.forwarded` | `forwarded` | the forward notice | `forwardedById` | the `DecisionForward` fact | 4d-i |
    | `pending`/`change → approved` with NO chain (the direct approve) | `decision.approved` / `decision.reapproved` | `approved` / `reapproved` | the green approved notice | the head revision's `approvedById` | the `DecisionApprovalRevision` (born `finalized = true`) — written from `pending` and from `change` alike, while the `ChangeRequest` CLOSURE of the `reapproved` arm exists only when approving from `change`, so the revision claims and the closure verifies (#572's review round 9, finding 1) | event + audit row from 4d-i (the delivered `approve` writes both in-transaction, so the previous release is compatible through the drain); the feed row's `eventId` binding from 4d-iii, since the previous release writes the row without it |
-   | `approved → change` by the standard `requestChange` (the delivered path, `origin = 'standard'`; the request and the transition paired in BOTH directions — #568's review round 1, finding 3) | `decision.change_requested` | `change_requested` | — (the delivered path writes none) | the receipt's actor | the `ChangeRequest` INSERT | event + audit row + the `ChangeRequest` row from 4d-i (delivered, in-transaction; the envelope pair NULL and `sourceCommandId` NULL through the drain) |
-   | `change → approved` by standard `withdrawChange` | `decision.change_withdrawn` | `change_withdrawn` | — (the delivered path writes none) | the receipt's actor | the `ChangeRequest` CLOSURE (the UPDATE arm round 8 added to `ChangeRequest_t4d_provenance_required`) | event + audit row from 4d-i (delivered, in-transaction) |
+   | `approved → change` by the standard `requestChange` (the delivered path, `origin = 'standard'`; the request and the transition paired in BOTH directions — #568's review round 1, finding 3) | `decision.change_requested` | `change_requested` | — (the delivered path writes none) | the receipt's actor | the `ChangeRequest` INSERT, claimed by `ChangeRequest_t4d_paired` (4d-i, permanent) | event + audit row + the `ChangeRequest` row from 4d-i (delivered, in-transaction; the envelope pair NULL and `sourceCommandId` NULL through the drain) |
+   | `change → approved` by standard `withdrawChange` | `decision.change_withdrawn` | `change_withdrawn` | — (the delivered path writes none) | the receipt's actor | the `ChangeRequest` CLOSURE, claimed by **`ChangeRequest_t4d_paired`** — the PERMANENT 4d-i deferred pairing seal, not the trailing provenance trigger (#572's review round 11, finding 1). Round 9 named the 4d-iii UPDATE arm, which §D installs only in 4d-iii: `decision.change_withdrawn` is pairing-required from 4d-i, and BOTH the previous release and 4d-ii execute `withdrawChange` in the window between them, so the kernel would see no claim and reject every withdrawal at commit — and after 4d-iii the two triggers would both claim and collide on the per-event UNIQUE. The trailing provenance trigger stays VERIFICATION-ONLY on this branch | event + audit row from 4d-i (delivered, in-transaction) |
    | the architect standing flip on `Membership` | `membership.standing_changed` naming the fact — payload `transitionId`, `membershipId`, `role`, `from`, `to`, `activeCount` ALL bound to the fact and the register; paired in the CONVERSE by the kernel's generic pairing seal, the fact's own seal claiming the event (§A.2) | — (orgs; the fact is the audit) | — | the fact's `actorId` and frozen `actorRole`/`actorName`, on the event envelope | the `MembershipTransition` fact (§A.2) | 4d-i (no pre-4d writer can flip the role) |
 
    A `DecisionEvent` written by the service for a transition this table does
@@ -5044,7 +5104,25 @@ today's behaviour lives.
     frozen `resolvedByRole`/`resolvedByName` pair), all four then immutable
     together exactly as the requester's are — **and, for a `standard` request
     closed to `withdrawn`, the resolver must BE the requester or hold `pmc`
-    standing** (#572's review round 10, finding 1). Round 8 gave this arm the
+    standing** (#572's review round 10, finding 1).
+
+    **`open → withdrawn` is itself INVALID for a `countersign_rejection`
+    request, whatever the resolver's authority** (#572's review round 11,
+    finding 2). Round 10 added authority for the standard-origin case and
+    asked nothing about the other origin on the same transition, and the
+    closure/restoration pairing covers `standard` alone — so a database-role
+    writer could reserve and complete a `decisions.withdrawChange` receipt,
+    write a truthful complete resolver set, and withdraw an open
+    `countersign_rejection` request while leaving its decision in `change`.
+    That is a state the service forbids AND cannot recover from: reapproval
+    requires exactly one open request, and this one closed without restoring
+    anything. The arm therefore refuses the TRANSITION by origin before it
+    judges any authority — the rejection request's only legal closures are the
+    `resolved` its reapproval writes and the `returned` resolution's own
+    bundle. P33 gains the hostile direct update: an `open →  withdrawn` on a
+    `countersign_rejection` row carrying every provenance column correctly and
+    a PMC resolver, REFUSED, with its decision still in `change` and its
+    request still open (RED against the round-10 arm, which admits it). Round 8 gave this arm the
     closure's completeness and not its AUTHORITY, so a truthful closure by a
     stranger passed: every column right, every seal met, and a withdrawal the
     service forbids committed. The predicate reads
