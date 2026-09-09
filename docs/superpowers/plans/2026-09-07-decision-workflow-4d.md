@@ -1015,6 +1015,45 @@ mirrors or backfills — `ProjectRoleStanding`, `ProjectUserStanding`,
 backfill over pre-existing rows; `OutboxConsumerActivation` was the one that
 did not, and that is finding 3.
 
+### Review round 17 (head `e264fb47`) — one P1: the split's own ordering, unenforced
+
+| # | classification | why that class |
+|---|---|---|
+| 1 | **missed related path** | round 14's finding 5 made this plan CITE #580's catalog-INSERT trigger and never asked what happens if this plan merges FIRST |
+
+Not a duplicate and not incorrect: the tree search is right — this head carries
+no `2026-09-09-outbox-consumer-activation.md`, because that document is #580's.
+
+**The trace.** PRODUCER of the dependency: §D 4d-ii's `decisions.effects`
+registration, which needs the catalog-INSERT trigger for its head. CONSUMERS:
+4d-iii's activation append and its head verification, and the operator no-op
+branch that must have a head to return. ENFORCEMENT POINT: none existed — the
+order was prose, and prose does not survive a merge. DEPLOYMENT STAGES: the
+natural order is safe by construction, since #580 depends on nothing here; the
+INVERTED order is the whole risk, and it is reachable because merging is the
+Board's. Walked through the delivered resolver: this plan merging first clears
+`open_pr` in `assessPostMergeRunnerState`, leaves `task_state: in_progress`, and
+`assessRunnerState` returns `task:4` — the runner starts 4d-i with the register
+absent from `main`.
+
+**Contract, inventory and proof move together**: 4d-i gains the precondition
+(the activation unit on `main`, checkable as a file rather than as a PR number),
+the 4d-ii registration line carries it where the dependency is cited, and the
+post-merge obligation names `blocking_directive:
+phase-6-4d-unit1-prerequisite` — verifiable against
+`scripts/autonomous-status-state.mjs`, whose directive branch returns before the
+`open_pr` branch.
+
+**And one instrument is deliberately NOT used now, with the evidence for why.**
+Setting that directive today would be wrong: on an `in_progress` task the
+directive outranks `open_pr`, so it would redirect the runner away from this PR
+— the open work item currently under correction — and park its review loop
+behind a directive nobody is working. The same key is right after a merge and
+wrong before one, which is why it is written as a post-merge obligation. The
+finding's OTHER remedy — "land the prerequisite before this commit" — is not
+available to any session: merging and deploying are the Board's, and this
+session does not merge.
+
 ### Review round 16 (head `3a3dd090`) — three P1s, classified and traced before correction
 
 JagPat directed that every finding be CLASSIFIED before another correction push,
@@ -5551,8 +5590,41 @@ today's behaviour lives.
     finding 4 is the mechanism this row relies on: an AFTER INSERT trigger on
     `OutboxConsumerCatalog` appends every new row's `seq = 1` baseline in the
     same statement, whoever performs the INSERT — this migration's registration
-    included. Nothing is owed here beyond registering the row; the dependency is
-    named so a reader does not have to re-derive it — with
+    included. Nothing is owed here beyond registering the row.
+
+    **AND THE DEPENDENCY IS A PRECONDITION ON 4d-i, not merely a citation**
+    (#572's review round 17, finding 1). The activation register, its seals and
+    the `outbox:consumer` protocol exist ONLY on #580: a tree search of this
+    plan's own head finds no
+    `docs/superpowers/plans/2026-09-09-outbox-consumer-activation.md`, because
+    that document is the other PR's. The natural order needs no rule — #580 has
+    no dependency on anything here and lands first by construction — but the
+    INVERTED order is reachable, since merging is the Board's and either PR can
+    be taken first. If THIS plan merges first, `docs/STATUS.md` loses its
+    `open_pr` to `assessPostMergeRunnerState`, `task_state` stays
+    `in_progress`, and `assessRunnerState` returns `task:4` — the runner starts
+    4d-i implementation with the register it registers a consumer into, and the
+    trigger that gives that consumer its head, specified nowhere on `main`.
+
+    So **4d-i does not begin until the activation unit is on `main`**, stated
+    here as the staging precondition and checkable as a file's presence rather
+    than as a claim about PR numbers. If this plan merges first, the merging
+    change carries `blocking_directive: phase-6-4d-unit1-prerequisite` into
+    STATUS, which is what makes the runner's next step "land the prerequisite"
+    instead of "start 4d-i": on an `in_progress` task a directive OUTRANKS
+    `open_pr` and every task branch (`scripts/autonomous-status-state.mjs` — the
+    directive branch returns before the `open_pr` branch), so the same key is
+    the right instrument at that moment and the WRONG one now, while this PR is
+    the open work item under active correction — set today it would park this
+    PR's own review loop behind a directive nobody is working. That asymmetry is
+    the reason it is written here as a post-merge obligation and not applied to
+    STATUS in this change.
+
+    **The half of the finding that is not mine to act on**: its first remedy is
+    to land #580 before this commit, and merging is Board-only in this
+    repository — no session merges anything, this one included. The second is to
+    keep this plan from advancing implementation until the prerequisite exists,
+    and that is what the precondition above does — with
     `decisionsManifest.consumesEvents` gaining `membership.standing_changed`
     and the platform-owned `EventStreamQuery.latestPosition`; the
     per-recipient pre-send hook and the cancellation-by-subject inventory in
