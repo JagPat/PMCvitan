@@ -15,8 +15,8 @@ phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: f5da6654
-open_pr: 572
+reviewed_merge: 1fb8f531
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-09
@@ -51,7 +51,47 @@ plan's round 22 records the reversal, and its rounds 17 and 18 keep their
 sections under a SUPERSEDED banner, because the defects they named — a contract
 naming no installer, a rule left in prose — remain rules this repository holds.
 
-### The 4d PLAN unit — the NARROWED plan, carried on #572 and fixed forward, docs-only
+### The 4d PLAN unit MERGED as #572. 4d-i implementation is the next step; nothing is deployed.
+
+`1fb8f531` (PR #572, reviewed head `ed76eafe`, a fresh Codex +1 with zero findings on that head,
+86 verified Codex threads resolved at the merge) merged the docs-only 4d PLAN unit: the narrowed
+plan `docs/superpowers/plans/2026-09-07-decision-workflow-4d.md` — the §C orchestration design
+carried in substance, the §D obligations 4–6 elaborated, the probe table P28–P42, and the staging
+4d-i → 4d-ii-a → 4d-ii-b → the operator drain attestation → 4d-iii — together with its COMPANION
+document `docs/superpowers/plans/2026-09-09-outbox-consumer-activation.md`, which specifies the
+outbox consumer activation register, its seals, its baseline backfill, the mirror's sole writer
+and the `outbox:consumer` operator protocol.
+
+**What moves in this flip.** `reviewed_merge` advances to `1fb8f531`; `open_pr` returns to `none`
+(#572 is merged, and a stale pointer would park the runner on finished work — the same drift the
+4c-v handoff reported at its own boundary). `task_state` stays `in_progress` and `task` stays `4`:
+unlike the 4c-v record this is NOT a terminal handoff, because task 4's remaining scope is the 4d
+IMPLEMENTATION units and the plan describing them has only just landed. With `open_pr: none`,
+`task_state: in_progress` and `blocking_directive: none`, `assessRunnerState` resolves to `task:4`
+— begin 4d-i from the `main` that carries the plan — and never reaches `next_task`, which is why
+that key is left as it stands. This record never names itself as `open_pr`, per the STATUS-only
+handoff shape #536 and #494 established.
+
+**The unit's own history, recorded because its review count is unusual.** #572 was the narrowed
+plan's fifteenth outing and took 26 review rounds, fixed forward on one PR throughout (the Board's
+decision, #482 comment 5585712971, under the rule #578 put on `main` at `f050bcd` retiring the
+forced close-and-replace). Its ledger line is `Replaces: none`; the `review-replacement-required`
+labels on #559, #567 and #568 were removed on the Board's instruction at 11:36 UTC on 2026-09-08,
+and that chain is history rather than a live obligation. Rounds 13–21 carried the activation
+register as a separate unit (PR #580, "unit 1 of four"); round 22 REVERSED that split on JagPat's
+instruction — "close #580 and take the whole 4d plan back to one unit" — carrying the activation
+document into #572 with every round, finding and answer intact and closing #580 against the
+absorbing commit, so no finding lives only inside a closed PR.
+
+**What the merge does and does not establish.** It establishes that the PLAN is on `main` and
+through the exact-head gate. It establishes NOTHING about the running system: no schema, no
+migration, no runtime code and no test changed in this unit, and no 4d implementation has begun.
+The reservation doors, the register, the seals and the operator protocol the plan specifies exist
+only as text until 4d-i is written, reviewed and merged, and applying any of it to a deployment is
+the Board's call, not a consequence of this merge. Contractor-capture units 1–6 stay Board-gated;
+the P3005 correction stays in the maintenance queue; #530, #531 and #532 stay closed.
+
+### The 4d PLAN unit as it was carried — the NARROWED plan on #572, fixed forward, docs-only (HISTORY, merged above)
 
 **What this PR is.** The docs-only 4d plan unit the merged 4b plan's §E order names as the first
 4d stop, `docs/superpowers/plans/2026-09-07-decision-workflow-4d.md`: the §C orchestration
