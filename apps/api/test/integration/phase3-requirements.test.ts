@@ -475,7 +475,7 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     // and the approver's identity (on behalf of the client — never disguised)
     await makeApprovedDecision(projectId, 'IT-P3-LEG1');
     await t.prisma.decision.update({ where: { id: 'IT-P3-LEG1' }, data: { status: 'change' } });
-    await t.prisma.changeRequest.create({ data: { decisionId: 'IT-P3-LEG1', reason: 'shade', costImpact: 0, timeImpactDays: 0, status: 'open' } });
+    await t.prisma.changeRequest.create({ data: { projectId, decisionId: 'IT-P3-LEG1', reason: 'shade', costImpact: 0, timeImpactDays: 0, status: 'open' } });
     await decisions.approve(projectId, 'IT-P3-LEG1', { optionIndex: 1 }, pmc(projectId));
     const head1 = await t.prisma.decisionApprovalRevision.findFirstOrThrow({ where: { decisionId: 'IT-P3-LEG1' }, orderBy: { version: 'desc' } });
     expect(head1.version).toBe(2);
@@ -498,7 +498,7 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
       },
     });
     await publishRow('IT-P3-LEG2');
-    await t.prisma.changeRequest.create({ data: { decisionId: 'IT-P3-LEG2', reason: 'again', costImpact: 0, timeImpactDays: 0, status: 'open' } });
+    await t.prisma.changeRequest.create({ data: { projectId, decisionId: 'IT-P3-LEG2', reason: 'again', costImpact: 0, timeImpactDays: 0, status: 'open' } });
     await decisions.approve(projectId, 'IT-P3-LEG2', { optionIndex: 0 }, pmc(projectId));
     const rows2 = await t.prisma.decisionApprovalRevision.findMany({ where: { decisionId: 'IT-P3-LEG2' } });
     expect(rows2).toHaveLength(1); // nothing fabricated for the unprovable past

@@ -306,7 +306,7 @@ describe('decision change-control (integration)', () => {
     expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 })).status).toBe(201);
     expect((await as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'r', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
     await expect(
-      t.prisma.changeRequest.create({ data: { decisionId: id, reason: 'forged duplicate', costImpact: 0, timeImpactDays: 0 } }),
+      t.prisma.changeRequest.create({ data: { projectId: f.projectA.id, decisionId: id, reason: 'forged duplicate', costImpact: 0, timeImpactDays: 0 } }),
     ).rejects.toMatchObject({ code: 'P2002' });
   });
 });

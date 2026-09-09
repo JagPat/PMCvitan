@@ -325,6 +325,10 @@ async function main(): Promise<void> {
   // change-control diagnostic aborts on and re-approval now refuses (gate finding 1).
   await prisma.changeRequest.create({
     data: {
+      // Phase 6 unit 4d-i — `ChangeRequest.projectId` joined the uniform seal contract
+      // (§A.3 obligation 5). The migration's trigger fills it for the previous release; a
+      // writer compiled against the new client names it.
+      projectId: PROJECT_ID,
       decisionId: 'DL-003',
       reason: 'Quartz slab size unavailable — vendor proposes 2-piece joint',
       costImpact: 0,

@@ -142,7 +142,20 @@ export async function wipeDecisions(
   prisma: PrismaService,
   where: Record<string, unknown>,
 ): Promise<void> {
-  await wipeDecisionsVia(prisma, (tx) => tx.decision.deleteMany({ where }));
+  await wipeDecisionsVia(prisma, async (tx) => {
+    // CHILD-FIRST, and SCOPED to the decisions this reset actually targets. The three 4d chain
+    // facts hold `ON DELETE NO ACTION` composite FKs to `Decision`, so their rows would block the
+    // parent's deletion; an unscoped `deleteMany({})` would clear another parallel suite's rows
+    // in the shared database, which is the pollution class these fixtures exist to avoid.
+    const targets = await tx.decision.findMany({ where, select: { id: true } });
+    const decisionId = { in: targets.map((d) => d.id) };
+    if (targets.length > 0) {
+      await tx.decisionStrandedResolution.deleteMany({ where: { decisionId } });
+      await tx.decisionCountersign.deleteMany({ where: { decisionId } });
+      await tx.decisionForward.deleteMany({ where: { decisionId } });
+    }
+    return tx.decision.deleteMany({ where });
+  });
 }
 
 /** The same sanctioned bypass for a reset that is not a plain `decision.deleteMany` — a TRUNCATE,
@@ -158,6 +171,17 @@ export async function wipeDecisionsVia(
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await tx.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"');
+    // Phase 6 unit 4d-i — the three chain FACTS hold same-project composite FKs to `Decision`
+    // with `ON DELETE NO ACTION`, so a scenario that created one could never tear its decision
+    // down: a restrictive FK blocks the parent's deletion and a cascading one would meet the
+    // fact's own DELETE seal. They are therefore deleted CHILD-FIRST inside this same
+    // transaction, under their row seals disabled by name for that reset only (#561's review
+    // round 2, finding 9). Dark today — nothing writes them until 4d-ii — so these deletes clear
+    // nothing yet; the protocol exists from the unit that installs the seals, not from the one
+    // that first trips over them.
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionForward" DISABLE TRIGGER "DecisionForward_t4d_append_only"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionCountersign" DISABLE TRIGGER "DecisionCountersign_t4d_append_only"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionStrandedResolution" DISABLE TRIGGER "DecisionStrandedResolution_t4d_append_only"');
     await tx.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_evidence_no_delete"');
     await tx.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_no_truncate"');
     // Phase 6 task 4b — the published-record delete seal and the widened published-parent
@@ -169,6 +193,9 @@ export async function wipeDecisionsVia(
     await tx.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b2_record_no_delete"');
     await tx.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_no_truncate"');
     await tx.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_evidence_no_delete"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionStrandedResolution" ENABLE TRIGGER "DecisionStrandedResolution_t4d_append_only"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionCountersign" ENABLE TRIGGER "DecisionCountersign_t4d_append_only"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionForward" ENABLE TRIGGER "DecisionForward_t4d_append_only"');
     await tx.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"');
   }, { timeout: 60_000, maxWait: 30_000 });
 }

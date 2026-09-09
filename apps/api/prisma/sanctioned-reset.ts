@@ -72,6 +72,28 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   // sanctioned reset genuinely needs to bypass it: `outbox-operations.test.ts` truncates
   // `OutboxOperatorAction` directly, and this suite's own per-probe reset does too.
   { table: 'OutboxOperatorAction', trigger: 'OutboxOperatorAction_4c_iiir_no_truncate' },
+  // Phase 6 unit 4d-i — the five platform REGISTERS the chain's standing, identity, authority and
+  // tenancy questions are answered from, plus `Membership`, the orgs table the counted register
+  // mirrors. Each carries a row-level writer-depth seal, and a row trigger never fires for
+  // TRUNCATE, so each carries a statement seal too.
+  //
+  // `Membership` is the one that would fail loudest if it were left out: many suites reset it
+  // directly and `TRUNCATE "Project" CASCADE` reaches it, so the seal would abort the SETUP of
+  // every one of them. The registers are here for the same reason one step removed — a reset
+  // that wipes `Project` or `User` cascades into all five.
+  { table: 'ChangeRequest', trigger: 'ChangeRequest_t4d_no_truncate' },
+  // Phase 6 unit 4d-i — the three append-only FACTS of the architect chain. A
+  // `TRUNCATE "Decision" … CASCADE` reaches all three, and a statement trigger fires even on an
+  // empty table, so a suite that never created a forward would still meet the seal in setup.
+  { table: 'DecisionCountersign', trigger: 'DecisionCountersign_t4d_no_truncate' },
+  { table: 'DecisionForward', trigger: 'DecisionForward_t4d_no_truncate' },
+  { table: 'DecisionStrandedResolution', trigger: 'DecisionStrandedResolution_t4d_no_truncate' },
+  { table: 'Membership', trigger: 'Membership_t4d_no_truncate' },
+  { table: 'OrgUserAuthority', trigger: 'OrgUserAuthority_t4d_no_truncate' },
+  { table: 'ProjectOrg', trigger: 'ProjectOrg_t4d_no_truncate' },
+  { table: 'ProjectRoleStanding', trigger: 'ProjectRoleStanding_t4d_no_truncate' },
+  { table: 'ProjectUserStanding', trigger: 'ProjectUserStanding_t4d_no_truncate' },
+  { table: 'UserIdentity', trigger: 'UserIdentity_t4d_no_truncate' },
 ];
 
 /**

@@ -858,7 +858,14 @@ export class DecisionsService {
           });
           if (count === 0) throw new ConflictException('The decision changed while requesting — reload and retry');
           await tx.changeRequest.create({
-            data: { decisionId, reason: input.reason, costImpact: input.costImpact, timeImpactDays: input.timeImpactDays, status: 'open', requestedById: actor.actorId },
+            // Phase 6 unit 4d-i — `projectId` became NOT NULL when the row joined the uniform
+            // seal contract (§A.3 obligation 5: every reference project-bound through the
+            // child's own column). The migration's BEFORE INSERT trigger fills it from the
+            // row's decision for the PREVIOUS RELEASE, which never names it and must keep
+            // working through the drain; a writer compiled against the new client names it
+            // directly. Same row, same value, no behaviour change — the project is the one this
+            // command already holds.
+            data: { projectId, decisionId, reason: input.reason, costImpact: input.costImpact, timeImpactDays: input.timeImpactDays, status: 'open', requestedById: actor.actorId },
           });
           await tx.decisionEvent.create({ data: { decisionId, type: 'change_requested', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: input } });
           await recordAudit(tx, { projectId, actor, action: 'decision.change', entity: 'Decision', entityId: decisionId });

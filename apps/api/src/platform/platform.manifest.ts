@@ -37,6 +37,18 @@ export const platformManifest: ModuleManifest = {
     // fresh reservation or replaying over a database that has already retired it. Platform-owned
     // because it is rollout evidence about the deployment, not about any module's domain.
     'rolloutRetirement',
+    // Phase 6 task 4d unit 4d-i (§A.2) — the five REGISTERS every 4d seal asks its standing,
+    // identity, team-management-authority and project→org tenancy questions through. They are
+    // platform-owned because the whole point is that no decisions- or platform-owned trigger
+    // reads an orgs table (#561's review round 1, finding 1): ORGS-owned triggers PROJECT these
+    // rows from their own tables through generic platform primitives, and every seal then reads
+    // kernel-owned rows. Registering them here is not bookkeeping — the boundary suite requires
+    // this set to EQUAL the DMMF, so a table added without its registration cannot merge.
+    'projectOrg',
+    'projectRoleStanding',
+    'projectUserStanding',
+    'userIdentity',
+    'orgUserAuthority',
   ],
   dependsOn: [],
   // Phase 6 unit 4b, round-6 Codex F6 — the push spine asks TWO orgs-owned questions through

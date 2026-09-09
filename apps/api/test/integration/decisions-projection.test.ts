@@ -103,7 +103,7 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
       if (publishedAt) await tx.decision.update({ where: { id }, data: { publishedAt } });
     });
     if (opts.withChangeRequest) {
-      await t.prisma.changeRequest.create({ data: { decisionId: id, reason: 'reopen', costImpact: 500, timeImpactDays: 3, status: 'open', requestedById: authorId } });
+      await t.prisma.changeRequest.create({ data: { projectId, decisionId: id, reason: 'reopen', costImpact: 500, timeImpactDays: 3, status: 'open', requestedById: authorId } });
     }
     const eventType = opts.draft ? 'decision.drafted' : status === 'change' ? 'decision.change_requested' : status === 'approved' ? 'decision.approved' : 'decision.published';
     await t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType, entityType: 'Decision', entityId: id, effectKey: eventType, dispatch: {} }));
