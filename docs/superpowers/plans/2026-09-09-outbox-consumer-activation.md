@@ -77,12 +77,28 @@ requestToken, at)`, platform-owned, append-only and attributable.
   identity exactly as an operator does, and without one a re-run after an
   operator's deactivation would append again and silently re-activate the
   consumer, which is the lost-response defect wearing a migration's hat. Its
-  token is the migration's own name, stable across every replay, and the UNIQUE
-  is `(consumer, requestToken)`, so one migration writing a baseline row per
-  catalog row uses one token value and contends with nothing. A REGISTRATION
+  token is the migration's own name, stable across every replay, and under the
+  uniqueness stated below one migration writing a baseline row per catalog row
+  uses one token value and contends with nothing (#580's review round 4,
+  finding 3: this sentence used to state a `(consumer, requestToken)` UNIQUE of
+  its own, which round 3 superseded and did not delete — TWO constraints, and
+  the narrower one would still have let a planted operator row block the
+  migration despite the differing kind, defeating the namespace fix and P-A10.
+  There is ONE uniqueness on this table and it is the triple). A REGISTRATION
   cannot retry: the trigger fires from a catalog row's INSERT, the catalog's
   primary key admits that INSERT exactly once for a consumer, and a second one
-  is not a retry but an error the key already refuses. The UNIQUE is `(consumer, actorKind, requestToken)` — **the KIND is part of
+  is not a retry but an error the key already refuses. **And a present token
+  must be a REAL one** (#580's review round 4, finding 5): `requestToken` is
+  caller-supplied text — the reserved `sys:` prefix rules out a typed UUID — and
+  a rule that rejects only NULL leaves `''` and whitespace-only strings as valid
+  PERMANENT retry identities, so two unrelated operator calls that both send
+  `''` collide and the second is replayed or refused as though it were the
+  first. It therefore carries the SAME discipline `reason` and `actorId` carry —
+  zod trims and requires length ≥ 1, and the CHECK rejects a value that is empty
+  once every ASCII whitespace character is stripped — and joins P-A7's raw
+  boundary probe with them. The whitespace rule was written twice in this
+  document and applied to two of the three caller-supplied strings; the third
+  was introduced in the same round that wrote the rule. The UNIQUE is `(consumer, actorKind, requestToken)` — **the KIND is part of
   the retry identity, not merely a column beside it** (#580's review round 3,
   finding 2) — and in PostgreSQL it admits any number of NULLs, so the baseline
   rows the registration trigger appends never contend on it. Round 2 made the
@@ -126,20 +142,43 @@ requestToken, at)`, platform-owned, append-only and attributable.
   PRODUCTION DELETES A CATALOG ROW.** `apps/api/src`, `apps/api/prisma` and
   `scripts` contain no `outboxConsumerCatalog.delete` of any form —
   `syncConsumerCatalog` only creates, and no operator command removes a
-  consumer. All TEN deleters are integration teardowns:
-  `outbox-scanner.test.ts` lines 51, 65, 108, 159, 175, 204, 230 and 250, and
-  `outbox-reliability.test.ts` lines 26 and 32. So round 2 opened a production
-  erasure path to serve test cleanup — the weaker of the two answers that
-  finding offered, and the SECOND time this material has taken the weaker of two
-  (the first was the state-only no-op over the token, #572 round 9). The
-  stronger one is taken now: those ten sites route their catalog cleanup through
-  `sanctionedReset`, with this register's seal disabled by name inside the
-  seed's existing `DO $$ … IF EXISTS (SELECT 1 FROM pg_trigger …) … DISABLE
-  TRIGGER` protocol and re-enabled after — the same shape `wipeDecisionEvents`
-  and the membership wipe already use, so the mechanism is delivered and only
-  the registration is new. P-A6 asserts the halves that matter: a direct DELETE
-  refused, a catalog-row DELETE refused while a head exists, and the ten
-  teardowns succeeding through the seam with every seal enabled afterwards.
+  consumer. All ELEVEN deleters are integration teardowns:
+  `outbox-scanner.test.ts` lines 51, 65, 108, 159, 175, 204, 230 and 250,
+  `outbox-reliability.test.ts` lines 26 and 32, and
+  `outbox-operations.test.ts` line 40 (#580's review round 4, finding 1 — round
+  3 called its list complete at ten and it was not; a count is a claim, and this
+  one is now the output of a search rather than a recollection). So round 2
+  opened a production erasure path to serve test cleanup — the weaker of the two
+  answers that finding offered, and the SECOND time this material has taken the
+  weaker of two (the first was the state-only no-op over the token, #572 round
+  9).
+
+  **The stronger answer needs a helper that does not yet exist, and round 3
+  named one that cannot do the job** (#580's review round 4, finding 4). Round 3
+  said those sites "route their catalog cleanup through `sanctionedReset`". The
+  delivered helper takes TABLE NAMES and executes `TRUNCATE TABLE <list>
+  [CASCADE]` (`apps/api/prisma/sanctioned-reset.ts:106-121`): it has no
+  row-scoped form at all. Applied to this problem it fails both ways — without
+  `CASCADE` the truncate is refused by the new activation FK, and with `CASCADE`
+  it erases EVERY catalog row including the `FILTERED` consumer
+  `outbox-scanner.test.ts` needs for its remaining tests, so the suite stops
+  materializing deliveries. Naming a delivered helper without reading it is the
+  same defect as naming a seal with no installer, one layer down.
+
+  So this unit specifies a NEW row-scoped sanctioned operation beside the
+  existing one — `sanctionedConsumerRemoval(prisma, consumers)` in the same
+  file, which in ONE transaction disables
+  `OutboxConsumerActivation_t4d_append_only` by name in the delivered
+  `DO $$ … IF EXISTS (SELECT 1 FROM pg_trigger …) … DISABLE TRIGGER` shape,
+  deletes the activation rows for exactly the named consumers, deletes their
+  catalog rows, and re-enables the seal. It is row-scoped because the fixtures
+  are: `afterEach` removes an `AD_HOC` list while a long-lived consumer must
+  survive, which a table-level truncate cannot express. The eleven sites call
+  it; nothing else may. P-A6 asserts the halves that matter: a direct DELETE
+  refused, a catalog-row DELETE refused while a head exists, the eleven
+  teardowns succeeding through the new seam with every seal enabled afterwards,
+  AND the long-lived consumer still present after a row-scoped removal of its
+  neighbours — the arm that fails against a `CASCADE` truncate.
 - BEFORE INSERT takes the consumer's `OutboxConsumerCatalog` row `FOR UPDATE`
   and requires `NEW.seq = activationSeq + 1` against the stored head.
 - AFTER INSERT is the ONLY writer of the mirror: it advances `active` and
@@ -212,6 +251,20 @@ On upgrade the catalog already holds active consumers (`webpush.notify`,
 attributable row explaining its value — the very thing this register exists to
 end — and whose head the no-op below promises to return and could not (#572's
 review round 10, finding 3).
+
+**The migration is in `migrate.sh`'s `ALWAYS_EXECUTE` list, or none of this
+exists on a baseline** (#580's review round 4, finding 2). On a P3005/db-push
+baseline `apps/api/scripts/migrate.sh` resolves every migration NOT named in
+`ALWAYS_EXECUTE` as applied WITHOUT executing its SQL (the list at `:374`, the
+check at `:476`). Everything this unit adds beyond Prisma-modelled columns — the
+CHECKs, the BEFORE/AFTER triggers, the catalog-INSERT baseline trigger, the
+rules trigger's seam, the backfill — is raw SQL, so on a production baseline it
+would silently not exist while every probe that invokes the migration directly
+still passes. This is the shape #572's round 8 finding 3 fixed for `20271015`,
+and the extracted unit did not inherit it. The migration therefore joins
+`ALWAYS_EXECUTE` by name, and P-A1 gains a BASELINE arm: the whole unit exercised
+after a P3005 baseline run, RED with the entry removed — which is what makes the
+list membership a tested fact rather than a line in a shell script nobody reads.
 
 **The trigger is installed BEFORE this migration's own registrations, and the
 backfill runs after them** (#572's review round 12, finding 2; #580's review
@@ -330,8 +383,9 @@ UPDATES in the same files, which is the same question one operation along):
 
 | site | operation | disposition |
 | --- | --- | --- |
-| `outbox-scanner.test.ts` 51, 65, 108, 159, 175, 204, 230, 250 | catalog row DELETE | through `sanctionedReset` with this register's seal disabled by name; the production delete stays refused |
+| `outbox-scanner.test.ts` 51, 65, 108, 159, 175, 204, 230, 250 | catalog row DELETE | through the NEW row-scoped `sanctionedConsumerRemoval`, seal disabled by name; the production delete stays refused |
 | `outbox-reliability.test.ts` 26, 32 | catalog row DELETE | the same seam |
+| `outbox-operations.test.ts` 40 | catalog row DELETE | the same seam — the eleventh, missing from round 3's list (round 4, finding 1) |
 | `outbox-scanner.test.ts` 171, 194, 198 | direct `active` UPDATE | converted to `outbox:consumer` protocol requests, each with its own token and a stated reason |
 | `outbox-operations.test.ts` 122, 128 | direct `active` UPDATE | the same conversion, including the `// restore for later tests` flip at 128 |
 
@@ -340,8 +394,10 @@ places in the repository that flip a consumer's `active` outside the protocol,
 and routing them through it means the focused suites exercise the SUPPORTED path
 and the freeze has no exception carved for tests. The ten DELETEs cannot be
 converted the same way — nothing in the protocol removes a consumer, because
-nothing in production does — so they take the sanctioned-reset seam the seed and
-the decisions fixtures already use.
+nothing in production does — so they take the row-scoped sanctioned
+removal specified above — which is NEW code in `sanctioned-reset.ts`, not the
+existing `sanctionedReset`, whose table-level `TRUNCATE` cannot express "these
+consumers and not that one" (round 4, finding 4).
 
 ## Probes
 
@@ -359,11 +415,42 @@ Executable, and each RED against its own defect alone:
 | P-A8 | a raw `INSERT` naming a consumer with NO catalog row is refused — by the trigger's STRICT `NOT FOUND` raise, and again by the FK with the trigger disabled — and no orphan row survives | the non-STRICT lookup, under which the row commits with no mirror and a later registration collides with its history |
 | P-A9 | a retry carrying a KNOWN token with a DIFFERENT `active`, a different `reason` or a different `actorId` is REFUSED naming the conflict, while the identical request replays; and an append with a blank or whitespace-only `actorId` is refused | a replay branch keyed on the token alone, which reports the earlier fact as this request's result |
 | P-A10 | the CROSS-KIND collision (#580's review round 3, finding 2): an operator request carrying a migration's public name as its `requestToken` is refused at the surface by the reserved-prefix rule, and — planted directly past the surface — does NOT preempt the migration, which appends its own fact under its own kind and replays that fact on re-run; and an operator retry finds its own row and not the migration's | the single `(consumer, requestToken)` namespace, under which the migration is either refused for a canonical mismatch or replays the operator's row as its own |
-| P-A11 | the delivered FIXTURE surface (#580's review round 3, findings 1 and 3): the five direct `active` UPDATEs converted to `outbox:consumer` requests (`outbox-scanner.test.ts` 171/194/198, `outbox-operations.test.ts` 122/128) drive their suites GREEN through the supported path, the same statements are REFUSED by the rules trigger when left direct, and the ten catalog-delete teardowns leave no row behind | the freeze installed without converting them, under which those focused suites fail on statements the plan never inspected |
+| P-A11 | the delivered FIXTURE surface (#580's review round 3, findings 1 and 3): the five direct `active` UPDATEs converted to `outbox:consumer` requests (`outbox-scanner.test.ts` 171/194/198, `outbox-operations.test.ts` 122/128) drive their suites GREEN through the supported path, the same statements are REFUSED by the rules trigger when left direct, and the ELEVEN catalog-delete teardowns leave no row behind, with the long-lived `FILTERED` consumer still present after a row-scoped removal of its `AD_HOC` neighbours | the freeze installed without converting them, under which those focused suites fail on statements the plan never inspected |
 
 `expandMissingDeliveries`, the delivery rows, the persisted catalog rules and
 the obligation set are NOT in this unit — they stay in the 4d plan, which reads
 the ACTIVE set from this register.
+
+## Review round 4 (head `15e58c59`) — six findings; three are round 3's own
+
+| # | classification | why that class |
+|---|---|---|
+| 1 | **regression introduced by a fix** | round 3's "all TEN deleters" was a count from recollection, not a search; there are eleven |
+| 2 | **missed related path** | the extracted unit did not inherit `ALWAYS_EXECUTE` membership, which #572's round 8 finding 3 established for a sibling migration |
+| 3 | **regression introduced by a fix** | round 3 added the three-column identity and left round 2's two-column sentence standing — two constraints, the narrower one defeating the fix |
+| 4 | **regression introduced by a fix** | round 3 named `sanctionedReset` as the seam without reading it: it takes table names and TRUNCATEs |
+| 5 | **missed related path** | the whitespace discipline was applied to `reason` and `actorId`, not to the third caller-supplied string this document introduced |
+| 6 | **genuinely new** | the packet named the fork point as the base rather than the reviewed head's parent |
+
+None duplicate, none incorrect; each reproduced against the repository before
+acceptance.
+
+**Finding 4 is the one that matters, and it is a repeat of a repeat.** Round 3
+declined a cascade in favour of "a sanctioned seam" and named the delivered
+`sanctionedReset` as that seam. It cannot be: it takes TABLE NAMES and executes
+`TRUNCATE TABLE <list> [CASCADE]` (`sanctioned-reset.ts:106-121`). Without
+`CASCADE` the truncate is refused by the very FK round 3 added; with `CASCADE`
+it erases every catalog row including the consumer the suite still needs. So the
+answer needs NEW code — a row-scoped `sanctionedConsumerRemoval` — and round 3
+shipped a plan that pointed at a helper unable to do the job.
+
+That is **naming a delivered helper without reading it**, which is the same
+defect as naming a seal with no installer, one layer down. Findings 1 and 3 are
+the same failure in smaller form: a count asserted from memory, and a superseded
+sentence left standing beside its replacement. All three would have been caught
+by the checks this plan family already carries — quote the thing you name, and
+re-read what your edit supersedes — applied to my own new material rather than
+to the material under review. This is the third round where that is the finding.
 
 ## Review round 3 (head `f586a64e`) — three findings, classified before correction
 
@@ -493,13 +580,19 @@ except the two marked NEW, which this unit fixes.
 | the migration's replay token is refused by the register's own CHECK | #580 round 2, finding 2 | **FIXED** — the CHECK covers every retry-capable kind |
 | P-A5's staging deadlocks against the correct implementation | #580 round 2, finding 3 | **FIXED** — pre-lock rendezvous with the blocked observation |
 | the catalog-INSERT trigger breaks four delivered outbox teardowns | #580 round 2, finding 4 | **superseded** — the cascade it chose was itself an evidence-erasure path; see round 3, finding 1 |
+| the eleventh catalog deleter was missing from a list called complete | #580 round 4, finding 1 | **FIXED** — `outbox-operations.test.ts:40`, found by search |
+| the migration is not in `ALWAYS_EXECUTE`, so a baseline skips its raw SQL | #580 round 4, finding 2 | **FIXED** — named in the list, with a baseline probe arm |
+| two token uniquenesses, the narrower defeating the namespace fix | #580 round 4, finding 3 | **FIXED** — one uniqueness, the triple |
+| `sanctionedReset` cannot do row-scoped cleanup | #580 round 4, finding 4 | **FIXED** — a new `sanctionedConsumerRemoval` is specified instead |
+| a blank or whitespace-only `requestToken` is a permanent retry identity | #580 round 4, finding 5 | **FIXED** — the same CHECK `reason` and `actorId` carry, plus the raw probe |
+| the packet named the fork point as the base SHA | #580 round 4, finding 6 | **FIXED** — the reviewed head's parent, with the fork point kept as history |
 | the parent cascade erases token receipts and lets a lost request execute again | #580 round 3, finding 1 | **FIXED** — no deletion in production (nothing there deletes a catalog row); the ten teardowns take the sanctioned-reset seam |
 | an operator token can preempt or replay a migration's identity | #580 round 3, finding 2 | **FIXED** — the retry identity is `(consumer, actorKind, requestToken)`, with a reserved `sys:` prefix at the surface |
 | five delivered fixtures write `active` directly and the freeze would refuse them | #580 round 3, finding 3 | **FIXED** — converted to `outbox:consumer` requests; the suites exercise the supported path |
 
 ## Review unit
 
-- Base SHA: `15dd8eec` (`main`)
+- Base SHA: `e6fcc6c0` — the reviewed head's sole parent and the CURRENT comparison base, `main` as it stands after #571 merged. (`15dd8eec` is this branch's original fork point and is recorded here as history only; naming it as the base described a broader, stale comparison than the two-file diff actually under review — #580's review round 4, finding 6)
 - Scope: this plan document + `docs/STATUS.md`, which records the unit while it
   is open (#580's review round 1, finding 1); the outbox consumer activation
   register, its mirror, and the operator protocol
