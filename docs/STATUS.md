@@ -11,7 +11,7 @@ narrative and may lag behind reality.
 
 ```yaml
 phase: 6
-phase_plan: docs/superpowers/plans/2026-08-29-decision-workflow-4c.md
+phase_plan: docs/superpowers/plans/2026-09-09-outbox-consumer-activation.md
 task: 4
 task_state: in_progress
 work_item: none
@@ -48,6 +48,18 @@ finding keeps its original round and PR in each document's own ledger. #572 carr
 STATUS entry naming itself as `open_pr`; the two entries touch the same YAML key, so
 whichever merges second resolves the conflict in favour of the PR still open. Correction
 owner on both: `claude`. There is one producer, not two.
+
+**`phase_plan` moves with the task, not with the phase's history** (#580's
+review round 2, finding 1). It named the COMPLETED 4c document while
+`task_state` said `in_progress`, and the two together are a trap: once this PR
+merges, `assessPostMergeRunnerState` clears `open_pr`, the resolver returns
+`task:4`, and the runner opens the 4c plan — finished work — instead of the unit
+actually in progress. It now names the plan THIS change lands, which is the only
+4d plan that exists in this tree; `scripts/autonomous-status-state.test.mjs`
+requires `phase_plan` to resolve to a regular file here, so naming #572's
+still-unlanded 4d document would fail that pin and leave a dangling pointer on
+`main`. When #572 lands units 2–4 it re-points `phase_plan` at the 4d plan with
+the same reasoning.
 
 **Not gated by this unit.** Merging and deploying stay the Board's. The standing 4d
 directives on #572 — the operator drain attestation among them — are unchanged by the split

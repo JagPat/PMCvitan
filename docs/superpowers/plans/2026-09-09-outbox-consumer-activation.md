@@ -64,9 +64,25 @@ requestToken, at)`, platform-owned, append-only and attributable.
   authentication this unit does not build. What the register guarantees is that
   a state-changing fact always CARRIES an identity and never an invented or
   blank one.
-- `requestToken` is nullable at the column and REQUIRED BY CHECK for the kind
-  that can retry: `actorKind = 'operator' → requestToken IS NOT NULL`, and the
-  two system kinds carry none. The UNIQUE is `(consumer, requestToken)`, which
+- `requestToken` is nullable at the column and REQUIRED BY CHECK for every kind
+  that CAN RETRY, which is two of the three: `actorKind IN ('operator',
+  'migration') → requestToken IS NOT NULL`, and `'registration'` alone carries
+  none (#580's review round 2, finding 2). Round 1 wrote the rule as
+  "operator" and then, four paragraphs later, gave 4d-iii's migration step "a
+  fixed token of its own (its migration name)" — an instruction that its own
+  CHECK rejects. That is the SAME self-cancelling shape as the `registeredAt`
+  sentence round 1 was fixing, reintroduced in the same commit, and the repair
+  is the same: say which property each kind has and why. A MIGRATION retries —
+  `ALWAYS_EXECUTE` re-runs it on every baseline path — so it needs the replay
+  identity exactly as an operator does, and without one a re-run after an
+  operator's deactivation would append again and silently re-activate the
+  consumer, which is the lost-response defect wearing a migration's hat. Its
+  token is the migration's own name, stable across every replay, and the UNIQUE
+  is `(consumer, requestToken)`, so one migration writing a baseline row per
+  catalog row uses one token value and contends with nothing. A REGISTRATION
+  cannot retry: the trigger fires from a catalog row's INSERT, the catalog's
+  primary key admits that INSERT exactly once for a consumer, and a second one
+  is not a retry but an error the key already refuses. The UNIQUE is `(consumer, requestToken)`, which
   in PostgreSQL admits any number of NULLs, so the baseline rows the migration
   and the registration trigger append never contend on it. The row also carries
   the CANONICAL REQUEST the token was minted for (`active`, `reason`,
@@ -78,7 +94,24 @@ requestToken, at)`, platform-owned, append-only and attributable.
   `OutboxConsumerActivation_t4d_no_truncate` registered in `TRUNCATE_SEALS`
   while the table stays outside every sanctioned reset (#560's review round 2,
   finding 2: a direct `TRUNCATE` would have erased the evidence and left the
-  mirror unexplained).
+  mirror unexplained). **The ONE admitted deletion is the CATALOG ROW'S OWN
+  CASCADE** (#580's review round 2, finding 4): the FK carries `ON DELETE
+  CASCADE` and the seal ADMITS that nested delete — arriving at trigger depth
+  from the owning `OutboxConsumerCatalog` row — while a direct `DELETE` stays
+  refused, exactly as `UserIdentity` is disposed against its owning `User` row
+  in the 4d plan. Without it, the catalog-INSERT trigger below turns every
+  consumer into a parent with an undeletable child, and four DELIVERED
+  teardowns break: `outbox-scanner.test.ts` (`afterAll` line 51, `afterEach`
+  line 65) and `outbox-reliability.test.ts` (`afterAll` line 26, `afterEach`
+  line 32) each `deleteMany` their ad-hoc catalog rows, and their own comment
+  says why — a leaked row "poisons later runs" of the SHARED test database. The
+  FK would refuse those deletes, the child could not be removed either, and the
+  suites would fail at teardown and leave exactly the pollution they exist to
+  prevent. This costs the register nothing it was protecting: the evidence
+  explains a consumer's `active` mirror, and when the catalog row is gone there
+  is no mirror left to explain. The sanctioned reset needs NO new step and no
+  new disabled name, and P-A6 asserts both halves — the direct delete refused,
+  the catalog row's delete taking its activations with it.
 - BEFORE INSERT takes the consumer's `OutboxConsumerCatalog` row `FOR UPDATE`
   and requires `NEW.seq = activationSeq + 1` against the stored head.
 - AFTER INSERT is the ONLY writer of the mirror: it advances `active` and
@@ -248,7 +281,9 @@ carries its own token, and retries never append, because they replay theirs.
 
 4d-iii's own `decisions.effects` activation runs the SAME two branches, and the
 sweep behind this round corrects it too: it is a MIGRATION step with a fixed
-token of its own (its migration name), so a replayed migration finds that token
+token of its own — its migration name, which the register's CHECK REQUIRES of
+the `'migration'` kind for exactly this reason (#580's review round 2,
+finding 2) — so a replayed migration finds that token
 and replays its fact instead of appending a second one, and a
 `decisions.effects` an operator deactivated between the first run and the replay
 is NOT silently re-activated by it. The earlier wording — "append only if the
@@ -265,8 +300,8 @@ Executable, and each RED against its own defect alone:
 | P-A2 | `outbox:consumer` issued TWICE with the same token and the SAME request appends exactly ONE fact; the mirror and `activationSeq` are unmoved on the second | the state-only no-op and the seq-carrying command |
 | P-A3 | activate → (response lost) → a DIFFERENT operator deactivates → the first caller retries with its original token: the retry returns its ORIGINAL fact, the mirror stays INACTIVE, and no fact is appended — driven in BOTH starting states, from inactive AND **from a consumer that was ALREADY ACTIVE when the first request arrived** | round 9's state-only no-op, which re-activates and undoes the later intent, and the token-with-a-state-branch answer, which passes the first arm and fails the second because the confirming request recorded no token (#580's review round 1, finding 2) |
 | P-A4 | activate → deactivate → activate, three distinct tokens, appends three facts | a token check that swallows genuine new intent |
-| P-A5 | two concurrent operator requests with DISTINCT tokens, both flipping, under a barrier that forces BOTH to read the head before EITHER commits: BOTH facts commit, at `activationSeq + 1` and `+ 2` in the order they serialized, and the terminal mirror is the SECOND operator's intent | the head lock removed — without it both writers read the same head, both derive `+ 1`, the unique index admits one and REFUSES the other, and an operator's request is lost with the terminal state left at the first writer's. (RED by construction, unlike the earlier assertion — "exactly one commits at `activationSeq + 1`" — which `(consumer, seq)` UNIQUE guarantees with or without the lock, so it could not fail against lock removal at all: #580's review round 1, finding 7) |
-| P-A6 | a direct UPDATE, a direct DELETE and a `TRUNCATE` on the register are each refused; a direct UPDATE of `OutboxConsumerCatalog.active`, `activationSeq` or `registeredAt` refused at depth 1, one nested from another trigger without the marker refused, and the register's own AFTER INSERT admitted — while an event's obligation set is unchanged when `registeredAt` differs | the seals removed one at a time; an unconditional catalog freeze (under which every activation rolls back) and a depth-only one (under which any nested writer passes) |
+| P-A5 | two concurrent operator requests with DISTINCT tokens, both flipping, staged as a PRE-LOCK rendezvous (#580's review round 2, finding 3 — round 1's staging said "both read the head before either commits", which the CORRECT implementation cannot do, because it takes the catalog row `FOR UPDATE` BEFORE that read: A would hold the lock at the barrier and B could never reach it, so the probe deadlocked against the very code it certifies): A opens, takes the lock, appends and HOLDS without committing; B then starts and is observed BLOCKED on that row in `pg_stat_activity`; A commits; B proceeds, reads the head A committed, and appends after it. BOTH facts commit, at `activationSeq + 1` and `+ 2` in the order they serialized, and the terminal mirror is the SECOND operator's intent | the head lock removed — without it both writers read the same head, both derive `+ 1`, the unique index admits one and REFUSES the other, and an operator's request is lost with the terminal state left at the first writer's. (RED by construction, unlike the earlier assertion — "exactly one commits at `activationSeq + 1`" — which `(consumer, seq)` UNIQUE guarantees with or without the lock, so it could not fail against lock removal at all: #580's review round 1, finding 7) |
+| P-A6 | a direct UPDATE, a direct DELETE and a `TRUNCATE` on the register are each refused, while DELETING THE CATALOG ROW takes its activation rows with it and the four delivered outbox teardowns (`outbox-scanner.test.ts` 51/65, `outbox-reliability.test.ts` 26/32) run unchanged and leave nothing behind; a direct UPDATE of `OutboxConsumerCatalog.active`, `activationSeq` or `registeredAt` refused at depth 1, one nested from another trigger without the marker refused, and the register's own AFTER INSERT admitted — while an event's obligation set is unchanged when `registeredAt` differs | the seals removed one at a time; an unconditional catalog freeze (under which every activation rolls back) and a depth-only one (under which any nested writer passes) |
 | P-A7 | the WHITESPACE CHECK at the database boundary: a raw `INSERT` whose `reason` is a single space, a tab, a vertical tab, a form feed, a carriage return or a newline is refused, one arm of the CHECK removed at a time; the same for `actorId`; and the zod layer refused independently | a `btrim()`-only check, which passes every zod probe and still persists a tab-only reason from a direct writer (#580's review round 1, finding 10) |
 | P-A8 | a raw `INSERT` naming a consumer with NO catalog row is refused — by the trigger's STRICT `NOT FOUND` raise, and again by the FK with the trigger disabled — and no orphan row survives | the non-STRICT lookup, under which the row commits with no mirror and a later registration collides with its history |
 | P-A9 | a retry carrying a KNOWN token with a DIFFERENT `active`, a different `reason` or a different `actorId` is REFUSED naming the conflict, while the identical request replays; and an append with a blank or whitespace-only `actorId` is refused | a replay branch keyed on the token alone, which reports the earlier fact as this request's result |
@@ -274,6 +309,42 @@ Executable, and each RED against its own defect alone:
 `expandMissingDeliveries`, the delivery rows, the persisted catalog rules and
 the obligation set are NOT in this unit — they stay in the 4d plan, which reads
 the ACTIVE set from this register.
+
+## Review round 2 (head `feea630d`) — four findings, and all four are round 1's own corrections
+
+| finding | the answer |
+|---|---|
+| 1 (P1) STATUS declares this unit current and leaves `phase_plan` on the COMPLETED 4c document, so after the merge the resolver returns `task:4` and the runner opens finished work | `phase_plan` names the plan this change lands — the only 4d plan in this tree, which is what `autonomous-status-state.test.mjs` requires of it |
+| 2 (P2) the register requires no token of the system kinds while 4d-iii's migration step is given "a fixed token of its own" — an instruction its own CHECK rejects | the CHECK covers every kind that CAN RETRY: `operator` AND `migration`. A migration retries (`ALWAYS_EXECUTE`), so it needs the replay identity for the same reason; `registration` cannot, because the catalog's primary key admits its INSERT once |
+| 3 (P2) round 1's P-A5 staging requires both requests to read the head before either commits, which the CORRECT implementation forbids — it locks before reading, so the probe deadlocks against the code it certifies | staged as a PRE-LOCK rendezvous: A holds the lock uncommitted, B is observed BLOCKED in `pg_stat_activity`, A commits, B reads the committed head and appends after it |
+| 4 (P2) the catalog-INSERT trigger makes every consumer a parent with an undeletable child, and four delivered outbox teardowns `deleteMany` their ad-hoc catalog rows — they would fail and poison the shared test database | the FK carries `ON DELETE CASCADE` and the seal admits that nested delete, exactly as `UserIdentity` is disposed against its owning `User` row; a direct DELETE stays refused and the reset needs no new step |
+
+**All four are round 1's own corrections, and the root cause is that I did not
+run my own check over my own new material.** The three questions this plan's
+sibling states — which unit installs this arm, what does it read and where does
+each value come from, and which DELIVERED writers must it still admit — were
+written the same hour as round 1's batch, and round 1 added three obligations
+without asking any of them of the new work: a trigger that creates a child row
+for every catalog INSERT (finding 4 is its third question — the delivered
+teardowns), a CHECK keyed on `actorKind` (finding 2 is its second — what the
+migration step needs to exist), and a barrier probe (finding 3 is a fourth
+question the others imply and none of them asks).
+
+So the check gains that fourth question, and it is the one a plan document is
+most able to get wrong, because nothing runs it:
+
+> **Can the PROBE be executed against the correct implementation?** A probe
+> states an interleaving; the implementation states a lock order. Walk the probe
+> against the code it certifies, step by step, and ask what each session is
+> holding at each barrier. A probe that deadlocks against correct code is not a
+> weak proof, it is not a proof — and it fails in a way that reads like a bug in
+> the thing it was meant to certify.
+
+Finding 4 is the shape #571 spent four rounds on — a DELETE-refusing seal that
+breaks a reset — and it reappeared here within a day, from a trigger added to
+fix something else. The lesson that transfers is not about deletes: it is that
+adding a PARENT-CHILD relationship to a table other code already deletes is a
+change to that other code, whether or not it is edited.
 
 ## Review round 1 (head `733c4b92`) — ten findings, all folded here after the audit
 
@@ -326,6 +397,10 @@ except the two marked NEW, which this unit fixes.
 | `registeredAt` frozen AND "in no seal" — an instruction cancelling itself | #580 round 1, finding 9 | **FIXED** — both statements separated and both probed |
 | no database-boundary probe for the whitespace CHECK | #580 round 1, finding 10 | **FIXED** — P-A7, one CHECK arm removed at a time |
 | this task-bearing unit is not recorded in STATUS | #580 round 1, finding 1 | **FIXED** — `open_pr: 580`, `task_state: in_progress`, the four-unit split named |
+| `phase_plan` still named the completed 4c plan | #580 round 2, finding 1 | **FIXED** — it names the plan this change lands |
+| the migration's replay token is refused by the register's own CHECK | #580 round 2, finding 2 | **FIXED** — the CHECK covers every retry-capable kind |
+| P-A5's staging deadlocks against the correct implementation | #580 round 2, finding 3 | **FIXED** — pre-lock rendezvous with the blocked observation |
+| the catalog-INSERT trigger breaks four delivered outbox teardowns | #580 round 2, finding 4 | **FIXED** — `ON DELETE CASCADE` with the seal admitting the nested delete |
 
 ## Review unit
 
