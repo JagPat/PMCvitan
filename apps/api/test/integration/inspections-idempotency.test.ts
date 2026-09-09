@@ -6,6 +6,7 @@ import { InspectionsService } from '../../src/inspections/inspections.service';
 import { InspectionsQueryService } from '../../src/inspections/inspections.query';
 import { MediaService } from '../../src/media/media.service';
 import { StorageService } from '../../src/media/storage.service';
+import { InspectionParticipant } from '../../src/inspections/inspection.participant';
 import type { AuthUser } from '../../src/common/auth';
 
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
@@ -768,6 +769,111 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
       INSERT INTO "InspectionEvidence" ("id","projectId","inspectionId","inspectionItemId","mediaId")
       VALUES ('r10-legacy-1', ${p}, ${insp.id}, ${item.id}, ${stranger.id})`;
     expect(await links()).toBe(1);
+  });
+
+  /**
+   * ROUND 11, FINDING 1 — reading the assignee is not holding it.
+   *
+   * `assertEvidenceMutable` returned early on an UNASSIGNED inspection, and the membership row lock
+   * it takes when assigned protects the assignee's STANDING, never `Inspection.assigneeId`. The
+   * freeze trigger is a one-way LATCH, so `null → A` is a permitted assignment: an alternate writer
+   * could make it between the authorisation and the write, and B's delete then destroyed the
+   * evidence — bytes included — of work that had just become A's.
+   *
+   * `submit` already answered this in round 5, by pinning the OBSERVED `assigneeId` in its CAS
+   * predicate. Evidence has two writers rather than one, so the same fence is stated once in the
+   * participant and taken by both. This probe is the interleaving itself, with the assignment
+   * committed by a SECOND connection between the two halves.
+   */
+  it('ROUND 11 — an assignment landing mid-delete refuses the delete instead of destroying the evidence', async () => {
+    const { p, pmcA } = await freshProject();
+    const holder = `it-inidem-u-r11h-${projSeq}`;
+    await t.prisma.user.create({ data: { id: holder, projectId: p, role: 'engineer', name: 'Holder', email: `${holder}@t.local` } });
+    await t.prisma.membership.create({ data: { projectId: p, userId: holder, role: 'engineer', status: 'active' } });
+    await svc.create(p, createInput({ title: 'Raced assignment' }), asPmc(pmcA, p), 'k-r11-1');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Raced assignment' }, include: { items: true } });
+    const asUser = (sub: string) => ({ sub, role: 'engineer', projectId: p }) as AuthUser;
+
+    // UNASSIGNED when the photo is attached — the ordinary case, admitted
+    const shot = await media.create(p, asUser(holder), {
+      kind: 'inspection', mime: 'image/png', data: Buffer.from('r11a').toString('base64'),
+      inspectionId: insp.id, inspectionItemId: insp.items[0]!.id,
+    });
+    expect(await t.prisma.inspectionEvidence.count({ where: { projectId: p, mediaId: shot.id } })).toBe(1);
+
+    // THE RACE ITSELF. Setting the assignee beforehand would only exercise the ordinary guard —
+    // `assertEvidenceMutable` would read it and refuse, and the fence would never matter (this
+    // probe passed against the reverted fence until it was written this way). The assignment must
+    // land BETWEEN the authorisation's unlocked read and the write it authorised, so it is
+    // committed from a SECOND connection at exactly that point: the participant's own
+    // `removeEvidence` is the seam, and a plain `t.prisma` call inside the running `$transaction`
+    // takes a different pooled connection and commits independently of it.
+    const participant = t.app.get(InspectionParticipant);
+    const realRemove = participant.removeEvidence.bind(participant);
+    const spy = vi.spyOn(participant, 'removeEvidence').mockImplementation(async (...args) => {
+      await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: holder } });
+      return realRemove(...args);
+    });
+    try {
+      await expect(media.remove(shot.id, asUser(`it-inidem-u-r11o-${projSeq}`)))
+        .rejects.toBeInstanceOf(ConflictException);
+    } finally {
+      spy.mockRestore();
+    }
+    // the evidence, and its bytes, survive the assignment that landed mid-flight
+    expect(await t.prisma.inspectionEvidence.count({ where: { projectId: p, mediaId: shot.id } })).toBe(1);
+    expect(await t.prisma.media.count({ where: { projectId: p, id: shot.id } })).toBe(1);
+
+    // precise, not merely strict: the assignee's own delete still succeeds
+    expect(await media.remove(shot.id, asUser(holder))).toBe(true);
+    expect(await t.prisma.inspectionEvidence.count({ where: { projectId: p, mediaId: shot.id } })).toBe(0);
+  });
+
+  /**
+   * ROUND 11, FINDING 3 — a refusal after `storage.put` must not leave the object behind.
+   *
+   * Round 10 moved a preflight ahead of the upload, and said in the same breath that it is
+   * ADVISORY. So the authoritative in-transaction check can still refuse a request whose bytes are
+   * already stored — an assignee inactive at the preflight and reactivated before the transaction
+   * is precisely that — and the rollback does not reach the bucket.
+   */
+  it('ROUND 11 — a refusal AFTER the upload removes the object it stored', async () => {
+    const { p, pmcA } = await freshProject();
+    const held = `it-inidem-u-r11bh-${projSeq}`;
+    const rival = `it-inidem-u-r11br-${projSeq}`;
+    for (const [id, name] of [[held, 'Held'], [rival, 'Rival']] as const) {
+      await t.prisma.user.create({ data: { id, projectId: p, role: 'engineer', name, email: `${id}@t.local` } });
+      await t.prisma.membership.create({ data: { projectId: p, userId: id, role: 'engineer', status: 'active' } });
+    }
+    await svc.create(p, createInput({ title: 'Refused upload' }), asPmc(pmcA, p), 'k-r11-2');
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: p, title: 'Refused upload' }, include: { items: true } });
+    // assigned to `held`, whose membership is INACTIVE — so the preflight admits the rival…
+    await t.prisma.inspection.update({ where: { id: insp.id }, data: { assigneeId: held } });
+    await t.prisma.membership.updateMany({ where: { projectId: p, userId: held }, data: { status: 'removed' } });
+
+    const storage = t.app.get(StorageService);
+    // captured BEFORE the spy replaces it — binding after `vi.spyOn` would bind the spy to itself
+    const original = storage.put.bind(storage);
+    const put = vi.spyOn(storage, 'put');
+    const remove = vi.spyOn(storage, 'remove');
+    try {
+      // …and `held` is reactivated after the preflight, so the AUTHORITATIVE check refuses
+      put.mockImplementation(async (...args: Parameters<StorageService['put']>) => {
+        await t.prisma.membership.updateMany({ where: { projectId: p, userId: held }, data: { status: 'active' } });
+        return original(...args);
+      });
+      await expect(media.create(p, { sub: rival, role: 'engineer', projectId: p } as AuthUser, {
+        kind: 'inspection', mime: 'image/png', data: Buffer.from('r11c').toString('base64'),
+        inspectionId: insp.id, inspectionItemId: insp.items[0]!.id,
+      })).rejects.toBeInstanceOf(ForbiddenException);
+      expect(put).toHaveBeenCalledTimes(1);
+      // RED before this round: the object stayed, one orphan per refused request
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(remove.mock.calls[0]![0]).toBe(put.mock.calls[0]![0]);
+    } finally {
+      put.mockRestore();
+      remove.mockRestore();
+    }
   });
 
   /**

@@ -3411,6 +3411,29 @@ starts the GATED work only when the gate's recorded clearance arrives.
   Board, never to a correction push. Cleared by: an explicit per-unit GO from
   JagPat recorded in the session or repository, naming the unit it opens.
 
+- `phase-6-4d-inspection-assignment-drain` — the inspection ASSIGNMENT
+  authority of #571 must not be deployed while a previous-release replica is
+  still serving. Its evidence fence
+  (`20271217000000_inspection_evidence_authority_fence`) is `BEFORE INSERT`
+  only, and that is a MEASURED limit, not an oversight: the `Media` wipe's FK
+  cascade issues a statement byte-identical to the legacy unlink, so a DELETE
+  arm refuses every reset in the repository — the seed, and each of the 15+
+  integration teardowns that call `media.deleteMany` directly rather than
+  through `sanctionedReset`. ATTACHING evidence to somebody else's binding
+  work is therefore fenced at the database; REMOVING it rests on
+  `MediaService.remove`'s guard, which a previous-release replica is not
+  running. That replica can delete an assigned checklist's evidence and its
+  bucket object, and the bytes do not come back.
+  #571's round 11, finding 2 is correct that the migration DEFERRED to this
+  drain without anything carrying it — `blocking_directive: none` carried
+  nothing. It is carried here now, and this is the shape 4c-iii-r's round 13
+  settled for the same class: the fence this code cannot build is a stated
+  limit held by a directive, and enforcing a drain at DEPLOY time is a change
+  to production deploy behaviour that is ROUTED to the Board, not taken by a
+  correction push. Landing #571 is not gated; DEPLOYING it is. Cleared by: a
+  recorded attestation that no previous-release replica is serving, naming the
+  minimum release, exactly as `phase-6-4c-previous-release-drained` is cleared.
+
 - `phase-6-4c-iiir-post-deployment-evidence` — the deploy-time `decisions.inbox`
   repair is DELIVERED IN CODE and independently reviewed, but merging code is
   not running it, and this unit's entire value is what the step does to the

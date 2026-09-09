@@ -139,15 +139,17 @@ export class MediaService {
           // proves the item belongs to the inspection and the inspection to this project; it says
           // nothing about whether this actor may change THIS inspection's evidence. Asked here,
           // inside the transaction that writes the link, so the answer cannot be overtaken.
-          await this.inspectionParticipant.assertEvidenceMutable(tx, { projectId, inspectionId: input.inspectionId, actorUserId: user.sub });
-          evs.push(await this.inspectionParticipant.addEvidence(tx, { projectId, actor, inspectionId: input.inspectionId, inspectionItemId: input.inspectionItemId, mediaId: created.id }));
+          const { observedAssigneeId } = await this.inspectionParticipant.assertEvidenceMutable(tx, { projectId, inspectionId: input.inspectionId, actorUserId: user.sub });
+          // the value the authorisation saw travels WITH the write it authorised (#571 round 11, F1)
+          evs.push(await this.inspectionParticipant.addEvidence(tx, { projectId, actor, inspectionId: input.inspectionId, inspectionItemId: input.inspectionItemId, mediaId: created.id, observedAssigneeId }));
         }
         events = evs;
         return created;
       });
     } catch (e) {
       // a concurrent replay of the same clientKey landed first — return ITS row
-      // (the unique is the DB proof the photo persisted exactly once)
+      // (the unique is the DB proof the photo persisted exactly once). The winner's object IS
+      // this key's bytes for the same clientKey, so nothing is orphaned on this path.
       if (input.clientKey && e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
         const winner = await this.prisma.media.findUniqueOrThrow({
           where: { projectId_clientKey: { projectId, clientKey: input.clientKey } },
@@ -155,6 +157,15 @@ export class MediaService {
         });
         return { id: winner.id, url: this.signed.mediaPath(winner.id) };
       }
+      // THE ROLLBACK DOES NOT REACH THE BUCKET (#571 round 11, finding 3). The preflight above is
+      // deliberately advisory, so the authoritative in-transaction check is the one that can refuse
+      // a request whose bytes are already stored: an inactive assignee reactivated between the two
+      // is exactly that interleaving, and it left one unreferenced object per refusal. Every failure
+      // after `storage.put` — the authority refusal, a constraint, a lost connection — now removes
+      // the object it wrote, because the transaction rolled back and NOTHING references this key.
+      // Best-effort and swallowed: a bucket that will not delete is an orphan to sweep, never a
+      // reason to convert a refusal into a different error (the delete path takes the same view).
+      if (key) await this.storage.remove(key).catch(() => {});
       throw e;
     }
 
@@ -223,11 +234,11 @@ export class MediaService {
       // #571 round 9, finding 1 — and the same rule for ASSIGNED inspection evidence: while an
       // assignment binds, only its assignee may destroy the photos that stand behind that work.
       // This is the sharpest case of the whole assignment rule, because a delete does not come back.
-      await this.inspectionParticipant.assertEvidenceDisposable(tx, { projectId, mediaId: id, actorUserId: user.sub });
+      const observedEvidence = await this.inspectionParticipant.assertEvidenceDisposable(tx, { projectId, mediaId: id, actorUserId: user.sub });
       // Task 10 (Module 3) correction — unlink any inspection-owned evidence FIRST (participant appends
       // `inspection.evidence_removed` when a link existed), THEN delete the media row, so the projection
       // observes the removal. `null` when this media was not item-level evidence.
-      const evidenceEv = await this.inspectionParticipant.removeEvidence(tx, { projectId, actor, mediaId: id });
+      const evidenceEv = await this.inspectionParticipant.removeEvidence(tx, { projectId, actor, mediaId: id, observed: observedEvidence });
       await tx.media.delete({ where: { id } });
       const removedEv = await emitEvent(tx, { projectId, actor, eventType: 'media.removed', entityType: 'Media', entityId: id, effectKey: 'media.removed', dispatch: {} });
       return evidenceEv ? [evidenceEv, removedEv] : [removedEv];

@@ -29,10 +29,19 @@
 --
 -- So the halves are answered differently, and the plan says which is which. ATTACHING evidence to
 -- somebody else's binding work is fenced HERE, at the database, where no teardown ever inserts.
--- REMOVING it rests on `MediaService.remove`'s guard plus the drain requirement
--- (`phase-6-4d-previous-release-drained`) — the second of the two answers this finding itself
--- admits. Claiming a DELETE fence that every reset must switch off would be a weaker guarantee
--- dressed as a stronger one.
+-- REMOVING it rests on `MediaService.remove`'s guard plus a drain — the second of the two answers
+-- this finding itself admits. Claiming a DELETE fence that every reset must switch off would be a
+-- weaker guarantee dressed as a stronger one.
+--
+-- THE DRAIN IS CARRIED, NOT MERELY CITED (#571 round 11, finding 2). An earlier spelling of this
+-- comment deferred to a drain that nothing held: `docs/STATUS.md` read `blocking_directive: none`,
+-- so the deferral named an attestation no gate required. The standing directive
+-- `phase-6-4d-inspection-assignment-drain` now carries it, and says what it gates: LANDING this
+-- unit is not gated, DEPLOYING its assignment semantics is, because a previous-release replica
+-- still running the unguarded media-delete path can destroy an assigned checklist's evidence and
+-- its bucket object. Enforcing the drain at deploy time is a change to production deploy behaviour
+-- and is routed to the Board rather than taken here — the same disposition 4c-iii-r's round 13
+-- recorded for this exact class.
 --
 -- ITS HONEST LIMIT, stated because the repository states it elsewhere (4c-iii-r): a `SET LOCAL` is
 -- MISTAKE-PROOFING, not a privilege boundary — this deployment's single table-owning role could not
