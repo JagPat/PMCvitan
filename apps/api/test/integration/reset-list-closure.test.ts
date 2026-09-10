@@ -70,7 +70,7 @@ ALTER TABLE "DecisionForward" DISABLE TRIGGER "DecisionForward_t4d_paired";
 ALTER TABLE "DecisionForward" DISABLE TRIGGER "DecisionForward_t4d_provenance_bound";
 INSERT INTO "CommandExecution"
   ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
-  SELECT 'RLC-CMD', 'project', p."orgId", m."projectId", m."userId", 'members.updateRole',
+  SELECT 'RLC-CMD', 'project', p."orgId", m."projectId", m."userId", 'members.add',
          'RLC-KEY', 'RLC-HASH', 'reserved'
     FROM "Membership" m JOIN "Project" p ON p."id" = m."projectId" ORDER BY m."id" LIMIT 1;
 UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(),

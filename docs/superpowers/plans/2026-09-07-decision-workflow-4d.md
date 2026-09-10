@@ -6348,6 +6348,25 @@ today's behaviour lives.
     POST-retirement body — the full fact-and-transition converse — when the
     marker is present, the weak body only when it is absent.
 
+    **And the marker's VERDICT is taken once, before 4d-i creates any of the
+    evidence that verdict reads** (#582's review round 7, finding 1). Round 5
+    hardened `phase6_t4d_retired()` against a FORGED marker — a
+    `RolloutRetirement` row for `phase6-4d` on a database that never ran 4d-iii,
+    which a `db push` baseline can carry — by requiring one of 4d-i's own
+    artifacts beside it. That artifact is created BY 4d-i, so the predicate was
+    correctly false at the doors and turned TRUE a few thousand lines later, the
+    moment the seal function existed: every marker-aware gate after that point
+    skipped as though retirement had happened, and the unit committed with
+    `DecisionForward_t4d_reserved` uninstalled and `DecisionEvent_t4d_correspondence`
+    absent — a database calling itself dark with the forwarding door open. A
+    predicate may not be evidence of a state its own file is midway through
+    creating. So 4d-i takes the verdict in a transaction-local snapshot
+    immediately after defining the predicate and before Part 1, and every gate in
+    the file reads `phase6_t4d_retired_at_start()`; `phase6_t4d_retired()` remains
+    the durable definition of "retired", which is what the snapshot calls and what
+    a later unit asks of a settled database. Any marker-aware statement added to
+    this file joins the snapshot, never the live predicate.
+
     **And the sweep is replaced by an OBLIGATION, because a count is a fact about
     one moment and this one has now aged into a false claim once.** Any statement
     added to 4d-i's permanent portion whose body a later unit replaces joins the

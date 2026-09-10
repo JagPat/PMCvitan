@@ -229,9 +229,14 @@ const REGISTER: Record<string, SealContract> = {
   phase6_t4d_event_correspondence_weak: {
     rule: 'an audit row corresponds to an event emitted IN THE SAME TRANSACTION — a historical '
       + 'event of the same type does not satisfy a later audit insert',
-    plan: '§A.3 obligation 4; #582 round 1, finding 3',
+    plan: '§A.3 obligation 4; #582 round 1, finding 3; round 7, finding 4',
     on: { 'DecisionEvent.DecisionEvent_t4d_correspondence': C('I') },
-    must: ['platform_tx_event'],
+    // #582 round 7, finding 4 — `platform_tx_event` alone is satisfied by the WEAKER question.
+    // §A.3 says exactly ONE, and `platform_tx_event_count` was written for it (its own doc
+    // comment says "two events for one act are as wrong as none") and never called. The token is
+    // the COUNT function's name, not the singular one's, because that is the only string that
+    // distinguishes an existence check from an exactness check.
+    must: ['platform_tx_event_count', 'v_events > 1'],
   },
   phase6_t4d_consultation_attribution_frozen: {
     rule: 'the 4c consultation attribution columns are frozen once written',
@@ -290,6 +295,18 @@ const REGISTER: Record<string, SealContract> = {
     // understood and was silent on the one I had wrong. That is a real limit on this file, and
     // the answer is an outside reader — which is what Codex was here.
     must: ['succeeded', 'membershipId', 'txid_current', 'commandType', 'actorId',
+      // #582 round 7, finding 3 — `commandType` alone witnesses only that the receipt is ONE OF
+      // the three member commands, which makes the three interchangeable: a `members.remove`
+      // receipt could back a transition INTO active. These three tokens are the per-command
+      // shape rules, each unique to its arm, so the register cannot be satisfied by the set test.
+      "'members.remove' AND NEW.\"toStatus\" = 'active'",
+      "'members.add' AND NEW.\"toStatus\" <> 'active'",
+      // NOT the bare `'members.updateRole'` string: that already appears in the three-command
+      // ARRAY above, so it is satisfied by the very body this token exists to reject — the
+      // "a token two rules can satisfy witnesses neither" weakness rounds 3 and 5 corrected
+      // elsewhere in this register and I reintroduced here on the first draft. This clause is
+      // the only place the two roles are compared.
+      'NEW."fromRole" = NEW."toRole"',
       // #582 round 4, finding 2 as restated by round 5's column correction. `roleNow`/`statusNow`
       // are the aliases of the POST-state comparison that makes the orphan clause name THIS
       // transition rather than any write that touched the row. `platform_role_standing` left this
@@ -486,10 +503,16 @@ const REGISTER: Record<string, SealContract> = {
     must: ["TG_OP = 'DELETE'", 'eventId', 'kind', 'decisionId', 'projectId'],
   },
   platform_t4d_notification_binding_bound: {
-    rule: 'the INSERT arm is DEFERRED, because a notice may be written before its event',
-    plan: '§A.2; #572 round 5, finding 1',
+    rule: 'the INSERT arm is DEFERRED, because a notice may be written before its event — and it '
+      + 'binds the notice to that event in BOTH directions: a Decision event owes a `decisionId` '
+      + 'stamp, and a KINDED notice\'s `kind` equals the event\'s own `eventType`',
+    plan: '§A.2; §A.3 obligation 7 (plan line 4507, "whose `kind` equals that event\'s `eventType`"); '
+      + '#572 round 5, finding 1; #582 round 6, finding 4; round 7, finding 5',
     on: { 'Notification.Notification_t4d_binding_bound': C('I') },
-    must: ['DomainEvent'],
+    // `eventType` is the round-7 token: the binding selected the event's project, entity type and
+    // entity id and never its TYPE, so a kinded notice could name an event that says something
+    // else and the freeze made the false kind permanent.
+    must: ['DomainEvent', 'eventType'],
   },
   platform_t4d_notification_no_truncate: {
     rule: 'the notice register is never truncated — its row seal would not fire',

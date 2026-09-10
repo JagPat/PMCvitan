@@ -570,6 +570,40 @@ const ARMS: Arm[] = [
     refusal: /carries a blank attribution pair/,
   },
   {
+    // #582 round 7, finding 3 — the shape, not just the set. `ss-mem-c` is an ACTIVE client
+    // membership; the fact records it arriving into active from a removed state, and cites a
+    // REMOVAL. Everything else agrees — the receipt succeeded in this transaction, its actor is
+    // the fact's actor, its result is the membership — so only the command↔shape rule can refuse
+    // it. Fact FIRST, as every membership probe in this file now is.
+    seal: 'MembershipTransition_t4d_provenance_bound',
+    what: 'a removal\'s receipt may not back a transition INTO active standing',
+    hostile: `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+                VALUES ('ss-cmd-shape','project','ss-org','ss-proj','ss-user','members.remove','ss-key-shape','ss-hash-shape','reserved');
+              UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-c' WHERE "id" = 'ss-cmd-shape';
+              INSERT INTO "MembershipTransition"
+                ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
+              VALUES ('ss-mt-shape','ss-proj','ss-mem-c','ss-client','client','removed','client','active','ss-user','pmc','SS User','ss-cmd-shape');
+              UPDATE "Membership" SET "status" = 'active' WHERE "id" = 'ss-mem-c'`,
+    // `Membership_t4d_architect_provenance` stands in front of this for the STRIPPED run: its
+    // every-role comparison sees a fact naming `(client, removed) → (client, active)` over a
+    // write that left an already-active membership active, and refuses first. In the WHOLE run
+    // the order is the other way — both are deferred and fire in QUEUE order, and the fact INSERT
+    // precedes the membership UPDATE here — so the whole migration still answers with this
+    // seal's own message, which is what binds the arm to the object it names.
+    alsoStrip: ['Membership_t4d_architect_provenance'],
+    refusal: /cites a `members.remove` receipt/,
+  },
+  {
+    // #582 round 7, finding 5 — a KINDED notice is RENDERED from its kind, so a kind that
+    // disagrees with its own event announces something that did not happen. The event here is the
+    // fixture's real `decision.published`; the notice claims it is an approval.
+    seal: 'Notification_t4d_binding_bound',
+    what: 'a kinded notice may not name an event of a different type',
+    hostile: `INSERT INTO "Notification" ("id","projectId","text","color","time","kind","eventId","decisionId")
+              VALUES ('ss-note-k','ss-proj','Decision approved','green','just now','decision.approved','ss-ev1','ss-dec')`,
+    refusal: /declares kind `decision.approved` but names event/,
+  },
+  {
     seal: 'ReleaseLease_t4d_frozen',
     what: 'a lease expires and stays as history — it is never deleted',
     hostile: `DELETE FROM "ReleaseLease" WHERE "instanceId" = 'ss-instance'`,
@@ -647,14 +681,12 @@ const COVERED_BY_CLASS: Record<string, string> = {
   // the response half of the consultation pair check: the SAME function on the sibling table,
   // installed by the same paragraph, so stripping it re-measures a body already measured.
   DecisionConsultationResponse_t4d_attribution_present: 'DecisionConsultation_t4d_attribution_present',
-  Notification_t4d_binding_bound: 'Notification_t4d_no_truncate',
   // seals whose subject is a 4d-ii/4d-iii SERVICE path — unreachable while the doors stand, so
   // their hostile write cannot be constructed on a 4d-i database at all. They are proven by the
   // integration suite driving the delivered writers, and by 4d-ii's own probes.
   Decision_t4d_holder_standing: 'Decision_t4d_awaiting_reserved',
   Membership_t4d_holder_guard: 'Membership_t4d_architect_reserved',
   MembershipTransition_t4d_append_only: 'DecisionForward_t4d_reserved',
-  MembershipTransition_t4d_provenance_bound: 'DecisionForward_t4d_reserved',
   MembershipTransition_t4d_seal: 'DecisionForward_t4d_reserved',
   DecisionApprovalRevision_t4d_birth: 'Decision_t4d_awaiting_reserved',
   DecisionApprovalRevision_t4d_one_flip: 'Decision_t4d_awaiting_reserved',
@@ -821,8 +853,13 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     // the membership is written — its `xmin` is this transaction's — but the write leaves the
     // member an ACTIVE engineer, while the fact claims they LEFT engineer standing.
     const mismatched = psql(RUN_DB, ['-c',
+      // #582 round 7, finding 3 — the receipt is a `members.remove`, because the FACT records a
+      // removal. It was `members.updateRole` until this round, which the new command↔shape
+      // binding now refuses on its own (a re-role does not end a standing) — and that would have
+      // quietly moved this arm off the post-state rule it exists to measure and onto the new one.
+      // Tracing the consumers of a rule before changing it is what caught this.
       `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
-         VALUES ('ss-cmd-x','project','ss-org','ss-proj','ss-user','members.updateRole','ss-key-x','ss-hash-x','reserved');
+         VALUES ('ss-cmd-x','project','ss-org','ss-proj','ss-user','members.remove','ss-key-x','ss-hash-x','reserved');
        UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-e2' WHERE "id" = 'ss-cmd-x';
        INSERT INTO "MembershipTransition"
          ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
@@ -854,8 +891,12 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     // can see that, which is why this arm exists on top of the one above. The counted register is
     // architect-only, so nothing else narrows a fact about any other role.
     const fabricatedArrival = psql(RUN_DB, ['-c',
+      // and here the receipt is a `members.add`, for the same reason and the same round: the fact
+      // claims the member ARRIVED, and an arrival is what `members.add` performs (plan line 3085
+      // — re-activation goes through it too). Only the membership's OLD row contradicts this
+      // fact, which is the whole point of the arm.
       `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
-         VALUES ('ss-cmd-f','project','ss-org','ss-proj','ss-user','members.updateRole','ss-key-f','ss-hash-f','reserved');
+         VALUES ('ss-cmd-f','project','ss-org','ss-proj','ss-user','members.add','ss-key-f','ss-hash-f','reserved');
        UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-e2' WHERE "id" = 'ss-cmd-f';
        INSERT INTO "MembershipTransition"
          ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
@@ -927,6 +968,101 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       'ExternalEffectCatalog_frozen_body_check',
       'ExternalEffectCatalog_requires_push_check',
     ]);
+  }, 180_000);
+
+  /**
+   * #582's review round 7, finding 1 — A RETIREMENT VERDICT MAY NOT BE EVIDENCE OF ITSELF.
+   *
+   * Round 5 answered a FORGED marker — a `RolloutRetirement` row for `phase6-4d` on a database
+   * that never ran 4d-iii — by requiring one of this unit's own artifacts beside it. The artifact
+   * it named is created by THIS file, so the predicate was false at the doors and TRUE from the
+   * moment the seal function existed: every gate after that point skipped as though 4d-iii had
+   * run, and the unit committed with `DecisionForward_t4d_reserved` uninstalled and
+   * `DecisionEvent_t4d_correspondence` absent — a database calling itself dark with the
+   * forwarding door standing open.
+   *
+   * The probe builds exactly that database: the modelled `RolloutRetirement` table (what
+   * `prisma db push` reproduces — columns and key, no triggers) carrying the marker, and nothing
+   * else of 4d-i. Then it applies the whole migration and asks what was installed.
+   */
+  it('a forged retirement marker does not disarm the doors it cannot have earned', () => {
+    psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+    const created = psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]);
+    expect(created.ok, created.output).toBe(true);
+
+    const baseline = psql(RUN_DB, ['-c',
+      // exactly what `prisma db push` reproduces from the model — columns, default and key, and
+      // none of the CHECKs or triggers this file adds. The marker row is the forgery.
+      `CREATE TABLE "RolloutRetirement" (
+         "unit" TEXT NOT NULL, "retiredAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+         "retiredBy" TEXT NOT NULL,
+         CONSTRAINT "RolloutRetirement_pkey" PRIMARY KEY ("unit"));
+       INSERT INTO "RolloutRetirement" ("unit","retiredBy") VALUES ('phase6-4d','someone')`]);
+    expect(baseline.ok, baseline.output).toBe(true);
+
+    const applied = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(applied.ok, `the unit must apply over a marker-bearing baseline:\n${applied.output}`).toBe(true);
+
+    const installed = psql(RUN_DB, ['-t', '-A', '-c',
+      `SELECT tgname FROM pg_trigger
+        WHERE tgname IN ('DecisionForward_t4d_reserved', 'DecisionEvent_t4d_correspondence',
+                         'Decision_t4d_awaiting_reserved', 'Membership_t4d_architect_reserved')
+          AND NOT tgisinternal ORDER BY 1`]);
+    expect(installed.ok, installed.output).toBe(true);
+    expect(
+      installed.output.trim().split('\n').filter(Boolean),
+      'a database whose marker is not backed by 4d-i\'s own artifacts retired NOTHING, so every '
+      + 'door and the correspondence seal are owed. The verdict has to be taken BEFORE this file '
+      + 'creates the evidence it reads, or the file talks itself out of its own reservation '
+      + 'halfway through.',
+    ).toEqual([
+      'DecisionEvent_t4d_correspondence',
+      'DecisionForward_t4d_reserved',
+      'Decision_t4d_awaiting_reserved',
+      'Membership_t4d_architect_reserved',
+    ]);
+  }, 180_000);
+
+  /**
+   * #582's review round 7, finding 2 — THE REGISTER MUST AGREE, NOT MERELY EXIST.
+   *
+   * `ProjectOrg` is the project→org mapping every tenancy join reads, and on the db-push/P3005
+   * path the modelled table can exist before its writer-depth and freeze seals do. The backfill
+   * keys its `WHERE NOT EXISTS` on the PROJECT, so a row already there is preserved whatever it
+   * says; the audit asked only whether a row existed; and the freeze then made it permanent. A
+   * project mapped to another org hands that org's owners and admins team-management authority
+   * over it, through `platform_user_orchestration_authority`.
+   */
+  it('a pre-existing ProjectOrg row that names the wrong org ABORTS the apply', () => {
+    psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+    const created = psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]);
+    expect(created.ok, created.output).toBe(true);
+
+    const baseline = psql(RUN_DB, ['-c',
+      `INSERT INTO "Org" ("id","name","slug") VALUES ('po-org-a','PO Org A','po-org-a'), ('po-org-b','PO Org B','po-org-b');
+       INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+         VALUES ('po-proj','po-org-a','PO Site','PO','','Finishing','PO-01','01 Jan 2026','31 Dec 2026',0,0,0);
+       CREATE TABLE "ProjectOrg" (
+         "projectId" TEXT NOT NULL, "orgId" TEXT NOT NULL,
+         CONSTRAINT "ProjectOrg_pkey" PRIMARY KEY ("projectId"));
+       INSERT INTO "ProjectOrg" ("projectId","orgId") VALUES ('po-proj','po-org-b')`]);
+    expect(baseline.ok, baseline.output).toBe(true);
+
+    const applied = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(
+      applied.ok,
+      'the unit must REFUSE to adopt and freeze a tenancy mapping that contradicts the Project it '
+      + `names — existence is not agreement:\n${applied.output}`,
+    ).toBe(false);
+    expect(applied.output).toMatch(/name an org their "Project" does not/);
+    expect(applied.output, 'the abort must name the projects that disagree, or an operator cannot act on it')
+      .toMatch(/po-proj→po-org-b \(Project says po-org-a\)/);
+
+    // and the same database, with the mapping corrected by the operator, applies.
+    const repaired = psql(RUN_DB, ['-c', `UPDATE "ProjectOrg" SET "orgId" = 'po-org-a' WHERE "projectId" = 'po-proj'`]);
+    expect(repaired.ok, repaired.output).toBe(true);
+    const again = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(again.ok, `once the register agrees, the same apply must succeed:\n${again.output}`).toBe(true);
   }, 180_000);
 
   it('every installed _t4d_ seal is either stripped by an arm or declared covered by its class', () => {

@@ -212,6 +212,35 @@ CREATE OR REPLACE FUNCTION phase6_t4d_retired() RETURNS boolean AS $fn$
      AND to_regproc('phase6_t4d_membership_transition_seal') IS NOT NULL;
 $fn$ LANGUAGE sql STABLE;
 
+-- THE VERDICT IS TAKEN ONCE, BEFORE THIS FILE CREATES ANY OF THE EVIDENCE IT READS
+-- (#582's review round 7, finding 1). The evidence conjunct above was round 5's answer to a
+-- forged marker, and it made the predicate SELF-FULFILLING: the artifact it names,
+-- `phase6_t4d_membership_transition_seal`, is created by THIS migration a few thousand lines
+-- below. On a db-push baseline carrying an unsealed `phase6-4d` marker the predicate is
+-- correctly FALSE at the doors, turns TRUE the moment the seal function is created, and every
+-- gate after that point then skips as if 4d-iii had run — leaving `DecisionForward_t4d_reserved`
+-- uninstalled and `DecisionEvent_t4d_correspondence` absent on a database that retired nothing.
+-- The unit would commit calling itself dark with the forwarding door open.
+--
+-- A predicate cannot be evidence of a state this file is in the middle of creating. So the
+-- question is asked ONCE, here, against the PRE-MIGRATION database, and every gate in this file
+-- reads the answer rather than re-deriving it. `phase6_t4d_retired()` stays as the durable
+-- definition of "retired" — it is what this snapshot calls, and what a later unit asks of a
+-- settled database — while `phase6_t4d_retired_at_start()` is what THIS transaction may ask,
+-- because only it is fixed against the file's own writes.
+--
+-- TRANSACTION-LOCAL (`is_local = true`), like the catalog gate: this file is one transaction
+-- (round 3, finding 1), so the snapshot covers every statement in it and survives no failure.
+DO $snapshot$
+BEGIN
+  PERFORM set_config('vitan.phase6_4d_retired_at_start',
+                     CASE WHEN phase6_t4d_retired() THEN 'on' ELSE 'off' END, true);
+END $snapshot$;
+
+CREATE OR REPLACE FUNCTION phase6_t4d_retired_at_start() RETURNS boolean AS $fn$
+  SELECT current_setting('vitan.phase6_4d_retired_at_start', true) = 'on';
+$fn$ LANGUAGE sql STABLE;
+
 -- ════════════════════════════════════════════════════════════════════════════════════════════
 -- PART 1 — THE RESERVATION DOORS (TRANSIENT)
 -- ════════════════════════════════════════════════════════════════════════════════════════════
@@ -226,7 +255,7 @@ $fn$ LANGUAGE sql STABLE;
 
 DO $$
 BEGIN
-  IF phase6_t4d_retired() THEN
+  IF phase6_t4d_retired_at_start() THEN
     RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the reservation doors are NOT installed (this is a replay over a retired database)';
   ELSE
     CREATE OR REPLACE FUNCTION phase6_t4d_reserved() RETURNS trigger AS $fn$
@@ -240,7 +269,7 @@ END $$;
 DO $$
 DECLARE tg pg_trigger;
 BEGIN
-  IF phase6_t4d_retired() THEN
+  IF phase6_t4d_retired_at_start() THEN
     RETURN;
   END IF;
 
@@ -324,7 +353,7 @@ ALTER TYPE "DecisionStatus" ADD VALUE IF NOT EXISTS 'awaiting_countersign';
 DO $$
 DECLARE tg pg_trigger;
 BEGIN
-  IF phase6_t4d_retired() THEN RETURN; END IF;
+  IF phase6_t4d_retired_at_start() THEN RETURN; END IF;
 
   SELECT * INTO tg FROM pg_trigger
    WHERE tgname = 'Membership_t4d_architect_reserved'
@@ -369,7 +398,7 @@ DECLARE
   v_users       BIGINT;
   v_sample      TEXT;
 BEGIN
-  IF phase6_t4d_retired() THEN RETURN; END IF;
+  IF phase6_t4d_retired_at_start() THEN RETURN; END IF;
 
   SELECT count(*) INTO v_memberships FROM "Membership" WHERE "role" = 'architect';
   SELECT count(*) INTO v_users       FROM "User"       WHERE "role" = 'architect';
@@ -980,7 +1009,7 @@ CREATE TRIGGER "Membership_t4d_role_standing"
 -- `SET LOCAL` scopes the gate to this transaction, so nothing outside the migration can write a
 -- register directly even in the same session.
 DO $$
-DECLARE v_backfilled BIGINT; v_blank_names BIGINT; v_blank_sample TEXT;
+DECLARE v_backfilled BIGINT; v_blank_names BIGINT; v_blank_sample TEXT; v_sample_org TEXT;
 BEGIN
   PERFORM set_config('vitan.phase6_4d_standing_backfill', 'on', true);
 
@@ -1065,6 +1094,33 @@ BEGIN
   IF v_backfilled > 0 THEN
     RAISE EXCEPTION 'phase6 4d-i ABORT: % project(s) hold no "ProjectOrg" row after the backfill — the project→org mapping every tenancy join depends on is incomplete; refusing to commit.', v_backfilled;
   END IF;
+
+  -- AND THE ROW MUST SAY THE RIGHT THING (#582's review round 7, finding 2). The audit above
+  -- proves a row EXISTS and nothing about what it holds, which is the whole question on the one
+  -- path where this table can be older than its seals: a `prisma db push` / P3005 baseline has
+  -- the modelled table without the writer-depth and freeze triggers, so a row put there by any
+  -- means survives. The backfill's `WHERE NOT EXISTS` is keyed on the PROJECT, so it preserves
+  -- such a row rather than correcting it, this audit passed it, and the freeze installed below
+  -- then makes it PERMANENT. A project mapped to the wrong org is not a cosmetic drift:
+  -- `platform_user_orchestration_authority` joins through this register, so every owner and
+  -- admin of the named org gains team-management authority over a project that is not theirs —
+  -- the exact tenancy boundary this register exists to state.
+  --
+  -- Repairing it here would be worse than aborting: the mapping is the tenancy fact, and a
+  -- migration that silently re-points a project to a different org is doing the thing the seal
+  -- forbids every other writer from doing. The operator is told which projects disagree.
+  SELECT count(*) INTO v_backfilled FROM "Project" p
+    JOIN "ProjectOrg" r ON r."projectId" = p."id"
+   WHERE r."orgId" IS DISTINCT FROM p."orgId";
+  IF v_backfilled > 0 THEN
+    SELECT string_agg(format('%s→%s (Project says %s)', r."projectId", r."orgId", p."orgId"), ', ')
+      INTO v_sample_org
+      FROM "Project" p JOIN "ProjectOrg" r ON r."projectId" = p."id"
+     WHERE r."orgId" IS DISTINCT FROM p."orgId";
+    RAISE EXCEPTION
+      'phase6 4d-i ABORT: % "ProjectOrg" row(s) name an org their "Project" does not — %. The register is about to be FROZEN, and a mismatched mapping grants that org''s owners and admins team-management authority over a project that is not theirs. Correct the register (or the Project) before this migration adopts it; this file will not re-point a tenancy mapping on its own.',
+      v_backfilled, v_sample_org;
+  END IF;
   SELECT count(*) INTO v_backfilled FROM "Project" p
    WHERE NOT EXISTS (SELECT 1 FROM "ProjectRoleStanding" r
                       WHERE r."projectId" = p."id" AND r."role" = 'architect');
@@ -1083,7 +1139,7 @@ BEGIN
   -- The seeding above stays unconditional: `WHERE NOT EXISTS` makes it a no-op for rows that are
   -- already there, so a mature database keeps its counts and gains any register row a project
   -- created since the last run still lacks.
-  IF NOT phase6_t4d_retired() THEN
+  IF NOT phase6_t4d_retired_at_start() THEN
     SELECT count(*) INTO v_backfilled FROM "ProjectRoleStanding"
      WHERE "role" = 'architect' AND "activeCount" <> 0;
     IF v_backfilled > 0 THEN
@@ -2428,6 +2484,40 @@ BEGIN
       'phase6 4d-i: MembershipTransition % cites a `%` receipt, which is not a command that changes membership standing (expected members.add, members.updateRole or members.remove) — a receipt borrowed from an unrelated command proves nothing about this act',
       NEW."id", c."commandType";
   END IF;
+
+  -- AND THE COMMAND MUST MATCH THE SHAPE OF THE TRANSITION (#582's review round 7, finding 3).
+  -- Round 4's answer bound the command's KIND to a SET of three and stopped there, which makes
+  -- the three interchangeable: a direct transaction can reserve a `members.remove` receipt,
+  -- insert a fact describing a removed or absent membership becoming ACTIVE, perform that
+  -- re-activation, and complete the receipt naming the membership. Actor, result,
+  -- same-transaction and exact-standing checks all pass, and the append-only seal then keeps
+  -- immutable evidence that a REMOVAL produced an ADD — with a removal's authorisation behind an
+  -- addition's effect. The set was the easy half of the rule; the shape is the rule.
+  --
+  -- The three shapes come from the plan, not from this file's guesswork: `members.add` is the
+  -- command re-activation goes through (plan line 3085, verbatim), so it is the one that moves a
+  -- membership INTO `active`; `members.remove` is the one that moves it OUT; `members.updateRole`
+  -- moves the ROLE of a membership that is active on both sides — a re-role is not a way in or
+  -- out. Nothing here constrains a removal's role or an addition's, because the plan does not:
+  -- only the standing edge each command owns is asserted.
+  IF c."commandType" = 'members.remove' AND NEW."toStatus" = 'active' THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: MembershipTransition % records membership % becoming `active`, but cites a `members.remove` receipt — a removal is the command that ends a standing, never the one that grants it, and this fact would stand forever as an addition authorised by a removal',
+      NEW."id", NEW."membershipId";
+  END IF;
+  IF c."commandType" = 'members.add' AND NEW."toStatus" <> 'active' THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: MembershipTransition % records membership % becoming `%`, but cites a `members.add` receipt — an add ends with the membership ACTIVE (re-activation of a removed member goes through it too), so a fact that ends anywhere else was produced by a different command',
+      NEW."id", NEW."membershipId", NEW."toStatus";
+  END IF;
+  IF c."commandType" = 'members.updateRole'
+     AND (NEW."toStatus" <> 'active' OR NEW."fromStatus" IS DISTINCT FROM 'active'
+          OR NEW."fromRole" IS NULL OR NEW."fromRole" = NEW."toRole") THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: MembershipTransition % cites a `members.updateRole` receipt but records % → % / % → % — a re-role moves the ROLE of a membership that is active on both sides; a birth, a way in and a way out are members.add and members.remove',
+      NEW."id", COALESCE(NEW."fromRole", '<null>'), NEW."toRole",
+      COALESCE(NEW."fromStatus", '<null>'), NEW."toStatus";
+  END IF;
   IF c."actorId" IS DISTINCT FROM NEW."actorId" THEN
     RAISE EXCEPTION
       'phase6 4d-i: MembershipTransition % attributes the standing change to %, but its receipt was run by % — the fact and the receipt are one act seen twice, and team management is the act whose attribution matters most',
@@ -3350,12 +3440,31 @@ BEGIN
     RETURN NULL;
   END IF;
 
-  SELECT "projectId", "entityType", "entityId" INTO e FROM "DomainEvent"
+  SELECT "projectId", "entityType", "entityId", "eventType" INTO e FROM "DomainEvent"
    WHERE "projectId" = NEW."projectId" AND "eventId" = NEW."eventId";
   IF NOT FOUND THEN
     RAISE EXCEPTION
       'phase6 4d-i: notice % names event %, which does not exist in project % at commit',
       NEW."id", NEW."eventId", NEW."projectId";
+  END IF;
+
+  -- THE KIND IS THE EVENT'S TYPE (#582's review round 7, finding 5). §A.3 obligation 7 states it
+  -- in those words — "exactly ONE `Notification` … whose `kind` equals that event's `eventType`"
+  -- (plan line 4507) — and this binding read the event's project, entity type and entity id and
+  -- never its TYPE. So a hand-run bundle could bind a notice with kind `decision.change_requested`
+  -- to a `decision.approved` event about the same decision: the composite FK holds, the
+  -- entity-correspondence clauses above hold, and the kinded freeze then makes the false kind
+  -- IMMUTABLE. That is the failure `kind` exists to prevent (#555's review round 2, finding 7:
+  -- a feed row saying the decision was rejected when it was countersigned), arriving through the
+  -- one column the readers trust — every reader RENDERS a kinded row from `kind`, so a wrong
+  -- kind is a wrong announcement no display-text check can catch.
+  --
+  -- A KINDLESS row is untouched: it is the legacy and drain-window shape, served from its stored
+  -- text, and 4d-iii is where a notice bound to an event is required to declare a kind at all.
+  IF NEW."kind" IS NOT NULL AND NEW."kind" IS DISTINCT FROM e."eventType" THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: notice % declares kind `%` but names event %, which is a `%` — a kinded notice is RENDERED from its kind, so a kind that disagrees with its own event announces something that did not happen, and the freeze below is about to make it permanent',
+      NEW."id", NEW."kind", NEW."eventId", e."eventType";
   END IF;
   IF NEW."decisionId" IS NOT NULL
      AND (e."entityType" <> 'Decision' OR e."entityId" IS DISTINCT FROM NEW."decisionId") THEN
@@ -3719,7 +3828,7 @@ CREATE TRIGGER "Decision_t4d_entry_seal" BEFORE INSERT OR UPDATE ON "Decision"
 DO $$
 DECLARE tg pg_trigger;
 BEGIN
-  IF phase6_t4d_retired() THEN RETURN; END IF;
+  IF phase6_t4d_retired_at_start() THEN RETURN; END IF;
 
   SELECT * INTO tg FROM pg_trigger
    WHERE tgname = 'DecisionForward_t4d_reserved'
@@ -4247,6 +4356,7 @@ DECLARE
   v_status   TEXT;
   v_project  TEXT;
   v_required TEXT[];
+  v_events   BIGINT;
 BEGIN
   SELECT d."status"::text, d."projectId" INTO v_status, v_project
     FROM "Decision" d WHERE d."id" = NEW."decisionId";
@@ -4277,10 +4387,29 @@ BEGIN
   -- approved decision's HISTORICAL `decision.approved` event answer every later `approved` audit
   -- insert, so a direct writer could append a second fabricated row with no emission at all —
   -- and `DecisionEvent_t4d_append_only` then made that false evidence permanent.
-  IF platform_tx_event(v_project, 'Decision', NEW."decisionId", v_required) IS NULL THEN
+  -- EXACTLY ONE, WHICH IS A COUNT AND NOT AN EXISTENCE (#582's review round 7, finding 4).
+  -- §A.3 says the audit row and the event record the SAME act; `platform_tx_event_count` was
+  -- written for precisely this and its own doc comment says so — "two events for one act are as
+  -- wrong as none" — and then nothing called it, which is the THIRD time in this unit a kernel
+  -- primitive has been defined with the right rule in its comment and left unwired (round 1's
+  -- `platform_tx_event`, round 2's `platform_claim_event_pairing`, this).
+  --
+  -- The hole an existence check leaves is not theoretical: a hand-run no-chain approval can take
+  -- two valid allocator increments, insert two catalog-valid `decision.approved` events at the
+  -- two positions it allocated, and append ONE `approved` audit row. Every envelope and
+  -- allocation seal passes — each event is well-formed and correctly positioned — and this seal
+  -- accepted whichever one `platform_tx_event` returned. The decision is then announced twice
+  -- from one act, with two immutable deliveries and one audit row that cannot say which is real.
+  v_events := platform_tx_event_count(v_project, 'Decision', NEW."decisionId", v_required);
+  IF v_events = 0 THEN
     RAISE EXCEPTION
       'phase6 4d-i: the `%` audit row for decision % (committed `%`) has no matching % event in this transaction — the audit register and the delivery stream record the SAME act, and one without the other is a system that cannot say what it did',
       NEW."type", NEW."decisionId", v_status, array_to_string(v_required, ' or ');
+  END IF;
+  IF v_events > 1 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: the `%` audit row for decision % (committed `%`) is accompanied by % matching % events in this transaction — one act emits ONE event, and a second announces the same decision twice with nothing to say which is real',
+      NEW."type", NEW."decisionId", v_status, v_events, array_to_string(v_required, ' or ');
   END IF;
   RETURN NULL;
 END $$;
@@ -4297,7 +4426,7 @@ END $$;
 -- touching it produces.
 DO $$
 BEGIN
-  IF phase6_t4d_retired() THEN
+  IF phase6_t4d_retired_at_start() THEN
     RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — DecisionEvent_t4d_correspondence is left as 4d-iii installed it (this is a replay over a retired database; re-pointing it here would downgrade the live seal to the weak body)';
     RETURN;
   END IF;
