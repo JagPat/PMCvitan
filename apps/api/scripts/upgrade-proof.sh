@@ -4939,8 +4939,14 @@ $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P38: a serving process could
 INSERT INTO "ReleaseLease" ("instanceId","catalogVersion","release","startedAt","leaseUntil")
   VALUES ('UP4D-INST', 2, 'r-2026.09.01', now(), now() + interval '30 minutes');
 SQL
+# the renewal runs in its own statement — `assert` compares the WHOLE `-tA` output, and an
+# UPDATE folded into the same `-c` prints its `UPDATE 1` command tag above the SELECT's row.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P38: the RENEWAL was REFUSED — a freeze that refuses its own writer is a freeze 4d-ii cannot ship against"; FAIL=1; }
+UPDATE "ReleaseLease" SET "leaseUntil" = "leaseUntil" + interval '30 minutes'
+ WHERE "instanceId" = 'UP4D-INST';
+SQL
 assert "4d-i P38: the RENEWAL is admitted — leaseUntil moves forward while the process serves" \
-  "UPDATE \"ReleaseLease\" SET \"leaseUntil\" = \"leaseUntil\" + interval '30 minutes' WHERE \"instanceId\"='UP4D-INST'; SELECT (\"leaseUntil\" > now() + interval '45 minutes')::text FROM \"ReleaseLease\" WHERE \"instanceId\"='UP4D-INST';" \
+  "SELECT (\"leaseUntil\" > now() + interval '45 minutes')::text FROM \"ReleaseLease\" WHERE \"instanceId\"='UP4D-INST';" \
   "true"
 assert_rejects "4d-i P38: a LIVE lease may not be re-versioned into the minimum" \
   "UPDATE \"ReleaseLease\" SET \"catalogVersion\" = 1 WHERE \"instanceId\"='UP4D-INST'" \
