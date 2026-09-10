@@ -94,8 +94,15 @@ const INVENTORY: Record<string, string[]> = {
   OrgUserAuthority: ['OrgUserAuthority_t4d_no_truncate', 'OrgUserAuthority_t4d_writer'],
   Project: ['Project_t4d_deleting', 'Project_t4d_project_org', 'Project_t4d_user_standing'],
   ProjectEventStream: [
+    // §A.2 names FIVE objects here and the first version of this unit installed two, with the
+    // first weakened to "any increase" (Codex round 1, findings 3 and 7). The pin is what makes
+    // the other three visible: an inventory that lists what was built rather than what the
+    // contract states cannot report a missing seal.
     'ProjectEventStream_t4d_allocation',
     'ProjectEventStream_t4d_allocation_bound',
+    'ProjectEventStream_t4d_init',
+    'ProjectEventStream_t4d_no_delete',
+    'ProjectEventStream_t4d_no_truncate',
   ],
   ProjectOrg: ['ProjectOrg_t4d_frozen', 'ProjectOrg_t4d_no_truncate', 'ProjectOrg_t4d_writer'],
   ProjectRoleStanding: ['ProjectRoleStanding_t4d_no_truncate', 'ProjectRoleStanding_t4d_writer'],

@@ -177,10 +177,19 @@ COMMIT;
 -- one real event at a position taken from the allocator, and one SUCCEEDED command receipt: the
 -- referents the fact and claim arms need, so their hostile writes are refused by the SEAL under
 -- test and not by a foreign key that never had a row to point at.
-INSERT INTO "ProjectEventStream" ("projectId","nextPosition") VALUES ('ss-proj', 1)
-  ON CONFLICT ("projectId") DO UPDATE SET "nextPosition" = 1 WHERE "ProjectEventStream"."nextPosition" < 1;
+-- The event is planted the way emitEvent plants one, and for the same reason the seals now
+-- demand it: allocate by incrementing the counter, then insert at nextPosition - 1, IN ONE
+-- TRANSACTION (§A.2). A counter row is created at 0 or not at all — _t4d_init refuses a stream
+-- introduced further along — so the row is born here only if the project has none.
+-- (No backticks in this block: it lives inside a TypeScript template literal.)
+BEGIN;
+INSERT INTO "ProjectEventStream" ("projectId","nextPosition") VALUES ('ss-proj', 0)
+  ON CONFLICT ("projectId") DO NOTHING;
+UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
 INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId")
-  VALUES ('ss-ev1','decision.published',1,'ss-org','ss-proj',0,'system','system:seed','Decision','ss-dec');
+  SELECT 'ss-ev1','decision.published',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec'
+    FROM "ProjectEventStream" s WHERE s."projectId" = 'ss-proj';
+COMMIT;
 -- the receipt is RESERVED on insert and COMPLETES by update, because the delivered ledger
 -- protocol refuses a receipt born terminal ("a command that never ran").
 INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
@@ -281,19 +290,51 @@ const ARMS: Arm[] = [
   {
     seal: 'DomainEvent_t4d_envelope',
     what: 'half an actor envelope is refused — the pair is written together or not at all',
-    hostile: `INSERT INTO "ProjectEventStream" ("projectId","nextPosition") VALUES ('ss-proj', 2)
-                ON CONFLICT ("projectId") DO UPDATE SET "nextPosition" = 2 WHERE "ProjectEventStream"."nextPosition" < 2;
+    // allocate and insert in ONE transaction, exactly as `emitEvent` does — so the ONLY thing
+    // wrong with this write is the half-filled envelope, which is what the arm claims to measure.
+    hostile: `BEGIN;
+              UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
               INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId","actorRole")
-              VALUES ('ss-half','x',1,'ss-org','ss-proj',1,'ss-user','human','Decision','ss-dec','pmc')`,
+              SELECT 'ss-half','x',1,'ss-org','ss-proj',s."nextPosition" - 1,'ss-user','human','Decision','ss-dec','pmc'
+                FROM "ProjectEventStream" s WHERE s."projectId" = 'ss-proj';
+              COMMIT`,
     refusal: /carries half an actor envelope/,
   },
   {
     seal: 'ProjectEventStream_t4d_allocation',
-    what: 'the allocator may only advance — moving it back re-issues live positions',
-    hostile: `INSERT INTO "ProjectEventStream" ("projectId","nextPosition") VALUES ('ss-proj', 5)
-                ON CONFLICT ("projectId") DO UPDATE SET "nextPosition" = 5;
-              UPDATE "ProjectEventStream" SET "nextPosition" = 1 WHERE "projectId" = 'ss-proj'`,
-    refusal: /allocator for project .* may only advance/,
+    what: 'the allocator moves by EXACTLY ONE — a jump leaves positions nobody can fill',
+    // §A.2's rule, and the one the first implementation weakened to "any increase" (Codex round 1,
+    // finding 7). Starting at N, a jump to N+2 with no events passed the old pair, and the next
+    // legitimate emit then wrote N+2 — leaving N and N+1 empty forever, which stalls
+    // `dispatchOrdered` at the hole and makes every rebuild report a replay gap.
+    hostile: `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 2 WHERE "projectId" = 'ss-proj'`,
+    refusal: /moves by exactly one/,
+    // with the `+1` rule omitted, the DEFERRED converse still refuses an increment whose position
+    // no event took, so both are stripped together and the immediate rule answers first by name.
+    alsoStrip: ['ProjectEventStream_t4d_allocation_bound'],
+  },
+  {
+    seal: 'ProjectEventStream_t4d_no_delete',
+    what: 'the allocator row cannot be dropped — deleting and recreating it bypasses the +1 rule',
+    hostile: `DELETE FROM "ProjectEventStream" WHERE "projectId" = 'ss-proj'`,
+    refusal: /may not be DELETED/,
+  },
+  {
+    seal: 'ProjectEventStream_t4d_init',
+    what: 'an allocator row is born at 0, on a project that has no events',
+    // #561's review round 1, finding 7, which this unit had left unimplemented: a transaction
+    // could delete a project's stream row, reinsert it at N + 2 and insert one event at N + 1 —
+    // no UPDATE trigger firing at all — leaving position N absent forever.
+    // The DELETE that sets this arm up is itself sealed, and `alsoStrip` would only remove that
+    // seal from the STRIPPED run — the whole run would then be answered by `_t4d_no_delete` and
+    // the arm would measure the wrong object. So the setup declares a NAMED BYPASS inside the
+    // hostile SQL, identically in both runs, leaving `_t4d_init` as the only difference between
+    // them.
+    hostile: `ALTER TABLE "ProjectEventStream" DISABLE TRIGGER "ProjectEventStream_t4d_no_delete";
+              DELETE FROM "ProjectEventStream" WHERE "projectId" = 'ss-proj';
+              ALTER TABLE "ProjectEventStream" ENABLE TRIGGER "ProjectEventStream_t4d_no_delete";
+              INSERT INTO "ProjectEventStream" ("projectId","nextPosition") VALUES ('ss-proj', 5)`,
+    refusal: /created at position 0|already holds events/,
   },
   {
     seal: 'DomainEventPairingClaim_t4d_writer',
@@ -393,6 +434,7 @@ const COVERED_BY_CLASS: Record<string, string> = {
   ProjectUserStanding_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
   ReleaseLease_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
   UserIdentity_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
+  ProjectEventStream_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
   // `TRUNCATE "Membership"` needs CASCADE to run at all, and the cascade meets a DELIVERED 4c
   // statement-level seal on `DecisionConsultation` — an object this harness has no business
   // stripping. Same function as the arm above; measured there.
@@ -422,7 +464,6 @@ const COVERED_BY_CLASS: Record<string, string> = {
   User_t4d_identity: 'UserIdentity_t4d_writer',
   // the kernel pair, and the deferred halves of seals whose immediate half is stripped
   DomainEvent_t4d_pairing_claimed: 'DomainEventPairingClaim_t4d_writer',
-  ProjectEventStream_t4d_allocation_bound: 'ProjectEventStream_t4d_allocation',
   Notification_t4d_binding: 'Notification_t4d_no_truncate',
   Notification_t4d_binding_bound: 'Notification_t4d_no_truncate',
   ReleaseLease_t4d_sealed: 'ExternalEffectCatalog_t4d_sealed',

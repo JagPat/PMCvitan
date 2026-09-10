@@ -172,7 +172,23 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
       data: { id: `it-ev-nostream-${Date.now() % 1e6}`, orgId: tmpOrg.id, name: 'Tmp', short: 'T', descriptor: '', stage: 'x', siteCode: 'T', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
     });
     expect(await streamOf(tmp.id), 'the trigger auto-created its counter on insert').not.toBeNull();
+    // Phase 6 unit 4d-i — the SETUP takes a NAMED BYPASS, the sentence does not move.
+    // `ProjectEventStream_t4d_no_delete` now refuses this delete, because dropping and
+    // recreating the counter row is how the `+1` allocation rule gets bypassed (§A.2). What this
+    // arm PROVES is unchanged and still worth proving — a project without a counter cannot emit —
+    // so only the way it manufactures that state is declared, by name, for exactly this statement.
+    await t.prisma.$executeRawUnsafe(
+      `DO $do$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'ProjectEventStream_t4d_no_delete') THEN `
+      + `EXECUTE 'ALTER TABLE "ProjectEventStream" DISABLE TRIGGER "ProjectEventStream_t4d_no_delete"'; END IF; END $do$`,
+    );
+    try {
     await t.prisma.projectEventStream.delete({ where: { projectId: tmp.id } });
+    } finally {
+      await t.prisma.$executeRawUnsafe(
+        `DO $do$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'ProjectEventStream_t4d_no_delete') THEN `
+        + `EXECUTE 'ALTER TABLE "ProjectEventStream" ENABLE TRIGGER "ProjectEventStream_t4d_no_delete"'; END IF; END $do$`,
+      );
+    }
     await expect(
       t.prisma.$transaction((tx) => emitEvent(tx, { projectId: tmp.id, actor: human, eventType: 'project.created', entityType: 'Project', entityId: tmp.id, effectKey: 'project.created', dispatch: {} })),
     ).rejects.toThrow();
