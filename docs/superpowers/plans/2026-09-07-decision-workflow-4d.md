@@ -6429,6 +6429,45 @@ today's behaviour lives.
     for finding 7 above. Raised at round 6 and not fixed until round 8; the arm
     that would have caught it now exists.
 
+    **ROUND 9 — the same habit, one level up, and one reason of mine that was
+    simply wrong** (#582's review round 9, findings 1-6).
+
+    Round 8's corrections were each applied to the site reported and not to the
+    CLASS, and round 9 is what that costs. The register audit was not extended to
+    the dark FACT tables; the pair rule was not extended to the notice binding;
+    the nonblank-string rule was not extended to the push TARGET; the audit
+    exactness was left one-sided. So: the dark fact tables — `DecisionForward`,
+    `DecisionCountersign`, `DecisionStrandedResolution`, `MembershipTransition`,
+    `DomainEventPairingClaim` — must be EMPTY when 4d-i seals them, because 4d-ii
+    is their first writer and before retirement the only correct population is
+    none (gated on the retirement snapshot, so a mature replay aborts nothing);
+    `(eventId IS NULL) = (kind IS NULL)` on `Notification`, because the only two
+    compatible producers write both or neither and a half-bound notice is
+    irreparable by construction; a present `targetUserId` must be a nonblank
+    string; and the audit correspondence counts ROWS as well as events.
+
+    **The catalog seed is restructured, and that is a regression this unit
+    introduced.** Round 8's outgoing-generation copy read the REAL table, so a
+    constraint-valid but wrong pre-baseline row — adopted by `ON CONFLICT DO
+    NOTHING` — was propagated into a SECOND generation. The literal now lands in a
+    temp table, the temp table is audited against whatever is already at those
+    keys, the apply REFUSES on disagreement, and both generations are seeded from
+    the literal. A definition changes by a new coverage version, never in place,
+    so adoption was never the right verb.
+
+    **And `ProjectUserStanding` binds `membershipId`, which round 8 got wrong IN
+    WRITING.** Round 8 judged justification only and recorded the reason in the
+    migration: "a stale pointer beside a real membership is untidy, not a grant".
+    That is false. `membershipId` has exactly one consumer and it resolves the
+    HOLDER by that column alone — `platform_membership_active_user` selects
+    `userId` from the register `WHERE "membershipId" = p_membership`, with no join
+    back to `Membership` — and its callers are the forward seal's current-holder
+    read and its target-eligibility check. A row for user A carrying user B's
+    `membershipId` hands a forward FROM B to A. Round 8 traced the TABLE's
+    consumers and never the COLUMN's, and wrote the conclusion down as though it
+    had. A documented wrong reason is worse than an undocumented gap, because the
+    next reader trusts it; the correction is recorded at the audit itself.
+
     P28b's replay arm gains BOTH: the
     4d-i migration re-run against a post-4d-iii database, with the architect
     consultation request COMMITTING afterwards, RED against the unconditional

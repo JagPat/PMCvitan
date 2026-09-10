@@ -397,6 +397,25 @@ const ARMS: Arm[] = [
     alsoStrip: ['ProjectEventStream_t4d_allocation_bound'],
   },
   {
+    // #582 round 9, finding 4 — `->>` returns NULL only for an absent key or a JSON null, so a
+    // blank target reads as PRESENT and satisfies a targeted family. The consumer's `if
+    // (!targetUserId)` branch then marks the delivery non-actionable and the announcement the
+    // catalog REQUIRES is cancelled with nothing raised. Same blank-string class as the push body.
+    seal: 'DomainEvent_t4d_envelope',
+    what: 'a targeted push naming a BLANK user is refused — an empty target is a cancelled announcement',
+    hostile: `BEGIN;
+              UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+              INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+                SELECT 'ss-ev-blank','decision.consultation_requested',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec',
+                       jsonb_build_object('effectKey','decision.consultation_requested','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
+                                          'push', jsonb_build_object('body','ss','roles', jsonb_build_array('pmc'), 'targetUserId', ''))
+                  FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+                 WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.consultation_requested'
+                   AND c."coverageVersion" = '${COVERAGE}';
+              COMMIT;`,
+    refusal: /names a target that is not a nonblank string/,
+  },
+  {
     seal: 'ProjectEventStream_t4d_no_delete',
     what: 'the allocator row cannot be dropped — deleting and recreating it bypasses the +1 rule',
     hostile: `DELETE FROM "ProjectEventStream" WHERE "projectId" = 'ss-proj'`,
@@ -1227,6 +1246,15 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       -- (3) pmc standing for a user with neither an active membership in it nor an org owner/admin row
       INSERT INTO "ProjectUserStanding" ("projectId","userId","role","membershipId")
         VALUES ('pb-proj','pb-out','pmc',NULL);
+      -- (4) round 9, finding 3 -- a standing row whose JUSTIFICATION is real (pb-user is an
+      -- active pmc) but whose membershipId points at SOMEBODY ELSE's membership. Round 8 judged
+      -- justification only and wrote into the migration that a stale pointer is "untidy, not a
+      -- grant"; platform_membership_active_user resolves the holder by that column ALONE, so a
+      -- forward FROM pb-out's membership would answer pb-user.
+      -- (No backticks in this block: it lives inside a TypeScript template literal.)
+      INSERT INTO "Membership" ("id","projectId","userId","role","status") VALUES
+        ('pb-mem-a','pb-proj','pb-user','pmc','active'),
+        ('pb-mem-b','pb-proj','pb-out','engineer','active');
     `]);
     expect(seeded.ok, seeded.output).toBe(true);
 
@@ -1252,11 +1280,223 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     expect(standing.output).toMatch(/"ProjectUserStanding" row\(s\) are backed by neither an active "Membership"/);
     expect(standing.output).toMatch(/pb-out on pb-proj as 'pmc'/);
 
-    // repair (3) — and only now does the whole unit apply
+    // repair (3) — replace the unbacked row with a MISPOINTED one, which round 8 would have
+    // adopted and round 9 refuses
+    expect(psql(RUN_DB, ['-c', `
+      DELETE FROM "ProjectUserStanding" WHERE "userId" = 'pb-out';
+      INSERT INTO "ProjectUserStanding" ("projectId","userId","role","membershipId")
+        VALUES ('pb-proj','pb-user','pmc','pb-mem-b');
+    `]).ok).toBe(true);
+    const pointer = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(
+      pointer.ok,
+      'a standing row pointing at ANOTHER user\'s membership must REFUSE the apply — the holder '
+      + 'is resolved by that column alone, so the pointer is authority, not bookkeeping',
+    ).toBe(false);
+    expect(pointer.output).toMatch(/"ProjectUserStanding" row\(s\) are backed by neither an active "Membership" of that exact user, role AND id/);
+    expect(pointer.output).toMatch(/membershipId 'pb-mem-b'/);
+
+    // repair (4) — and only now does the whole unit apply
     expect(psql(RUN_DB, ['-c',
-      `DELETE FROM "ProjectUserStanding" WHERE "userId" = 'pb-out'`]).ok).toBe(true);
+      `UPDATE "ProjectUserStanding" SET "membershipId" = 'pb-mem-a' WHERE "userId" = 'pb-user'`]).ok).toBe(true);
     const clean = psql(RUN_DB, ['-f', MIGRATION]);
-    expect(clean.ok, `after all three named repairs the apply must succeed:\n${clean.output}`).toBe(true);
+    expect(clean.ok, `after all four named repairs the apply must succeed:\n${clean.output}`).toBe(true);
+  }, 300_000);
+
+  /**
+   * THE PAIR CHECKS, which are CONSTRAINTS and so cannot be stripped by name — the harness omits
+   * `CREATE TRIGGER` statements, and a CHECK either exists or does not. The constraint NAME in the
+   * refusal is what identifies which object spoke, which is the same thing a strip proves.
+   *
+   * #582's review round 9, finding 6 for the notice pair; and the round-8 change-request pairs,
+   * which were added with the freeze proven and the CHECKS themselves never exercised — the same
+   * "proved the site, not the rule" gap this round is about, in my own harness.
+   */
+  it('every attribution and binding PAIR is both halves or neither', () => {
+    buildRun([]);
+
+    // (1) the notice binding — round 9, finding 6
+    const halfNotice = psql(RUN_DB, ['-c',
+      `INSERT INTO "Notification" ("id","projectId","text","color","time","eventId")
+       VALUES ('ss-note-half','ss-proj','half bound','ink','now','ss-ev1')`]);
+    expect(halfNotice.ok, 'a notice with an eventId and no kind must be REFUSED').toBe(false);
+    expect(halfNotice.output).toMatch(/Notification_event_binding_pair_check/);
+
+    // the legacy shape — BOTH null — is exactly what the previous release writes, and stays legal
+    const legacyNotice = psql(RUN_DB, ['-c',
+      `INSERT INTO "Notification" ("id","projectId","text","color","time")
+       VALUES ('ss-note-legacy','ss-proj','legacy','ink','now')`]);
+    expect(legacyNotice.ok, `the previous release's kindless, eventless notice must COMMIT:\n${legacyNotice.output}`).toBe(true);
+
+    // (2) the change request's requester pair — round 8, never exercised until now
+    const halfRequester = psql(RUN_DB, ['-c',
+      `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","requestedByRole")
+       VALUES ('ss-cr-half','ss-dec','x',0,0,'open','architect')`]);
+    expect(halfRequester.ok, 'a role without a name must be REFUSED').toBe(false);
+    expect(halfRequester.output).toMatch(/ChangeRequest_requested_pair_check/);
+
+    // and a BLANK half is refused too — a present half is non-blank
+    const blankRequester = psql(RUN_DB, ['-c',
+      `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","requestedByRole","requestedByName")
+       VALUES ('ss-cr-blank','ss-dec','x',0,0,'open','architect','   ')`]);
+    expect(blankRequester.ok, 'a whitespace-only name must be REFUSED').toBe(false);
+    expect(blankRequester.output).toMatch(/ChangeRequest_requested_pair_check/);
+
+    // (3) the resolver pair, same rule at the other end
+    const halfResolver = psql(RUN_DB, ['-c',
+      `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","resolvedByName")
+       VALUES ('ss-cr-halfres','ss-dec','x',0,0,'withdrawn','Someone')`]);
+    expect(halfResolver.ok, 'a resolver name without a role must be REFUSED').toBe(false);
+    expect(halfResolver.output).toMatch(/ChangeRequest_resolved_pair_check/);
+
+    // the all-null legacy shape survives, which is what makes the CHECK safe to add
+    const legacyCr = psql(RUN_DB, ['-c',
+      `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status")
+       VALUES ('ss-cr-legacy','ss-dec','x',0,0,'open')`]);
+    expect(legacyCr.ok, `a legacy request carrying no attribution must COMMIT:\n${legacyCr.output}`).toBe(true);
+  }, 180_000);
+
+  /**
+   * #582's review round 9, finding 5 — THE AUDIT COUNT RUNS BOTH WAYS.
+   *
+   * Round 7 replaced an existence check with a count and stopped there. Every audit row demanded
+   * exactly one event; nothing demanded exactly one audit row. One act, one event, TWO immutable
+   * audit claims, and each deferred invocation saw `v_events = 1` and passed.
+   */
+  it('one act appends ONE audit row, not two that each see their single event', () => {
+    buildRun([]);
+
+    // `change_requested` is used because the audit map is keyed by (type, resulting status) and
+    // this pair needs no entry into `approved` — the entry seal is not what this arm measures.
+    expect(psql(RUN_DB, ['-c', `UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'ss-dec'`]).ok).toBe(true);
+
+    // one valid allocation + ONE event + TWO audit rows for the same act
+    const doubled = psql(RUN_DB, ['-c', `
+      BEGIN;
+      UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+      INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+        SELECT 'ss-ev-dbl','decision.change_requested',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec',
+               jsonb_build_object('effectKey','decision.change_requested','coverageVersion',c."coverageVersion",'invalidate',c."invalidate")
+          FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+         WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.change_requested'
+           AND c."coverageVersion" = '${COVERAGE}';
+      INSERT INTO "DecisionEvent" ("id","decisionId","type","actor") VALUES ('ss-de-1','ss-dec','change_requested','X');
+      INSERT INTO "DecisionEvent" ("id","decisionId","type","actor") VALUES ('ss-de-2','ss-dec','change_requested','X');
+      COMMIT;
+    `]);
+    expect(
+      doubled.ok,
+      'two audit rows for one act must be REFUSED — each one sees its single event and passes the '
+      + `one-sided count, which is exactly the hole round 7 left:\n${doubled.output}`,
+    ).toBe(false);
+    expect(doubled.output).toMatch(/audit rows written by this transaction/);
+
+    // ONE row for the same act still commits — the fix narrows, it does not close the path
+    const single = psql(RUN_DB, ['-c', `
+      BEGIN;
+      UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+      INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+        SELECT 'ss-ev-one','decision.change_requested',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec',
+               jsonb_build_object('effectKey','decision.change_requested','coverageVersion',c."coverageVersion",'invalidate',c."invalidate")
+          FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+         WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.change_requested'
+           AND c."coverageVersion" = '${COVERAGE}';
+      INSERT INTO "DecisionEvent" ("id","decisionId","type","actor") VALUES ('ss-de-ok','ss-dec','change_requested','X');
+      COMMIT;
+    `]);
+    expect(single.ok, `one audit row for one event must COMMIT:\n${single.output}`).toBe(true);
+  }, 180_000);
+
+  /**
+   * #582's review round 9, finding 2 — A PRE-BASELINE CATALOG ROW THAT DISAGREES WITH THE LITERAL.
+   *
+   * Round 8 made this WORSE before round 9 fixed it: the outgoing-generation copy read the REAL
+   * table, so one adopted bad row was propagated into a second generation. The seed now lands in a
+   * temp table, the temp table is audited against what is already there, and BOTH generations are
+   * seeded from the literal.
+   */
+  it('a pre-baseline catalog row that disagrees with the compiled definition aborts the apply', () => {
+    psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+    expect(psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]).ok).toBe(true);
+
+    // constraint-valid and WRONG: the right audience, but silent and non-invalidating.
+    const seeded = psql(RUN_DB, ['-c', `
+      CREATE TABLE "ExternalEffectCatalog" (
+        "coverageVersion" TEXT NOT NULL, "effectKey" TEXT NOT NULL, "eventType" TEXT NOT NULL,
+        "invalidate" BOOLEAN NOT NULL, "pushRoles" JSONB, "pushFamily" TEXT,
+        "frozenAudience" BOOLEAN NOT NULL DEFAULT false, "requiresPush" BOOLEAN NOT NULL DEFAULT false,
+        "audience" TEXT, "pushBody" TEXT, "pairingRequired" BOOLEAN NOT NULL DEFAULT false,
+        "retiredAt" TIMESTAMP(3),
+        CONSTRAINT "ExternalEffectCatalog_pkey" PRIMARY KEY ("coverageVersion","effectKey"));
+      INSERT INTO "ExternalEffectCatalog"
+        ("coverageVersion","effectKey","eventType","invalidate","pushRoles","pushFamily","frozenAudience","requiresPush","audience","pushBody","pairingRequired")
+      VALUES ('${COVERAGE}', 'decision.approved', 'decision.approved', false,
+              '["contractor","engineer","pmc"]'::jsonb, NULL, false, false, NULL, NULL, false);
+    `]);
+    expect(seeded.ok, seeded.output).toBe(true);
+
+    const applied = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(applied.ok, 'the apply must REFUSE a catalog row that contradicts the compiled catalog').toBe(false);
+    expect(applied.output).toMatch(/already exist at a key this migration seeds and DISAGREE with the compiled catalog/);
+    expect(applied.output).toMatch(/decision\.approved/);
+
+    // and once removed, BOTH generations are seeded from the literal — the amplification round 8
+    // introduced is gone, so the outgoing generation cannot inherit a row the literal never said.
+    expect(psql(RUN_DB, ['-c', `DELETE FROM "ExternalEffectCatalog"`]).ok).toBe(true);
+    const clean = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(clean.ok, `after removing the conflicting row the apply must succeed:\n${clean.output}`).toBe(true);
+    const gens = psql(RUN_DB, ['-t', '-A', '-c',
+      `SELECT count(DISTINCT "coverageVersion") || ':' || count(*) FROM "ExternalEffectCatalog"
+        WHERE "effectKey" = 'decision.approved' AND "invalidate" = true`]);
+    expect(gens.output.trim(), 'both generations must carry the LITERAL definition').toBe('2:2');
+  }, 300_000);
+
+  /**
+   * #582's review round 9, finding 1 — THE DARK FACT TABLES MUST BE EMPTY WHEN 4d-i SEALS THEM.
+   *
+   * Round 8 audited the four adopted REGISTERS and left the fact tables alone. Same db-push
+   * exposure, and a stronger remedy: these tables are dark, 4d-ii is their first writer, so before
+   * retirement the only correct population is none.
+   */
+  it('a pre-baseline row in a dark fact table aborts the apply', () => {
+    psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+    expect(psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]).ok).toBe(true);
+
+    // `schema.prisma` creates the table on a db-push baseline; nothing has sealed it yet. The
+    // shape below is the migration's own CREATE TABLE, and the referents exist because the FKs
+    // this file adds are checked against the rows already there.
+    const seeded = psql(RUN_DB, ['-c', `
+      INSERT INTO "Org" ("id","name","slug") VALUES ('df-org','DF Org','df-org');
+      INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+        VALUES ('df-proj','df-org','DF Site','DF','','Finishing','DF-01','01 Jan 2026','31 Dec 2026',0,0,0);
+      INSERT INTO "User" ("id","projectId","role","name","phone") VALUES ('df-user','df-proj','pmc','DF User','+910000000041');
+      INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt")
+        VALUES ('df-dec','df-proj','DF Decision','Hall','pending','sw',NULL);
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('df-cmd','project','df-org','df-proj','df-user','decisions.forward','df-key','df-hash','reserved');
+      UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'df-ghost' WHERE "id" = 'df-cmd';
+      CREATE TABLE "DecisionForward" (
+        "id" TEXT NOT NULL, "projectId" TEXT NOT NULL, "decisionId" TEXT NOT NULL,
+        "fromDesignationKind" TEXT NOT NULL, "fromDesignationMembershipId" TEXT,
+        "toDesignationKind" TEXT NOT NULL, "toDesignationMembershipId" TEXT,
+        "forwardedById" TEXT NOT NULL, "forwardedByRole" TEXT NOT NULL, "forwardedByName" TEXT NOT NULL,
+        "reason" TEXT NOT NULL, "at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "sourceCommandId" TEXT NOT NULL,
+        CONSTRAINT "DecisionForward_pkey" PRIMARY KEY ("id"));
+      INSERT INTO "DecisionForward" ("id","projectId","decisionId","fromDesignationKind","toDesignationKind","forwardedById","forwardedByRole","forwardedByName","reason","sourceCommandId")
+        VALUES ('df-ghost','df-proj','df-dec','client','pmc','df-user','pmc','DF User','a hand-off nobody performed','df-cmd');
+    `]);
+    expect(seeded.ok, seeded.output).toBe(true);
+
+    const applied = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(applied.ok, 'the apply must REFUSE a dark fact table that already holds rows').toBe(false);
+    expect(applied.output).toMatch(/dark fact table\(s\) already hold rows before this unit seals them/);
+    expect(applied.output).toMatch(/DecisionForward \(1 row\(s\)\)/);
+
+    // and the named repair works
+    expect(psql(RUN_DB, ['-c', `DELETE FROM "DecisionForward"`]).ok).toBe(true);
+    const clean = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(clean.ok, `after removing the ghost row the apply must succeed:\n${clean.output}`).toBe(true);
   }, 300_000);
 
   /**

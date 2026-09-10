@@ -76,6 +76,23 @@ the migration seeding the outgoing generation by copying rather than transcribin
 `phase6-t4d-i-catalog-generations.test.ts` re-derives that equality from source every run, so the
 licence cannot outlive its proof.
 
+**Round 9 is folded — six P1s on `f33efafb`, and five of them are one habit.** Round 8's fixes
+were each applied to the site reported and not to the class: the register audit not extended to the
+dark fact tables, the pair rule not to the notice binding, the nonblank-string rule not to the push
+target, the audit exactness left one-sided. The remaining two are worse than misses. The catalog
+copy round 8 added read the REAL table, so an adopted bad pre-baseline row was propagated into a
+second generation — a regression this unit introduced, now fixed by making the literal the only
+thing either generation is seeded from, with a conflict audit that refuses rather than adopts. And
+round 8's `ProjectUserStanding` audit judged justification only and wrote the REASON into the
+migration — "a stale pointer is untidy, not a grant" — which is false:
+`platform_membership_active_user` resolves the holder by `membershipId` alone, so a mispointed row
+hands a forward to the wrong person. That correction is recorded at the audit itself, because a
+documented wrong reason is worse than an undocumented gap.
+
+Six new arms, each measured RED against `f33efafb` and GREEN after. One of them also closes a gap
+in my own harness: round 8's change-request pair CHECKs were added with the freeze proven and the
+constraints themselves never exercised.
+
 The oracle is `test/integration/phase6-t4d-i-seal-contract.test.ts`: every trigger function the
 unit installs carries a register entry naming its rule, the plan location that states it, the
 operations and timing every installing trigger must fire on, and the tokens its body must

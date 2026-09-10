@@ -244,7 +244,9 @@ const REGISTER: Record<string, SealContract> = {
     // comment says "two events for one act are as wrong as none") and never called. The token is
     // the COUNT function's name, not the singular one's, because that is the only string that
     // distinguishes an existence check from an exactness check.
-    must: ['platform_tx_event_count', 'v_events > 1'],
+    // #582 round 9, finding 5 — round 7's count was ONE-SIDED: each audit row demanded one
+    // event and nothing demanded one audit row. `v_audits` witnesses the converse.
+    must: ['platform_tx_event_count', 'v_events > 1', 'v_audits > 1'],
   },
   phase6_t4d_consultation_attribution_frozen: {
     rule: 'the 4c consultation attribution columns are frozen once written',
@@ -465,6 +467,9 @@ const REGISTER: Record<string, SealContract> = {
     must: [
       'ProjectEventStream', 'nextPosition', 'txid_current', 'streamPosition',
       'ExternalEffectCatalog', 'FOR SHARE', 'coverageVersion', 'effectKey',
+      // #582 round 9, finding 4 — `->>` reads a blank string as PRESENT, so a targeted
+      // family was satisfiable by a target the consumer then drops as non-actionable.
+      "jsonb_typeof(v_push -> 'targetUserId')",
       'retiredAt', 'invalidate', 'requiresPush', 'pushRoles', 'audience', 'targetUserIds',
     ],
   },

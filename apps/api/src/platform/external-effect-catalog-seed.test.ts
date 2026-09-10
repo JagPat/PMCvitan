@@ -43,10 +43,14 @@ type Row = {
 /** Parse the seed's VALUES tuples out of the migration. */
 function seededRows(): Row[] {
   const sql = readFileSync(MIGRATION, 'utf8');
-  const start = sql.indexOf('INSERT INTO "ExternalEffectCatalog"');
-  expect(start, 'the migration must carry the catalog seed').toBeGreaterThan(-1);
-  const end = sql.indexOf('ON CONFLICT ("coverageVersion", "effectKey") DO NOTHING;', start);
-  expect(end, 'the seed must end with its ON CONFLICT clause').toBeGreaterThan(start);
+  // #582's review round 9, finding 2 — the literal moved into a TEMP table, which is now the
+  // authority the real table is audited against and both generations are seeded from. The parser
+  // follows the literal rather than the destination: what this suite checks is that the SEED says
+  // what the compiled catalog says, and the seed is the VALUES list wherever it lands.
+  const start = sql.indexOf('INSERT INTO "_t4d_catalog_seed"');
+  expect(start, 'the migration must carry the catalog seed literal').toBeGreaterThan(-1);
+  const end = sql.indexOf('-- ANY ROW ALREADY AT ONE OF THESE KEYS', start);
+  expect(end, 'the seed literal must be followed by its conflict audit').toBeGreaterThan(start);
 
   const rows: Row[] = [];
   // Eleven columns since Codex round 1 (findings 4 and 5): the key gained `coverageVersion` and

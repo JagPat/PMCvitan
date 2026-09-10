@@ -1171,16 +1171,30 @@ BEGIN
   -- is what `platform_user_holds_role` answers from, so an unbacked row is a role its holder was
   -- never given. Its two legitimate shapes are exactly the two arms backfilled above — an ACTIVE
   -- membership in that role, or the membership-less `pmc` of an org owner/admin — and a row
-  -- matching neither is standing nobody granted. Judged on JUSTIFICATION only, never on
-  -- `membershipId` equality: a stale pointer beside a real membership is untidy, not a grant, and
-  -- aborting a deploy over it would repeat round 6''s zero-count defect of refusing a healthy
-  -- database.
-  SELECT count(*), string_agg(format('%s on %s as %L', s2."userId", s2."projectId", s2."role"), ', ' ORDER BY s2."projectId", s2."userId")
+  -- matching neither is standing nobody granted.
+  --
+  -- AND THE POINTER IS PART OF THE ROW, WHICH ROUND 8 GOT WRONG IN WRITING (#582 round 9,
+  -- finding 3). Round 8 judged JUSTIFICATION only and wrote the reason into this file: "a stale
+  -- pointer beside a real membership is untidy, not a grant". That is false, and the falsehood was
+  -- worse than the gap because the next reader would have trusted it. `membershipId` has exactly
+  -- one consumer and it resolves the HOLDER by that column alone —
+  -- `platform_membership_active_user(project, membershipId)` selects `userId` from this register
+  -- `WHERE "membershipId" = p_membership`, with no join back to `Membership` — and its two callers
+  -- are the forward seal's current-holder read and its target-eligibility check. So a row for user
+  -- A carrying user B's `membershipId` makes a forward FROM B resolve to A: forwarding authority
+  -- and target eligibility both answer with the wrong person. Round 8 traced the TABLE's consumers
+  -- and never the COLUMN's.
+  --
+  -- Binding it also makes the column unique by construction, which is why no index is added: arm
+  -- (a) now requires the membership's own project, user and role, and a `Membership` row holds one
+  -- of each, so two standing rows cannot name one membership.
+  SELECT count(*), string_agg(format('%s on %s as %L (membershipId %L)', s2."userId", s2."projectId", s2."role", s2."membershipId"), ', ' ORDER BY s2."projectId", s2."userId")
     INTO v_backfilled, v_sample
     FROM "ProjectUserStanding" s2
    WHERE NOT EXISTS (SELECT 1 FROM "Membership" m
                       WHERE m."projectId" = s2."projectId" AND m."userId" = s2."userId"
-                        AND m."role" = s2."role" AND m."status" = 'active')
+                        AND m."role" = s2."role" AND m."status" = 'active'
+                        AND m."id" = s2."membershipId")
      AND NOT (s2."role" = 'pmc' AND s2."membershipId" IS NULL
               AND EXISTS (SELECT 1 FROM "Project" p2
                             JOIN "OrgMembership" om ON om."orgId" = p2."orgId"
@@ -1188,7 +1202,7 @@ BEGIN
                              AND om."role" IN ('owner', 'admin')));
   IF v_backfilled > 0 THEN
     RAISE EXCEPTION
-      'phase6 4d-i ABORT: % "ProjectUserStanding" row(s) are backed by neither an active "Membership" in that role nor an org owner/admin''s membership-less `pmc` claim — %. The register is about to be adopted as the answer to "does this user hold this role here?", and an unbacked row is standing nobody granted. Remove the unbacked rows (or grant the membership they claim) before this migration adopts the register.',
+      'phase6 4d-i ABORT: % "ProjectUserStanding" row(s) are backed by neither an active "Membership" of that exact user, role AND id, nor an org owner/admin''s membership-less `pmc` claim — %. The register is about to be adopted as the answer to "does this user hold this role here?" AND as the answer to "who holds this membership?" — `platform_membership_active_user` resolves the holder by `membershipId` alone — so an unbacked row is standing nobody granted and a mispointed one hands a forward to the wrong person. Remove or repoint the rows (or grant the membership they claim) before this migration adopts the register.',
       v_backfilled, v_sample;
   END IF;
 
@@ -2910,6 +2924,20 @@ RETURNS TEXT LANGUAGE sql STABLE AS $$
 $$;
 
 
+-- THE BOUND PAIR ARRIVES TOGETHER OR NOT AT ALL (#582's review round 9, finding 6). Through the
+-- 4d-i-to-4d-iii window there are exactly two compatible producers: the previous release writes
+-- BOTH null, and 4d-ii writes BOTH present. No writer needs the half-bound shape, and admitting it
+-- is not neutral — a direct insert carrying a valid `eventId` with a null `kind` consumes the
+-- event's one-notice unique key, the binding freeze then refuses to fill the missing kind, the
+-- delete refusal makes the row permanent, and a kindless row leaves `text`/`color` editable and
+-- sends readers down the legacy cache path. It is irreparable by construction, so it is
+-- unrepresentable instead. The same "both halves or neither" rule the change request's and the
+-- consultation's attribution pairs already carry — applied here, where round 8 did not look.
+DO $$ BEGIN
+  ALTER TABLE "Notification" ADD CONSTRAINT "Notification_event_binding_pair_check"
+    CHECK (("eventId" IS NULL) = ("kind" IS NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 DO $$ BEGIN
   ALTER TABLE "Notification" ADD CONSTRAINT "Notification_projectId_eventId_fkey"
     FOREIGN KEY ("projectId", "eventId") REFERENCES "DomainEvent"("projectId", "eventId")
@@ -3095,7 +3123,25 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- false — see the header.
 SELECT set_config('vitan.phase6_4d_catalog', 'on', true);
 
-INSERT INTO "ExternalEffectCatalog" ("coverageVersion", "effectKey", "eventType", "invalidate", "pushRoles", "pushFamily", "frozenAudience", "requiresPush", "audience", "pushBody", "pairingRequired") VALUES
+-- THE LITERAL LANDS IN A TEMP TABLE FIRST, AND THE TEMP TABLE IS THE AUTHORITY (#582's review
+-- round 9, finding 2). `ON CONFLICT DO NOTHING` straight into the real table silently ADOPTS
+-- whatever is already sitting at a key. On the supported db-push/P3005 path a constraint-valid but
+-- WRONG row can be there — a `decision.approved` row with the right audience but `invalidate` and
+-- `requiresPush` false satisfies all three CHECKs — and adopting it makes the envelope seal reject
+-- every ordinary approval intent, or admit a silent non-invalidating one. Round 8 made that worse
+-- rather than better: the outgoing-generation copy read the REAL table, so one bad pre-baseline row
+-- was propagated into a second generation. That is a regression this unit introduced, and the fix
+-- removes the amplification at its root — the copy below now reads this temp table, so the literal
+-- is the only thing either generation can be seeded from.
+CREATE TEMP TABLE "_t4d_catalog_seed" (
+    "coverageVersion" TEXT NOT NULL, "effectKey" TEXT NOT NULL, "eventType" TEXT NOT NULL,
+    "invalidate" BOOLEAN NOT NULL, "pushRoles" JSONB, "pushFamily" TEXT,
+    "frozenAudience" BOOLEAN NOT NULL, "requiresPush" BOOLEAN NOT NULL,
+    "audience" TEXT, "pushBody" TEXT, "pairingRequired" BOOLEAN NOT NULL,
+    PRIMARY KEY ("coverageVersion", "effectKey")
+) ON COMMIT DROP;
+
+INSERT INTO "_t4d_catalog_seed" ("coverageVersion", "effectKey", "eventType", "invalidate", "pushRoles", "pushFamily", "frozenAudience", "requiresPush", "audience", "pushBody", "pairingRequired") VALUES
   ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.completion_requested', 'activity.completion_requested', true, '["pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
   ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.created', 'activity.created', true, '["contractor","engineer"]'::jsonb, NULL, false, false, 'broadcast', NULL, false),
   ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.deleted', 'activity.deleted', true, NULL, NULL, false, false, NULL, NULL, false),
@@ -3203,6 +3249,35 @@ INSERT INTO "ExternalEffectCatalog" ("coverageVersion", "effectKey", "eventType"
   ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'stock.transacted', 'stock.transacted', true, NULL, NULL, false, false, NULL, NULL, false),
   ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'substitution.approved', 'substitution.approved', true, NULL, NULL, false, false, NULL, NULL, false),
   ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'substitution.revoked', 'substitution.revoked', true, NULL, NULL, false, false, NULL, NULL, false)
+;
+
+-- ANY ROW ALREADY AT ONE OF THESE KEYS MUST SAY WHAT THE LITERAL SAYS. A disagreement is not
+-- something to overwrite — the catalog is frozen and a definition changes by a NEW coverage
+-- version, never in place — so the apply REFUSES and names the columns that differ.
+DO $catalog_audit$
+DECLARE v_bad BIGINT; v_sample TEXT;
+BEGIN
+  SELECT count(*), string_agg(format('(%s, %s)', c."coverageVersion", c."effectKey"), ', ' ORDER BY c."effectKey")
+    INTO v_bad, v_sample
+    FROM "_t4d_catalog_seed" t
+    JOIN "ExternalEffectCatalog" c
+      ON c."coverageVersion" = t."coverageVersion" AND c."effectKey" = t."effectKey"
+   WHERE (c."eventType", c."invalidate", c."pushRoles", c."pushFamily", c."frozenAudience",
+          c."requiresPush", c."audience", c."pushBody", c."pairingRequired")
+      IS DISTINCT FROM
+         (t."eventType", t."invalidate", t."pushRoles", t."pushFamily", t."frozenAudience",
+          t."requiresPush", t."audience", t."pushBody", t."pairingRequired");
+  IF v_bad > 0 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i ABORT: % "ExternalEffectCatalog" row(s) already exist at a key this migration seeds and DISAGREE with the compiled catalog — %. The seals about to be installed read these rows to decide what an event may invalidate, push and claim, so adopting a definition this release did not compute would refuse valid events or admit silent ones. A definition changes by a NEW coverage version, never in place: reconcile or remove the conflicting rows before this migration adopts the catalog.',
+      v_bad, v_sample;
+  END IF;
+END $catalog_audit$;
+
+INSERT INTO "ExternalEffectCatalog" ("coverageVersion", "effectKey", "eventType", "invalidate", "pushRoles", "pushFamily", "frozenAudience", "requiresPush", "audience", "pushBody", "pairingRequired")
+SELECT "coverageVersion", "effectKey", "eventType", "invalidate", "pushRoles", "pushFamily",
+       "frozenAudience", "requiresPush", "audience", "pushBody", "pairingRequired"
+  FROM "_t4d_catalog_seed"
 ON CONFLICT ("coverageVersion", "effectKey") DO NOTHING;
 
 -- AND THE GENERATION THAT IS STILL SERVING (#582's review round 8, finding 3). The seed above
@@ -3234,7 +3309,7 @@ INSERT INTO "ExternalEffectCatalog" ("coverageVersion", "effectKey", "eventType"
 SELECT '6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7',
        c."effectKey", c."eventType", c."invalidate", c."pushRoles", c."pushFamily",
        c."frozenAudience", c."requiresPush", c."audience", c."pushBody", c."pairingRequired"
-  FROM "ExternalEffectCatalog" c
+  FROM "_t4d_catalog_seed" c
  WHERE c."coverageVersion" = 'b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61'
 ON CONFLICT ("coverageVersion", "effectKey") DO NOTHING;
 
@@ -3481,8 +3556,22 @@ BEGIN
           'phase6 4d-i: catalog entry (%, %) is a BROADCAST family, but the push of event % also names a target — the delivered consumer prefers a target over the audience, so this reaches ONE user while claiming to reach the whole ceiling %',
           v_version, v_key, NEW."eventId", v_ceiling;
       END IF;
+      -- A PRESENT TARGET MUST BE A NONBLANK STRING (#582 round 9, finding 4). `->>` returns SQL
+      -- NULL only for a JSON null or an absent key, so `targetUserId: ""` — or a number, or an
+      -- object — reads as present here and satisfies the targeted family. The delivered consumer
+      -- then takes that empty target through `consultationRequestedPushTarget`, whose
+      -- `if (!targetUserId)` branch marks the delivery non-actionable, and the announcement the
+      -- catalog REQUIRES is cancelled with nothing raised anywhere. This is the same blank-string
+      -- class as the push body, which an earlier round corrected in one field and not the other.
+      IF (v_push ? 'targetUserId')
+         AND (jsonb_typeof(v_push -> 'targetUserId') <> 'string'
+              OR btrim(v_push ->> 'targetUserId', E' \t\n\x0B\f\r') = '') THEN
+        RAISE EXCEPTION
+          'phase6 4d-i: the push of event % names a target that is not a nonblank string (it is a %) — a blank target is dropped as non-actionable by the consumer, so the announcement catalog entry (%, %) requires would be silently cancelled',
+          NEW."eventId", jsonb_typeof(v_push -> 'targetUserId'), v_version, v_key;
+      END IF;
       IF v_cat."audience" = 'targeted'
-         AND (v_push ->> 'targetUserId') IS NULL AND cardinality(v_roles) = 0 THEN
+         AND NOT (v_push ? 'targetUserId') AND cardinality(v_roles) = 0 THEN
         RAISE EXCEPTION
           'phase6 4d-i: catalog entry (%, %) is a TARGETED family, so the push of event % must name the user it is for or the non-empty role audience it narrows to, and it names neither',
           v_version, v_key, NEW."eventId";
@@ -4528,7 +4617,7 @@ DECLARE
   v_status   TEXT;
   v_project  TEXT;
   v_required TEXT[];
-  v_events   BIGINT;
+  v_events   BIGINT; v_audits BIGINT;
 BEGIN
   SELECT d."status"::text, d."projectId" INTO v_status, v_project
     FROM "Decision" d WHERE d."id" = NEW."decisionId";
@@ -4582,6 +4671,24 @@ BEGIN
     RAISE EXCEPTION
       'phase6 4d-i: the `%` audit row for decision % (committed `%`) is accompanied by % matching % events in this transaction — one act emits ONE event, and a second announces the same decision twice with nothing to say which is real',
       NEW."type", NEW."decisionId", v_status, v_events, array_to_string(v_required, ' or ');
+  END IF;
+
+  -- AND THE COUNT RUNS BOTH WAYS (#582's review round 9, finding 5). Round 7 replaced an
+  -- existence check with a count and stopped there, which left exactness ONE-SIDED: every audit
+  -- row demands exactly one event, and nothing demands exactly one audit row. The converse hole
+  -- is the same shape as the one round 7 closed — a hand-run no-chain approval performs ONE valid
+  -- transition, emits ONE `decision.approved`, and appends TWO `approved` rows. This trigger fires
+  -- once per row, each invocation sees `v_events = 1`, both pass, and the register carries two
+  -- immutable claims for one act with nothing to say which is real. Counting the rows is the same
+  -- question asked from the other end.
+  SELECT count(*) INTO v_audits
+    FROM "DecisionEvent" d
+   WHERE d."decisionId" = NEW."decisionId" AND d."type" = NEW."type"
+     AND d."xmin" = txid_current()::text::xid;
+  IF v_audits > 1 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: decision % carries % `%` audit rows written by this transaction — one act appends ONE row, and a second is a duplicate claim the append-only seal would make permanent',
+      NEW."decisionId", v_audits, NEW."type";
   END IF;
   RETURN NULL;
 END $$;
@@ -4866,5 +4973,50 @@ CREATE TRIGGER "DecisionConsultationResponse_t4d_attribution_present" BEFORE INS
 CREATE UNIQUE INDEX IF NOT EXISTS "DecisionEvent_countersign_renotified_key"
   ON "DecisionEvent"("decisionId", (("payload" ->> 'crossingEventId')))
   WHERE "type" = 'countersign_renotified';
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────
+-- THE DARK FACT TABLES MUST BE EMPTY WHEN THIS UNIT SEALS THEM
+-- ────────────────────────────────────────────────────────────────────────────────────────────
+-- #582's review round 9, finding 1, and it is round 8's register rule applied where round 8
+-- stopped. Round 8 audited the four adopted REGISTERS against their sources and left the FACT
+-- tables alone, on no stated reason — the same "fixed at the site, not for the class" habit this
+-- unit has now been corrected for three rounds running.
+--
+-- The exposure is the same and the remedy is stronger. On the supported db-push/P3005 path
+-- `schema.prisma` can create these tables before any of their INSERT-time eligibility, pairing and
+-- provenance triggers exist, so a constraint-valid row can be sitting in one: a `DecisionForward`
+-- citing a historical receipt for a hand-off that never moved its decision, say. The FKs and
+-- triggers this file adds validate NEITHER that row nor its provenance, the append-only seal then
+-- makes it permanent, and 4d-ii consumes it as decision history.
+--
+-- "Prove each row against its transition" is the weaker answer. These tables are DARK: 4d-i
+-- creates them and 4d-ii is their first writer, so before retirement there is no sanctioned
+-- producer and the only correct population is NONE. Emptiness is the whole invariant, so that is
+-- what is asserted.
+--
+-- GATED ON THE RETIREMENT SNAPSHOT, because after 4d-iii these tables legitimately hold the
+-- history 4d-ii wrote, and an `ALWAYS_EXECUTE` replay over such a database must abort nothing —
+-- exactly the defect round 6's finding 1 corrected in the zero-count audit, not repeated here.
+DO $dark_tables$
+DECLARE v_table TEXT; v_rows BIGINT; v_found TEXT := '';
+BEGIN
+  IF phase6_t4d_retired_at_start() THEN
+    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the dark-fact emptiness audit is SKIPPED (4d-ii has legitimately written these tables; this is a replay over a retired database)';
+  ELSE
+    FOREACH v_table IN ARRAY ARRAY['DecisionForward', 'DecisionCountersign',
+                                   'DecisionStrandedResolution', 'MembershipTransition',
+                                   'DomainEventPairingClaim'] LOOP
+      EXECUTE format('SELECT count(*) FROM %I', v_table) INTO v_rows;
+      IF v_rows > 0 THEN
+        v_found := v_found || format('%s%s (%s row(s))', CASE WHEN v_found = '' THEN '' ELSE ', ' END, v_table, v_rows);
+      END IF;
+    END LOOP;
+    IF v_found <> '' THEN
+      RAISE EXCEPTION
+        'phase6 4d-i ABORT: dark fact table(s) already hold rows before this unit seals them — %. These tables have no sanctioned writer until 4d-ii, so a row present now was validated by none of the eligibility, pairing or provenance triggers this file installs, and the append-only seal would make it permanent evidence of an act nobody performed. Remove the rows (or, on a database that has genuinely run 4d-iii, restore its RolloutRetirement marker) before this migration adopts them.',
+        v_found;
+    END IF;
+  END IF;
+END $dark_tables$;
 
 COMMIT;
