@@ -510,6 +510,35 @@ const ARMS: Arm[] = [
     refusal: /may not move BACKWARD/,
   },
   {
+    // #582 round 5, finding 1 — an EMPTY body is not a quiet announcement, it is none. The
+    // delivered consumer reads a falsy body as a `noop`, so this shape passes every other clause
+    // and silently declines to announce an event the catalog says always announces.
+    seal: 'DomainEvent_t4d_envelope',
+    what: 'a push body is a NONBLANK string — an empty one is read as a noop and never announces',
+    hostile: `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+              INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+              SELECT 'ss-blank','decision.approved',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec',
+                     jsonb_build_object('effectKey','decision.approved','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
+                                        'push', jsonb_build_object('body','   ','roles', c."pushRoles"))
+                FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+               WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.approved'`,
+    refusal: /a push announces, so its body is a NONBLANK string/,
+  },
+  {
+    // #582 round 5, finding 6 — the roles are the whole ceiling AND a target is named. The
+    // delivered consumer prefers the target and returns, so one user receives a broadcast.
+    seal: 'DomainEvent_t4d_envelope',
+    what: 'a BROADCAST family may not also name a target — the consumer would deliver to it alone',
+    hostile: `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+              INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+              SELECT 'ss-bcast-t','decision.approved',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec',
+                     jsonb_build_object('effectKey','decision.approved','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
+                                        'push', jsonb_build_object('body','ok','roles', c."pushRoles",'targetUserId','ss-client'))
+                FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+               WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.approved'`,
+    refusal: /is a BROADCAST family, but the push of event .* also names a target/,
+  },
+  {
     seal: 'ReleaseLease_t4d_frozen',
     what: 'a lease expires and stays as history — it is never deleted',
     hostile: `DELETE FROM "ReleaseLease" WHERE "instanceId" = 'ss-instance'`,
@@ -573,6 +602,16 @@ const COVERED_BY_CLASS: Record<string, string> = {
   User_t4d_identity: 'UserIdentity_t4d_writer',
   // the kernel pair, and the deferred halves of seals whose immediate half is stripped
   DomainEvent_t4d_pairing_claimed: 'DomainEventPairingClaim_t4d_writer',
+  // A CLAIMANT, NOT A REFUSER, AND UNREACHABLE ON A 4d-i DATABASE. It writes the pairing claim the
+  // `countersign_renotified` branch owes, so there is no hostile write to strip it against. More
+  // to the point, its branch cannot be CONSTRUCTED here: `decision.awaiting_countersign` is a
+  // 4d-ii event type with no row in the compiled catalog, and `DomainEvent_t4d_envelope` refuses
+  // any event whose `(coverageVersion, effectKey)` does not resolve — so no such event exists to
+  // be claimed until 4d-ii seeds the key. A probe was written for this and deleted rather than
+  // weakened into one that drives a different key: it would have measured some other branch's
+  // claim and reported this one. It belongs with the other seals whose subject is a 4d-ii path,
+  // and 4d-ii owns proving it on the database where the branch is reachable.
+  DecisionEvent_t4d_renotified_claim: 'DomainEventPairingClaim_t4d_writer',
   Notification_t4d_binding: 'Notification_t4d_no_truncate',
   Notification_t4d_binding_bound: 'Notification_t4d_no_truncate',
   // seals whose subject is a 4d-ii/4d-iii SERVICE path — unreachable while the doors stand, so
@@ -678,18 +717,21 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
   }, 180_000);
 
   /**
-   * #582's review round 4, finding 1 — THE FACT MAY BE WRITTEN BEFORE THE MEMBERSHIP.
+   * THE FACT IS WRITTEN BEFORE THE MEMBERSHIP, and the whole unit must accept that.
    *
-   * The `activeCount` correspondence sat in the BEFORE INSERT seal, where it read a register that
-   * `Membership_t4d_role_standing` only moves when the MEMBERSHIP is written. Nothing orders those
-   * two statements, and this file says so twice in its own voice: the architect pairing trigger is
-   * deferred because "the transition row may be written before or after the membership write", and
-   * `MembershipTransition_membershipId_fkey` is DEFERRED because "an ADD may write the transition
-   * before the `Membership` row exists". A command that took that order met a register that had not
-   * moved yet, and a correct transaction was refused.
+   * The plan does not merely permit this order, it REQUIRES it — "the fact is inserted BEFORE the
+   * membership write it describes, for every transition" (line 2860) — and the file agrees in two
+   * places of its own: the architect pairing trigger is deferred because "the transition row may
+   * be written before or after the membership write", and
+   * `MembershipTransition_projectId_membershipId_fkey` is DEFERRED because "an ADD may write the
+   * transition before the `Membership` row exists".
    *
-   * No seal is stripped: the whole migration must ACCEPT this, which is the only thing worth
-   * proving about an ordering.
+   * #582 round 4, finding 1 caught an INSERT-time register comparison refusing exactly this
+   * transaction. Round 5 removed the comparison outright with the invented `activeCount` column it
+   * read (the count is an event payload field, not a fact column), so what this arm guards now is
+   * the ORDER itself: an architect ADD written fact-first has to commit through the deferred FK,
+   * the membership-side pairing and the deferred binding together. No seal is stripped but the two
+   * reservation doors, which is the state 4d-iii leaves behind.
    */
   it('the transition fact may be written BEFORE the membership write it records', () => {
     // The ARCHITECT case is the one that reproduces it, and it has to be: the counted register
@@ -706,8 +748,8 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
        UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-a' WHERE "id" = 'ss-cmd-add';
        INSERT INTO "User" ("id","projectId","role","name","phone") VALUES ('ss-arch-p','ss-proj','architect','SS Arch P','+910000000011');
        INSERT INTO "MembershipTransition"
-         ("id","projectId","membershipId","userId","role","fromStanding","toStanding","activeCount","actorId","actorRole","actorName","sourceCommandId")
-       VALUES ('ss-mt-1','ss-proj','ss-mem-a','ss-arch-p','architect','not_held','held',1,'ss-user','pmc','SS User','ss-cmd-add');
+         ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
+       VALUES ('ss-mt-1','ss-proj','ss-mem-a','ss-arch-p',NULL,NULL,'architect','active','ss-user','pmc','SS User','ss-cmd-add');
        INSERT INTO "Membership" ("id","projectId","userId","role","status") VALUES ('ss-mem-a','ss-proj','ss-arch-p','architect','active')`]);
     expect(
       factFirst.ok,
@@ -716,7 +758,8 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       + `correspondence judged at INSERT time contradicts them:\n${factFirst.output}`,
     ).toBe(true);
 
-    // and the register really did move, so the arm is not passing on a comparison of 0 with 0.
+    // and the register really did move. Nothing in the FACT claims a count any more, so this is
+    // the arm's evidence that the membership write was real rather than merely accepted.
     const head = psql(RUN_DB, ['-t', '-A', '-c',
       `SELECT "activeCount" FROM "ProjectRoleStanding" WHERE "projectId" = 'ss-proj' AND "role" = 'architect'`]);
     expect(head.output.trim(), 'the architect register must hold 1 after the add').toBe('1');
@@ -749,14 +792,43 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
        UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-e2' WHERE "id" = 'ss-cmd-x';
        UPDATE "Membership" SET "status" = 'active' WHERE "id" = 'ss-mem-e2';
        INSERT INTO "MembershipTransition"
-         ("id","projectId","membershipId","userId","role","fromStanding","toStanding","activeCount","actorId","actorRole","actorName","sourceCommandId")
-       VALUES ('ss-mt-x','ss-proj','ss-mem-e2','ss-eng2','engineer','held','not_held',0,'ss-user','pmc','SS User','ss-cmd-x')`]);
+         ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
+       VALUES ('ss-mt-x','ss-proj','ss-mem-e2','ss-eng2','engineer','active','engineer','removed','ss-user','pmc','SS User','ss-cmd-x')`]);
     expect(
       mismatched.ok,
       'a fact claiming a standing change the transaction\'s membership write did not make must be '
       + `REFUSED — the receipt, the actor, the subject and the register all agree:\n${mismatched.output}`,
     ).toBe(false);
-    expect(mismatched.output).toMatch(/name the change the write actually made/);
+    // TWO clauses refuse this row and the message names the one that answers FIRST. Both are
+    // deferred constraint triggers, so they fire in the order they were QUEUED: the membership
+    // UPDATE precedes the fact INSERT here, so `Membership_t4d_architect_provenance`'s
+    // every-role comparison speaks before `MembershipTransition_t4d_provenance_bound`'s
+    // post-state one. Accepting either keeps this arm about the RULE rather than about statement
+    // order, which a 4d-ii writer is free to change.
+    expect(mismatched.output).toMatch(
+      /name the change the write actually made|does not describe the write that happened/);
+
+    // #582 round 5, finding 5 — THE PRE-STATE, on a NON-ARCHITECT role. The membership is left
+    // exactly as it was (an active engineer), so the POST-state comparison above agrees with a
+    // fact claiming this member had just been ADDED — a NULL pre-state arriving at
+    // `(engineer, active)`. Only the write's OLD row contradicts it, and only the membership side
+    // can see that, which is why this arm exists on top of the one above. The counted register is
+    // architect-only, so nothing else narrows a fact about any other role.
+    const fabricatedArrival = psql(RUN_DB, ['-c',
+      `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+         VALUES ('ss-cmd-f','project','ss-org','ss-proj','ss-user','members.updateRole','ss-key-f','ss-hash-f','reserved');
+       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-e2' WHERE "id" = 'ss-cmd-f';
+       UPDATE "Membership" SET "status" = 'active' WHERE "id" = 'ss-mem-e2';
+       INSERT INTO "MembershipTransition"
+         ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
+       VALUES ('ss-mt-f','ss-proj','ss-mem-e2','ss-eng2',NULL,NULL,'engineer','active','ss-user','pmc','SS User','ss-cmd-f')`]);
+    expect(
+      fabricatedArrival.ok,
+      'a fact claiming the member ARRIVED, written against a membership that was already active '
+      + 'and merely re-touched, must be REFUSED — the post-state agrees with it and only the '
+      + `pre-state does not:\n${fabricatedArrival.output}`,
+    ).toBe(false);
+    expect(fabricatedArrival.output).toMatch(/does not describe the write that happened/);
 
     // the truthful version of the same act commits, so the clause is not refusing everything.
     const truthful = psql(RUN_DB, ['-c',
@@ -765,8 +837,8 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
        UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-e2' WHERE "id" = 'ss-cmd-r';
        UPDATE "Membership" SET "status" = 'removed' WHERE "id" = 'ss-mem-e2';
        INSERT INTO "MembershipTransition"
-         ("id","projectId","membershipId","userId","role","fromStanding","toStanding","activeCount","actorId","actorRole","actorName","sourceCommandId")
-       VALUES ('ss-mt-r','ss-proj','ss-mem-e2','ss-eng2','engineer','held','not_held',0,'ss-user','pmc','SS User','ss-cmd-r')`]);
+         ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
+       VALUES ('ss-mt-r','ss-proj','ss-mem-e2','ss-eng2','engineer','active','engineer','removed','ss-user','pmc','SS User','ss-cmd-r')`]);
     expect(
       truthful.ok,
       `the same removal, with the membership actually left inactive, must COMMIT:\n${truthful.output}`,

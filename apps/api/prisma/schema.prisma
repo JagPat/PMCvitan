@@ -437,10 +437,14 @@ model MembershipTransition {
   projectId       String
   membershipId    String
   userId          String
-  role            String
-  fromStanding    String
-  toStanding      String
-  activeCount     Int
+  /// The WHOLE transition, old role and status to new (plan line 2851). `fromRole`/`fromStatus`
+  /// are NULL together and only for an ADD — no prior row means no role in any status. The
+  /// membership-side pairing seal compares all four against the write's OLD and NEW, which is
+  /// what binds a fact to the move it claims rather than to any write that touched the row.
+  fromRole        String?
+  fromStatus      String?
+  toRole          String
+  toStatus        String
   actorId         String
   actorRole       String
   actorName       String

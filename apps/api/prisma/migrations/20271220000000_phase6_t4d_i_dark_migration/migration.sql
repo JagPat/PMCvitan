@@ -190,8 +190,26 @@ END $$;
 -- The ONE reader every conditional statement below shares. Kept as a function rather than an
 -- inline EXISTS so the marker-aware set is greppable and so a later unit changing the predicate
 -- changes it in one place.
+--
+-- A MARKER ALONE IS NOT EVIDENCE (#582 round 5, finding 2). `RolloutRetirement` is a
+-- `schema.prisma` model, so on the supported P3005 path `prisma db push` creates the TABLE before
+-- any of its raw seals exist — the gate that admits only the retiring migration, the freeze, the
+-- truncate refusal are all in this file. A row written into that unsealed window would be adopted
+-- here at face value, and the consequence is not a cosmetic one: every conditional below would
+-- skip, so the five reservation doors and the legacy-role audit would never install, pre-existing
+-- architect memberships would be paired against a zero-count backfill, and a rollout the operator
+-- believes is DARK would be open on a database that never ran retirement.
+--
+-- So the marker is adopted only alongside evidence that there was something to retire. 4d-iii
+-- retires a unit that 4d-i INSTALLED, and 4d-i's seals are raw `CREATE FUNCTION` — the one class
+-- of object `prisma db push` cannot reproduce from the schema, and the one 4d-iii has no reason to
+-- drop, because the chain those seals protect is exactly what goes live. A database claiming
+-- retirement without them has a marker and no history, and this file treats that as unretired:
+-- installing doors that a genuinely retired database no longer needs is a replay's cost, while
+-- skipping them on a forged marker is a hole with no floor.
 CREATE OR REPLACE FUNCTION phase6_t4d_retired() RETURNS boolean AS $fn$
-  SELECT EXISTS (SELECT 1 FROM "RolloutRetirement" WHERE "unit" = 'phase6-4d');
+  SELECT EXISTS (SELECT 1 FROM "RolloutRetirement" WHERE "unit" = 'phase6-4d')
+     AND to_regproc('phase6_t4d_membership_transition_seal') IS NOT NULL;
 $fn$ LANGUAGE sql STABLE;
 
 -- ════════════════════════════════════════════════════════════════════════════════════════════
@@ -2128,20 +2146,35 @@ CREATE TRIGGER "ChangeRequest_t4d_evidence_frozen" BEFORE UPDATE ON "ChangeReque
 -- obligations every other 4d fact carries (§A.3). Without it "the chain turned on" is a count
 -- with no attributable act behind it.
 --
--- THREE COLUMN DETERMINATIONS THE PLAN LEAVES OPEN, recorded here rather than left implicit.
--- §A.3's effect row names the payload fields (`role`, `membershipId`, `from`, `to`,
--- `transitionId`, `activeCount`) and §D names the frozen pair, the FKs, the one-use UNIQUE and
--- the seals, but not the domain of `from`/`to`:
+-- THE COLUMNS ARE THE PLAN'S, and were not until #582's review round 5 (findings 3 and 5, whose
+-- single shared cause this is). The contract states the fact exactly — `MembershipTransition(id,
+-- projectId, membershipId, fromRole, fromStatus, toRole, toStatus, actorId, actorRole, actorName,
+-- sourceCommandId, at)` (plan line 2851): the WHOLE membership transition, old role and status to
+-- new role and status, in ONE row. The first version of this table invented a different model —
+-- `role` plus `fromStanding`/`toStanding`, one role's standing flip per fact, plus a stored
+-- `activeCount` — and both round-5 findings are consequences of that one divergence:
 --
---   (i)   `role` is the role whose STANDING changed, not the membership's current role — a
---         re-role writes the fact for the role LEFT and the role ENTERED.
---   (ii)  `fromStanding`/`toStanding` are `held` / `not_held`: whether the membership held
---         `role` with ACTIVE standing. Statuses (`invited`/`active`/`removed`) would not do —
---         a re-role changes standing without changing status, and an `invited → removed`
---         change moves status without ever touching standing.
---   (iii) `activeCount` is the register's count AFTER the transition, which is what
---         `platform_role_standing` returns at the same instant and therefore what the
---         correspondence check can compare.
+--   · a re-role changes TWO roles' standing, so the invented model owed two facts for one
+--     command, while `MembershipTransition_one_flip_key` admits one. The contract has no such
+--     tension: one transition is one fact, and the UNIQUE is right as it stands.
+--   · `fromStanding` had nothing to bind to. The membership row at commit is the POST-state, so a
+--     fact could claim any prior standing it liked and the seal could not contradict it. The
+--     pre-state is `fromRole`/`fromStatus`, and the membership-side pairing compares all four
+--     against the write's OLD and NEW — the plan's own sentence at line 2915.
+--
+-- `role` and `activeCount` are gone because they were never fact columns: §A.3 names them as
+-- EVENT PAYLOAD fields, and the payload's `activeCount` is compared against the register by the
+-- event seal 4d-ii installs, not by the fact. Round 4's finding 1 deferred a comparison of the
+-- invented column; the column it deferred does not exist in the contract, so the comparison goes
+-- with it rather than being carried forward against a value nothing owes.
+--
+-- TWO DOMAIN DETERMINATIONS the plan leaves open, recorded rather than left implicit:
+--
+--   (i)  `fromRole`/`fromStatus` are NULL together, and only for an ADD — the membership did not
+--        exist, so it held no role in any status. Every other transition has both.
+--   (ii) `toRole`/`toStatus` are never NULL: the ordinary removal is SOFT (`status = 'removed'`,
+--        the row and its role left in place), which is the same fact the reservation audit and
+--        the deferred FK below already rest on.
 --
 -- "ONE FLIP PER MEMBERSHIP AND PER PROJECT PER TRANSACTION" is enforced as one flip per
 -- membership per RECEIPT. A transaction has no column to key on; a command does, every
@@ -2153,10 +2186,10 @@ CREATE TABLE IF NOT EXISTS "MembershipTransition" (
     "projectId"       TEXT NOT NULL,
     "membershipId"    TEXT NOT NULL,
     "userId"          TEXT NOT NULL,
-    "role"            TEXT NOT NULL,
-    "fromStanding"    TEXT NOT NULL,
-    "toStanding"      TEXT NOT NULL,
-    "activeCount"     INTEGER NOT NULL,
+    "fromRole"        TEXT,
+    "fromStatus"      TEXT,
+    "toRole"          TEXT NOT NULL,
+    "toStatus"        TEXT NOT NULL,
     "actorId"         TEXT NOT NULL,
     "actorRole"       TEXT NOT NULL,
     "actorName"       TEXT NOT NULL,
@@ -2174,13 +2207,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS "MembershipTransition_one_flip_key"
   ON "MembershipTransition"("projectId", "membershipId", "sourceCommandId");
 
 DO $$ BEGIN
-  ALTER TABLE "MembershipTransition" ADD CONSTRAINT "MembershipTransition_standing_check"
-    CHECK ("fromStanding" IN ('held', 'not_held') AND "toStanding" IN ('held', 'not_held')
-           AND "fromStanding" <> "toStanding");
+  -- the pre-state is present or absent as a PAIR: a fact that names a prior role without its
+  -- status (or the reverse) states half a transition, and half a transition cannot be compared
+  -- against the write's OLD row.
+  ALTER TABLE "MembershipTransition" ADD CONSTRAINT "MembershipTransition_from_pair_check"
+    CHECK (("fromRole" IS NULL) = ("fromStatus" IS NULL));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN
-  ALTER TABLE "MembershipTransition" ADD CONSTRAINT "MembershipTransition_activeCount_check"
-    CHECK ("activeCount" >= 0);
+  -- A FACT RECORDS A CHANGE. Without this a row could claim `(engineer, active)` moved to
+  -- `(engineer, active)` — a transition of nothing, immutable, and agreeing with any membership
+  -- write that happened to touch the row. It is the same rule the old `fromStanding <> toStanding`
+  -- CHECK carried, restated over the columns that now hold the transition.
+  ALTER TABLE "MembershipTransition" ADD CONSTRAINT "MembershipTransition_moves_check"
+    CHECK (("fromRole", "fromStatus") IS DISTINCT FROM ("toRole", "toStatus"));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN
   ALTER TABLE "MembershipTransition" ADD CONSTRAINT "MembershipTransition_actorRole_present_check"
@@ -2262,8 +2301,9 @@ CREATE TRIGGER "MembershipTransition_t4d_no_truncate"
 --   (a) an org owner/admin of THIS project's organisation — the tenancy-joined derivation, so
 --       an owner of an unrelated org is refused;
 --   (b) an active project `pmc`;
---   (c) SELF-DEMOTION. An actor who is the SUBJECT of a transition that REMOVES standing
---       (`toStanding = 'not_held'`) is admitted even when arms (a) and (b) no longer hold —
+--   (c) SELF-DEMOTION. An actor who is the SUBJECT of a transition that REMOVES active standing
+--       (they held a role actively before and do not after) is admitted even when (a) and (b) no
+--       longer hold —
 --       because by the time the seal runs the standing they are giving up may already be gone,
 --       and the whole act is them giving it up. Refusing it would make the last owner
 --       permanently unable to step down. It is narrow by construction: it admits only a
@@ -2274,7 +2314,13 @@ CREATE TRIGGER "MembershipTransition_t4d_no_truncate"
 CREATE OR REPLACE FUNCTION phase6_t4d_membership_transition_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE v_self_demotion BOOLEAN;
 BEGIN
-  v_self_demotion := (NEW."actorId" = NEW."userId" AND NEW."toStanding" = 'not_held');
+  -- LOSS is now read off the transition itself: the subject held an ACTIVE role before and does
+  -- not after. Under the invented columns this was `toStanding = 'not_held'`, which asked the same
+  -- question of a value the fact simply asserted; here it is computed from the pre- and post-state
+  -- the membership write is bound to, so a fact cannot talk its way into the self-demotion arm.
+  v_self_demotion := (NEW."actorId" = NEW."userId"
+                      AND NEW."fromStatus" = 'active'
+                      AND NEW."toStatus" IS DISTINCT FROM 'active');
 
   IF NOT v_self_demotion
      AND NOT platform_user_orchestration_authority(NEW."projectId", NEW."actorId")
@@ -2287,20 +2333,15 @@ BEGIN
   PERFORM phase6_t4d_actor_bound(NEW."projectId", NEW."actorId", NEW."actorRole",
                                  NEW."actorName", 'MembershipTransition ' || NEW."id");
 
-  -- THE `activeCount` CORRESPONDENCE IS NOT HERE. It lived in this BEFORE INSERT seal until
-  -- #582's review round 4, finding 1, under a comment that reasoned: the membership standing
-  -- trigger is BEFORE ROW, so by the time this seal runs the delta is already applied. That is
-  -- true of the trigger and says nothing about the STATEMENT ORDER. `Membership_t4d_role_standing`
-  -- moves the register when the MEMBERSHIP is written, and nothing requires the membership write
-  -- to precede the fact — `phase6_t4d_membership_architect_paired`, forty lines below, states the
-  -- opposite in its own comment ("the transition row may be written before or after the membership
-  -- write inside the command's transaction") and is DEFERRED for exactly that reason. A command
-  -- that writes the fact first therefore met a register that had not moved: adding the first
-  -- architect supplies `activeCount = 1` while `platform_role_standing` still returns 0, and the
-  -- seal refused a correct 4d-ii transaction. The plan puts the question at commit in so many
-  -- words — the payload count "equals the register's `activeCount` for `(projectId, 'architect')`
-  -- AT COMMIT" (plan lines 2998-2999) — so the comparison moved to the DEFERRED binding below,
-  -- where the register's head is final whichever order the command wrote in.
+  -- NO REGISTER COMPARISON HERE, AND NONE BELOW. Round 4's finding 1 correctly moved it out of
+  -- this immediate seal — the register only moves when the MEMBERSHIP is written, and the fact is
+  -- written FIRST (plan line 2860: "the fact is inserted BEFORE the membership write it
+  -- describes, for every transition"), so an INSERT-time comparison refused correct transactions.
+  -- Round 5 removes the comparison itself: it compared a stored `activeCount` that the contract
+  -- does not give this fact. The count is an EVENT PAYLOAD field (§A.3), and the event seal 4d-ii
+  -- installs is what compares it against the register at commit. A fact column that duplicates a
+  -- register is a second copy of a truth that already has one, and the round-4 defect was only
+  -- ever a symptom of storing it.
   RETURN NEW;
 END $$;
 
@@ -2382,7 +2423,7 @@ BEGIN
       NEW."id", COALESCE(c."resultRef", '<null>'), NEW."membershipId";
   END IF;
 
-  SELECT m."role" = NEW."role" AND m."status" = 'active' AS "standingNow",
+  SELECT m."role" AS "roleNow", m."status" AS "statusNow",
          m."xmin" = txid_current()::text::xid AS "movedThisTx"
     INTO v_mem FROM "Membership" m
    WHERE m."id" = NEW."membershipId"
@@ -2394,35 +2435,20 @@ BEGIN
       NEW."id", NEW."membershipId", NEW."userId";
   END IF;
 
-  -- THE WRITE MUST BE *THIS* STANDING CHANGE (#582 round 4, finding 2). `xmin` alone proves only
-  -- that SOME write touched the membership in this transaction, and for a non-architect fact
-  -- nothing else narrows it: the counted register is architect-only, so the correspondence below
-  -- compares 0 against 0 for every other role and agrees with anything. A command that updated an
-  -- engineer membership for an unrelated reason could therefore commit a fact claiming that user
-  -- entered or left ANY role — permanent, immutable evidence of a standing change the write it
-  -- points at did not perform. The resulting state is the exact binding and needs no extra
-  -- column: after the write, the membership either holds `role` actively or it does not, and that
-  -- is precisely what `toStanding` asserts. A re-role satisfies it from either side (the row left
-  -- or the row entered), which is what the one-flip-per-receipt UNIQUE already allows; removal is
-  -- a `status` update, never a DELETE (`members.service.ts`), so the row is here to be read.
-  IF COALESCE(v_mem."standingNow", FALSE) <> (NEW."toStanding" = 'held') THEN
+  -- THE POST-STATE MUST BE THE ONE THIS FACT CLAIMS (#582 round 4, finding 2, now stated over the
+  -- contract's columns). `xmin` alone proves only that SOME write touched the membership; the
+  -- fact's `(toRole, toStatus)` has to BE the row the transaction left behind, or the fact is
+  -- riding a write that did something else. The PRE-state half of the same question —
+  -- `(fromRole, fromStatus)` — cannot be asked here at all, because at commit the OLD row is
+  -- gone; it is asked by `phase6_t4d_membership_architect_paired` from the MEMBERSHIP side, where
+  -- OLD is in hand (#582 round 5, finding 5, and plan line 2915, which put it there in the first
+  -- place). Between the two directions all four columns are bound to the write.
+  IF v_mem."roleNow" IS DISTINCT FROM NEW."toRole"
+     OR v_mem."statusNow" IS DISTINCT FROM NEW."toStatus" THEN
     RAISE EXCEPTION
-      'phase6 4d-i: MembershipTransition % records membership % moving to `%` standing in `%`, but after this transaction''s writes that membership % hold `%` actively — a fact must name the change the write actually made, not merely ride a write that touched the same row',
-      NEW."id", NEW."membershipId", NEW."toStanding", NEW."role",
-      CASE WHEN COALESCE(v_mem."standingNow", FALSE) THEN 'DOES' ELSE 'does NOT' END, NEW."role";
-  END IF;
-
-  -- THE REGISTER CORRESPONDENCE, AT COMMIT (#582 round 4, finding 1 — see the INSERT seal above
-  -- for why it is not there). `activeCount` is the register's count AFTER the transition, and the
-  -- register's head is final only once every membership write in the transaction has run. The
-  -- comparison is EXACT rather than a bound because `Membership_t4d_architect_provenance` admits
-  -- at most one standing-flipping write per project per transaction (§A.2), so there is no
-  -- intermediate value for the fact to disagree with.
-  IF NEW."activeCount" IS DISTINCT FROM platform_role_standing(NEW."projectId", NEW."role") THEN
-    RAISE EXCEPTION
-      'phase6 4d-i: MembershipTransition % records `%` standing at % on project %, but at commit the register holds % — the fact and the register are the same truth and a fact that disagrees with it is evidence of nothing',
-      NEW."id", NEW."role", NEW."activeCount", NEW."projectId",
-      platform_role_standing(NEW."projectId", NEW."role");
+      'phase6 4d-i: MembershipTransition % records membership % arriving at (%, %), but after this transaction''s writes that membership is (%, %) — a fact must name the change the write actually made, not merely ride a write that touched the same row',
+      NEW."id", NEW."membershipId", NEW."toRole", NEW."toStatus",
+      COALESCE(v_mem."roleNow", '<none>'), COALESCE(v_mem."statusNow", '<none>');
   END IF;
   RETURN NULL;
 END $$;
@@ -2452,10 +2478,11 @@ DECLARE
   v_project    TEXT;
   v_membership TEXT;
   v_user       TEXT;
-  v_direction  TEXT;
+  v_from_role  TEXT;
+  v_from_stat  TEXT;
+  v_to_role    TEXT;
+  v_to_stat    TEXT;
 BEGIN
-  IF v_before = v_after THEN RETURN NULL; END IF;
-
   -- OLD and NEW are records, and plpgsql has no expression that picks between two of them, so
   -- the fields are read explicitly per operation rather than through a CASE over the rows.
   -- `userId` is frozen on a membership (the identity-freeze class), so OLD and NEW agree on it
@@ -2465,24 +2492,78 @@ BEGIN
   ELSE
     v_project := NEW."projectId"; v_membership := NEW."id"; v_user := NEW."userId";
   END IF;
-  v_direction := CASE WHEN v_after THEN 'held' ELSE 'not_held' END;
 
-  -- IN THIS TRANSACTION, and about THIS MEMBER (Codex round 1, findings 9 and 13 — two holes in
-  -- one predicate). Unscoped, it accepted historical evidence: an architect legitimately
-  -- activated, removed, then bare-restored found the ORIGINAL `toStanding = 'held'` row and
-  -- passed, re-arming the chain with no attributable act. And without the subject comparison a
-  -- PMC could activate membership A while inserting an otherwise-valid immutable transition
-  -- naming an unrelated user B, leaving permanent evidence that B's standing changed.
+  -- THE TRANSITION THE WRITE ACTUALLY MADE, both ends of it. An INSERT has no prior row, so its
+  -- pre-state is NULL/NULL — the one shape the fact's `from_pair` CHECK admits as absent.
+  IF TG_OP <> 'INSERT' THEN
+    v_from_role := OLD."role"; v_from_stat := OLD."status";
+  END IF;
+  IF TG_OP <> 'DELETE' THEN
+    v_to_role := NEW."role"; v_to_stat := NEW."status";
+  END IF;
+
+  -- TWO RULES, AND THEY HAVE DIFFERENT SCOPES (#582 round 5, finding 5).
+  --
+  -- (1) EVERY ROLE: if a fact for this membership was written in this transaction, it must
+  --     describe THIS write. That is the clause the pre-state needs, and it cannot be architect-
+  --     scoped: the counted register carries `architect` alone, so for any other role nothing else
+  --     narrows what a fact may claim. An already-active engineer membership given a same-value
+  --     update inside a hand-run bundle satisfies `xmin`, and a fact fabricating an arrival that
+  --     never happened — a NULL pre-state, as though the member had just been added — agrees with
+  --     the post-state too, because the post-state is genuinely `(engineer, active)`. Only the
+  --     PRE-state contradicts it, and only this side of the pairing can see it.
+  --
+  --     It DEMANDS nothing: a membership write with no fact passes this arm untouched, which is
+  --     what keeps the unit dark while the delivered member commands still write no facts.
+  IF EXISTS (
+    SELECT 1 FROM "MembershipTransition" mt
+     WHERE mt."projectId" = v_project AND mt."membershipId" = v_membership
+       AND mt."xmin" = txid_current()::text::xid
+  ) AND NOT EXISTS (
+    SELECT 1 FROM "MembershipTransition" mt
+     WHERE mt."projectId" = v_project AND mt."membershipId" = v_membership
+       AND mt."xmin" = txid_current()::text::xid
+       AND mt."userId" = v_user
+       AND mt."fromRole" IS NOT DISTINCT FROM v_from_role
+       AND mt."fromStatus" IS NOT DISTINCT FROM v_from_stat
+       AND mt."toRole" IS NOT DISTINCT FROM v_to_role
+       AND mt."toStatus" IS NOT DISTINCT FROM v_to_stat
+  ) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: a MembershipTransition written in this transaction for membership % on project % does not describe the write that happened — this write moved user % (%, %) → (%, %), and a fact that names any other move is permanent evidence of an act nobody performed',
+      v_membership, v_project, v_user, COALESCE(v_from_role, '<none>'), COALESCE(v_from_stat, '<none>'),
+      COALESCE(v_to_role, '<none>'), COALESCE(v_to_stat, '<none>');
+  END IF;
+
+  -- (2) ARCHITECT ONLY: the chain's arrival and departure must CARRY a fact. This is the demand,
+  --     and it stays architect-scoped because that is the standing the chain reads.
+  IF v_before = v_after THEN RETURN NULL; END IF;
+
+  -- IN THIS TRANSACTION, about THIS MEMBER, and NAMING THIS TRANSITION — all four columns
+  -- (Codex round 1, findings 9 and 13; #582 round 5, finding 5). Unscoped, it accepted historical
+  -- evidence: an architect legitimately activated, removed, then bare-restored found the ORIGINAL
+  -- row and passed, re-arming the chain with no attributable act. Without the subject comparison a
+  -- PMC could activate membership A while inserting an otherwise-valid immutable transition naming
+  -- an unrelated user B. And matching only the DIRECTION — which is all the invented
+  -- `toStanding` column could express — left the pre-state unbound: an already-active engineer
+  -- membership, given a same-value update inside a hand-run bundle, satisfied every other clause
+  -- while the fact claimed a `not_held → held` arrival that never happened. Comparing
+  -- `(fromRole, fromStatus, toRole, toStatus)` against OLD and NEW is the plan's own sentence
+  -- (line 2915) and closes it: the fact must describe the write, end to end.
   IF NOT EXISTS (
     SELECT 1 FROM "MembershipTransition" mt
      WHERE mt."projectId" = v_project AND mt."membershipId" = v_membership
-       AND mt."role" = 'architect' AND mt."toStanding" = v_direction
        AND mt."userId" = v_user
+       AND mt."fromRole" IS NOT DISTINCT FROM v_from_role
+       AND mt."fromStatus" IS NOT DISTINCT FROM v_from_stat
+       AND mt."toRole" IS NOT DISTINCT FROM v_to_role
+       AND mt."toStatus" IS NOT DISTINCT FROM v_to_stat
        AND mt."xmin" = txid_current()::text::xid
   ) THEN
     RAISE EXCEPTION
-      'phase6 4d-i: membership % on project % moved architect standing to `%` in this transaction with no MembershipTransition written HERE naming user % — the chain is armed and disarmed by attributable ACTS, never by a bare row write and never by an older act reused',
-      v_membership, v_project, v_direction, v_user;
+      'phase6 4d-i: membership % on project % moved architect standing (%, %) → (%, %) in this transaction with no MembershipTransition written HERE naming user % and that exact transition — the chain is armed and disarmed by attributable ACTS, never by a bare row write, never by an older act reused, and never by a fact that describes a different move',
+      v_membership, v_project, COALESCE(v_from_role, '<none>'), COALESCE(v_from_stat, '<none>'),
+      COALESCE(v_to_role, '<none>'), COALESCE(v_to_stat, '<none>'), v_user;
   END IF;
   RETURN NULL;
 END $$;
@@ -2717,113 +2798,113 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 SELECT set_config('vitan.phase6_4d_catalog', 'on', true);
 
 INSERT INTO "ExternalEffectCatalog" ("coverageVersion", "effectKey", "eventType", "invalidate", "pushRoles", "pushFamily", "frozenAudience", "requiresPush", "audience", "pushBody", "pairingRequired") VALUES
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.completion_requested', 'activity.completion_requested', true, '["pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.created', 'activity.created', true, '["contractor","engineer"]'::jsonb, NULL, false, false, 'broadcast', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.deleted', 'activity.deleted', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.labour_blocked', 'activity.labour_blocked', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.labour_unblocked', 'activity.labour_unblocked', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.material_blocked', 'activity.material_blocked', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.material_unblocked', 'activity.material_unblocked', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.override_granted', 'activity.override_granted', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.override_revoked', 'activity.override_revoked', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.signed_off', 'activity.signed_off', true, '["client","contractor"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.signoff_rejected', 'activity.signoff_rejected', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.started', 'activity.started', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.unfiled', 'activity.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.updated', 'activity.updated', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity_output.recorded', 'activity_output.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'allocation.made', 'allocation.made', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'allocation.released', 'allocation.released', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'attendance.recorded', 'attendance.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'attendance.revoked', 'attendance.revoked', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'capacity.committed', 'capacity.committed', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'capacity.defaulted', 'capacity.defaulted', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'capacity.revised', 'capacity.revised', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'commercial.money_moved', 'commercial.money_moved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'comparison.approved', 'comparison.approved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'dailylog.started', 'dailylog.started', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'dailylog.submitted', 'dailylog.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.approved', 'decision.approved', true, '["contractor","engineer","pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.change_requested', 'decision.change_requested', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.change_withdrawn', 'decision.change_withdrawn', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.consultation_requested', 'decision.consultation_requested', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'consultation_requested', false, true, 'targeted', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.consultation_responded', 'decision.consultation_responded', true, '["pmc"]'::jsonb, 'consultation_responded', false, true, 'targeted', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.drafted', 'decision.drafted', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.published', 'decision.published', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'decider', false, false, 'targeted', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.reapproved', 'decision.reapproved', true, '["contractor","engineer","pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.withdrawn', 'decision.withdrawn', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'delivery.committed', 'delivery.committed', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'delivery.defaulted', 'delivery.defaulted', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'delivery.fulfilled', 'delivery.fulfilled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'delivery.revised', 'delivery.revised', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.acknowledged', 'drawing.acknowledged', true, '["pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.activity_unlinked', 'drawing.activity_unlinked', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.issued', 'drawing.issued', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.issued_draft', 'drawing.issued', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.published', 'drawing.published', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.recipients_frozen', 'drawing.recipients_frozen', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.refiled', 'drawing.refiled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.removed', 'drawing.removed', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.revised', 'drawing.revised', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.revised_draft', 'drawing.revised', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.unfiled', 'drawing.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.approved', 'inspection.approved', true, '["client","contractor"]'::jsonb, NULL, false, false, 'broadcast', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.closing_created', 'inspection.closing_created', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.created', 'inspection.created', true, '["engineer"]'::jsonb, NULL, false, false, 'broadcast', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.evidence_added', 'inspection.evidence_added', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.evidence_removed', 'inspection.evidence_removed', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.reinspection_created', 'inspection.reinspection_created', true, '["engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.rejected', 'inspection.rejected', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.relabeled', 'inspection.relabeled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.submitted', 'inspection.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.unfiled', 'inspection.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'issue.recorded', 'issue.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour.comparison.approved', 'labour.comparison.approved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour.po.amended', 'labour.po.amended', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour.po.cancelled', 'labour.po.cancelled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour.po.closed_short', 'labour.po.closed_short', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour.po.issued', 'labour.po.issued', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour.requisition.approved', 'labour.requisition.approved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour.requisition.submitted', 'labour.requisition.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour_mismatch.recorded', 'labour_mismatch.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour_mismatch.resolved', 'labour_mismatch.resolved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour_work.recorded', 'labour_work.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'material.added', 'material.added', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'material.mismatch_flagged', 'material.mismatch_flagged', true, '["contractor","pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'material.unfiled', 'material.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'media.refiled', 'media.refiled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'media.removed', 'media.removed', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'media.uploaded', 'media.uploaded', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'membership.added', 'membership.added', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'membership.discipline_changed', 'membership.discipline_changed', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'membership.removed', 'membership.removed', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'membership.role_changed', 'membership.role_changed', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'mismatch.resolved', 'mismatch.resolved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'node.created', 'node.created', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'node.moved', 'node.moved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'node.published', 'node.published', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'node.removed', 'node.removed', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'node.renamed', 'node.renamed', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'phase.created', 'phase.created', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'phase.removed', 'phase.removed', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'po.amended', 'po.amended', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'po.cancelled', 'po.cancelled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'po.closed_short', 'po.closed_short', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'po.issued', 'po.issued', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'project.archived', 'project.archived', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'project.created', 'project.created', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'project.restored', 'project.restored', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'project.updated', 'project.updated', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'requirement.cancelled', 'requirement.cancelled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'requirement.created', 'requirement.created', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'requirement.revised', 'requirement.revised', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'requisition.approved', 'requisition.approved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'requisition.submitted', 'requisition.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'skill_substitution.approved', 'skill_substitution.approved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'skill_substitution.revoked', 'skill_substitution.revoked', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'stock.transacted', 'stock.transacted', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'substitution.approved', 'substitution.approved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'substitution.revoked', 'substitution.revoked', true, NULL, NULL, false, false, NULL, NULL, false)
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.completion_requested', 'activity.completion_requested', true, '["pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.created', 'activity.created', true, '["contractor","engineer"]'::jsonb, NULL, false, false, 'broadcast', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.deleted', 'activity.deleted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.labour_blocked', 'activity.labour_blocked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.labour_unblocked', 'activity.labour_unblocked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.material_blocked', 'activity.material_blocked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.material_unblocked', 'activity.material_unblocked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.override_granted', 'activity.override_granted', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.override_revoked', 'activity.override_revoked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.signed_off', 'activity.signed_off', true, '["client","contractor"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.signoff_rejected', 'activity.signoff_rejected', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.started', 'activity.started', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.unfiled', 'activity.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.updated', 'activity.updated', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity_output.recorded', 'activity_output.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'allocation.made', 'allocation.made', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'allocation.released', 'allocation.released', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'attendance.recorded', 'attendance.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'attendance.revoked', 'attendance.revoked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'capacity.committed', 'capacity.committed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'capacity.defaulted', 'capacity.defaulted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'capacity.revised', 'capacity.revised', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'commercial.money_moved', 'commercial.money_moved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'comparison.approved', 'comparison.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'dailylog.started', 'dailylog.started', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'dailylog.submitted', 'dailylog.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.approved', 'decision.approved', true, '["contractor","engineer","pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.change_requested', 'decision.change_requested', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.change_withdrawn', 'decision.change_withdrawn', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.consultation_requested', 'decision.consultation_requested', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'consultation_requested', false, true, 'targeted', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.consultation_responded', 'decision.consultation_responded', true, '["pmc"]'::jsonb, 'consultation_responded', false, true, 'targeted', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.drafted', 'decision.drafted', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.published', 'decision.published', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'decider', false, false, 'targeted', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.reapproved', 'decision.reapproved', true, '["contractor","engineer","pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.withdrawn', 'decision.withdrawn', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'delivery.committed', 'delivery.committed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'delivery.defaulted', 'delivery.defaulted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'delivery.fulfilled', 'delivery.fulfilled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'delivery.revised', 'delivery.revised', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.acknowledged', 'drawing.acknowledged', true, '["pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.activity_unlinked', 'drawing.activity_unlinked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.issued', 'drawing.issued', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.issued_draft', 'drawing.issued', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.published', 'drawing.published', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.recipients_frozen', 'drawing.recipients_frozen', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.refiled', 'drawing.refiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.removed', 'drawing.removed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.revised', 'drawing.revised', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.revised_draft', 'drawing.revised', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.unfiled', 'drawing.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.approved', 'inspection.approved', true, '["client","contractor"]'::jsonb, NULL, false, false, 'broadcast', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.closing_created', 'inspection.closing_created', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.created', 'inspection.created', true, '["engineer"]'::jsonb, NULL, false, false, 'broadcast', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.evidence_added', 'inspection.evidence_added', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.evidence_removed', 'inspection.evidence_removed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.reinspection_created', 'inspection.reinspection_created', true, '["engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.rejected', 'inspection.rejected', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.relabeled', 'inspection.relabeled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.submitted', 'inspection.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.unfiled', 'inspection.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'issue.recorded', 'issue.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour.comparison.approved', 'labour.comparison.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour.po.amended', 'labour.po.amended', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour.po.cancelled', 'labour.po.cancelled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour.po.closed_short', 'labour.po.closed_short', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour.po.issued', 'labour.po.issued', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour.requisition.approved', 'labour.requisition.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour.requisition.submitted', 'labour.requisition.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour_mismatch.recorded', 'labour_mismatch.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour_mismatch.resolved', 'labour_mismatch.resolved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour_work.recorded', 'labour_work.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'material.added', 'material.added', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'material.mismatch_flagged', 'material.mismatch_flagged', true, '["contractor","pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'material.unfiled', 'material.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'media.refiled', 'media.refiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'media.removed', 'media.removed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'media.uploaded', 'media.uploaded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'membership.added', 'membership.added', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'membership.discipline_changed', 'membership.discipline_changed', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'membership.removed', 'membership.removed', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'membership.role_changed', 'membership.role_changed', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'mismatch.resolved', 'mismatch.resolved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'node.created', 'node.created', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'node.moved', 'node.moved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'node.published', 'node.published', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'node.removed', 'node.removed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'node.renamed', 'node.renamed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'phase.created', 'phase.created', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'phase.removed', 'phase.removed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'po.amended', 'po.amended', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'po.cancelled', 'po.cancelled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'po.closed_short', 'po.closed_short', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'po.issued', 'po.issued', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'project.archived', 'project.archived', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'project.created', 'project.created', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'project.restored', 'project.restored', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'project.updated', 'project.updated', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'requirement.cancelled', 'requirement.cancelled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'requirement.created', 'requirement.created', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'requirement.revised', 'requirement.revised', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'requisition.approved', 'requisition.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'requisition.submitted', 'requisition.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'skill_substitution.approved', 'skill_substitution.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'skill_substitution.revoked', 'skill_substitution.revoked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'stock.transacted', 'stock.transacted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'substitution.approved', 'substitution.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'substitution.revoked', 'substitution.revoked', true, NULL, NULL, false, false, NULL, NULL, false)
 ON CONFLICT ("coverageVersion", "effectKey") DO NOTHING;
 
 SELECT set_config('vitan.phase6_4d_catalog', 'off', true);
@@ -3023,6 +3104,19 @@ BEGIN
         NEW."eventId", v_version, v_key;
     END IF;
     IF v_push IS NOT NULL THEN
+      -- THE BODY IS A NONBLANK STRING (#582 round 5, finding 1). Requiring only that `push` be an
+      -- object let `{push: {body: '', roles: <the whole ceiling>}}` satisfy every clause below —
+      -- and `deliveryFor` (`outbox/consumers.ts`) reads a falsy body as a `noop`, so the delivered
+      -- service SILENTLY declines to announce an event the catalog says always announces. That is
+      -- the exact hole `requiresPush` exists to close, reached through the body rather than
+      -- through the flag: an empty string is not a quiet announcement, it is no announcement at
+      -- all, and it must be refused where the intent is judged rather than discovered downstream.
+      IF jsonb_typeof(v_push -> 'body') IS DISTINCT FROM 'string'
+         OR btrim(v_push ->> 'body', E' \t\n\x0B\f\r') = '' THEN
+        RAISE EXCEPTION
+          'phase6 4d-i: the push of event % carries body % — a push announces, so its body is a NONBLANK string; a missing or empty one is read as a `noop` by the delivered consumer and the announcement the catalog owes never happens',
+          NEW."eventId", COALESCE(jsonb_typeof(v_push -> 'body'), '<absent>');
+      END IF;
       IF jsonb_typeof(v_push -> 'roles') IS DISTINCT FROM 'array' THEN
         RAISE EXCEPTION
           'phase6 4d-i: the push of event % names roles as % — the audience is an array, and an absent one is not an empty one',
@@ -3041,6 +3135,20 @@ BEGIN
         RAISE EXCEPTION
           'phase6 4d-i: catalog entry (%, %) is a BROADCAST family, so the push of event % must reach its whole ceiling % and reaches % — a narrowed broadcast silently drops the roles it omits',
           v_version, v_key, NEW."eventId", v_ceiling, v_roles;
+      END IF;
+      -- A BROADCAST MAY NAME NO TARGET (#582 round 5, finding 6). The clause above proves the role
+      -- set is the whole ceiling and stopped there, so an event could carry the full broadcast
+      -- audience AND a scalar `targetUserId` — and the delivered consumer
+      -- (`outbox/consumers.ts`, the targeted branch) PRIORITISES that target and returns, so
+      -- exactly one user receives what the catalog declares a broadcast and everyone else is
+      -- silently dropped. Widening the roles was already refused; narrowing by a back door was
+      -- not. Both target shapes are rejected here, because `targetUserIds` on a non-frozen family
+      -- is refused below for the same reason and a broadcast is not frozen either.
+      IF v_cat."audience" = 'broadcast'
+         AND ((v_push ? 'targetUserId') OR (v_push ? 'targetUserIds')) THEN
+        RAISE EXCEPTION
+          'phase6 4d-i: catalog entry (%, %) is a BROADCAST family, but the push of event % also names a target — the delivered consumer prefers a target over the audience, so this reaches ONE user while claiming to reach the whole ceiling %',
+          v_version, v_key, NEW."eventId", v_ceiling;
       END IF;
       IF v_cat."audience" = 'targeted'
          AND (v_push ->> 'targetUserId') IS NULL AND cardinality(v_roles) = 0 THEN
@@ -3976,6 +4084,42 @@ DROP TRIGGER IF EXISTS "DecisionEvent_t4d_append_only" ON "DecisionEvent";
 CREATE TRIGGER "DecisionEvent_t4d_append_only"
   BEFORE UPDATE OR DELETE ON "DecisionEvent"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_decision_event_append_only();
+
+-- ── the re-notification's CLAIM ──────────────────────────────────────────────────────────────
+-- §A.3 obligation 7 needs exactly ONE claimant per pairing-required event, and the plan names
+-- this branch's claimant as the `countersign_renotified` AUDIT ROW itself (#572's review round
+-- 19; #582's round 5, finding 7). Every other sealed branch has a FACT TABLE to claim from —
+-- a forward, a countersign, a stranded resolution, a transition. The re-notification has none:
+-- it re-emits `decision.awaiting_countersign` for a crossing, and the only durable row the act
+-- writes is its audit entry. Without a claimant here, the moment 4d-ii sets `pairingRequired` on
+-- that key the legitimate `decisions.effects` transaction writes its event and its audit row,
+-- creates no claim, and `DomainEvent_t4d_pairing_claimed` aborts it AT COMMIT — the seal killing
+-- the act it was built to witness.
+--
+-- NARROW BY CONSTRUCTION. The `WHEN` clause admits one audit kind, so no other insert on this
+-- register reaches the claim; the event is resolved through the kernel's own same-transaction
+-- primitive rather than by a lookup this module invents; and a missing event is left to
+-- `DecisionEvent_t4d_correspondence`, which is the seal that owes that message. Claiming is all
+-- this does — the pairing's converse stays where it belongs, on the kernel's deferred seal.
+CREATE OR REPLACE FUNCTION phase6_t4d_renotified_claims_event() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_project TEXT; v_event TEXT;
+BEGIN
+  SELECT d."projectId" INTO v_project FROM "Decision" d WHERE d."id" = NEW."decisionId";
+  IF v_project IS NULL THEN RETURN NULL; END IF;
+
+  v_event := platform_tx_event(v_project, 'Decision', NEW."decisionId",
+                               ARRAY['decision.awaiting_countersign']);
+  IF v_event IS NULL THEN RETURN NULL; END IF;
+
+  PERFORM platform_claim_event_pairing(v_project, v_event, 'DecisionEvent', NEW."id");
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS "DecisionEvent_t4d_renotified_claim" ON "DecisionEvent";
+CREATE TRIGGER "DecisionEvent_t4d_renotified_claim"
+  AFTER INSERT ON "DecisionEvent"
+  FOR EACH ROW WHEN (NEW."type" = 'countersign_renotified')
+  EXECUTE FUNCTION phase6_t4d_renotified_claims_event();
 
 -- ── the WEAK converse: the (kind, committed status) table §A.3 closes ────────────────────────
 -- An audit row says an act happened. The correspondence says the same transaction must carry the

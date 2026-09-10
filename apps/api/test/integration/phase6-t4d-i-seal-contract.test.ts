@@ -251,9 +251,18 @@ const REGISTER: Record<string, SealContract> = {
   },
 
   // ── the membership side ─────────────────────────────────────────────────────────────────────
+  phase6_t4d_renotified_claims_event: {
+    rule: 'the `countersign_renotified` audit row CLAIMS its own same-transaction '
+      + '`decision.awaiting_countersign` event — the one sealed branch with no fact table to '
+      + 'claim from, so without this the kernel\'s pairing seal aborts the legitimate act',
+    plan: '§A.3 obligation 7; #572 round 19; #582 round 5, finding 7',
+    on: { 'DecisionEvent.DecisionEvent_t4d_renotified_claim': A('I') },
+    must: ['platform_claim_event_pairing', 'platform_tx_event',
+      'decision.awaiting_countersign', 'DecisionEvent'],
+  },
   phase6_t4d_membership_transition_seal: {
     rule: 'team management is an AUTHORIZED act (owner/admin authority, or `pmc`, or the subject '
-      + 'stepping down) and the frozen pair is true',
+      + 'stepping down, judged from the transition\'s own pre- and post-state) and the pair is true',
     plan: '§A.2 the membership paragraph',
     on: { 'MembershipTransition.MembershipTransition_t4d_seal': B('I') },
     // `platform_role_standing` was in this list until #582 round 4, finding 1, and its presence
@@ -268,9 +277,9 @@ const REGISTER: Record<string, SealContract> = {
   },
   phase6_t4d_membership_transition_bound: {
     rule: 'the cited command SUCCEEDED in THIS transaction naming `NEW."membershipId"` as its '
-      + 'result, a same-transaction `Membership` write left that membership in exactly the '
-      + 'standing the fact records (an orphan fact refused), and the register agrees AT COMMIT',
-    plan: 'plan lines 2951-2956 and 2998-2999; #582 round 1, finding 11; round 4, findings 1-2',
+      + 'result, and a same-transaction `Membership` write left that membership at exactly the '
+      + '`(toRole, toStatus)` the fact records (an orphan fact refused)',
+    plan: 'plan lines 2851 and 2951-2956; #582 round 1, finding 11; round 4, finding 2; round 5, finding 3',
     on: { 'MembershipTransition.MembershipTransition_t4d_provenance_bound': C('I') },
     // #582 round 2, finding 5 — `commandType` and `actorId` were ABSENT from this list, and
     // that is the register's own failure, not just the seal's. Round 1 established the
@@ -281,12 +290,13 @@ const REGISTER: Record<string, SealContract> = {
     // understood and was silent on the one I had wrong. That is a real limit on this file, and
     // the answer is an outside reader — which is what Codex was here.
     must: ['succeeded', 'membershipId', 'txid_current', 'commandType', 'actorId',
-      // #582 round 4, findings 1 and 2 — two clauses this binding did not carry. The register
-      // correspondence arrived from the INSERT seal, where it read a count a later statement in
-      // the same command could still move; `standingNow` is the alias of the resulting-state
-      // predicate that makes the orphan clause name THIS standing change rather than any write
-      // that happened to touch the row. Neither is witnessed by a token the other body shares.
-      'platform_role_standing', 'standingNow',
+      // #582 round 4, finding 2 as restated by round 5's column correction. `roleNow`/`statusNow`
+      // are the aliases of the POST-state comparison that makes the orphan clause name THIS
+      // transition rather than any write that touched the row. `platform_role_standing` left this
+      // list with the `activeCount` column it read: the count is an EVENT payload field, compared
+      // against the register by 4d-ii's event seal, and a fact column duplicating a register is a
+      // second copy of a truth that already has one.
+      'roleNow', 'statusNow', 'toRole', 'toStatus',
       // #582 round 3, finding 3 — `txid_current` alone does NOT witness this rule: the
       // ORPHAN clause already used it on `Membership`, so the register was green while the
       // RECEIPT lookup carried no transaction predicate at all. `thisTx` is the alias of
@@ -304,9 +314,14 @@ const REGISTER: Record<string, SealContract> = {
   phase6_t4d_membership_architect_paired: {
     rule: 'every arrival and departure of architect standing carries a transition written IN THE '
       + 'SAME TRANSACTION, for THIS membership\'s user and this exact OLD→NEW change',
-    plan: '§A.3 obligation 2; #582 round 1, findings 9 and 13',
+    plan: '§A.3 obligation 2 and plan line 2915; #582 round 1, findings 9 and 13; round 5, finding 5',
     on: { 'Membership.Membership_t4d_architect_provenance': C('I D U') },
-    must: ['txid_current', '"userId" = v_user', 'toStanding', "'architect'"],
+    // #582 round 5, finding 5 — `toStanding` was the token here, and it could only ever witness
+    // the DIRECTION of the move. The pre-state went unbound, so a same-value update on an
+    // already-active membership let a fabricated arrival through. All four transition columns are
+    // the rule now, so all four are the tokens.
+    must: ['txid_current', '"userId" = v_user', "'architect'",
+      'v_from_role', 'v_from_stat', 'v_to_role', 'v_to_stat'],
   },
   phase6_t4d_membership_guard: {
     rule: 'a membership change may not orphan the named holder of an open decision',

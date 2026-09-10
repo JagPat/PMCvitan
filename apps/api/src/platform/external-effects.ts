@@ -44,11 +44,18 @@ export interface ExternalEffectDef {
    *  refuse four live emit paths at INSERT; each one is named at its key below. Declared here
    *  rather than inferred, so adding a silent branch is a decision a reader can see.
    *
-   *  NOT part of `canonicalCatalog()`: the coverage version identifies what a producer EMITS —
-   *  key, event type, invalidation and audience — and this says only which of a key's own
-   *  branches the service always announces on. Adding it therefore leaves every persisted
-   *  intent's `coverageVersion` unchanged, which is what lets a still-serving release keep
-   *  resolving its rows. */
+   *  PART OF `canonicalCatalog()`, and the reasoning that once excluded it was wrong (#582 review
+   *  round 5, finding 4). The exclusion was argued as "this says only which of a key's own
+   *  branches the service always announces on", which treats it as a producer-local nicety. It is
+   *  not: it decides the persisted `requiresPush`, which is a SEALED value, and the seal refuses a
+   *  silent event wherever that value is true. Two releases disagreeing about the flag disagree
+   *  about which intents the database admits — and with the flag outside the preimage they would
+   *  share a `coverageVersion`, so the newer release's catalog row would collide with the older on
+   *  `(coverageVersion, effectKey)` and the seed's `ON CONFLICT DO NOTHING` would keep the STALE
+   *  obligation. The producer and the database would then reject different intents under one
+   *  version, which is precisely the state versioning exists to make impossible. In the preimage
+   *  the two definitions get different versions and coexist through the drain, as every other
+   *  policy change on a key does. */
   readonly pushOptional?: true;
 }
 
@@ -296,7 +303,10 @@ function canonicalCatalog(): string {
   return JSON.stringify(
     keys.map((k) => {
       const d = EXTERNAL_EFFECTS[k as ExternalEffectKey] as ExternalEffectDef;
-      return [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(), d.pushFamily ?? null];
+      // `pushOptional` is here because it changes the SEALED `requiresPush` (see its declaration).
+      // Normalised to a boolean so an absent flag and an explicit `undefined` cannot hash apart.
+      return [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(),
+        d.pushFamily ?? null, d.pushOptional === true];
     }),
   );
 }
@@ -304,7 +314,8 @@ function canonicalCatalog(): string {
 let cachedVersion: string | null = null;
 
 /** The current effect-coverage version: SHA-256 of the canonical catalog. Stable across process runs
- *  for a fixed catalog; changes iff a key/eventType/invalidate/role set changes. The cutover seal
+ *  for a fixed catalog; changes iff a key, event type, invalidation, role set, family or
+ *  `pushOptional` flag changes — every input the sealed catalog row is built from. The cutover seal
  *  (Task 3) pins this exact value and outbox-mode startup requires it. */
 export function effectCoverageVersion(): string {
   if (cachedVersion === null) cachedVersion = createHash('sha256').update(canonicalCatalog()).digest('hex');

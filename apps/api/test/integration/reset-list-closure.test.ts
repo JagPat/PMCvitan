@@ -77,9 +77,9 @@ UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(),
        "resultRef" = (SELECT "id" FROM "Membership" ORDER BY "id" LIMIT 1)
  WHERE "id" = 'RLC-CMD';
 INSERT INTO "MembershipTransition"
-  ("id","projectId","membershipId","userId","role","fromStanding","toStanding","activeCount",
+  ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus",
    "actorId","actorRole","actorName","sourceCommandId")
-  SELECT 'RLC-MT', m."projectId", m."id", m."userId", m."role", 'not_held', 'held', 1,
+  SELECT 'RLC-MT', m."projectId", m."id", m."userId", NULL, NULL, m."role", m."status",
          m."userId", m."role", u."name", 'RLC-CMD'
     FROM "Membership" m JOIN "User" u ON u."id" = m."userId" ORDER BY m."id" LIMIT 1;
 INSERT INTO "DecisionForward"
