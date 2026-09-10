@@ -539,6 +539,37 @@ const ARMS: Arm[] = [
     refusal: /is a BROADCAST family, but the push of event .* also names a target/,
   },
   {
+    // #582 round 6, finding 2 — the ORDER. A member command that writes the membership before its
+    // fact is refused: the fact's live authority read must see the PRE-state, and after 4d-iii a
+    // membership-first bundle lets an actor's own promotion authorise itself.
+    seal: 'Membership_t4d_fact_first',
+    what: 'a member command writes its FACT before the membership write it describes',
+    hostile: `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+                VALUES ('ss-cmd-ord','project','ss-org','ss-proj','ss-user','members.updateRole','ss-key-ord','ss-hash-ord','reserved');
+              UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-c' WHERE "id" = 'ss-cmd-ord';
+              UPDATE "Membership" SET "status" = 'active' WHERE "id" = 'ss-mem-c'`,
+    refusal: /has not been inserted yet — the fact comes FIRST/,
+  },
+  {
+    // #582 round 6, finding 5 — a half or blank attribution pair is frozen the moment it lands,
+    // so INSERT is the only moment it can be judged.
+    seal: 'DecisionConsultation_t4d_attribution_present',
+    what: 'a consultation attribution pair may not be written blank',
+    // The write is LEGITIMATE in every respect the delivered 4c request seal judges — a
+    // reserved-then-succeeded `consultations.request` receipt naming this row, the decision's
+    // current open cycle, the active consultee and their canonical audience — because
+    // `DecisionConsultation_t4c_request_seal` sorts BEFORE this trigger and would otherwise
+    // answer for both runs, leaving the arm measuring a 4c object rather than mine. The one
+    // defect left is the blank half of the attribution pair.
+    hostile: `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+                VALUES ('ss-cmd-con','project','ss-org','ss-proj','ss-user','consultations.request','ss-key-con','ss-hash-con','reserved');
+              INSERT INTO "DecisionConsultation"
+                ("id","projectId","decisionId","requestedById","consulteeMembershipId","consulteeUserId","question","openCycle","sourceCommandId","requestedByRole","requestedByName")
+              VALUES ('ss-con-b','ss-proj','ss-dec','ss-user','ss-mem-c','ss-client','is this blank pair admitted?',0,'ss-cmd-con','   ','SS User');
+              UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-con-b' WHERE "id" = 'ss-cmd-con'`,
+    refusal: /carries a blank attribution pair/,
+  },
+  {
     seal: 'ReleaseLease_t4d_frozen',
     what: 'a lease expires and stays as history — it is never deleted',
     hostile: `DELETE FROM "ReleaseLease" WHERE "instanceId" = 'ss-instance'`,
@@ -613,6 +644,9 @@ const COVERED_BY_CLASS: Record<string, string> = {
   // and 4d-ii owns proving it on the database where the branch is reachable.
   DecisionEvent_t4d_renotified_claim: 'DomainEventPairingClaim_t4d_writer',
   Notification_t4d_binding: 'Notification_t4d_no_truncate',
+  // the response half of the consultation pair check: the SAME function on the sibling table,
+  // installed by the same paragraph, so stripping it re-measures a body already measured.
+  DecisionConsultationResponse_t4d_attribution_present: 'DecisionConsultation_t4d_attribution_present',
   Notification_t4d_binding_bound: 'Notification_t4d_no_truncate',
   // seals whose subject is a 4d-ii/4d-iii SERVICE path — unreachable while the doors stand, so
   // their hostile write cannot be constructed on a 4d-i database at all. They are proven by the
@@ -790,10 +824,10 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
          VALUES ('ss-cmd-x','project','ss-org','ss-proj','ss-user','members.updateRole','ss-key-x','ss-hash-x','reserved');
        UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-e2' WHERE "id" = 'ss-cmd-x';
-       UPDATE "Membership" SET "status" = 'active' WHERE "id" = 'ss-mem-e2';
        INSERT INTO "MembershipTransition"
          ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
-       VALUES ('ss-mt-x','ss-proj','ss-mem-e2','ss-eng2','engineer','active','engineer','removed','ss-user','pmc','SS User','ss-cmd-x')`]);
+       VALUES ('ss-mt-x','ss-proj','ss-mem-e2','ss-eng2','engineer','active','engineer','removed','ss-user','pmc','SS User','ss-cmd-x');
+       UPDATE "Membership" SET "status" = 'active' WHERE "id" = 'ss-mem-e2'`]);
     expect(
       mismatched.ok,
       'a fact claiming a standing change the transaction\'s membership write did not make must be '
@@ -808,6 +842,11 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     expect(mismatched.output).toMatch(
       /name the change the write actually made|does not describe the write that happened/);
 
+    // EVERY transaction here writes the FACT FIRST. That is not stylistic: `Membership_t4d_fact_first`
+    // (round 6, finding 2) refuses a member command that writes the membership before its fact,
+    // because the fact's live authority read has to see the PRE-state. These probes were written
+    // membership-first and the new seal refused them — the fixtures were wrong, not the seal.
+    //
     // #582 round 5, finding 5 — THE PRE-STATE, on a NON-ARCHITECT role. The membership is left
     // exactly as it was (an active engineer), so the POST-state comparison above agrees with a
     // fact claiming this member had just been ADDED — a NULL pre-state arriving at
@@ -818,10 +857,10 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
          VALUES ('ss-cmd-f','project','ss-org','ss-proj','ss-user','members.updateRole','ss-key-f','ss-hash-f','reserved');
        UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-e2' WHERE "id" = 'ss-cmd-f';
-       UPDATE "Membership" SET "status" = 'active' WHERE "id" = 'ss-mem-e2';
        INSERT INTO "MembershipTransition"
          ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
-       VALUES ('ss-mt-f','ss-proj','ss-mem-e2','ss-eng2',NULL,NULL,'engineer','active','ss-user','pmc','SS User','ss-cmd-f')`]);
+       VALUES ('ss-mt-f','ss-proj','ss-mem-e2','ss-eng2',NULL,NULL,'engineer','active','ss-user','pmc','SS User','ss-cmd-f');
+       UPDATE "Membership" SET "status" = 'active' WHERE "id" = 'ss-mem-e2'`]);
     expect(
       fabricatedArrival.ok,
       'a fact claiming the member ARRIVED, written against a membership that was already active '
@@ -835,10 +874,10 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
          VALUES ('ss-cmd-r','project','ss-org','ss-proj','ss-user','members.remove','ss-key-r','ss-hash-r','reserved');
        UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-e2' WHERE "id" = 'ss-cmd-r';
-       UPDATE "Membership" SET "status" = 'removed' WHERE "id" = 'ss-mem-e2';
        INSERT INTO "MembershipTransition"
          ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
-       VALUES ('ss-mt-r','ss-proj','ss-mem-e2','ss-eng2','engineer','active','engineer','removed','ss-user','pmc','SS User','ss-cmd-r')`]);
+       VALUES ('ss-mt-r','ss-proj','ss-mem-e2','ss-eng2','engineer','active','engineer','removed','ss-user','pmc','SS User','ss-cmd-r');
+       UPDATE "Membership" SET "status" = 'removed' WHERE "id" = 'ss-mem-e2'`]);
     expect(
       truthful.ok,
       `the same removal, with the membership actually left inactive, must COMMIT:\n${truthful.output}`,

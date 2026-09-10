@@ -6056,12 +6056,14 @@ today's behaviour lives.
   and carrying every outstanding finding and proof — never to reset a
   count (#572's review round 3, finding 1).
 
-- **4d implementation follows as FIVE PRs — the dark migration 4d-i, the
+- **4d implementation follows as SIX PRs — the dark migration 4d-i, the
+  PAIRING SWITCH-ON 4d-i-b, the
   dark SERVER unit 4d-ii-a, the CLIENT unit 4d-ii-b, a drain attestation,
   and the trailing reservation retirement 4d-iii — each honouring the
   mandatory migration seam and the service/UI seam the standing reservation
   makes viable** (#567's review round 1, finding 4; "4d-ii" names the pair
-  wherever the distinction does not matter) (the additive schema is deployable before any caller uses it — that
+  wherever the distinction does not matter; 4d-i-b was carved out of 4d-i on
+  JagPat's instruction during #582's review round 6 — see the bullet below) (the additive schema is deployable before any caller uses it — that
   viable seam makes a single migration+service+UI PR a violation of the
   repository's migration review-unit rule, and this plan takes the seam):
 
@@ -6206,7 +6208,10 @@ today's behaviour lives.
     generic pairing mechanism — the `DomainEventPairingClaim` register with
     its writer-depth, append-only and no-TRUNCATE seals, the
     `platform_claim_event_pairing` primitive, the catalog's
-    `pairingRequired` column seeded under the tripwire, and the kernel-owned
+    `pairingRequired` column seeded under the tripwire — `false` on EVERY
+    row, so 4d-i installs the mechanism and switches it on for nothing (the
+    flip and the remaining claimants are 4d-i-b's; see that bullet) — and the
+    kernel-owned
     `DomainEvent_t4d_pairing_claimed` seal — with the claim supplied per
     BRANCH by that branch's PRIMARY fact seal and every other fact in the
     bundle verification-only, exactly as §A states it, and no peer-owned
@@ -6260,7 +6265,11 @@ today's behaviour lives.
     nullable `sourceCommandId` with its composite FK and partial one-use
     UNIQUE, the `ChangeRequest_t4d_no_truncate` seal (a statement trigger
     fires on an empty table, and the harness's `TRUNCATE "Decision" …
-    CASCADE` reaches `ChangeRequest`), and the two-producer P33b pairing; the
+    CASCADE` reaches `ChangeRequest`), and the two-producer P33b pairing
+    — EXCEPT `ChangeRequest_t4d_paired` itself, which 4d-i-b installs (see
+    that bullet; the column, the CHECKs, the FK, the one-use UNIQUE and the
+    freeze all stay here, so 4d-i-b adds a seal over data 4d-i already
+    shaped); the
     two platform-owned per-user registers `ProjectUserStanding` and
     `UserIdentity` with their writer-depth and no-TRUNCATE seals, their
     gated backfills and the orgs-owned triggers that feed them, and the
@@ -6429,6 +6438,77 @@ today's behaviour lives.
     pre-review checks, lists its file inventory, and carries its
     `<!-- migration-scope: inseparable -->` marker with the stated
     boundary above — exactly what 4d-ii's paragraph requires of 4d-ii.
+
+  - **4d-i-b, the PAIRING SWITCH-ON — a migration-only unit carved out of
+    4d-i on JagPat's instruction (#582's review round 6, finding 3)**. 4d-i
+    installs the pairing MECHANISM and leaves it switched off: the
+    `DomainEventPairingClaim` register with its writer-depth, append-only and
+    no-TRUNCATE seals, the `platform_claim_event_pairing` primitive, the
+    kernel-owned `DomainEvent_t4d_pairing_claimed` seal, and the catalog's
+    `pairingRequired` column — seeded `false` on every one of its rows, so no
+    event type demands a claim and the mechanism is dark in the same sense the
+    rest of 4d-i is. 4d-i-b is the unit that TURNS IT ON, and it is one unit
+    because the three pieces are inseparable in the only direction that
+    matters: flipping a type to `pairingRequired` without its claimant refuses
+    every legitimate event of that type at commit, and installing a claimant
+    for a type still at `false` claims into a register nothing reads. Its
+    inventory is exactly:
+    (a) `ChangeRequest_t4d_paired`, the ONE deferred pairing seal on
+    `ChangeRequest` — the closure-and-restoration bundle in both directions
+    (#558's review round 1, finding 2) and the OPENING bundle in both
+    directions (#568's review round 1, finding 3), with the seed's DL-003
+    plant its only admitted bypass and the `decision.change_requested` /
+    `decision.change_withdrawn` claims it owns (#572's review round 11,
+    finding 1);
+    (b) the REMAINING per-branch CLAIMANTS the §A.3 correspondence table's
+    claimant column names — the consultation request and response fact seals,
+    and the `DecisionApprovalRevision` birth seal for the reapproval branch
+    (#572's review round 9, finding 1) — every other fact in each bundle
+    staying verification-only. 4d-i already installs ONE of them, the
+    re-notification's `DecisionEvent_t4d_renotified_claim` (#582's review
+    round 5, finding 7), and that is not a breach of round 11's rule: the rule
+    forbids a claimant installed LATER than the flip, because that leaves a
+    window in which every legitimate event of the type is refused at commit. A
+    claimant installed EARLIER writes claim rows nothing yet demands, which is
+    inert — and it is what keeps the two units independently revertible;
+    (c) the six catalog rows flipped to `pairingRequired = true` —
+    `decision.approved`, `decision.reapproved`, `decision.change_requested`,
+    `decision.change_withdrawn`, `decision.consultation_requested` and
+    `decision.consultation_responded`; the three 4d-ii types
+    (`decision.forwarded`, `decision.awaiting_countersign`,
+    `membership.standing_changed`) are not compiled yet and are declared by the
+    unit that adds them, with their claimants beside them.
+    **The split CHANGES how that flip is delivered, and this is the one thing
+    it is not free.** Inside 4d-i the flip rode the catalog's FIRST INSERT, so
+    the rows were simply born `true` at coverage `b731a407…`. Split out, they
+    are already committed `false` at that version and
+    `ExternalEffectCatalog_t4d_frozen` admits no UPDATE but the retirement
+    stamp — its own refusal says a definition changes by a NEW coverage
+    version, never in place. So 4d-i-b adds `pairingRequired` to the compiled
+    catalog's `canonicalCatalog()` PREIMAGE, which is what makes the flip a new
+    `effectCoverageVersion()` and lets 4d-i-b insert a fresh generation beside
+    the old one; a still-serving release keeps resolving its own rows through
+    the version its intents carry, which is the mechanism the column was built
+    for. `pushOptional` is in that preimage for the same reason (#582's review
+    round 5, finding 4).
+    **Why it is a separate unit rather than a later paragraph of 4d-i**: 4d-i
+    reached #582's round 6 already carrying the whole of §A.3's fact/seal
+    surface, and the pairing switch-on is the one part of it whose failure mode
+    is a REFUSAL of delivered traffic rather than a dark addition — it deserves
+    its own probe surface (P29b's claim arms and P37's unclaimed-event arms)
+    and its own review, and folding it into a unit already at the lifecycle
+    limit would have bought a larger diff for a smaller reading of it. It is
+    ORDERED between 4d-i and 4d-ii-a: 4d-ii-a's four commands write the facts
+    the claimants read, so the claim must be in place before those commands
+    exist, and 4d-i-b's seals are all over tables and columns 4d-i already
+    delivered — it adds no table and no column. **Its diff surface** is
+    `prisma/` (one migration and the seed), `test/`, and under `src/` EXACTLY
+    the compiled external-effect catalog's `pairingRequired` declarations and
+    the preimage change (c) requires — the source the seeded column is derived
+    from and the seed tripwire pins; no service, controller, query, emitter,
+    participant or UI change, so it keeps 4d-i's migration-only character. Its
+    packet carries the standard markers; it is not expected to need
+    `justified-large`.
 
   - **4d-ii, the service/role/UI unit — SPLIT into 4d-ii-a, the SERVER
     unit, and 4d-ii-b, the CLIENT unit** (#567's review round 1, finding 4):

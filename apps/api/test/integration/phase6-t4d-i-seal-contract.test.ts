@@ -311,6 +311,26 @@ const REGISTER: Record<string, SealContract> = {
     on: { 'MembershipTransition.MembershipTransition_t4d_append_only': B('D U') },
     must: ['phase6.t4d_project_delete'],
   },
+  phase6_t4d_membership_fact_first: {
+    rule: 'a member command writes its FACT before the membership — so the fact\'s live authority '
+      + 'and frozen-role reads see the PRE-state, never the standing the write itself grants',
+    plan: 'plan line 2860; #566 round 1, finding 2; #582 round 6, finding 2',
+    on: { 'Membership.Membership_t4d_fact_first': A('I D U') },
+    // IMMEDIATE by necessity: the deferred pairing cannot tell which row arrived first, which is
+    // exactly the property this seal exists for. `members.` witnesses the command-scoped guard
+    // that keeps an ordinary membership write untouched.
+    must: ['txid_current', 'MembershipTransition', 'members.updateRole', 'CommandExecution'],
+  },
+  phase6_t4d_consultation_attribution_present: {
+    rule: 'a consultation attribution pair is written as a PAIR and neither half is blank — the '
+      + 'freeze makes whatever lands permanent, so INSERT is the only moment it can be judged',
+    plan: '§A.3 obligation 3; #582 round 6, finding 5',
+    on: {
+      'DecisionConsultation.DecisionConsultation_t4d_attribution_present': B('I'),
+      'DecisionConsultationResponse.DecisionConsultationResponse_t4d_attribution_present': B('I'),
+    },
+    must: ['btrim', 'requestedByRole', 'respondedByRole'],
+  },
   phase6_t4d_membership_architect_paired: {
     rule: 'every arrival and departure of architect standing carries a transition written IN THE '
       + 'SAME TRANSACTION, for THIS membership\'s user and this exact OLD→NEW change',

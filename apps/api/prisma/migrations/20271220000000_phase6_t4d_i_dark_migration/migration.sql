@@ -1071,10 +1071,26 @@ BEGIN
   IF v_backfilled > 0 THEN
     RAISE EXCEPTION 'phase6 4d-i ABORT: % project(s) hold no zero-count `architect` standing row after the backfill; refusing to commit.', v_backfilled;
   END IF;
-  SELECT count(*) INTO v_backfilled FROM "ProjectRoleStanding"
-   WHERE "role" = 'architect' AND "activeCount" <> 0;
-  IF v_backfilled > 0 THEN
-    RAISE EXCEPTION 'phase6 4d-i ABORT: % `architect` standing row(s) are non-zero, which the reservation and the audit make impossible; refusing to commit.', v_backfilled;
+  -- THE ZERO-COUNT AUDIT IS PRE-RETIREMENT ONLY (#582 round 6, finding 1). Its premise is the
+  -- RESERVATION: while the doors stand no architect membership can exist, so every counted row
+  -- must read zero and a non-zero one is evidence the reservation leaked. After 4d-iii retires
+  -- the doors that premise is simply false — an architect is a legitimate, ordinary thing for a
+  -- project to have — and an `ALWAYS_EXECUTE` replay over such a database would abort on the
+  -- healthiest state the system can be in, which is precisely what P28's marker-aware replay
+  -- forbids. Every transient block above is already gated this way; this one was missed because
+  -- it lives in the BACKFILL rather than among the doors, and the backfill runs on both paths.
+  --
+  -- The seeding above stays unconditional: `WHERE NOT EXISTS` makes it a no-op for rows that are
+  -- already there, so a mature database keeps its counts and gains any register row a project
+  -- created since the last run still lacks.
+  IF NOT phase6_t4d_retired() THEN
+    SELECT count(*) INTO v_backfilled FROM "ProjectRoleStanding"
+     WHERE "role" = 'architect' AND "activeCount" <> 0;
+    IF v_backfilled > 0 THEN
+      RAISE EXCEPTION 'phase6 4d-i ABORT: % `architect` standing row(s) are non-zero while the reservation still stands, which the doors and the audit make impossible; refusing to commit.', v_backfilled;
+    END IF;
+  ELSE
+    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the zero-count architect audit is SKIPPED (an active architect is legitimate after retirement; this is a replay over a retired database)';
   END IF;
 END $$;
 
@@ -2573,6 +2589,59 @@ CREATE CONSTRAINT TRIGGER "Membership_t4d_architect_provenance"
   AFTER INSERT OR UPDATE OR DELETE ON "Membership" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_membership_architect_paired();
 
+-- ── the ORDER, enforced where order can be enforced ──────────────────────────────────────────
+-- #582 round 6, finding 2. The pairing above is DEFERRED, which makes it blind to WHEN the fact
+-- arrived: it asks at commit whether a fact describing this write exists, and a bundle that wrote
+-- the membership FIRST satisfies it just as well as one that wrote the fact first. That ordering
+-- is not decoration. The plan requires the fact BEFORE the membership write "for every
+-- transition" (line 2860) for a specific reason: the fact's own INSERT seal reads the actor's
+-- authority and frozen role LIVE, so it must read them against the PRE-state.
+--
+-- Written membership-first, a direct bundle after 4d-iii can complete a `members.updateRole`
+-- receipt for an active engineer, update THAT ACTOR'S OWN membership to `pmc`, and only then
+-- insert the transition claiming `actorRole = 'pmc'`. Every later check agrees: the deferred
+-- pairing sees a fact describing the write, and the fact's live authority read sees the freshly
+-- projected `pmc` standing. The actor authorises their own promotion, and the register says a PMC
+-- did it. The plan already anticipated this exact shape (#566's review round 1, finding 2, which
+-- is why the live reads were placed at the fact's insert); nothing was enforcing the placement.
+--
+-- IMMEDIATE, because that is the whole point — a deferred check cannot distinguish orders. It
+-- fires only where a standing-flipping write is possible at all, and it DEMANDS nothing of a
+-- write with no fact: a plain membership write commits untouched, which keeps the unit dark.
+CREATE OR REPLACE FUNCTION phase6_t4d_membership_fact_first() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_project TEXT; v_membership TEXT;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    v_project := OLD."projectId"; v_membership := OLD."id";
+  ELSE
+    v_project := NEW."projectId"; v_membership := NEW."id";
+  END IF;
+
+  -- A fact for this membership written LATER in the same transaction cannot exist yet, so
+  -- "already present" is exactly the question this trigger can answer and the deferred one cannot.
+  -- The converse — a fact with no membership write — stays with the deferred binding.
+  IF EXISTS (
+    SELECT 1 FROM "CommandExecution" c
+     WHERE c."projectId" = v_project
+       AND c."commandType" = ANY (ARRAY['members.add', 'members.updateRole', 'members.remove'])
+       AND c."xmin" = txid_current()::text::xid
+  ) AND NOT EXISTS (
+    SELECT 1 FROM "MembershipTransition" mt
+     WHERE mt."projectId" = v_project AND mt."membershipId" = v_membership
+       AND mt."xmin" = txid_current()::text::xid
+  ) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: membership % on project % is being written by a member command whose MembershipTransition has not been inserted yet — the fact comes FIRST, so the authority and frozen role it records are read against the standing the actor held BEFORE this write, never the standing this write grants them',
+      v_membership, v_project;
+  END IF;
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS "Membership_t4d_fact_first" ON "Membership";
+CREATE TRIGGER "Membership_t4d_fact_first"
+  AFTER INSERT OR UPDATE OR DELETE ON "Membership"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_membership_fact_first();
+
 -- ────────────────────────────────────────────────────────────────────────────────────────────
 -- PART 3e — THE KERNEL ENVELOPE, THE EFFECT CATALOG, AND THE RELEASE LEASE
 -- ────────────────────────────────────────────────────────────────────────────────────────────
@@ -3243,6 +3312,23 @@ BEGIN
         OLD."id", OLD."projectId", NEW."projectId";
     END IF;
   END IF;
+
+  -- THE RENDERED CACHE IS FROZEN ON A KINDED NOTICE (#582 round 6, finding 6). The clauses above
+  -- freeze the BINDING — which event, which kind, which decision, which project — and stopped
+  -- there, so `text` and `color` stayed writable. Through the 4d-ii rolling deployment that is a
+  -- live hole with two readers: a new replica DERIVES a kinded notice's content from the immutable
+  -- event and never looks at these columns, while a PREVIOUS-RELEASE 4c replica still renders the
+  -- stored strings. A direct post-commit UPDATE therefore shows one thing to the old replica and
+  -- another to the new one, and the reader that would notice is precisely the one that stopped
+  -- reading. A kinded notice's cache is a copy of a derivation, so it may be written once and not
+  -- edited; a legacy KINDLESS row has no derivation behind it and keeps its editability.
+  IF OLD."kind" IS NOT NULL THEN
+    IF NEW."text" IS DISTINCT FROM OLD."text" OR NEW."color" IS DISTINCT FROM OLD."color" THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: notice % is KINDED (`%`), so its rendered text and colour are a cache of what its event already says and may not be edited — a previous-release replica still renders these columns, and rewriting them makes two releases announce different things about one act',
+        OLD."id", OLD."kind";
+    END IF;
+  END IF;
   RETURN NEW;
 END $$;
 
@@ -3276,6 +3362,20 @@ BEGIN
     RAISE EXCEPTION
       'phase6 4d-i: notice % is stamped with decision % but names an event about %/% — the stamp and the event must be about the same thing, or retiring the notice by identity retires the wrong one',
       NEW."id", NEW."decisionId", e."entityType", e."entityId";
+  END IF;
+
+  -- A DECISION EVENT'S NOTICE NAMES ITS DECISION (#582 round 6, finding 4). The clause above
+  -- guards a stamp that IS present and said nothing about one that is absent, so a hand-run
+  -- bundle could insert a kinded `decision.forwarded` notice with the right project and the right
+  -- event and a NULL `decisionId` — and skip the correspondence entirely. That is not a cosmetic
+  -- gap: the kinded reader runs `decisionVisibleToViewer` off `decisionId`, so with none there is
+  -- no decision to judge visibility against, and the legacy null-id fallback filters pending-TEXT
+  -- notices only. The forwarding notice would be shown to viewers who cannot see the decision it
+  -- announces. NULL stays legitimate for a notice whose event is about something else.
+  IF e."entityType" = 'Decision' AND NEW."decisionId" IS NULL THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: notice % names event %, which is about decision %, but carries no `decisionId` — a notice about a decision is READ through that stamp (the kinded reader judges visibility by it), and an unstamped one is rendered to viewers the decision itself would exclude',
+      NEW."id", NEW."eventId", e."entityId";
   END IF;
   RETURN NULL;
 END $$;
@@ -4091,8 +4191,9 @@ CREATE TRIGGER "DecisionEvent_t4d_append_only"
 -- 19; #582's round 5, finding 7). Every other sealed branch has a FACT TABLE to claim from —
 -- a forward, a countersign, a stranded resolution, a transition. The re-notification has none:
 -- it re-emits `decision.awaiting_countersign` for a crossing, and the only durable row the act
--- writes is its audit entry. Without a claimant here, the moment 4d-ii sets `pairingRequired` on
--- that key the legitimate `decisions.effects` transaction writes its event and its audit row,
+-- writes is its audit entry. Without a claimant here, the moment 4d-i-b sets `pairingRequired` on
+-- that key (the pairing switch-on unit §D carves out of this one) the legitimate
+-- `decisions.effects` transaction writes its event and its audit row,
 -- creates no claim, and `DomainEvent_t4d_pairing_claimed` aborts it AT COMMIT — the seal killing
 -- the act it was built to witness.
 --
@@ -4394,12 +4495,55 @@ BEGIN
   RETURN NEW;
 END $$;
 
+-- THE PAIR IS WRITTEN AS A PAIR (#582 round 6, finding 5). The freeze above governs UPDATE only,
+-- so through the 4d-i → 4d-iii window a direct INSERT could supply a role with no name, or a name
+-- with no role — and the DELIVERED append-only seal then makes that half-attribution PERMANENT.
+-- 4d-iii's "future inserts must carry the pair" cannot repair a row already committed, and the
+-- consequence is not merely untidy: 4d-ii builds the response push audience from a request's
+-- frozen `requestedByRole`, so a fabricated role with no name to contradict it steers who gets
+-- told. A CHECK is the right instrument because it binds every writer at every moment, including
+-- the ones this unit cannot see; the all-null legacy shape stays admitted, which is what keeps
+-- the drain window open for the previous release.
+DO $$ BEGIN
+  ALTER TABLE "DecisionConsultation" ADD CONSTRAINT "DecisionConsultation_t4d_attribution_pair_check"
+    CHECK (("requestedByRole" IS NULL) = ("requestedByName" IS NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE "DecisionConsultationResponse" ADD CONSTRAINT "DecisionConsultationResponse_t4d_attribution_pair_check"
+    CHECK (("respondedByRole" IS NULL) = ("respondedByName" IS NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- and a pair that IS present is judged at INSERT, not only frozen afterwards: a blank role or a
+-- blank name satisfies the CHECK above (neither is null) while attributing nothing at all.
+CREATE OR REPLACE FUNCTION phase6_t4d_consultation_attribution_present() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_role TEXT; v_name TEXT;
+BEGIN
+  IF TG_TABLE_NAME = 'DecisionConsultation' THEN
+    v_role := NEW."requestedByRole"; v_name := NEW."requestedByName";
+  ELSE
+    v_role := NEW."respondedByRole"; v_name := NEW."respondedByName";
+  END IF;
+  IF v_role IS NULL THEN RETURN NEW; END IF;   -- the legacy all-null shape, admitted by the CHECK
+  IF btrim(v_role, E' \t\n\x0B\f\r') = '' OR btrim(v_name, E' \t\n\x0B\f\r') = '' THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: %.% carries a blank attribution pair (role `%`, name `%`) — the pair is evidence of WHO acted, it is frozen the moment it lands, and a blank half attributes nothing while looking attributed',
+      TG_TABLE_NAME, NEW."id", COALESCE(v_role, '<null>'), COALESCE(v_name, '<null>');
+  END IF;
+  RETURN NEW;
+END $$;
+
 DROP TRIGGER IF EXISTS "DecisionConsultation_t4d_attribution" ON "DecisionConsultation";
 CREATE TRIGGER "DecisionConsultation_t4d_attribution" BEFORE UPDATE ON "DecisionConsultation"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_consultation_attribution_frozen();
 DROP TRIGGER IF EXISTS "DecisionConsultationResponse_t4d_attribution" ON "DecisionConsultationResponse";
 CREATE TRIGGER "DecisionConsultationResponse_t4d_attribution" BEFORE UPDATE ON "DecisionConsultationResponse"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_consultation_attribution_frozen();
+DROP TRIGGER IF EXISTS "DecisionConsultation_t4d_attribution_present" ON "DecisionConsultation";
+CREATE TRIGGER "DecisionConsultation_t4d_attribution_present" BEFORE INSERT ON "DecisionConsultation"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_consultation_attribution_present();
+DROP TRIGGER IF EXISTS "DecisionConsultationResponse_t4d_attribution_present" ON "DecisionConsultationResponse";
+CREATE TRIGGER "DecisionConsultationResponse_t4d_attribution_present" BEFORE INSERT ON "DecisionConsultationResponse"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_consultation_attribution_present();
 
 -- ── one re-notification per crossing ─────────────────────────────────────────────────────────
 -- When the architect set changes while a decision awaits countersign, the new holder is notified

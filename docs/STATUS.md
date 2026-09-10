@@ -61,6 +61,20 @@ contain. Run against the head Codex reviewed (`cb9b1e23`) it is RED on twelve `m
 per seal finding, plus the operations arm and the coverage arm — while the seal-stripped harness
 was green throughout. Both harnesses are kept; they answer different questions.
 
+### The pairing switch-on is CARVED OUT of 4d-i as its own unit, 4d-i-b
+
+On JagPat's instruction during #582's review round 6, the part of §A.3
+obligation 7 that TURNS PAIRING ON leaves this unit and becomes a sixth 4d PR,
+`4d-i-b`, ordered between 4d-i and 4d-ii-a. 4d-i keeps the whole MECHANISM —
+the `DomainEventPairingClaim` register and its seals, the
+`platform_claim_event_pairing` primitive, the kernel's
+`DomainEvent_t4d_pairing_claimed` seal, and the catalog's `pairingRequired`
+column seeded `false` on every row — so nothing in this unit demands a claim.
+4d-i-b installs `ChangeRequest_t4d_paired`, the remaining per-branch claimants,
+and the six catalog rows flipped to `pairingRequired = true` under a new
+coverage version. §D of the plan carries the full inventory and the ordering
+argument; #582's round 6, finding 3 is answered there rather than in this unit.
+
 `reviewed_merge` stays `1fb8f531` — the last REVIEWED merge — and `next_task`
 stays `phase-6-task-4d`, which names the task stop the remaining units hang off.
 

@@ -38,8 +38,10 @@ const INVENTORY: Record<string, string[]> = {
     'DecisionApprovalRevision_t4d_flip_paired',
     'DecisionApprovalRevision_t4d_one_flip',
   ],
-  DecisionConsultation: ['DecisionConsultation_t4d_attribution'],
-  DecisionConsultationResponse: ['DecisionConsultationResponse_t4d_attribution'],
+  DecisionConsultation: ['DecisionConsultation_t4d_attribution',
+    'DecisionConsultation_t4d_attribution_present'],
+  DecisionConsultationResponse: ['DecisionConsultationResponse_t4d_attribution',
+    'DecisionConsultationResponse_t4d_attribution_present'],
   DecisionCountersign: [
     'DecisionCountersign_t4d_append_only',
     'DecisionCountersign_t4d_no_truncate',
@@ -76,6 +78,7 @@ const INVENTORY: Record<string, string[]> = {
   Membership: [
     'Membership_t4d_architect_provenance',
     'Membership_t4d_architect_reserved',
+    'Membership_t4d_fact_first',
     'Membership_t4d_holder_guard',
     'Membership_t4d_no_truncate',
     'Membership_t4d_role_standing',
