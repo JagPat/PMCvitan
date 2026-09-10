@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { wipeDecisionEvents } from './fixtures';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
@@ -536,7 +537,7 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } })).status).toBe('recorded');
     // cleanup: the unpublished record draft is discardable (its drafted/draft_updated events
     // are not approval evidence); the temp identity leaves
-    await t.prisma.decisionEvent.deleteMany({ where: { decisionId: d.id } });
+    await wipeDecisionEvents(t.prisma, { decisionId: d.id });
     await t.prisma.decision.delete({ where: { id: d.id } });
     await t.prisma.membership.delete({ where: { projectId_userId: { projectId, userId: tempId } } });
     await t.prisma.user.delete({ where: { id: tempId } });
@@ -692,7 +693,7 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     expect(after.deciderKind).toBe('none');
     expect(after.photoSwatch).toBeNull();
     // cleanup: the unpublished record draft is discardable (no approval evidence)
-    await t.prisma.decisionEvent.deleteMany({ where: { decisionId: d.id } });
+    await wipeDecisionEvents(t.prisma, { decisionId: d.id });
     await t.prisma.decision.delete({ where: { id: d.id } });
   });
 
@@ -852,7 +853,7 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     const other = await patch(engBToken)(`/projects/${projectId}/decisions/${d.id}/draft`, { title: 'not yours' });
     expect(other.status).toBe(403);
     // cleanup (an unpublished draft is discardable)
-    await t.prisma.decisionEvent.deleteMany({ where: { decisionId: d.id } });
+    await wipeDecisionEvents(t.prisma, { decisionId: d.id });
     await t.prisma.decisionOption.deleteMany({ where: { decisionId: d.id } });
     await t.prisma.decision.delete({ where: { id: d.id } });
     await t.prisma.membership.delete({ where: { projectId_userId: { projectId, userId: tempId } } });

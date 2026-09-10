@@ -2769,3 +2769,697 @@ BEGIN
       tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
   END IF;
 END $$;
+
+-- -- the two 4c consultation seals, open set widened ------------------------------------------
+-- These CANNOT be widened by a second trigger: the delivered seals REFUSE an
+-- `awaiting_countersign` decision, and no other trigger can un-refuse what one has raised on. So
+-- both functions are reproduced here VERBATIM with exactly ONE token changed in each -- the open
+-- set gains `awaiting_countersign` -- and nothing else moves.
+--
+-- In particular the REQUESTER ARM stays on `phase6_user_decision_authority`, byte-identical.
+-- That is the WINDOW RULE of A.2 (#566's review round 2, finding 1): through the drain a
+-- membership-less org owner/admin has no fanned-out `pmc` row, so re-pointing the arm onto the
+-- register here would refuse exactly the requester the delivered access path authorizes.
+-- 4d-iii re-points it after the fenced re-projection, when the register can answer.
+--
+-- The bodies are PINNED before they are replaced. `CREATE OR REPLACE` on a function whose
+-- delivered body has changed since would silently revert that change, so the migration asserts
+-- the body it is about to overwrite is the one it was written against and ABORTS otherwise --
+-- the same claim the repository's `t3c seals` preflight makes about function-BODY identity.
+DO $pin$
+DECLARE v_body TEXT; v_name TEXT;
+BEGIN
+  FOREACH v_name IN ARRAY ARRAY[
+    'phase6_t4c_consultation_request_seal', 'phase6_t4c_consultation_response_seal'
+  ] LOOP
+    SELECT prosrc INTO v_body FROM pg_proc WHERE proname = v_name;
+    IF v_body IS NULL THEN
+      RAISE EXCEPTION 'phase6 4d-i: % does not exist -- 4d-i widens the 4c consultation open set and cannot do so over a database that never installed it', v_name;
+    END IF;
+    -- Nested dollar quoting, so the searched fragment carries its own single quotes
+    -- literally and no doubling has to be got right by eye.
+    IF strpos(v_body, $frag$'pending', 'change'$frag$) = 0 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i ABORT: the body of % no longer carries the delivered open set this migration was written to widen. Replacing it now would silently revert whatever changed it. Re-derive the widening against the current body before deploying. See docs/RUNBOOK.md P6T4D.',
+        v_name;
+    END IF;
+  END LOOP;
+END $pin$;
+
+CREATE OR REPLACE FUNCTION phase6_t4c_consultation_request_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_user TEXT; d RECORD; v_cycle INT;
+BEGIN
+  -- §B.1 try-acquire-or-refuse: reentrant on the service path (the command already holds the
+  -- key), acquired and held to commit on a free direct write, REFUSED when contended — a seal
+  -- never waits inside a trigger, so no lock-order inversion can exist.
+  IF NOT phase6_try_readiness(NEW."projectId") THEN
+    RAISE EXCEPTION 'phase6-4c: the project readiness key is held elsewhere — this direct consultation write is refused rather than waiting inside a trigger (%)', NEW."id";
+  END IF;
+  IF NOT phase6_project_operable(NEW."projectId") THEN
+    RAISE EXCEPTION 'phase6-4c: project % is archived — no consultation may be recorded against it', NEW."projectId";
+  END IF;
+
+  v_user := phase6_membership_active_user(NEW."projectId", NEW."consulteeMembershipId");
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'phase6-4c: the consultee membership is not ACTIVE on this project — a request for a removed member would become answerable if they were ever restored (%)', NEW."id";
+  END IF;
+  -- the WRONG-AUDIENCE forgery: `consulteeUserId` is the projection's REBUILDABLE audience, so an
+  -- arbitrary user there would mint a projected slice — and a widened view — for a stranger.
+  IF NEW."consulteeUserId" IS DISTINCT FROM v_user THEN
+    RAISE EXCEPTION 'phase6-4c: the recorded audience is not the user this membership resolves to — the canonical audience may not be forged (%)', NEW."id";
+  END IF;
+  -- the contract's actor-standing obligation, applied to this fact's RECORDED actor
+  IF NOT phase6_user_decision_authority(NEW."projectId", NEW."requestedById") THEN
+    RAISE EXCEPTION 'phase6-4c: the recorded requester holds no active authority to ask for advice on this project (%)', NEW."id";
+  END IF;
+
+  SELECT "status"::text AS status, "publishedAt" INTO d FROM "Decision"
+   WHERE "projectId" = NEW."projectId" AND "id" = NEW."decisionId" FOR SHARE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'phase6-4c: decision % is not in this project', NEW."decisionId";
+  END IF;
+  -- eligibility: PUBLISHED (status alone admits an author-private draft whose status is
+  -- `pending`) and still OPEN. Never `withdrawn` (whose title and reason are pmc-only — a
+  -- consultation there leaks exactly what 4a hides), `approved` or `recorded` (nothing to inform).
+  IF d."publishedAt" IS NULL OR d.status NOT IN ('pending', 'change', 'awaiting_countersign') THEN
+    RAISE EXCEPTION 'phase6-4c: a consultation belongs only to a PUBLISHED, still-open decision — % is not one', NEW."decisionId";
+  END IF;
+
+  -- the INITIAL cycle is SEALED, not merely compared later: a command bug storing `current + 1`
+  -- would mint a consultation unanswerable now that becomes answerable after ONE approve-and-
+  -- reopen — the exact revival this column exists to prevent, arriving through a legitimate writer.
+  SELECT count(*) INTO v_cycle FROM "DecisionApprovalRevision" r WHERE r."decisionId" = NEW."decisionId";
+  IF NEW."openCycle" IS DISTINCT FROM v_cycle THEN
+    RAISE EXCEPTION 'phase6-4c: the frozen open cycle % is not the decision''s current approval count % — a consultation is born in the cycle it was asked in', NEW."openCycle", v_cycle;
+  END IF;
+
+  PERFORM phase6_t4c_provenance_reserved(NEW."projectId", NEW."sourceCommandId", 'consultations.request', NEW."requestedById", NEW."id");
+  RETURN NEW;
+END $$;
+
+CREATE OR REPLACE FUNCTION phase6_t4c_consultation_response_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE c RECORD; v_user TEXT; d RECORD; v_cycle INT;
+BEGIN
+  IF NOT phase6_try_readiness(NEW."projectId") THEN
+    RAISE EXCEPTION 'phase6-4c: the project readiness key is held elsewhere — this direct response write is refused rather than waiting inside a trigger (%)', NEW."id";
+  END IF;
+  IF NOT phase6_project_operable(NEW."projectId") THEN
+    RAISE EXCEPTION 'phase6-4c: project % is archived — no advice may be recorded against it', NEW."projectId";
+  END IF;
+
+  SELECT "consulteeMembershipId", "openCycle", "decisionId" INTO c FROM "DecisionConsultation"
+   WHERE "projectId" = NEW."projectId" AND "id" = NEW."consultationId";
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'phase6-4c: no consultation % in this project', NEW."consultationId";
+  END IF;
+
+  v_user := phase6_membership_active_user(NEW."projectId", c."consulteeMembershipId");
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'phase6-4c: the consultee membership is no longer ACTIVE — a removed member cannot append immutable advice (%)', NEW."id";
+  END IF;
+  -- without a recorded actor compared against the named consultee, a raw writer could forge advice
+  -- presented forever as the member's own
+  IF NEW."respondedById" IS DISTINCT FROM v_user THEN
+    RAISE EXCEPTION 'phase6-4c: only the named consultee may be recorded as the responder (%)', NEW."id";
+  END IF;
+
+  SELECT "status"::text AS status, "publishedAt" INTO d FROM "Decision"
+   WHERE "projectId" = NEW."projectId" AND "id" = NEW."decisionId" FOR SHARE;
+  IF NOT FOUND OR d."publishedAt" IS NULL OR d.status NOT IN ('pending', 'change', 'awaiting_countersign') THEN
+    RAISE EXCEPTION 'phase6-4c: advice belongs only to a PUBLISHED, still-open decision — % is not one', NEW."decisionId";
+  END IF;
+
+  -- eligibility is not a STATUS test alone. Approve then `requestChange` returns the decision to
+  -- an open status while the append-only consultation row remains by design; a status-only guard
+  -- would REVIVE a consultation the approval already closed and mix two decision cycles in one
+  -- immutable thread. Asking again in the new cycle means a NEW consultation.
+  SELECT count(*) INTO v_cycle FROM "DecisionApprovalRevision" r WHERE r."decisionId" = NEW."decisionId";
+  IF c."openCycle" IS DISTINCT FROM v_cycle THEN
+    RAISE EXCEPTION 'phase6-4c: this consultation belongs to cycle %, and the decision is now in cycle % — an approval permanently closes the consultations of the cycle it ended', c."openCycle", v_cycle;
+  END IF;
+
+  PERFORM phase6_t4c_provenance_reserved(NEW."projectId", NEW."sourceCommandId", 'consultations.respond', NEW."respondedById", NEW."id");
+  RETURN NEW;
+END $$;
+
+-- ── the architect arms: SEPARATE triggers, the delivered arms untouched ──────────────────────
+-- §D asks for "SEPARATE architect arms over `platform_role_standing`, the delivered `client`/`pmc`
+-- arms untouched" (#565's review round 1, finding 1). Separate TRIGGERS, not a rewritten
+-- function: `phase6_t4b2_decision_seal` and `phase6_t4b2_membership_guard` are large delivered
+-- objects, and reproducing either to add one arm risks reverting a change made since. A second
+-- trigger adds refusals without touching a byte of the first, and `t4d` sorts after `t4b2`, so
+-- the delivered arms still refuse first for every role they already judge.
+--
+-- WHY THE ARCHITECT ARM READS A DIFFERENT PRIMITIVE: `phase6_effective_role_standing` answers
+-- for `client`/`pmc` and knows nothing of `architect` — it is the delivered orgs derivation, and
+-- teaching it the new role would put the chain's meaning in the wrong module. The architect
+-- count lives in the platform register, so the architect arm reads `platform_role_standing`.
+
+CREATE OR REPLACE FUNCTION phase6_t4d_holder_standing_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW."deciderKind"::text <> 'architect' THEN RETURN NEW; END IF;
+
+  -- A row born ALREADY PUBLISHED, and the publication boundary, and the reopen — the same three
+  -- boundaries the delivered seal judges for `client`/`pmc`, asked of the architect role.
+  IF (TG_OP = 'INSERT' AND NEW."publishedAt" IS NOT NULL
+      AND NEW."status"::text IN ('pending', 'change'))
+     OR (TG_OP = 'UPDATE' AND OLD."publishedAt" IS NULL AND NEW."publishedAt" IS NOT NULL)
+     OR (TG_OP = 'UPDATE' AND OLD."status"::text = 'approved' AND NEW."status"::text = 'change') THEN
+    IF platform_role_standing(NEW."projectId", 'architect') = 0 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: this project has no active architect — a decision designated to the architect role would be born with nobody able to decide it (decision %)',
+        NEW."id";
+    END IF;
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "Decision_t4d_holder_standing" ON "Decision";
+CREATE TRIGGER "Decision_t4d_holder_standing" BEFORE INSERT OR UPDATE ON "Decision"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_holder_standing_seal();
+
+-- ── the membership guard's widened open set, and its ONE named exemption ─────────────────────
+-- P39 states the rule exactly, and it is two claims, not one:
+--
+--   * THE OPEN SET WIDENS. An `awaiting_countersign` decision is OPEN, so removing or re-roling
+--     its NAMED holder, or the last active member of its ROLE designation, is refused — at the
+--     command through `holdsOpenDecisions` (4d-ii) and here at the database.
+--
+--   * THE ONE EXEMPTION. Removing the LAST ARCHITECT is NOT refused, even when that architect is
+--     the named holder of an awaiting decision or the last member of the architect ROLE
+--     designation it names. That departure DEACTIVATES the chain and STRANDS the decision, which
+--     is a defined state with a named command to resolve it
+--     (`decisions.resolveStrandedCountersign`); refusing it would instead trap the project —
+--     the architect could never leave while any decision awaited their countersign.
+--
+--   The exemption is narrow in both directions, and both are probed:
+--     · a named holder who IS an architect but NOT the last is REFUSED, naming the pending
+--       countersign — the chain survives their departure, so the decision is not stranded and
+--       has no defined resolution;
+--     · a `pending`/`change` decision designated to the architect ROLE still REFUSES removing
+--       its last architect — that decision is not awaiting a countersign, it is waiting for a
+--       DECISION, and stranding has nothing to say about it.
+--
+-- The delivered `phase6_decisions_hold_role` / `phase6_decisions_name_membership` are LEFT
+-- ALONE. Widening them would make the DELIVERED guard — which has no exemption — refuse the last
+-- architect's departure, which is the one thing this rule exists to permit. So the widened open
+-- set lives in this trigger's own predicates.
+--
+-- AFTER ROW, like the guard it sits beside, and the count it reads is therefore the POST-write
+-- one: `Membership_t4d_role_standing` is a BEFORE trigger and has already applied its delta.
+CREATE OR REPLACE FUNCTION phase6_t4d_membership_guard() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+  v_project    TEXT := COALESCE(NEW."projectId", OLD."projectId");
+  v_lost_role  TEXT;
+  v_membership TEXT;
+  v_architects INT;
+BEGIN
+  -- Only a write that can REDUCE holder-relevant standing is judged; a pure display or limit
+  -- update passes untouched, exactly as the delivered guard decides it.
+  IF TG_OP = 'UPDATE'
+     AND NEW."status" IS NOT DISTINCT FROM OLD."status"
+     AND NEW."role" IS NOT DISTINCT FROM OLD."role" THEN
+    RETURN NULL;
+  END IF;
+  IF TG_OP = 'INSERT' THEN RETURN NULL; END IF;
+  IF OLD."status" <> 'active' THEN RETURN NULL; END IF;
+  IF TG_OP = 'UPDATE' AND NEW."status" = 'active' AND NEW."role" IS NOT DISTINCT FROM OLD."role" THEN
+    RETURN NULL;
+  END IF;
+
+  v_lost_role  := OLD."role";
+  v_membership := OLD."id";
+  v_architects := platform_role_standing(v_project, 'architect');
+
+  IF NOT phase6_try_readiness(v_project) THEN
+    RAISE EXCEPTION 'phase6 4d-i: the project readiness key is contended — retry this membership change (project %)', v_project;
+  END IF;
+
+  -- (a) the NAMED holder of an AWAITING decision
+  IF EXISTS (
+    SELECT 1 FROM "Decision" d
+     WHERE d."projectId" = v_project AND d."deciderMembershipId" = v_membership
+       AND d."publishedAt" IS NOT NULL AND d."status"::text = 'awaiting_countersign'
+  ) AND NOT (v_lost_role = 'architect' AND v_architects = 0) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: membership % is the named holder of a decision awaiting countersign — resolve or forward it before removing them (project %). The one exception is the LAST architect leaving, which deactivates the chain and strands the decision for `decisions.resolveStrandedCountersign`; this project still holds % active architect(s).',
+      v_membership, v_project, v_architects;
+  END IF;
+
+  -- (b) the last active member of a ROLE designation
+  IF v_lost_role = 'architect' AND v_architects = 0 THEN
+    -- The exemption covers AWAITING decisions only. A `pending`/`change` decision designated to
+    -- the architect role is waiting for a DECISION, not for a countersign, and stranding has
+    -- nothing to say about it.
+    IF EXISTS (
+      SELECT 1 FROM "Decision" d
+       WHERE d."projectId" = v_project AND d."deciderKind"::text = 'architect'
+         AND d."publishedAt" IS NOT NULL AND d."status"::text IN ('pending', 'change')
+    ) THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: this change leaves NO active architect while a published OPEN decision is designated to that role (project %) — such a decision is waiting to be DECIDED, not countersigned, so no stranded resolution covers it; forward it or restore standing first',
+        v_project;
+    END IF;
+  ELSIF EXISTS (
+    SELECT 1 FROM "Decision" d
+     WHERE d."projectId" = v_project AND d."deciderKind"::text = v_lost_role
+       AND d."publishedAt" IS NOT NULL AND d."status"::text = 'awaiting_countersign'
+  ) AND (
+    (v_lost_role = 'architect' AND v_architects = 0)
+    OR (v_lost_role <> 'architect' AND phase6_effective_role_standing(v_project, v_lost_role) = 0)
+  ) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: this change leaves NO effective % holder while a decision awaiting countersign is designated to that role (project %) — cover it first',
+      v_lost_role, v_project;
+  END IF;
+
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS "Membership_t4d_holder_guard" ON "Membership";
+CREATE TRIGGER "Membership_t4d_holder_guard"
+  AFTER UPDATE OR DELETE ON "Membership"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_membership_guard();
+
+-- ────────────────────────────────────────────────────────────────────────────────────────────
+-- PART 3e (cont.) — THE APPROVAL REGISTER'S FINALITY KEY
+-- ────────────────────────────────────────────────────────────────────────────────────────────
+--
+-- THE DELIVERED SEAL IS REPLACED, NEVER STACKED UNDER. The register carries
+-- `DecisionApprovalRevision_append_only` (`phase3_immutable_row()`), which rejects EVERY UPDATE
+-- — so the countersign's `finalized` false→true flip would abort before the pairing trigger
+-- judged it. 4d-i therefore DROPS that trigger in the same transaction that installs the
+-- register's own replacement. The old trigger ABSENT and the replacement PRESENT by name are
+-- both asserted below, and join `upgrade-proof.sh`.
+--
+-- The replacement is STRICTLY NARROWER than what it replaces in every direction but one: every
+-- DELETE is still refused, every other column is still frozen, and the ONE thing it newly admits
+-- is the `finalized` false→true flip — paired, by the deferred trigger of §B.4, to the fact that
+-- performed it.
+DROP TRIGGER IF EXISTS "DecisionApprovalRevision_append_only" ON "DecisionApprovalRevision";
+
+CREATE OR REPLACE FUNCTION phase6_t4d_revision_one_flip() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION
+      'DecisionApprovalRevision is append-only: DELETE is forbidden (revision %)', OLD."id";
+  END IF;
+
+  -- Every column but `finalized` compared OLD to NEW. Enumerated rather than "everything except
+  -- the one" so a column ADDED later is frozen by default: an unlisted column would otherwise be
+  -- silently rewritable the day it appears, which is the failure shape a seal exists to prevent.
+  IF NEW."id" IS DISTINCT FROM OLD."id"
+     OR NEW."projectId" IS DISTINCT FROM OLD."projectId"
+     OR NEW."decisionId" IS DISTINCT FROM OLD."decisionId"
+     OR NEW."version" IS DISTINCT FROM OLD."version"
+     OR NEW."optionKey" IS DISTINCT FROM OLD."optionKey"
+     OR NEW."approvedAt" IS DISTINCT FROM OLD."approvedAt"
+     OR NEW."approvedById" IS DISTINCT FROM OLD."approvedById"
+     OR NEW."onBehalfOf" IS DISTINCT FROM OLD."onBehalfOf"
+     OR NEW."sourceCommandId" IS DISTINCT FROM OLD."sourceCommandId"
+     OR NEW."approvedFrom" IS DISTINCT FROM OLD."approvedFrom"
+     OR NEW."approvedByName" IS DISTINCT FROM OLD."approvedByName"
+     OR NEW."approvedByRole" IS DISTINCT FROM OLD."approvedByRole" THEN
+    RAISE EXCEPTION
+      'DecisionApprovalRevision is append-only apart from ONE transition: revision % may only have `finalized` flipped false → true, and every other column is immutable evidence of the approval act',
+      OLD."id";
+  END IF;
+
+  -- The ONE permitted transition, in ONE direction. A true→false write would un-finalize a
+  -- countersigned approval; a true→true write is a no-op that would let a writer touch the row
+  -- without changing it, which is not something any command needs to do.
+  IF NOT (OLD."finalized" = FALSE AND NEW."finalized" = TRUE) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: revision %''s finality may only move false → true (saw % → %) — un-finalizing a countersigned approval would present a settled decision as provisional',
+      OLD."id", OLD."finalized", NEW."finalized";
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "DecisionApprovalRevision_t4d_one_flip" ON "DecisionApprovalRevision";
+CREATE TRIGGER "DecisionApprovalRevision_t4d_one_flip"
+  BEFORE UPDATE OR DELETE ON "DecisionApprovalRevision"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_revision_one_flip();
+
+-- ── the BIRTH value is sealed too ────────────────────────────────────────────────────────────
+-- A revision is BORN `false` under an active chain and `true` without one. Left unsealed, a
+-- forged birth is the cheapest attack on the whole mechanism: a revision inserted `true` under a
+-- chain is a final approval no architect ever countersigned, and one inserted `false` with no
+-- chain can never be finalized, because neither finalizer exists.
+CREATE OR REPLACE FUNCTION phase6_t4d_revision_birth() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_chain BOOLEAN;
+BEGIN
+  IF NOT phase6_try_readiness(NEW."projectId") THEN
+    RAISE EXCEPTION 'phase6 4d-i: the project readiness key is held elsewhere — this direct approval-revision write is refused rather than waiting inside a trigger (revision %)', NEW."id";
+  END IF;
+  v_chain := platform_role_standing(NEW."projectId", 'architect') > 0;
+
+  IF NEW."finalized" <> (NOT v_chain) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: revision % is born finalized=% on a project whose architect chain is %, and the birth value is NOT the writer''s to choose — under a chain an approval is PROVISIONAL until countersigned, without one it is final at the act',
+      NEW."id", NEW."finalized", CASE WHEN v_chain THEN 'ACTIVE' ELSE 'inactive' END;
+  END IF;
+
+  -- A revision born PROVISIONAL owes the pair its finalizer will emit from: without
+  -- `approvedFrom` the countersign cannot know whether to emit `decision.approved` or
+  -- `decision.reapproved`, and without the frozen pair the fact seals have nothing to compare.
+  -- Legacy and drain-window rows are all born `true` and are untouched by this arm.
+  IF NEW."finalized" = FALSE AND (
+       NEW."approvedFrom" IS NULL OR NEW."approvedByName" IS NULL OR NEW."approvedByRole" IS NULL
+     ) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: revision % is born PROVISIONAL and must record the act its finalizer will emit from — `approvedFrom`, `approvedByName` and `approvedByRole` are all required on a revision born unfinalized',
+      NEW."id";
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "DecisionApprovalRevision_t4d_birth" ON "DecisionApprovalRevision";
+CREATE TRIGGER "DecisionApprovalRevision_t4d_birth"
+  BEFORE INSERT ON "DecisionApprovalRevision"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_revision_birth();
+
+-- ── the FLIP is PAIRED, in both directions (§B.4) ────────────────────────────────────────────
+-- A finalized-only flip with NEITHER pairing fact is unrepresentable. The two legal finalizers
+-- are the `DecisionCountersign` row (the chain path) and the `DecisionStrandedResolution` row
+-- with outcome `completed` (the only other one) — so the seal names both and nothing else.
+CREATE OR REPLACE FUNCTION phase6_t4d_revision_flip_paired() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD."finalized" = TRUE OR NEW."finalized" = FALSE THEN RETURN NULL; END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM "DecisionCountersign" c
+     WHERE c."projectId" = NEW."projectId" AND c."revisionId" = NEW."id"
+  ) AND NOT EXISTS (
+    SELECT 1 FROM "DecisionStrandedResolution" s
+     WHERE s."projectId" = NEW."projectId" AND s."revisionId" = NEW."id"
+       AND s."outcome" = 'completed'
+  ) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: revision % was finalized in this transaction with neither a DecisionCountersign nor a `completed` DecisionStrandedResolution naming it — a provisional approval becomes final by an ACT, and a flip with no act behind it is exactly the forgery the register exists to make impossible',
+      NEW."id";
+  END IF;
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS "DecisionApprovalRevision_t4d_flip_paired" ON "DecisionApprovalRevision";
+CREATE CONSTRAINT TRIGGER "DecisionApprovalRevision_t4d_flip_paired"
+  AFTER UPDATE ON "DecisionApprovalRevision" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_revision_flip_paired();
+
+-- The replacement is VERIFIED, not assumed: a `CREATE OR REPLACE` that silently did nothing, or
+-- a `DROP TRIGGER IF EXISTS` over a name that had already moved, would leave the register either
+-- unsealed or still blanket-immutable, and both are discovered far too late.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_trigger
+              WHERE tgname = 'DecisionApprovalRevision_append_only'
+                AND tgrelid = '"DecisionApprovalRevision"'::regclass AND NOT tgisinternal) THEN
+    RAISE EXCEPTION 'phase6 4d-i ABORT: the delivered blanket append-only trigger is still present on "DecisionApprovalRevision" — the finality flip would abort before its pairing trigger judged it.';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger
+                  WHERE tgname = 'DecisionApprovalRevision_t4d_one_flip'
+                    AND tgrelid = '"DecisionApprovalRevision"'::regclass AND NOT tgisinternal) THEN
+    RAISE EXCEPTION 'phase6 4d-i ABORT: the replacement one-flip seal is missing from "DecisionApprovalRevision" — the register would be left rewritable.';
+  END IF;
+END $$;
+
+-- ── the DecisionEvent audit register: append-only, and CORRESPONDING ─────────────────────────
+-- The delivered `DecisionEvent_no_withdrawn_approval` refuses the DELETE of an approval row.
+-- 4d-i widens that to the whole register: an audit row is the attributable record that an act
+-- happened, and a writer who can rewrite or delete one can make a past act say something else.
+-- The sanctioned reset disables it BY NAME alongside the delivered seal — that is §A.3's "one
+-- new name", and `wipeDecisionEvents` gains it in the same unit.
+CREATE OR REPLACE FUNCTION phase6_t4d_decision_event_append_only() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION
+    'phase6 4d-i: "DecisionEvent" is the attributable audit register and is append-only — % is refused (row %). The sanctioned reset (test/integration/fixtures.ts wipeDecisionEvents, prisma/seed.ts) disables this trigger BY NAME.',
+    TG_OP, COALESCE(OLD."id", '<unknown>');
+END $$;
+
+DROP TRIGGER IF EXISTS "DecisionEvent_t4d_append_only" ON "DecisionEvent";
+CREATE TRIGGER "DecisionEvent_t4d_append_only"
+  BEFORE UPDATE OR DELETE ON "DecisionEvent"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_decision_event_append_only();
+
+-- ── the WEAK converse: the (kind, committed status) table §A.3 closes ────────────────────────
+-- An audit row says an act happened. The correspondence says the same transaction must carry the
+-- EVENT that act owes, so an audit trail and a delivery stream cannot disagree about what the
+-- system did.
+--
+-- WHY A TABLE AND NOT A FUNCTION OF THE KIND (round 23, finding 1, replacing round 21's kind →
+-- type function): `approved` and `reapproved` map to DIFFERENT events depending on where the
+-- decision LANDED. The same `approved` audit row means `decision.approved` when the decision
+-- committed `approved`, and `decision.awaiting_countersign` when a chain made that approval
+-- PROVISIONAL. A function of the kind alone cannot tell them apart, and would demand the wrong
+-- event for one of the two.
+--
+-- DEFERRED, because the delivered writers insert the audit row BEFORE they emit
+-- (`decisions.service.ts`), so an immediate check would judge a transaction that is still
+-- correct and merely unfinished. Judged at COMMIT, when the whole transaction is visible.
+--
+-- WEAK, because this is the 4d-i body: it derives the required event from the TRANSITION alone.
+-- 4d-iii replaces it with the FULL converse, which also demands the FACT. A `DecisionEvent`
+-- written for a transition this table does not list — the delivered `issued`, `drafted`,
+-- `draft_updated`, and `withdrawn` — is untouched: the seal judges only what it admits.
+CREATE OR REPLACE FUNCTION phase6_t4d_event_correspondence_weak() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+  v_status   TEXT;
+  v_project  TEXT;
+  v_required TEXT[];
+BEGIN
+  SELECT d."status"::text, d."projectId" INTO v_status, v_project
+    FROM "Decision" d WHERE d."id" = NEW."decisionId";
+  IF v_status IS NULL THEN RETURN NULL; END IF;
+
+  -- THE TABLE. Each row is (audit kind, the status the decision COMMITTED in) → the event types
+  -- that kind owes there. A disjunction where the pair genuinely admits two: a countersign emits
+  -- `decision.approved` or `decision.reapproved` by the revision's own `approvedFrom`, and which
+  -- one is the finalizer's business, not this seal's.
+  v_required := CASE
+    WHEN NEW."type" = 'approved'    AND v_status = 'approved'              THEN ARRAY['decision.approved']
+    WHEN NEW."type" = 'approved'    AND v_status = 'awaiting_countersign'  THEN ARRAY['decision.awaiting_countersign']
+    WHEN NEW."type" = 'reapproved'  AND v_status = 'approved'              THEN ARRAY['decision.reapproved']
+    WHEN NEW."type" = 'reapproved'  AND v_status = 'awaiting_countersign'  THEN ARRAY['decision.awaiting_countersign']
+    WHEN NEW."type" = 'countersigned'      AND v_status = 'approved'       THEN ARRAY['decision.approved', 'decision.reapproved']
+    WHEN NEW."type" = 'stranded_resolved'  AND v_status = 'approved'       THEN ARRAY['decision.approved', 'decision.reapproved']
+    WHEN NEW."type" = 'stranded_resolved'  AND v_status = 'change'         THEN ARRAY['decision.change_requested']
+    WHEN NEW."type" = 'change_requested'   AND v_status = 'change'         THEN ARRAY['decision.change_requested']
+    WHEN NEW."type" = 'change_withdrawn'   AND v_status = 'approved'       THEN ARRAY['decision.change_withdrawn']
+    WHEN NEW."type" = 'forwarded'                                          THEN ARRAY['decision.forwarded']
+    WHEN NEW."type" = 'countersign_renotified'                             THEN ARRAY['decision.awaiting_countersign']
+    ELSE NULL
+  END;
+  IF v_required IS NULL THEN RETURN NULL; END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM "DomainEvent" e
+     WHERE e."projectId" = v_project
+       AND e."entityType" = 'Decision' AND e."entityId" = NEW."decisionId"
+       AND e."eventType" = ANY (v_required)
+  ) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: the `%` audit row for decision % (committed `%`) has no matching % event in this transaction — the audit register and the delivery stream record the SAME act, and one without the other is a system that cannot say what it did',
+      NEW."type", NEW."decisionId", v_status, array_to_string(v_required, ' or ');
+  END IF;
+  RETURN NULL;
+END $$;
+
+-- MARKER-AWARE (§D; #572's review round 23, finding 2). On a fresh install or an ordinary
+-- upgrade this weak body is correct and is installed. On a P3005 BASELINE REPLAY of a MATURE
+-- database — one where `RolloutRetirement` already carries `phase6-4d` — 4d-iii has already
+-- replaced this trigger with the FULL converse, and re-pointing it here would DOWNGRADE a live
+-- seal while waiting for a stage that has already run.
+--
+-- The guard is therefore "leave it alone", not "install 4d-iii's body". Carrying a copy of a
+-- later unit's body in this file would mean two definitions of one seal drifting apart, and the
+-- outcome the plan asks for — the mature database keeps the full body — is exactly what NOT
+-- touching it produces.
+DO $$
+BEGIN
+  IF phase6_t4d_retired() THEN
+    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — DecisionEvent_t4d_correspondence is left as 4d-iii installed it (this is a replay over a retired database; re-pointing it here would downgrade the live seal to the weak body)';
+    RETURN;
+  END IF;
+  DROP TRIGGER IF EXISTS "DecisionEvent_t4d_correspondence" ON "DecisionEvent";
+  CREATE CONSTRAINT TRIGGER "DecisionEvent_t4d_correspondence"
+    AFTER INSERT ON "DecisionEvent" DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION phase6_t4d_event_correspondence_weak();
+END $$;
+
+-- ── the stream ALLOCATION seal ───────────────────────────────────────────────────────────────
+-- `ProjectEventStream.nextPosition` is the allocator for `DomainEvent.streamPosition`, and the
+-- ordering guarantee every projection cursor rests on is that a position is issued ONCE and the
+-- counter never trails the stream. Two arms:
+--
+--   · IMMEDIATE — the counter is strictly increasing. A decrease would re-issue positions that
+--     already carry events, and the `(projectId, streamPosition)` unique would then reject the
+--     next legitimate emission rather than the write that caused it.
+--   · DEFERRED — at commit the counter is AHEAD of every position actually used. Stated as
+--     `>` and not `=` deliberately: the sanctioned reset truncates `DomainEvent` without
+--     resetting the allocator, which is correct (a position must never be reused, least of all
+--     after a wipe), and an equality rule would refuse the first emission after every reset.
+CREATE OR REPLACE FUNCTION platform_t4d_stream_allocation() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' AND NEW."nextPosition" <= OLD."nextPosition" THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: the event-stream allocator for project % may only advance (saw % → %) — moving it back re-issues positions that already carry events, and the collision would then be reported against the next legitimate emission rather than against this write',
+      OLD."projectId", OLD."nextPosition", NEW."nextPosition";
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE OR REPLACE FUNCTION platform_t4d_stream_allocation_bound() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_max BIGINT; v_next BIGINT;
+BEGIN
+  -- READ THE COUNTER, do not trust NEW. A DEFERRED constraint trigger fires once per UPDATE and
+  -- each firing carries the row image FROM THAT UPDATE — not the committed one. `emitEvent`
+  -- increments this counter once per event, so a transaction emitting TWO events queues two
+  -- firings: the first holds `nextPosition = 1` while the transaction ends with positions 0 AND
+  -- 1 used. Comparing that stale snapshot against the final stream refuses a correct
+  -- transaction, which is exactly what it did — 55 suites, every one of them emitting more than
+  -- one event in a command.
+  --
+  -- The claim is about the state AT COMMIT, so both sides are read at commit.
+  SELECT "nextPosition" INTO v_next FROM "ProjectEventStream" WHERE "projectId" = NEW."projectId";
+  IF v_next IS NULL THEN RETURN NULL; END IF;
+  SELECT max("streamPosition") INTO v_max FROM "DomainEvent" WHERE "projectId" = NEW."projectId";
+  IF v_next <= COALESCE(v_max, -1) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: the event-stream allocator for project % committed at % while position % is already used — the allocator must stay ahead of the stream or the next emission collides',
+      NEW."projectId", v_next, v_max;
+  END IF;
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS "ProjectEventStream_t4d_allocation" ON "ProjectEventStream";
+CREATE TRIGGER "ProjectEventStream_t4d_allocation"
+  BEFORE UPDATE ON "ProjectEventStream"
+  FOR EACH ROW EXECUTE FUNCTION platform_t4d_stream_allocation();
+
+DROP TRIGGER IF EXISTS "ProjectEventStream_t4d_allocation_bound" ON "ProjectEventStream";
+CREATE CONSTRAINT TRIGGER "ProjectEventStream_t4d_allocation_bound"
+  AFTER INSERT OR UPDATE ON "ProjectEventStream" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION platform_t4d_stream_allocation_bound();
+
+-- ── the two kernel TRANSACTION reads ─────────────────────────────────────────────────────────
+-- §A.3 obligation 7 asks a fact's seal "is the effect this act owes present in THIS transaction?"
+-- Every such seal asks it the same way, so it is asked once here. Platform-owned, because the
+-- effect tables are the kernel's; a decisions seal calling these reads no peer table.
+--
+-- They are the VERIFICATION side of the pairing, not the claiming side: a bundle's non-primary
+-- facts check through these and never write a claim (§A.3 — one claimant per event branch).
+CREATE OR REPLACE FUNCTION platform_tx_event(
+  p_project TEXT, p_entity_type TEXT, p_entity TEXT, p_types TEXT[]
+) RETURNS TEXT LANGUAGE sql STABLE AS $$
+  SELECT e."eventId" FROM "DomainEvent" e
+   WHERE e."projectId" = p_project
+     AND e."entityType" = p_entity_type AND e."entityId" = p_entity
+     AND e."eventType" = ANY (p_types)
+   ORDER BY e."streamPosition" DESC
+   LIMIT 1;
+$$;
+
+CREATE OR REPLACE FUNCTION platform_tx_notification(p_project TEXT, p_event TEXT)
+RETURNS TEXT LANGUAGE sql STABLE AS $$
+  SELECT n."id" FROM "Notification" n
+   WHERE n."projectId" = p_project AND n."eventId" = p_event
+   LIMIT 1;
+$$;
+
+-- ── the spec tables' finality CARRIER ────────────────────────────────────────────────────────
+-- A requirement spec's provenance is an approval that REALLY happened — the delivered FK already
+-- says that. 4d adds a second claim: it must be an approval that is FINAL. Under a chain an
+-- approval is provisional until countersigned, and a material or labour demand derived from one
+-- would be a commitment made on a decision nobody has finished making.
+--
+-- The mechanism is an FK, not a trigger. `revisionFinalized` exists to CARRY the referenced
+-- value: the provenance FK is re-targeted at a widened candidate key that includes the
+-- register's `finalized`, so a spec whose carrier says `true` can only bind a revision that IS
+-- finalized, judged by the database on every write with no rule for anyone to remember.
+--
+-- DEFAULT `true` and KEPT: every existing spec references a finalized revision, because before
+-- 4d every revision was born final. The CHECK states the rule in the table itself, where a
+-- reader meets it — the FK enforces it, and the two agree by construction.
+CREATE UNIQUE INDEX IF NOT EXISTS "DecisionApprovalRevision_finalized_provenance_key"
+  ON "DecisionApprovalRevision"("projectId", "decisionId", "version", "optionKey", "finalized");
+
+ALTER TABLE "MaterialRequirementSpec"
+  ADD COLUMN IF NOT EXISTS "revisionFinalized" BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE "LabourRequirementSpec"
+  ADD COLUMN IF NOT EXISTS "revisionFinalized" BOOLEAN NOT NULL DEFAULT TRUE;
+
+DO $$ BEGIN
+  ALTER TABLE "MaterialRequirementSpec" ADD CONSTRAINT "MaterialRequirementSpec_revisionFinalized_check"
+    CHECK ("decisionId" IS NULL OR "revisionFinalized" = TRUE);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE "LabourRequirementSpec" ADD CONSTRAINT "LabourRequirementSpec_revisionFinalized_check"
+    CHECK ("decisionId" IS NULL OR "revisionFinalized" = TRUE);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- The RE-TARGET. The old FK is dropped and the widened one added in the same transaction, so no
+-- window exists in which a spec's provenance is unconstrained.
+ALTER TABLE "MaterialRequirementSpec" DROP CONSTRAINT IF EXISTS "MaterialRequirementSpec_provenance_fkey";
+DO $$ BEGIN
+  ALTER TABLE "MaterialRequirementSpec" ADD CONSTRAINT "MaterialRequirementSpec_provenance_fkey"
+    FOREIGN KEY ("projectId", "decisionId", "decisionVersion", "optionKey", "revisionFinalized")
+    REFERENCES "DecisionApprovalRevision"("projectId", "decisionId", "version", "optionKey", "finalized")
+    ON DELETE NO ACTION ON UPDATE NO ACTION;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+ALTER TABLE "LabourRequirementSpec" DROP CONSTRAINT IF EXISTS "LabourRequirementSpec_provenance_fkey";
+DO $$ BEGIN
+  ALTER TABLE "LabourRequirementSpec" ADD CONSTRAINT "LabourRequirementSpec_provenance_fkey"
+    FOREIGN KEY ("projectId", "decisionId", "decisionVersion", "optionKey", "revisionFinalized")
+    REFERENCES "DecisionApprovalRevision"("projectId", "decisionId", "version", "optionKey", "finalized")
+    ON DELETE NO ACTION ON UPDATE NO ACTION;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- ── the four consultation attribution columns ────────────────────────────────────────────────
+-- §A.3 obligation 3 applies to the 4c facts too, and #562's review round 2, finding 4 records
+-- the inventory naming ONE of the four. All four, nullable for legacy and drain-window rows,
+-- frozen once written by the seal below; 4d-ii writes them and 4d-iii requires them.
+ALTER TABLE "DecisionConsultation" ADD COLUMN IF NOT EXISTS "requestedByRole" TEXT;
+ALTER TABLE "DecisionConsultation" ADD COLUMN IF NOT EXISTS "requestedByName" TEXT;
+ALTER TABLE "DecisionConsultationResponse" ADD COLUMN IF NOT EXISTS "respondedByRole" TEXT;
+ALTER TABLE "DecisionConsultationResponse" ADD COLUMN IF NOT EXISTS "respondedByName" TEXT;
+
+CREATE OR REPLACE FUNCTION phase6_t4d_consultation_attribution_frozen() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_old_role TEXT; v_old_name TEXT; v_new_role TEXT; v_new_name TEXT;
+BEGIN
+  IF TG_TABLE_NAME = 'DecisionConsultation' THEN
+    v_old_role := OLD."requestedByRole"; v_old_name := OLD."requestedByName";
+    v_new_role := NEW."requestedByRole"; v_new_name := NEW."requestedByName";
+  ELSE
+    v_old_role := OLD."respondedByRole"; v_old_name := OLD."respondedByName";
+    v_new_role := NEW."respondedByRole"; v_new_name := NEW."respondedByName";
+  END IF;
+
+  IF (v_old_role IS NOT NULL AND v_new_role IS DISTINCT FROM v_old_role)
+     OR (v_old_name IS NOT NULL AND v_new_name IS DISTINCT FROM v_old_name) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: the frozen attribution pair on %.% is evidence of WHO acted and may not be rewritten (% / % → % / %)',
+      TG_TABLE_NAME, NEW."id",
+      COALESCE(v_old_role, '<null>'), COALESCE(v_old_name, '<null>'),
+      COALESCE(v_new_role, '<null>'), COALESCE(v_new_name, '<null>');
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "DecisionConsultation_t4d_attribution" ON "DecisionConsultation";
+CREATE TRIGGER "DecisionConsultation_t4d_attribution" BEFORE UPDATE ON "DecisionConsultation"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_consultation_attribution_frozen();
+DROP TRIGGER IF EXISTS "DecisionConsultationResponse_t4d_attribution" ON "DecisionConsultationResponse";
+CREATE TRIGGER "DecisionConsultationResponse_t4d_attribution" BEFORE UPDATE ON "DecisionConsultationResponse"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_consultation_attribution_frozen();
+
+-- ── one re-notification per crossing ─────────────────────────────────────────────────────────
+-- When the architect set changes while a decision awaits countersign, the new holder is notified
+-- ONCE per crossing (§A.2, and #572's review round 19 puts `countersign_renotified` among the
+-- audit kinds the correspondence judges). The audit row names the crossing event, and the
+-- PARTIAL unique makes a second row for the same crossing unrepresentable rather than merely
+-- refused by whichever writer happens to check.
+CREATE UNIQUE INDEX IF NOT EXISTS "DecisionEvent_countersign_renotified_key"
+  ON "DecisionEvent"("decisionId", (("payload" ->> 'crossingEventId')))
+  WHERE "type" = 'countersign_renotified';

@@ -72,24 +72,41 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
     /** Disable ONE named seal for exactly this delete, inside a single transaction — the
      *  repository's sanctioned destructive-reset contract (`wipeDecisionsVia` does the same).
      *  PostgreSQL DDL is transactional, so a throw rolls the disable back with it. */
-    const sealed = (table: string, trigger: string, sql: string) => () =>
+    // Phase 6 unit 4d-i — takes a LIST, and each toggle is GUARDED on the trigger's existence.
+    //
+    // Both changes are the same lesson from the same unit. Naming ONE seal per table rots: the
+    // `DecisionEvent` register carried one seal, then three, and a disable naming only the first
+    // is refused by the two it missed — on the very wipe it was written to perform. And naming a
+    // seal that a later unit REPLACED is an outright error, not a no-op: 4d-i drops
+    // `DecisionApprovalRevision_append_only` (the blanket immutability that would abort the
+    // countersign's one permitted flip) in favour of `DecisionApprovalRevision_t4d_one_flip`, so
+    // an unguarded `DISABLE TRIGGER` on the old name raises. The guard is the same shape
+    // `prisma/sanctioned-reset.ts` uses, and for the same reason: these suites run against
+    // whatever migration state the database happens to be at.
+    const sealed = (table: string, triggers: string[], sql: string) => () =>
       t.prisma.$transaction(async (tx) => {
-        await tx.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`);
+        const toggle = async (action: 'DISABLE' | 'ENABLE', trigger: string) =>
+          tx.$executeRawUnsafe(
+            `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = '${trigger}') THEN `
+            + `EXECUTE 'ALTER TABLE "${table}" ${action} TRIGGER "${trigger}"'; END IF; END $$;`,
+          );
+        for (const trigger of triggers) await toggle('DISABLE', trigger);
         await tx.$executeRawUnsafe(sql);
-        await tx.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`);
+        for (const trigger of [...triggers].reverse()) await toggle('ENABLE', trigger);
       }, { timeout: 60_000, maxWait: 30_000 });
 
     // The approval register, the legacy stamp and the approval event are all immutable BY DESIGN —
     // which is exactly why this suite plants real ones: an arm of the freeze that no probe can
     // reach is a check nobody knows works.
     await step('approval register', sealed('DecisionApprovalRevision',
-      'DecisionApprovalRevision_append_only',
+      ['DecisionApprovalRevision_append_only', 'DecisionApprovalRevision_t4d_one_flip'],
       `DELETE FROM "DecisionApprovalRevision" WHERE "decisionId" LIKE 'DL-a1-%'`));
     await step('legacy approval stamps', sealed('DecisionLegacyApproval',
-      'DecisionLegacyApproval_sealed',
+      ['DecisionLegacyApproval_sealed'],
       `DELETE FROM "DecisionLegacyApproval" WHERE "decisionId" LIKE 'DL-a1-%'`));
     await step('approval events', sealed('DecisionEvent',
-      'DecisionEvent_no_withdrawn_approval',
+      ['DecisionEvent_no_withdrawn_approval', 'DecisionEvent_t4d_append_only',
+       'DecisionEvent_t4d_correspondence'],
       `DELETE FROM "DecisionEvent" WHERE "decisionId" LIKE 'DL-a1-%'`));
     await step('options', () => t.prisma.$executeRawUnsafe(
       `DELETE FROM "DecisionOption" WHERE "id" LIKE 'opt-a1-%'`));

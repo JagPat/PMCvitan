@@ -13,14 +13,40 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
-task_state: merged
+task_state: in_progress
 work_item: none
 reviewed_merge: 1fb8f531
 open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-09
+updated: 2026-09-10
 ```
+
+### Unit 4d-i — the DARK MIGRATION — is the OPEN work item
+
+`task_state` is `in_progress`, because the 4d plan merged as #572 and its FIRST
+implementation unit is now underway on `claude/jagpat-pmcvitan-pr-552-6bfsa9`.
+
+`open_pr` and `work_item` are BOTH `none` on this unit's own commit and BOTH
+carry their values on the pointer commit that follows the PR's creation. That is
+the §D self-naming convention — the PR number does not exist until the PR does —
+and the pairing is not cosmetic: `assessRunnerState` consults `work_item` only
+when the resolved step is not a bare task, so a named `work_item` with no
+`open_pr` beside it resolves to `task:4` and sends the loop to the PARENT task
+while claiming to name a unit. `scripts/autonomous-status-state.test.mjs` holds
+that guard, and it is what corrected this edit.
+
+**Nothing is deployed and nothing is reachable.** 4d-i is additive and dark: one
+migration file, the schema mirror, the reset protocol, the fixtures and probes
+the seals force, and — under `src/` — EXACTLY the declarative schema-metadata
+mirrors the boundary tripwire pins to the Prisma DMMF, plus one call site that
+the `ChangeRequest.projectId` NOT NULL forces. No contract, no command, no route,
+no reader: those are 4d-ii's. Five reservation doors keep the architect chain
+unwritable until 4d-iii retires them, so a still-serving previous-release
+instance cannot produce a value the release cannot read.
+
+`reviewed_merge` stays `1fb8f531` — the last REVIEWED merge — and `next_task`
+stays `phase-6-task-4d`, which names the task stop the remaining units hang off.
 
 ### Directive `phase-6-4d-unit1-prerequisite` — WITHDRAWN, and why
 

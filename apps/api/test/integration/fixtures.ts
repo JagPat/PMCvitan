@@ -122,10 +122,19 @@ export async function wipeDecisionEvents(
   prisma: PrismaService,
   where: Record<string, unknown>,
 ): Promise<void> {
+  // Phase 6 unit 4d-i — TWO new names join the delivered one (§A.3's "one new name", which
+  // became two once the correspondence trigger landed here rather than in 4d-iii):
+  // `DecisionEvent_t4d_append_only` refuses every UPDATE and DELETE on the register, and
+  // `DecisionEvent_t4d_correspondence` is a DEFERRED constraint trigger — a wipe that removes an
+  // audit row would otherwise leave its event unmatched and abort at commit.
   await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
+  await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_append_only"');
+  await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_correspondence"');
   try {
     await prisma.decisionEvent.deleteMany({ where });
   } finally {
+    await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_correspondence"');
+    await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_append_only"');
     await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
   }
 }
@@ -266,4 +275,98 @@ export async function plantLegacyApprovalRevision(
     }),
     prisma.$executeRawUnsafe(toggle('ENABLE')),
   ]);
+}
+
+/**
+ * Phase 6 unit 4d-i — allocate REAL stream positions for a raw `DomainEvent` plant.
+ *
+ * `ProjectEventStream_t4d_allocation_bound` states, at COMMIT, that the allocator is ahead of
+ * every position the stream actually uses. A raw plant that picks its own position — `max + 500`,
+ * a literal `90001` — leaves the allocator permanently BEHIND that project's stream, and the
+ * abort then lands on the next legitimate `emitEvent`, not on the plant that caused it (which is
+ * exactly how it presented: `event-envelope.test.ts`'s append-only arm failed on an `emit`,
+ * three tests after the plant).
+ *
+ * So a probe that needs a raw row takes its position from the REAL allocator here (§D 4d-i;
+ * §A.3 obligation 7's raw-insert finding). Returns the FIRST position of a contiguous run of
+ * `count`; the run is issued exactly as `emitEvent` issues one, so the allocator ends ahead.
+ * Allocating a position and then NOT using it is fine — the bound is `>`, not `=`.
+ *
+ * A legacy-SHAPE plant (a pre-4d row, by definition unable to satisfy the 4d seals) does NOT
+ * use this: it declares a NAMED bypass instead, the way `scripts/upgrade-proof.sh` does.
+ */
+export async function allocateStreamPositions(
+  prisma: PrismaService,
+  projectId: string,
+  count = 1,
+): Promise<number> {
+  const rows = await prisma.$queryRawUnsafe<Array<{ from: bigint }>>(
+    `INSERT INTO "ProjectEventStream" ("projectId", "nextPosition") VALUES ($1, $2)
+       ON CONFLICT ("projectId") DO UPDATE SET "nextPosition" = "ProjectEventStream"."nextPosition" + $2
+     RETURNING "nextPosition" - $2 AS "from"`,
+    projectId,
+    count,
+  );
+  return Number(rows[0]!.from);
+}
+
+/**
+ * Phase 6 unit 4d-i — run a HISTORICAL decision plant with the correspondence seal named off.
+ *
+ * `DecisionEvent_t4d_correspondence` is the WEAK converse of §A.3 obligation 7: an `approved`
+ * audit row on a decision that COMMITTED `approved` owes a `decision.approved` event in the same
+ * transaction. Every delivered writer satisfies it — `decisions.approve` inserts the audit row
+ * and emits in one transaction. A FIXTURE that fabricates an already-approved decision does not,
+ * and cannot: it is standing in for an approval that happened before this database existed, and
+ * the trigger is right to refuse it, because it cannot tell a simulated import from a forgery.
+ *
+ * So the fixture declares itself, by name, for exactly that plant — the same contract
+ * `plantLegacyApprovalRevision` and `sanctionedReset` use, and for the same reason: the bypass is
+ * the sanctioned path, and naming it is what keeps it visible.
+ *
+ * The seal is DEFERRED, so the disable must be COMMITTED before the plant's own transaction
+ * opens (a trigger disabled at INSERT time queues no commit-time firing). It is re-enabled in
+ * `finally`, so no failing plant leaves the seal off for a later probe. Guarded on the trigger's
+ * existence, because a suite may run against a database migrated to an earlier point.
+ */
+export async function plantLegacyDecisionAudit<T>(
+  prisma: PrismaService,
+  plant: () => Promise<T>,
+): Promise<T> {
+  const toggle = (action: 'DISABLE' | 'ENABLE'): string =>
+    `DO $do$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_t4d_correspondence') THEN `
+    + `EXECUTE 'ALTER TABLE "DecisionEvent" ${action} TRIGGER "DecisionEvent_t4d_correspondence"'; END IF; END $do$`;
+  await prisma.$executeRawUnsafe(toggle('DISABLE'));
+  try {
+    return await plant();
+  } finally {
+    await prisma.$executeRawUnsafe(toggle('ENABLE'));
+  }
+}
+
+/**
+ * Phase 6 unit 4d-i — reserve a CALLER-CHOSEN stream position through the real allocator.
+ *
+ * The sibling of `allocateStreamPositions`, for probes whose position is part of the sentence —
+ * a legacy row that must sit BEFORE a cutover, two deliveries whose relative order is the point.
+ * Those cannot take whatever the allocator hands out, so they declare the slot and this advances
+ * the allocator PAST it, which is the invariant `ProjectEventStream_t4d_allocation_bound` states:
+ * the counter is ahead of every position the stream uses.
+ *
+ * The advance is conditional, because `ProjectEventStream_t4d_allocation` refuses a
+ * non-increasing UPDATE — a counter already ahead is left exactly where it is.
+ */
+export async function reserveStreamPosition(
+  prisma: PrismaService,
+  projectId: string,
+  position: number,
+): Promise<number> {
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO "ProjectEventStream" ("projectId", "nextPosition") VALUES ($1, $2 + 1)
+       ON CONFLICT ("projectId") DO UPDATE SET "nextPosition" = $2 + 1
+        WHERE "ProjectEventStream"."nextPosition" < $2 + 1`,
+    projectId,
+    position,
+  );
+  return position;
 }

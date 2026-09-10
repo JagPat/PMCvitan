@@ -105,6 +105,12 @@ describe('Phase 6 unit 4b — approval attribution expansion (live PG)', () => {
         IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN
           ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval";
         END IF;
+        IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_t4d_append_only') THEN
+          ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_append_only";
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_t4d_correspondence') THEN
+          ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_correspondence";
+        END IF;
         IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4b2_record_no_delete') THEN
           ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b2_record_no_delete";
         END IF;
@@ -121,6 +127,12 @@ describe('Phase 6 unit 4b — approval attribution expansion (live PG)', () => {
         END IF;
         IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4b2_record_no_delete') THEN
           ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b2_record_no_delete";
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_t4d_correspondence') THEN
+          ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_correspondence";
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_t4d_append_only') THEN
+          ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_append_only";
         END IF;
         IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN
           ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval";

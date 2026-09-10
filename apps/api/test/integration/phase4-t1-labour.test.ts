@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, seedPublishedDecision, plantLegacyApprovalRevision } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, seedPublishedDecision, plantLegacyApprovalRevision, plantLegacyDecisionAudit } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { LabourService } from '../../src/labour/labour.service';
 import { CapabilitiesService, MATERIALS_CAPABILITY, LABOUR_CAPABILITY } from '../../src/platform/capabilities.service';
@@ -108,15 +108,18 @@ describe('Phase 4 Task 1 — labour capability + type-routed demand + workforce 
     return id;
   };
   const makeApprovedDecision = async (projectId: string, id: string): Promise<void> => {
-    // re-ordered seed (4b): unpublished birth with 2 options, published in the same transaction
-    await seedPublishedDecision(t.prisma, {
+    // re-ordered seed (4b): unpublished birth with 2 options, published in the same transaction.
+    // Phase 6 unit 4d-i — through the NAMED bypass: `DecisionEvent_t4d_correspondence` demands
+    // the `decision.approved` event beside an `approved` audit row on an `approved` decision, and
+    // this plant stands in for an approval that already happened (see the helper's contract).
+    await plantLegacyDecisionAudit(t.prisma, () => seedPublishedDecision(t.prisma, {
       id, projectId, title: id, room: 'Living', photoSwatch: 'sw', status: 'approved',
       authorId: f.memberUser.id, approvedOption: 'Option A',
       events: { create: [{ type: 'approved', actor: 'member' }] },
     }, [
       { label: 'Option A', optionKey: 'opt-a', material: 'Skilled', delta: 0, swatch: 'sw-a', order: 1 },
       { label: 'Option B', optionKey: 'opt-b', material: 'Unskilled', delta: 100, swatch: 'sw-b', order: 2 },
-    ]);
+    ]));
     // Phase 6 unit 4c-ii — planted through the named bypass: this stands in for an approval that
     // already happened, not one this fixture is performing.
     await plantLegacyApprovalRevision(t.prisma, {

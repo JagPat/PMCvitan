@@ -139,6 +139,15 @@ describe('Phase 6 unit 4c-0 — sanctioned resets route through the shared helpe
       // through the helper would disable the arm and leave the measurement vacuous, exactly as for
       // the marker seal above.
       'phase6-4c-iiir-inbox-repair.test.ts': 2,
+      // Phase 6 unit 4d-i: the SEAL-STRIPPED harness. Three of its arms are TRUNCATE statements —
+      // `ExternalEffectCatalog`, `RolloutRetirement` and `Notification` — and each is driven TWICE
+      // against scratch databases the harness builds itself: once with that no-TRUNCATE seal
+      // OMITTED from the migration, where the statement must SUCCEED, and once with the migration
+      // whole, where it must be REFUSED by that seal's own message. Routing them through the
+      // helper would disable the seals under test in the whole-migration half and disable nothing
+      // in the stripped half, which is two vacuous assertions instead of one measurement. The
+      // harness never touches the shared test database.
+      'phase6-t4d-i-seal-stripped.test.ts': 3,
     };
 
     const offenders: string[] = [];

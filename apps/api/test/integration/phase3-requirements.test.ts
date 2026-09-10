@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, plantLegacyApprovalRevision } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, plantLegacyApprovalRevision, plantLegacyDecisionAudit } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import { MembersService } from '../../src/orgs/members.service';
@@ -146,7 +146,12 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
    *  history AND its immutable approval-register head (round 2) — `decisions.approvedRef`
    *  serves provenance from the register row alone. */
   const makeApprovedDecision = async (projectId: string, id: string, approvals: Array<'approved' | 'reapproved'> = ['approved']): Promise<void> => {
-    await t.prisma.$transaction(async (tx) => {
+    // Phase 6 unit 4d-i — planted through the NAMED bypass. `DecisionEvent_t4d_correspondence`
+    // (§A.3 obligation 7's weak converse) demands that an `approved` audit row on a decision that
+    // committed `approved` carry its `decision.approved` event in the SAME transaction. Every
+    // delivered writer does; this fixture is standing in for an approval that happened before
+    // this database existed, and the seal is right to refuse it rather than guess.
+    await plantLegacyDecisionAudit(t.prisma, () => t.prisma.$transaction(async (tx) => {
       await tx.decision.create({
         data: {
           id, projectId, title: id, room: 'Living', photoSwatch: 'sw', status: 'approved',
@@ -159,7 +164,7 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
         },
       });
       await tx.decision.update({ where: { id }, data: { publishedAt: new Date() } });
-    });
+    }));
     // the register head: version = the recorded approval count, pinning the selected option.
     // Planted through the named bypass (Phase 6 unit 4c-ii): this row stands in for an approval
     // that already happened, and the provenance seal is right to refuse a fresh one with no

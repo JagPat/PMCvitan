@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { reserveStreamPosition, createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { emitEvent } from '../../src/platform/events';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { OutboxOperationsService } from '../../src/platform/outbox/outbox-operations.service';
@@ -394,6 +394,9 @@ describe('PR C Task 3 — external-effect cutover seal (live PG)', () => {
     coverage: string | null, status: 'pending' | 'leased' = 'pending', payload = '{"legacy":"body"}',
   ): Promise<void> => {
     const intent = coverage === null ? 'NULL' : `'${JSON.stringify({ effectKey: 'compat.task6', coverageVersion: coverage, invalidate: true })}'::jsonb`;
+    // Phase 6 unit 4d-i — the caller chooses `pos` because the ORDER is part of the sentence, so
+    // the allocator is advanced past it rather than consulted for it (see the helper's contract).
+    await reserveStreamPosition(t.prisma, projectId, pos);
     await t.prisma.$executeRawUnsafe(
       `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent") ` +
       `VALUES ('${evId}','decision.approved',1,'${f.orgA.id}','${projectId}',${pos},'system','system:seed','Decision','D',${intent})`,
@@ -474,6 +477,8 @@ describe('PR C Task 3 — external-effect cutover seal (live PG)', () => {
     const p = await freshProject();
     await seal();
     const intent = JSON.stringify({ effectKey: 'decision.approved', coverageVersion: effectCoverageVersion(), invalidate: true });
+    // Phase 6 unit 4d-i — both slots reserved through the allocator (see the helper's contract).
+    await reserveStreamPosition(t.prisma, p, 301);
     // null intent → refused by the seal trigger
     await expect(
       t.prisma.$executeRawUnsafe(

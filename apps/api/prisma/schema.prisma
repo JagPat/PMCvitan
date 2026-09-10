@@ -1571,11 +1571,20 @@ model MaterialRequirementSpec {
   // AUTHORITATIVE decision provenance — all null (manual spec) or all server-resolved (CHECK).
   // Round-2 finding 2: the triple FKs onto the IMMUTABLE DecisionApprovalRevision register, so
   // a spec can only reference an approval that really happened, for a real selected option.
-  decision         Decision?                 @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  decisionId       String?
-  approvalRevision DecisionApprovalRevision? @relation(fields: [projectId, decisionId, decisionVersion, optionKey], references: [projectId, decisionId, version, optionKey], onDelete: NoAction, onUpdate: NoAction)
-  decisionVersion  Int?
-  optionKey        String?
+  decision          Decision?                 @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  decisionId        String?
+  approvalRevision  DecisionApprovalRevision? @relation(fields: [projectId, decisionId, decisionVersion, optionKey, revisionFinalized], references: [projectId, decisionId, version, optionKey, finalized], onDelete: NoAction, onUpdate: NoAction)
+  decisionVersion   Int?
+  optionKey         String?
+  /// Phase 6 task 4d unit 4d-i (§D) — the FINALITY carrier. A spec's provenance must be an
+  /// approval that really happened (the delivered FK) AND one that is FINAL: under a chain an
+  /// approval is provisional until countersigned, and a demand derived from one would be a
+  /// commitment made on a decision nobody has finished making. The column exists to carry the
+  /// referenced value — the provenance FK is re-targeted at a candidate key that includes the
+  /// register's `finalized`, so the database enforces it on every write. DEFAULT `true` and
+  /// KEPT: every existing spec references a finalized revision, because before 4d every
+  /// revision was born final.
+  revisionFinalized Boolean                   @default(true)
 
   @@unique([projectId, requirementId, revision])
   @@index([projectId, specFingerprint])
@@ -2460,6 +2469,12 @@ model DecisionApprovalRevision {
   // the provenance FK target: version AND option bind together to one immutable approval fact
   // (explicit name — the generated one exceeds PostgreSQL's 63-char identifier limit)
   @@unique([projectId, decisionId, version, optionKey], map: "DecisionApprovalRevision_provenance_target_key")
+  // Phase 6 task 4d unit 4d-i — the WIDENED provenance target. The requirement specs'
+  // provenance FK is re-targeted at this key so a spec can only bind an approval that is
+  // FINAL, enforced by the database rather than by a rule someone must remember. The
+  // delivered key above is KEPT: it is what makes (version, optionKey) one immutable
+  // approval fact, and nothing else references the widened one.
+  @@unique([projectId, decisionId, version, optionKey, finalized], map: "DecisionApprovalRevision_finalized_provenance_key")
 }
 
 // Append-only lifecycle + audit log for a decision.
@@ -2542,7 +2557,13 @@ model DecisionConsultation {
 
   requestedAt DateTime @default(now())
 
-  response DecisionConsultationResponse?
+  response        DecisionConsultationResponse?
+  /// Phase 6 task 4d unit 4d-i (§A.3 obligation 3; #562's review round 2, finding 4 —
+  /// the inventory named ONE of the four) — the frozen attribution pair. Nullable for
+  /// legacy rows and for the previous release's writer through the drain, frozen once
+  /// written; 4d-ii writes them and 4d-iii requires them.
+  requestedByRole String?
+  requestedByName String?
 
   @@unique([projectId, sourceCommandId], map: "DecisionConsultation_source_command_key")
   /// The candidate key the response's triple FK references, so the response's own project and
@@ -2586,7 +2607,13 @@ model DecisionConsultationResponse {
   sourceCommand   CommandExecution @relation("decisionConsultationResponseSource", fields: [projectId, sourceCommandId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   sourceCommandId String
 
-  respondedAt DateTime @default(now())
+  respondedAt     DateTime @default(now())
+  /// Phase 6 task 4d unit 4d-i (§A.3 obligation 3; #562's review round 2, finding 4 —
+  /// the inventory named ONE of the four) — the frozen attribution pair. Nullable for
+  /// legacy rows and for the previous release's writer through the drain, frozen once
+  /// written; 4d-ii writes them and 4d-iii requires them.
+  respondedByRole String?
+  respondedByName String?
 
   @@unique([projectId, sourceCommandId], map: "DecisionConsultationResponse_source_command_key")
   /// The one-to-one's defining side: implied by the `consultationId` UNIQUE above, and stated
@@ -3326,11 +3353,20 @@ model LabourRequirementSpec {
 
   // AUTHORITATIVE decision provenance — all null (manual) or all server-resolved (CHECK), FK-bound
   // onto the immutable DecisionApprovalRevision register (same rule as MaterialRequirementSpec).
-  decision         Decision?                 @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  decisionId       String?
-  approvalRevision DecisionApprovalRevision? @relation(fields: [projectId, decisionId, decisionVersion, optionKey], references: [projectId, decisionId, version, optionKey], onDelete: NoAction, onUpdate: NoAction)
-  decisionVersion  Int?
-  optionKey        String?
+  decision          Decision?                 @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  decisionId        String?
+  approvalRevision  DecisionApprovalRevision? @relation(fields: [projectId, decisionId, decisionVersion, optionKey, revisionFinalized], references: [projectId, decisionId, version, optionKey, finalized], onDelete: NoAction, onUpdate: NoAction)
+  decisionVersion   Int?
+  optionKey         String?
+  /// Phase 6 task 4d unit 4d-i (§D) — the FINALITY carrier. A spec's provenance must be an
+  /// approval that really happened (the delivered FK) AND one that is FINAL: under a chain an
+  /// approval is provisional until countersigned, and a demand derived from one would be a
+  /// commitment made on a decision nobody has finished making. The column exists to carry the
+  /// referenced value — the provenance FK is re-targeted at a candidate key that includes the
+  /// register's `finalized`, so the database enforces it on every write. DEFAULT `true` and
+  /// KEPT: every existing spec references a finalized revision, because before 4d every
+  /// revision was born final.
+  revisionFinalized Boolean                   @default(true)
 
   @@unique([projectId, requirementId, revision])
   @@index([projectId, labourSpecFingerprint])
