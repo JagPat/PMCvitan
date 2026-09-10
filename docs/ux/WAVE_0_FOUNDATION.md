@@ -240,6 +240,49 @@ Audit every action target against the 44×44 floor in the same pass.
 >
 > A sweep proves the states it drives over the data it has. That is a smaller claim than it looks,
 > and it is the fifth distinct way this unit has now been caught overstating one.
+>
+> **Amendment (2026-09-10, PR #584 review round 7): the deferral is over — the audit is EVERY
+> persona and EVERY surface its navigation reaches.** This finding has now been raised four times,
+> and the first three answers all had the same shape: re-scope the PROOF rather than meet the
+> CRITERION. Round 2 swept the Daily Log and deferred the rest to F-1c. Round 5 swept the two
+> surfaces this unit had changed and deferred the rest to F-1c. Round 7 named three more shipped
+> controls under the floor — `TeamAccessScreen`'s zero-padding Back action, its ~36px language
+> chips, `PhotoViewer`'s 40×40 close — and would have named a fourth set next round, because the
+> DEFERRAL was the defect and not the list.
+>
+> The criterion above says "every action target >=44x44" with no exception, so `mobile-fields.spec.ts`
+> now walks the personas the switcher itself offers, and for each one every bottom tab and every
+> More-sheet row the nav itself renders, sweeping each. Nothing in it is a named list: a screen
+> added tomorrow is swept the day it appears. Run against the previous head it is RED on the first
+> violation it meets (the decision register's 42px search input); with the fixes it is green across
+> all four personas.
+>
+> **And text-entry controls are ACTION TARGETS.** Round 3's fix widened the sweep's element types
+> and then wrote a carve-out — "a text field is typed into, not pressed" — that put every
+> non-button input back out of scope, and `textarea` was never in the query at all, so no textarea
+> in the product had ever been measured. The sentence is false about the FIRST interaction: a thumb
+> has to land on the field before a keyboard exists. Behind that carve-out sat Schedule's dialog
+> fields (`fldS`, 42px), the Decision Register's inline location editors (34px), the Drafts
+> screen's decider selects (32px) and the Drawings dialog's file control (21px). All are at the
+> floor; the carve-out is gone.
+>
+> **What the measured walk turned up beyond what round 7 named** — because an inventory written
+> from a reading lists what the author noticed, and this one was run: the Engineer checklist's
+> Pass / Fail / N.A. verdicts and its five Add-photo buttons at 51x35, and the Drafts screen's five
+> decider controls at 32px. The verdict toggles are the ones worth naming: they are pressed
+> one-handed on site, and a mis-tap records the wrong verdict against a physical item.
+>
+> **And the `Button` primitive's floor was overridable.** `...style` was spread AFTER `minHeight:
+> 44`, so `style={{ minHeight: 34 }}` replaced the floor outright while the comment beside it
+> promised a caller "cannot go shorter by accident". That is this unit's own recurring defect in
+> its own primitive: prose stating a rule the mechanism does not implement. The floor is now
+> clamped after the caller's styles — taller still wins, shorter cannot — in both axes, with four
+> arms in `ux-consistency.test.tsx` that fail against the previous shape.
+>
+> **F-1c no longer inherits a cross-surface sweep.** What it still owns is the states this suite
+> cannot drive: modal dialogs past the four swept here, multi-step flows past their first step, a
+> recorded gate override, the stale-snapshot banner, and any surface that needs seeded location
+> data or a signed-in session.
 
 > 4. **A desktop-parity assertion must name a value.** `expect(sizes.every((s)
 >    => s > 0))` is true whether the rule is scoped or has escaped to every

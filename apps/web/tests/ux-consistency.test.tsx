@@ -400,4 +400,41 @@ describe('the schedule says WHY an activity cannot be acted on', () => {
     expect(decl, 'the breadcrumb must declare minWidth: 44').toContain('minWidth: 44');
     expect(decl, 'the breadcrumb must declare minHeight: 44').toContain('minHeight: 44');
   });
+
+  describe('the Button primitive\'s floor SURVIVES a caller (Wave 0 F-1b, #584 review round 7)', () => {
+    // Not by source this time, because the defect was not a missing declaration — the declaration
+    // was there and the CASCADE undid it. `...style` was spread after `minHeight: 44`, so a later
+    // property in the same object won outright and `style={{ minHeight: 34 }}` replaced the floor
+    // while the comment beside it promised a caller "cannot go shorter by accident". These arms
+    // render the component and read the inline style the clamp actually produced, which is the
+    // only thing that distinguishes the fixed shape from the broken one.
+    it('a caller trying to go SHORTER is clamped back to the floor', async () => {
+      const { Button } = await import('@/components/Button');
+      const r = render(<Button style={{ minHeight: 34, minWidth: 20 }}>Add</Button>);
+      const el = r.getByRole('button');
+      expect(el.style.minHeight, 'a 34px override may not lower the 44px floor').toBe('44px');
+      expect(el.style.minWidth, 'a 20px override may not lower the 44px floor').toBe('44px');
+    });
+
+    it('a caller with a genuine reason to go TALLER still wins', async () => {
+      const { Button } = await import('@/components/Button');
+      const r = render(<Button style={{ minHeight: 56 }}>Sign off</Button>);
+      expect(r.getByRole('button').style.minHeight).toBe('56px');
+    });
+
+    it('a caller with no minimum at all gets the floor', async () => {
+      const { Button } = await import('@/components/Button');
+      const r = render(<Button>Publish</Button>);
+      const el = r.getByRole('button');
+      expect(el.style.minHeight).toBe('44px');
+      expect(el.style.minWidth).toBe('44px');
+    });
+
+    it('a NON-NUMERIC override goes through CSS max(), so the floor holds without unit guessing', async () => {
+      const { Button } = await import('@/components/Button');
+      const r = render(<Button style={{ minHeight: '3rem' }}>Issue</Button>);
+      // jsdom keeps the declaration verbatim; the browser resolves `max()` at layout.
+      expect(r.getByRole('button').style.minHeight).toContain('max(44px');
+    });
+  });
 });

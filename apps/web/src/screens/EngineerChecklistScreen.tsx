@@ -9,6 +9,10 @@ import styles from './responsive.module.css';
 
 const toggleBase: CSSProperties = {
   flex: 1,
+  // Wave 0 / F-1b round 7 — the Pass / Fail / N.A. verdicts measured 51×35. They are pressed
+  // one-handed, on site, with a glove or a wet thumb, and a mis-tap records the wrong verdict
+  // against a physical item. Padding alone left them 9px short; the floor is stated.
+  minHeight: 44,
   padding: '9px 0',
   borderRadius: 9,
   fontFamily: 'var(--font-sans)',
@@ -210,6 +214,8 @@ export function EngineerChecklistScreen() {
                     aria-label="Add photo"
                     style={{
                       flex: 1,
+                      // Wave 0 / F-1b round 7 — 35px tall before this; see `toggleBase`.
+                      minHeight: 44,
                       padding: '9px 0',
                       borderRadius: 9,
                       cursor: frozen ? 'not-allowed' : 'pointer',

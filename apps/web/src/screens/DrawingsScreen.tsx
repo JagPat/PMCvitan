@@ -457,8 +457,17 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
         <div style={{ fontSize: 11.5, color: 'var(--faint)', marginBottom: 7 }}>File it at its level — a floor plan on the zone, a detail on the object. Rooms below inherit it.</div>
         <LocationPicker value={nodeId} onChange={setNodeId} idPrefix="dwg-loc" />
 
+        {/* Wave 0 / F-1b round 7 — the file control rendered 254×21, the smallest target in this
+            dialog and the one that actually attaches the drawing. It sits inside a `<label>`, so
+            label activation forwards a tap anywhere in the box to the picker: giving the input a
+            44px band makes the whole band the target rather than the native button alone. */}
         <label style={{ display: 'block', marginTop: 10 }}>
-          <input type="file" accept=".pdf,.dwg,.dxf,image/*,application/pdf" onChange={(e) => onPick(e.target.files?.[0])} style={{ fontSize: 13 }} />
+          <input
+            type="file"
+            accept=".pdf,.dwg,.dxf,image/*,application/pdf"
+            onChange={(e) => onPick(e.target.files?.[0])}
+            style={{ fontSize: 13, display: 'block', width: '100%', minHeight: 44 }}
+          />
         </label>
         {file && <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>{file.name}</div>}
 

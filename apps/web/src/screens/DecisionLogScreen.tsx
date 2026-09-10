@@ -407,7 +407,7 @@ function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDele
   if (addingKind) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: (depth + 1) * 18, minHeight: 34 }} data-testid={`loc-row-${id}`}>
-        <input autoFocus value={childName} onChange={(e) => setChildName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commitChild(); }} placeholder={`New ${addingKind === 'room' ? 'room' : 'object'} in ${name}`} style={{ ...fldD, flex: 1, minWidth: 0, height: 34 }} data-testid={`loc-add-input-${id}`} />
+        <input autoFocus value={childName} onChange={(e) => setChildName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commitChild(); }} placeholder={`New ${addingKind === 'room' ? 'room' : 'object'} in ${name}`} style={{ ...fldD, flex: 1, minWidth: 0 }} data-testid={`loc-add-input-${id}`} />
         <button onClick={commitChild} style={iconBtn} aria-label={`Add inside ${name}`}>✓</button>
         <button onClick={() => { setAddingKind(null); setChildName(''); }} style={iconBtn} aria-label="Cancel">✕</button>
       </div>
@@ -417,7 +417,7 @@ function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDele
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: depth * 18, minHeight: 34 }} data-testid={`loc-row-${id}`}>
       {editing ? (
         <>
-          <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commit(); }} style={{ ...fldD, flex: 1, minWidth: 0, height: 34 }} />
+          <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commit(); }} style={{ ...fldD, flex: 1, minWidth: 0 }} />
           <button onClick={commit} style={iconBtn} aria-label="Save">✓</button>
         </>
       ) : (
@@ -469,4 +469,8 @@ const draftChip: CSSProperties = {
 };
 
 const iconBtn: CSSProperties = { background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', padding: 5 };
-const fldD: CSSProperties = { height: 42, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none' };
+// Wave 0 / F-1b round 7 — 42 → 44. A text field is a POINTER TARGET before it is a text
+// field: a thumb has to land on it to focus it, and the 44×44 floor has no exception for
+// "typed into rather than pressed". That exception is what my round-3 sweep wrote into its
+// filter, and it is why this control sat four pixels under the floor for four more rounds.
+const fldD: CSSProperties = { height: 44, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none' };

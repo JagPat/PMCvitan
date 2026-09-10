@@ -576,5 +576,8 @@ function AddPhaseModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-const fldS: CSSProperties = { height: 42, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none', marginTop: 4 };
+// Wave 0 / F-1b round 7 — 42 → 44, for the reason recorded on `fldD`: every control in the
+// Plan activity, Add phase and Override dialogs is built from this constant, and each of them
+// is tapped before it is typed into.
+const fldS: CSSProperties = { height: 44, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none', marginTop: 4 };
 const lblS: CSSProperties = { flex: 1, fontSize: 11.5, color: 'var(--muted)', display: 'flex', flexDirection: 'column' };

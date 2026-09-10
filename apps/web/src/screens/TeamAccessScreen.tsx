@@ -44,7 +44,10 @@ const WORKERS = [
 
 function BackBtn({ onClick, label }: { onClick: () => void; label: string }) {
   return (
-    <button onClick={onClick} style={{ background: 'transparent', border: 'none', fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--muted)', cursor: 'pointer', padding: 0, alignSelf: 'flex-start' }}>
+    // Wave 0 / F-1b round 7 — `padding: 0` made this a ~16px-tall text line, and it is the ONLY
+    // way out of the worker jobcard and the mistri view. `alignSelf: 'flex-start'` keeps it left,
+    // so the floor is added as a box rather than as stretch.
+    <button onClick={onClick} style={{ background: 'transparent', border: 'none', fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--muted)', cursor: 'pointer', padding: '0 8px', minHeight: 44, minWidth: 44, display: 'inline-flex', alignItems: 'center', alignSelf: 'flex-start' }}>
       ← {label}
     </button>
   );
@@ -647,6 +650,13 @@ export function TeamAccessScreen() {
 function langStyle(active: boolean): CSSProperties {
   return {
     flex: 1,
+    // Wave 0 / F-1b round 7 — measured 115×33. This control chooses the language the worker
+    // reads their own jobcard in; it is the first thing they press and the one they press with
+    // the least confidence.
+    minHeight: 44,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
     padding: '8px 4px',
     borderRadius: 9,
     fontFamily: 'var(--font-sans)',
@@ -669,6 +679,14 @@ const linkBtn: CSSProperties = {
   cursor: 'pointer',
   marginTop: 14,
   alignSelf: 'center',
+  // Wave 0 / F-1b round 7 — a bare text button owes the same floor as a bordered one; nothing
+  // about the thumb changes because the border was dropped.
+  minHeight: 44,
+  minWidth: 44,
+  padding: '0 12px',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
 };
 
 const loginField: CSSProperties = {

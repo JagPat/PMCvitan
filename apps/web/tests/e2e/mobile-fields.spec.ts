@@ -27,13 +27,27 @@ test.use({ viewport: { width: 390, height: 844 } });
 const FLOOR = 16;
 const TOUCH = 44;
 
-/** Every enabled interactive element that is not a dev-only affordance, with its measured box. */
+/**
+ * Every enabled interactive element that is not a dev-only affordance.
+ *
+ * #584 review round 7, finding 1 — TEXT-ENTRY CONTROLS ARE POINTER TARGETS TOO, and the filter
+ * below used to select them only to throw them away. The comment defending that read "a text
+ * field is typed into, not pressed" — which is false about the first interaction: a thumb has to
+ * LAND on the field before a keyboard exists. Two shipped controls sat under the floor behind
+ * that sentence (Schedule's dialog fields at 42px, the Decision Register's inline location
+ * editors at 34px), and `textarea` was never in this list at all, so no textarea anywhere in the
+ * product had ever been measured. The 44×44 floor in `WAVE_0_FOUNDATION.md` is written about
+ * ACTION TARGETS with no carve-out for the ones that also accept text, so there is none here.
+ *
+ * `type=hidden` is the one exclusion, because it has no box to measure.
+ */
 const INTERACTIVE = [
   'button:not([disabled])',
   'select:not([disabled])',
+  'textarea:not([disabled])',
   '[role="button"]:not([aria-disabled="true"])',
   'a[href]',
-  'input:not([disabled])',
+  'input:not([disabled]):not([type="hidden"])',
 ].join(', ');
 
 /**
@@ -46,14 +60,13 @@ async function sweepActionTargets(page: Page, surface: string): Promise<void> {
     (els as HTMLElement[])
       .filter((el) => el.offsetParent !== null)
       .filter((el) => !el.closest('[data-dev-affordance]'))
-      .filter((el) => !(el instanceof HTMLInputElement)
-        || ['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'image', 'color', 'range']
-          .includes(el.type))
       .map((el) => {
         const r = el.getBoundingClientRect();
         return {
+          tag: el.tagName.toLowerCase(),
           testid: el.getAttribute('data-testid') || '',
-          label: (el.textContent || '').trim().slice(0, 30),
+          label: (el.textContent || '').trim().slice(0, 30)
+            || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '',
           w: Math.round(r.width), h: Math.round(r.height),
         };
       })
@@ -170,37 +183,111 @@ test('the team surface focuses without zooming', async ({ page }) => {
 });
 
 /**
- * #584 review round 5 — THE SURFACES WHOSE TARGETS THIS UNIT RAISED.
+ * #584 review round 7, finding 2 — THE CROSS-SURFACE AUDIT, ACTUALLY TAKEN.
  *
- * Round 2 deferred three known sub-floor groups to F-1c as "density decisions": the Schedule
- * breadcrumbs and drawing chips, and the decision register's group-by row. That was the wrong
- * unit to send them to — F-1c is VALIDATION with no new design decisions, and F-1b's completion
- * criterion is "every action target ≥44×44" with no exception written into it. They are raised
- * here, so they are swept here.
+ * This is the fourth time the same finding has been raised, and each of the first three times I
+ * answered it by re-scoping the PROOF instead of meeting the CRITERION. Round 2: sweep the Daily
+ * Log only, defer the rest to F-1c. Round 5: sweep the two surfaces this unit had changed. Round
+ * 7 named three more shipped controls under the floor — `TeamAccessScreen`'s zero-padding Back
+ * action, its ~36px language chips, `PhotoViewer`'s 40×40 close — and it would have named a
+ * fourth set next round, because the deferral was the defect, not the list.
  *
- * This is NOT the cross-surface sweep round 2 rejected. That one would have covered whichever
- * surfaces happened to pass; this covers the three groups this unit CHANGED, which is the
- * evidence a reader needs to believe the change. F-1c still owns the sweep of everything else.
+ * `WAVE_0_FOUNDATION.md`'s F-1b completion criterion is "every action target ≥44×44" with no
+ * exception written into it. So the sweep is now what that sentence describes: for EVERY persona
+ * the product offers, walk EVERY surface that persona's navigation reaches — the bottom tabs and
+ * every row of the More sheet — and measure every pointer target on each.
+ *
+ * Nothing here is a named list. The personas come from the switcher's own options and the
+ * surfaces from the nav's own test ids, so a screen added tomorrow is swept the day it appears
+ * rather than the day someone remembers to add it. That is the property the three narrowed
+ * versions never had, and it is why this arm replaces them instead of joining them.
+ *
+ * WHAT IT STILL CANNOT REACH is stated rather than implied: modal dialogs, multi-step flows past
+ * their first step, and states that need a server (a recorded gate override; the stale-snapshot
+ * banner). Those are swept where they ARE drivable — the Schedule and Drawings dialogs below —
+ * or guarded at source in `ux-consistency.test.tsx`. F-1c owns the seeded-places and
+ * authenticated-flow states.
  */
-test('the surfaces whose targets F-1b raised hold the 44px floor', async ({ page }) => {
+test('every persona, every surface its navigation reaches, holds the 44px floor', async ({ page }) => {
   await page.goto('/');
+  const personas = await page
+    .locator('[data-dev-affordance="role-switcher"] select option')
+    .evaluateAll((els) => els.map((e) => (e as HTMLOptionElement).value));
+  expect(personas.length, 'the persona switcher must offer the roles this sweep walks').toBeGreaterThan(1);
 
+  for (const persona of personas) {
+    await page.goto('/');
+    await page.locator('[data-dev-affordance="role-switcher"] select').selectOption(persona);
+
+    const tabs = await page
+      .locator('[data-testid^="tab-"]')
+      .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')!).filter((t) => t !== 'tab-more'));
+    expect(tabs.length, `${persona}: the bottom tabs must render for this persona`).toBeGreaterThan(0);
+    for (const tab of tabs) {
+      await page.getByTestId(tab).click();
+      await expect(page.getByTestId(tab)).toBeVisible();
+      await sweepActionTargets(page, `${persona} — ${tab}`);
+    }
+
+    // `More` renders only when the persona has more screens than the tab bar holds — a narrow
+    // role (the client's) has none, and that is a fact about the nav, not a state to force.
+    const more = page.getByTestId('tab-more');
+    if (!(await more.count())) continue;
+
+    await more.click();
+    await sweepActionTargets(page, `${persona} — the More sheet itself`);
+    const rows = await page
+      .locator('[data-testid^="more-item-"]')
+      .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')!));
+    expect(rows.length, `${persona}: the More sheet opened and offered no rows to sweep`).toBeGreaterThan(0);
+    await page.keyboard.press('Escape');
+    for (const row of rows) {
+      await page.getByTestId('tab-more').click();
+      const item = page.getByTestId(row);
+      await expect(item).toBeVisible();
+      await item.click();
+      await expect(page.getByTestId('tab-more')).toBeVisible();
+      await sweepActionTargets(page, `${persona} — ${row}`);
+    }
+  }
+});
+
+/**
+ * #584 review round 7 — THE DIALOGS, which the walk above cannot open on its own.
+ *
+ * Every field in these three dialogs is built from one style constant per screen (`fldS`,
+ * `fld`), and each was 42px — under the floor by exactly the amount that made round 7's first
+ * finding true. They are swept here because a dialog is where this surface's text entry lives,
+ * and because the count guard in `sweep()` already proved that an arm which never opens one
+ * measures nothing at all.
+ */
+test('the dialogs that hold this product\'s text entry hold the 44px floor', async ({ page }) => {
+  await page.goto('/');
   await page.getByTestId('tab-site-schedule').click();
-  await expect(page.locator('[data-testid^="sched-place-"]').first()).toBeVisible();
-  await sweepActionTargets(page, 'Schedule — as opened');
 
-  // #584 review round 6, finding 2 — THE OVERRIDE STATE CANNOT BE DRIVEN HERE, and the control it
-  // holds is guarded elsewhere. The revoke button exists only once an override is RECORDED, and
-  // recording one goes through `overrideGate`, which refuses without a server ("Gate overrides
-  // need the server") — this suite runs the API-less demo, so no click sequence reaches the state.
-  // Driving a different state and calling it covered is the failure this file has already made
-  // four times, so it is not repeated here. The control is raised to 44x44 in `ScheduleScreen`,
-  // and `ux-consistency.test.tsx` fails if that declaration is removed — Wave 0's own criterion
-  // allows verification "by computed style, or by source", and source is what this state affords.
+  await page.getByTestId('add-phase').click();
+  await expect(page.getByTestId('phase-name')).toBeVisible();
+  await sweepActionTargets(page, 'Schedule — Add phase dialog');
+  await page.keyboard.press('Escape');
+
+  await page.getByTestId('plan-activity').click();
+  await expect(page.getByTestId('act-name')).toBeVisible();
+  await sweepActionTargets(page, 'Schedule — Plan activity dialog');
+  await page.keyboard.press('Escape');
+
+  const override = page.locator('[data-testid^="override-ACT-"]').first();
+  if (await override.count()) {
+    await override.click();
+    await expect(page.getByTestId('override-gate')).toBeVisible();
+    await sweepActionTargets(page, 'Schedule — Override dialog');
+    await page.keyboard.press('Escape');
+  }
+
   await page.getByTestId('tab-more').click();
-  await page.getByTestId('more-item-decision-log').click();
-  await expect(page.getByTestId('groupby-location')).toBeVisible();
-  await sweepActionTargets(page, 'Decision register — group-by row');
+  await page.getByTestId('more-item-drawings').click();
+  await page.getByTestId('issue-drawing').click();
+  await expect(page.getByTestId('publish-drawing')).toBeVisible();
+  await sweepActionTargets(page, 'Drawings — Issue drawing dialog');
 });
 
 /**
@@ -326,12 +413,16 @@ test('the daily log offers no action target below the 44px floor', async ({ page
   // documented floor stood inside the very screen this arm sweeps, and the arm passed. The floor
   // is about what a thumb presses, so the query names every interactive kind rather than the one
   // that happened to be undersized in round 1 — a `<select>` is pressed exactly as a button is.
+  // #584 review round 7, finding 1 — and the same widening as the shared `INTERACTIVE` above:
+  // `textarea` was never listed, and every non-button input type was selected only to be
+  // discarded. See the note on the module-level constant for why that carve-out was wrong.
   const INTERACTIVE = [
     'button:not([disabled])',
     'select:not([disabled])',
+    'textarea:not([disabled])',
     '[role="button"]:not([aria-disabled="true"])',
     'a[href]',
-    'input:not([disabled])',
+    'input:not([disabled]):not([type="hidden"])',
   ].join(', ');
 
   // #584 review round 4, finding 2 — MEASURE WHAT THE THUMB MEETS, ANIMATION AND ALL.
@@ -353,11 +444,6 @@ test('the daily log offers no action target below the 44px floor', async ({ page
         // The exclusion is a marked subtree rather than a narrowed query, so it stays greppable
         // and anything NEW that appears is swept by default.
         .filter((el) => !el.closest('[data-dev-affordance]'))
-        // a text field is typed into, not pressed, and the floor it answers to is the 16px
-        // font-size rule the arms above measure. Only the PRESSED input types belong here.
-        .filter((el) => !(el instanceof HTMLInputElement)
-          || ['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'image', 'color', 'range']
-            .includes(el.type))
         .map((el) => {
           const r = el.getBoundingClientRect();
           return {
