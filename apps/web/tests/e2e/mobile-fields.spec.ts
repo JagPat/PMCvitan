@@ -26,6 +26,24 @@ test.use({ viewport: { width: 390, height: 844 } });
 
 const FLOOR = 16;
 const TOUCH = 44;
+/**
+ * #584 review round 8, finding 1 — the floor is compared against the RAW rect, and this epsilon
+ * is what makes that safe.
+ *
+ * Rounding before the comparison hid a real class of defect: a target at 43.6px read as 44 and
+ * passed, in the one suite whose reason for existing is a SUB-PIXEL shrink. But the unrounded
+ * rect brings its own artifact, and this arm measured it within minutes of the change — the More
+ * sheet's Close button, whose layout box is EXACTLY 44×44 (`min-width`/`min-height`, no
+ * transform, verified by computed style), reports ~43.99 while the sheet's `sheetUp` entry
+ * animation is translating it: a fractional translate moves both edges, and the rect's width is
+ * the difference of two independently snapped coordinates.
+ *
+ * So the predicate keeps the raw measurement and allows a TENTH of a pixel. That is two orders of
+ * magnitude below every real defect this file has found — `vpop`'s scale gave 43.1, and round 8's
+ * own example is 43.5–44.0 — and comfortably above edge snapping. An element genuinely one tenth
+ * of a pixel short is not a thumb problem; an element half a pixel short still fails here.
+ */
+const SUBPIXEL = 0.1;
 
 /**
  * Every enabled interactive element that is not a dev-only affordance.
@@ -56,21 +74,35 @@ const INTERACTIVE = [
  * surface as it stands, for the groups round 5 required this unit to raise.
  */
 async function sweepActionTargets(page: Page, surface: string): Promise<void> {
-  const small = await page.$$eval(INTERACTIVE, (els, floor) =>
+  const small = await page.$$eval(INTERACTIVE, (els, { floor, eps }) =>
     (els as HTMLElement[])
       .filter((el) => el.offsetParent !== null)
       .filter((el) => !el.closest('[data-dev-affordance]'))
       .map((el) => {
-        const r = el.getBoundingClientRect();
+        // A CHECKBOX OR RADIO IS MEASURED AT ITS LABEL when one encloses it. The native box is a
+        // platform affordance — 13px on every browser, and forcing it larger changes a control
+        // users recognise by its size — while label activation forwards a press anywhere in the
+        // label to the control. So the thumb's target genuinely IS the label, and that is what
+        // the floor is about. This applies to nothing else: a button, a select or a text field
+        // is its own target, and measuring an enclosing label for those would let a tall row
+        // excuse a small control.
+        const box = (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio')
+          && el.closest('label')) || el;
+        const r = box.getBoundingClientRect();
         return {
           tag: el.tagName.toLowerCase(),
           testid: el.getAttribute('data-testid') || '',
           label: (el.textContent || '').trim().slice(0, 30)
             || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '',
-          w: Math.round(r.width), h: Math.round(r.height),
+          // #584 review round 8, finding 1 — the RAW rect decides, and rounding is for the
+          // message only. `Math.round` used to run first, so a target at 43.6px read as 44 and
+          // passed — in the one suite whose reason for existing is a SUB-PIXEL shrink: `vpop`
+          // scaled 44 to 43.1, and a slightly gentler scale would have been invisible here.
+          w: r.width, h: r.height,
         };
       })
-      .filter((b) => b.w > 0 && b.h > 0 && (b.w < floor || b.h < floor)), TOUCH);
+      .filter((b) => b.w > 0 && b.h > 0 && (b.w < floor - eps || b.h < floor - eps))
+      .map((b) => ({ ...b, w: Math.round(b.w * 10) / 10, h: Math.round(b.h * 10) / 10 })), { floor: TOUCH, eps: SUBPIXEL });
 
   expect(
     small,
@@ -253,41 +285,86 @@ test('every persona, every surface its navigation reaches, holds the 44px floor'
 });
 
 /**
- * #584 review round 7 — THE DIALOGS, which the walk above cannot open on its own.
+ * #584 review round 8, finding 2 — THE DIALOGS ARE DISCOVERED, NOT NAMED.
  *
- * Every field in these three dialogs is built from one style constant per screen (`fldS`,
- * `fld`), and each was 42px — under the floor by exactly the amount that made round 7's first
- * finding true. They are swept here because a dialog is where this surface's text entry lives,
- * and because the count guard in `sweep()` already proved that an arm which never opens one
- * measures nothing at all.
+ * Round 7 replaced a named SURFACE list with a walk of the navigation's own items, and then
+ * opened four dialogs BY NAME beside it. That was the same defect one level down, and it took
+ * one round to prove: `Manage locations` is reachable from the Decision Register, holds the
+ * tree's rename / delete / add controls, and no arm here opened it — so its 23px glyph buttons
+ * and its dashed add-child chips sat under the floor while the suite was green.
+ *
+ * So this arm opens dialogs the way a person finds them: it presses each control on a surface
+ * and asks whether a dialog appeared. Anything that opens one is swept; anything that does not
+ * is left alone. Nothing is named, so a dialog added tomorrow is swept the day it appears — the
+ * property the four-name list never had.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO is press controls INSIDE a dialog. A modal's own buttons
+ * commit, delete and publish, and a sweep that fires them is not measuring a surface any more —
+ * it is driving the app somewhere the next assertion cannot predict. The dialog is opened,
+ * measured, and dismissed with Escape, and the page is reloaded between surfaces so a control
+ * that changed state cannot leak into the next one.
  */
-test('the dialogs that hold this product\'s text entry hold the 44px floor', async ({ page }) => {
-  await page.goto('/');
-  await page.getByTestId('tab-site-schedule').click();
+test('every dialog a surface can open holds the 44px floor', async ({ page }) => {
+  // pressing every control on three surfaces is minutes of work, not seconds, and the project
+  // default is 30s. The cost is the price of discovery: a named list runs in two seconds and is
+  // wrong one round later, which this file has now demonstrated twice.
+  test.setTimeout(300_000);
+  const surfaces = ['tab-site-schedule', 'more-item-decision-log', 'more-item-drawings'];
+  const seen: string[] = [];
 
-  await page.getByTestId('add-phase').click();
-  await expect(page.getByTestId('phase-name')).toBeVisible();
-  await sweepActionTargets(page, 'Schedule — Add phase dialog');
-  await page.keyboard.press('Escape');
+  const openSurface = async (surface: string): Promise<void> => {
+    await page.goto('/');
+    if (surface.startsWith('more-item-')) {
+      await page.getByTestId('tab-more').click();
+      await page.getByTestId(surface).click();
+    } else {
+      await page.getByTestId(surface).click();
+    }
+    await expect(page.getByTestId('tab-more')).toBeVisible();
+  };
 
-  await page.getByTestId('plan-activity').click();
-  await expect(page.getByTestId('act-name')).toBeVisible();
-  await sweepActionTargets(page, 'Schedule — Plan activity dialog');
-  await page.keyboard.press('Escape');
+  for (const surface of surfaces) {
+    await openSurface(surface);
+    const openerCount = await page.locator('button:not([disabled])').count();
 
-  const override = page.locator('[data-testid^="override-ACT-"]').first();
-  if (await override.count()) {
-    await override.click();
-    await expect(page.getByTestId('override-gate')).toBeVisible();
-    await sweepActionTargets(page, 'Schedule — Override dialog');
-    await page.keyboard.press('Escape');
+    for (let i = 0; i < openerCount; i += 1) {
+      // THE SURFACE IS RELOADED BEFORE EVERY PRESS, and that is not caution — the first draft
+      // walked `nth(i)` over a list captured once, and opening a dialog inserts ITS buttons into
+      // that list. The indices drifted, the arm re-measured one dialog several times, and the
+      // `opened` count still passed while `Manage locations` — the dialog round 8 is about — was
+      // never reached. Measured, not reasoned: the arm was green against the UNFIXED source.
+      await openSurface(surface);
+      const button = page.locator('button:not([disabled])').nth(i);
+      if (!(await button.isVisible().catch(() => false))) continue;
+      if (await button.evaluate((el) => !!el.closest('[data-dev-affordance]')).catch(() => true)) continue;
+
+      await button.click({ timeout: 1_500 }).catch(() => undefined);
+      const dialog = page.locator('[role="dialog"]');
+      if (await dialog.count().catch(() => 0)) {
+        const label = (await dialog.first().textContent().catch(() => '') || '').trim().slice(0, 40);
+        await sweepActionTargets(page, `${surface} — dialog "${label}"`);
+        seen.push(label);
+      }
+    }
   }
+  const opened = new Set(seen).size;
 
-  await page.getByTestId('tab-more').click();
-  await page.getByTestId('more-item-drawings').click();
-  await page.getByTestId('issue-drawing').click();
-  await expect(page.getByTestId('publish-drawing')).toBeVisible();
-  await sweepActionTargets(page, 'Drawings — Issue drawing dialog');
+  // and the count is part of the claim, exactly as it is for the field sweeps: an arm that
+  // opened NO dialog would pass this test having measured nothing at all, which is the failure
+  // rounds 4 and 7 both caught in this file.
+  expect(
+    opened,
+    'this arm must actually open dialogs — three surfaces that stop offering any would make it '
+    + 'pass over an empty measurement, which is the shape this file keeps being caught in',
+  ).toBeGreaterThanOrEqual(4);
+
+  // and the DISTINCT dialogs are named in the failure, so a future reader can see which states
+  // this arm actually entered rather than trusting a number.
+  expect(
+    [...new Set(seen)].join(' | '),
+    'the Locations manager is the dialog round 8 named, and the first draft of this arm never '
+    + 'reached it — so its presence is asserted rather than assumed',
+  ).toContain('Locations');
 });
 
 /**
@@ -435,7 +512,7 @@ test('the daily log offers no action target below the 44px floor', async ({ page
   // NOT freeze motion, so any future entry animation that shrinks a control is caught here rather
   // than hidden. `translateY` moves a box without resizing it, which is why the rise survives.
   const sweepTargets = async (state: string): Promise<void> => {
-    const small = await page.$$eval(INTERACTIVE, (els) =>
+    const small = await page.$$eval(INTERACTIVE, (els, eps) =>
       els
         .filter((el) => (el as HTMLElement).offsetParent !== null)
         // DEV-ONLY affordances owe no field floor. The persona switcher renders under `DEV_AUTH`,
@@ -451,10 +528,12 @@ test('the daily log offers no action target below the 44px floor', async ({ page
             testid: el.getAttribute('data-testid') || '',
             within: el.closest('[data-testid]')?.getAttribute('data-testid') || el.parentElement?.tagName || '',
             html: el.outerHTML.slice(0, 120),
-            w: Math.round(r.width), h: Math.round(r.height),
+            // #584 review round 8, finding 1 — raw, for the reason on the shared sweep above.
+            w: r.width, h: r.height,
           };
         })
-        .filter((b) => b.w > 0 && b.h > 0 && (b.w < 44 || b.h < 44)));
+        .filter((b) => b.w > 0 && b.h > 0 && (b.w < 44 - eps || b.h < 44 - eps))
+        .map((b) => ({ ...b, w: Math.round(b.w * 10) / 10, h: Math.round(b.h * 10) / 10 })), SUBPIXEL);
 
     expect(
       small,

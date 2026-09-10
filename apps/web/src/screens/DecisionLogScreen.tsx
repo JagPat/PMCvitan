@@ -344,7 +344,11 @@ export function ManageLocationsModal({ onClose }: { onClose: () => void }) {
           <input value={newZone} onChange={(e) => setNewZone(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addZone(); }} placeholder="Add a zone (e.g. Ground Floor)" style={{ ...fldD, flex: 1, minWidth: 0 }} data-testid="manage-new-zone" />
           <Button variant="ink" onClick={addZone} style={{ padding: '0 14px', fontSize: 12.5 }}>Add</Button>
         </div>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--muted)', cursor: 'pointer', marginBottom: 4 }}>
+        {/* Wave 0 / F-1b round 8 — the checkbox itself is a native 13px box; the LABEL is what a
+            thumb lands on, and label activation forwards to the control, so the 44px band goes
+            here. The box is left native: forcing a checkbox larger changes a platform affordance
+            for no gain, and the rule is about what the thumb meets. */}
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minHeight: 44, fontSize: 12, color: 'var(--muted)', cursor: 'pointer', marginBottom: 4 }}>
           <input type="checkbox" checked={asDraft} onChange={(e) => setAsDraft(e.target.checked)} data-testid="manage-zone-draft" />
           Add as a private draft (publish later)
         </label>
@@ -449,6 +453,14 @@ const addChildBtn: CSSProperties = {
   background: 'transparent',
   border: '1px dashed rgba(35,33,28,.3)',
   borderRadius: 6,
+  // Wave 0 / F-1b round 8 — these live in the Manage locations dialog, which the round-7 walk
+  // reached no more than the round-2 and round-5 sweeps did: it opened four NAMED dialogs, and a
+  // named list is the same defect as a named surface list. The label keeps its 10.5px mono size —
+  // the floor governs the HIT AREA, not the type.
+  minHeight: 44,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
   padding: '2px 7px',
   fontSize: 10.5,
   cursor: 'pointer',
@@ -468,7 +480,10 @@ const draftChip: CSSProperties = {
   flex: 'none',
 };
 
-const iconBtn: CSSProperties = { background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', padding: 5 };
+// Wave 0 / F-1b round 8 — the glyph-only rename / delete / save / confirm controls of the
+// Manage locations tree. A 13px icon in 5px of padding is a 23px target, and these are the
+// controls that RENAME and DELETE a location decisions are filed against.
+const iconBtn: CSSProperties = { background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 44, minHeight: 44, padding: 5 };
 // Wave 0 / F-1b round 7 — 42 → 44. A text field is a POINTER TARGET before it is a text
 // field: a thumb has to land on it to focus it, and the 44×44 floor has no exception for
 // "typed into rather than pressed". That exception is what my round-3 sweep wrote into its

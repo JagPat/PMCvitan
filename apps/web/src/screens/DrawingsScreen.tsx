@@ -277,7 +277,9 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
           </div>
         </div>
         <span style={{ ...chip, background: sm.bg, color: sm.fg, borderColor: sm.border }}>{sm.label}</span>
-        <button onClick={onClose} aria-label="Close" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex' }}>
+        {/* Wave 0 / F-1b round 8 — the drawing viewer's dismiss. A glyph with no padding measured
+            32x22; it is the only way out of a full-screen sheet on a phone, so it takes the floor. */}
+        <button onClick={onClose} aria-label="Close" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 44, minHeight: 44 }}>
           <X size={20} />
         </button>
       </div>
@@ -528,10 +530,14 @@ const fld: CSSProperties = {
   outline: 'none',
 };
 
+// Wave 0 / F-1b round 8 — 11px of padding around a 16px glyph lands at 41.6, and an `<a download>`
+// is a press target like any button. The floor is on the anchor, not on a wrapper.
 const dlBtn: CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
+  justifyContent: 'center',
   gap: 8,
+  minHeight: 44,
   padding: '11px 18px',
   borderRadius: 11,
   background: 'var(--ink)',

@@ -131,11 +131,14 @@ export function TeamScreen() {
             </div>
             {canManage ? (
               <>
-                <select value={m.role} onChange={(e) => { const r = e.target.value as Role; updateMemberRole(m.userId, r, r === 'consultant' ? (m.discipline ?? 'architect') : undefined); }} style={{ ...fld, flex: '0 0 120px', height: 38 }} data-testid={`member-role-${m.userId}`}>
+                {/* Wave 0 / F-1b round 8 — 38 -> 44 on every role/discipline select here. These
+                    override the shared `fld` height downward, so raising the token alone would
+                    have left them short: an override is a second spelling of the rule. */}
+                <select value={m.role} onChange={(e) => { const r = e.target.value as Role; updateMemberRole(m.userId, r, r === 'consultant' ? (m.discipline ?? 'architect') : undefined); }} style={{ ...fld, flex: '0 0 120px', height: 44 }} data-testid={`member-role-${m.userId}`}>
                   {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
                 </select>
                 {m.role === 'consultant' && (
-                  <select value={m.discipline ?? 'architect'} onChange={(e) => updateMemberRole(m.userId, 'consultant', e.target.value)} style={{ ...fld, flex: '0 0 120px', height: 38 }} aria-label={`Discipline for ${m.name}`}>
+                  <select value={m.discipline ?? 'architect'} onChange={(e) => updateMemberRole(m.userId, 'consultant', e.target.value)} style={{ ...fld, flex: '0 0 120px', height: 44 }} aria-label={`Discipline for ${m.name}`}>
                     {CONSULTANT_DISCIPLINES.map((d) => <option key={d} value={d}>{discLabel(d)}</option>)}
                   </select>
                 )}
@@ -257,7 +260,7 @@ function OrgRoster({ orgId, canManageRoles, canCorrectEmails }: { orgId: string;
                     value={correctedEmail}
                     onChange={(e) => setCorrectedEmail(e.target.value)}
                     aria-label={`Corrected email for ${m.name}`}
-                    style={{ ...fld, flex: '1 1 190px', height: 38 }}
+                    style={{ ...fld, flex: '1 1 190px', height: 44 }}
                   />
                   <Button
                     variant="ink"
@@ -289,7 +292,7 @@ function OrgRoster({ orgId, canManageRoles, canCorrectEmails }: { orgId: string;
                         onChange={(e) => updateOrgMemberRole(orgId, m.userId, e.target.value as OrgRole)}
                         aria-label={`Org role for ${m.name}`}
                         data-testid="org-member-role"
-                        style={{ ...fld, flex: '0 0 120px', height: 38, opacity: lastOwner ? 0.6 : 1 }}
+                        style={{ ...fld, flex: '0 0 120px', height: 44, opacity: lastOwner ? 0.6 : 1 }}
                       >
                         {ORG_ROLES.map((r) => <option key={r} value={r}>{ORG_ROLE_LABEL[r]}</option>)}
                       </select>
