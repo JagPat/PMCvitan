@@ -112,7 +112,7 @@ export function DecisionLogScreen() {
           {GROUP_OPTIONS.map((g) => {
             const on = groupBy === g.key;
             return (
-              <button key={g.key} onClick={() => setGroupBy(g.key)} data-testid={`groupby-${g.key}`} style={{ padding: '6px 11px', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 600, background: on ? 'var(--ink)' : 'transparent', color: on ? '#fff' : 'var(--muted)' }}>
+              <button key={g.key} onClick={() => setGroupBy(g.key)} data-testid={`groupby-${g.key}`} style={{ padding: '6px 11px', minHeight: 44, minWidth: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 600, background: on ? 'var(--ink)' : 'transparent', color: on ? '#fff' : 'var(--muted)' }}>
                 {g.label}
               </button>
             );
@@ -124,7 +124,7 @@ export function DecisionLogScreen() {
         {STATUS_FILTERS.map((s) => {
           const on = statuses.has(s.key);
           return (
-            <button key={s.key} onClick={() => toggleStatus(s.key)} data-testid={`filter-${s.key}`} style={{ padding: '5px 11px', borderRadius: 20, cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, border: `1px solid ${on ? 'var(--ink)' : 'var(--hairline)'}`, background: on ? 'var(--ink)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }}>
+            <button key={s.key} onClick={() => toggleStatus(s.key)} data-testid={`filter-${s.key}`} style={{ padding: '5px 11px', minHeight: 44, minWidth: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 20, cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, border: `1px solid ${on ? 'var(--ink)' : 'var(--hairline)'}`, background: on ? 'var(--ink)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }}>
               {s.label}
             </button>
           );
@@ -145,7 +145,7 @@ export function DecisionLogScreen() {
                 <button
                   onClick={() => toggleGroup(g.key)}
                   data-testid={`group-head-${g.key}`}
-                  style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 9, padding: '9px 4px', background: 'transparent', border: 'none', borderBottom: '1px solid var(--hairline)', cursor: 'pointer', textAlign: 'left', marginBottom: isCollapsed ? 0 : 12 }}
+                  style={{ width: '100%', minHeight: 44, display: 'flex', alignItems: 'center', gap: 9, padding: '9px 4px', background: 'transparent', border: 'none', borderBottom: '1px solid var(--hairline)', cursor: 'pointer', textAlign: 'left', marginBottom: isCollapsed ? 0 : 12 }}
                 >
                   <ChevronRight size={15} style={{ transform: isCollapsed ? 'none' : 'rotate(90deg)', transition: 'transform .15s', color: 'var(--muted)' }} />
                   <span style={{ fontWeight: 700, fontSize: 15 }}>{g.label}</span>

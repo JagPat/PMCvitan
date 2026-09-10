@@ -197,23 +197,31 @@ Audit every action target against the 44×44 floor in the same pass.
 > now states how many fields it must find, dev affordances are excluded from the count, and the
 > dialogs that hold the fields are opened.
 >
-> **The SCHEDULE surface is still deferred to F-1c**, on the two blockers that survive — both of
-> them density decisions rather than size constants, and neither an artifact:
-> - the place breadcrumbs (`sched-place-*-crumb-*`) and drawing chips (`sched-dwg-*`) are inline
->   TEXT links at **18–21px tall**. A 44px box for each is a decision about the density of a
->   schedule row, not padding.
-> - the DECISION REGISTER's group-by control is a **26px** segmented chip row
->   (`groupby-location`, `groupby-room`, `groupby-element`, `groupby-status`).
+> **Amendment (2026-09-10, PR #584 review round 5): the deferral is WITHDRAWN and the targets are
+> raised.** Round 2 parked three known sub-floor groups in F-1c as "density decisions" — the
+> Schedule breadcrumbs (`sched-place-*-crumb-*`, ~18px), the drawing chips (`sched-dwg-*`, ~21px)
+> and the decision register's group-by row (26px). That was the wrong unit to send them to. F-1c is
+> defined in this document as validation that "applies F-1a/b and proves them", with no new design
+> decisions in it, while F-1b's completion criterion above says "every action target >=44x44" with
+> no exception written into it. A known violation deferred to a unit that cannot decide anything is
+> deferred nowhere, and F-1b would have been cleared with the rule it states unmet.
 >
-> F-1c owns both, which is where this document already puts "the sweep and the evidence,
-> across all surfaces" — and it inherits one instruction from the retraction above: measure the
-> steady state. A target that is only undersized while it animates in is an animation question,
-> not a layout one, and must not enter the inventory as a blocker. F-1b carries the corrections its own section names and the Daily Log's
-> multi-state sweep; it does NOT carry a cross-surface sweep scoped to whichever surfaces pass,
-> because that is the same narrowing round 2 caught, stated more confidently. The e2e sweep names this exclusion in the spec so it is visible rather than
-> absent, and the stale-snapshot state is likewise asserted UNREACHABLE under this suite's
-> `snapshot` read mode instead of skipped by a silent conditional.
+> All three are at the floor now, and raising them is a real density change to two dense surfaces —
+> which is the trade this unit is the one entitled to make. The drawing chip keeps its 9.5px mono
+> label: the floor governs the HIT AREA, and shrinking a governing drawing number to satisfy a
+> touch rule would trade one rule for another.
 >
+> **And the inventory that named those three was itself incomplete.** Sweeping the decision
+> register — rather than reading it — turned up four status filter chips at 24px, three collapsible
+> group headers at 35px, and `groupby-flat` at 37px WIDE after the height fix, because the floor is
+> 44 in BOTH axes and the round-2 note had only ever looked at one. All are raised, and
+> `mobile-fields.spec.ts` sweeps both surfaces so the claim rests on a measurement. The lesson is
+> the one this unit keeps relearning: an inventory written from a reading lists what the author
+> noticed; only a sweep lists what is there.
+>
+> F-1c still owns the sweep of every surface this unit did not touch. What it no longer inherits is
+> a set of known violations it was never allowed to fix.
+
 > 4. **A desktop-parity assertion must name a value.** `expect(sizes.every((s)
 >    => s > 0))` is true whether the rule is scoped or has escaped to every
 >    width, so it passed in the world it existed to rule out. It now asserts a

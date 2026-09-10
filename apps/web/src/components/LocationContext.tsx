@@ -79,6 +79,15 @@ const wrap: CSSProperties = {
 const crumb: CSSProperties = {
   background: 'transparent',
   border: 'none',
+  // 44 TALL, and the trail grows to fit (#584 review round 5). A breadcrumb is a navigation
+  // control pressed with a thumb on site, so it answers to the same floor as every other action
+  // target; at 12px in 2px of padding it was ~18px, and F-1b's completion criterion is "every
+  // action target ≥44×44" without exception. Deferring it was the mistake round 5 caught: F-1c is
+  // VALIDATION with no new design decisions, so a known violation parked there is parked nowhere.
+  // The row is denser for it, and that is the trade this unit is the one allowed to make.
+  minHeight: 44,
+  display: 'inline-flex',
+  alignItems: 'center',
   padding: '2px 3px',
   margin: 0,
   fontFamily: 'var(--font-sans)',

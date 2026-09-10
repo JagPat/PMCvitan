@@ -118,7 +118,11 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
               onClick={() => setScreen('drawings')}
               data-testid={`sched-dwg-${a.id}`}
               title={`Governed by ${linkedDrawing.number} — open the Drawings register`}
-              style={{ marginTop: 6, display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer', background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 6, padding: '3px 7px', fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--muted)' }}
+              // minHeight 44 (#584 review round 5): this opens the Drawings register, so it is a
+              // thumb target and owes the floor. The label stays 9.5px mono — the FLOOR is about
+              // the hit area, not the type size, and shrinking a governing drawing number would
+              // trade one rule for another.
+              style={{ marginTop: 6, display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer', background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 6, padding: '3px 7px', minHeight: 44, fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--muted)' }}
             >
               <PencilRuler size={11} /> {linkedDrawing.number} · Rev {linkedDrawing.current.rev}
             </button>

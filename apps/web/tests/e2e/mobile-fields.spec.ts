@@ -25,6 +25,46 @@ import { test, expect, type Page } from '@playwright/test';
 test.use({ viewport: { width: 390, height: 844 } });
 
 const FLOOR = 16;
+const TOUCH = 44;
+
+/** Every enabled interactive element that is not a dev-only affordance, with its measured box. */
+const INTERACTIVE = [
+  'button:not([disabled])',
+  'select:not([disabled])',
+  '[role="button"]:not([aria-disabled="true"])',
+  'a[href]',
+  'input:not([disabled])',
+].join(', ');
+
+/**
+ * The shared action-target sweep. The Daily Log arm keeps its own state-by-state version below
+ * (it has to drive check-in, offline and stale states); this is the same rule applied to a
+ * surface as it stands, for the groups round 5 required this unit to raise.
+ */
+async function sweepActionTargets(page: Page, surface: string): Promise<void> {
+  const small = await page.$$eval(INTERACTIVE, (els, floor) =>
+    (els as HTMLElement[])
+      .filter((el) => el.offsetParent !== null)
+      .filter((el) => !el.closest('[data-dev-affordance]'))
+      .filter((el) => !(el instanceof HTMLInputElement)
+        || ['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'image', 'color', 'range']
+          .includes(el.type))
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        return {
+          testid: el.getAttribute('data-testid') || '',
+          label: (el.textContent || '').trim().slice(0, 30),
+          w: Math.round(r.width), h: Math.round(r.height),
+        };
+      })
+      .filter((b) => b.w > 0 && b.h > 0 && (b.w < floor || b.h < floor)), TOUCH);
+
+  expect(
+    small,
+    `${surface}: these action targets are under ${TOUCH}×${TOUCH} and are pressed with a thumb, `
+    + `on site — ${JSON.stringify(small)}`,
+  ).toEqual([]);
+}
 
 /** every control on the page that iOS would zoom for, with its computed size and a locator hint */
 async function visibleFields(page: Page): Promise<Array<{ where: string; size: number; under: boolean }>> {
@@ -127,6 +167,32 @@ test('the team surface focuses without zooming', async ({ page }) => {
     await team.click();
     await sweep(page, 'Team', 1);
   }
+});
+
+/**
+ * #584 review round 5 — THE SURFACES WHOSE TARGETS THIS UNIT RAISED.
+ *
+ * Round 2 deferred three known sub-floor groups to F-1c as "density decisions": the Schedule
+ * breadcrumbs and drawing chips, and the decision register's group-by row. That was the wrong
+ * unit to send them to — F-1c is VALIDATION with no new design decisions, and F-1b's completion
+ * criterion is "every action target ≥44×44" with no exception written into it. They are raised
+ * here, so they are swept here.
+ *
+ * This is NOT the cross-surface sweep round 2 rejected. That one would have covered whichever
+ * surfaces happened to pass; this covers the three groups this unit CHANGED, which is the
+ * evidence a reader needs to believe the change. F-1c still owns the sweep of everything else.
+ */
+test('the surfaces whose targets F-1b raised hold the 44px floor', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByTestId('tab-site-schedule').click();
+  await expect(page.locator('[data-testid^="sched-place-"]').first()).toBeVisible();
+  await sweepActionTargets(page, 'Schedule — breadcrumbs and drawing chips');
+
+  await page.getByTestId('tab-more').click();
+  await page.getByTestId('more-item-decision-log').click();
+  await expect(page.getByTestId('groupby-location')).toBeVisible();
+  await sweepActionTargets(page, 'Decision register — group-by row');
 });
 
 /**
