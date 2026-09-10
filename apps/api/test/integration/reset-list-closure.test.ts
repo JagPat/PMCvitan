@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { createTestApp, type TestApp } from './test-app';
 
@@ -32,6 +33,62 @@ import { createTestApp, type TestApp } from './test-app';
  */
 
 const SEED = join(__dirname, '..', '..', 'prisma', 'seed.ts');
+
+/** psql wants a libpq URI: Prisma's `?schema=public` is not one of its parameters. */
+function adminUrl(raw: string): string {
+  const url = new URL(raw);
+  url.search = '';
+  return url.toString();
+}
+
+/**
+ * One row in each register the DELETE-phase arm exists to catch, on whatever project, membership,
+ * decision and user the seed just created. The INSERT seals belong to 4d-ii's writers; this plant
+ * is about the RESET, so they are disabled by name for exactly these two statements and re-enabled
+ * unconditionally — PostgreSQL DDL is transactional, so a failure rolls the disable back with it.
+ */
+const PLANT = `
+BEGIN;
+ALTER TABLE "MembershipTransition" DISABLE TRIGGER "MembershipTransition_t4d_seal";
+ALTER TABLE "MembershipTransition" DISABLE TRIGGER "MembershipTransition_t4d_provenance_bound";
+ALTER TABLE "DecisionForward" DISABLE TRIGGER "DecisionForward_t4d_reserved";
+ALTER TABLE "DecisionForward" DISABLE TRIGGER "DecisionForward_t4d_seal";
+ALTER TABLE "DecisionForward" DISABLE TRIGGER "DecisionForward_t4d_paired";
+ALTER TABLE "DecisionForward" DISABLE TRIGGER "DecisionForward_t4d_provenance_bound";
+INSERT INTO "CommandExecution"
+  ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+  SELECT 'RLC-CMD', 'project', p."orgId", m."projectId", m."userId", 'members.updateRole',
+         'RLC-KEY', 'RLC-HASH', 'reserved'
+    FROM "Membership" m JOIN "Project" p ON p."id" = m."projectId" ORDER BY m."id" LIMIT 1;
+UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(),
+       "resultRef" = (SELECT "id" FROM "Membership" ORDER BY "id" LIMIT 1)
+ WHERE "id" = 'RLC-CMD';
+INSERT INTO "MembershipTransition"
+  ("id","projectId","membershipId","userId","role","fromStanding","toStanding","activeCount",
+   "actorId","actorRole","actorName","sourceCommandId")
+  SELECT 'RLC-MT', m."projectId", m."id", m."userId", m."role", 'not_held', 'held', 1,
+         m."userId", m."role", u."name", 'RLC-CMD'
+    FROM "Membership" m JOIN "User" u ON u."id" = m."userId" ORDER BY m."id" LIMIT 1;
+INSERT INTO "DecisionForward"
+  ("id","projectId","decisionId","fromDesignationKind","toDesignationKind",
+   "forwardedById","forwardedByRole","forwardedByName","reason","sourceCommandId")
+  SELECT 'RLC-FWD', d."projectId", d."id", 'client', 'pmc', m."userId", m."role", u."name",
+         'reset closure plant', 'RLC-CMD'
+    FROM "Decision" d
+    JOIN "Membership" m ON m."projectId" = d."projectId"
+    JOIN "User" u ON u."id" = m."userId"
+   ORDER BY d."id", m."id" LIMIT 1;
+-- the FKs on both tables are deferrable, and PostgreSQL refuses ALTER TABLE while a table
+-- carries pending trigger events, so the queue is flushed before the seals go back on.
+SET CONSTRAINTS ALL IMMEDIATE;
+ALTER TABLE "DecisionForward" ENABLE TRIGGER "DecisionForward_t4d_provenance_bound";
+ALTER TABLE "DecisionForward" ENABLE TRIGGER "DecisionForward_t4d_paired";
+ALTER TABLE "DecisionForward" ENABLE TRIGGER "DecisionForward_t4d_seal";
+ALTER TABLE "DecisionForward" ENABLE TRIGGER "DecisionForward_t4d_reserved";
+ALTER TABLE "MembershipTransition" ENABLE TRIGGER "MembershipTransition_t4d_provenance_bound";
+ALTER TABLE "MembershipTransition" ENABLE TRIGGER "MembershipTransition_t4d_seal";
+COMMIT;
+`;
 
 /** The named `const <NAME> = [...] as const;` array literal, as plain strings. */
 function resetList(name: string): string[] {
@@ -102,4 +159,67 @@ describe('the seed\'s TRUNCATE lists are closed under foreign-key references (li
       ).toEqual([]);
     });
   }
+
+  /**
+   * Phase 6 unit 4d-i, round 1 — the DELETE phase, which the two arms above cannot see, proven
+   * by RUNNING THE SEED rather than by reasoning about it.
+   *
+   * WHAT THE ARMS ABOVE MISS. They ask whether each TRUNCATE list is internally closed. The seed
+   * then clears a second set of tables with `deleteMany`, and `Membership`, `Decision` and `User`
+   * — three of the most referenced tables in the schema — are in THAT set. A table referencing
+   * one of them is invisible to those arms and breaks the seed two ways: a NO ACTION key refuses
+   * the delete outright, or a CASCADE key delivers a row DELETE into a seal that was never asked
+   * about this wipe. Codex round 1, finding 7 is the second shape — `MembershipTransition`
+   * cascades from `Membership` into `_t4d_append_only`, which admits a delete only under the
+   * project-deletion flag — and `DecisionForward` is the first, from three parents at once.
+   *
+   * WHY THIS IS DYNAMIC AND NOT A STATIC CLOSURE. A static version of this arm was written first
+   * and produced eleven FALSE positives on a seed that works: a child reached only through an
+   * earlier parent's cascade is already gone (`WorkerSkill` via `Worker`), and a DELETE trigger
+   * is not the same as a DELETE refusal (`ProjectOrg_t4d_writer` and its siblings ADMIT a
+   * cascade, which arrives nested). Encoding those exceptions is encoding a second copy of the
+   * seed's reasoning, and the first draft of THIS FILE already shipped one tripwire that passed
+   * vacuously by modelling instead of asking. So this arm asks the only oracle that cannot be
+   * wrong: it runs the seed, plants one row in each newly sealed register the way a real run
+   * would leave one, and runs the seed AGAIN.
+   *
+   * The SECOND run is the whole point. The first seed of an empty database deletes nothing, so
+   * no seal fires and no key is tested — which is exactly why the previous defect of this family
+   * reached CI. The plant between the runs is what makes the second one meet the rows.
+   */
+  it('the seed runs AGAIN over a database holding the rows this unit seals', () => {
+    const url = process.env.DATABASE_URL;
+    expect(url, 'the seed subprocess needs the suite\'s DATABASE_URL').toBeTruthy();
+    const api = join(__dirname, '..', '..');
+    const seed = (): { ok: boolean; out: string } => {
+      try {
+        return { ok: true, out: execFileSync('npx', ['tsx', 'prisma/seed.ts'],
+          { cwd: api, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+            env: { ...process.env, DATABASE_URL: url } }) };
+      } catch (e) {
+        const err = e as { stdout?: string; stderr?: string };
+        return { ok: false, out: `${err.stdout ?? ''}${err.stderr ?? ''}` };
+      }
+    };
+
+    const first = seed();
+    expect(first.ok, `the seed must run over this database at all:\n${first.out}`).toBe(true);
+
+    // The plant: one row in each register whose omission this arm exists to catch, written the
+    // way the seed will meet it — a committed row referencing the seeded project's own
+    // membership, decision and user. The fact seals are 4d-ii's writers' business, not this
+    // arm's, so the plant disables them BY NAME, exactly as `fixtures.ts` plants a legacy event.
+    execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', adminUrl(url!), '-c', PLANT], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const second = seed();
+    expect(
+      second.ok,
+      'the seed aborted on a database holding a MembershipTransition and a DecisionForward. '
+      + 'Every table this unit seals must be cleared BEFORE the `deleteMany` that reaches it — '
+      + 'add it to RESET_TABLES in prisma/seed.ts, with a TRUNCATE_SEALS entry in '
+      + `prisma/sanctioned-reset.ts if it carries a no-TRUNCATE seal:\n${second.out}`,
+    ).toBe(true);
+  }, 300_000);
 });

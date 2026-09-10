@@ -1206,13 +1206,38 @@ reservation is exactly what it must not be able to do.
 
 ### Repair — a RE-ROLE, never a removal
 
-1. **Re-role each named row.** Use the ordinary team role command to move each `Membership` to the
-   role the member actually holds. A dev `User` fixture is re-roled the same way. A row that never
-   legitimately existed may instead be deleted, subject to the delivered 4b holder guards, which
-   refuse deleting the named holder of an open decision — re-role that one.
+The abort names TWO tables and they take TWO DIFFERENT repairs. Saying "the team role command"
+for both was a recovery that could not be followed (#582's review round 1, finding 17): an
+operator who re-roled the membership, resolved the failed migration and redeployed would abort on
+the same `User` row, forever.
+
+1a. **`Membership` rows — the ordinary team role command.** Move each named `Membership` to the
+   role the member actually holds. A row that never legitimately existed may instead be deleted,
+   subject to the delivered 4b holder guards, which refuse deleting the named holder of an open
+   decision — re-role that one.
 
    Do NOT soft-remove instead: the audit counts removed rows too, and the next deploy would abort
    on exactly the same row.
+
+1b. **`User` rows — a direct, audited statement.** `User.role` has NO writer. It is set once, when
+   the member is created (`apps/api/src/orgs/members.service.ts`), and no command, route or CLI
+   updates it afterwards — `MembersService.updateRole` writes `Membership.role` alone. So there is
+   no operation to point at, and this half is performed as SQL, one statement per row from the
+   abort sample:
+
+   ```sql
+   UPDATE "User" SET "role" = '<the role that member actually holds>'
+    WHERE "id" = '<the id from the abort sample>' AND "role" = 'architect';
+   ```
+
+   Per row and keyed by id, never a blanket `UPDATE … WHERE role = 'architect'`: the column
+   records what each individual person is, and one sweep would flatten several different answers
+   into whichever role was typed. The `AND "role" = 'architect'` guard makes the statement a no-op
+   if someone else already repaired that row.
+
+   The doors rolled back with the aborted transaction (see above), so this UPDATE meets no seal.
+   After 4d-i has SUCCEEDED, `User_t4d_architect_reserved` stands and the same statement in the
+   other direction — a row moved INTO `architect` — is refused until 4d-iii retires it.
 
 2. **Clear the failed attempt.**
 
@@ -1225,8 +1250,8 @@ reservation is exactly what it must not be able to do.
 
 3. **Redeploy.** The audit now sees zero and the reservation installs.
 
-`scripts/migrate.sh` prints these three steps itself (`report_4d_i_migration_failure`), because the
-migration's own message is swallowed by the aborted transaction.
+`scripts/migrate.sh` prints these steps itself (`report_4d_i_migration_failure`), the `User`
+statement included, because the migration's own message is swallowed by the aborted transaction.
 
 ### The baseline path runs the audit too
 

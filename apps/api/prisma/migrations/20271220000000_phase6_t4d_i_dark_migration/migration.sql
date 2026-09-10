@@ -1428,15 +1428,16 @@ BEGIN
   -- decision to an active target, and pass every other check in this trigger.
   --
   -- The HOLDER arm reads the DISPLACED designation, which the field-for-field comparison below
-  -- has already tied to the decision's actual holder: a named membership resolves to its ACTIVE
-  -- user, a role designation to anyone holding that role. `none` resolves to nobody, and such a
-  -- decision is forwarded by a PMC or an architect like any other.
+  -- ties to the decision's actual holder: a named membership resolves to its ACTIVE user, a role
+  -- designation to anyone holding that role. (`none` is not representable here — the designation
+  -- CHECK admits `client`, `pmc`, `member` and `architect` only — so every forward displaces a
+  -- designation somebody can hold.)
   IF NEW."fromDesignationKind" = 'member' THEN
     v_holder_user := platform_membership_active_user(NEW."projectId", NEW."fromDesignationMembershipId");
   END IF;
   IF NOT (
        (v_holder_user IS NOT NULL AND v_holder_user = NEW."forwardedById")
-    OR (NEW."fromDesignationKind" NOT IN ('member', 'none')
+    OR (NEW."fromDesignationKind" <> 'member'
         AND platform_user_holds_role(NEW."projectId", NEW."forwardedById", NEW."fromDesignationKind"))
     OR platform_user_holds_role(NEW."projectId", NEW."forwardedById", 'pmc')
     OR platform_user_holds_role(NEW."projectId", NEW."forwardedById", 'architect')

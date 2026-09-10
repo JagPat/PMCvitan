@@ -195,15 +195,34 @@ report_4c_iiir_migration_failure() {
 #
 # The repair is a RE-ROLE, never a soft removal and never a repair engine: the still-serving
 # pre-4d client reads `Membership.role` as the plain string it is, so the ordinary team role
-# command re-roles each offending row to the role the member actually holds. The aborted attempt
-# installed nothing, so that UPDATE is free.
+# command re-roles each offending MEMBERSHIP row to the role the member actually holds. The
+# aborted attempt installed nothing — PostgreSQL DDL is transactional and the doors rolled back
+# with it — so the repair meets no seal.
+#
+# THE TWO HALVES ARE DIFFERENT OPERATIONS, and saying "the team role command" for both was a
+# recovery that could not be followed (Codex round 1, finding 17). `MembersService.updateRole`
+# writes `Membership.role` and nothing else; `User.role` is written ONCE, at
+# `members.service.ts` user creation, and no delivered command, route or CLI ever updates it
+# again. An operator who followed the old text on a database whose abort sample named a `User`
+# row would re-role the membership, resolve the failed migration, redeploy — and abort on the
+# same row, forever. So the `User` half is named as what it actually is: a direct, audited
+# statement, printed in full, because there is no command to point at.
 report_4d_i_migration_failure() {
   printf '%s\n' "$1" | grep -q '20271220000000_phase6_t4d_i_dark_migration' || return 0
   echo "[migrate] That failure is the 4d-i dark migration. Its own message is swallowed by the"
-  echo "[migrate] aborted transaction, so the recovery is repeated here:"
-  echo "[migrate]   1. RE-ROLE every \`Membership\` and \`User\` row spelling \`architect\` to the role"
-  echo "[migrate]      the member actually holds (the ordinary team role command; a row that never"
-  echo "[migrate]      legitimately existed is deleted, subject to the 4b holder guards)"
+  echo "[migrate] aborted transaction, so the recovery is repeated here. The audit names BOTH"
+  echo "[migrate] tables and they take DIFFERENT repairs:"
+  echo "[migrate]   1a. \`Membership\` rows spelling \`architect\`: re-role each through the ordinary"
+  echo "[migrate]       team role command, to the role the member actually holds (a row that never"
+  echo "[migrate]       legitimately existed is deleted, subject to the 4b holder guards)."
+  echo "[migrate]   1b. \`User\` rows spelling \`architect\`: NO command writes \`User.role\` — it is set"
+  echo "[migrate]       once when the member is created and never updated — so this half is a direct"
+  echo "[migrate]       statement, run per row from the abort sample with the intended role:"
+  echo "[migrate]         UPDATE \"User\" SET \"role\" = '<the role that member actually holds>'"
+  echo "[migrate]          WHERE \"id\" = '<the id from the sample>' AND \"role\" = 'architect';"
+  echo "[migrate]       Per row and keyed by id, never a blanket UPDATE: the column records what"
+  echo "[migrate]       each person is, and one sweep would flatten several answers into one."
+  echo "[migrate]       The doors rolled back with the aborted transaction, so it meets no seal."
   echo "[migrate]   2. prisma migrate resolve --rolled-back 20271220000000_phase6_t4d_i_dark_migration"
   echo "[migrate]      (without this the next deploy stops at P3009 — the schema rolled back, but the"
   echo "[migrate]       failed attempt is still recorded)"

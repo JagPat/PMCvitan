@@ -109,6 +109,23 @@ async function main(): Promise<void> {
     // instead of in a CI seed run.
     'ChangeRequest', 'DecisionCountersign', 'DecisionStrandedResolution',
     'DecisionApprovalRevision', 'ActivityDependency',
+    // Phase 6 unit 4d-i, round 1 (Codex finding 7, and `DecisionForward` beside it — the same
+    // omission on a second table). These two clear here, in the TRUNCATE that runs BEFORE the
+    // `deleteMany` phase, because that phase cannot reach them:
+    //
+    //   · `MembershipTransition.membershipId` FKs `Membership` ON DELETE CASCADE, so
+    //     `membership.deleteMany()` CASCADES into it — and the cascade is a row DELETE, which
+    //     fires `MembershipTransition_t4d_append_only`. That seal admits a delete only under the
+    //     project-deletion flag, which a membership wipe does not set, so the seed aborts on any
+    //     database that has ever recorded a transition. Its `actorId` FK onto `User` is NO ACTION
+    //     besides, so `user.deleteMany()` would refuse it a few lines later even without the seal.
+    //   · `DecisionForward` FKs `Decision`, `Membership` and `User`, all NO ACTION, so a database
+    //     holding one forward refuses the decision wipe outright.
+    //
+    // Neither is caught by the closure arm over these lists — that arm asks whether the TRUNCATE
+    // is internally closed, and `Membership`, `Decision` and `User` are cleared by `deleteMany`,
+    // not truncated. `reset-list-closure.test.ts` gains the DELETE-phase arm that does ask.
+    'MembershipTransition', 'DecisionForward',
     // Phase 6 unit 4c-iii moved this wipe from `deleteMany()` to the sanctioned reset because the
     // consultation preservation seal refused a direct DELETE; unit 4c-v retired that seal. The
     // table stays in the reset list — one wipe path for every table, seal or no seal.
