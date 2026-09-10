@@ -34,7 +34,17 @@ export interface TruncateCapableClient {
  * list: `TRUNCATE "Decision" CASCADE` fires the seal on every table PostgreSQL pulls into the
  * cascade, which the caller never names and cannot be expected to enumerate.
  *
- * DELIBERATELY ABSENT: `T3CRepairAction_no_truncate`. Do not add it — it breaks every reset in
+ * DELIBERATELY ABSENT, and these two are the whole list — every other `BEFORE TRUNCATE` trigger
+ * installed by any migration appears below:
+ *
+ * `RolloutRetirement_t4d_no_truncate`. The rollout register is keyed by `unit` and holds no
+ * foreign key at all, so no CASCADE can reach it and no sanctioned reset names it; the only
+ * TRUNCATE aimed at it in the repository is the seal-stripped harness's HOSTILE arm, which must
+ * meet the seal rather than a bypass. It is recorded here because a sweep of the migrations
+ * against this list surfaces it (#582 round 4, alongside finding 5) and the next reader deserves
+ * the answer rather than the question.
+ *
+ * `T3CRepairAction_no_truncate`. Do not add it — it breaks every reset in
  * the repository, which is how it was found. That table additionally carries a DDL guard that
  * refuses ALTER TABLE outright ("is the durable repair-evidence register and is never altered"),
  * and disabling a trigger IS an ALTER TABLE, so listing it here makes the very first statement of
@@ -104,6 +114,12 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   { table: 'ProjectOrg', trigger: 'ProjectOrg_t4d_no_truncate' },
   { table: 'ProjectRoleStanding', trigger: 'ProjectRoleStanding_t4d_no_truncate' },
   { table: 'ProjectUserStanding', trigger: 'ProjectUserStanding_t4d_no_truncate' },
+  // Phase 6 unit 4d-i — the per-project event stream's allocation head. Sealed by the same
+  // `platform_t4d_register_no_truncate` function as the registers above and MISSED here when they
+  // were added (#582 round 4, finding 5). It is reached the same way they are: it holds a
+  // `projectId` FK, so `TRUNCATE "Project" CASCADE` pulls it in, and a statement trigger fires on
+  // an empty table too — so a suite that never allocated an event still meets the seal in setup.
+  { table: 'ProjectEventStream', trigger: 'ProjectEventStream_t4d_no_truncate' },
   { table: 'UserIdentity', trigger: 'UserIdentity_t4d_no_truncate' },
 ];
 

@@ -122,6 +122,11 @@ const REGISTER: Record<string, SealContract> = {
       'succeeded', 'commandType', 'actorId',
       'decisions.forward', 'decisions.countersign', 'decisions.resolveStrandedCountersign',
       'forwardedById', 'countersignedById', 'resolvedById',
+      // #582 round 4, finding 3 — the receipt must be THIS transaction's. `txid_current` would
+      // not witness it: this body has no other use of it today, but the membership binding
+      // learned in round 3 that a token a second clause can satisfy witnesses neither, so the
+      // alias is the evidence and it exists nowhere else here.
+      'receiptThisTx',
     ],
   },
   phase6_t4d_forward_seal: {
@@ -248,18 +253,24 @@ const REGISTER: Record<string, SealContract> = {
   // ── the membership side ─────────────────────────────────────────────────────────────────────
   phase6_t4d_membership_transition_seal: {
     rule: 'team management is an AUTHORIZED act (owner/admin authority, or `pmc`, or the subject '
-      + 'stepping down), the frozen pair is true, and the fact agrees with the register',
+      + 'stepping down) and the frozen pair is true',
     plan: '§A.2 the membership paragraph',
     on: { 'MembershipTransition.MembershipTransition_t4d_seal': B('I') },
+    // `platform_role_standing` was in this list until #582 round 4, finding 1, and its presence
+    // here is what made the misplacement look correct: the register comparison genuinely was in
+    // this body, so the oracle was green while the seal asked its question one statement too
+    // early. The clause moved to the DEFERRED binding, and the token moved with it — a register
+    // that names a clause by where it USED to live is a register that will accept it back.
     must: [
       'platform_user_orchestration_authority', 'platform_user_holds_role',
-      'phase6_t4d_actor_bound', 'platform_role_standing',
+      'phase6_t4d_actor_bound',
     ],
   },
   phase6_t4d_membership_transition_bound: {
-    rule: 'the cited command SUCCEEDED naming `NEW."membershipId"` as its result, AND a '
-      + 'same-transaction `Membership` write matching the fact exists (an orphan fact refused)',
-    plan: 'plan lines 2951-2956; #582 round 1, finding 11',
+    rule: 'the cited command SUCCEEDED in THIS transaction naming `NEW."membershipId"` as its '
+      + 'result, a same-transaction `Membership` write left that membership in exactly the '
+      + 'standing the fact records (an orphan fact refused), and the register agrees AT COMMIT',
+    plan: 'plan lines 2951-2956 and 2998-2999; #582 round 1, finding 11; round 4, findings 1-2',
     on: { 'MembershipTransition.MembershipTransition_t4d_provenance_bound': C('I') },
     // #582 round 2, finding 5 — `commandType` and `actorId` were ABSENT from this list, and
     // that is the register's own failure, not just the seal's. Round 1 established the
@@ -270,6 +281,12 @@ const REGISTER: Record<string, SealContract> = {
     // understood and was silent on the one I had wrong. That is a real limit on this file, and
     // the answer is an outside reader — which is what Codex was here.
     must: ['succeeded', 'membershipId', 'txid_current', 'commandType', 'actorId',
+      // #582 round 4, findings 1 and 2 — two clauses this binding did not carry. The register
+      // correspondence arrived from the INSERT seal, where it read a count a later statement in
+      // the same command could still move; `standingNow` is the alias of the resulting-state
+      // predicate that makes the orphan clause name THIS standing change rather than any write
+      // that happened to touch the row. Neither is witnessed by a token the other body shares.
+      'platform_role_standing', 'standingNow',
       // #582 round 3, finding 3 — `txid_current` alone does NOT witness this rule: the
       // ORPHAN clause already used it on `Membership`, so the register was green while the
       // RECEIPT lookup carried no transaction predicate at all. `thisTx` is the alias of

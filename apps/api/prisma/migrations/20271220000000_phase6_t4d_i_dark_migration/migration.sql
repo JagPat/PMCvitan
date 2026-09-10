@@ -1723,12 +1723,31 @@ BEGIN
   END IF;
   v_actor := to_jsonb(NEW) ->> v_actor_column;
 
-  SELECT "status", "resultRef", "commandType", "actorId" INTO c FROM "CommandExecution"
+  -- THE RECEIPT IS THIS TRANSACTION'S (#582 round 4, finding 3). Round 3's finding 3 corrected
+  -- exactly this shape on `phase6_t4d_membership_transition_bound` — a message that has said "in
+  -- this transaction" since round 1 over a query with no transaction predicate — and the commit
+  -- that carried it reasoned that the DECISION facts were safe because their commands are new.
+  -- They are not: `decisions.forward`, `decisions.disagree`, `decisions.countersign` and
+  -- `decisions.resolveStrandedCountersign` are all DELIVERED and ledgered today, so a mature
+  -- database holds succeeded receipts for every one of them that no 4d fact has ever cited. A
+  -- later direct transaction can write a forward, countersign or resolution citing one of those
+  -- HISTORICAL receipts and satisfy every other clause here truthfully — right command kind, right
+  -- actor, right result — presenting a new act as an old command's. `xmin` closes it, and it is
+  -- read under an alias no other predicate in this body uses so the contract register can witness
+  -- THIS clause rather than some other use of `txid_current`.
+  SELECT "status", "resultRef", "commandType", "actorId",
+         "xmin" = txid_current()::text::xid AS "receiptThisTx"
+    INTO c FROM "CommandExecution"
    WHERE "projectId" = NEW."projectId" AND "id" = NEW."sourceCommandId";
   IF NOT FOUND OR c."status" <> 'succeeded' THEN
     RAISE EXCEPTION
       'phase6 4d-i: %.% cites a command that did not succeed in this transaction — the receipt must be COMPLETED by the command that wrote the row',
       TG_TABLE_NAME, NEW."id";
+  END IF;
+  IF NOT COALESCE(c."receiptThisTx", FALSE) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: %.% cites receipt %, which was completed by an EARLIER transaction — the fact and its receipt are one act seen twice, and a receipt lying around from a past forward, countersign or resolution cannot back an act performed now',
+      TG_TABLE_NAME, NEW."id", NEW."sourceCommandId";
   END IF;
 
   IF NOT (c."commandType" = ANY (v_types)) THEN
@@ -2268,14 +2287,20 @@ BEGIN
   PERFORM phase6_t4d_actor_bound(NEW."projectId", NEW."actorId", NEW."actorRole",
                                  NEW."actorName", 'MembershipTransition ' || NEW."id");
 
-  -- `activeCount` is the register's count AFTER the transition, and the membership standing
-  -- trigger is BEFORE ROW, so by the time this INSERT seal runs the delta is already applied.
-  IF NEW."activeCount" IS DISTINCT FROM platform_role_standing(NEW."projectId", NEW."role") THEN
-    RAISE EXCEPTION
-      'phase6 4d-i: MembershipTransition % records `%` standing at % on project %, but the register holds % — the fact and the register are the same truth and a fact that disagrees with it is evidence of nothing',
-      NEW."id", NEW."role", NEW."activeCount", NEW."projectId",
-      platform_role_standing(NEW."projectId", NEW."role");
-  END IF;
+  -- THE `activeCount` CORRESPONDENCE IS NOT HERE. It lived in this BEFORE INSERT seal until
+  -- #582's review round 4, finding 1, under a comment that reasoned: the membership standing
+  -- trigger is BEFORE ROW, so by the time this seal runs the delta is already applied. That is
+  -- true of the trigger and says nothing about the STATEMENT ORDER. `Membership_t4d_role_standing`
+  -- moves the register when the MEMBERSHIP is written, and nothing requires the membership write
+  -- to precede the fact — `phase6_t4d_membership_architect_paired`, forty lines below, states the
+  -- opposite in its own comment ("the transition row may be written before or after the membership
+  -- write inside the command's transaction") and is DEFERRED for exactly that reason. A command
+  -- that writes the fact first therefore met a register that had not moved: adding the first
+  -- architect supplies `activeCount = 1` while `platform_role_standing` still returns 0, and the
+  -- seal refused a correct 4d-ii transaction. The plan puts the question at commit in so many
+  -- words — the payload count "equals the register's `activeCount` for `(projectId, 'architect')`
+  -- AT COMMIT" (plan lines 2998-2999) — so the comparison moved to the DEFERRED binding below,
+  -- where the register's head is final whichever order the command wrote in.
   RETURN NEW;
 END $$;
 
@@ -2305,7 +2330,7 @@ CREATE TRIGGER "MembershipTransition_t4d_seal" BEFORE INSERT ON "MembershipTrans
 -- performed. The converse (a membership write with no fact) is the membership-side pairing
 -- trigger; this is the direction it cannot see, and the plan puts it here.
 CREATE OR REPLACE FUNCTION phase6_t4d_membership_transition_bound() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE c RECORD;
+DECLARE c RECORD; v_mem RECORD;
 BEGIN
   -- THE RECEIPT IS THIS TRANSACTION'S (#582 round 3, finding 3). The message below has said
   -- "in this transaction" since round 1 and the query underneath it did not — the same shape
@@ -2357,16 +2382,47 @@ BEGIN
       NEW."id", COALESCE(c."resultRef", '<null>'), NEW."membershipId";
   END IF;
 
-  IF NOT EXISTS (
-    SELECT 1 FROM "Membership" m
-     WHERE m."id" = NEW."membershipId"
-       AND m."projectId" = NEW."projectId"
-       AND m."userId" = NEW."userId"
-       AND m."xmin" = txid_current()::text::xid
-  ) THEN
+  SELECT m."role" = NEW."role" AND m."status" = 'active' AS "standingNow",
+         m."xmin" = txid_current()::text::xid AS "movedThisTx"
+    INTO v_mem FROM "Membership" m
+   WHERE m."id" = NEW."membershipId"
+     AND m."projectId" = NEW."projectId"
+     AND m."userId" = NEW."userId";
+  IF NOT FOUND OR NOT COALESCE(v_mem."movedThisTx", FALSE) THEN
     RAISE EXCEPTION
       'phase6 4d-i: MembershipTransition % records a standing change of membership % (user %) that no write in this transaction performed — the fact and the membership move together or neither moves, and an ORPHAN fact is permanent evidence of an act that never happened',
       NEW."id", NEW."membershipId", NEW."userId";
+  END IF;
+
+  -- THE WRITE MUST BE *THIS* STANDING CHANGE (#582 round 4, finding 2). `xmin` alone proves only
+  -- that SOME write touched the membership in this transaction, and for a non-architect fact
+  -- nothing else narrows it: the counted register is architect-only, so the correspondence below
+  -- compares 0 against 0 for every other role and agrees with anything. A command that updated an
+  -- engineer membership for an unrelated reason could therefore commit a fact claiming that user
+  -- entered or left ANY role — permanent, immutable evidence of a standing change the write it
+  -- points at did not perform. The resulting state is the exact binding and needs no extra
+  -- column: after the write, the membership either holds `role` actively or it does not, and that
+  -- is precisely what `toStanding` asserts. A re-role satisfies it from either side (the row left
+  -- or the row entered), which is what the one-flip-per-receipt UNIQUE already allows; removal is
+  -- a `status` update, never a DELETE (`members.service.ts`), so the row is here to be read.
+  IF COALESCE(v_mem."standingNow", FALSE) <> (NEW."toStanding" = 'held') THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: MembershipTransition % records membership % moving to `%` standing in `%`, but after this transaction''s writes that membership % hold `%` actively — a fact must name the change the write actually made, not merely ride a write that touched the same row',
+      NEW."id", NEW."membershipId", NEW."toStanding", NEW."role",
+      CASE WHEN COALESCE(v_mem."standingNow", FALSE) THEN 'DOES' ELSE 'does NOT' END, NEW."role";
+  END IF;
+
+  -- THE REGISTER CORRESPONDENCE, AT COMMIT (#582 round 4, finding 1 — see the INSERT seal above
+  -- for why it is not there). `activeCount` is the register's count AFTER the transition, and the
+  -- register's head is final only once every membership write in the transaction has run. The
+  -- comparison is EXACT rather than a bound because `Membership_t4d_architect_provenance` admits
+  -- at most one standing-flipping write per project per transaction (§A.2), so there is no
+  -- intermediate value for the fact to disagree with.
+  IF NEW."activeCount" IS DISTINCT FROM platform_role_standing(NEW."projectId", NEW."role") THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: MembershipTransition % records `%` standing at % on project %, but at commit the register holds % — the fact and the register are the same truth and a fact that disagrees with it is evidence of nothing',
+      NEW."id", NEW."role", NEW."activeCount", NEW."projectId",
+      platform_role_standing(NEW."projectId", NEW."role");
   END IF;
   RETURN NULL;
 END $$;
@@ -2384,8 +2440,11 @@ CREATE CONSTRAINT TRIGGER "MembershipTransition_t4d_provenance_bound"
 --
 -- DEFERRED, and judged from the MEMBERSHIP side: the transition row may be written before or
 -- after the membership write inside the command's transaction. The converse direction — a fact
--- with no standing change — is judged by the `activeCount` comparison in the INSERT seal above,
--- which reads the register the membership trigger has already moved.
+-- with no standing change — is judged by `phase6_t4d_membership_transition_bound`, which is
+-- deferred for this same reason: it reads the register and the membership row once every write
+-- in the transaction has run (#582 round 4, findings 1 and 2). It said "the `activeCount`
+-- comparison in the INSERT seal above" until round 4, and that placement was the defect — an
+-- immediate check cannot read a register a later statement in the same command still has to move.
 CREATE OR REPLACE FUNCTION phase6_t4d_membership_architect_paired() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   v_before     BOOLEAN := (TG_OP <> 'INSERT' AND OLD."role" = 'architect' AND OLD."status" = 'active');
@@ -2523,27 +2582,46 @@ CREATE TABLE IF NOT EXISTS "ExternalEffectCatalog" (
     -- exactly one fact. Seeded false; 4d-ii turns it on per key as its facts land.
     "pairingRequired" BOOLEAN NOT NULL DEFAULT FALSE,
     "retiredAt"       TIMESTAMP(3),
-    CONSTRAINT "ExternalEffectCatalog_pkey" PRIMARY KEY ("coverageVersion", "effectKey"),
-    -- A row that MAY push names its shape; a row that may not names none. The shape is tied to
-    -- `pushRoles`, not to `requiresPush`, because the two answer different questions (#582 round
-    -- 2, finding 1, and the seeding defect it exposed): `pushRoles` is the audience CEILING a
-    -- key may ever reach, `requiresPush` is whether the delivered branch ALWAYS announces. Four
-    -- delivered keys may push and legitimately do not on one of their branches — a
-    -- participant-initialised activity or inspection, an inspection approval folded into an
-    -- activity sign-off, and a RECORD publication, which pushes at nobody because there is
-    -- nothing to approve. Keying `audience` to `requiresPush` would have left exactly those four
-    -- families' push SHAPE unjudged, `decision.published`'s decider narrowing among them.
-    CONSTRAINT "ExternalEffectCatalog_audience_check"
-      CHECK (("pushRoles" IS NOT NULL AND "audience" IN ('broadcast', 'targeted', 'frozen'))
-             OR ("pushRoles" IS NULL AND "audience" IS NULL)),
-    -- a branch cannot be obliged to announce to an audience it has no ceiling for.
-    CONSTRAINT "ExternalEffectCatalog_requires_push_check"
-      CHECK (NOT "requiresPush" OR "pushRoles" IS NOT NULL),
-    -- only a frozen-audience family carries a constant body, and it carries one.
-    CONSTRAINT "ExternalEffectCatalog_frozen_body_check"
-      CHECK (("frozenAudience" AND "audience" = 'frozen' AND "pushBody" IS NOT NULL)
-             OR (NOT "frozenAudience" AND "pushBody" IS NULL))
+    CONSTRAINT "ExternalEffectCatalog_pkey" PRIMARY KEY ("coverageVersion", "effectKey")
 );
+
+-- THE CHECKS ARE ADDED SEPARATELY, and that is not a style choice (#582 round 4, finding 4).
+-- `CREATE TABLE IF NOT EXISTS` skips its ENTIRE body when the table is already there, and on the
+-- P3005 baseline path it always is: `prisma db push` built the schema from `schema.prisma`, which
+-- reproduces this table's columns and primary key and NONE of its CHECKs — Prisma cannot express
+-- them — and `migrate.sh` then runs this file from `ALWAYS_EXECUTE` over that database. Written
+-- inline, the three constraints below would have installed on a fresh migrate and on NO baseline
+-- database, so the seals that read this catalog would have been judging rows nothing constrained,
+-- on exactly the deployments the drain is aimed at. Every other table in this file already adds
+-- its CHECKs this way (`ReleaseLease`, `MembershipTransition`, `ProjectRoleStanding`, the spec
+-- tables); this one was the single exception, and `migrate.sh`'s own baseline comment states the
+-- rule it broke: "a db-push baseline has their modeled tables and columns but NONE of their raw
+-- CHECK, append-only, eligibility or provenance triggers".
+DO $$ BEGIN
+  -- A row that MAY push names its shape; a row that may not names none. The shape is tied to
+  -- `pushRoles`, not to `requiresPush`, because the two answer different questions (#582 round
+  -- 2, finding 1, and the seeding defect it exposed): `pushRoles` is the audience CEILING a
+  -- key may ever reach, `requiresPush` is whether the delivered branch ALWAYS announces. Four
+  -- delivered keys may push and legitimately do not on one of their branches — a
+  -- participant-initialised activity or inspection, an inspection approval folded into an
+  -- activity sign-off, and a RECORD publication, which pushes at nobody because there is
+  -- nothing to approve. Keying `audience` to `requiresPush` would have left exactly those four
+  -- families' push SHAPE unjudged, `decision.published`'s decider narrowing among them.
+  ALTER TABLE "ExternalEffectCatalog" ADD CONSTRAINT "ExternalEffectCatalog_audience_check"
+    CHECK (("pushRoles" IS NOT NULL AND "audience" IN ('broadcast', 'targeted', 'frozen'))
+           OR ("pushRoles" IS NULL AND "audience" IS NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  -- a branch cannot be obliged to announce to an audience it has no ceiling for.
+  ALTER TABLE "ExternalEffectCatalog" ADD CONSTRAINT "ExternalEffectCatalog_requires_push_check"
+    CHECK (NOT "requiresPush" OR "pushRoles" IS NOT NULL);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  -- only a frozen-audience family carries a constant body, and it carries one.
+  ALTER TABLE "ExternalEffectCatalog" ADD CONSTRAINT "ExternalEffectCatalog_frozen_body_check"
+    CHECK (("frozenAudience" AND "audience" = 'frozen' AND "pushBody" IS NOT NULL)
+           OR (NOT "frozenAudience" AND "pushBody" IS NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ── the release lease, DARK ──────────────────────────────────────────────────────────────────
 -- The drain attestation's TRUSTED AUTONOMOUS EVIDENCE, and the plan states its columns exactly:

@@ -207,6 +207,13 @@ INSERT INTO "ReleaseLease" ("instanceId","catalogVersion","release","startedAt",
 INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
   VALUES ('ss-cmd','project','ss-org','ss-proj','ss-user','decisions.forward','ss-key','ss-hash','reserved');
 UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec' WHERE "id" = 'ss-cmd';
+-- A SECOND succeeded forward receipt, this one naming a forward id that does not exist yet, for
+-- the transaction-predicate probe below. It is committed HERE, in the fixture, which is the whole
+-- point: everything a later statement does with it is a different transaction, exactly as a
+-- mature database's months-old receipts are.
+INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+  VALUES ('ss-cmd-hist','project','ss-org','ss-proj','ss-user','decisions.forward','ss-key-hist','ss-hash-hist','reserved');
+UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-fwd-hist' WHERE "id" = 'ss-cmd-hist';
 `;
 
 /**
@@ -623,6 +630,193 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       if (!admits) expect(whole.output).toMatch(arm.refusal);
     }, 120_000);
   }
+
+  /**
+   * #582's review round 4, finding 3 — THE RECEIPT IS THIS TRANSACTION'S, on the decision facts.
+   *
+   * This cannot be an ARM. `DecisionForward_t4d_reserved` stands in front of the table and answers
+   * every whole-migration write with its own message, so an arm could only ever measure the door.
+   * The probe therefore strips the DOOR (and the two seals that refuse this row on their own
+   * unrelated terms) and leaves `DecisionForward_t4d_provenance_bound` standing, which is the only
+   * arrangement in which that binding's own judgement is observable at all.
+   *
+   * Two-sided on purpose: a refusal alone would also be produced by a binding that refused
+   * everything, so the same shape citing a receipt completed IN the transaction has to commit.
+   */
+  it('a decision fact may not cite a receipt an EARLIER transaction completed', () => {
+    buildRun(['DecisionForward_t4d_reserved', 'DecisionForward_t4d_seal', 'DecisionForward_t4d_paired']);
+
+    const cols = '("id","projectId","decisionId","fromDesignationKind","toDesignationKind",'
+      + '"forwardedById","forwardedByRole","forwardedByName","reason","sourceCommandId")';
+
+    // `ss-cmd-hist` succeeded in the FIXTURE's transaction: right command kind, right actor, and
+    // its `resultRef` names this very row. Every other clause of the binding is satisfied.
+    const historical = psql(RUN_DB, ['-c',
+      `INSERT INTO "DecisionForward" ${cols}
+       VALUES ('ss-fwd-hist','ss-proj','ss-dec','client','pmc','ss-user','pmc','SS User','because','ss-cmd-hist')`]);
+    expect(
+      historical.ok,
+      'a forward citing a receipt completed by an EARLIER transaction must be REFUSED — every '
+      + 'other clause of the binding passes truthfully, which is exactly why the transaction '
+      + `predicate is the one that has to stop it:\n${historical.output}`,
+    ).toBe(false);
+    expect(historical.output).toMatch(/completed by an EARLIER transaction/);
+
+    // the same row, with its receipt completed HERE. psql sends a multi-statement -c as one
+    // implicit transaction, which is the shape a command's own writer has.
+    const sameTx = psql(RUN_DB, ['-c',
+      `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+         VALUES ('ss-cmd-now','project','ss-org','ss-proj','ss-user','decisions.forward','ss-key-now','ss-hash-now','reserved');
+       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-fwd-now' WHERE "id" = 'ss-cmd-now';
+       INSERT INTO "DecisionForward" ${cols}
+       VALUES ('ss-fwd-now','ss-proj','ss-dec','client','pmc','ss-user','pmc','SS User','because','ss-cmd-now')`]);
+    expect(
+      sameTx.ok,
+      `the same forward whose receipt completed in THIS transaction must COMMIT — otherwise the `
+      + `probe above measured a binding that refuses everything:\n${sameTx.output}`,
+    ).toBe(true);
+  }, 180_000);
+
+  /**
+   * #582's review round 4, finding 1 — THE FACT MAY BE WRITTEN BEFORE THE MEMBERSHIP.
+   *
+   * The `activeCount` correspondence sat in the BEFORE INSERT seal, where it read a register that
+   * `Membership_t4d_role_standing` only moves when the MEMBERSHIP is written. Nothing orders those
+   * two statements, and this file says so twice in its own voice: the architect pairing trigger is
+   * deferred because "the transition row may be written before or after the membership write", and
+   * `MembershipTransition_membershipId_fkey` is DEFERRED because "an ADD may write the transition
+   * before the `Membership` row exists". A command that took that order met a register that had not
+   * moved yet, and a correct transaction was refused.
+   *
+   * No seal is stripped: the whole migration must ACCEPT this, which is the only thing worth
+   * proving about an ordering.
+   */
+  it('the transition fact may be written BEFORE the membership write it records', () => {
+    // The ARCHITECT case is the one that reproduces it, and it has to be: the counted register
+    // carries `architect` alone, so for any other role the correspondence compares 0 against 0 and
+    // agrees whichever order the command wrote in. Only the two reservation DOORS are stripped —
+    // 4d-iii retires them and this is the act that follows — while `MembershipTransition_t4d_seal`,
+    // `Membership_t4d_role_standing`, `Membership_t4d_architect_provenance` and the deferred
+    // binding all stand. Adding the FIRST architect is therefore a real 4d-ii transaction: the
+    // fact carries `activeCount = 1` and the register still reads 0 until the membership lands.
+    buildRun(['Membership_t4d_architect_reserved', 'User_t4d_architect_reserved']);
+    const factFirst = psql(RUN_DB, ['-c',
+      `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+         VALUES ('ss-cmd-add','project','ss-org','ss-proj','ss-user','members.add','ss-key-add','ss-hash-add','reserved');
+       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-a' WHERE "id" = 'ss-cmd-add';
+       INSERT INTO "User" ("id","projectId","role","name","phone") VALUES ('ss-arch-p','ss-proj','architect','SS Arch P','+910000000011');
+       INSERT INTO "MembershipTransition"
+         ("id","projectId","membershipId","userId","role","fromStanding","toStanding","activeCount","actorId","actorRole","actorName","sourceCommandId")
+       VALUES ('ss-mt-1','ss-proj','ss-mem-a','ss-arch-p','architect','not_held','held',1,'ss-user','pmc','SS User','ss-cmd-add');
+       INSERT INTO "Membership" ("id","projectId","userId","role","status") VALUES ('ss-mem-a','ss-proj','ss-arch-p','architect','active')`]);
+    expect(
+      factFirst.ok,
+      'a member command that writes its FACT before the membership must commit — the file defers '
+      + 'both the pairing trigger and the membership foreign key for exactly this order, and a '
+      + `correspondence judged at INSERT time contradicts them:\n${factFirst.output}`,
+    ).toBe(true);
+
+    // and the register really did move, so the arm is not passing on a comparison of 0 with 0.
+    const head = psql(RUN_DB, ['-t', '-A', '-c',
+      `SELECT "activeCount" FROM "ProjectRoleStanding" WHERE "projectId" = 'ss-proj' AND "role" = 'architect'`]);
+    expect(head.output.trim(), 'the architect register must hold 1 after the add').toBe('1');
+  }, 180_000);
+
+  /**
+   * #582's review round 4, finding 2 — THE WRITE MUST BE *THIS* STANDING CHANGE.
+   *
+   * The orphan clause asked only whether some `Membership` write happened in the transaction. For
+   * a non-architect fact nothing else narrowed it: the counted register carries `architect` only,
+   * so the correspondence compares 0 against 0 for every other role and agrees with anything. A
+   * command touching an engineer membership for an unrelated reason could therefore commit a
+   * permanent, immutable fact claiming that member entered or left any role at all.
+   */
+  it('a membership fact may not ride a write that made a DIFFERENT standing change', () => {
+    buildRun([]);
+
+    // an ordinary engineer, added truthfully, so the hostile transaction below has a real
+    // membership to touch and a real receipt shape to borrow.
+    const seed = psql(RUN_DB, ['-c',
+      `INSERT INTO "User" ("id","projectId","role","name","phone") VALUES ('ss-eng2','ss-proj','engineer','SS Eng2','+910000000012');
+       INSERT INTO "Membership" ("id","projectId","userId","role","status") VALUES ('ss-mem-e2','ss-proj','ss-eng2','engineer','active')`]);
+    expect(seed.ok, seed.output).toBe(true);
+
+    // the membership is written — its `xmin` is this transaction's — but the write leaves the
+    // member an ACTIVE engineer, while the fact claims they LEFT engineer standing.
+    const mismatched = psql(RUN_DB, ['-c',
+      `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+         VALUES ('ss-cmd-x','project','ss-org','ss-proj','ss-user','members.updateRole','ss-key-x','ss-hash-x','reserved');
+       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-e2' WHERE "id" = 'ss-cmd-x';
+       UPDATE "Membership" SET "status" = 'active' WHERE "id" = 'ss-mem-e2';
+       INSERT INTO "MembershipTransition"
+         ("id","projectId","membershipId","userId","role","fromStanding","toStanding","activeCount","actorId","actorRole","actorName","sourceCommandId")
+       VALUES ('ss-mt-x','ss-proj','ss-mem-e2','ss-eng2','engineer','held','not_held',0,'ss-user','pmc','SS User','ss-cmd-x')`]);
+    expect(
+      mismatched.ok,
+      'a fact claiming a standing change the transaction\'s membership write did not make must be '
+      + `REFUSED — the receipt, the actor, the subject and the register all agree:\n${mismatched.output}`,
+    ).toBe(false);
+    expect(mismatched.output).toMatch(/name the change the write actually made/);
+
+    // the truthful version of the same act commits, so the clause is not refusing everything.
+    const truthful = psql(RUN_DB, ['-c',
+      `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+         VALUES ('ss-cmd-r','project','ss-org','ss-proj','ss-user','members.remove','ss-key-r','ss-hash-r','reserved');
+       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-e2' WHERE "id" = 'ss-cmd-r';
+       UPDATE "Membership" SET "status" = 'removed' WHERE "id" = 'ss-mem-e2';
+       INSERT INTO "MembershipTransition"
+         ("id","projectId","membershipId","userId","role","fromStanding","toStanding","activeCount","actorId","actorRole","actorName","sourceCommandId")
+       VALUES ('ss-mt-r','ss-proj','ss-mem-e2','ss-eng2','engineer','held','not_held',0,'ss-user','pmc','SS User','ss-cmd-r')`]);
+    expect(
+      truthful.ok,
+      `the same removal, with the membership actually left inactive, must COMMIT:\n${truthful.output}`,
+    ).toBe(true);
+  }, 180_000);
+
+  /**
+   * #582's review round 4, finding 4 — THE CATALOG CHECKS INSTALL ON A BASELINE DATABASE.
+   *
+   * `CREATE TABLE IF NOT EXISTS` skips its whole body, constraints included, when the table is
+   * already there — and on the P3005 path it always is, because `prisma db push` built the schema
+   * from `schema.prisma`, which carries this table's columns and primary key and none of its
+   * CHECKs. The probe reproduces that database exactly: create the modeled shape first, then apply
+   * the whole migration over it, then ask PostgreSQL what constraints the table actually carries.
+   */
+  it('the catalog CHECKs install even when the table already exists (db-push baseline)', () => {
+    psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+    const created = psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]);
+    expect(created.ok, created.output).toBe(true);
+
+    // what `prisma db push` reproduces from the model: columns, defaults, primary key. No CHECKs —
+    // Prisma cannot express them — and no triggers.
+    const baseline = psql(RUN_DB, ['-c',
+      `CREATE TABLE "ExternalEffectCatalog" (
+         "coverageVersion" TEXT NOT NULL, "effectKey" TEXT NOT NULL, "eventType" TEXT NOT NULL,
+         "invalidate" BOOLEAN NOT NULL, "pushRoles" JSONB, "pushFamily" TEXT,
+         "frozenAudience" BOOLEAN NOT NULL, "requiresPush" BOOLEAN NOT NULL, "audience" TEXT,
+         "pushBody" TEXT, "pairingRequired" BOOLEAN NOT NULL DEFAULT FALSE,
+         "retiredAt" TIMESTAMP(3),
+         CONSTRAINT "ExternalEffectCatalog_pkey" PRIMARY KEY ("coverageVersion", "effectKey"))`]);
+    expect(baseline.ok, baseline.output).toBe(true);
+
+    const applied = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(applied.ok, `the unit must apply over a db-push baseline:\n${applied.output}`).toBe(true);
+
+    const checks = psql(RUN_DB, ['-t', '-A', '-c',
+      `SELECT conname FROM pg_constraint
+        WHERE conrelid = '"ExternalEffectCatalog"'::regclass AND contype = 'c' ORDER BY 1`]);
+    expect(checks.ok, checks.output).toBe(true);
+    expect(
+      checks.output.trim().split('\n').filter(Boolean),
+      'the three catalog CHECKs must be present on a baseline database too — written inside the '
+      + 'CREATE TABLE body they install on a fresh migrate and on no baseline at all, leaving the '
+      + 'seals that read this catalog judging rows nothing constrains',
+    ).toEqual([
+      'ExternalEffectCatalog_audience_check',
+      'ExternalEffectCatalog_frozen_body_check',
+      'ExternalEffectCatalog_requires_push_check',
+    ]);
+  }, 180_000);
 
   it('every installed _t4d_ seal is either stripped by an arm or declared covered by its class', () => {
     buildRun([]);
