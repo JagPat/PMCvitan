@@ -261,7 +261,16 @@ const REGISTER: Record<string, SealContract> = {
       + 'same-transaction `Membership` write matching the fact exists (an orphan fact refused)',
     plan: 'plan lines 2951-2956; #582 round 1, finding 11',
     on: { 'MembershipTransition.MembershipTransition_t4d_provenance_bound': C('I') },
-    must: ['succeeded', 'membershipId', 'txid_current'],
+    // #582 round 2, finding 5 — `commandType` and `actorId` were ABSENT from this list, and
+    // that is the register's own failure, not just the seal's. Round 1 established the
+    // identify-the-receipt clause, its correction reached the three decision facts, and I wrote
+    // BOTH this entry and that code from the same wrong belief that the membership binding had
+    // been included. An oracle authored alongside the code it checks inherits the author's
+    // blind spot exactly where the author has one; it caught twelve tokens across the seals I
+    // understood and was silent on the one I had wrong. That is a real limit on this file, and
+    // the answer is an outside reader — which is what Codex was here.
+    must: ['succeeded', 'membershipId', 'txid_current', 'commandType', 'actorId',
+           'members.add', 'members.updateRole', 'members.remove'],
   },
   phase6_t4d_membership_transition_immutable: {
     rule: 'the transition fact is immutable and undeletable, EXCEPT as the cascade of its own '

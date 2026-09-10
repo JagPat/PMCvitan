@@ -514,7 +514,7 @@ CREATE TRIGGER "Project_t4d_deleting"
 --     the seal: a seal clause reading "only for a project that has no row" is evaluated per
 --     VALUES row and would refuse the replay's own insert, making 4d-i unreplayable (#560's
 --     review round 2, finding 5; #572's review round 9).
---   * `vitan.phase6_4d_reprojection` — 4d-iii's fenced verify-and-repair, which re-projects the
+--   * `vitan.phase6_4d_standing_reprojection` — 4d-iii's fenced verify-and-repair, which re-projects the
 --     two per-user registers from the orgs truth before it closes any door (#572's review
 --     round 5, finding 4). Installed here because the SEAL is installed here; nothing in 4d-i
 --     sets it.
@@ -526,7 +526,7 @@ CREATE OR REPLACE FUNCTION platform_t4d_register_writer() RETURNS TRIGGER LANGUA
 DECLARE
   v_row     RECORD;
   v_backfill BOOLEAN := coalesce(current_setting('vitan.phase6_4d_standing_backfill', true), '') = 'on';
-  v_reproject BOOLEAN := coalesce(current_setting('vitan.phase6_4d_reprojection', true), '') = 'on';
+  v_reproject BOOLEAN := coalesce(current_setting('vitan.phase6_4d_standing_reprojection', true), '') = 'on';
 BEGIN
   IF pg_trigger_depth() > 1 THEN
     IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
@@ -540,7 +540,7 @@ BEGIN
   END IF;
 
   RAISE EXCEPTION
-    'phase6 4d-i: "%" is a platform REGISTER projected from the orgs tables by their own triggers — a % issued directly (trigger depth 1) is refused. Its truth is the orgs row it mirrors; a register written by anything else is evidence of nothing. The migration backfill runs under `vitan.phase6_4d_standing_backfill`, and 4d-iii''s re-projection under `vitan.phase6_4d_reprojection`.',
+    'phase6 4d-i: "%" is a platform REGISTER projected from the orgs tables by their own triggers — a % issued directly (trigger depth 1) is refused. Its truth is the orgs row it mirrors; a register written by anything else is evidence of nothing. The migration backfill runs under `vitan.phase6_4d_standing_backfill`, and 4d-iii''s re-projection under `vitan.phase6_4d_standing_reprojection`.',
     TG_TABLE_NAME, TG_OP;
 END $$;
 
@@ -2206,12 +2206,32 @@ CREATE TRIGGER "MembershipTransition_t4d_seal" BEFORE INSERT ON "MembershipTrans
 CREATE OR REPLACE FUNCTION phase6_t4d_membership_transition_bound() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE c RECORD;
 BEGIN
-  SELECT "status", "resultRef" INTO c FROM "CommandExecution"
+  SELECT "status", "resultRef", "commandType", "actorId" INTO c FROM "CommandExecution"
    WHERE "projectId" = NEW."projectId" AND "id" = NEW."sourceCommandId";
   IF NOT FOUND OR c."status" <> 'succeeded' THEN
     RAISE EXCEPTION
       'phase6 4d-i: MembershipTransition % cites a command that did not succeed in this transaction — the receipt must be COMPLETED by the command that wrote the fact',
       NEW."id";
+  END IF;
+
+  -- THE RECEIPT IS IDENTIFIED BEFORE IT IS MATCHED, here too (#582 round 2, finding 5).
+  -- Round 1's finding 12 established this clause and its correction landed on the three
+  -- DECISION facts only; the commit message that carried it stated "the membership binding
+  -- carries the same two clauses" and that was false. Without them a transaction can back a
+  -- transition attributed to authorized actor B with an unrelated succeeded command whose
+  -- result happens to equal the membership id, or with a member command actually run by A —
+  -- and the same-transaction membership write then satisfies everything else, making the false
+  -- attribution immutable. `members.add`/`updateRole`/`remove` are the three ledgered member
+  -- commands (§A, plan line 3095).
+  IF NOT (c."commandType" = ANY (ARRAY['members.add', 'members.updateRole', 'members.remove'])) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: MembershipTransition % cites a `%` receipt, which is not a command that changes membership standing (expected members.add, members.updateRole or members.remove) — a receipt borrowed from an unrelated command proves nothing about this act',
+      NEW."id", c."commandType";
+  END IF;
+  IF c."actorId" IS DISTINCT FROM NEW."actorId" THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: MembershipTransition % attributes the standing change to %, but its receipt was run by % — the fact and the receipt are one act seen twice, and team management is the act whose attribution matters most',
+      NEW."id", NEW."actorId", COALESCE(c."actorId", '<null>');
   END IF;
   IF c."resultRef" IS DISTINCT FROM NEW."membershipId" THEN
     RAISE EXCEPTION
