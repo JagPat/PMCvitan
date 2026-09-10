@@ -47,7 +47,20 @@ async function main(): Promise<void> {
     'BillDeductionRelease', 'BillDeduction', 'SodException', 'SodGrant',
     'CertifiedMeasurementConsumption', 'CertifiedAcceptanceConsumption', 'BillCertificate',
     'BillVerification', 'VendorBillLine', 'VendorBillVersion', 'VendorBillRevision',
-    'VendorBill', 'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'VendorBill',
+    // Phase 6 unit 4d-i — TWO new tables REFERENCE `DomainEvent` and must truncate in the SAME
+    // statement, because PostgreSQL refuses to truncate a referenced table unless every
+    // referencing table is named with it (the rule the Phase 3 chain above is grouped for):
+    // `Notification.eventId` binds a notice to the act it announces, and
+    // `DomainEventPairingClaim` is the register that says which fact claimed each event.
+    // `ON DELETE CASCADE` does not exempt the claim register — TRUNCATE is a statement, not a
+    // row delete, and the reference is what the rule looks at. Both carry no-TRUNCATE seals that
+    // `sanctionedReset` disables BY NAME, which is why they belong here and not in a bare
+    // TRUNCATE. Found by CI: the integration suites reach this reset through
+    // `sanctionedReset(..., { cascade: true })`, which papered over the omission, while the SEED
+    // — the path `pnpm test:e2e:api` takes — does not pass `cascade` and aborted.
+    'Notification', 'DomainEventPairingClaim',
+    'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
     'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
     'InspectionsProjection', 'MaterialReadinessProjection', 'CashForecastProjection',
     'LabourReadinessProjection'
@@ -84,7 +97,18 @@ async function main(): Promise<void> {
     'RequisitionLine', 'Requisition', 'ProjectPartyVendorSource', 'ProjectPartyCompanySource',
     'ProjectParty', 'ProjectVendor', 'Vendor', 'ApprovedSubstitution', 'LabourDemandSlice',
     'LabourRequirementSpec', 'MaterialRequirementSpec', 'ActivityRequirement',
-    'ActivityRequirementRoot', 'DecisionApprovalRevision', 'ActivityDependency',
+    'ActivityRequirementRoot',
+    // Phase 6 unit 4d-i — THREE tables now REFERENCE `DecisionApprovalRevision` and must truncate
+    // in the SAME statement (the rule this whole list is grouped for): `ChangeRequest.revisionId`
+    // names the revision a countersign rejection contests, and the two chain facts each cite the
+    // revision their act produced. All three carry no-TRUNCATE seals that `sanctionedReset`
+    // disables BY NAME. Found the same way as the `DomainEvent` pair above — by CI, because the
+    // integration suites reach their resets with `{ cascade: true }` and the seed does not.
+    // `apps/api/src/platform/module-registry/reset-list-closure.test.ts` now computes this
+    // closure from the Prisma schema, so the NEXT table to reference a reset table fails there
+    // instead of in a CI seed run.
+    'ChangeRequest', 'DecisionCountersign', 'DecisionStrandedResolution',
+    'DecisionApprovalRevision', 'ActivityDependency',
     // Phase 6 unit 4c-iii moved this wipe from `deleteMany()` to the sanctioned reset because the
     // consultation preservation seal refused a direct DELETE; unit 4c-v retired that seal. The
     // table stays in the reset list — one wipe path for every table, seal or no seal.
