@@ -11,7 +11,10 @@ const KIND_LABEL: Record<NodeKind, string> = { zone: 'Zone', room: 'Room', eleme
 const MAX_TREE_DEPTH = 5;
 
 const fld: CSSProperties = {
-  height: 42,
+  // 44, not 42 (#584 review round 3, finding 1). These are the zone/room/element choosers on the
+  // Daily Log, pressed with a thumb on site, and the documented floor for a pressed target is
+  // 44×44. The text input beside them shares this style and is simply four pixels taller for it.
+  height: 44,
   padding: '0 12px',
   borderRadius: 10,
   border: '1px solid rgba(35,33,28,.18)',

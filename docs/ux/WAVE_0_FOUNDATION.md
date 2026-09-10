@@ -169,20 +169,32 @@ Audit every action target against the 44×44 floor in the same pass.
 > and mistri sign-out buttons (34×34, 36×36) and the Places photo thumbnails (34×34). All three
 > are raw `button` elements the `Button` primitive's minimum never reaches; all three are fixed.
 >
-> **The SCHEDULE surface is deferred to F-1c, with its blockers measured.** It cannot be brought
-> to the floor by this unit, and the reason is not a size constant:
-> - an ancestor applies a **~0.982 content scale**, so a control whose CSS box is exactly 44px
->   renders and is pressed at **43.2px**. Every control on that surface is under the floor by
->   construction — the edit, override and remove-phase icon buttons this unit raised to 44 CSS px
->   included. Removing the scale is a Schedule layout decision.
+> **Retraction (2026-09-10, PR #584 review round 3, finding 2):** the paragraph below claimed a
+> **~0.982 ancestor content scale** on Schedule, "measured" at 43.2px on controls whose CSS box is
+> 44px, and deferred it to F-1c as a layout blocker. **There is no such scale, and the measurement
+> was an artifact of when it was taken.** `ScheduleRow` carries `animation: 'vpop .3s'`
+> (`ScheduleScreen.tsx`), and the `vpop` keyframe (`global.css`) runs `scale(0.98)` to
+> `transform: none`. A row sampled just after mount is mid-animation: 44 × 0.982 = 43.2, which is
+> the number that was recorded as permanent. A third of a second later the same control is 44px.
+> Left standing, this entry would have sent F-1c to remove a layout constraint that does not
+> exist. The controls this unit raised to 44 CSS px are at 44 real px.
+>
+> The generator, not just the entry: a size inventory that races an entry animation invents
+> blockers. `mobile-fields.spec.ts` now neutralises animation and transition before every sweep,
+> so what it reports is the steady-state box a thumb actually meets.
+>
+> **The SCHEDULE surface is still deferred to F-1c**, on the two blockers that survive — both of
+> them density decisions rather than size constants, and neither an artifact:
 > - the place breadcrumbs (`sched-place-*-crumb-*`) and drawing chips (`sched-dwg-*`) are inline
 >   TEXT links at **18–21px tall**. A 44px box for each is a decision about the density of a
 >   schedule row, not padding.
 > - the DECISION REGISTER's group-by control is a **26px** segmented chip row
 >   (`groupby-location`, `groupby-room`, `groupby-element`, `groupby-status`).
 >
-> F-1c owns all of it, which is where this document already puts "the sweep and the evidence,
-> across all surfaces". F-1b carries the corrections its own section names and the Daily Log's
+> F-1c owns both, which is where this document already puts "the sweep and the evidence,
+> across all surfaces" — and it inherits one instruction from the retraction above: measure the
+> steady state. A target that is only undersized while it animates in is an animation question,
+> not a layout one, and must not enter the inventory as a blocker. F-1b carries the corrections its own section names and the Daily Log's
 > multi-state sweep; it does NOT carry a cross-surface sweep scoped to whichever surfaces pass,
 > because that is the same narrowing round 2 caught, stated more confidently. The e2e sweep names this exclusion in the spec so it is visible rather than
 > absent, and the stale-snapshot state is likewise asserted UNREACHABLE under this suite's

@@ -47,7 +47,13 @@ export function TopBar() {
       </div>
       <div className={styles.right}>
         {DEV_AUTH ? (
-          <label className={styles.selectWrap}>
+          // `data-dev-affordance` marks this as a DEV-ONLY control for the field-target sweep in
+          // `mobile-fields.spec.ts`. `DEV_AUTH` is on only for the local demo and dev builds
+          // (`VITE_ALLOW_DEV_AUTH`, or no API base at all), so the persona switcher never renders
+          // in a real deployment and owes no thumb-target floor — but the e2e runs the demo build,
+          // where it does render, so the exclusion has to be stated in the DOM rather than left to
+          // a selector that happens not to reach it (#584 review round 3, finding 1).
+          <label className={styles.selectWrap} data-dev-affordance="role-switcher">
             <span className={styles.viewingAs}>as</span>
             <select value={role} onChange={(e) => setRole(e.target.value as Role)} className={styles.select} aria-label="Viewing as">
               {ROLES.map((r) => (

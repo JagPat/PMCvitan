@@ -176,10 +176,51 @@ test('the daily log offers no action target below the 44px floor', async ({ page
   // them were undersized behind a state this arm never entered: the `Check out` button, which
   // exists only while checked IN, and the stale-data `Retry`, which exists only while a refresh
   // is owed. So the sweep is a function now, and it runs in every state the screen can be in.
+  //
+  // #584 review round 3, finding 1 — AND A SWEEP OF ONE ELEMENT TYPE MEASURES ONE ELEMENT TYPE.
+  // It queried `button` alone, which is not what "action target" means: `LocationPicker` renders
+  // its zone/room/element choosers as `<select>` on the shared 42px field style, and the Daily Log
+  // shows them whenever the project has location nodes. So a thumb target four pixels under the
+  // documented floor stood inside the very screen this arm sweeps, and the arm passed. The floor
+  // is about what a thumb presses, so the query names every interactive kind rather than the one
+  // that happened to be undersized in round 1 — a `<select>` is pressed exactly as a button is.
+  const INTERACTIVE = [
+    'button:not([disabled])',
+    'select:not([disabled])',
+    '[role="button"]:not([aria-disabled="true"])',
+    'a[href]',
+    'input:not([disabled])',
+  ].join(', ');
+
+  // #584 review round 3, finding 2 — MEASURE THE STEADY STATE, NEVER THE ENTRY ANIMATION.
+  // Round 2 recorded a "~0.982 ancestor content scale" on Schedule as a persistent layout
+  // constraint and deferred it to F-1c. It was no such thing: `ScheduleRow` carries
+  // `animation: 'vpop .3s'` and the `vpop` keyframe runs `scale(0.98)` to `transform: none`, so a
+  // row measured just after mount reports 43.2px for a box that is 44px a third of a second
+  // later. A size inventory that races an animation invents layout blockers, so every sweep from
+  // here neutralises animation and transition first and measures what the thumb actually meets.
+  const freezeMotion = async (): Promise<void> => {
+    await page.addStyleTag({
+      content: `*, *::before, *::after { animation: none !important; transition: none !important; }`,
+    });
+  };
+
   const sweepTargets = async (state: string): Promise<void> => {
-    const small = await page.$$eval('button:not([disabled])', (els) =>
+    await freezeMotion();
+    const small = await page.$$eval(INTERACTIVE, (els) =>
       els
         .filter((el) => (el as HTMLElement).offsetParent !== null)
+        // DEV-ONLY affordances owe no field floor. The persona switcher renders under `DEV_AUTH`,
+        // which is on for the local demo and dev builds and off wherever an API is configured, so
+        // no site user ever presses it — but this suite runs the demo build, where it is on screen.
+        // The exclusion is a marked subtree rather than a narrowed query, so it stays greppable
+        // and anything NEW that appears is swept by default.
+        .filter((el) => !el.closest('[data-dev-affordance]'))
+        // a text field is typed into, not pressed, and the floor it answers to is the 16px
+        // font-size rule the arms above measure. Only the PRESSED input types belong here.
+        .filter((el) => !(el instanceof HTMLInputElement)
+          || ['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'image', 'color', 'range']
+            .includes(el.type))
         .map((el) => {
           const r = el.getBoundingClientRect();
           return {
@@ -198,6 +239,15 @@ test('the daily log offers no action target below the 44px floor', async ({ page
     ).toEqual([]);
   };
 
+  // WHAT THIS SWEEP STILL CANNOT REACH, stated rather than left to be discovered. The control
+  // round 3's finding named — `photo-loc-select-zone`, the `LocationPicker` chooser — renders only
+  // behind `nodes.length > 0` in `DailyLogScreen`, and the seeded demo project has no location
+  // nodes; the picker's own `__new_zone__` option cannot bootstrap the first one, because the
+  // picker is what the guard hides. So its height is corrected at the style constant (`fld` in
+  // `LocationPicker.tsx`, 42 → 44) and the widened query below WOULD catch it on any project that
+  // has places, but this fixture does not exercise it. That is a real gap in the proof and it is
+  // written here rather than papered over by adding whichever OTHER surface happens to pass —
+  // which is the narrowing round 2 already caught once. F-1c owns the seeded-places sweep.
   await sweepTargets('daily log — as opened');
 
   // CHECKED IN — `Check out` replaces `Check in at site`, and it is the only way off site.
