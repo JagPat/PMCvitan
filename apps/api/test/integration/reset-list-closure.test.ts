@@ -41,6 +41,19 @@ function adminUrl(raw: string): string {
   return url.toString();
 }
 
+/** the same server, a different database, with Prisma's query string kept for Prisma's own use. */
+function dbUrl(raw: string, db: string): string {
+  const url = new URL(raw);
+  url.pathname = `/${db}`;
+  return url.toString();
+}
+
+/** CREATE/DROP DATABASE cannot run inside the database being created — go through `postgres`. */
+function psqlAdmin(raw: string, sql: string): void {
+  execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', adminUrl(dbUrl(raw, 'postgres')), '-c', sql],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
 /**
  * One row in each register the DELETE-phase arm exists to catch, on whatever project, membership,
  * decision and user the seed just created. The INSERT seals belong to 4d-ii's writers; this plant
@@ -188,38 +201,55 @@ describe('the seed\'s TRUNCATE lists are closed under foreign-key references (li
    * reached CI. The plant between the runs is what makes the second one meet the rows.
    */
   it('the seed runs AGAIN over a database holding the rows this unit seals', () => {
-    const url = process.env.DATABASE_URL;
-    expect(url, 'the seed subprocess needs the suite\'s DATABASE_URL').toBeTruthy();
+    const base = process.env.DATABASE_URL;
+    expect(base, 'this arm needs a server to create its scratch database on').toBeTruthy();
     const api = join(__dirname, '..', '..');
-    const seed = (): { ok: boolean; out: string } => {
-      try {
-        return { ok: true, out: execFileSync('npx', ['tsx', 'prisma/seed.ts'],
-          { cwd: api, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-            env: { ...process.env, DATABASE_URL: url } }) };
-      } catch (e) {
-        const err = e as { stdout?: string; stderr?: string };
-        return { ok: false, out: `${err.stdout ?? ''}${err.stderr ?? ''}` };
-      }
-    };
 
-    const first = seed();
-    expect(first.ok, `the seed must run over this database at all:\n${first.out}`).toBe(true);
+    // ON ITS OWN DATABASE, never the suite's. The seed is a DESTRUCTIVE reset followed by a
+    // fixture: running it against the shared integration database wipes what every other suite
+    // built and leaves its own rows behind, which is a pollution the first version of this arm
+    // caused and four unrelated probes reported.
+    const scratch = 't4d_reset_closure';
+    const scratchUrl = dbUrl(base!, scratch);
+    psqlAdmin(base!, `DROP DATABASE IF EXISTS "${scratch}" WITH (FORCE)`);
+    psqlAdmin(base!, `CREATE DATABASE "${scratch}"`);
+    try {
+      execFileSync('npx', ['prisma', 'migrate', 'deploy'],
+        { cwd: api, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, DATABASE_URL: scratchUrl } });
 
-    // The plant: one row in each register whose omission this arm exists to catch, written the
-    // way the seed will meet it — a committed row referencing the seeded project's own
-    // membership, decision and user. The fact seals are 4d-ii's writers' business, not this
-    // arm's, so the plant disables them BY NAME, exactly as `fixtures.ts` plants a legacy event.
-    execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', adminUrl(url!), '-c', PLANT], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-    });
+      const seed = (): { ok: boolean; out: string } => {
+        try {
+          return { ok: true, out: execFileSync('npx', ['tsx', 'prisma/seed.ts'],
+            { cwd: api, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+              env: { ...process.env, DATABASE_URL: scratchUrl } }) };
+        } catch (e) {
+          const err = e as { stdout?: string; stderr?: string };
+          return { ok: false, out: `${err.stdout ?? ''}${err.stderr ?? ''}` };
+        }
+      };
 
-    const second = seed();
-    expect(
-      second.ok,
-      'the seed aborted on a database holding a MembershipTransition and a DecisionForward. '
-      + 'Every table this unit seals must be cleared BEFORE the `deleteMany` that reaches it — '
-      + 'add it to RESET_TABLES in prisma/seed.ts, with a TRUNCATE_SEALS entry in '
-      + `prisma/sanctioned-reset.ts if it carries a no-TRUNCATE seal:\n${second.out}`,
-    ).toBe(true);
-  }, 300_000);
+      const first = seed();
+      expect(first.ok, `the seed must run over a freshly migrated database at all:\n${first.out}`).toBe(true);
+
+      // The plant: one row in each register whose omission this arm exists to catch, written the
+      // way the seed will meet it — a committed row referencing the seeded project's own
+      // membership, decision and user. The fact seals are 4d-ii's writers' business, not this
+      // arm's, so the plant disables them BY NAME, exactly as `fixtures.ts` plants a legacy event.
+      execFileSync('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=1', adminUrl(scratchUrl), '-c', PLANT], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      const second = seed();
+      expect(
+        second.ok,
+        'the seed aborted on a database holding a MembershipTransition and a DecisionForward. '
+        + 'Every table this unit seals must be cleared BEFORE the `deleteMany` that reaches it — '
+        + 'add it to RESET_TABLES in prisma/seed.ts, with a TRUNCATE_SEALS entry in '
+        + `prisma/sanctioned-reset.ts if it carries a no-TRUNCATE seal:\n${second.out}`,
+      ).toBe(true);
+    } finally {
+      psqlAdmin(base!, `DROP DATABASE IF EXISTS "${scratch}" WITH (FORCE)`);
+    }
+  }, 600_000);
 });
