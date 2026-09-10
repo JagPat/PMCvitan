@@ -1412,10 +1412,40 @@ END $$;
 -- `countersign_rejection` request, which is the disagreement's forward-on. That arm is judged
 -- at COMMIT by the pairing seal below, because the request may be written after the forward.
 CREATE OR REPLACE FUNCTION phase6_t4d_forward_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE d RECORD;
+DECLARE
+  d RECORD;
+  v_holder_user TEXT;
 BEGIN
   PERFORM phase6_t4d_actor_bound(NEW."projectId", NEW."forwardedById", NEW."forwardedByRole",
                                  NEW."forwardedByName", 'DecisionForward ' || NEW."id");
+
+  -- AUTHORITY, which `phase6_t4d_actor_bound` does not supply (Codex round 1, finding 14).
+  -- That helper proves the actor TRULY holds the role and name they wrote down — it is an
+  -- honesty check, not a permission one, and every project member passes it about themselves.
+  -- The policy is the owner's settled 2026-08-13 amendment, carried into this plan at line
+  -- 1930: FORWARD AUTHORITY = the current HOLDER + PMC + architect (once one exists). Without
+  -- this arm an active engineer or contractor could write a truthful fact, hand a client-held
+  -- decision to an active target, and pass every other check in this trigger.
+  --
+  -- The HOLDER arm reads the DISPLACED designation, which the field-for-field comparison below
+  -- has already tied to the decision's actual holder: a named membership resolves to its ACTIVE
+  -- user, a role designation to anyone holding that role. `none` resolves to nobody, and such a
+  -- decision is forwarded by a PMC or an architect like any other.
+  IF NEW."fromDesignationKind" = 'member' THEN
+    v_holder_user := platform_membership_active_user(NEW."projectId", NEW."fromDesignationMembershipId");
+  END IF;
+  IF NOT (
+       (v_holder_user IS NOT NULL AND v_holder_user = NEW."forwardedById")
+    OR (NEW."fromDesignationKind" NOT IN ('member', 'none')
+        AND platform_user_holds_role(NEW."projectId", NEW."forwardedById", NEW."fromDesignationKind"))
+    OR platform_user_holds_role(NEW."projectId", NEW."forwardedById", 'pmc')
+    OR platform_user_holds_role(NEW."projectId", NEW."forwardedById", 'architect')
+  ) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: DecisionForward % hands decision % on, but user % is neither its current holder (%/%) nor a `pmc` nor an active `architect` on project % — forwarding is an AUTHORIZED act, and holding the role you truthfully named is not the same as being allowed to perform it',
+      NEW."id", NEW."decisionId", NEW."forwardedById", NEW."fromDesignationKind",
+      COALESCE(NEW."fromDesignationMembershipId", '<role>'), NEW."projectId";
+  END IF;
 
   SELECT "status"::text AS status, "publishedAt", "deciderKind"::text AS kind, "deciderMembershipId"
     INTO d FROM "Decision" WHERE "projectId" = NEW."projectId" AND "id" = NEW."decisionId" FOR UPDATE;
@@ -1468,11 +1498,51 @@ DROP TRIGGER IF EXISTS "DecisionForward_t4d_seal" ON "DecisionForward";
 CREATE TRIGGER "DecisionForward_t4d_seal" BEFORE INSERT ON "DecisionForward"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_forward_seal();
 
+-- ── the finalizer's subject: the PROVISIONAL HEAD, not merely "a revision of this decision" ──
+-- Codex round 1, finding 15. A finalizer names WHICH provisional approval it finalizes, and
+-- `revisionId` is writer-chosen, so "belongs to this decision" is not the question — a decision
+-- reopened after an earlier approval carries an OLDER FINALIZED revision beside its new
+-- provisional one. A countersign citing the old row passes a belongs-to check, drives the
+-- decision to `approved`, and satisfies the deferred flip pairing because that row is already
+-- `finalized` and never flips — leaving the ACTUAL provisional head unfinalized forever, with a
+-- final-looking decision resting on a finalization of something else.
+--
+-- The head is the highest `version` for the decision, and it must still be PROVISIONAL: the
+-- revision the awaiting transition produced. Both finalizers ask this — the countersign and the
+-- `completed` stranded resolution alike — because both end the same provisional approval.
+CREATE OR REPLACE FUNCTION phase6_t4d_provisional_head(
+  p_project TEXT, p_decision TEXT, p_revision TEXT, p_row TEXT
+) RETURNS VOID LANGUAGE plpgsql AS $$
+DECLARE r RECORD; v_head TEXT; v_head_version INTEGER;
+BEGIN
+  SELECT "decisionId", "finalized", "version" INTO r FROM "DecisionApprovalRevision"
+   WHERE "projectId" = p_project AND "id" = p_revision FOR UPDATE;
+  IF NOT FOUND OR r."decisionId" <> p_decision THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: % names revision %, which is not a revision of decision % — the fact records WHICH provisional approval it finalized',
+      p_row, p_revision, p_decision;
+  END IF;
+
+  SELECT "id", "version" INTO v_head, v_head_version FROM "DecisionApprovalRevision"
+   WHERE "projectId" = p_project AND "decisionId" = p_decision
+   ORDER BY "version" DESC LIMIT 1;
+  IF v_head IS DISTINCT FROM p_revision THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: % finalizes revision % (version %), but decision %''s current revision is % (version %) — a finalizer ends the approval that is OPEN, and citing a superseded one would leave the live provisional approval unfinalized behind a decision that reads as final',
+      p_row, p_revision, r."version", p_decision, v_head, v_head_version;
+  END IF;
+  IF r."finalized" THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: % finalizes revision %, which is ALREADY final — there is no provisional approval left for it to end',
+      p_row, p_revision;
+  END IF;
+END $$;
+
 -- ── the COUNTERSIGN INSERT seal ──────────────────────────────────────────────────────────────
 -- The countersigner must BE an architect, and the subject must be exactly `awaiting_countersign`
 -- — the only state a countersign is legal in.
 CREATE OR REPLACE FUNCTION phase6_t4d_countersign_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE d RECORD; r RECORD;
+DECLARE d RECORD;
 BEGIN
   IF NEW."countersignedByRole" <> 'architect' THEN
     RAISE EXCEPTION
@@ -1490,13 +1560,8 @@ BEGIN
       NEW."decisionId", COALESCE(d.status, '<missing>'), NEW."id";
   END IF;
 
-  SELECT "decisionId" INTO r FROM "DecisionApprovalRevision"
-   WHERE "projectId" = NEW."projectId" AND "id" = NEW."revisionId" FOR UPDATE;
-  IF NOT FOUND OR r."decisionId" <> NEW."decisionId" THEN
-    RAISE EXCEPTION
-      'phase6 4d-i: DecisionCountersign % names revision %, which is not a revision of decision % — the fact records WHICH provisional approval it finalized',
-      NEW."id", NEW."revisionId", NEW."decisionId";
-  END IF;
+  PERFORM phase6_t4d_provisional_head(NEW."projectId", NEW."decisionId", NEW."revisionId",
+                                      'DecisionCountersign ' || NEW."id");
   RETURN NEW;
 END $$;
 
@@ -1509,7 +1574,7 @@ CREATE TRIGGER "DecisionCountersign_t4d_seal" BEFORE INSERT ON "DecisionCounters
 -- are re-judged here, under the decision row lock and the readiness key the helper takes, so the
 -- architect-reappears race is closed at the DB and not only at the command's CAS.
 CREATE OR REPLACE FUNCTION phase6_t4d_stranded_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE d RECORD; r RECORD;
+DECLARE d RECORD;
 BEGIN
   IF NEW."resolvedByRole" <> 'pmc' THEN
     RAISE EXCEPTION
@@ -1535,13 +1600,11 @@ BEGIN
       NEW."projectId", NEW."decisionId", NEW."id";
   END IF;
 
-  SELECT "decisionId" INTO r FROM "DecisionApprovalRevision"
-   WHERE "projectId" = NEW."projectId" AND "id" = NEW."revisionId" FOR UPDATE;
-  IF NOT FOUND OR r."decisionId" <> NEW."decisionId" THEN
-    RAISE EXCEPTION
-      'phase6 4d-i: DecisionStrandedResolution % names revision %, which is not a revision of decision %',
-      NEW."id", NEW."revisionId", NEW."decisionId";
-  END IF;
+  -- the same subject rule as the countersign, on BOTH outcomes: `completed` ends the open
+  -- provisional approval and `returned` sends it back, and neither is an act about a superseded
+  -- or already-final revision (Codex round 1, finding 15's second half).
+  PERFORM phase6_t4d_provisional_head(NEW."projectId", NEW."decisionId", NEW."revisionId",
+                                      'DecisionStrandedResolution ' || NEW."id");
   RETURN NEW;
 END $$;
 
@@ -1568,17 +1631,75 @@ CREATE TRIGGER "DecisionStrandedResolution_t4d_seal" BEFORE INSERT ON "DecisionS
 -- DEFERRED, like its 4c sibling: the receipt is `reserved` while the command runs and only
 -- becomes `succeeded` when it completes, so an immediate check would judge a receipt that has
 -- not finished yet.
+--
+-- THE RECEIPT IS IDENTIFIED BEFORE IT IS MATCHED (Codex round 1, finding 12 — a hole in the
+-- CONTRACT's rule, not an abbreviation of it, so §A.3 obligation 6 gains this paragraph with
+-- the code). `status` and `resultRef` alone do not say WHICH command the receipt belongs to,
+-- and `resultRef = NEW."id"` is an equality over a writer-CHOSEN column: give a forged
+-- `DecisionForward` the id of an existing decision and cite that decision''s `decisions.create`
+-- receipt, and the identity arm accepts it as forward provenance. Nor does either column say
+-- who acted — a fact could name one actor while its receipt recorded another, and the frozen
+-- attribution pair would be truthful about a person who did nothing.
+--
+-- So the receipt must be the RIGHT KIND of command, run by the SAME actor:
+--
+--   · `DecisionForward` — `decisions.forward`, or the two BUNDLES that also write one:
+--     `decisions.disagree`''s forward-on and `decisions.resolveStrandedCountersign`''s
+--     departed-holder re-homing;
+--   · `DecisionCountersign` — `decisions.countersign`;
+--   · `DecisionStrandedResolution` — `decisions.resolveStrandedCountersign`.
+--
+-- These are the four ledgered commands the plan derives from the §A.3 fact table (lines
+-- 4325-4336), and naming them here means a 4d-ii command that spells its type differently is
+-- REFUSED rather than silently admitted — which is the coupling this seal is for. A table
+-- added to the loop below without an entry here is refused outright: the map fails CLOSED,
+-- because a fact whose expected command kind nobody stated is a fact nothing is checking.
 CREATE OR REPLACE FUNCTION phase6_t4d_provenance_bound() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   c RECORD;
   v_primary_ok BOOLEAN := FALSE;
+  v_types TEXT[];
+  v_actor_column TEXT;
+  v_actor TEXT;
 BEGIN
-  SELECT "status", "resultRef" INTO c FROM "CommandExecution"
+  v_types := CASE TG_TABLE_NAME
+    WHEN 'DecisionForward' THEN
+      ARRAY['decisions.forward', 'decisions.disagree', 'decisions.resolveStrandedCountersign']
+    WHEN 'DecisionCountersign' THEN ARRAY['decisions.countersign']
+    WHEN 'DecisionStrandedResolution' THEN ARRAY['decisions.resolveStrandedCountersign']
+    ELSE NULL
+  END;
+  v_actor_column := CASE TG_TABLE_NAME
+    WHEN 'DecisionForward' THEN 'forwardedById'
+    WHEN 'DecisionCountersign' THEN 'countersignedById'
+    WHEN 'DecisionStrandedResolution' THEN 'resolvedById'
+    ELSE NULL
+  END;
+  IF v_types IS NULL OR v_actor_column IS NULL THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: %.% is bound by phase6_t4d_provenance_bound, but no command kind or actor column is declared for table % — a fact whose expected provenance nobody stated is a fact nothing is checking',
+      TG_TABLE_NAME, NEW."id", TG_TABLE_NAME;
+  END IF;
+  v_actor := to_jsonb(NEW) ->> v_actor_column;
+
+  SELECT "status", "resultRef", "commandType", "actorId" INTO c FROM "CommandExecution"
    WHERE "projectId" = NEW."projectId" AND "id" = NEW."sourceCommandId";
   IF NOT FOUND OR c."status" <> 'succeeded' THEN
     RAISE EXCEPTION
       'phase6 4d-i: %.% cites a command that did not succeed in this transaction — the receipt must be COMPLETED by the command that wrote the row',
       TG_TABLE_NAME, NEW."id";
+  END IF;
+
+  IF NOT (c."commandType" = ANY (v_types)) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: %.% cites a `%` receipt, which is not a command that writes this fact (expected one of %) — provenance names the act, and a receipt borrowed from an unrelated command proves nothing about this one',
+      TG_TABLE_NAME, NEW."id", c."commandType", array_to_string(v_types, ', ');
+  END IF;
+
+  IF c."actorId" IS DISTINCT FROM v_actor THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: %.% attributes the act to %, but its receipt was run by % — the fact and the receipt are one act seen twice, and a truthful attribution pair naming someone who ran no command is exactly the forgery the frozen pair exists to prevent',
+      TG_TABLE_NAME, NEW."id", COALESCE(v_actor, '<null>'), COALESCE(c."actorId", '<null>');
   END IF;
 
   IF c."resultRef" = NEW."id" THEN RETURN NULL; END IF;
@@ -2061,9 +2182,26 @@ CREATE TRIGGER "MembershipTransition_t4d_seal" BEFORE INSERT ON "MembershipTrans
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_membership_transition_seal();
 
 -- ── obligation 6: the receipt binding ────────────────────────────────────────────────────────
--- Named `phase6_t4d_membership_transition_bound` by §D. It is the single-fact shape — a
--- membership command writes ONE transition and its receipt names it — so it does not need the
--- bundle widening the decisions facts take.
+-- Named `phase6_t4d_membership_transition_bound` by §D, and the plan states BOTH of its clauses:
+-- "requiring at commit that the cited command SUCCEEDED naming `NEW."membershipId"` as its
+-- result (the delivered `phase6_t4c_provenance_bound` binds `resultRef = NEW.id`, which here
+-- would be the fact's own id) AND that a same-transaction `Membership` write matching the fact
+-- exists (an orphan fact refused)" (plan lines 2951-2956).
+--
+-- THE RESULT IS THE MEMBERSHIP, NOT THE FACT (Codex round 1, finding 11). §A's membership
+-- command contract completes every one of the three member commands with `resultRef` = the
+-- membership id (plan line 3095) — the affected entity, exactly as `decisions.create` names the
+-- decision. The first version copied the delivered 4c binding, which compares against the row's
+-- own id, so a correct 4d-ii add, re-role or removal would have reached commit and been REFUSED
+-- there: a seal that only its own contradiction can pass. This is the single-fact shape — one
+-- command writes ONE transition — so it needs no bundle widening.
+--
+-- THE ORPHAN CLAUSE. The INSERT seal's `activeCount` comparison proves the fact agrees with the
+-- register; it does NOT prove any membership moved. With an architect already active the
+-- register reads 1, and a fabricated `not_held → held` fact claiming `activeCount = 1` agrees
+-- with it while no membership was touched — permanent evidence of a standing change nobody
+-- performed. The converse (a membership write with no fact) is the membership-side pairing
+-- trigger; this is the direction it cannot see, and the plan puts it here.
 CREATE OR REPLACE FUNCTION phase6_t4d_membership_transition_bound() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE c RECORD;
 BEGIN
@@ -2074,10 +2212,22 @@ BEGIN
       'phase6 4d-i: MembershipTransition % cites a command that did not succeed in this transaction — the receipt must be COMPLETED by the command that wrote the fact',
       NEW."id";
   END IF;
-  IF c."resultRef" IS DISTINCT FROM NEW."id" THEN
+  IF c."resultRef" IS DISTINCT FROM NEW."membershipId" THEN
     RAISE EXCEPTION
-      'phase6 4d-i: the command cited by MembershipTransition % names result %, not this fact — a receipt for another result cannot be borrowed',
-      NEW."id", COALESCE(c."resultRef", '<null>');
+      'phase6 4d-i: the command cited by MembershipTransition % names result %, not the membership % this fact records — a member command''s receipt names the MEMBERSHIP it affected, and a receipt for another result cannot be borrowed',
+      NEW."id", COALESCE(c."resultRef", '<null>'), NEW."membershipId";
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM "Membership" m
+     WHERE m."id" = NEW."membershipId"
+       AND m."projectId" = NEW."projectId"
+       AND m."userId" = NEW."userId"
+       AND m."xmin" = txid_current()::text::xid
+  ) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: MembershipTransition % records a standing change of membership % (user %) that no write in this transaction performed — the fact and the membership move together or neither moves, and an ORPHAN fact is permanent evidence of an act that never happened',
+      NEW."id", NEW."membershipId", NEW."userId";
   END IF;
   RETURN NULL;
 END $$;
@@ -3392,25 +3542,42 @@ CREATE TRIGGER "DecisionApprovalRevision_t4d_birth"
   BEFORE INSERT ON "DecisionApprovalRevision"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_revision_birth();
 
--- ── the FLIP is PAIRED, in both directions (§B.4) ────────────────────────────────────────────
+-- ── the FLIP is PAIRED, in both directions (§B.4) — with EXACTLY ONE finalizer ───────────────
 -- A finalized-only flip with NEITHER pairing fact is unrepresentable. The two legal finalizers
 -- are the `DecisionCountersign` row (the chain path) and the `DecisionStrandedResolution` row
 -- with outcome `completed` (the only other one) — so the seal names both and nothing else.
+--
+-- ONE, not "at least one" (Codex round 1, finding 16). The first version refused only the
+-- ABSENCE of both, which admits their PRESENCE together: for a stranded decision, one
+-- transaction can insert the `completed` resolution while the architect count is zero, activate
+-- an architect, insert a countersign for the same revision, and flip. Both facts are immutable
+-- and both claim to have ended the same provisional approval — a permanent contradiction in the
+-- register whose whole purpose is to say, unambiguously, which act made an approval final. The
+-- count is taken ACROSS the two tables because that is the question: not "did this table supply
+-- a finalizer" but "how many finalizers does this revision have".
 CREATE OR REPLACE FUNCTION phase6_t4d_revision_flip_paired() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_finalizers BIGINT;
 BEGIN
   IF OLD."finalized" = TRUE OR NEW."finalized" = FALSE THEN RETURN NULL; END IF;
 
-  IF NOT EXISTS (
-    SELECT 1 FROM "DecisionCountersign" c
+  SELECT (
+    SELECT count(*) FROM "DecisionCountersign" c
      WHERE c."projectId" = NEW."projectId" AND c."revisionId" = NEW."id"
-  ) AND NOT EXISTS (
-    SELECT 1 FROM "DecisionStrandedResolution" s
+  ) + (
+    SELECT count(*) FROM "DecisionStrandedResolution" s
      WHERE s."projectId" = NEW."projectId" AND s."revisionId" = NEW."id"
        AND s."outcome" = 'completed'
-  ) THEN
+  ) INTO v_finalizers;
+
+  IF v_finalizers = 0 THEN
     RAISE EXCEPTION
       'phase6 4d-i: revision % was finalized in this transaction with neither a DecisionCountersign nor a `completed` DecisionStrandedResolution naming it — a provisional approval becomes final by an ACT, and a flip with no act behind it is exactly the forgery the register exists to make impossible',
       NEW."id";
+  END IF;
+  IF v_finalizers > 1 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: revision % carries % finalizers — a countersign AND a `completed` stranded resolution, or two of one kind, each immutable and each claiming to have ended the same provisional approval. A finalized approval was made final by exactly ONE act, and the register may not record two.',
+      NEW."id", v_finalizers;
   END IF;
   RETURN NULL;
 END $$;

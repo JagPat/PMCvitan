@@ -4372,7 +4372,29 @@ before it. Each fact table carries:
    same transaction pairs them and both cite the SAME receipt — the primary
    is the reject-back/forward-on REQUEST for `decisions.disagree` and the
    RESOLUTION row for `resolveStrandedCountersign`; the per-table one-use
-   UNIQUE still holds. `ChangeRequest` joins the contract — and it carries no
+   UNIQUE still holds. **And the receipt is IDENTIFIED before it is matched**
+   (#582's review round 1, finding 12 — a hole in THIS rule, not an
+   abbreviation of it, which is why the rule itself gains the clause):
+   `status` and `resultRef` do not say which command a receipt belongs to,
+   and `resultRef` = the row's own id is an equality over a WRITER-CHOSEN
+   column — give a forged `DecisionForward` the id of an existing decision
+   and cite that decision's `decisions.create` receipt, and the identity arm
+   accepts it as forward provenance; nor does either column say who acted, so
+   a fact could name one actor while its receipt recorded another and the
+   frozen attribution pair would be truthful about a person who did nothing.
+   So `phase6_t4d_provenance_bound` reads the receipt's `commandType` and
+   `actorId` too, and requires the command to be one that WRITES this fact
+   table — `DecisionForward`: `decisions.forward` or the two bundle commands
+   (`decisions.disagree`, `decisions.resolveStrandedCountersign`);
+   `DecisionCountersign`: `decisions.countersign`;
+   `DecisionStrandedResolution`: `decisions.resolveStrandedCountersign` — run
+   by the SAME actor the fact attributes it to (`forwardedById`,
+   `countersignedById`, `resolvedById` respectively). The map fails CLOSED: a
+   fact table bound by this trigger with no declared command kind is refused
+   outright, so a later unit cannot add a table and leave its provenance
+   unchecked. `phase6_t4d_membership_transition_bound` carries the same two
+   clauses over `members.add`/`members.updateRole`/`members.remove` and
+   `MembershipTransition.actorId`. `ChangeRequest` joins the contract — and it carries no
    `projectId` today, so 4d-i adds `projectId`, backfilled from each row's
    decision and, for every later INSERT, filled by a BEFORE INSERT trigger
    that copies it from the row's decision when the writer omits it (so the
