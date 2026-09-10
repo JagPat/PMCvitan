@@ -5092,7 +5092,30 @@ before it. Each fact table carries:
    seeded from the compiled `EXTERNAL_EFFECTS`
    entries like every other column and under the same tripwire (#560's
    review round 1, finding 3: the enumerated schema omitted them while the
-   next paragraph read them) — primary key `(coverageVersion,
+   next paragraph read them) — **`pushRoles` is PERMISSION and
+   `requiresPush` is OBLIGATION, and the seeding derivation must not
+   conflate them** (#582's review round 2, finding 1, and the seeding defect
+   implementing it exposed): `pushRoles` is the audience CEILING a key may
+   ever reach, `requiresPush` is "the delivered service ALWAYS announces on
+   this branch", which is the sense the drain table below already used of
+   `decision.change_requested`. Seeding the second as `push !== null` made
+   four keys claim an obligation the delivered emitter does not carry —
+   `decision.published` (a RECORD publication pushes at nobody; the bell
+   notice is the announcement), `activity.created` and `inspection.created`
+   (the participants initialise a row for a foreign command and announce
+   nothing) and `inspection.approved` (an approval closing an activity
+   announces through the activity sign-off) — so the envelope seal below
+   would have refused those four live emit paths at INSERT on 4d-i's deploy.
+   The compiled catalog therefore DECLARES the exception per key
+   (`pushOptional`), `requiresPush` derives as `push !== null &&
+   !pushOptional` under the same tripwire, and `buildDispatchIntent` refuses
+   a missing push on an obliged key so the two ends of the rule agree.
+   `pushOptional` is deliberately NOT part of `canonicalCatalog()`: the
+   coverage version identifies what a producer EMITS, so adding the field
+   leaves every persisted intent's `coverageVersion` resolvable. And the
+   `audience` shape follows PERMISSION, never obligation — keying the CHECK
+   to `requiresPush` would leave those same four families' push shape
+   unjudged, `decision.published`'s 4b decider narrowing among them — primary key `(coverageVersion,
    effectKey)`, whose rows are written ONLY by migrations under a `SET LOCAL
    vitan.phase6_4d_catalog = 'on'` gate (the 4c-iii-r mistake-proofing
    shape), DELETE refused and UPDATE refused except the ONE gated

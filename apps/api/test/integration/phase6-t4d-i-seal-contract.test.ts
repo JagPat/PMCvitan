@@ -360,11 +360,21 @@ const REGISTER: Record<string, SealContract> = {
 
   // ── the kernel ──────────────────────────────────────────────────────────────────────────────
   platform_t4d_event_envelope: {
-    rule: 'every event carries a truthful actor pair AND sits at a position allocated by a stream '
-      + 'row updated in THIS transaction',
-    plan: '§A.2 the envelope; #582 round 1, finding 1',
+    rule: 'every event carries a truthful actor pair, sits at a position allocated by a stream '
+      + 'row updated in THIS transaction, AND names a live catalog entry whose event type, '
+      + 'invalidation flag and push shape it reproduces',
+    plan: '§A.2 the envelope, arms (a) and (b); #582 round 1, finding 1; #582 round 2, finding 1',
     on: { 'DomainEvent.DomainEvent_t4d_envelope': B('I U') },
-    must: ['ProjectEventStream', 'nextPosition', 'txid_current', 'streamPosition'],
+    // The intent half is the arm this register did NOT ask for in round 1, and its absence is
+    // exactly what round 2's finding 1 found: the seal judged the allocation and the actor pair
+    // and never resolved the intent the whole catalog exists to make askable. `FOR SHARE` is in
+    // the list because the plan states the LOCK, not merely the read — an unlocked read races
+    // the gated retirement stamp.
+    must: [
+      'ProjectEventStream', 'nextPosition', 'txid_current', 'streamPosition',
+      'ExternalEffectCatalog', 'FOR SHARE', 'coverageVersion', 'effectKey',
+      'retiredAt', 'invalidate', 'requiresPush', 'pushRoles', 'audience', 'targetUserIds',
+    ],
   },
   platform_t4d_event_pairing_claimed: {
     rule: 'an event of a pairing-required family is CLAIMED by exactly one fact',

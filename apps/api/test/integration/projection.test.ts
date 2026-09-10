@@ -112,7 +112,7 @@ describe('Phase 2 Task 9 — projection generations + activation barrier (live P
   };
 
   const emit = (projectId: string, entityId: string) =>
-    t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId, effectKey: 'decision.approved', dispatch: {} }));
+    t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId, effectKey: 'decision.published', dispatch: {} }));
 
   /** Dispatch every pending delivery of `consumer` for a project, in stream order, until no progress
    *  (so contiguous ordered applies all land). */

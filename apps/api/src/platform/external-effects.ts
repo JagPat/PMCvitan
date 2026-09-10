@@ -36,6 +36,20 @@ export interface ExternalEffectDef {
    *  demand their decision — re-judged at claim through the decisions-owned answer, re-targeting
    *  a changed holder or dropping with the cancellation mark. Absent = no claim-time predicate. */
   readonly pushFamily?: 'decider' | 'consultation_requested' | 'consultation_responded';
+  /** Phase 6 unit 4d-i (#582 round 2, finding 1) — this key MAY push, and one delivered branch
+   *  legitimately does not. `push` is the audience CEILING (permission); the sealed catalog's
+   *  `requiresPush` is the OBLIGATION the `DomainEvent_t4d_envelope` seal enforces — "the
+   *  delivered service always announces here", so a hand-run writer cannot seal a silent event
+   *  where it does. Deriving the obligation from `push !== null` alone would have made the seal
+   *  refuse four live emit paths at INSERT; each one is named at its key below. Declared here
+   *  rather than inferred, so adding a silent branch is a decision a reader can see.
+   *
+   *  NOT part of `canonicalCatalog()`: the coverage version identifies what a producer EMITS —
+   *  key, event type, invalidation and audience — and this says only which of a key's own
+   *  branches the service always announces on. Adding it therefore leaves every persisted
+   *  intent's `coverageVersion` unchanged, which is what lets a still-serving release keep
+   *  resolving its rows. */
+  readonly pushOptional?: true;
 }
 
 /**
@@ -48,7 +62,9 @@ export const EXTERNAL_EFFECTS = {
   'decision.drafted': { eventType: 'decision.drafted', invalidate: false, push: null },
   // Phase 6 task 4b (§A.3) — the CEILING widens to the union of possible decider roles; the
   // dispatch site narrows to the ACTUAL decider (a named member's user target, or the role).
-  'decision.published': { eventType: 'decision.published', invalidate: true, push: ['client', 'pmc', 'contractor', 'engineer', 'consultant'], pushFamily: 'decider' },
+  // `pushOptional`: a RECORD publication pushes at NOBODY — there is nothing to approve, and
+  // the bell notice is the announcement (`decisions.service.ts` publish/create, the `record` arm).
+  'decision.published': { eventType: 'decision.published', invalidate: true, push: ['client', 'pmc', 'contractor', 'engineer', 'consultant'], pushFamily: 'decider', pushOptional: true },
   'decision.approved': { eventType: 'decision.approved', invalidate: true, push: ['pmc', 'contractor', 'engineer'] },
   'decision.reapproved': { eventType: 'decision.reapproved', invalidate: true, push: ['pmc', 'contractor', 'engineer'] },
   'decision.change_requested': { eventType: 'decision.change_requested', invalidate: true, push: null },
@@ -69,7 +85,9 @@ export const EXTERNAL_EFFECTS = {
   'decision.consultation_requested': { eventType: 'decision.consultation_requested', invalidate: true, push: ['pmc', 'client', 'contractor', 'engineer', 'consultant'], pushFamily: 'consultation_requested' },
   'decision.consultation_responded': { eventType: 'decision.consultation_responded', invalidate: true, push: ['pmc'], pushFamily: 'consultation_responded' },
   // ── activities ─────────────────────────────────────────────────────────────────────────────
-  'activity.created': { eventType: 'activity.created', invalidate: true, push: ['engineer', 'contractor'] },
+  // `pushOptional`: the activities PARTICIPANT initialises an activity for a foreign command
+  // and announces nothing (`activity.participant.ts`, the `init` emit).
+  'activity.created': { eventType: 'activity.created', invalidate: true, push: ['engineer', 'contractor'], pushOptional: true },
   'activity.updated': { eventType: 'activity.updated', invalidate: true, push: null },
   'activity.deleted': { eventType: 'activity.deleted', invalidate: true, push: null },
   'activity.started': { eventType: 'activity.started', invalidate: true, push: null },
@@ -185,11 +203,15 @@ export const EXTERNAL_EFFECTS = {
   'phase.created': { eventType: 'phase.created', invalidate: true, push: null },
   'phase.removed': { eventType: 'phase.removed', invalidate: true, push: null },
   // ── inspections ────────────────────────────────────────────────────────────────────────────
-  'inspection.created': { eventType: 'inspection.created', invalidate: true, push: ['engineer'] },
+  // `pushOptional`: the inspections PARTICIPANT initialises a checklist for a foreign command
+  // and announces nothing (`inspection.participant.ts`, the `init` emit).
+  'inspection.created': { eventType: 'inspection.created', invalidate: true, push: ['engineer'], pushOptional: true },
   'inspection.submitted': { eventType: 'inspection.submitted', invalidate: true, push: null },
   // approve carries the push ONLY when the inspection has no linked activity (else the signoff does);
   // it may reach contractor + client either way.
-  'inspection.approved': { eventType: 'inspection.approved', invalidate: true, push: ['contractor', 'client'] },
+  // `pushOptional`: an approval that CLOSES an activity announces through the activity
+  // sign-off instead, so this event carries no push of its own (`inspections.service.ts`).
+  'inspection.approved': { eventType: 'inspection.approved', invalidate: true, push: ['contractor', 'client'], pushOptional: true },
   'inspection.rejected': { eventType: 'inspection.rejected', invalidate: true, push: null },
   'inspection.reinspection_created': { eventType: 'inspection.reinspection_created', invalidate: true, push: ['engineer'] },
   // Phase 2 Task 10 (Module 3) correction — inspection-owned events appended by the workflow participant in
@@ -296,13 +318,23 @@ export function effectCoverageVersion(): string {
  * catalog, so a caller can never forge the audience.
  */
 export function buildDispatchIntent(effectKey: ExternalEffectKey, eventType: DomainEventType, dispatch: DispatchInput): DispatchIntent {
-  const def = EXTERNAL_EFFECTS[effectKey];
+  const def: ExternalEffectDef | undefined = EXTERNAL_EFFECTS[effectKey];
   if (!def) throw new Error(`unknown external-effect key '${String(effectKey)}'`);
   if (def.eventType !== eventType) {
     throw new Error(`effect key '${effectKey}' is declared for event '${def.eventType}', not '${eventType}'`);
   }
   if (dispatch.push && def.push === null) {
     throw new Error(`effect key '${effectKey}' may not push (catalog push is null), but a push body was supplied`);
+  }
+  // Phase 6 unit 4d-i (#582 round 2, finding 1) — the OBLIGATION, at the same boundary the
+  // sealed catalog enforces it. `DomainEvent_t4d_envelope` refuses an event of a key whose
+  // persisted `requiresPush` is true and whose intent carries no push, because a silent write of
+  // an act the service announces is a suppressed notice. Without this throw the two ends
+  // disagree: the builder would happily produce an intent the database then refuses, and the
+  // caller would learn about it as an opaque P0001 from inside `emitEvent` rather than here,
+  // naming the key. `pushOptional` keys are exempt by declaration — that is what it declares.
+  if (!dispatch.push && def.push !== null && def.pushOptional !== true) {
+    throw new Error(`effect key '${effectKey}' always announces (catalog push is ${JSON.stringify(def.push)}), but no push body was supplied`);
   }
   // Phase 6 task 4b (§A.3) — a dispatch may NARROW the audience to the actual decider; the
   // catalog is the CEILING, so a role outside it is a forged audience and refuses the emit.

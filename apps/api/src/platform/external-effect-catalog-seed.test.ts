@@ -81,11 +81,19 @@ function seededRows(): Row[] {
 
 /** The same shape, DERIVED from the compiled catalog exactly as the seed generator derives it. */
 function compiledRows(): Row[] {
-  const catalog = EXTERNAL_EFFECTS as Record<string, { eventType: string; invalidate: boolean; push: readonly string[] | null; pushFamily?: string }>;
+  const catalog = EXTERNAL_EFFECTS as Record<string, { eventType: string; invalidate: boolean; push: readonly string[] | null; pushFamily?: string; pushOptional?: true }>;
   const coverageVersion = effectCoverageVersion();
   return Object.keys(catalog).sort().map((effectKey) => {
     const d = catalog[effectKey]!;
-    const requiresPush = d.push !== null;
+    // #582 round 2, finding 1 — PERMISSION and OBLIGATION are two questions, and deriving the
+    // second from the first was a seeding defect this round found: `push !== null` says the key
+    // MAY announce; `requiresPush` says the delivered branch ALWAYS does, and the envelope seal
+    // refuses a silent event of such a key. Four keys carry `pushOptional` because one delivered
+    // branch legitimately stays quiet; seeding them `requiresPush: true` would have aborted
+    // those four live emit paths at INSERT. `audience` follows PERMISSION, so a key that may
+    // push always declares the shape its pushes must take, silent branch or not.
+    const mayPush = d.push !== null;
+    const requiresPush = mayPush && d.pushOptional !== true;
     return {
       coverageVersion,
       effectKey,
@@ -97,7 +105,7 @@ function compiledRows(): Row[] {
       // row is false and carries no constant body.
       frozenAudience: false,
       requiresPush,
-      audience: !requiresPush ? null : d.pushFamily ? 'targeted' : 'broadcast',
+      audience: !mayPush ? null : d.pushFamily ? 'targeted' : 'broadcast',
       pushBody: null,
     };
   });

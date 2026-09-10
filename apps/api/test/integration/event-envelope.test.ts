@@ -32,7 +32,7 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
   /** emit one event inside a real interactive transaction, like a command would. */
   const emit = (over: Partial<EmitInput> = {}) =>
     t.prisma.$transaction((tx) =>
-      emitEvent(tx, { projectId: f.projectA.id, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-1', effectKey: 'decision.approved', dispatch: {}, ...over }),
+      emitEvent(tx, { projectId: f.projectA.id, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-1', effectKey: 'decision.approved', dispatch: { push: { body: 'approved' } }, ...over }),
     );
 
   const streamOf = (projectId: string) => t.prisma.projectEventStream.findUnique({ where: { projectId } });
@@ -67,7 +67,7 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
     const before = (await streamOf(f.projectA.id))!.nextPosition;
     await expect(
       t.prisma.$transaction(async (tx) => {
-        await emitEvent(tx, { projectId: f.projectA.id, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-rollback', effectKey: 'decision.approved', dispatch: {} });
+        await emitEvent(tx, { projectId: f.projectA.id, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-rollback', effectKey: 'decision.approved', dispatch: { push: { body: 'approved' } } });
         throw new Error('boom'); // the command failed after emitting — everything rolls back
       }),
     ).rejects.toThrow('boom');
@@ -143,8 +143,15 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
             WHERE "projectId" = $1 RETURNING "nextPosition" - 1 AS "at"`,
           f.projectA.id,
         );
+        // Phase 6 unit 4d-i — the plant carries the catalog's own intent for a non-pushing,
+        // non-pairing key. `DomainEvent_t4d_envelope`'s intent arm runs BEFORE the attribution
+        // CHECK (a BEFORE ROW trigger precedes constraint evaluation), so an intent-less plant
+        // would be refused by the wrong thing and this arm would stop measuring what it names.
         return tx.$executeRawUnsafe(
-          `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","entityType","entityId",${cols.split('=')[0]}) VALUES ('${id}','x',1,'${f.orgA.id}','${f.projectA.id}',${Number(rows[0]!.at)},'Decision','x',${cols.split('=')[1]})`,
+          `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","entityType","entityId","dispatchIntent",${cols.split('=')[0]})`
+          + ` SELECT '${id}','decision.drafted',1,'${f.orgA.id}','${f.projectA.id}',${Number(rows[0]!.at)},'Decision','x',`
+          + ` jsonb_build_object('effectKey','decision.drafted','coverageVersion',c."coverageVersion",'invalidate',c."invalidate"),${cols.split('=')[1]}`
+          + ` FROM "ExternalEffectCatalog" c WHERE c."effectKey" = 'decision.drafted'`,
         );
       });
     // invalid actorKind

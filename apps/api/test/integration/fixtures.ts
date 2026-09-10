@@ -291,7 +291,17 @@ export async function plantLegacyApprovalRevision(
  * So a probe that needs a raw row cannot choose a position, and cannot allocate in one statement
  * and insert in another — the earlier version of this helper did exactly that, and it only ever
  * worked because the seal was not yet asking. `columns`/`values` are appended to the fixed
- * envelope so an arm can add `actorRole`, `dispatchIntent` or an explicit `eventId`.
+ * envelope so an arm can add `actorRole` or an explicit `eventId`.
+ *
+ * It also COPIES THE PERSISTED CATALOG'S INTENT for `effectKey` (§A.2 (b), the shape this
+ * helper was specified with; #582 round 2, finding 1). The envelope seal now resolves
+ * `dispatchIntent.(coverageVersion, effectKey)` in `ExternalEffectCatalog` and compares the
+ * event type and the invalidation flag, so a plant with no intent is refused — correctly, and
+ * for a reason that has nothing to do with what most arms are probing. The default key is
+ * `decision.drafted`: it invalidates nothing, may not push and is not `pairingRequired`, so a
+ * bare plant owes no push and no pairing claim. An arm that needs another key names it; an arm
+ * that wants to probe the intent arm itself passes its own `"dispatchIntent"` column, which is
+ * left untouched.
  *
  * Returns the position the plant consumed. A legacy-SHAPE plant — a pre-4d row that by
  * construction cannot satisfy these seals — uses `plantLegacyEvent` instead, which declares a
@@ -306,15 +316,41 @@ export async function insertRawEvent(
     eventType?: string;
     entityType?: string;
     entityId?: string;
+    /** the catalog key whose PERSISTED intent this plant copies. Defaults to `decision.drafted`
+     *  — no invalidation, no push, no pairing claim owed. Ignored when the caller supplies its
+     *  own `"dispatchIntent"` column. */
+    effectKey?: string;
     /** extra column names, already quoted, e.g. `"actorRole"` */
     columns?: string[];
     /** matching SQL value expressions, e.g. `'pmc'` */
     values?: string[];
   },
 ): Promise<number> {
-  const cols = (spec.columns ?? []).length > 0 ? `,${spec.columns!.join(',')}` : '';
-  const vals = (spec.values ?? []).length > 0 ? `,${spec.values!.join(',')}` : '';
+  const ownIntent = (spec.columns ?? []).some((c) => c.includes('dispatchIntent'));
+  const effectKey = spec.effectKey ?? 'decision.drafted';
+  const columns = [...(spec.columns ?? [])];
+  const values = [...(spec.values ?? [])];
   return prisma.$transaction(async (tx) => {
+    if (!ownIntent) {
+      // The NEWEST unretired definition of the key: through 4d-ii's drain two coverage versions
+      // of one key coexist, and a plant must name the one a current writer would emit.
+      const cat = await tx.$queryRawUnsafe<Array<{ coverageVersion: string; eventType: string; invalidate: boolean }>>(
+        `SELECT "coverageVersion","eventType","invalidate" FROM "ExternalEffectCatalog"
+          WHERE "effectKey" = $1 AND "retiredAt" IS NULL ORDER BY "coverageVersion" DESC LIMIT 1`,
+        effectKey,
+      );
+      const row = cat[0];
+      if (!row) throw new Error(`insertRawEvent: no unretired ExternalEffectCatalog row for '${effectKey}'`);
+      columns.push('"dispatchIntent"');
+      values.push(
+        `'${JSON.stringify({ effectKey, coverageVersion: row.coverageVersion, invalidate: row.invalidate })}'::jsonb`,
+      );
+      // the seal requires the event's type to equal the catalog row's, so the plant takes it
+      // from the row rather than from a caller that did not name one.
+      spec = { ...spec, eventType: spec.eventType ?? row.eventType };
+    }
+    const cols = columns.length > 0 ? `,${columns.join(',')}` : '';
+    const vals = values.length > 0 ? `,${values.join(',')}` : '';
     const rows = await tx.$queryRawUnsafe<Array<{ at: bigint }>>(
       `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1
         WHERE "projectId" = $1 RETURNING "nextPosition" - 1 AS "at"`,

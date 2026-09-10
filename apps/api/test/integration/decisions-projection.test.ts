@@ -106,7 +106,11 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
       await t.prisma.changeRequest.create({ data: { projectId, decisionId: id, reason: 'reopen', costImpact: 500, timeImpactDays: 3, status: 'open', requestedById: authorId } });
     }
     const eventType = opts.draft ? 'decision.drafted' : status === 'change' ? 'decision.change_requested' : status === 'approved' ? 'decision.approved' : 'decision.published';
-    await t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType, entityType: 'Decision', entityId: id, effectKey: eventType, dispatch: {} }));
+    // Phase 6 unit 4d-i — `decision.approved` is a family the delivered service ALWAYS announces
+    // on (its sealed catalog row carries `requiresPush`), so the fixture supplies the push the
+    // emitter would; the other three families push nothing and take an empty dispatch.
+    const dispatch = eventType === 'decision.approved' ? { push: { body: `Approved: ${id}` } } : {};
+    await t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType, entityType: 'Decision', entityId: id, effectKey: eventType, dispatch }));
   };
 
   /** Drain every pending decisions.inbox (and noop) delivery for a project. */

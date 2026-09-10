@@ -193,7 +193,7 @@ describe('Phase 2 Task 10 — drawings module read isolation + recipient isolati
     // UPGRADE: the project's first drawing event drives the projection (the handler reads canonical, so
     // the pre-existing legacy drawing is captured) → now served from the rebuilt read model, same data.
     const sys = { actorId: f.memberUser.id, actorName: 'System', actorRole: 'system', actorKind: 'system' as const };
-    await t.prisma.$transaction((tx) => emitEvent(tx, { projectId: p, actor: sys, eventType: 'drawing.published', entityType: 'Drawing', entityId: d.id, effectKey: 'drawing.published', dispatch: {} }));
+    await t.prisma.$transaction((tx) => emitEvent(tx, { projectId: p, actor: sys, eventType: 'drawing.published', entityType: 'Drawing', entityId: d.id, effectKey: 'drawing.published', dispatch: { push: { body: 'Drawing issued: LEG-1' } } }));
     await applyProjection(p);
     const after = await request(t.app.getHttpServer()).get(`/projects/${p}/drawings`).set('Authorization', `Bearer ${token}`).expect(200);
     expect(after.body.source).toBe('projection');

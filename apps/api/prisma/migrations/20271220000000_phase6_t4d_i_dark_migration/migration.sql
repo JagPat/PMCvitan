@@ -2406,10 +2406,21 @@ CREATE TABLE IF NOT EXISTS "ExternalEffectCatalog" (
     "pairingRequired" BOOLEAN NOT NULL DEFAULT FALSE,
     "retiredAt"       TIMESTAMP(3),
     CONSTRAINT "ExternalEffectCatalog_pkey" PRIMARY KEY ("coverageVersion", "effectKey"),
-    -- a pushing row names its shape; a non-pushing row names none.
+    -- A row that MAY push names its shape; a row that may not names none. The shape is tied to
+    -- `pushRoles`, not to `requiresPush`, because the two answer different questions (#582 round
+    -- 2, finding 1, and the seeding defect it exposed): `pushRoles` is the audience CEILING a
+    -- key may ever reach, `requiresPush` is whether the delivered branch ALWAYS announces. Four
+    -- delivered keys may push and legitimately do not on one of their branches — a
+    -- participant-initialised activity or inspection, an inspection approval folded into an
+    -- activity sign-off, and a RECORD publication, which pushes at nobody because there is
+    -- nothing to approve. Keying `audience` to `requiresPush` would have left exactly those four
+    -- families' push SHAPE unjudged, `decision.published`'s decider narrowing among them.
     CONSTRAINT "ExternalEffectCatalog_audience_check"
-      CHECK (("requiresPush" AND "audience" IN ('broadcast', 'targeted', 'frozen'))
-             OR (NOT "requiresPush" AND "audience" IS NULL)),
+      CHECK (("pushRoles" IS NOT NULL AND "audience" IN ('broadcast', 'targeted', 'frozen'))
+             OR ("pushRoles" IS NULL AND "audience" IS NULL)),
+    -- a branch cannot be obliged to announce to an audience it has no ceiling for.
+    CONSTRAINT "ExternalEffectCatalog_requires_push_check"
+      CHECK (NOT "requiresPush" OR "pushRoles" IS NOT NULL),
     -- only a frozen-audience family carries a constant body, and it carries one.
     CONSTRAINT "ExternalEffectCatalog_frozen_body_check"
       CHECK (("frozenAudience" AND "audience" = 'frozen' AND "pushBody" IS NOT NULL)
@@ -2509,7 +2520,7 @@ SELECT set_config('vitan.phase6_4d_catalog', 'on', false);
 
 INSERT INTO "ExternalEffectCatalog" ("coverageVersion", "effectKey", "eventType", "invalidate", "pushRoles", "pushFamily", "frozenAudience", "requiresPush", "audience", "pushBody", "pairingRequired") VALUES
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.completion_requested', 'activity.completion_requested', true, '["pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.created', 'activity.created', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.created', 'activity.created', true, '["contractor","engineer"]'::jsonb, NULL, false, false, 'broadcast', NULL, false),
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.deleted', 'activity.deleted', true, NULL, NULL, false, false, NULL, NULL, false),
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.labour_blocked', 'activity.labour_blocked', true, NULL, NULL, false, false, NULL, NULL, false),
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.labour_unblocked', 'activity.labour_unblocked', true, NULL, NULL, false, false, NULL, NULL, false),
@@ -2540,7 +2551,7 @@ INSERT INTO "ExternalEffectCatalog" ("coverageVersion", "effectKey", "eventType"
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.consultation_requested', 'decision.consultation_requested', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'consultation_requested', false, true, 'targeted', NULL, false),
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.consultation_responded', 'decision.consultation_responded', true, '["pmc"]'::jsonb, 'consultation_responded', false, true, 'targeted', NULL, false),
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.drafted', 'decision.drafted', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.published', 'decision.published', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'decider', false, true, 'targeted', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.published', 'decision.published', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'decider', false, false, 'targeted', NULL, false),
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.reapproved', 'decision.reapproved', true, '["contractor","engineer","pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.withdrawn', 'decision.withdrawn', true, NULL, NULL, false, false, NULL, NULL, false),
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'delivery.committed', 'delivery.committed', true, NULL, NULL, false, false, NULL, NULL, false),
@@ -2558,9 +2569,9 @@ INSERT INTO "ExternalEffectCatalog" ("coverageVersion", "effectKey", "eventType"
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.revised', 'drawing.revised', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.revised_draft', 'drawing.revised', false, NULL, NULL, false, false, NULL, NULL, false),
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.unfiled', 'drawing.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.approved', 'inspection.approved', true, '["client","contractor"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.approved', 'inspection.approved', true, '["client","contractor"]'::jsonb, NULL, false, false, 'broadcast', NULL, false),
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.closing_created', 'inspection.closing_created', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.created', 'inspection.created', true, '["engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.created', 'inspection.created', true, '["engineer"]'::jsonb, NULL, false, false, 'broadcast', NULL, false),
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.evidence_added', 'inspection.evidence_added', true, NULL, NULL, false, false, NULL, NULL, false),
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.evidence_removed', 'inspection.evidence_removed', true, NULL, NULL, false, false, NULL, NULL, false),
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.reinspection_created', 'inspection.reinspection_created', true, '["engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
@@ -2710,7 +2721,10 @@ CREATE CONSTRAINT TRIGGER "DomainEvent_t4d_pairing_claimed"
 -- all. A half-filled envelope would pass a fact's comparison on one half and silently skip the
 -- other.
 CREATE OR REPLACE FUNCTION platform_t4d_event_envelope() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_next BIGINT; v_allocated_here BOOLEAN;
+DECLARE
+  v_next BIGINT; v_allocated_here BOOLEAN;
+  v_key TEXT; v_version TEXT; v_cat RECORD;
+  v_push JSONB; v_roles TEXT[]; v_ceiling TEXT[];
 BEGIN
   IF TG_OP = 'INSERT' THEN
     -- (a) THE POSITION, and that THIS transaction allocated it (§A.2; Codex round 1, finding 3).
@@ -2737,6 +2751,112 @@ BEGIN
       RAISE EXCEPTION
         'phase6 4d-i: event % sits at position % but this transaction did not allocate it (the allocator for project % stands at %, moved here: %) — a position is taken by incrementing the allocator in the SAME transaction that writes the event, never chosen',
         NEW."eventId", NEW."streamPosition", NEW."projectId", v_next, COALESCE(v_allocated_here, FALSE);
+    END IF;
+
+    -- (b) THE INTENT, judged against the PERSISTED catalog (§A.2 (b); #582 round 2, finding 1).
+    -- The first version of this seal stopped after the allocation and the actor pair, so the
+    -- ONE thing the catalog rows exist to make askable was never asked: a direct insert could
+    -- commit an unknown or retired coverage version, flip `invalidate` off so no consumer ever
+    -- refreshed, or persist a forged push audience — and the relay's `expandMissingDeliveries`
+    -- rebuilds from exactly this immutable intent, so the forgery survives every replay.
+    --
+    -- FOR SHARE, not a bare read (plan line 5104): the gated retirement stamp takes `FOR UPDATE`
+    -- on the same row, so the two order deterministically and an event cannot commit on an
+    -- intent that was retired between this check and its commit. Share locks do not conflict
+    -- with each other, so concurrent emits of the same key do not serialize behind one another.
+    IF NEW."dispatchIntent" IS NULL THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: event % carries no dispatchIntent — every event names the catalog entry that decides its external consequence, and an intent-less event is one the relay would have to guess about',
+        NEW."eventId";
+    END IF;
+    v_key     := NEW."dispatchIntent" ->> 'effectKey';
+    v_version := NEW."dispatchIntent" ->> 'coverageVersion';
+    IF v_key IS NULL OR v_version IS NULL THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: event % carries an intent naming effectKey % at coverageVersion % — both halves of the catalog key are required, because the key alone does not identify a definition through the drain',
+        NEW."eventId", COALESCE(v_key, '<null>'), COALESCE(v_version, '<null>');
+    END IF;
+
+    SELECT c."eventType", c."invalidate", c."pushRoles", c."requiresPush", c."audience", c."retiredAt"
+      INTO v_cat
+      FROM "ExternalEffectCatalog" c
+     WHERE c."coverageVersion" = v_version AND c."effectKey" = v_key
+       FOR SHARE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: event % names catalog entry (%, %), which this database does not hold — an intent the seals cannot resolve is an external consequence nobody approved',
+        NEW."eventId", v_version, v_key;
+    END IF;
+    IF v_cat."retiredAt" IS NOT NULL THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: event % names catalog entry (%, %), retired at % — a retired definition still resolves for HISTORY, and may not back a new event',
+        NEW."eventId", v_version, v_key, v_cat."retiredAt";
+    END IF;
+    IF v_cat."eventType" <> NEW."eventType" THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: event % is of type `%` but names catalog entry (%, %), which is declared for `%` — an effect key is per command BRANCH, and a branch cannot be borrowed by another type',
+        NEW."eventId", NEW."eventType", v_version, v_key, v_cat."eventType";
+    END IF;
+    IF (NEW."dispatchIntent" ->> 'invalidate')
+       IS DISTINCT FROM (CASE WHEN v_cat."invalidate" THEN 'true' ELSE 'false' END) THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: event % claims invalidate=% while catalog entry (%, %) declares % — suppressing the invalidation leaves every open surface showing the state before this act',
+        NEW."eventId", COALESCE(NEW."dispatchIntent" ->> 'invalidate', '<absent>'), v_version, v_key,
+        CASE WHEN v_cat."invalidate" THEN 'true' ELSE 'false' END;
+    END IF;
+
+    -- THE PUSH SHAPE. `pushRoles` is the CEILING a key may ever reach; `requiresPush` says the
+    -- delivered branch ALWAYS announces, so a hand-run writer cannot seal a silent event where
+    -- the service always speaks; `audience` says which shape is owed.
+    v_push := NEW."dispatchIntent" -> 'push';
+    IF v_push IS NOT NULL AND jsonb_typeof(v_push) <> 'object' THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: the push of event % is a % — a push is an object of body, roles and an optional target',
+        NEW."eventId", jsonb_typeof(v_push);
+    END IF;
+    IF v_push IS NOT NULL AND v_cat."pushRoles" IS NULL THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: event % carries a push, but catalog entry (%, %) declares no push audience at all — an announcement nobody approved is an audience invented at the write',
+        NEW."eventId", v_version, v_key;
+    END IF;
+    IF v_push IS NULL AND v_cat."requiresPush" THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: event % carries no push, but catalog entry (%, %) declares that this branch always announces — a silent write of an act the service announces is a suppressed notice',
+        NEW."eventId", v_version, v_key;
+    END IF;
+    IF v_push IS NOT NULL THEN
+      IF jsonb_typeof(v_push -> 'roles') IS DISTINCT FROM 'array' THEN
+        RAISE EXCEPTION
+          'phase6 4d-i: the push of event % names roles as % — the audience is an array, and an absent one is not an empty one',
+          NEW."eventId", COALESCE(jsonb_typeof(v_push -> 'roles'), '<absent>');
+      END IF;
+      SELECT COALESCE(array_agg(DISTINCT r), ARRAY[]::TEXT[]) INTO v_roles
+        FROM jsonb_array_elements_text(v_push -> 'roles') AS t(r);
+      SELECT COALESCE(array_agg(DISTINCT r), ARRAY[]::TEXT[]) INTO v_ceiling
+        FROM jsonb_array_elements_text(v_cat."pushRoles") AS t(r);
+      IF NOT (v_roles <@ v_ceiling) THEN
+        RAISE EXCEPTION
+          'phase6 4d-i: the push of event % names roles %, outside the ceiling % of catalog entry (%, %) — a site may NARROW an audience and may never widen it',
+          NEW."eventId", v_roles, v_ceiling, v_version, v_key;
+      END IF;
+      IF v_cat."audience" = 'broadcast' AND NOT (v_ceiling <@ v_roles) THEN
+        RAISE EXCEPTION
+          'phase6 4d-i: catalog entry (%, %) is a BROADCAST family, so the push of event % must reach its whole ceiling % and reaches % — a narrowed broadcast silently drops the roles it omits',
+          v_version, v_key, NEW."eventId", v_ceiling, v_roles;
+      END IF;
+      IF v_cat."audience" = 'targeted'
+         AND (v_push ->> 'targetUserId') IS NULL AND cardinality(v_roles) = 0 THEN
+        RAISE EXCEPTION
+          'phase6 4d-i: catalog entry (%, %) is a TARGETED family, so the push of event % must name the user it is for or the non-empty role audience it narrows to, and it names neither',
+          v_version, v_key, NEW."eventId";
+      END IF;
+      -- `targetUserIds` is the FROZEN-audience array (4d-ii's countersign demand and forward);
+      -- on any other family it is a set of recipients no rule resolved.
+      IF (v_push ? 'targetUserIds') AND v_cat."audience" IS DISTINCT FROM 'frozen' THEN
+        RAISE EXCEPTION
+          'phase6 4d-i: the push of event % carries a frozen audience list, but catalog entry (%, %) is a `%` family — only a frozen-audience family resolves its recipients as a set',
+          NEW."eventId", v_version, v_key, COALESCE(v_cat."audience", '<none>');
+      END IF;
     END IF;
 
     IF (NEW."actorRole" IS NULL) <> (NEW."actorName" IS NULL) THEN

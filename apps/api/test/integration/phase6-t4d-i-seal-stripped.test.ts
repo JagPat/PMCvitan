@@ -186,9 +186,12 @@ BEGIN;
 INSERT INTO "ProjectEventStream" ("projectId","nextPosition") VALUES ('ss-proj', 0)
   ON CONFLICT ("projectId") DO NOTHING;
 UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
-INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId")
-  SELECT 'ss-ev1','decision.published',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec'
-    FROM "ProjectEventStream" s WHERE s."projectId" = 'ss-proj';
+INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+  SELECT 'ss-ev1','decision.published',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec',
+         jsonb_build_object('effectKey','decision.published','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
+                            'push', jsonb_build_object('body','ss','roles', jsonb_build_array('client')))
+    FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+   WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.published';
 COMMIT;
 -- ONE LIVE LEASE for the drain-attestation arms: a serving process at catalog version 2 whose
 -- lease runs an hour out. The table is DARK, so nothing else in this fixture reads or writes it.
@@ -298,11 +301,62 @@ const ARMS: Arm[] = [
     // wrong with this write is the half-filled envelope, which is what the arm claims to measure.
     hostile: `BEGIN;
               UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
-              INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId","actorRole")
-              SELECT 'ss-half','x',1,'ss-org','ss-proj',s."nextPosition" - 1,'ss-user','human','Decision','ss-dec','pmc'
-                FROM "ProjectEventStream" s WHERE s."projectId" = 'ss-proj';
+              INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId","actorRole","dispatchIntent")
+              SELECT 'ss-half','decision.drafted',1,'ss-org','ss-proj',s."nextPosition" - 1,'ss-user','human','Decision','ss-dec','pmc',
+                     jsonb_build_object('effectKey','decision.drafted','coverageVersion',c."coverageVersion",'invalidate',c."invalidate")
+                FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+               WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.drafted';
               COMMIT`,
     refusal: /carries half an actor envelope/,
+  },
+  // ── the INTENT half of the envelope (#582 round 2, finding 1) ────────────────────────────
+  // Three arms, because the intent arm makes three different claims and a single hostile write
+  // would prove whichever one happens to fire first. Each carries a CORRECT allocation and a
+  // correct actor envelope, so the only thing wrong with it is the one the arm names.
+  {
+    seal: 'DomainEvent_t4d_envelope',
+    what: 'an intent naming a catalog entry this database does not hold is refused',
+    hostile: `BEGIN;
+              UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+              INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+              SELECT 'ss-unknown','decision.drafted',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec',
+                     jsonb_build_object('effectKey','decision.drafted','coverageVersion','not-a-version','invalidate',false)
+                FROM "ProjectEventStream" s WHERE s."projectId" = 'ss-proj';
+              COMMIT`,
+    refusal: /which this database does not hold/,
+  },
+  {
+    seal: 'DomainEvent_t4d_envelope',
+    what: 'an intent that suppresses the catalog\'s invalidation is refused',
+    // the shape that leaves every open surface showing the state before the act: the catalog
+    // says this family invalidates, the persisted intent says it does not, and the relay
+    // rebuilds from the intent.
+    hostile: `BEGIN;
+              UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+              INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+              SELECT 'ss-noinval','decision.published',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec',
+                     jsonb_build_object('effectKey','decision.published','coverageVersion',c."coverageVersion",'invalidate',false,
+                                        'push', jsonb_build_object('body','ss','roles', jsonb_build_array('client')))
+                FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+               WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.published';
+              COMMIT`,
+    refusal: /claims invalidate=/,
+  },
+  {
+    seal: 'DomainEvent_t4d_envelope',
+    what: 'a push audience wider than the catalog ceiling is refused',
+    // `decision.approved` broadcasts to pmc/contractor/engineer; `client` is outside that
+    // ceiling, so this is an audience invented at the write rather than narrowed from one.
+    hostile: `BEGIN;
+              UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+              INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+              SELECT 'ss-widened','decision.approved',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec',
+                     jsonb_build_object('effectKey','decision.approved','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
+                                        'push', jsonb_build_object('body','ss','roles', jsonb_build_array('pmc','contractor','engineer','client')))
+                FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+               WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.approved';
+              COMMIT`,
+    refusal: /outside the ceiling/,
   },
   {
     seal: 'ProjectEventStream_t4d_allocation',

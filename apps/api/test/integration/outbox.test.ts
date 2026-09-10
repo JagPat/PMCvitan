@@ -83,7 +83,7 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
   };
 
   const emit = (projectId: string, entityId: string, over: Record<string, unknown> = {}) =>
-    t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId, effectKey: 'decision.approved', dispatch: {}, ...over }));
+    t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId, effectKey: 'decision.published', dispatch: {}, ...over }));
 
   const deliveryFor = (consumer: string, eventId: string) =>
     t.prisma.outboxDelivery.findFirstOrThrow({ where: { consumer, eventId } });
@@ -107,7 +107,7 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
 
     // a rolled-back mutation writes NO event AND NO deliveries — they share the transaction
     await expect(t.prisma.$transaction(async (tx) => {
-      await emitEvent(tx, { projectId: p, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-rb', effectKey: 'decision.approved', dispatch: {} });
+      await emitEvent(tx, { projectId: p, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: 'D-rb', effectKey: 'decision.published', dispatch: {} });
       throw new Error('boom');
     })).rejects.toThrow('boom');
     expect(await t.prisma.outboxDelivery.count({ where: { projectId: p, eventId: { not: eventId } } })).toBe(0);
