@@ -126,10 +126,19 @@ a {
 }
 
 /* animations */
+/* NO `scale()` HERE (#584 review round 4, finding 2). `vpop` is the entry animation for the
+   Toast, the Modal, the notification panel and the Schedule and Decision rows — every one of
+   which CONTAINS pressed controls. A `scale(0.98)` on the container shrinks its buttons with it,
+   so a 44×44 target measured 43.1×43.1 for the first 300ms of its life: undersized exactly while
+   it is arriving under a thumb reaching for it. Round 3 answered a mis-diagnosis of this by
+   freezing animation in the SIZE INVENTORY, which stopped the test seeing it and changed nothing
+   for the user — the reason the test now measures mid-animation instead. `translateY` moves the
+   box without resizing it, so the rise and the fade stay and the floor holds from the first
+   frame. Any future entry animation on a container with controls owes the same rule. */
 @keyframes vpop {
   from {
     opacity: 0;
-    transform: translateY(6px) scale(0.98);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;

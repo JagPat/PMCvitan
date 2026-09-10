@@ -27,7 +27,7 @@ test.use({ viewport: { width: 390, height: 844 } });
 const FLOOR = 16;
 
 /** every control on the page that iOS would zoom for, with its computed size and a locator hint */
-async function undersizedFields(page: Page): Promise<Array<{ where: string; size: number }>> {
+async function visibleFields(page: Page): Promise<Array<{ where: string; size: number }>> {
   return page.$$eval(
     'input, textarea, select',
     (els, floor) => {
@@ -35,6 +35,12 @@ async function undersizedFields(page: Page): Promise<Array<{ where: string; size
       return els
         .filter((el) => {
           if (el instanceof HTMLInputElement && NO_ZOOM.includes(el.type)) return false;
+          // DEV-ONLY affordances are not part of any surface. The persona switcher is a `<select>`
+          // in the TopBar, so it rides along on EVERY screen — and measuring it is what made the
+          // Schedule and Drawings arms look non-empty while the surfaces' own fields (all of them
+          // behind dialogs) went unmeasured. Counting it would have satisfied the `atLeast` guard
+          // below with the one control the guard exists to look past.
+          if (el.closest('[data-dev-affordance]')) return false;
           // `$$eval` types the node broadly; only an HTMLElement has offsetParent, and only
           // those three tags are selected anyway.
           return el instanceof HTMLElement && el.offsetParent !== null;   // visible only
@@ -44,14 +50,35 @@ async function undersizedFields(page: Page): Promise<Array<{ where: string; size
             + `${el.getAttribute('placeholder') ? ` placeholder="${el.getAttribute('placeholder')}"` : ''}>`,
           size: parseFloat(getComputedStyle(el).fontSize),
         }))
-        .filter((f) => f.size < floor);
+        .map((f) => ({ ...f, under: f.size < floor }));
     },
     FLOOR,
   );
 }
 
-async function sweep(page: Page, surface: string) {
-  const bad = await undersizedFields(page);
+/**
+ * #584 review round 4, finding 1 — A SWEEP THAT MEASURED NOTHING PASSES.
+ *
+ * `toEqual([])` on the undersized list is satisfied by an empty page as readily as by a correct
+ * one, and on two surfaces it was exactly that: Schedule's inputs live behind the Plan activity,
+ * Add phase and Override dialogs, Drawings' behind Issue drawing, and these arms only opened the
+ * initial page. Both were green over ZERO fields, so a modal field-size regression would never
+ * have been seen — the third time this file has been caught proving something about a set it
+ * never populated (round 1: one state of many; round 3: one element type of several).
+ *
+ * So the count is now part of the claim: every sweep names how many fields it must find, and a
+ * surface that stops rendering them fails here rather than going quietly green.
+ */
+async function sweep(page: Page, surface: string, atLeast: number) {
+  const all = await visibleFields(page);
+  expect(
+    all.length,
+    `${surface}: this sweep measured ${all.length} fields and was asked for at least ${atLeast}. `
+    + `An empty sweep proves nothing — either the surface stopped rendering the controls this arm `
+    + `exists to check, or the arm never reached the state that holds them.`,
+  ).toBeGreaterThanOrEqual(atLeast);
+
+  const bad = all.filter((f) => f.under).map(({ where, size }) => ({ where, size }));
   expect(
     bad,
     `${surface}: these controls are below ${FLOOR}px, so focusing one zooms mobile Safari and `
@@ -62,7 +89,17 @@ async function sweep(page: Page, surface: string) {
 test('the schedule surface focuses every field without zooming', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('tab-site-schedule').click();
-  await sweep(page, 'Schedule');
+
+  // the fields are in the dialogs, so the dialogs are where the sweep has to be (round 4,
+  // finding 1). Each is swept while OPEN, and the count assertion below is what makes a dialog
+  // that stops opening a failure here instead of a silent pass.
+  await page.getByTestId('add-phase').click();
+  await expect(page.getByTestId('phase-name')).toBeVisible();
+  await sweep(page, 'Schedule — Add phase dialog', 1);
+  await page.keyboard.press('Escape');
+
+  await page.getByTestId('plan-activity').click();
+  await sweep(page, 'Schedule — Plan activity dialog', 2);
 });
 
 test('the decision register, including its one search input, focuses without zooming', async ({ page }) => {
@@ -70,14 +107,16 @@ test('the decision register, including its one search input, focuses without zoo
   await page.getByTestId('tab-more').click();
   await page.getByTestId('more-item-decision-log').click();
   await expect(page.getByText('DECISION REGISTER')).toBeVisible();
-  await sweep(page, 'Decision log');
+  await sweep(page, 'Decision log', 1);
 });
 
 test('the drawings register focuses without zooming', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('tab-more').click();
   await page.getByTestId('more-item-drawings').click();
-  await sweep(page, 'Drawings');
+  // same as Schedule: the register itself carries no field, the Issue drawing dialog does.
+  await page.getByTestId('issue-drawing').click();
+  await sweep(page, 'Drawings — Issue drawing dialog', 1);
 });
 
 test('the team surface focuses without zooming', async ({ page }) => {
@@ -86,8 +125,37 @@ test('the team surface focuses without zooming', async ({ page }) => {
   const team = page.getByTestId('more-item-team');
   if (await team.count()) {
     await team.click();
-    await sweep(page, 'Team');
+    await sweep(page, 'Team', 1);
   }
+});
+
+/**
+ * #584 review round 4, finding 2 — the ENTRY ANIMATION may not shrink a pressed control.
+ *
+ * This arm exists because the fix it guards is invisible to every other arm here: the Daily Log
+ * sweep measures a surface `vpop` does not wrap, so the keyframe could regain its `scale()`
+ * tomorrow and this file would stay green. It measures the FIRST frames deliberately — no wait
+ * for the animation, no frozen motion — because that is the window in which the defect existed:
+ * a row scaled to 0.98 renders its 44×44 edit button at ~43.1×43.1 while the thumb is already
+ * moving toward it.
+ */
+test('a schedule row\'s controls hold the 44px floor from their first frame', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/');
+  await page.getByTestId('tab-site-schedule').click();
+
+  // the first row to render, measured immediately — `vpop` runs for 300ms and we want this
+  // inside that window, so nothing here waits for it to settle.
+  const edit = page.locator('[data-testid^="edit-"]').first();
+  await expect(edit).toBeVisible();
+  const box = await edit.boundingBox();
+  expect(box, 'the schedule must render at least one row control to measure').not.toBeNull();
+  expect(
+    Math.min(box!.width, box!.height),
+    `a schedule row control measures ${box!.width}×${box!.height} during its entry animation. `
+    + `A transform on the ROW scales its controls with it, so the target is under the 44px floor `
+    + `exactly while it is arriving under a thumb — the animation may move the box, never resize it.`,
+  ).toBeGreaterThanOrEqual(44);
 });
 
 test('desktop keeps its authored density — the floor is a MOBILE floor, not a global one', async ({ page }) => {
@@ -192,21 +260,16 @@ test('the daily log offers no action target below the 44px floor', async ({ page
     'input:not([disabled])',
   ].join(', ');
 
-  // #584 review round 3, finding 2 — MEASURE THE STEADY STATE, NEVER THE ENTRY ANIMATION.
-  // Round 2 recorded a "~0.982 ancestor content scale" on Schedule as a persistent layout
-  // constraint and deferred it to F-1c. It was no such thing: `ScheduleRow` carries
-  // `animation: 'vpop .3s'` and the `vpop` keyframe runs `scale(0.98)` to `transform: none`, so a
-  // row measured just after mount reports 43.2px for a box that is 44px a third of a second
-  // later. A size inventory that races an animation invents layout blockers, so every sweep from
-  // here neutralises animation and transition first and measures what the thumb actually meets.
-  const freezeMotion = async (): Promise<void> => {
-    await page.addStyleTag({
-      content: `*, *::before, *::after { animation: none !important; transition: none !important; }`,
-    });
-  };
-
+  // #584 review round 4, finding 2 — MEASURE WHAT THE THUMB MEETS, ANIMATION AND ALL.
+  // Round 3 answered a mis-diagnosed "ancestor content scale" by FREEZING animation before every
+  // sweep. That was the wrong half of the problem. The scale was not a layout constraint, but it
+  // was not harmless either: `vpop` scaled the whole row, so its 44×44 buttons really were
+  // ~43.1×43.1 for the first 300ms — undersized exactly while the row is arriving under a thumb
+  // reaching for it. Freezing animation stopped this test seeing that and changed nothing for the
+  // user. The scale is now gone from the keyframe (`global.css`), and this sweep deliberately does
+  // NOT freeze motion, so any future entry animation that shrinks a control is caught here rather
+  // than hidden. `translateY` moves a box without resizing it, which is why the rise survives.
   const sweepTargets = async (state: string): Promise<void> => {
-    await freezeMotion();
     const small = await page.$$eval(INTERACTIVE, (els) =>
       els
         .filter((el) => (el as HTMLElement).offsetParent !== null)

@@ -179,9 +179,23 @@ Audit every action target against the 44×44 floor in the same pass.
 > Left standing, this entry would have sent F-1c to remove a layout constraint that does not
 > exist. The controls this unit raised to 44 CSS px are at 44 real px.
 >
-> The generator, not just the entry: a size inventory that races an entry animation invents
-> blockers. `mobile-fields.spec.ts` now neutralises animation and transition before every sweep,
-> so what it reports is the steady-state box a thumb actually meets.
+> **Correction to the correction (2026-09-10, PR #584 review round 4, finding 2):** the retraction
+> above was right that there is no ancestor content scale and wrong about what followed. 43.2px was
+> a real measurement of a real thumb target: `vpop` scaled the whole ROW, so its 44×44 buttons were
+> ~43.1×43.1 for the animation's 300ms — undersized exactly while the row is arriving under a thumb
+> already reaching for it. Round 3 answered that by freezing animation in the test, which stopped
+> the inventory seeing it and changed nothing for the user. `scale()` is now gone from the `vpop`
+> keyframe — `translateY` moves a box without resizing it, so the rise and fade stay and the floor
+> holds from the first frame — and the sweep deliberately does NOT freeze motion, so a future entry
+> animation that shrinks a control fails here instead of hiding. This applies to every `vpop`
+> container with controls in it, not only Schedule: the Toast, the Modal and the notification panel
+> were all scaling their own buttons.
+>
+> **And the per-surface sweeps were measuring one dev-only control** (round 4, finding 1). Schedule's
+> and Drawings' own fields live behind dialogs, so those arms measured the TopBar persona `<select>`
+> — present on every screen, dev-only, and enough to make an empty sweep look populated. Each sweep
+> now states how many fields it must find, dev affordances are excluded from the count, and the
+> dialogs that hold the fields are opened.
 >
 > **The SCHEDULE surface is still deferred to F-1c**, on the two blockers that survive — both of
 > them density decisions rather than size constants, and neither an artifact:
