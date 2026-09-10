@@ -14,9 +14,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: none
+work_item: phase-6-task-4d-unit-i-dark-migration
 reviewed_merge: 1fb8f531
-open_pr: none
+open_pr: 582
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-10
@@ -27,8 +27,9 @@ updated: 2026-09-10
 `task_state` is `in_progress`, because the 4d plan merged as #572 and its FIRST
 implementation unit is now underway on `claude/jagpat-pmcvitan-pr-552-6bfsa9`.
 
-`open_pr` and `work_item` are BOTH `none` on this unit's own commit and BOTH
-carry their values on the pointer commit that follows the PR's creation. That is
+`open_pr` is #582 and `work_item` names the unit. Both were `none` on the unit's
+own commit and both take their values here, on the pointer commit that follows
+the PR's creation. That is
 the §D self-naming convention — the PR number does not exist until the PR does —
 and the pairing is not cosmetic: `assessRunnerState` consults `work_item` only
 when the resolved step is not a bare task, so a named `work_item` with no
