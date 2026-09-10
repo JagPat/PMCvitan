@@ -167,7 +167,7 @@ export function DailyLogScreen() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: conn.bg, border: `1px solid ${conn.border}`, borderRadius: 11, padding: '9px 12px', marginBottom: 14 }}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: conn.dot, flex: 'none' }} />
           <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: conn.color }} data-testid="conn-text">{conn.text}</span>
-          <button onClick={toggleOnline} data-testid="toggle-online" style={{ background: 'transparent', border: '1px solid rgba(35,33,28,.2)', borderRadius: 7, padding: '6px 10px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--ink)', cursor: 'pointer' }}>
+          <button onClick={toggleOnline} data-testid="toggle-online" style={{ background: 'transparent', border: '1px solid rgba(35,33,28,.2)', borderRadius: 7, padding: '6px 10px', minHeight: 44, fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--ink)', cursor: 'pointer' }}>
             {conn.toggle}
           </button>
         </div>
@@ -217,7 +217,7 @@ export function DailyLogScreen() {
             </div>
           ))}
         </div>
-        <button onClick={openQr} style={{ width: '100%', marginTop: 10, background: '#fff', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 11, padding: 12, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+        <button onClick={openQr} style={{ width: '100%', marginTop: 10, background: '#fff', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 11, padding: 12, minHeight: 44, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
           <QrCode size={16} /> Worker self check-in (scan QR)
         </button>
 
@@ -259,22 +259,45 @@ export function DailyLogScreen() {
               <div style={{ flex: 1 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                   <div style={{ fontWeight: 600, fontSize: 13.5 }}>{m.name}</div>
-                  {m.matched && (
-                    <button onClick={() => flagMismatch(i)} disabled={actionsLocked} data-testid={`flag-${m.decisionId}`} style={{ background: 'transparent', border: 'none', color: 'var(--red-solid)', fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 600, cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.5 : 1, whiteSpace: 'nowrap', padding: 0, display: 'flex', alignItems: 'center', gap: 3 }}>
-                      <TriangleAlert size={11} /> Flag mismatch
-                    </button>
-                  )}
                 </div>
-                <div style={{ fontSize: 11.5, marginTop: 2, color: m.matched ? 'var(--green-text)' : 'var(--red-solid)', fontWeight: m.matched ? 400 : 600 }}>
+                {/* Wave 0 / F-1b — the match verdict is SAFETY-CRITICAL, not metadata: it is the
+                    sentence that tells the engineer the material in front of them is not the one
+                    that was approved. Off 11.5px onto the 13px floor the brief sets for anything
+                    that changes what a user must DO, and it keeps the weight it already carried
+                    on the mismatch arm. */}
+                <div style={{ fontSize: 13, marginTop: 2, color: m.matched ? 'var(--green-text)' : 'var(--red-solid)', fontWeight: m.matched ? 400 : 600 }}>
                   {m.matched ? `✓ Matches locked decision ${m.decisionId}` : `⚠ MISMATCH — not the approved ${m.decisionId}`}
                 </div>
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)', marginTop: 3 }}>{m.qty} · {m.zone}</div>
+                {/* Wave 0 / F-1b — THE MISMATCH CONTROL, at a real touch target.
+                    It was a borderless 9.5px caption wedged against the material name, about
+                    84 × 12 px of hit area, and it is the control that stops wrong material
+                    reaching the wall. It is now full-width, bordered and 44px tall — the floor
+                    every action target is held to — and it sits BELOW the verdict it acts on
+                    rather than beside the name, so the thumb reaches it without covering the
+                    sentence that prompted it. Same handler, same disabled rule, same test id. */}
+                {m.matched && (
+                  <button
+                    onClick={() => flagMismatch(i)}
+                    disabled={actionsLocked}
+                    data-testid={`flag-${m.decisionId}`}
+                    style={{
+                      width: '100%', minHeight: 44, marginTop: 9, padding: '0 12px',
+                      background: 'transparent', border: '1px solid var(--red-solid)', borderRadius: 10,
+                      color: 'var(--red-solid)', fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 600,
+                      cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.5 : 1,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                    }}
+                  >
+                    <TriangleAlert size={14} /> Flag mismatch
+                  </button>
+                )}
               </div>
             </div>
           ))}
         </div>
         {can('dailyLog.addMaterial', role) && (
-          <button onClick={() => setAddingMaterial(true)} disabled={actionsLocked} data-testid="add-material" style={{ width: '100%', marginTop: 10, background: '#fff', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 11, padding: 12, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.5 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+          <button onClick={() => setAddingMaterial(true)} disabled={actionsLocked} data-testid="add-material" style={{ width: '100%', marginTop: 10, background: '#fff', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 11, padding: 12, minHeight: 44, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.5 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
             <Plus size={16} /> Record material delivery
           </button>
         )}
@@ -287,7 +310,7 @@ export function DailyLogScreen() {
             <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>Stamped with the time and place the photo itself recorded</div>
           </div>
           <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPickPhoto} data-testid="progress-file" style={{ display: 'none' }} />
-          <button onClick={() => fileRef.current?.click()} data-testid="add-progress-photo" style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button onClick={() => fileRef.current?.click()} data-testid="add-progress-photo" style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', minHeight: 44, borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
             <Camera size={14} /> Add
           </button>
         </div>
@@ -336,9 +359,12 @@ export function DailyLogScreen() {
   );
 }
 
+/* Wave 0 / F-1b — the crew steppers meet the 44×44 action-target floor. One constant, ten
+   rendered buttons: they are tapped repeatedly, with a thumb, to set the crew count the day's
+   labour record rests on, and 32px is below the floor every action target is held to. */
 const stepBtn: React.CSSProperties = {
-  width: 32,
-  height: 32,
+  width: 44,
+  height: 44,
   borderRadius: 8,
   border: '1px solid rgba(35,33,28,.18)',
   background: 'var(--panel)',

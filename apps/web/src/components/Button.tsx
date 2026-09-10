@@ -38,6 +38,13 @@ export function Button({ variant = 'ink', fullWidth, style, children, ...rest }:
         fontWeight: 600,
         fontSize: 14,
         padding: '12px 16px',
+        // Wave 0 / F-1b — the 44×44 action-target floor, set at the PRIMITIVE.
+        // A call site that overrides `fontSize` or `padding` for density (LocationPicker's
+        // inline Add/Cancel, for one) was silently dropping the button to 34px tall. Wave 0's
+        // rule is that a screen needing a fix means the primitive is missing an affordance, so
+        // the floor lives here and every Button inherits it. `...style` still follows, so a
+        // caller with a genuine reason can go taller — but not shorter by accident.
+        minHeight: 44,
         borderRadius: 'var(--r-btn)',
         display: 'inline-flex',
         alignItems: 'center',

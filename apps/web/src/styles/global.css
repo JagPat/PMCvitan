@@ -68,6 +68,40 @@ a {
   }
 }
 
+/* The MOBILE FIELD FLOOR (Wave 0 / F-1b).
+   Mobile Safari zooms the viewport when a text-entry control smaller than 16px takes focus,
+   and it does not zoom back out — the user is left panned into a form they must scroll
+   sideways to read, one-handed, on site. 16px is the threshold at which iOS stops doing it;
+   it is not a taste.
+
+   WHY A RULE AND NOT A PRIMITIVE. §6.7 of the UX programme chose a shared field primitive so
+   the property would be "structurally guaranteed and testable at source". That reasoning was
+   written against the brief's count of EIGHT field styles. At F-1b's opening head the real
+   count is 134 text-entry controls across 14 files — 45 of them inside the 162 KB
+   CommercialScreen that Wave 3 has to split before anyone may touch it. A primitive
+   guarantees only the call sites that adopt it, and nothing stops the 135th. This rule
+   guarantees every control that exists and every control anyone adds later, which is the
+   property that was actually wanted. `components/Field.tsx` still carries the shared style
+   so new code has one thing to reach for.
+
+   WHY !important. The screens write their sizes as INLINE style attributes, and only an
+   important author declaration outranks an inline one in the cascade — the same fact the
+   forced-colors rule above already depends on. Verified in Chromium, not assumed: inline
+   13.5px / 12.5px / 14px controls all compute to 16px under this rule at 390px wide.
+
+   MOBILE ONLY. Above 640px the rule is out of range and each surface keeps the density it
+   was designed with; the brief permits scaling down at desktop and forbids it on mobile.
+
+   Checkbox, radio, file, range and the button-like input types are excluded: iOS does not
+   zoom for them, and forcing 16px would change their box for nothing. */
+@media (max-width: 639px) {
+  input:not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']):not([type='color']):not([type='submit']):not([type='button']):not([type='reset']):not([type='image']),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
 /* custom scrollbars (opt-in) */
 .vscroll::-webkit-scrollbar {
   width: 9px;

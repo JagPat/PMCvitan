@@ -93,6 +93,43 @@ Re-measure if any palette value changes. Do not assume a token passes because it
 
 ## Unit F-1b — mobile field and touch corrections
 
+> **Amendment (F-1b's own opening head, `f44e0eba`) — the guarantee is a CSS FLOOR, not the
+> primitive; the §6.7 default is superseded by its own reasoning.**
+>
+> The reproduce-first step was re-run at this head, as this document requires, and two of the
+> five claims no longer reproduce: `:focus-visible` has **3** matches, not 0, and the
+> `outline:none` sites now sit under F-1a's global replacement rule. Both are F-1a's, and are
+> dropped here.
+>
+> Claim 3 does not reproduce either — but in the other direction. The brief counts **8 field
+> constants**. The measured count at this head is **134 text-entry controls across 14 files**
+> (`input` other than checkbox/radio/file/range/button-like, `textarea`, `select`), of which
+> **45 are inside `CommercialScreen.tsx`** — the 162 KB file Wave 3 must split before anyone
+> may touch it.
+>
+> §6.7 chose the shared primitive *because* it makes the ≥16px property "structurally
+> guaranteed and testable at source". At 8 sites that holds. At 134 it does not: a primitive
+> guarantees only the call sites that adopt it, nothing stops the 135th, and the migration
+> alone would exceed the review-unit limit while forcing a Wave-3 prerequisite. The option was
+> chosen for a property, and at the real count it no longer delivers that property.
+>
+> F-1b therefore delivers the property by a **mobile field floor** in `styles/global.css`: an
+> `@media (max-width: 639px)` rule setting `font-size: 16px !important` on every text-entry
+> control. `!important` is what makes it work — the screens write their sizes as INLINE style
+> attributes, and only an important author declaration outranks an inline one, the same cascade
+> fact F-1a's forced-colors rule already depends on. **Verified in Chromium, not assumed:**
+> inline 13.5 / 12.5 / 14px controls all compute to 16px at 390px, and at 1280px the rule is
+> out of range so every surface keeps its authored desktop density (which this unit's brief
+> explicitly permits, and forbids only on mobile).
+>
+> This covers every control that exists and every control anyone adds later — which is what
+> §6.7 wanted. No `components/Field.tsx` is introduced: an unused primitive added to satisfy
+> the letter of a decision whose reasoning no longer holds is not a guarantee, it is ceremony.
+> **The owner may override asynchronously**, exactly as §6.7's own amendment provides.
+>
+> Proof lives in `apps/web/tests/e2e/mobile-fields.spec.ts` — a real browser at 390×844, and a
+> GENERIC sweep rather than a named list, because a named list is what went stale here.
+
 ### Fields to 16px
 Raise all 8 field styles to `fontSize: 16` — via the shared primitive if that route was chosen above. Where desktop density genuinely suffers, scale **down** at `min-width: 640px` — never below 16px on mobile.
 

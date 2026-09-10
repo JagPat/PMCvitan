@@ -103,10 +103,13 @@
 .select option {
   color: #23211c;
 }
+/* Wave 0 / F-1b — the notifications bell meets the 44×44 action-target floor. It sits in the
+   shell, so it is on every screen at every viewport, and at 34px it was the smallest tap target
+   in the product. */
 .bell {
   position: relative;
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   border: 1px solid rgba(237, 231, 218, 0.2);
   background: transparent;
   border-radius: 8px;
