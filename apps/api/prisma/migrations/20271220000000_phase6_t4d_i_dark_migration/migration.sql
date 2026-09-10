@@ -2663,10 +2663,26 @@ CREATE TRIGGER "DomainEventPairingClaim_t4d_no_truncate"
 CREATE OR REPLACE FUNCTION platform_t4d_event_pairing_claimed() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE v_required BOOLEAN;
 BEGIN
+  -- THE EVENT'S OWN CATALOG ROW, by its full key (#582 round 2, finding 4). The previous
+  -- lookup matched on `eventType` alone and took `ORDER BY effectKey LIMIT 1` — an ARBITRARY
+  -- unretired row. That is wrong exactly where this unit is supposed to be careful: through the
+  -- rolling drain two coverage versions of the same key coexist ON PURPOSE and may disagree on
+  -- `pairingRequired`, so the old `false` row could be chosen for a new pairing-required event
+  -- (admitting it unclaimed) or the new `true` row for a previous-release event (refusing a
+  -- write the drain exists to keep working). The comment above this query already argued that a
+  -- roster is what keeps failing — and then the query picked one by position.
+  --
+  -- `(coverageVersion, effectKey)` is the catalog's PRIMARY KEY, so this reads at most one row
+  -- and needs no ordering. `retiredAt` is deliberately NOT filtered: the row the event NAMES is
+  -- the policy that governed it when it was emitted, and retirement is a statement about what
+  -- the current release implements, not about what an already-emitted event owed.
+  --
+  -- A legacy event carrying no intent resolves both keys to NULL, matches nothing, and is
+  -- admitted — which is correct: an event with no catalog entry was never under this policy.
   SELECT c."pairingRequired" INTO v_required
     FROM "ExternalEffectCatalog" c
-   WHERE c."eventType" = NEW."eventType" AND c."retiredAt" IS NULL
-   ORDER BY c."effectKey" LIMIT 1;
+   WHERE c."coverageVersion" = NEW."dispatchIntent" ->> 'coverageVersion'
+     AND c."effectKey"       = NEW."dispatchIntent" ->> 'effectKey';
   IF v_required IS DISTINCT FROM TRUE THEN RETURN NULL; END IF;
 
   IF NOT EXISTS (SELECT 1 FROM "DomainEventPairingClaim" k
