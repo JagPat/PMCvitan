@@ -27,7 +27,7 @@ test.use({ viewport: { width: 390, height: 844 } });
 const FLOOR = 16;
 
 /** every control on the page that iOS would zoom for, with its computed size and a locator hint */
-async function visibleFields(page: Page): Promise<Array<{ where: string; size: number }>> {
+async function visibleFields(page: Page): Promise<Array<{ where: string; size: number; under: boolean }>> {
   return page.$$eval(
     'input, textarea, select',
     (els, floor) => {
