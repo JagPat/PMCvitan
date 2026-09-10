@@ -313,11 +313,20 @@ export class OrgsService {
     );
     // AFTER the guarded standing write commits, success path only. `notify` never throws, so a
     // mail failure cannot report a roster grant that IS in the database as a failed add.
-    await this.invitations?.notify(user, {
-      context: org.name,
-      role: membership.role,
-      actorUserId: callerId,
-    });
+    //
+    // round-1 Codex F3 — ONLY owner/admin is invited. This command deliberately mints no
+    // project membership, and `AuthService.signInAccess` admits an identity only through an
+    // active project membership or an owner/admin org grant; `PasswordCredentialsService`
+    // gates password setup on the same two. So a plain `member` cannot complete setup or get
+    // a session, and telling them to sign in would be an invitation to a door that does not
+    // open. They are invited by the project-team add that grants them access.
+    if (membership.role === 'owner' || membership.role === 'admin') {
+      await this.invitations?.notify(user.id, {
+        context: org.name,
+        role: membership.role,
+        actorUserId: callerId,
+      });
+    }
     return { userId: user.id, name: user.name, email: user.email, phone: user.phone, orgRole: membership.role, credentialState: user.passwordHash ? 'active' : 'not_set' };
   }
 

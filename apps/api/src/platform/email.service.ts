@@ -1,7 +1,7 @@
 import { HttpException, HttpStatus, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
-import { OtpStore } from './otp-store';
+import { OtpStore } from '../auth/otp-store';
 import { isProduction } from '../config';
 
 const OTP_TTL_MS = 10 * 60_000;
@@ -164,9 +164,13 @@ export class EmailService {
       }
       return { live: false };
     }
-    const where = invite.signInUrl
-      ? `Sign in at ${invite.signInUrl} and choose "Email me a code" — a sign-in code will be sent to this address.`
-      : 'Open the Vitan PMC app and choose "Email me a code" — a sign-in code will be sent to this address.';
+    // round-1 Codex F2 — these are the REAL control labels on `TeamAccessScreen`, in the order
+    // an invitee meets them. There is no "email me a code" entry point on that screen; the
+    // password-setup path is the one built for an invited identity ("Use the email your
+    // administrator added to Vitan PMC"), and its eligibility rule is the same one that
+    // decides whether this invite is sent at all.
+    const open = invite.signInUrl ? `Open ${invite.signInUrl}` : 'Open the Vitan PMC app';
+    const where = `${open}, choose "Architect / Client / Contractor? Sign in with email", then "Set up or forgot password", and enter this address — a verification code will be sent to it.`;
     const link = invite.signInUrl
       ? `<p><a href="${escapeHtml(invite.signInUrl)}">${escapeHtml(invite.signInUrl)}</a></p>`
       : '';

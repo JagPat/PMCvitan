@@ -11,7 +11,7 @@ import { AuthService } from './auth/auth.service';
 import { AuthController } from './auth/auth.controller';
 import { HealthController } from './health.controller';
 import { SmsService } from './auth/sms.service';
-import { EmailService } from './auth/email.service';
+import { EmailService } from './platform/email.service';
 import { InvitationsService } from './orgs/invitations.service';
 import { GoogleAuthService } from './auth/google.service';
 import { PasswordCredentialsService } from './auth/password-credentials.service';

@@ -58,7 +58,7 @@ function make(orgRole: string | null = null) {
     { effectiveRoleStanding: vi.fn(async () => 1) } as unknown as OrgsParticipant,
     { notify } as unknown as InvitationsService,
   );
-  return { svc, users, memberships, notify };
+  return { svc, users, memberships, notify, prisma };
 }
 
 const pmc: AuthUser = { sub: 'pmc1', role: 'pmc', projectId: 'p1' };
@@ -153,8 +153,8 @@ describe('MembersService.add — invite notice', () => {
     await svc.add('p1', pmc, { name: 'Vitan Growth OS', role: 'pmc', email: 'growthos@vitan.in' });
 
     expect(notify).toHaveBeenCalledOnce();
-    const [user, context] = notify.mock.calls[0] as unknown as [{ email: string }, { context: string; role: string; actorUserId: string | null }];
-    expect(user.email).toBe('growthos@vitan.in');
+    const [userId, context] = notify.mock.calls[0] as unknown as [string, { context: string; role: string; actorUserId: string | null }];
+    expect(userId).toBe('u1');
     expect(context).toMatchObject({ context: 'the Ambli project', role: 'pmc' });
   });
 
@@ -177,5 +177,18 @@ describe('MembersService.add — invite notice', () => {
       .resolves.toMatchObject({ role: 'engineer', status: 'active' });
     // `notify` is called unconditionally; it is the service that decides to stay silent.
     expect(notify).toHaveBeenCalledOnce();
+  });
+
+  // round-1 Codex F1 — nothing fallible may run between the commit and the return. The
+  // project-name read is hoisted above the transaction, so the only post-commit call is
+  // `notify`, which cannot throw.
+  it('reads the project name before the transaction, so no fallible call follows the commit', async () => {
+    const { svc, prisma, memberships } = make();
+    await svc.add('p1', pmc, { name: 'Ordered', role: 'engineer', email: 'ordered@vitan.in' });
+    const nameReads = prisma.project.findUnique.mock.calls.filter(
+      ([args]: [{ select?: Record<string, unknown> }]) => args?.select?.name,
+    );
+    expect(nameReads).toHaveLength(1);
+    expect(memberships).toHaveLength(1);
   });
 });

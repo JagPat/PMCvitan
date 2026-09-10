@@ -141,6 +141,11 @@ export class MembersService {
     }
 
     const actor = await resolveActor(this.prisma, requester);
+    // round-1 Codex F1 — read BEFORE the transaction. A fallible lookup AFTER commit could
+    // reject `add` when the membership and its `membership.added` event are already durable,
+    // handing the caller a failure for a write it can see — the partial success this notice
+    // exists to avoid. Read here and a transient error fails the add before anything commits.
+    const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { name: true } });
     // (re)activating a member can shrink a frozen distribution's outstanding set —
     // a readiness write (gate finding 1), serialized against start()
     const membership = await this.prisma.$transaction(async (tx) => {
@@ -174,9 +179,10 @@ export class MembersService {
       return m;
     });
     // AFTER commit, success path only: the membership above is durable and the readiness lock
-    // is released, so the SMTP round-trip holds nothing. `notify` never throws.
-    const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { name: true } });
-    await this.invitations?.notify(user, {
+    // is released, so the SMTP round-trip holds nothing. Every project-team member gets an
+    // ACTIVE membership here, so `signInAccess` will admit them once they hold a credential.
+    // `notify` re-reads the credential state itself and never throws.
+    await this.invitations?.notify(user.id, {
       context: project?.name ? `the ${project.name} project` : 'a project',
       role: membership.role,
       // Only a human actor's id is a real `User` row; a system actor's id is a name, and

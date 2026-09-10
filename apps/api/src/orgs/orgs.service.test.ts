@@ -1187,7 +1187,12 @@ describe('OrgsService.addOrgMember — invite notice', () => {
     const orgMemberships: unknown[] = [];
     const prisma = {
       orgMembership: {
-        findUnique: vi.fn(async () => ({ role: 'owner' })),
+        // Only the CALLER is an owner; the target is new to the org, so the upsert takes its
+        // CREATE arm and nothing reduces (otherwise a role-`member` add would read as a
+        // demotion of an existing owner and take the covered-project lock path).
+        findUnique: vi.fn(async ({ where }: { where: { orgId_userId: { userId: string } } }) =>
+          (where.orgId_userId.userId === 'owner1' ? { role: 'owner' } : null),
+        ),
         upsert: vi.fn(async ({ create }: { create: { role: string } }) => { orgMemberships.push(create); return create; }),
       },
       org: { findUnique: vi.fn(async () => ({ id: 'org1', name: 'Vitan Architects', projects: [{ id: 'ambli' }] })) },
@@ -1213,8 +1218,8 @@ describe('OrgsService.addOrgMember — invite notice', () => {
     await svc.addOrgMember('org1', 'owner1', { name: 'Vitan Growth OS', email: 'growthos@vitan.in', role: 'admin' });
 
     expect(notify).toHaveBeenCalledOnce();
-    const [user, context] = notify.mock.calls[0] as unknown as [{ email: string }, { context: string; role: string; actorUserId: string | null }];
-    expect(user.email).toBe('growthos@vitan.in');
+    const [userId, context] = notify.mock.calls[0] as unknown as [string, { context: string; role: string; actorUserId: string | null }];
+    expect(userId).toBe('newuser');
     expect(context).toEqual({ context: 'Vitan Architects', role: 'admin', actorUserId: 'owner1' });
   });
 
@@ -1233,6 +1238,22 @@ describe('OrgsService.addOrgMember — invite notice', () => {
     const { svc, notify } = makeRoster(existing);
     await svc.addOrgMember('org1', 'owner1', { name: 'JP', email: 'jp@vitan.in', role: 'admin' });
     expect(notify).toHaveBeenCalledOnce();
-    expect((notify.mock.calls[0] as unknown as [{ passwordHash: string | null }])[0].passwordHash).toBe('bcrypt-hash');
+    expect((notify.mock.calls[0] as unknown as [string])[0]).toBe('u9');
+  });
+
+  // round-1 Codex F3 — this command mints NO project membership, and `signInAccess` admits an
+  // identity only through an active project membership or an owner/admin org grant. A plain
+  // `member` therefore cannot complete password setup or get a session, so inviting them would
+  // point at a door that does not open.
+  it('does NOT invite a plain org member, who cannot sign in from this grant alone', async () => {
+    const { svc, notify } = makeRoster();
+    await svc.addOrgMember('org1', 'owner1', { name: 'Bookkeeper', email: 'books@vitan.in', role: 'member' });
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it.each([['owner'], ['admin']])('invites an org %s, who reaches every project as PMC', async (role) => {
+    const { svc, notify } = makeRoster();
+    await svc.addOrgMember('org1', 'owner1', { name: 'Reachable', email: 'reach@vitan.in', role });
+    expect(notify).toHaveBeenCalledOnce();
   });
 });

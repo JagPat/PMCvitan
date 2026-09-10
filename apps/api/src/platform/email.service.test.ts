@@ -115,6 +115,19 @@ describe('EmailService.sendMemberInvite', () => {
       expect(sent[0].text).not.toMatch(/\d{6}/);
     });
 
+    // round-1 Codex F2 — the body must name controls that EXIST on TeamAccessScreen. These
+    // strings are the screen's own labels; if a label is renamed there, this fails here.
+    it('walks the invitee through the real TeamAccessScreen controls, in order', async () => {
+      await new EmailService().sendMemberInvite('growthos@vitan.in', invite);
+      const text = sent[0].text;
+      const signIn = text.indexOf('Architect / Client / Contractor? Sign in with email');
+      const setup = text.indexOf('Set up or forgot password');
+      expect(signIn).toBeGreaterThan(-1);
+      expect(setup).toBeGreaterThan(signIn);
+      // The control that does NOT exist on that screen must never be named.
+      expect(text).not.toContain('Email me a code');
+    });
+
     it('omits the link when no web app origin is configured', async () => {
       await new EmailService().sendMemberInvite('growthos@vitan.in', { ...invite, signInUrl: null });
       expect(sent[0].text).toContain('Open the Vitan PMC app');
