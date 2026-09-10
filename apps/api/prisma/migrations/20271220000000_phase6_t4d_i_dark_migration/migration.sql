@@ -2246,18 +2246,41 @@ CREATE TABLE IF NOT EXISTS "ExternalEffectCatalog" (
 );
 
 -- ── the release lease, DARK ──────────────────────────────────────────────────────────────────
--- The drain attestation's evidence: which release is serving, since when, and under whose
--- authority. Written by nothing until 4d-ii; its identity is frozen and its rows are neither
--- deletable nor truncatable, because a lease that can be rewritten attests to nothing.
+-- The drain attestation's TRUSTED AUTONOMOUS EVIDENCE, and the plan states its columns exactly:
+-- `ReleaseLease(instanceId, catalogVersion, release, startedAt, leaseUntil)` (plan line 6707).
+-- Every serving process writes its row at startup with the consumer-catalog version COMPILED
+-- into it — the same durable generation identity `syncConsumerCatalog` already judges — and
+-- renews `leaseUntil` on an interval while it serves. The preflight's question is therefore one
+-- query: "is any lease whose `leaseUntil` is still in the future sitting at a `catalogVersion`
+-- below the minimum?", and a NO is in-database proof that no process of an older generation
+-- that started after this register existed is still serving.
+--
+-- The first version of this table shipped `id`/`acquiredAt`/`acquiredBy`/`heartbeatAt`/
+-- `releasedAt` — an ACQUIRE/RELEASE mutex, which is a different mechanism answering a different
+-- question (Codex round 1, finding 10, and the column set beyond what that finding raised). A
+-- mutex carries no `catalogVersion`, so the preflight cannot ask its question of it at all; and
+-- its `releasedAt` is a stamp any caller may set, retiring a STILL-SERVING release before
+-- 4d-iii's preflight reads it — precisely the hole the register exists to close. An EXPIRY is
+-- not a stamp: a stopped process's lease runs out on its own and stays as history, and no
+-- writer can make a live lease look dead.
 CREATE TABLE IF NOT EXISTS "ReleaseLease" (
-    "id"            TEXT NOT NULL,
-    "release"       TEXT NOT NULL,
-    "acquiredAt"    TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "acquiredBy"    TEXT NOT NULL,
-    "heartbeatAt"   TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "releasedAt"    TIMESTAMP(3),
-    CONSTRAINT "ReleaseLease_pkey" PRIMARY KEY ("id")
+    -- one row per SERVING PROCESS, keyed by the process instance. A restarted container is a
+    -- new instance and takes a new row; the old row expires where it stands.
+    "instanceId"     TEXT NOT NULL,
+    -- the consumer-catalog contract version compiled into that process — an INTEGER, the shape
+    -- `OutboxConsumerCatalog.catalogVersion` carries, because the preflight compares the two.
+    "catalogVersion" INTEGER NOT NULL,
+    "release"        TEXT NOT NULL,
+    "startedAt"      TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- NO DEFAULT: a lease whose expiry its writer did not state is a lease the preflight cannot
+    -- judge, and a default here would silently make every such row either eternally live or
+    -- instantly dead. The renewal moves this column and only this column.
+    "leaseUntil"     TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "ReleaseLease_pkey" PRIMARY KEY ("instanceId")
 );
+-- the preflight's index: every live lease below a version, in one range scan.
+CREATE INDEX IF NOT EXISTS "ReleaseLease_catalogVersion_leaseUntil_idx"
+  ON "ReleaseLease"("catalogVersion", "leaseUntil");
 CREATE INDEX IF NOT EXISTS "ReleaseLease_release_idx" ON "ReleaseLease"("release");
 
 DO $$ BEGIN
@@ -2265,8 +2288,19 @@ DO $$ BEGIN
     CHECK (btrim("release", E' \t\n\x0B\f\r') <> '');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN
-  ALTER TABLE "ReleaseLease" ADD CONSTRAINT "ReleaseLease_acquiredBy_present_check"
-    CHECK (btrim("acquiredBy", E' \t\n\x0B\f\r') <> '');
+  ALTER TABLE "ReleaseLease" ADD CONSTRAINT "ReleaseLease_instanceId_present_check"
+    CHECK (btrim("instanceId", E' \t\n\x0B\f\r') <> '');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  -- a version at or below zero is no generation the catalog ever registered, and admitting one
+  -- would let a process claim to be OLDER than any minimum the preflight can name.
+  ALTER TABLE "ReleaseLease" ADD CONSTRAINT "ReleaseLease_catalogVersion_check"
+    CHECK ("catalogVersion" >= 1);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  -- a lease that expired before it began is not evidence that anything served.
+  ALTER TABLE "ReleaseLease" ADD CONSTRAINT "ReleaseLease_leaseUntil_after_start_check"
+    CHECK ("leaseUntil" >= "startedAt");
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ── the generic pairing register ─────────────────────────────────────────────────────────────
@@ -2550,8 +2584,28 @@ CREATE TRIGGER "DomainEvent_t4d_envelope" BEFORE INSERT OR UPDATE ON "DomainEven
 -- The BINDING is a DEFERRED constraint trigger on INSERT: a notice written before its event, in
 -- the same transaction, must still be judged — and PostgreSQL cannot make a BEFORE trigger
 -- deferred, so one object cannot be both.
+-- The freeze covers FOUR columns and BOTH operations (§A.2, and #556's round 2 finding 5 as the
+-- plan states it: "freezes `eventId`, `kind`, `decisionId` and `projectId` on any row whose
+-- `eventId` is non-NULL and refuses its DELETE"). The first version froze two columns on UPDATE
+-- only (Codex round 1, finding 6): once 4d-ii starts writing kinded, event-bound notices, a
+-- direct DELETE removed the owed notice permanently while its transition and its event stayed
+-- committed, and the INSERT-time correspondence trigger is not re-evaluated on a delete.
+--
+-- SCOPED to rows that carry an event. A legacy or drain-window notice carries none, and the
+-- delivered withdraw's notice retirement deletes exactly those kind-less rows — so the seal must
+-- not touch them. A kinded notice of a withdrawn decision is HIDDEN by the visibility filter,
+-- never erased.
 CREATE OR REPLACE FUNCTION platform_t4d_notification_binding() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF OLD."eventId" IS NOT NULL THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: notice % announces event % and may not be DELETED — its transition and its event stay committed, so erasing the notice leaves an act that was announced to nobody. A notice about a withdrawn decision is HIDDEN by the visibility filter, never removed; the delivered retirement path deletes kind-less legacy rows only.',
+        OLD."id", OLD."eventId";
+    END IF;
+    RETURN OLD;
+  END IF;
+
   IF NEW."eventId" IS DISTINCT FROM OLD."eventId" THEN
     RAISE EXCEPTION
       'phase6 4d-i: notice % is bound to event % and may not be re-pointed at % — a notice announces the act it was written for, and moving it makes it announce another',
@@ -2562,11 +2616,25 @@ BEGIN
       'phase6 4d-i: notice %''s kind (`%`) is evidence of WHAT was announced and may not be rewritten to `%`',
       OLD."id", COALESCE(OLD."kind", '<null>'), COALESCE(NEW."kind", '<null>');
   END IF;
+  -- the two coordinates the binding rests on. Re-pointing either would make the notice render
+  -- another decision's content, or another project's, under this row's visibility.
+  IF OLD."eventId" IS NOT NULL THEN
+    IF NEW."decisionId" IS DISTINCT FROM OLD."decisionId" THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: notice % announces event % about decision % and may not be re-pointed at % — the binding is what makes "this notice is about that act" a database truth',
+        OLD."id", OLD."eventId", COALESCE(OLD."decisionId", '<null>'), COALESCE(NEW."decisionId", '<null>');
+    END IF;
+    IF NEW."projectId" IS DISTINCT FROM OLD."projectId" THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: notice % may not change project (% → %) — the notice, its event and its decision share one tenant, and moving the row across that boundary renders its content under another project''s visibility',
+        OLD."id", OLD."projectId", NEW."projectId";
+    END IF;
+  END IF;
   RETURN NEW;
 END $$;
 
 DROP TRIGGER IF EXISTS "Notification_t4d_binding" ON "Notification";
-CREATE TRIGGER "Notification_t4d_binding" BEFORE UPDATE ON "Notification"
+CREATE TRIGGER "Notification_t4d_binding" BEFORE UPDATE OR DELETE ON "Notification"
   FOR EACH ROW EXECUTE FUNCTION platform_t4d_notification_binding();
 
 CREATE OR REPLACE FUNCTION platform_t4d_notification_binding_bound() RETURNS TRIGGER LANGUAGE plpgsql AS $$
@@ -2693,34 +2761,45 @@ CREATE TRIGGER "ExternalEffectCatalog_t4d_no_truncate" BEFORE TRUNCATE ON "Exter
   FOR EACH STATEMENT EXECUTE FUNCTION platform_t4d_register_no_truncate();
 
 -- ── the release lease's seals ────────────────────────────────────────────────────────────────
--- Identity frozen, no DELETE, no TRUNCATE (§D). A lease whose release or acquirer can be
--- rewritten attests to nothing, and a drain attestation rests entirely on it.
-CREATE OR REPLACE FUNCTION platform_t4d_release_lease_sealed() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+-- Identity FROZEN after insert, the ONLY admitted update a NON-DECREASING `leaseUntil`, DELETE
+-- refused, `ReleaseLease_t4d_no_truncate` in `TRUNCATE_SEALS` (plan lines 401 and 6712; P38's
+-- sentence: "a `ReleaseLease` row's `instanceId`/`release`/`catalogVersion`/`startedAt` UPDATE
+-- refused, a `leaseUntil` decrease refused, DELETE and TRUNCATE refused, the renewal admitted").
+--
+-- The direction matters as much as the freeze. A live lower-version lease that could be
+-- SHORTENED — `leaseUntil` moved back to the past — would read to 4d-iii's preflight exactly
+-- like a stopped process, and the preflight would retire the doors while that process still
+-- served: the same hole as a DELETE, reached through an UPDATE. Only forward, therefore, and
+-- INSERT is unsealed because 4d-ii's startup writer is the one that establishes the identity
+-- this seal then holds still.
+CREATE OR REPLACE FUNCTION platform_t4d_release_lease_frozen() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION
-      'phase6 4d-i: release lease % may not be DELETED — the drain attestation rests on which release was serving and when, and a lease that can be removed attests to nothing',
-      OLD."id";
+      'phase6 4d-i: release lease % (release %, catalog version %) may not be DELETED — the drain attestation rests on which generation was serving and until when; a stopped process''s lease EXPIRES and stays as history, and a lease that can be removed attests to nothing',
+      OLD."instanceId", OLD."release", OLD."catalogVersion";
   END IF;
-  IF NEW."id" IS DISTINCT FROM OLD."id"
+
+  IF NEW."instanceId" IS DISTINCT FROM OLD."instanceId"
      OR NEW."release" IS DISTINCT FROM OLD."release"
-     OR NEW."acquiredAt" IS DISTINCT FROM OLD."acquiredAt"
-     OR NEW."acquiredBy" IS DISTINCT FROM OLD."acquiredBy" THEN
+     OR NEW."catalogVersion" IS DISTINCT FROM OLD."catalogVersion"
+     OR NEW."startedAt" IS DISTINCT FROM OLD."startedAt" THEN
     RAISE EXCEPTION
-      'phase6 4d-i: release lease %''s identity (release %, acquired by % at %) is frozen — only the heartbeat and the release stamp move',
-      OLD."id", OLD."release", OLD."acquiredBy", OLD."acquiredAt";
+      'phase6 4d-i: release lease %''s identity (release %, catalog version %, started %) is FROZEN — only `leaseUntil` moves. Re-versioning a live lease into the minimum is how a preflight is talked into retiring the doors while an older generation still serves; a process at another version writes its OWN row.',
+      OLD."instanceId", OLD."release", OLD."catalogVersion", OLD."startedAt";
   END IF;
-  IF OLD."releasedAt" IS NOT NULL AND NEW."releasedAt" IS DISTINCT FROM OLD."releasedAt" THEN
+
+  IF NEW."leaseUntil" < OLD."leaseUntil" THEN
     RAISE EXCEPTION
-      'phase6 4d-i: release lease % was released at % — that stamp is one-way, and un-releasing it would attest that a drained release was still serving',
-      OLD."id", OLD."releasedAt";
+      'phase6 4d-i: release lease %''s expiry may not move BACKWARD (% → %) — renewal extends a lease, and shortening one makes a still-serving process read as stopped, which is the DELETE this seal refuses reached through an UPDATE',
+      OLD."instanceId", OLD."leaseUntil", NEW."leaseUntil";
   END IF;
   RETURN NEW;
 END $$;
 
-DROP TRIGGER IF EXISTS "ReleaseLease_t4d_sealed" ON "ReleaseLease";
-CREATE TRIGGER "ReleaseLease_t4d_sealed" BEFORE UPDATE OR DELETE ON "ReleaseLease"
-  FOR EACH ROW EXECUTE FUNCTION platform_t4d_release_lease_sealed();
+DROP TRIGGER IF EXISTS "ReleaseLease_t4d_frozen" ON "ReleaseLease";
+CREATE TRIGGER "ReleaseLease_t4d_frozen" BEFORE UPDATE OR DELETE ON "ReleaseLease"
+  FOR EACH ROW EXECUTE FUNCTION platform_t4d_release_lease_frozen();
 
 DROP TRIGGER IF EXISTS "ReleaseLease_t4d_no_truncate" ON "ReleaseLease";
 CREATE TRIGGER "ReleaseLease_t4d_no_truncate" BEFORE TRUNCATE ON "ReleaseLease"

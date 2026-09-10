@@ -107,7 +107,7 @@ const INVENTORY: Record<string, string[]> = {
   ProjectOrg: ['ProjectOrg_t4d_frozen', 'ProjectOrg_t4d_no_truncate', 'ProjectOrg_t4d_writer'],
   ProjectRoleStanding: ['ProjectRoleStanding_t4d_no_truncate', 'ProjectRoleStanding_t4d_writer'],
   ProjectUserStanding: ['ProjectUserStanding_t4d_no_truncate', 'ProjectUserStanding_t4d_writer'],
-  ReleaseLease: ['ReleaseLease_t4d_no_truncate', 'ReleaseLease_t4d_sealed'],
+  ReleaseLease: ['ReleaseLease_t4d_frozen', 'ReleaseLease_t4d_no_truncate'],
   RolloutRetirement: [
     'RolloutRetirement_t4d_frozen',
     'RolloutRetirement_t4d_gate',

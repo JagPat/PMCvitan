@@ -3154,17 +3154,22 @@ model ExternalEffectCatalog {
   @@id([coverageVersion, effectKey])
 }
 
-// Phase 6 task 4d unit 4d-i (§D) — the drain attestation's evidence: which release is serving,
-// since when, and under whose authority. DARK until 4d-ii writes it. Identity frozen, rows
-// undeletable, table untruncatable — a lease that can be rewritten attests to nothing.
+// Phase 6 task 4d unit 4d-i (§D) — the drain attestation's trusted autonomous evidence: which
+// GENERATION is serving and until when. Every serving process writes its row at startup with the
+// consumer-catalog version compiled into it and renews `leaseUntil` while it serves, so the
+// preflight's question is one query: any live lease below the minimum version? DARK until 4d-ii
+// writes it. Identity frozen after insert, the only admitted update a NON-DECREASING
+// `leaseUntil`, rows undeletable, table untruncatable — a lease that can be shortened reads as a
+// stopped process, which is the DELETE reached through an UPDATE.
 model ReleaseLease {
-  id          String    @id
-  release     String
-  acquiredAt  DateTime  @default(now())
-  acquiredBy  String
-  heartbeatAt DateTime  @default(now())
-  releasedAt  DateTime?
+  instanceId     String   @id
+  catalogVersion Int
+  release        String
+  startedAt      DateTime @default(now())
+  /// No default: an expiry its writer did not state is a lease the preflight cannot judge.
+  leaseUntil     DateTime
 
+  @@index([catalogVersion, leaseUntil])
   @@index([release])
 }
 

@@ -4929,6 +4929,32 @@ assert_rejects "4d-i: the retirement marker is written only by the retiring migr
   "INSERT INTO \"RolloutRetirement\"(\"unit\",\"retiredBy\") VALUES ('phase6-4d','an operator')" \
   "written only by the retiring migration"
 
+# ── the RELEASE LEASE, the drain attestation's trusted autonomous evidence (P38, §D) ───────────
+# The register is DARK — 4d-ii writes it — so this proves the SHAPE and the SEAL an upgraded
+# database carries, in exactly P38's four clauses: identity UPDATE refused, a `leaseUntil`
+# decrease refused, DELETE and TRUNCATE refused, THE RENEWAL ADMITTED. The last clause is the one
+# a strictness-only seal passes and a shippable one must not: a freeze that refused its own
+# writer's renewal is a freeze 4d-ii could not start a process against.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P38: a serving process could not register its lease"; FAIL=1; }
+INSERT INTO "ReleaseLease" ("instanceId","catalogVersion","release","startedAt","leaseUntil")
+  VALUES ('UP4D-INST', 2, 'r-2026.09.01', now(), now() + interval '30 minutes');
+SQL
+assert "4d-i P38: the RENEWAL is admitted — leaseUntil moves forward while the process serves" \
+  "UPDATE \"ReleaseLease\" SET \"leaseUntil\" = \"leaseUntil\" + interval '30 minutes' WHERE \"instanceId\"='UP4D-INST'; SELECT (\"leaseUntil\" > now() + interval '45 minutes')::text FROM \"ReleaseLease\" WHERE \"instanceId\"='UP4D-INST';" \
+  "true"
+assert_rejects "4d-i P38: a LIVE lease may not be re-versioned into the minimum" \
+  "UPDATE \"ReleaseLease\" SET \"catalogVersion\" = 1 WHERE \"instanceId\"='UP4D-INST'" \
+  "identity .* is FROZEN"
+assert_rejects "4d-i P38: a live lease may not be SHORTENED into looking expired" \
+  "UPDATE \"ReleaseLease\" SET \"leaseUntil\" = \"startedAt\" WHERE \"instanceId\"='UP4D-INST'" \
+  "may not move BACKWARD"
+assert_rejects "4d-i P38: a lease expires and stays as history — it is never deleted" \
+  "DELETE FROM \"ReleaseLease\" WHERE \"instanceId\"='UP4D-INST'" \
+  "may not be DELETED"
+assert_rejects "4d-i P38: the lease register cannot be truncated away" \
+  "TRUNCATE \"ReleaseLease\"" \
+  "never truncated|truncate"
+
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."
 else

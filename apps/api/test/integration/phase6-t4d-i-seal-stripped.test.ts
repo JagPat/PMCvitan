@@ -190,6 +190,10 @@ INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationI
   SELECT 'ss-ev1','decision.published',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec'
     FROM "ProjectEventStream" s WHERE s."projectId" = 'ss-proj';
 COMMIT;
+-- ONE LIVE LEASE for the drain-attestation arms: a serving process at catalog version 2 whose
+-- lease runs an hour out. The table is DARK, so nothing else in this fixture reads or writes it.
+INSERT INTO "ReleaseLease" ("instanceId","catalogVersion","release","startedAt","leaseUntil")
+  VALUES ('ss-instance', 2, 'ss-release', now(), now() + interval '1 hour');
 -- the receipt is RESERVED on insert and COMPLETES by update, because the delivered ledger
 -- protocol refuses a receipt born terminal ("a command that never ran").
 INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
@@ -407,6 +411,33 @@ const ARMS: Arm[] = [
     refusal: /never reached/,
   },
   {
+    // Codex round 1, finding 10, and the column set beyond it. The register's whole purpose is
+    // that 4d-iii's preflight can ask "is any process of an older generation still serving?" and
+    // trust the answer, so re-versioning a LIVE lease into the minimum is the exact write that
+    // would talk the preflight into retiring the doors under a running old process.
+    seal: 'ReleaseLease_t4d_frozen',
+    what: 'a LIVE lease may not be re-versioned into the minimum',
+    hostile: `UPDATE "ReleaseLease" SET "catalogVersion" = 1 WHERE "instanceId" = 'ss-instance'`,
+    refusal: /identity .* is FROZEN/,
+  },
+  {
+    // the same hole reached through the OTHER door. A lease whose expiry can be pulled back to
+    // its own start reads to the preflight exactly like a stopped process — so the direction is
+    // sealed, not merely the identity. (The `leaseUntil >= startedAt` CHECK is why the hostile
+    // write lands ON the start and not before it: a write the CHECK refuses would be refused in
+    // the STRIPPED run too, and the arm would measure the constraint instead of the seal.)
+    seal: 'ReleaseLease_t4d_frozen',
+    what: 'a live lease may not be SHORTENED into looking expired',
+    hostile: `UPDATE "ReleaseLease" SET "leaseUntil" = "startedAt" WHERE "instanceId" = 'ss-instance'`,
+    refusal: /may not move BACKWARD/,
+  },
+  {
+    seal: 'ReleaseLease_t4d_frozen',
+    what: 'a lease expires and stays as history — it is never deleted',
+    hostile: `DELETE FROM "ReleaseLease" WHERE "instanceId" = 'ss-instance'`,
+    refusal: /may not be DELETED/,
+  },
+  {
     seal: 'Notification_t4d_no_truncate',
     what: 'the notice register is never truncated',
     hostile: `TRUNCATE "Notification"`,
@@ -466,7 +497,6 @@ const COVERED_BY_CLASS: Record<string, string> = {
   DomainEvent_t4d_pairing_claimed: 'DomainEventPairingClaim_t4d_writer',
   Notification_t4d_binding: 'Notification_t4d_no_truncate',
   Notification_t4d_binding_bound: 'Notification_t4d_no_truncate',
-  ReleaseLease_t4d_sealed: 'ExternalEffectCatalog_t4d_sealed',
   // seals whose subject is a 4d-ii/4d-iii SERVICE path — unreachable while the doors stand, so
   // their hostile write cannot be constructed on a 4d-i database at all. They are proven by the
   // integration suite driving the delivered writers, and by 4d-ii's own probes.
