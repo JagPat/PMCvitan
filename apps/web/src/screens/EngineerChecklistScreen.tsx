@@ -235,7 +235,10 @@ export function EngineerChecklistScreen() {
                 )}
                 {it.state === 'fail' && (
                   <div style={{ marginTop: 10, background: '#FBF0EF', border: '1px solid #E7CBC7', borderRadius: 9, padding: '9px 11px' }}>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--red-solid)', letterSpacing: '.1em' }}>FAIL REQUIRES NOTE + PHOTO EVIDENCE</div>
+                    {/* #584 review round 1, finding 3 — the fail-evidence REQUIREMENT is what the engineer must
+                        do before this checklist can be submitted, so it leaves metadata type for F-1b's 13px
+                        floor with real weight. The letter-spacing goes with the mono face. */}
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--red-solid)' }}>Fail requires a note + photo evidence</div>
                     <input
                       value={it.note}
                       onChange={(e) => setNote(i, e.target.value)}
@@ -264,7 +267,9 @@ export function EngineerChecklistScreen() {
             the picker exists to fix: work nobody can see is work nobody can recover. */}
         {failedEvidence.length > 0 && (
           <div style={{ marginTop: 12, background: '#FBF0EF', border: '1px solid #E7CBC7', borderRadius: 12, padding: '11px 13px' }} data-testid="evidence-failed">
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--red-solid)', letterSpacing: '.1em' }}>PHOTOS THE SERVER REFUSED — CHOOSE FOR EACH</div>
+            {/* #584 review round 1, finding 3 — a refused photo is evidence that did not land, and this
+                line is the instruction to deal with each one; 13px with weight, not an eyebrow. */}
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--red-solid)' }}>Photos the server refused — choose for each</div>
             {failedEvidence.map((f) => (
               <div key={f.clientKey} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
                 <span style={{ flex: 1, fontSize: 12.5 }} data-testid={`evidence-failed-${f.clientKey}`}>

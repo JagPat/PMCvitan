@@ -232,7 +232,9 @@ function AckBlock({ drawing }: { drawing: Drawing }) {
       {/* the frozen distribution (Phase 1 Task 3): who this revision was ISSUED to and hasn't confirmed yet */}
       {(rev.recipients ?? []).some((r) => !r.acked) && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: canAck ? 12 : 0 }} data-testid="ack-outstanding">
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.14em', color: 'var(--faint)' }}>ISSUED TO — NOT YET CONFIRMED</div>
+          {/* #584 review round 1, finding 3 — the outstanding ISSUED-TO status is the reason a
+              revision is still chased, so it carries F-1b's 13px floor rather than eyebrow type. */}
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>Issued to — not yet confirmed</div>
           {(rev.recipients ?? []).filter((r) => !r.acked).map((r, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: 'var(--muted)' }}>
               <span style={{ fontWeight: 600 }}>{r.userName}</span>

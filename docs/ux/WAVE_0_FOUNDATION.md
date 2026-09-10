@@ -144,6 +144,30 @@ Audit every action target against the 44×44 floor in the same pass.
 
 **Done when:** all 8 field styles ≥16px on mobile (verified by computed style, or by source if the primitive was introduced); no safety- or evidence-critical text below 13px; every action target ≥44×44; iOS Safari focuses every field without zooming.
 
+> **Amendment (2026-09-10, PR #584 review round 1 — four accepted findings):**
+>
+> 1. **The floor is not a WIDTH.** `max-width: 639px` releases in phone
+>    LANDSCAPE — an iPhone 14 rotated is 844 × 390 CSS px — at exactly the
+>    moment the device is still a phone and Safari still zooms. Worse, the
+>    app's own shell has already switched to `LeftRail` at that width, so the
+>    surface is serving authored desktop density to a phone. The rule gains a
+>    second condition on the SHORT side: `(max-height: 549px) and
+>    (orientation: landscape) and (pointer: coarse)` — the height excludes a
+>    landscape iPad (768px tall, and iPadOS does not zoom), the pointer test
+>    excludes a desktop window dragged short.
+> 2. **The action-target sweep must enter every STATE**, not measure the one
+>    that happens to render. Two undersized controls sat behind states the
+>    first sweep never entered: `Check out` (30px, visible only while checked
+>    IN) and the stale-data `Retry`.
+> 3. **This section's four named labels are the contract**, not examples: the
+>    fail-evidence requirement, the server-refused photo list, the presence
+>    proof and the issued-to status all leave metadata type for the 13px floor
+>    with real weight. The first head raised the material verdict alone.
+> 4. **A desktop-parity assertion must name a value.** `expect(sizes.every((s)
+>    => s > 0))` is true whether the rule is scoped or has escaped to every
+>    width, so it passed in the world it existed to rule out. It now asserts a
+>    known dense control keeps its authored sub-16px size.
+
 ---
 
 ## Unit F-1c — per-surface validation

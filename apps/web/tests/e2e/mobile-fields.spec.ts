@@ -91,13 +91,64 @@ test('the team surface focuses without zooming', async ({ page }) => {
 });
 
 test('desktop keeps its authored density — the floor is a MOBILE floor, not a global one', async ({ page }) => {
+  // #584 review round 1, finding 4 — the first version of this arm asserted only that every
+  // computed size was POSITIVE, which is true whether the rule is correctly scoped or has
+  // escaped to every width. It therefore passed in exactly the world it existed to rule out.
+  // The claim is now made of a control whose authored size is KNOWN and sub-16px: the schedule
+  // surface's dense filter fields. If the mobile rule reaches desktop, this reads 16 and fails.
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto('/');
-  const sizes = await page.$$eval('input, textarea, select', (els) =>
-    els.map((el) => parseFloat(getComputedStyle(el).fontSize)));
-  // nothing is asserted about the values themselves — only that the mobile rule is scoped and
-  // has NOT reached the desktop layout, which the brief explicitly allows to be denser.
-  expect(sizes.every((s) => s > 0)).toBe(true);
+  // the bottom tabs are the MOBILE navigation and are display:none at this width; desktop
+  // navigates through `LeftRail`, which is the whole reason this width has its own density.
+  // The decision register is the surface chosen because it renders a text-entry control at
+  // BOTH widths — the schedule surface renders none at desktop, so it could prove nothing here.
+  await page.getByRole('button', { name: 'Decision Log' }).click();
+  await expect(page.getByText('DECISION REGISTER')).toBeVisible();
+  const sizes = await page.$$eval(
+    "input:not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']):not([type='color']):not([type='submit']):not([type='button']):not([type='reset']):not([type='image']), textarea, select",
+    (els) => els
+      .filter((el) => el instanceof HTMLElement && el.offsetParent !== null)
+      .map((el) => parseFloat(getComputedStyle(el).fontSize)),
+  );
+  expect(sizes.length, 'the decision register must render text-entry controls at desktop').toBeGreaterThan(0);
+  expect(
+    sizes.filter((v) => v < 16).length,
+    `at least one desktop control must keep its authored sub-16px density — sizes: ${JSON.stringify(sizes)}`,
+  ).toBeGreaterThan(0);
+});
+
+/**
+ * #584 review round 1, finding 1 — PHONE LANDSCAPE, where a width-only rule stops applying.
+ *
+ * An iPhone 14 rotated is 844 x 390 CSS px, so `max-width: 639px` alone releases the floor at
+ * exactly the moment the device is still a phone and Safari still zooms. The rule's second
+ * condition tests the SHORT side plus `pointer: coarse`, so this arm needs a touch device and
+ * not merely a wide-and-short viewport — and it takes one through `test.use`, which inherits the
+ * project's own options (`baseURL` among them). `browser.newContext()` inherits none of them.
+ */
+test.describe('phone landscape', () => {
+  test.use({ viewport: { width: 844, height: 390 }, hasTouch: true, isMobile: true });
+
+  test('the field floor still applies, so iOS Safari does not zoom on rotation', async ({ page }) => {
+    await page.goto('/');
+    // At 844px wide the SHELL is already the desktop one — `BottomTabs` is display:none above
+    // 640px — so a phone in landscape navigates through `LeftRail` and receives the authored
+    // desktop density. That is precisely why the hazard is real here and why the floor's second
+    // condition exists: the app has stopped treating this device as a phone, and Safari has not.
+    await page.getByRole('button', { name: 'Decision Log' }).click();
+    await expect(page.getByText('DECISION REGISTER')).toBeVisible();
+    const small = await page.$$eval(
+      "input:not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']):not([type='color']):not([type='submit']):not([type='button']):not([type='reset']):not([type='image']), textarea, select",
+      (els) => els
+        .filter((el) => el instanceof HTMLElement && el.offsetParent !== null)
+        .map((el) => ({ size: parseFloat(getComputedStyle(el).fontSize), html: el.outerHTML.slice(0, 90) }))
+        .filter((f) => f.size < 16),
+    );
+    expect(
+      small,
+      `these controls zoom iOS Safari in phone landscape — ${JSON.stringify(small)}`,
+    ).toEqual([]);
+  });
 });
 
 /**
@@ -120,23 +171,53 @@ test('the daily log offers no action target below the 44px floor', async ({ page
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByText('MATERIAL ON SITE')).toBeVisible();
 
-  const small = await page.$$eval('button:not([disabled])', (els) =>
-    els
-      .filter((el) => (el as HTMLElement).offsetParent !== null)
-      .map((el) => {
-        const r = el.getBoundingClientRect();
-        return {
-          label: (el.textContent || '').trim().slice(0, 40) || el.getAttribute('aria-label') || '(unlabelled)',
-          testid: el.getAttribute('data-testid') || '',
-          within: el.closest('[data-testid]')?.getAttribute('data-testid') || el.parentElement?.tagName || '',
-          html: el.outerHTML.slice(0, 120),
-          w: Math.round(r.width), h: Math.round(r.height),
-        };
-      })
-      .filter((b) => b.w > 0 && b.h > 0 && (b.w < 44 || b.h < 44)));
+  // #584 review round 1, finding 2 — a sweep of what happens to be on screen measures ONE state
+  // and reports on all of them. The daily log renders different controls per state, and two of
+  // them were undersized behind a state this arm never entered: the `Check out` button, which
+  // exists only while checked IN, and the stale-data `Retry`, which exists only while a refresh
+  // is owed. So the sweep is a function now, and it runs in every state the screen can be in.
+  const sweepTargets = async (state: string): Promise<void> => {
+    const small = await page.$$eval('button:not([disabled])', (els) =>
+      els
+        .filter((el) => (el as HTMLElement).offsetParent !== null)
+        .map((el) => {
+          const r = el.getBoundingClientRect();
+          return {
+            label: (el.textContent || '').trim().slice(0, 40) || el.getAttribute('aria-label') || '(unlabelled)',
+            testid: el.getAttribute('data-testid') || '',
+            within: el.closest('[data-testid]')?.getAttribute('data-testid') || el.parentElement?.tagName || '',
+            html: el.outerHTML.slice(0, 120),
+            w: Math.round(r.width), h: Math.round(r.height),
+          };
+        })
+        .filter((b) => b.w > 0 && b.h > 0 && (b.w < 44 || b.h < 44)));
 
-  expect(
-    small,
-    `these action targets are under 44×44 and are pressed with a thumb, on site — ${JSON.stringify(small)}`,
-  ).toEqual([]);
+    expect(
+      small,
+      `these action targets are under 44×44 and are pressed with a thumb, on site (state: ${state}) — ${JSON.stringify(small)}`,
+    ).toEqual([]);
+  };
+
+  await sweepTargets('as opened');
+
+  // CHECKED IN — `Check out` replaces `Check in at site`, and it is the only way off site.
+  const checkIn = page.getByTestId('check-in');
+  if (await checkIn.count()) {
+    await checkIn.click();
+    await expect(page.getByTestId('check-out')).toBeVisible();
+    await sweepTargets('checked in');
+  }
+
+  // OFFLINE — the connectivity toggle drives the state the stale-data banner belongs to, and
+  // the actions the screen locks while it is showing.
+  const toggle = page.getByTestId('toggle-online');
+  if (await toggle.count()) {
+    await toggle.click();
+    await sweepTargets('offline');
+    await toggle.click();
+  }
+
+  // STALE — the `Retry` button lives in the last-known-log banner and nowhere else.
+  const retry = page.getByTestId('daily-log-retry');
+  if (await retry.count()) await sweepTargets('stale snapshot');
 });

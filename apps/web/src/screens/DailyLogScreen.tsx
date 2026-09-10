@@ -145,7 +145,7 @@ export function DailyLogScreen() {
             <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--amber-text)' }}>
               Showing the last-known log — the latest couldn't load. Actions are paused until it refreshes.
             </span>
-            <button onClick={requestFreshSnapshot} data-testid="daily-log-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '6px 10px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <button onClick={requestFreshSnapshot} data-testid="daily-log-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '6px 10px', minHeight: 44, fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <RefreshCw size={12} /> Retry
             </button>
           </div>
@@ -184,7 +184,7 @@ export function DailyLogScreen() {
               <div style={{ fontWeight: 600, fontSize: 14 }}>Checked in · {dailyLog.checkinTime}</div>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'rgba(237,231,218,.55)', marginTop: 2 }}>{siteLabel} · within 60 m · GPS + selfie</div>
             </div>
-            <button onClick={checkOut} style={{ background: 'transparent', border: '1px solid rgba(237,231,218,.3)', color: 'var(--sidebar-text)', padding: '8px 11px', borderRadius: 8, fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, cursor: 'pointer' }}>
+            <button onClick={checkOut} data-testid="check-out" style={{ background: 'transparent', border: '1px solid rgba(237,231,218,.3)', color: 'var(--sidebar-text)', padding: '8px 11px', minHeight: 44, borderRadius: 8, fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, cursor: 'pointer' }}>
               Check out
             </button>
           </div>
@@ -193,7 +193,9 @@ export function DailyLogScreen() {
             <button onClick={checkIn} data-testid="check-in" style={{ width: '100%', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 15, padding: 18, fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 15, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9 }}>
               <Crosshair size={18} /> Check in at site
             </button>
-            <div style={{ textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)', marginTop: 7 }}>Uses this phone's GPS + a selfie as proof of presence</div>
+            {/* the PRESENCE PROOF is not an eyebrow: it tells the worker what this button is about to
+                take from their phone, so F-1b's 13px floor applies (#584 review round 1, finding 3). */}
+            <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--muted)', marginTop: 7 }}>Uses this phone's GPS + a selfie as proof of presence</div>
           </>
         )}
 
