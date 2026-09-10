@@ -3,7 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ForbiddenException, UnauthorizedException, type ExecutionContext } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { SmsService } from './sms.service';
-import { EmailService } from './email.service';
+import { EmailService } from '../platform/email.service';
 import { GoogleAuthService } from './google.service';
 import { JwtGuard, type AuthUser } from '../common/auth';
 import type { PrismaService } from '../prisma.service';

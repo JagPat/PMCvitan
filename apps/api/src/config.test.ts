@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { resolveJwtSecret, resolveCorsOrigins } from './config';
+import { resolveJwtSecret, resolveCorsOrigins, resolveWebAppUrl } from './config';
 
 // Snapshot the env we mutate so one test can't leak NODE_ENV into another file.
 const ORIG = {
@@ -7,6 +7,7 @@ const ORIG = {
   JWT_SECRET: process.env.JWT_SECRET,
   CORS_ORIGINS: process.env.CORS_ORIGINS,
   DATABASE_URL: process.env.DATABASE_URL,
+  WEB_APP_URL: process.env.WEB_APP_URL,
 };
 
 function restore(key: keyof typeof ORIG): void {
@@ -20,6 +21,7 @@ describe('config — production safety (fail-soft)', () => {
     restore('JWT_SECRET');
     restore('CORS_ORIGINS');
     restore('DATABASE_URL');
+    restore('WEB_APP_URL');
   });
 
   describe('resolveJwtSecret', () => {
@@ -64,6 +66,26 @@ describe('config — production safety (fail-soft)', () => {
       process.env.NODE_ENV = 'test';
       delete process.env.CORS_ORIGINS;
       expect(resolveCorsOrigins()).toBe(true);
+    });
+  });
+
+  describe('resolveWebAppUrl', () => {
+    it('prefers an explicit WEB_APP_URL and drops trailing slashes', () => {
+      process.env.WEB_APP_URL = 'https://app.vitan.in/';
+      process.env.CORS_ORIGINS = 'https://pms.vitan.in';
+      expect(resolveWebAppUrl()).toBe('https://app.vitan.in');
+    });
+
+    it('falls back to the first CORS origin — the browser origin allowed to call this API', () => {
+      delete process.env.WEB_APP_URL;
+      process.env.CORS_ORIGINS = 'https://pms.vitan.in, https://admin.vitan.in';
+      expect(resolveWebAppUrl()).toBe('https://pms.vitan.in');
+    });
+
+    it('returns null when neither is set, so the invite omits the link rather than guessing', () => {
+      delete process.env.WEB_APP_URL;
+      delete process.env.CORS_ORIGINS;
+      expect(resolveWebAppUrl()).toBeNull();
     });
   });
 });

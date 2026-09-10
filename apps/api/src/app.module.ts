@@ -11,7 +11,8 @@ import { AuthService } from './auth/auth.service';
 import { AuthController } from './auth/auth.controller';
 import { HealthController } from './health.controller';
 import { SmsService } from './auth/sms.service';
-import { EmailService } from './auth/email.service';
+import { EmailService } from './platform/email.service';
+import { InvitationsService } from './orgs/invitations.service';
 import { GoogleAuthService } from './auth/google.service';
 import { PasswordCredentialsService } from './auth/password-credentials.service';
 import { SnapshotService } from './snapshot/snapshot.service';
@@ -222,6 +223,8 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     PushService,
     OrgsService,
     MembersService,
+    // Phase 7c-auth — the post-commit invite notice both roster writes hang off.
+    InvitationsService,
     CompaniesService,
     NodesService,
     OutboxRelay,

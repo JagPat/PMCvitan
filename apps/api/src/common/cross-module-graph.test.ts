@@ -288,6 +288,7 @@ const NON_PILLAR_WRITERS: Record<string, string> = {
   'auth/password-credentials.service.ts': 'identity security — durable challenge CAS, password establishment and security audit; no project signal',
   'orgs/members.service.ts': 'project roster — writes orgs-owned User/Membership; no cross-domain write, no signal',
   'orgs/companies.service.ts': 'project roster — writes orgs-owned ProjectCompany; no cross-domain write, no signal',
+  'orgs/invitations.service.ts': 'identity notice (Phase 7c-auth) — the post-commit invite mail for a roster write, writing only the SHARED SecurityAuditEvent trail; reads orgs-owned User fields, no domain table, no signal',
   'push/push.service.ts': 'infra — writes the SHARED PushSubscription; no domain table, no signal',
   'platform/capabilities.service.ts': 'platform infra (Phase 3 Task 1) — pilot capability activation writes the SHARED ProjectCapability record; no module domain table, no signal',
   'platform/outbox/relay.service.ts': 'platform infra (Task 6) — the outbox relay writes the SHARED OutboxDelivery/ProcessedEvent/ProjectionCursor delivery-state tables and dispatches to consumers; no module domain table',
@@ -301,7 +302,7 @@ const NON_PILLAR_WRITERS: Record<string, string> = {
 // Services that perform NO Prisma write (readers, token/OTP/blob helpers, the
 // Prisma client itself). Each must stay write-free.
 const NO_WRITE_SERVICES: Record<string, string> = {
-  'auth/email.service.ts': 'email-OTP delivery (OTP store, no DB write)',
+  'platform/email.service.ts': 'platform infra — the SHARED mail sender (email-OTP, password-credential and member-invite delivery). Lives in the kernel, not in `auth`, so a domain module reaching it is a platform edge rather than a sideways peer import. OTP store only, no DB write.',
   'auth/google.service.ts': 'Google ID-token verification (no DB write)',
   'auth/sms.service.ts': 'phone-OTP delivery (no DB write)',
   'common/project-access.service.ts': 'read-only project access checks',

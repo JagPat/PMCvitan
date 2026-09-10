@@ -10,6 +10,7 @@ import { NodeInitParticipant } from '../nodes/node-init.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import type { PrismaService } from '../prisma.service';
+import type { InvitationsService } from './invitations.service';
 import type { SignedUrlService } from '../media/signed-url.service';
 import { Prisma } from '@prisma/client';
 import { registerConsumer, unregisterConsumer } from '../platform/outbox/registry';
@@ -448,7 +449,7 @@ describe('OrgsService.addOrgMember', () => {
           return row;
         }),
       },
-      org: { findUnique: vi.fn(async () => ({ id: 'org1', projects })) },
+      org: { findUnique: vi.fn(async () => ({ id: 'org1', name: 'Vitan Architects', projects })) },
       user: {
         findUnique: vi.fn(async () => existingUser),
         create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -462,7 +463,16 @@ describe('OrgsService.addOrgMember', () => {
       // transaction even when nothing reduces; the mock passes itself through as the tx client
       $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
     };
-    return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants(prisma)), prisma, created, orgMemberships };
+    // Phase 7c-auth — the post-commit invite notice, captured so a test can assert that an
+    // org roster grant actually tells the new admin (the defect: it was granted in silence).
+    const notify = vi.fn(async () => undefined);
+    const svc = new OrgsService(
+      prisma as unknown as PrismaService,
+      { today: () => '2026-07-03' },
+      ...initParticipants(prisma),
+      { notify } as unknown as InvitationsService,
+    );
+    return { svc, prisma, created, orgMemberships, notify };
   }
 
   it('lets an org owner add a new roster member with NO phantom project grant', async () => {
@@ -1166,5 +1176,84 @@ describe('OrgsService — named presets (Templates Slice 3)', () => {
     const { svc } = makeTemplates({ orgRole: 'member', templates: [{ id: 't1', orgId: 'org1', archivedAt: null, items: [], name: 'X', description: '', version: 1 }] });
     await expect(svc.listTemplates('org1', 'u2')).resolves.toHaveLength(1);
     await expect(svc.createTemplate('org1', 'u2', { name: 'X', description: '', items: [{ moduleId: 'm', count: 1 }] } as never)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+// Phase 7c-auth — the reported defect, on the org roster path: granting someone admin
+// provisioned their identity and sent nothing, so a new admin (e.g. growthos@vitan.in) had no
+// way to learn that an account existed for them.
+describe('OrgsService.addOrgMember — invite notice', () => {
+  function makeRoster(existingUser: unknown = null) {
+    const orgMemberships: unknown[] = [];
+    const prisma = {
+      orgMembership: {
+        // Only the CALLER is an owner; the target is new to the org, so the upsert takes its
+        // CREATE arm and nothing reduces (otherwise a role-`member` add would read as a
+        // demotion of an existing owner and take the covered-project lock path).
+        findUnique: vi.fn(async ({ where }: { where: { orgId_userId: { userId: string } } }) =>
+          (where.orgId_userId.userId === 'owner1' ? { role: 'owner' } : null),
+        ),
+        upsert: vi.fn(async ({ create }: { create: { role: string } }) => { orgMemberships.push(create); return create; }),
+      },
+      org: { findUnique: vi.fn(async () => ({ id: 'org1', name: 'Vitan Architects', projects: [{ id: 'ambli' }] })) },
+      user: {
+        findUnique: vi.fn(async () => existingUser),
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'newuser', passwordHash: null, emailVerifiedAt: null, ...data })),
+      },
+      membership: { create: vi.fn() },
+      $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
+    };
+    const notify = vi.fn(async () => undefined);
+    const svc = new OrgsService(
+      prisma as unknown as PrismaService,
+      { today: () => '2026-07-03' },
+      ...initParticipants(prisma),
+      { notify } as unknown as InvitationsService,
+    );
+    return { svc, notify, orgMemberships };
+  }
+
+  it('tells a newly provisioned admin how to sign in, naming the org and their role', async () => {
+    const { svc, notify } = makeRoster();
+    await svc.addOrgMember('org1', 'owner1', { name: 'Vitan Growth OS', email: 'growthos@vitan.in', role: 'admin' });
+
+    expect(notify).toHaveBeenCalledOnce();
+    const [userId, context] = notify.mock.calls[0] as unknown as [string, { context: string; role: string; actorUserId: string | null }];
+    expect(userId).toBe('newuser');
+    expect(context).toEqual({ context: 'Vitan Architects', role: 'admin', actorUserId: 'owner1' });
+  });
+
+  it('notifies only after the guarded standing write committed', async () => {
+    const { svc, notify, orgMemberships } = makeRoster();
+    notify.mockImplementation(async () => {
+      expect(orgMemberships).toHaveLength(1);
+      return undefined;
+    });
+    await svc.addOrgMember('org1', 'owner1', { name: 'Vitan Growth OS', email: 'growthos@vitan.in', role: 'admin' });
+    expect(notify).toHaveBeenCalledOnce();
+  });
+
+  it('hands over an existing identity too — the service decides whether an invite is still owed', async () => {
+    const existing = { id: 'u9', name: 'JP', email: 'jp@vitan.in', phone: null, projectId: 'ambli', role: 'pmc', passwordHash: 'bcrypt-hash', emailVerifiedAt: null };
+    const { svc, notify } = makeRoster(existing);
+    await svc.addOrgMember('org1', 'owner1', { name: 'JP', email: 'jp@vitan.in', role: 'admin' });
+    expect(notify).toHaveBeenCalledOnce();
+    expect((notify.mock.calls[0] as unknown as [string])[0]).toBe('u9');
+  });
+
+  // round-1 Codex F3 — this command mints NO project membership, and `signInAccess` admits an
+  // identity only through an active project membership or an owner/admin org grant. A plain
+  // `member` therefore cannot complete password setup or get a session, so inviting them would
+  // point at a door that does not open.
+  it('does NOT invite a plain org member, who cannot sign in from this grant alone', async () => {
+    const { svc, notify } = makeRoster();
+    await svc.addOrgMember('org1', 'owner1', { name: 'Bookkeeper', email: 'books@vitan.in', role: 'member' });
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it.each([['owner'], ['admin']])('invites an org %s, who reaches every project as PMC', async (role) => {
+    const { svc, notify } = makeRoster();
+    await svc.addOrgMember('org1', 'owner1', { name: 'Reachable', email: 'reach@vitan.in', role });
+    expect(notify).toHaveBeenCalledOnce();
   });
 });
