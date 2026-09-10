@@ -163,6 +163,31 @@ Audit every action target against the 44×44 floor in the same pass.
 >    fail-evidence requirement, the server-refused photo list, the presence
 >    proof and the issued-to status all leave metadata type for the 13px floor
 >    with real weight. The first head raised the material verdict alone.
+> **Amendment (2026-09-10, PR #584 review round 2):** the action-target audit is EVERY
+> reachable surface, not the one this section names. Round 1 swept the Daily Log only, which let
+> the unit claim a generic audit while three shipped controls stayed under the floor — the worker
+> and mistri sign-out buttons (34×34, 36×36) and the Places photo thumbnails (34×34). All three
+> are raw `button` elements the `Button` primitive's minimum never reaches; all three are fixed.
+>
+> **The SCHEDULE surface is deferred to F-1c, with its blockers measured.** It cannot be brought
+> to the floor by this unit, and the reason is not a size constant:
+> - an ancestor applies a **~0.982 content scale**, so a control whose CSS box is exactly 44px
+>   renders and is pressed at **43.2px**. Every control on that surface is under the floor by
+>   construction — the edit, override and remove-phase icon buttons this unit raised to 44 CSS px
+>   included. Removing the scale is a Schedule layout decision.
+> - the place breadcrumbs (`sched-place-*-crumb-*`) and drawing chips (`sched-dwg-*`) are inline
+>   TEXT links at **18–21px tall**. A 44px box for each is a decision about the density of a
+>   schedule row, not padding.
+> - the DECISION REGISTER's group-by control is a **26px** segmented chip row
+>   (`groupby-location`, `groupby-room`, `groupby-element`, `groupby-status`).
+>
+> F-1c owns all of it, which is where this document already puts "the sweep and the evidence,
+> across all surfaces". F-1b carries the corrections its own section names and the Daily Log's
+> multi-state sweep; it does NOT carry a cross-surface sweep scoped to whichever surfaces pass,
+> because that is the same narrowing round 2 caught, stated more confidently. The e2e sweep names this exclusion in the spec so it is visible rather than
+> absent, and the stale-snapshot state is likewise asserted UNREACHABLE under this suite's
+> `snapshot` read mode instead of skipped by a silent conditional.
+>
 > 4. **A desktop-parity assertion must name a value.** `expect(sizes.every((s)
 >    => s > 0))` is true whether the rule is scoped or has escaped to every
 >    width, so it passed in the world it existed to rule out. It now asserts a

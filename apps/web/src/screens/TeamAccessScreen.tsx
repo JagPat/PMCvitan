@@ -558,7 +558,7 @@ export function TeamAccessScreen() {
             <div style={{ fontSize: 13, color: 'rgba(237,231,218,.6)' }}>{t.hi},</div>
             <div style={{ fontWeight: 700, fontSize: 19 }}>{worker?.name ?? ''}</div>
           </div>
-          <button onClick={accReset} aria-label="Sign out" style={{ background: 'rgba(237,231,218,.14)', border: 'none', color: 'var(--sidebar-text)', width: 34, height: 34, borderRadius: 9, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <button onClick={accReset} aria-label="Sign out" style={{ background: 'rgba(237,231,218,.14)', border: 'none', color: 'var(--sidebar-text)', width: 44, height: 44, borderRadius: 9, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Power size={16} />
           </button>
         </div>
@@ -609,7 +609,7 @@ export function TeamAccessScreen() {
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.16em', color: 'var(--amber-text)' }}>{trade ? tradeLabel(trade) : ''} · IN-CHARGE</div>
           <div style={{ fontSize: 22, fontWeight: 700, marginTop: 3 }}>Mistri Iqbal</div>
         </div>
-        <button onClick={accReset} aria-label="Sign out" style={{ background: 'var(--panel)', border: '1px solid rgba(35,33,28,.15)', width: 36, height: 36, borderRadius: 9, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <button onClick={accReset} aria-label="Sign out" style={{ background: 'var(--panel)', border: '1px solid rgba(35,33,28,.15)', width: 44, height: 44, borderRadius: 9, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <Power size={15} />
         </button>
       </div>

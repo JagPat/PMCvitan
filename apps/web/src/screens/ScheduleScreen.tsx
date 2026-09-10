@@ -102,7 +102,7 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)' }}>{a.id}</span>
             <ActivityChip status={a.status} />
             {onEdit && (
-              <button onClick={() => onEdit(a)} aria-label={`Edit ${a.name}`} data-testid={`edit-${a.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 2 }}>
+              <button onClick={() => onEdit(a)} aria-label={`Edit ${a.name}`} data-testid={`edit-${a.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 2, flex: 'none', width: 44, height: 44 }}>
                 <Pencil size={12} />
               </button>
             )}
@@ -156,7 +156,7 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
               below states the blocked reason and the next valid step. Revoking an override
               already recorded stays available on its chip. */}
           {onOverride && a.status !== 'blocked' && (
-            <button onClick={() => onOverride(a)} title="Record a gate override (expires automatically)" aria-label={`Override a gate on ${a.name}`} data-testid={`override-${a.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 2, marginTop: 1 }}>
+            <button onClick={() => onOverride(a)} title="Record a gate override (expires automatically)" aria-label={`Override a gate on ${a.name}`} data-testid={`override-${a.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 2, marginTop: 1, flex: 'none', width: 44, height: 44 }}>
               <ShieldCheck size={13} />
             </button>
           )}
@@ -263,7 +263,7 @@ function PhaseGroup({ phase, activities, todayPct, onEdit, onDeletePhase, onOver
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{ fontWeight: 700, fontSize: 17, letterSpacing: '-.01em' }}>{phase.name}</div>
             {onDeletePhase && (
-              <button onClick={() => onDeletePhase(phase.id)} aria-label={`Remove phase ${phase.name}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 2 }}>
+              <button onClick={() => onDeletePhase(phase.id)} aria-label={`Remove phase ${phase.name}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 2, flex: 'none', width: 44, height: 44 }}>
                 <X size={14} />
               </button>
             )}

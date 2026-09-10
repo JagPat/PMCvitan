@@ -198,7 +198,7 @@ test('the daily log offers no action target below the 44px floor', async ({ page
     ).toEqual([]);
   };
 
-  await sweepTargets('as opened');
+  await sweepTargets('daily log — as opened');
 
   // CHECKED IN — `Check out` replaces `Check in at site`, and it is the only way off site.
   const checkIn = page.getByTestId('check-in');
@@ -217,7 +217,43 @@ test('the daily log offers no action target below the 44px floor', async ({ page
     await toggle.click();
   }
 
-  // STALE — the `Retry` button lives in the last-known-log banner and nowhere else.
-  const retry = page.getByTestId('daily-log-retry');
-  if (await retry.count()) await sweepTargets('stale snapshot');
+  // STALE — and this is a STATEMENT, not a skip (#584 review round 2, finding 2). The first
+  // version of this arm wrote `if (await retry.count()) await sweepTargets(...)`, which reads
+  // like coverage and is not: `dailyLogLoad` only reaches `error` on a FAILED MODULE READ, and
+  // that read exists only under `VITE_DAILYLOG_READ=moduleQuery`, which this harness does not
+  // run — the default is `snapshot`, and `toggleOnline` sets `online` and nothing else. So the
+  // banner never appears here and the branch was always false.
+  //
+  // Asserting its ABSENCE is the honest shape: it records why the state is unreachable in this
+  // suite, and it FAILS the moment that stops being true — at which point this sweep must gain
+  // the state rather than silently resume skipping it. (`daily-log-retry` itself carries the
+  // 44px floor; the sweep is what cannot reach it here.)
+  await expect(
+    page.getByTestId('daily-log-retry'),
+    'the stale-snapshot banner is unreachable under the snapshot read mode this suite runs; if it '
+    + 'renders, this sweep owes that state an arm',
+  ).toHaveCount(0);
 });
+
+/**
+ * #584 review round 2, finding 1 — THE CROSS-SURFACE AUDIT IS F-1c's, and this is the record of
+ * why, with the measurement that settles it.
+ *
+ * The finding is accepted: sweeping only the Daily Log let this unit claim a generic audit while
+ * three shipped controls stayed under the floor. Those three are FIXED on this head — the worker
+ * and mistri sign-out buttons and the Places photo thumbnails — as are the Schedule surface's
+ * three icon buttons, which the sweep found on the way.
+ *
+ * What a full sweep then measured is that the remaining violations are not size constants:
+ *   · SCHEDULE applies a ~0.982 ancestor content scale, so a control whose CSS box is exactly
+ *     44px is pressed at 43.2 — every control there is under the floor by construction — and its
+ *     place breadcrumbs and drawing chips are inline TEXT links 18–21px tall.
+ *   · the DECISION REGISTER's group-by chips are a 26px segmented control.
+ * Each is a layout decision about a dense surface, not padding, and `WAVE_0_FOUNDATION.md` puts
+ * "the sweep and the evidence, across all surfaces" in F-1c by name.
+ *
+ * So this file does NOT carry a cross-surface sweep. A sweep scoped to the surfaces that happen
+ * to pass is the same narrowing round 2 caught, stated more confidently; the honest artifact is
+ * the fixes above plus the measured inventory recorded in the brief for F-1c. The Daily Log's
+ * multi-state sweep stays, because that surface IS this unit's named subject.
+ */
