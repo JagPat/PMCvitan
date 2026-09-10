@@ -288,6 +288,7 @@ const NON_PILLAR_WRITERS: Record<string, string> = {
   'auth/password-credentials.service.ts': 'identity security — durable challenge CAS, password establishment and security audit; no project signal',
   'orgs/members.service.ts': 'project roster — writes orgs-owned User/Membership; no cross-domain write, no signal',
   'orgs/companies.service.ts': 'project roster — writes orgs-owned ProjectCompany; no cross-domain write, no signal',
+  'orgs/invitations.service.ts': 'identity notice (Phase 7c-auth) — the post-commit invite mail for a roster write, writing only the SHARED SecurityAuditEvent trail; reads orgs-owned User fields, no domain table, no signal',
   'push/push.service.ts': 'infra — writes the SHARED PushSubscription; no domain table, no signal',
   'platform/capabilities.service.ts': 'platform infra (Phase 3 Task 1) — pilot capability activation writes the SHARED ProjectCapability record; no module domain table, no signal',
   'platform/outbox/relay.service.ts': 'platform infra (Task 6) — the outbox relay writes the SHARED OutboxDelivery/ProcessedEvent/ProjectionCursor delivery-state tables and dispatches to consumers; no module domain table',

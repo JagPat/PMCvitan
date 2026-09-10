@@ -8,6 +8,7 @@ import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import { DecisionsParticipant } from '../decisions/decisions.participant';
 import { OrgsParticipant } from './orgs.participant';
+import { InvitationsService } from './invitations.service';
 
 export interface MemberDto {
   userId: string;
@@ -56,6 +57,9 @@ export class MembersService {
     // participant channels.
     private readonly decisionHolders: DecisionsParticipant,
     private readonly standing: OrgsParticipant,
+    // Phase 7c-auth — the post-commit invite notice. Optional so the many unit suites that
+    // construct this service directly keep working; a deployment always has it from DI.
+    private readonly invitations?: InvitationsService,
   ) {}
 
   /**
@@ -168,6 +172,16 @@ export class MembersService {
       await this.refuseHolderOrphan(tx, projectId, atRisk);
       await emitEvent(tx, { projectId, actor, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role }, effectKey: 'membership.added', dispatch: {} });
       return m;
+    });
+    // AFTER commit, success path only: the membership above is durable and the readiness lock
+    // is released, so the SMTP round-trip holds nothing. `notify` never throws.
+    const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { name: true } });
+    await this.invitations?.notify(user, {
+      context: project?.name ? `the ${project.name} project` : 'a project',
+      role: membership.role,
+      // Only a human actor's id is a real `User` row; a system actor's id is a name, and
+      // `SecurityAuditEvent.actorUserId` is an FK.
+      actorUserId: actor.actorKind === 'human' ? actor.actorId : null,
     });
     return { userId: user.id, membershipId: membership.id, name: user.name, email: user.email, phone: user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status, credentialState: user.passwordHash ? 'active' : 'not_set' };
   }

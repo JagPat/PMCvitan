@@ -16,6 +16,7 @@ import { ActivitiesQueryService } from '../activities/activities.query';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { DecisionsParticipant } from '../decisions/decisions.participant';
 import { OrgsParticipant } from './orgs.participant';
+import { InvitationsService } from './invitations.service';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import type { AuthUser, Role } from '../common/auth';
@@ -167,6 +168,9 @@ export class OrgsService {
     // effective-PMC standing consult the decisions-owned open-holder answer per covered project.
     private readonly decisionHolders: DecisionsParticipant,
     private readonly orgsParticipant: OrgsParticipant,
+    // Phase 7c-auth — the post-commit invite notice. Optional so the unit suites that
+    // construct this service directly keep working; a deployment always has it from DI.
+    private readonly invitations?: InvitationsService,
   ) {}
 
   /**
@@ -307,6 +311,13 @@ export class OrgsService {
         create: { orgId, userId: user.id, role: input.role },
       }),
     );
+    // AFTER the guarded standing write commits, success path only. `notify` never throws, so a
+    // mail failure cannot report a roster grant that IS in the database as a failed add.
+    await this.invitations?.notify(user, {
+      context: org.name,
+      role: membership.role,
+      actorUserId: callerId,
+    });
     return { userId: user.id, name: user.name, email: user.email, phone: user.phone, orgRole: membership.role, credentialState: user.passwordHash ? 'active' : 'not_set' };
   }
 

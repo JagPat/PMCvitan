@@ -10,6 +10,7 @@ import { NodeInitParticipant } from '../nodes/node-init.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import type { PrismaService } from '../prisma.service';
+import type { InvitationsService } from './invitations.service';
 import type { SignedUrlService } from '../media/signed-url.service';
 import { Prisma } from '@prisma/client';
 import { registerConsumer, unregisterConsumer } from '../platform/outbox/registry';
@@ -448,7 +449,7 @@ describe('OrgsService.addOrgMember', () => {
           return row;
         }),
       },
-      org: { findUnique: vi.fn(async () => ({ id: 'org1', projects })) },
+      org: { findUnique: vi.fn(async () => ({ id: 'org1', name: 'Vitan Architects', projects })) },
       user: {
         findUnique: vi.fn(async () => existingUser),
         create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -462,7 +463,16 @@ describe('OrgsService.addOrgMember', () => {
       // transaction even when nothing reduces; the mock passes itself through as the tx client
       $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
     };
-    return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants(prisma)), prisma, created, orgMemberships };
+    // Phase 7c-auth — the post-commit invite notice, captured so a test can assert that an
+    // org roster grant actually tells the new admin (the defect: it was granted in silence).
+    const notify = vi.fn(async () => undefined);
+    const svc = new OrgsService(
+      prisma as unknown as PrismaService,
+      { today: () => '2026-07-03' },
+      ...initParticipants(prisma),
+      { notify } as unknown as InvitationsService,
+    );
+    return { svc, prisma, created, orgMemberships, notify };
   }
 
   it('lets an org owner add a new roster member with NO phantom project grant', async () => {
@@ -1166,5 +1176,63 @@ describe('OrgsService — named presets (Templates Slice 3)', () => {
     const { svc } = makeTemplates({ orgRole: 'member', templates: [{ id: 't1', orgId: 'org1', archivedAt: null, items: [], name: 'X', description: '', version: 1 }] });
     await expect(svc.listTemplates('org1', 'u2')).resolves.toHaveLength(1);
     await expect(svc.createTemplate('org1', 'u2', { name: 'X', description: '', items: [{ moduleId: 'm', count: 1 }] } as never)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+// Phase 7c-auth — the reported defect, on the org roster path: granting someone admin
+// provisioned their identity and sent nothing, so a new admin (e.g. growthos@vitan.in) had no
+// way to learn that an account existed for them.
+describe('OrgsService.addOrgMember — invite notice', () => {
+  function makeRoster(existingUser: unknown = null) {
+    const orgMemberships: unknown[] = [];
+    const prisma = {
+      orgMembership: {
+        findUnique: vi.fn(async () => ({ role: 'owner' })),
+        upsert: vi.fn(async ({ create }: { create: { role: string } }) => { orgMemberships.push(create); return create; }),
+      },
+      org: { findUnique: vi.fn(async () => ({ id: 'org1', name: 'Vitan Architects', projects: [{ id: 'ambli' }] })) },
+      user: {
+        findUnique: vi.fn(async () => existingUser),
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'newuser', passwordHash: null, emailVerifiedAt: null, ...data })),
+      },
+      membership: { create: vi.fn() },
+      $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
+    };
+    const notify = vi.fn(async () => undefined);
+    const svc = new OrgsService(
+      prisma as unknown as PrismaService,
+      { today: () => '2026-07-03' },
+      ...initParticipants(prisma),
+      { notify } as unknown as InvitationsService,
+    );
+    return { svc, notify, orgMemberships };
+  }
+
+  it('tells a newly provisioned admin how to sign in, naming the org and their role', async () => {
+    const { svc, notify } = makeRoster();
+    await svc.addOrgMember('org1', 'owner1', { name: 'Vitan Growth OS', email: 'growthos@vitan.in', role: 'admin' });
+
+    expect(notify).toHaveBeenCalledOnce();
+    const [user, context] = notify.mock.calls[0] as unknown as [{ email: string }, { context: string; role: string; actorUserId: string | null }];
+    expect(user.email).toBe('growthos@vitan.in');
+    expect(context).toEqual({ context: 'Vitan Architects', role: 'admin', actorUserId: 'owner1' });
+  });
+
+  it('notifies only after the guarded standing write committed', async () => {
+    const { svc, notify, orgMemberships } = makeRoster();
+    notify.mockImplementation(async () => {
+      expect(orgMemberships).toHaveLength(1);
+      return undefined;
+    });
+    await svc.addOrgMember('org1', 'owner1', { name: 'Vitan Growth OS', email: 'growthos@vitan.in', role: 'admin' });
+    expect(notify).toHaveBeenCalledOnce();
+  });
+
+  it('hands over an existing identity too — the service decides whether an invite is still owed', async () => {
+    const existing = { id: 'u9', name: 'JP', email: 'jp@vitan.in', phone: null, projectId: 'ambli', role: 'pmc', passwordHash: 'bcrypt-hash', emailVerifiedAt: null };
+    const { svc, notify } = makeRoster(existing);
+    await svc.addOrgMember('org1', 'owner1', { name: 'JP', email: 'jp@vitan.in', role: 'admin' });
+    expect(notify).toHaveBeenCalledOnce();
+    expect((notify.mock.calls[0] as unknown as [{ passwordHash: string | null }])[0].passwordHash).toBe('bcrypt-hash');
   });
 });

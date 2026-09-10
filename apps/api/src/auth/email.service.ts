@@ -6,12 +6,39 @@ import { isProduction } from '../config';
 
 const OTP_TTL_MS = 10 * 60_000;
 
+/** The invite is the only mail here that interpolates caller-supplied text (a member's name,
+ *  the project/org they were added to) into HTML, so it escapes: an operator who types a name
+ *  containing markup must not get it rendered as markup in someone's inbox. */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export interface EmailOtpResult {
   live: boolean;
   devCode?: string;
 }
 
 export interface PasswordCredentialEmailResult {
+  live: boolean;
+}
+
+/** What an invited member is told: where they were added and where to sign in. Carries NO
+ *  credential material — the invitee asks for their own code from the sign-in screen. */
+export interface MemberInvite {
+  name: string;
+  /** What they were added to, already phrased for a sentence ("the Ambli project"). */
+  context: string;
+  role: string;
+  /** Public origin of the web app, or null when none is configured (the link is then omitted). */
+  signInUrl: string | null;
+}
+
+export interface MemberInviteEmailResult {
   live: boolean;
 }
 
@@ -114,6 +141,42 @@ export class EmailService {
       this.log.error(`Password credential email failed: ${(error as Error).constructor.name}`);
       throw new ServiceUnavailableException('Could not send the password setup email.');
     }
+    return { live: true };
+  }
+
+  /**
+   * Tell a newly invited identity that an account exists for them and how to reach it.
+   *
+   * Unlike the two code senders this does NOT fail closed on a missing provider: it hangs off
+   * an admin write that has already committed, so an unconfigured mailer returns `live: false`
+   * rather than the 503 that would report a durable member-add as failed. A delivery error
+   * still propagates — reporting it is this sender's job, deciding what it means is the
+   * caller's ({@link InvitationsService} swallows it and records nothing).
+   *
+   * No code or token is embedded — the invitee requests their own from the sign-in screen, so
+   * a forwarded or archived invite grants nothing.
+   */
+  async sendMemberInvite(email: string, invite: MemberInvite): Promise<MemberInviteEmailResult> {
+    const to = email.trim().toLowerCase();
+    if (!this.configured) {
+      if (isProduction()) {
+        this.log.warn(`Member invite for ${to} not sent — no mail provider is configured.`);
+      }
+      return { live: false };
+    }
+    const where = invite.signInUrl
+      ? `Sign in at ${invite.signInUrl} and choose "Email me a code" — a sign-in code will be sent to this address.`
+      : 'Open the Vitan PMC app and choose "Email me a code" — a sign-in code will be sent to this address.';
+    const link = invite.signInUrl
+      ? `<p><a href="${escapeHtml(invite.signInUrl)}">${escapeHtml(invite.signInUrl)}</a></p>`
+      : '';
+    await this.tx().sendMail({
+      from: this.from,
+      to,
+      subject: 'You have been added to Vitan PMC',
+      text: `Hi ${invite.name},\n\nYou have been added to ${invite.context} on Vitan PMC as ${invite.role}.\n\n${where}\n\nIf you were not expecting this, ignore this email.`,
+      html: `<p>Hi ${escapeHtml(invite.name)},</p><p>You have been added to <b>${escapeHtml(invite.context)}</b> on Vitan PMC as <b>${escapeHtml(invite.role)}</b>.</p><p>${escapeHtml(where)}</p>${link}<p>If you were not expecting this, ignore this email.</p>`,
+    });
     return { live: true };
   }
 }

@@ -61,3 +61,18 @@ export function resolveCorsOrigins(): string[] | boolean {
   }
   return true; // reflect any origin
 }
+
+/**
+ * The public origin of the web app, used to tell an invited member where to sign in.
+ * Prefer an explicit `WEB_APP_URL`. Falling back to the first `CORS_ORIGINS` entry costs
+ * nothing to configure and is right by construction: the browser origin that is allowed to
+ * call this API *is* the app the invite should point at. With neither set we return null and
+ * the invite simply omits the link — a wrong link is worse than no link.
+ */
+export function resolveWebAppUrl(): string | null {
+  const explicit = process.env.WEB_APP_URL?.trim();
+  if (explicit) return explicit.replace(/\/+$/, '');
+  const origins = resolveCorsOrigins();
+  if (Array.isArray(origins) && origins[0]) return origins[0].replace(/\/+$/, '');
+  return null;
+}
