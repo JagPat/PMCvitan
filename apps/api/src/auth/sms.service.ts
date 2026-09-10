@@ -1,5 +1,5 @@
 import { HttpException, HttpStatus, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
-import { OtpStore } from './otp-store';
+import { OtpStore } from '../platform/otp-store';
 import { isProduction } from '../config';
 
 const OTP_TTL_MS = 5 * 60_000;

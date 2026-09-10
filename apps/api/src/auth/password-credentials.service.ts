@@ -10,7 +10,7 @@ import type {
 } from '../contracts';
 import { PrismaService } from '../prisma.service';
 import { lockUserCredential } from '../common/credential-lock';
-import { EmailService } from './email.service';
+import { EmailService } from '../platform/email.service';
 
 const PURPOSE = 'password_setup_or_reset';
 const LIFETIME_MS = 10 * 60_000;
