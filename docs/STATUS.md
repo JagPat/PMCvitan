@@ -46,6 +46,21 @@ no reader: those are 4d-ii's. Five reservation doors keep the architect chain
 unwritable until 4d-iii retires them, so a still-serving previous-release
 instance cannot produce a value the release cannot read.
 
+**Review round 1 is folded, all seventeen findings, on this same PR.** Thirteen were the SAME
+defect made thirteen times — a seal whose prose above it stated the contract's rule correctly
+over SQL that judged something narrower — so the round is not a list of oversights but a missing
+oracle. Four were genuinely new: the seed's reset never cleared `MembershipTransition`, the
+provenance binding read only `status`/`resultRef` (a hole in the contract's own rule, so §A.3
+obligation 6 is amended with the code), the flip pairing admitted TWO finalizers, and the
+migration's abort advertised a repair for `User.role` that no operation can perform.
+
+The oracle is `test/integration/phase6-t4d-i-seal-contract.test.ts`: every trigger function the
+unit installs carries a register entry naming its rule, the plan location that states it, the
+operations and timing every installing trigger must fire on, and the tokens its body must
+contain. Run against the head Codex reviewed (`cb9b1e23`) it is RED on twelve `must` tokens, one
+per seal finding, plus the operations arm and the coverage arm — while the seal-stripped harness
+was green throughout. Both harnesses are kept; they answer different questions.
+
 `reviewed_merge` stays `1fb8f531` — the last REVIEWED merge — and `next_task`
 stays `phase-6-task-4d`, which names the task stop the remaining units hang off.
 
