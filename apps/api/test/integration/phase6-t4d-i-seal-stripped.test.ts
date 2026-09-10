@@ -114,9 +114,14 @@ function buildBase(): void {
   expect(created.ok, created.output).toBe(true);
   for (const dir of readdirSync(MIGRATIONS_DIR).filter((d) => d !== UNIT_DIR && !d.endsWith('.toml')).sort()) {
     const file = join(MIGRATIONS_DIR, dir, 'migration.sql');
-    // `ALTER TYPE … ADD VALUE` cannot run inside a transaction block; everything else is applied
-    // the way Prisma applies it (one transaction, stop on error), because some migrations take a
-    // LOCK TABLE and LOCK outside a transaction is an error.
+    // Everything is applied the way Prisma applies it (one transaction, stop on error), because
+    // some migrations take a LOCK TABLE and LOCK outside a transaction is an error. A migration
+    // carrying `ALTER TYPE … ADD VALUE` is applied WITHOUT the outer `--single-transaction`: not
+    // because PostgreSQL forbids the ADD in a transaction (it has permitted it since 12 — the
+    // restriction is on CONSUMING the value before commit, and #582's round 3, finding 1
+    // measured this unit's own file applying inside one BEGIN/COMMIT on 16), but because these
+    // older files were written for the psql-per-statement shape and this builder only needs to
+    // reach the pre-unit state, not to re-decide their boundaries.
     const body = readFileSync(file, 'utf8');
     const tx = /ALTER TYPE .* ADD VALUE/i.test(body) ? [] : ['--single-transaction'];
     const r = psql(BASE_DB, [...tx, '-f', file]);
@@ -465,6 +470,18 @@ const ARMS: Arm[] = [
     refusal: /never reached/,
   },
   {
+    seal: 'ChangeRequest_t4d_evidence_frozen',
+    what: 'a written command receipt cannot be CLEARED off a change request',
+    // #582 round 3, finding 4 — the delivered `ChangeRequest_t4b2_seal` freezes `decisionId`
+    // alone, and it is a MERGED migration, so every evidence column this unit adds arrived with
+    // no freeze. The NULLing is the shape P33 names: the row keeps saying a request was raised
+    // and stops saying which command raised it, and 4d-iii then seals that.
+    hostile: `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","sourceCommandId")
+              VALUES ('ss-cr-ev','ss-dec','x',0,0,'withdrawn','ss-cmd');
+              UPDATE "ChangeRequest" SET "sourceCommandId" = NULL WHERE "id" = 'ss-cr-ev'`,
+    refusal: /may not be replaced or cleared/,
+  },
+  {
     // Codex round 1, finding 10, and the column set beyond it. The register's whole purpose is
     // that 4d-iii's preflight can ask "is any process of an older generation still serving?" and
     // trust the answer, so re-versioning a LIVE lease into the minimum is the exact write that
@@ -635,4 +652,81 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       + 'seal that is itself stripped',
     ).toEqual([]);
   }, 120_000);
+
+  /**
+   * #582's review round 3, finding 1 — THE UNIT IS ATOMIC, and this is the two-sided proof.
+   *
+   * The whole claim of a dark unit is that there is no observable window: the reservation doors,
+   * the enum values, the registers, the seals and the audits either are all there or none of them
+   * is, and §P6T4D's recovery tells an operator exactly that. Prisma documents that it does NOT
+   * wrap migrations in a transaction, so nothing was enforcing it — a raise in the late audits
+   * would have left doors and trigger replacements committed under a migration reported FAILED.
+   *
+   * Measuring only "it applies" would not be a proof of atomicity: it would pass with no BEGIN at
+   * all. So the arm injects a raise at the very END of the file — after every object has been
+   * created — and requires the database to carry NONE of them afterwards.
+   */
+  it('the migration is ONE transaction: a raise at the end leaves no object behind', () => {
+    psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+    const created = psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]);
+    expect(created.ok, created.output).toBe(true);
+
+    const sql = readFileSync(MIGRATION, 'utf8');
+    expect(sql.includes('\nBEGIN;\n'), 'the migration must open its own transaction').toBe(true);
+    expect(sql.trimEnd().endsWith('COMMIT;'), 'the migration must close its own transaction').toBe(true);
+
+    // the raise goes BEFORE the COMMIT, so everything above it has already run
+    const poisoned = sql.replace(
+      /COMMIT;\s*$/,
+      "DO $probe$ BEGIN RAISE EXCEPTION 'seal-stripped harness: atomicity probe'; END $probe$;\nCOMMIT;\n",
+    );
+    const file = join(tmp, 'atomicity.sql');
+    writeFileSync(file, poisoned);
+    const applied = psql(RUN_DB, ['-f', file]);
+    expect(applied.ok, 'the poisoned apply must FAIL — otherwise the probe measured nothing').toBe(false);
+    expect(applied.output).toMatch(/atomicity probe/);
+
+    // and nothing it created survives
+    const left = psql(RUN_DB, ['-t', '-A', '-c',
+      `SELECT (SELECT count(*) FROM pg_trigger WHERE tgname LIKE '%\\_t4d\\_%' AND NOT tgisinternal)
+            + (SELECT count(*) FROM pg_class WHERE relname IN ('RolloutRetirement','ExternalEffectCatalog','ReleaseLease','MembershipTransition','DomainEventPairingClaim'))
+            + (SELECT count(*) FROM pg_proc WHERE proname LIKE 'phase6\\_t4d\\_%')`]);
+    expect(left.ok, left.output).toBe(true);
+    expect(
+      left.output.trim(),
+      'the failed apply left objects behind — the unit is NOT atomic, and §P6T4D\'s recovery would '
+      + 'be telling an operator something untrue',
+    ).toBe('0');
+  }, 180_000);
+
+  /**
+   * #582's review round 3, finding 2 — an account whose identity cannot be projected ABORTS the
+   * apply rather than being silently dropped from the register every 4d fact resolves through.
+   */
+  it('a blank-named legacy account aborts the apply with a named repair, rather than vanishing', () => {
+    psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+    const created = psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]);
+    expect(created.ok, created.output).toBe(true);
+
+    const seeded = psql(RUN_DB, ['-c', `
+      INSERT INTO "Org" ("id","name","slug") VALUES ('bn-org','BN Org','bn-org');
+      INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+        VALUES ('bn-proj','bn-org','BN Site','BN','','Finishing','BN-01','01 Jan 2026','31 Dec 2026',0,0,0);
+      INSERT INTO "User" ("id","projectId","role","name","phone") VALUES ('bn-user','bn-proj','pmc','   ','+910000000009');
+    `]);
+    expect(seeded.ok, seeded.output).toBe(true);
+
+    const applied = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(applied.ok, 'the apply must REFUSE while an account cannot be projected').toBe(false);
+    expect(applied.output).toMatch(/cannot be projected into "UserIdentity"/);
+    expect(applied.output, 'the abort must name the account so the operator can repair it')
+      .toMatch(/bn-user/);
+
+    // the same database applies cleanly once the account has a real name — the repair the
+    // message names is the repair that works.
+    const repaired = psql(RUN_DB, ['-c', `UPDATE "User" SET "name" = 'BN User' WHERE "id" = 'bn-user'`]);
+    expect(repaired.ok, repaired.output).toBe(true);
+    const again = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(again.ok, `after the named repair the apply must succeed:\n${again.output}`).toBe(true);
+  }, 180_000);
 });

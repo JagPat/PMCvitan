@@ -33,7 +33,28 @@
 -- of a MATURE database replays this file after 4d-iii retired the doors, and an unconditional
 -- body would re-create a reservation and abort on rows that are legitimately there.
 --
+-- ATOMICITY IS THIS FILE'S OWN, and the BEGIN below is why (#582's review round 3, finding 1).
+-- The unit's whole claim is that it deploys DARK and leaves no observable window: the reservation
+-- doors, the enum values, the registers, the seals and the audits either are all there or none of
+-- them is. Nothing was enforcing that. Prisma DOCUMENTS the opposite — migrations are not
+-- automatically wrapped in a transaction — so under a runner that autocommits, a failure in the
+-- late audits would leave doors and trigger replacements committed while the migration is reported
+-- FAILED, and §P6T4D's recovery would be telling an operator that everything rolled back when it
+-- had not. `20271120000000_phase6_t4c_iii_enablement` records exactly this reasoning and adds its
+-- own wrapper; this file is the third in the repository to do so.
+--
+-- The first version of this file argued the opposite, IN CONTRADICTION WITH ITS OWN PARAGRAPH
+-- ABOVE: the catalog-gate comment claimed "this file is not wrapped in one transaction (Part 2's
+-- `ALTER TYPE` statements cannot be)", while the paragraph above already states the real rule —
+-- a value added by `ALTER TYPE … ADD VALUE` is unusable until commit, which is a restriction on
+-- CONSUMING it, not on adding it inside a transaction. PostgreSQL has permitted the ADD since 12.
+-- Measured rather than argued: the whole file applies inside one BEGIN/COMMIT on PostgreSQL 16,
+-- and the probe below asserts both directions — it applies wrapped, and a raise anywhere inside
+-- it leaves NO object behind.
+--
 -- Recovery for a failed apply: docs/RUNBOOK.md §P6T4D.
+
+BEGIN;
 
 -- ════════════════════════════════════════════════════════════════════════════════════════════
 -- PART 0 — THE RETIREMENT MARKER
@@ -941,7 +962,7 @@ CREATE TRIGGER "Membership_t4d_role_standing"
 -- `SET LOCAL` scopes the gate to this transaction, so nothing outside the migration can write a
 -- register directly even in the same session.
 DO $$
-DECLARE v_backfilled BIGINT;
+DECLARE v_backfilled BIGINT; v_blank_names BIGINT; v_blank_sample TEXT;
 BEGIN
   PERFORM set_config('vitan.phase6_4d_standing_backfill', 'on', true);
 
@@ -959,11 +980,30 @@ BEGIN
                       WHERE r."projectId" = p."id" AND r."role" = 'architect')
   ON CONFLICT ("projectId", "role") DO NOTHING;
 
-  -- every account's display name
+  -- every account's display name. AND THE REGISTER IS COMPLETE OR THE MIGRATION ABORTS
+  -- (#582's review round 3, finding 2). The whitespace filter existed because `UserIdentity`
+  -- carries a non-blank CHECK, and it silently DROPPED any account whose `User.name` is
+  -- whitespace-only — `User.name` has no such constraint today, and `ensure-accounts.ts` casts
+  -- `ACCOUNTS_JSON` without validating names. The migration then reported success with that
+  -- account missing from the register, and the damage lands much later and somewhere else: from
+  -- 4d-ii, `phase6_t4d_actor_bound` resolves the frozen name through this register, so that
+  -- user's otherwise-authorized forward, countersign or membership command is refused for a
+  -- reason no message names. A register whose completeness the seals depend on is not a
+  -- best-effort projection, so the unprojectable rows are DIAGNOSED and the apply refuses.
+  SELECT count(*), string_agg(u."id", ', ' ORDER BY u."id")
+    INTO v_blank_names, v_blank_sample
+    FROM "User" u
+   WHERE btrim(COALESCE(u."name", ''), E' \t\n\x0B\f\r') = ''
+     AND NOT EXISTS (SELECT 1 FROM "UserIdentity" i WHERE i."userId" = u."id");
+  IF v_blank_names > 0 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i ABORT: % account(s) carry a blank or whitespace-only "User"."name" and cannot be projected into "UserIdentity", whose displayName is non-blank by CHECK. Every 4d fact resolves its frozen actor name through that register, so committing without these rows would refuse those users'' commands from 4d-ii with no message naming the cause. Give each account a real display name and re-run: UPDATE "User" SET "name" = ''<real name>'' WHERE "id" = ''<id>''. Ids: %',
+      v_blank_names, v_blank_sample;
+  END IF;
+
   INSERT INTO "UserIdentity" ("userId", "displayName")
   SELECT u."id", u."name" FROM "User" u
-   WHERE btrim(u."name", E' \t\n\x0B\f\r') <> ''
-     AND NOT EXISTS (SELECT 1 FROM "UserIdentity" i WHERE i."userId" = u."id")
+   WHERE NOT EXISTS (SELECT 1 FROM "UserIdentity" i WHERE i."userId" = u."id")
   ON CONFLICT ("userId") DO NOTHING;
 
   -- team-management authority, per org membership in an authoritative role
@@ -1999,6 +2039,67 @@ DROP TRIGGER IF EXISTS "ChangeRequest_t4d_no_truncate" ON "ChangeRequest";
 CREATE TRIGGER "ChangeRequest_t4d_no_truncate" BEFORE TRUNCATE ON "ChangeRequest"
   FOR EACH STATEMENT EXECUTE FUNCTION phase6_t4d_fact_no_truncate();
 
+-- ── the EVIDENCE FREEZE on the columns this unit introduces ──────────────────────────────────
+-- §A.3 obligation 1 puts `ChangeRequest` in the fact class: "every evidence AND discriminator
+-- column immutable (`origin`, kinds, designations, `outcome`, the frozen `<act>ByRole` /
+-- `<act>ByName` pair included)", and P33 names the columns — `decisionId`, `origin`,
+-- `revisionId`, `projectId`, `sourceCommandId` and the frozen role/name pair — with the
+-- re-point, the re-label, the NULLing and the replacing UPDATE each refused.
+--
+-- NOTHING WAS ENFORCING THAT (#582's review round 3, finding 4). The delivered
+-- `ChangeRequest_t4b2_seal` freezes `decisionId` and nothing else, and it is a MERGED migration
+-- that stays byte-for-byte unchanged — so the eight evidence columns this unit adds arrived with
+-- no freeze at all. Until 4d-iii trusts and permanently seals the row, a direct UPDATE could
+-- re-point `sourceCommandId` at another receipt, NULL `resolvedByCommandId`, re-label `origin`
+-- from `standard` to `countersign_rejection`, or rewrite the frozen actor pair — changing which
+-- command and which person the record says opened or closed the request, and the later stages
+-- would then seal the forgery.
+--
+-- TWO CLASSES, because the columns are written at two different moments:
+--
+--   · FROZEN OUTRIGHT — `projectId`, `origin`, `revisionId`. These are the row's identity and
+--     its discriminator, decided at INSERT. `revisionId` is CHECK-tied to `origin`, so admitting
+--     a later write to either would let the pair be re-formed after the fact.
+--   · ONE-WAY — `sourceCommandId` and the requester pair, `resolvedByCommandId` and the
+--     resolver pair. NULL -> value is admitted because that is how they are legitimately
+--     written: the drain leaves `sourceCommandId` NULL (4d-iii requires it), and the CLOSURE is
+--     what writes the resolver set when the request leaves `open`. Once written they are
+--     evidence, so value -> anything else, value -> NULL included, is refused.
+--
+-- `decisionId` is deliberately NOT repeated here: the delivered seal already refuses it by name,
+-- and two triggers raising different messages about one write helps nobody.
+CREATE OR REPLACE FUNCTION phase6_t4d_change_request_evidence_frozen() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_col TEXT;
+BEGIN
+  IF NEW."projectId" IS DISTINCT FROM OLD."projectId" THEN v_col := 'projectId';
+  ELSIF NEW."origin" IS DISTINCT FROM OLD."origin" THEN v_col := 'origin';
+  ELSIF NEW."revisionId" IS DISTINCT FROM OLD."revisionId" THEN v_col := 'revisionId';
+  END IF;
+  IF v_col IS NOT NULL THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: change request % is evidence — its % is decided when the request is opened and may not be rewritten. Re-labelling a request''s origin or re-pointing its disposed revision changes what the record says happened.',
+      OLD."id", v_col;
+  END IF;
+
+  IF OLD."sourceCommandId" IS NOT NULL AND NEW."sourceCommandId" IS DISTINCT FROM OLD."sourceCommandId" THEN v_col := 'sourceCommandId';
+  ELSIF OLD."requestedByRole" IS NOT NULL AND NEW."requestedByRole" IS DISTINCT FROM OLD."requestedByRole" THEN v_col := 'requestedByRole';
+  ELSIF OLD."requestedByName" IS NOT NULL AND NEW."requestedByName" IS DISTINCT FROM OLD."requestedByName" THEN v_col := 'requestedByName';
+  ELSIF OLD."resolvedByCommandId" IS NOT NULL AND NEW."resolvedByCommandId" IS DISTINCT FROM OLD."resolvedByCommandId" THEN v_col := 'resolvedByCommandId';
+  ELSIF OLD."resolvedByRole" IS NOT NULL AND NEW."resolvedByRole" IS DISTINCT FROM OLD."resolvedByRole" THEN v_col := 'resolvedByRole';
+  ELSIF OLD."resolvedByName" IS NOT NULL AND NEW."resolvedByName" IS DISTINCT FROM OLD."resolvedByName" THEN v_col := 'resolvedByName';
+  END IF;
+  IF v_col IS NOT NULL THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: change request % already records % as provenance and it may not be replaced or cleared — the receipt and the frozen actor pair are written ONCE, by the command that performed the act they describe.',
+      OLD."id", v_col;
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "ChangeRequest_t4d_evidence_frozen" ON "ChangeRequest";
+CREATE TRIGGER "ChangeRequest_t4d_evidence_frozen" BEFORE UPDATE ON "ChangeRequest"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_change_request_evidence_frozen();
+
 -- ────────────────────────────────────────────────────────────────────────────────────────────
 -- PART 3c — THE ORGS-OWNED MembershipTransition FACT
 -- ────────────────────────────────────────────────────────────────────────────────────────────
@@ -2206,12 +2307,29 @@ CREATE TRIGGER "MembershipTransition_t4d_seal" BEFORE INSERT ON "MembershipTrans
 CREATE OR REPLACE FUNCTION phase6_t4d_membership_transition_bound() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE c RECORD;
 BEGIN
-  SELECT "status", "resultRef", "commandType", "actorId" INTO c FROM "CommandExecution"
+  -- THE RECEIPT IS THIS TRANSACTION'S (#582 round 3, finding 3). The message below has said
+  -- "in this transaction" since round 1 and the query underneath it did not — the same shape
+  -- round 1's finding 2 corrected in `platform_tx_event`, arriving again on the one table whose
+  -- commands PREDATE the fact. `members.add`/`updateRole`/`remove` have existed since long
+  -- before `MembershipTransition`, so a mature database holds succeeded member receipts that no
+  -- transition has ever cited: a later direct transaction can update the membership (satisfying
+  -- the `xmin` check on `Membership`) and insert a transition citing one of those HISTORICAL
+  -- receipts, presenting a new standing change as an old command's act, with the actor and
+  -- command type both truthfully matching that old act. `xmin` on the receipt closes it — the
+  -- same comparison the delivered ledger seal uses to bind a completion to its reservation.
+  SELECT "status", "resultRef", "commandType", "actorId",
+         "xmin" = txid_current()::text::xid AS "thisTx"
+    INTO c FROM "CommandExecution"
    WHERE "projectId" = NEW."projectId" AND "id" = NEW."sourceCommandId";
   IF NOT FOUND OR c."status" <> 'succeeded' THEN
     RAISE EXCEPTION
       'phase6 4d-i: MembershipTransition % cites a command that did not succeed in this transaction — the receipt must be COMPLETED by the command that wrote the fact',
       NEW."id";
+  END IF;
+  IF NOT COALESCE(c."thisTx", FALSE) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: MembershipTransition % cites receipt %, which was completed by an EARLIER transaction — a member command''s receipt is one act seen twice, and a receipt lying around from a past add, re-role or removal cannot back a standing change made now',
+      NEW."id", NEW."sourceCommandId";
   END IF;
 
   -- THE RECEIPT IS IDENTIFIED BEFORE IT IS MATCHED, here too (#582 round 2, finding 5).
@@ -2513,10 +2631,12 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- `apps/api/src/platform/external-effects.ts` rather than transcribed. `ON CONFLICT DO NOTHING`
 -- so an `ALWAYS_EXECUTE` replay adds keys that appeared since and never rewrites a row an
 -- operator or a later unit has moved.
--- The seed DECLARES itself, which is what the INSERT arm above requires. Session-scoped rather
--- than `SET LOCAL`, because this file is not wrapped in one transaction (Part 2's `ALTER TYPE`
--- statements cannot be), and a `SET LOCAL` outside a transaction block sets nothing at all.
-SELECT set_config('vitan.phase6_4d_catalog', 'on', false);
+-- The seed DECLARES itself, which is what the INSERT arm above requires. TRANSACTION-LOCAL
+-- (`is_local = true`, the `SET LOCAL` form) since the file gained its own BEGIN (#582's review
+-- round 3, finding 1): a gate that outlives a FAILED apply is a gate standing open in a session
+-- whose writes were rolled back. The earlier session-scoped form carried a reason that was
+-- false — see the header.
+SELECT set_config('vitan.phase6_4d_catalog', 'on', true);
 
 INSERT INTO "ExternalEffectCatalog" ("coverageVersion", "effectKey", "eventType", "invalidate", "pushRoles", "pushFamily", "frozenAudience", "requiresPush", "audience", "pushBody", "pairingRequired") VALUES
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.completion_requested', 'activity.completion_requested', true, '["pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
@@ -2628,7 +2748,7 @@ INSERT INTO "ExternalEffectCatalog" ("coverageVersion", "effectKey", "eventType"
   ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'substitution.revoked', 'substitution.revoked', true, NULL, NULL, false, false, NULL, NULL, false)
 ON CONFLICT ("coverageVersion", "effectKey") DO NOTHING;
 
-SELECT set_config('vitan.phase6_4d_catalog', 'off', false);
+SELECT set_config('vitan.phase6_4d_catalog', 'off', true);
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────
 -- PART 3d — THE GENERIC PAIRING MECHANISM AND THE KERNEL SEALS
@@ -4068,3 +4188,5 @@ CREATE TRIGGER "DecisionConsultationResponse_t4d_attribution" BEFORE UPDATE ON "
 CREATE UNIQUE INDEX IF NOT EXISTS "DecisionEvent_countersign_renotified_key"
   ON "DecisionEvent"("decisionId", (("payload" ->> 'crossingEventId')))
   WHERE "type" = 'countersign_renotified';
+
+COMMIT;

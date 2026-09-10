@@ -227,6 +227,12 @@ report_4d_i_migration_failure() {
   echo "[migrate]      (without this the next deploy stops at P3009 — the schema rolled back, but the"
   echo "[migrate]       failed attempt is still recorded)"
   echo "[migrate]   3. redeploy; the audit then sees zero and the reservation installs"
+  echo "[migrate] A DIFFERENT 4d-i abort names accounts whose \`User\`.\`name\` is blank or"
+  echo "[migrate] whitespace-only. Those cannot be projected into \`UserIdentity\`, the register every"
+  echo "[migrate] 4d fact resolves its frozen actor NAME through, so the apply refuses rather than"
+  echo "[migrate] committing an incomplete register (#582's review round 3, finding 2). Give each"
+  echo "[migrate] named account a real display name, then step 2 and step 3 above:"
+  echo "[migrate]   UPDATE \"User\" SET \"name\" = '<real name>' WHERE \"id\" = '<the id from the sample>';"
   echo "[migrate] Full detail: docs/RUNBOOK.md §P6T4D."
 }
 

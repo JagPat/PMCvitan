@@ -270,6 +270,11 @@ const REGISTER: Record<string, SealContract> = {
     // understood and was silent on the one I had wrong. That is a real limit on this file, and
     // the answer is an outside reader — which is what Codex was here.
     must: ['succeeded', 'membershipId', 'txid_current', 'commandType', 'actorId',
+      // #582 round 3, finding 3 — `txid_current` alone does NOT witness this rule: the
+      // ORPHAN clause already used it on `Membership`, so the register was green while the
+      // RECEIPT lookup carried no transaction predicate at all. `thisTx` is the alias of
+      // that predicate and exists nowhere else in the body, which is what makes it evidence.
+      'thisTx',
            'members.add', 'members.updateRole', 'members.remove'],
   },
   phase6_t4d_membership_transition_immutable: {
@@ -374,6 +379,20 @@ const REGISTER: Record<string, SealContract> = {
       'ProjectEventStream', 'nextPosition', 'txid_current', 'streamPosition',
       'ExternalEffectCatalog', 'FOR SHARE', 'coverageVersion', 'effectKey',
       'retiredAt', 'invalidate', 'requiresPush', 'pushRoles', 'audience', 'targetUserIds',
+    ],
+  },
+  phase6_t4d_change_request_evidence_frozen: {
+    rule: 'the change request\'s identity and discriminator are frozen, and its two receipts and '
+      + 'two frozen actor pairs are written ONCE — never replaced, never cleared',
+    plan: '§A.3 obligation 1 (the fact class evidence freeze); P33; #582 round 3, finding 4',
+    on: { 'ChangeRequest.ChangeRequest_t4d_evidence_frozen': B('U') },
+    // The delivered `ChangeRequest_t4b2_seal` freezes `decisionId` alone and is a MERGED
+    // migration, so every column this unit adds arrived unfrozen. `decisionId` is deliberately
+    // absent from this list for that reason — it is the delivered seal's, not this one's.
+    must: [
+      'projectId', 'origin', 'revisionId',
+      'sourceCommandId', 'requestedByRole', 'requestedByName',
+      'resolvedByCommandId', 'resolvedByRole', 'resolvedByName',
     ],
   },
   platform_t4d_event_pairing_claimed: {

@@ -1195,14 +1195,41 @@ reservation, which judges only NEW rows, would leave it in place and arm the cha
 role is understood. The migration therefore installs the reservation doors FIRST (taking the locks
 that stop every concurrent writer), then counts, then aborts if the count is not zero.
 
-**Nothing was installed.** PostgreSQL DDL is transactional and the abort rolls the whole migration
-back: no doors, no `RolloutRetirement` table, no new enum values, no registers. What DOES survive
-is Prisma's record of a FAILED attempt, which is why a plain redeploy stops at P3009.
+**Nothing was installed.** The abort rolls the whole migration back: no doors, no
+`RolloutRetirement` table, no new enum values, no registers. What DOES survive is Prisma's record
+of a FAILED attempt, which is why a plain redeploy stops at P3009.
+
+That guarantee rests on the migration's OWN `BEGIN`/`COMMIT`, not on the runner (#582's review
+round 3, finding 1). This paragraph previously said "PostgreSQL DDL is transactional", which is
+true of a statement and says nothing about a FILE: Prisma documents that it does not wrap
+migrations in a transaction, so under an autocommitting runner the doors and trigger replacements
+created before the abort would have stayed committed while the deploy reported failure — and this
+sentence would have been telling you something untrue at the exact moment you were relying on it.
+The file now opens its own transaction, and the seal-stripped suite proves it both ways: the
+migration applies wrapped, and a raise injected after its last statement leaves no trigger, no
+table and no function behind.
 
 **The audit counts rows in ANY status.** The ordinary team removal is soft — it sets
 `status = 'removed'` and leaves `role` in place — so a departed architect aborts identically to an
 active one. That is deliberate: a soft-removed row can be restored, and a restore past the
 reservation is exactly what it must not be able to do.
+
+### A DIFFERENT abort: an account whose identity cannot be projected
+
+`prisma migrate deploy` may instead stop with `phase6 4d-i ABORT:` naming a count of accounts whose
+`User.name` is blank or whitespace-only, and listing their ids.
+
+`UserIdentity` is the register every 4d fact resolves its frozen actor NAME through, and its
+`displayName` is non-blank by CHECK. An account whose name cannot be projected has no row there,
+and from 4d-ii `phase6_t4d_actor_bound` would refuse that user's otherwise-authorized forward,
+countersign or membership command for a reason no message names. The first version of this
+migration FILTERED those accounts out and reported success (#582's review round 3, finding 2),
+which moved the failure months later and into a different subsystem.
+
+**Repair:** give each named account a real display name and redeploy —
+`UPDATE "User" SET "name" = '<real name>' WHERE "id" = '<id>';` — then resolve the failed migration
+as below. `User.name` has no non-blank constraint today and `ensure-accounts.ts` does not validate
+`ACCOUNTS_JSON` names, so a blank can arrive from provisioning as well as from history.
 
 ### Repair — a RE-ROLE, never a removal
 

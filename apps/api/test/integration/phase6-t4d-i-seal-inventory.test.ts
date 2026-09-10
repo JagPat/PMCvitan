@@ -26,7 +26,7 @@ import { PrismaClient } from '@prisma/client';
 
 /** table → the `_t4d_` triggers 4d-i installs on it. */
 const INVENTORY: Record<string, string[]> = {
-  ChangeRequest: ['ChangeRequest_t4d_no_truncate', 'ChangeRequest_t4d_project'],
+  ChangeRequest: ['ChangeRequest_t4d_evidence_frozen', 'ChangeRequest_t4d_no_truncate', 'ChangeRequest_t4d_project'],
   Decision: [
     'Decision_t4d_architect_reserved',
     'Decision_t4d_awaiting_reserved',
