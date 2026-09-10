@@ -278,36 +278,107 @@ export async function plantLegacyApprovalRevision(
 }
 
 /**
- * Phase 6 unit 4d-i — allocate REAL stream positions for a raw `DomainEvent` plant.
+ * Phase 6 unit 4d-i — plant a raw `DomainEvent` the way `emitEvent` does: allocate and insert in
+ * ONE transaction.
  *
- * `ProjectEventStream_t4d_allocation_bound` states, at COMMIT, that the allocator is ahead of
- * every position the stream actually uses. A raw plant that picks its own position — `max + 500`,
- * a literal `90001` — leaves the allocator permanently BEHIND that project's stream, and the
- * abort then lands on the next legitimate `emitEvent`, not on the plant that caused it (which is
- * exactly how it presented: `event-envelope.test.ts`'s append-only arm failed on an `emit`,
- * three tests after the plant).
+ * `DomainEvent_t4d_envelope` requires an event to sit at `ProjectEventStream.nextPosition - 1` of
+ * a stream row THIS TRANSACTION moved (§A.2). That is the increment-then-insert protocol
+ * `emitEvent` follows, and it is what makes allocations and events one-to-one: a writer that
+ * skips the increment lands on `nextPosition` and is refused; one that increments once and
+ * inserts twice has its second insert refused; and the deferred converse refuses an increment
+ * whose position no event took.
  *
- * So a probe that needs a raw row takes its position from the REAL allocator here (§D 4d-i;
- * §A.3 obligation 7's raw-insert finding). Returns the FIRST position of a contiguous run of
- * `count`; the run is issued exactly as `emitEvent` issues one, so the allocator ends ahead.
- * Allocating a position and then NOT using it is fine — the bound is `>`, not `=`.
+ * So a probe that needs a raw row cannot choose a position, and cannot allocate in one statement
+ * and insert in another — the earlier version of this helper did exactly that, and it only ever
+ * worked because the seal was not yet asking. `columns`/`values` are appended to the fixed
+ * envelope so an arm can add `actorRole`, `dispatchIntent` or an explicit `eventId`.
  *
- * A legacy-SHAPE plant (a pre-4d row, by definition unable to satisfy the 4d seals) does NOT
- * use this: it declares a NAMED bypass instead, the way `scripts/upgrade-proof.sh` does.
+ * Returns the position the plant consumed. A legacy-SHAPE plant — a pre-4d row that by
+ * construction cannot satisfy these seals — uses `plantLegacyEvent` instead, which declares a
+ * NAMED bypass.
  */
-export async function allocateStreamPositions(
+export async function insertRawEvent(
+  prisma: PrismaService,
+  spec: {
+    projectId: string;
+    organizationId: string;
+    eventId: string;
+    eventType?: string;
+    entityType?: string;
+    entityId?: string;
+    /** extra column names, already quoted, e.g. `"actorRole"` */
+    columns?: string[];
+    /** matching SQL value expressions, e.g. `'pmc'` */
+    values?: string[];
+  },
+): Promise<number> {
+  const cols = (spec.columns ?? []).length > 0 ? `,${spec.columns!.join(',')}` : '';
+  const vals = (spec.values ?? []).length > 0 ? `,${spec.values!.join(',')}` : '';
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.$queryRawUnsafe<Array<{ at: bigint }>>(
+      `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1
+        WHERE "projectId" = $1 RETURNING "nextPosition" - 1 AS "at"`,
+      spec.projectId,
+    );
+    const at = Number(rows[0]!.at);
+    await tx.$executeRawUnsafe(
+      `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId"${cols})`
+      + ` VALUES ('${spec.eventId}','${spec.eventType ?? 'x'}',1,'${spec.organizationId}','${spec.projectId}',${at},'system','system:seed','${spec.entityType ?? 'Decision'}','${spec.entityId ?? 'x'}'${vals})`,
+    );
+    return at;
+  });
+}
+
+/**
+ * Phase 6 unit 4d-i — the NAMED BYPASS for a LEGACY-SHAPE raw event plant.
+ *
+ * Some probes need a position that is part of the sentence: a pre-cutover row that must sit
+ * BEFORE a later one, two deliveries whose relative order is the whole point. Those cannot take
+ * whatever the allocator hands out, and by construction they are pre-4d shapes the 4d seals are
+ * right to refuse. So they declare themselves BY NAME for exactly the plant.
+ *
+ * FOUR names, because the allocator is now sealed as a whole (§A.2): the envelope seal would
+ * refuse the chosen position, the pairing seal would demand a claim, and moving the counter past
+ * the plant afterwards would trip BOTH allocator arms — `_t4d_allocation` admits only `+1`, and
+ * `_t4d_allocation_bound` requires every increment to carry its own event. A legacy plant has
+ * neither, so the counter is set directly, inside the same bypass, and every seal goes back on in
+ * `finally`. The same contract `scripts/upgrade-proof.sh` uses for its legacy plants.
+ *
+ * Guarded on the triggers' existence, because a suite may run against an earlier migration point.
+ */
+export async function plantLegacyEvent<T>(
   prisma: PrismaService,
   projectId: string,
-  count = 1,
-): Promise<number> {
-  const rows = await prisma.$queryRawUnsafe<Array<{ from: bigint }>>(
-    `INSERT INTO "ProjectEventStream" ("projectId", "nextPosition") VALUES ($1, $2)
-       ON CONFLICT ("projectId") DO UPDATE SET "nextPosition" = "ProjectEventStream"."nextPosition" + $2
-     RETURNING "nextPosition" - $2 AS "from"`,
-    projectId,
-    count,
-  );
-  return Number(rows[0]!.from);
+  highestPosition: number,
+  plant: () => Promise<T>,
+): Promise<T> {
+  const NAMES: Array<[table: string, trigger: string]> = [
+    ['DomainEvent', 'DomainEvent_t4d_envelope'],
+    ['DomainEvent', 'DomainEvent_t4d_pairing_claimed'],
+    ['ProjectEventStream', 'ProjectEventStream_t4d_allocation'],
+    ['ProjectEventStream', 'ProjectEventStream_t4d_allocation_bound'],
+  ];
+  const toggle = (action: 'DISABLE' | 'ENABLE'): string =>
+    'DO $do$ BEGIN '
+    + NAMES.map(([table, trigger]) =>
+        `IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = '${trigger}') THEN `
+        + `EXECUTE 'ALTER TABLE "${table}" ${action} TRIGGER "${trigger}"'; END IF; `).join('')
+    + 'END $do$';
+  await prisma.$executeRawUnsafe(toggle('DISABLE'));
+  try {
+    const out = await plant();
+    // the counter is set PAST the hand-chosen positions, so the allocator is never left behind its
+    // own stream once the seals go back on. Conditional: a counter already ahead is left alone.
+    await prisma.$executeRawUnsafe(
+      `UPDATE "ProjectEventStream" SET "nextPosition" = $2::bigint + 1
+        WHERE "projectId" = $1 AND "nextPosition" < $2::bigint + 1`,
+      projectId,
+      highestPosition,
+    );
+    return out;
+  } finally {
+    await prisma.$executeRawUnsafe(toggle('ENABLE'));
+  }
 }
 
 /**
@@ -342,31 +413,4 @@ export async function plantLegacyDecisionAudit<T>(
   } finally {
     await prisma.$executeRawUnsafe(toggle('ENABLE'));
   }
-}
-
-/**
- * Phase 6 unit 4d-i — reserve a CALLER-CHOSEN stream position through the real allocator.
- *
- * The sibling of `allocateStreamPositions`, for probes whose position is part of the sentence —
- * a legacy row that must sit BEFORE a cutover, two deliveries whose relative order is the point.
- * Those cannot take whatever the allocator hands out, so they declare the slot and this advances
- * the allocator PAST it, which is the invariant `ProjectEventStream_t4d_allocation_bound` states:
- * the counter is ahead of every position the stream uses.
- *
- * The advance is conditional, because `ProjectEventStream_t4d_allocation` refuses a
- * non-increasing UPDATE — a counter already ahead is left exactly where it is.
- */
-export async function reserveStreamPosition(
-  prisma: PrismaService,
-  projectId: string,
-  position: number,
-): Promise<number> {
-  await prisma.$executeRawUnsafe(
-    `INSERT INTO "ProjectEventStream" ("projectId", "nextPosition") VALUES ($1, $2 + 1)
-       ON CONFLICT ("projectId") DO UPDATE SET "nextPosition" = $2 + 1
-        WHERE "ProjectEventStream"."nextPosition" < $2 + 1`,
-    projectId,
-    position,
-  );
-  return position;
 }

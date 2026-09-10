@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { reserveStreamPosition, createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { plantLegacyEvent, createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { emitEvent } from '../../src/platform/events';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { OutboxOperationsService } from '../../src/platform/outbox/outbox-operations.service';
@@ -394,9 +394,12 @@ describe('PR C Task 3 — external-effect cutover seal (live PG)', () => {
     coverage: string | null, status: 'pending' | 'leased' = 'pending', payload = '{"legacy":"body"}',
   ): Promise<void> => {
     const intent = coverage === null ? 'NULL' : `'${JSON.stringify({ effectKey: 'compat.task6', coverageVersion: coverage, invalidate: true })}'::jsonb`;
-    // Phase 6 unit 4d-i — the caller chooses `pos` because the ORDER is part of the sentence, so
-    // the allocator is advanced past it rather than consulted for it (see the helper's contract).
-    await reserveStreamPosition(t.prisma, projectId, pos);
+    // Phase 6 unit 4d-i — a LEGACY-SHAPE plant under the NAMED BYPASS. These are pre-cutover rows
+    // whose POSITION is part of the sentence (the seal's targets sit at chosen coordinates), and
+    // a pre-4d shape cannot satisfy the 4d envelope seal by construction. The bypass names the
+    // four triggers it turns off and sets the allocator past the plant before turning them back
+    // on — never an implicit hole.
+    await plantLegacyEvent(t.prisma, projectId, pos, async () => {
     await t.prisma.$executeRawUnsafe(
       `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent") ` +
       `VALUES ('${evId}','decision.approved',1,'${f.orgA.id}','${projectId}',${pos},'system','system:seed','Decision','D',${intent})`,
@@ -413,6 +416,7 @@ describe('PR C Task 3 — external-effect cutover seal (live PG)', () => {
       `INSERT INTO "OutboxDelivery" ("id","eventId","projectId","consumer","consumerKind","deliveryAction","streamPosition","status","updatedAt") ` +
       `VALUES ('${delId}-push','${evId}','${projectId}','webpush.notify','unordered','noop',${pos},'succeeded', now())`,
     );
+    });
   };
 
   const seal = () => ops.sealExternal({ operatorIdentity: 'ops@vitan.in', reason: 'cutover' });
@@ -477,20 +481,23 @@ describe('PR C Task 3 — external-effect cutover seal (live PG)', () => {
     const p = await freshProject();
     await seal();
     const intent = JSON.stringify({ effectKey: 'decision.approved', coverageVersion: effectCoverageVersion(), invalidate: true });
-    // Phase 6 unit 4d-i — both slots reserved through the allocator (see the helper's contract).
-    await reserveStreamPosition(t.prisma, p, 301);
-    // null intent → refused by the seal trigger
-    await expect(
-      t.prisma.$executeRawUnsafe(
-        `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId") ` +
-        `VALUES ('seal-null-after','decision.approved',1,'${f.orgA.id}','${p}',300,'system','system:seed','Decision','D')`,
-      ),
-    ).rejects.toThrow(/cutover is sealed/);
-    // a valid current-intent event still commits
-    await t.prisma.$executeRawUnsafe(
-      `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent") ` +
-      `VALUES ('seal-ok-after','decision.approved',1,'${f.orgA.id}','${p}',301,'system','system:seed','Decision','D','${intent}'::jsonb)`,
-    );
+    // Phase 6 unit 4d-i — both arms are LEGACY-SHAPE plants at chosen positions, so both run under
+    // the NAMED BYPASS. The subject here is the CUTOVER seal's intent rule; the 4d envelope seal
+    // would otherwise answer first and the arm would stop measuring what it names.
+    await plantLegacyEvent(t.prisma, p, 301, async () => {
+      // null intent → refused by the seal trigger
+      await expect(
+        t.prisma.$executeRawUnsafe(
+          `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId") ` +
+          `VALUES ('seal-null-after','decision.approved',1,'${f.orgA.id}','${p}',300,'system','system:seed','Decision','D')`,
+        ),
+      ).rejects.toThrow(/cutover is sealed/);
+      // a valid current-intent event still commits
+      await t.prisma.$executeRawUnsafe(
+        `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent") ` +
+        `VALUES ('seal-ok-after','decision.approved',1,'${f.orgA.id}','${p}',301,'system','system:seed','Decision','D','${intent}'::jsonb)`,
+      );
+    });
     expect(await t.prisma.domainEvent.findUnique({ where: { eventId: 'seal-ok-after' } })).not.toBeNull();
   });
 

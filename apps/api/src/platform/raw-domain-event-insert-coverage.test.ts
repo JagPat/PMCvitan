@@ -16,8 +16,8 @@ import { join, relative } from 'node:path';
  * So the contract (§A.3 obligation 7's raw-insert finding; §D 4d-i) admits raw plants two ways
  * and no third:
  *
- *   · through the ALLOCATOR — `allocateStreamPositions` (take the next slots) or
- *     `reserveStreamPosition` (declare a slot and advance the counter past it), or
+ *   · through the ALLOCATOR — `insertRawEvent`, which allocates and inserts in ONE transaction,
+ *     the way `emitEvent` does; or
  *   · under a NAMED BYPASS — a legacy-SHAPE plant, pre-4d by definition and unable to satisfy the
  *     4d seals, that disables `ProjectEventStream_t4d_allocation` / `DomainEvent_t4d_envelope` BY
  *     NAME inside its own plant transaction and re-enables them after.
@@ -40,8 +40,8 @@ const RAW_INSERT = /INSERT\s+INTO\s+"DomainEvent"/i;
 
 /** Every mechanism that makes a raw plant legitimate. A file must show at least one. */
 const SANCTIONED = [
-  'allocateStreamPositions',
-  'reserveStreamPosition',
+  'insertRawEvent',
+  'plantLegacyEvent',
   'ProjectEventStream_t4d_allocation',
   'DomainEvent_t4d_envelope',
 ] as const;
@@ -83,7 +83,7 @@ describe('phase 6 unit 4d-i — raw DomainEvent plants are allocated or named-by
     expect(
       unclassified,
       'these files plant raw "DomainEvent" rows without taking a position from the allocator '
-      + '(allocateStreamPositions / reserveStreamPosition) and without a NAMED bypass of '
+      + '(insertRawEvent / plantLegacyEvent) and without a NAMED bypass of '
       + 'ProjectEventStream_t4d_allocation / DomainEvent_t4d_envelope. An unallocated plant leaves '
       + 'the allocator behind the stream and aborts the NEXT legitimate emitEvent, in a different '
       + 'test, with a message that names neither this file nor this plant.',

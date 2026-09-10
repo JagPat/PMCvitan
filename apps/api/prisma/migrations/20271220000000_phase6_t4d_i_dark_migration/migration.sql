@@ -1020,6 +1020,51 @@ BEGIN
   END IF;
 END $$;
 
+-- ── the two kernel TRANSACTION reads ─────────────────────────────────────────────────────────
+-- §A.3 obligation 7 asks a fact's seal "is the effect this act owes present in THIS transaction?"
+-- Every such seal asks it the same way, so it is asked ONCE here. Platform-owned, because the
+-- effect tables are the kernel's; a decisions seal calling these reads no peer table.
+--
+-- THE WORD THAT DOES THE WORK IS "TRANSACTION" (Codex round 1, findings 2, 8 and 9 — one root
+-- cause). The first version of these functions carried no transaction predicate at all, and
+-- neither did the seals, which asked their own inline `EXISTS` instead of calling here. An
+-- unscoped existence check is satisfied by HISTORY: once a decision has ever been approved, its
+-- old `decision.approved` event answers every later `approved` audit row, so a direct writer can
+-- append fabricated evidence that the append-only seal then makes permanent. Worse, the seals'
+-- own error messages already said "in this transaction" — the sentence was right and the query
+-- underneath it was not.
+--
+-- `xmin` is the transaction that inserted the row; `txid_current()::text::xid` truncates the
+-- 64-bit counter to the 32-bit xid the row carries. It is the SAME comparison
+-- `20270425000000_platform_command_receipt_seal` uses to bind a completion to the transaction
+-- that reserved it, and the plan names that migration as the precedent.
+--
+-- These are the VERIFICATION side of the pairing, not the claiming side: a bundle's non-primary
+-- facts check through these and never write a claim (§A.3 — one claimant per event branch).
+CREATE OR REPLACE FUNCTION platform_tx_event(
+  p_project TEXT, p_entity_type TEXT, p_entity TEXT, p_types TEXT[]
+) RETURNS TEXT LANGUAGE sql STABLE AS $$
+  SELECT e."eventId" FROM "DomainEvent" e
+   WHERE e."projectId" = p_project
+     AND e."entityType" = p_entity_type AND e."entityId" = p_entity
+     AND e."eventType" = ANY (p_types)
+     AND e."xmin" = txid_current()::text::xid
+   ORDER BY e."streamPosition" DESC
+   LIMIT 1;
+$$;
+
+-- How MANY same-transaction events match. The exactness claims (§A.3's "exactly ONE") need a
+-- count, not an existence: two events for one act are as wrong as none.
+CREATE OR REPLACE FUNCTION platform_tx_event_count(
+  p_project TEXT, p_entity_type TEXT, p_entity TEXT, p_types TEXT[]
+) RETURNS BIGINT LANGUAGE sql STABLE AS $$
+  SELECT count(*) FROM "DomainEvent" e
+   WHERE e."projectId" = p_project
+     AND e."entityType" = p_entity_type AND e."entityId" = p_entity
+     AND e."eventType" = ANY (p_types)
+     AND e."xmin" = txid_current()::text::xid;
+$$;
+
 -- ────────────────────────────────────────────────────────────────────────────────────────────
 -- PART 3a — THE THREE DECISIONS-OWNED FACT TABLES (shape)
 -- ────────────────────────────────────────────────────────────────────────────────────────────
@@ -2058,27 +2103,38 @@ DECLARE
   v_after      BOOLEAN := (TG_OP <> 'DELETE' AND NEW."role" = 'architect' AND NEW."status" = 'active');
   v_project    TEXT;
   v_membership TEXT;
+  v_user       TEXT;
   v_direction  TEXT;
 BEGIN
   IF v_before = v_after THEN RETURN NULL; END IF;
 
   -- OLD and NEW are records, and plpgsql has no expression that picks between two of them, so
   -- the fields are read explicitly per operation rather than through a CASE over the rows.
+  -- `userId` is frozen on a membership (the identity-freeze class), so OLD and NEW agree on it
+  -- wherever both exist and either side names the same subject.
   IF TG_OP = 'DELETE' THEN
-    v_project := OLD."projectId"; v_membership := OLD."id";
+    v_project := OLD."projectId"; v_membership := OLD."id"; v_user := OLD."userId";
   ELSE
-    v_project := NEW."projectId"; v_membership := NEW."id";
+    v_project := NEW."projectId"; v_membership := NEW."id"; v_user := NEW."userId";
   END IF;
   v_direction := CASE WHEN v_after THEN 'held' ELSE 'not_held' END;
 
+  -- IN THIS TRANSACTION, and about THIS MEMBER (Codex round 1, findings 9 and 13 — two holes in
+  -- one predicate). Unscoped, it accepted historical evidence: an architect legitimately
+  -- activated, removed, then bare-restored found the ORIGINAL `toStanding = 'held'` row and
+  -- passed, re-arming the chain with no attributable act. And without the subject comparison a
+  -- PMC could activate membership A while inserting an otherwise-valid immutable transition
+  -- naming an unrelated user B, leaving permanent evidence that B's standing changed.
   IF NOT EXISTS (
     SELECT 1 FROM "MembershipTransition" mt
      WHERE mt."projectId" = v_project AND mt."membershipId" = v_membership
        AND mt."role" = 'architect' AND mt."toStanding" = v_direction
+       AND mt."userId" = v_user
+       AND mt."xmin" = txid_current()::text::xid
   ) THEN
     RAISE EXCEPTION
-      'phase6 4d-i: membership % on project % moved architect standing to `%` in this transaction with no MembershipTransition recording it — the chain is armed and disarmed by attributable ACTS, never by a bare row write',
-      v_membership, v_project, v_direction;
+      'phase6 4d-i: membership % on project % moved architect standing to `%` in this transaction with no MembershipTransition written HERE naming user % — the chain is armed and disarmed by attributable ACTS, never by a bare row write and never by an older act reused',
+      v_membership, v_project, v_direction, v_user;
   END IF;
   RETURN NULL;
 END $$;
@@ -2114,6 +2170,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS "DomainEvent_project_event_key"
 -- carry neither.
 ALTER TABLE "Notification" ADD COLUMN IF NOT EXISTS "kind" TEXT;
 ALTER TABLE "Notification" ADD COLUMN IF NOT EXISTS "eventId" TEXT;
+
+-- The notice half of the kernel's transaction reads. It lives HERE and not beside its sibling in
+-- Part 3b because a `LANGUAGE sql` body IS validated at CREATE time, and `Notification.eventId`
+-- is the column the two statements above have just added.
+CREATE OR REPLACE FUNCTION platform_tx_notification(p_project TEXT, p_event TEXT)
+RETURNS TEXT LANGUAGE sql STABLE AS $$
+  SELECT n."id" FROM "Notification" n
+   WHERE n."projectId" = p_project AND n."eventId" = p_event
+     AND n."xmin" = txid_current()::text::xid
+   LIMIT 1;
+$$;
+
 
 DO $$ BEGIN
   ALTER TABLE "Notification" ADD CONSTRAINT "Notification_projectId_eventId_fkey"
@@ -2386,8 +2454,35 @@ CREATE CONSTRAINT TRIGGER "DomainEvent_t4d_pairing_claimed"
 -- all. A half-filled envelope would pass a fact's comparison on one half and silently skip the
 -- other.
 CREATE OR REPLACE FUNCTION platform_t4d_event_envelope() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_next BIGINT; v_allocated_here BOOLEAN;
 BEGIN
   IF TG_OP = 'INSERT' THEN
+    -- (a) THE POSITION, and that THIS transaction allocated it (§A.2; Codex round 1, finding 3).
+    -- The first version of this seal judged the actor pair alone, so a direct insert could write
+    -- an otherwise-valid event at an arbitrary position without touching `ProjectEventStream`.
+    -- No allocator trigger fires for that, the corrupt event commits, and the abort lands on the
+    -- NEXT ordinary emit — in another transaction, naming neither the writer nor the row.
+    --
+    -- `emitEvent` follows increment-then-insert, so the event it is writing sits at
+    -- `nextPosition - 1` of a stream row this transaction just moved. A writer that skips the
+    -- increment lands on `nextPosition` (refused here) or on a taken position (refused by the
+    -- `(projectId, streamPosition)` unique); a writer that increments once and inserts twice has
+    -- its second insert refused. With `_t4d_allocation_bound` requiring the converse — every
+    -- increment carries its event — allocations and events are one-to-one.
+    SELECT s."nextPosition", s."xmin" = txid_current()::text::xid
+      INTO v_next, v_allocated_here
+      FROM "ProjectEventStream" s WHERE s."projectId" = NEW."projectId";
+    IF v_next IS NULL THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: project % has no event-stream allocator, so event % has no issued position to sit at',
+        NEW."projectId", NEW."eventId";
+    END IF;
+    IF NEW."streamPosition" <> v_next - 1 OR NOT COALESCE(v_allocated_here, FALSE) THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: event % sits at position % but this transaction did not allocate it (the allocator for project % stands at %, moved here: %) — a position is taken by incrementing the allocator in the SAME transaction that writes the event, never chosen',
+        NEW."eventId", NEW."streamPosition", NEW."projectId", v_next, COALESCE(v_allocated_here, FALSE);
+    END IF;
+
     IF (NEW."actorRole" IS NULL) <> (NEW."actorName" IS NULL) THEN
       RAISE EXCEPTION
         'phase6 4d-i: event % carries half an actor envelope (role %, name %) — the pair is written together or not at all, so a fact comparing it cannot pass on one half and skip the other',
@@ -2621,6 +2716,11 @@ BEGIN
     v_forwarded := FALSE;
     IF (NEW."deciderKind" IS DISTINCT FROM OLD."deciderKind"
         OR NEW."deciderMembershipId" IS DISTINCT FROM OLD."deciderMembershipId") THEN
+      -- IN THIS TRANSACTION (Codex round 1, finding 8). Without the `xmin` predicate this door
+      -- accepted ANY historical forward fact: after legitimate moves A→B and B→A, a third direct
+      -- update A→B reuses the FIRST append-only fact, passes, and moves the holder with no new
+      -- fact, no command receipt, no event, no audit row and no notice. The refusal message below
+      -- already said "a same-transaction row"; now the query says it too.
       v_forwarded := EXISTS (
         SELECT 1 FROM "DecisionForward" f
          WHERE f."projectId" = OLD."projectId" AND f."decisionId" = OLD."id"
@@ -2628,6 +2728,7 @@ BEGIN
            AND f."fromDesignationMembershipId" IS NOT DISTINCT FROM OLD."deciderMembershipId"
            AND f."toDesignationKind" = NEW."deciderKind"::text
            AND f."toDesignationMembershipId" IS NOT DISTINCT FROM NEW."deciderMembershipId"
+           AND f."xmin" = txid_current()::text::xid
       );
     END IF;
 
@@ -3252,12 +3353,12 @@ BEGIN
   END;
   IF v_required IS NULL THEN RETURN NULL; END IF;
 
-  IF NOT EXISTS (
-    SELECT 1 FROM "DomainEvent" e
-     WHERE e."projectId" = v_project
-       AND e."entityType" = 'Decision' AND e."entityId" = NEW."decisionId"
-       AND e."eventType" = ANY (v_required)
-  ) THEN
+  -- Through the KERNEL PRIMITIVE, which is what makes "in this transaction" true of the query and
+  -- not only of the message (Codex round 1, finding 2). An unscoped existence check let an
+  -- approved decision's HISTORICAL `decision.approved` event answer every later `approved` audit
+  -- insert, so a direct writer could append a second fabricated row with no emission at all —
+  -- and `DecisionEvent_t4d_append_only` then made that false evidence permanent.
+  IF platform_tx_event(v_project, 'Decision', NEW."decisionId", v_required) IS NULL THEN
     RAISE EXCEPTION
       'phase6 4d-i: the `%` audit row for decision % (committed `%`) has no matching % event in this transaction — the audit register and the delivery stream record the SAME act, and one without the other is a system that cannot say what it did',
       NEW."type", NEW."decisionId", v_status, array_to_string(v_required, ' or ');
@@ -3287,49 +3388,87 @@ BEGIN
     FOR EACH ROW EXECUTE FUNCTION phase6_t4d_event_correspondence_weak();
 END $$;
 
--- ── the stream ALLOCATION seal ───────────────────────────────────────────────────────────────
+-- ── the stream ALLOCATION seals ──────────────────────────────────────────────────────────────
 -- `ProjectEventStream.nextPosition` is the allocator for `DomainEvent.streamPosition`, and the
--- ordering guarantee every projection cursor rests on is that a position is issued ONCE and the
--- counter never trails the stream. Two arms:
+-- guarantee every projection cursor rests on is that positions are issued ONCE, CONTIGUOUSLY,
+-- and one per event. §A.2 states that as five objects, and the first version of this file
+-- installed two of them with the first weakened (Codex round 1, findings 3 and 7; the jump was
+-- already a KNOWN defect — the plan records it as #554's review round 2, finding 1 — so this is
+-- a rule the contract had fixed and the implementation re-opened).
 --
---   · IMMEDIATE — the counter is strictly increasing. A decrease would re-issue positions that
---     already carry events, and the `(projectId, streamPosition)` unique would then reject the
---     next legitimate emission rather than the write that caused it.
---   · DEFERRED — at commit the counter is AHEAD of every position actually used. Stated as
---     `>` and not `=` deliberately: the sanctioned reset truncates `DomainEvent` without
---     resetting the allocator, which is correct (a position must never be reused, least of all
---     after a wipe), and an equality rule would refuse the first emission after every reset.
+--   · `_t4d_allocation`      IMMEDIATE, admits ONLY `OLD + 1`. Never a jump, never a decrement.
+--   · `_t4d_allocation_bound` DEFERRED, per INCREMENT: the position that increment allocated
+--                             (`OLD."nextPosition"`) carries an event of THIS transaction.
+--   · `_t4d_init`            BEFORE INSERT, admits only `nextPosition = 0` on a project with no
+--                             events — so the row cannot be reintroduced further along.
+--   · `_t4d_no_delete`       the row cannot be dropped and recreated to bypass the `+1` rule
+--                             (#561's review round 1, finding 7), except under the project
+--                             cascade `Project_t4d_deleting` marks.
+--   · `_t4d_no_truncate`     the statement-level twin, in `TRUNCATE_SEALS`.
+--
+-- WHY A JUMP MATTERS, in the product's own terms: starting at N, a direct update to N+2 with no
+-- events passed the old pair, and the next legitimate emit then wrote N+2 — leaving N and N+1
+-- empty forever. `dispatchOrdered` waits for the next expected position and would never advance
+-- past the hole, and every rebuild reports a replay gap.
 CREATE OR REPLACE FUNCTION platform_t4d_stream_allocation() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-  IF TG_OP = 'UPDATE' AND NEW."nextPosition" <= OLD."nextPosition" THEN
+  IF NEW."nextPosition" <> OLD."nextPosition" + 1 THEN
     RAISE EXCEPTION
-      'phase6 4d-i: the event-stream allocator for project % may only advance (saw % → %) — moving it back re-issues positions that already carry events, and the collision would then be reported against the next legitimate emission rather than against this write',
+      'phase6 4d-i: the event-stream allocator for project % moves by exactly one (saw % → %) — a jump leaves positions nobody can fill, which stalls `dispatchOrdered` at the hole and makes every rebuild report a replay gap; a decrement re-issues positions that already carry events',
       OLD."projectId", OLD."nextPosition", NEW."nextPosition";
   END IF;
   RETURN NEW;
 END $$;
 
+-- PER INCREMENT, not per final value. A DEFERRED constraint trigger fires once per UPDATE and
+-- each firing carries the row image FROM THAT UPDATE, which is exactly the granularity this rule
+-- needs: `OLD."nextPosition"` is the position THAT increment handed out. (The earlier final-value
+-- comparison misread the same fact — it treated a per-update image as the committed state and
+-- refused correct transactions, 493 tests across 55 files. The image is not wrong; asking it the
+-- wrong question was.)
 CREATE OR REPLACE FUNCTION platform_t4d_stream_allocation_bound() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_max BIGINT; v_next BIGINT;
+DECLARE v_allocated BIGINT;
 BEGIN
-  -- READ THE COUNTER, do not trust NEW. A DEFERRED constraint trigger fires once per UPDATE and
-  -- each firing carries the row image FROM THAT UPDATE — not the committed one. `emitEvent`
-  -- increments this counter once per event, so a transaction emitting TWO events queues two
-  -- firings: the first holds `nextPosition = 1` while the transaction ends with positions 0 AND
-  -- 1 used. Comparing that stale snapshot against the final stream refuses a correct
-  -- transaction, which is exactly what it did — 55 suites, every one of them emitting more than
-  -- one event in a command.
-  --
-  -- The claim is about the state AT COMMIT, so both sides are read at commit.
-  SELECT "nextPosition" INTO v_next FROM "ProjectEventStream" WHERE "projectId" = NEW."projectId";
-  IF v_next IS NULL THEN RETURN NULL; END IF;
-  SELECT max("streamPosition") INTO v_max FROM "DomainEvent" WHERE "projectId" = NEW."projectId";
-  IF v_next <= COALESCE(v_max, -1) THEN
+  IF TG_OP <> 'UPDATE' THEN RETURN NULL; END IF;
+  v_allocated := OLD."nextPosition";
+  IF NOT EXISTS (
+    SELECT 1 FROM "DomainEvent" e
+     WHERE e."projectId" = NEW."projectId"
+       AND e."streamPosition" = v_allocated
+       AND e."xmin" = txid_current()::text::xid
+  ) THEN
     RAISE EXCEPTION
-      'phase6 4d-i: the event-stream allocator for project % committed at % while position % is already used — the allocator must stay ahead of the stream or the next emission collides',
-      NEW."projectId", v_next, v_max;
+      'phase6 4d-i: the event-stream allocator for project % issued position % and this transaction wrote no event there — an allocation without its event is a permanent hole in the stream, and allocations are one-to-one with events',
+      NEW."projectId", v_allocated;
   END IF;
   RETURN NULL;
+END $$;
+
+-- The counter row is BORN at zero on a project that has no events. Without this, a transaction
+-- could delete the row and reinsert it further along, no UPDATE trigger firing at all.
+CREATE OR REPLACE FUNCTION platform_t4d_stream_init() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW."nextPosition" <> 0 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: a project event stream is created at position 0 (project % arrived at %) — a stream introduced further along skips positions no event can ever fill',
+      NEW."projectId", NEW."nextPosition";
+  END IF;
+  IF EXISTS (SELECT 1 FROM "DomainEvent" e WHERE e."projectId" = NEW."projectId") THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: project % already holds events, so its allocator cannot be created afresh at 0 — that would re-issue every position the stream has already used',
+      NEW."projectId";
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE OR REPLACE FUNCTION platform_t4d_stream_no_delete() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF COALESCE(current_setting('phase6.t4d_project_delete', true), '') = 'on' THEN
+    RETURN OLD;
+  END IF;
+  RAISE EXCEPTION
+    'phase6 4d-i: the event-stream allocator for project % may not be DELETED — dropping and recreating the row is how the `+1` rule gets bypassed. It goes only with its project, under the deletion cascade.',
+    OLD."projectId";
 END $$;
 
 DROP TRIGGER IF EXISTS "ProjectEventStream_t4d_allocation" ON "ProjectEventStream";
@@ -3339,33 +3478,23 @@ CREATE TRIGGER "ProjectEventStream_t4d_allocation"
 
 DROP TRIGGER IF EXISTS "ProjectEventStream_t4d_allocation_bound" ON "ProjectEventStream";
 CREATE CONSTRAINT TRIGGER "ProjectEventStream_t4d_allocation_bound"
-  AFTER INSERT OR UPDATE ON "ProjectEventStream" DEFERRABLE INITIALLY DEFERRED
+  AFTER UPDATE ON "ProjectEventStream" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION platform_t4d_stream_allocation_bound();
 
--- ── the two kernel TRANSACTION reads ─────────────────────────────────────────────────────────
--- §A.3 obligation 7 asks a fact's seal "is the effect this act owes present in THIS transaction?"
--- Every such seal asks it the same way, so it is asked once here. Platform-owned, because the
--- effect tables are the kernel's; a decisions seal calling these reads no peer table.
---
--- They are the VERIFICATION side of the pairing, not the claiming side: a bundle's non-primary
--- facts check through these and never write a claim (§A.3 — one claimant per event branch).
-CREATE OR REPLACE FUNCTION platform_tx_event(
-  p_project TEXT, p_entity_type TEXT, p_entity TEXT, p_types TEXT[]
-) RETURNS TEXT LANGUAGE sql STABLE AS $$
-  SELECT e."eventId" FROM "DomainEvent" e
-   WHERE e."projectId" = p_project
-     AND e."entityType" = p_entity_type AND e."entityId" = p_entity
-     AND e."eventType" = ANY (p_types)
-   ORDER BY e."streamPosition" DESC
-   LIMIT 1;
-$$;
+DROP TRIGGER IF EXISTS "ProjectEventStream_t4d_init" ON "ProjectEventStream";
+CREATE TRIGGER "ProjectEventStream_t4d_init"
+  BEFORE INSERT ON "ProjectEventStream"
+  FOR EACH ROW EXECUTE FUNCTION platform_t4d_stream_init();
 
-CREATE OR REPLACE FUNCTION platform_tx_notification(p_project TEXT, p_event TEXT)
-RETURNS TEXT LANGUAGE sql STABLE AS $$
-  SELECT n."id" FROM "Notification" n
-   WHERE n."projectId" = p_project AND n."eventId" = p_event
-   LIMIT 1;
-$$;
+DROP TRIGGER IF EXISTS "ProjectEventStream_t4d_no_delete" ON "ProjectEventStream";
+CREATE TRIGGER "ProjectEventStream_t4d_no_delete"
+  BEFORE DELETE ON "ProjectEventStream"
+  FOR EACH ROW EXECUTE FUNCTION platform_t4d_stream_no_delete();
+
+DROP TRIGGER IF EXISTS "ProjectEventStream_t4d_no_truncate" ON "ProjectEventStream";
+CREATE TRIGGER "ProjectEventStream_t4d_no_truncate"
+  BEFORE TRUNCATE ON "ProjectEventStream"
+  FOR EACH STATEMENT EXECUTE FUNCTION platform_t4d_register_no_truncate();
 
 -- ── the spec tables' finality CARRIER ────────────────────────────────────────────────────────
 -- A requirement spec's provenance is an approval that REALLY happened — the delivered FK already

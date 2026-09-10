@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { allocateStreamPositions, createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { insertRawEvent, createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { emitEvent, type EmitInput } from '../../src/platform/events';
 import type { Actor } from '../../src/common/actor';
 
@@ -91,50 +91,62 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
   it('two events at the SAME (projectId, streamPosition) are rejected — position is the identity, not occurredAt', async () => {
     // identical occurredAt, distinct positions coexist and order deterministically by position…
     const at = '2026-07-15 09:00:00';
-    // Phase 6 unit 4d-i — the position comes from the REAL allocator, never from a literal or a
-    // `max + 500` guess. `ProjectEventStream_t4d_allocation_bound` states at COMMIT that the
-    // allocator is ahead of every position the stream uses, so a self-chosen position leaves the
-    // counter permanently behind and aborts the next legitimate `emitEvent` instead of this plant.
-    const max = await allocateStreamPositions(t.prisma, f.projectA.id, 2);
-    await t.prisma.$executeRawUnsafe(
-      `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","occurredAt") VALUES ('ev-tie-a','x',1,'${f.orgA.id}','${f.projectA.id}',${max},'system','system:seed','Decision','a','${at}'),('ev-tie-b','x',1,'${f.orgA.id}','${f.projectA.id}',${max + 1},'system','system:seed','Decision','b','${at}')`,
-    );
+    // Phase 6 unit 4d-i — each plant ALLOCATES AND INSERTS IN ONE TRANSACTION, the way
+    // `emitEvent` does. `DomainEvent_t4d_envelope` requires an event to sit at
+    // `nextPosition - 1` of a stream row this transaction moved, so a self-chosen position — or
+    // an allocation made in an earlier statement — is refused at the plant itself.
+    const max = await insertRawEvent(t.prisma, {
+      projectId: f.projectA.id, organizationId: f.orgA.id, eventId: 'ev-tie-a',
+      entityId: 'a', columns: ['"occurredAt"'], values: [`'${at}'`],
+    });
+    await insertRawEvent(t.prisma, {
+      projectId: f.projectA.id, organizationId: f.orgA.id, eventId: 'ev-tie-b',
+      entityId: 'b', columns: ['"occurredAt"'], values: [`'${at}'`],
+    });
     const ordered = await t.prisma.domainEvent.findMany({ where: { eventId: { in: ['ev-tie-a', 'ev-tie-b'] } }, orderBy: { streamPosition: 'asc' } });
     expect(ordered.map((e) => e.eventId)).toEqual(['ev-tie-a', 'ev-tie-b']);
-    // …but two events cannot share a position.
+    // …but two events cannot share a position. Written raw and deliberately NOT through the
+    // helper: the point is a COLLISION at an already-used position, which the allocator can no
+    // longer hand out. The envelope seal refuses it first, which is the stronger statement — the
+    // position is unreachable, not merely unique.
     await expect(
       t.prisma.$executeRawUnsafe(
         `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId") VALUES ('ev-dup','x',1,'${f.orgA.id}','${f.projectA.id}',${max},'system','system:seed','Decision','d')`,
       ),
-    ).rejects.toThrow(/unique|duplicate|already exists/i);
+    ).rejects.toThrow(/unique|duplicate|already exists|did not allocate it/i);
   });
 
   it('a forged tenant (organizationId that is not the project’s org) is rejected by the composite FK', async () => {
-    // Phase 6 unit 4d-i — allocated, not literal (see the tie arm above).
-    const slot = await allocateStreamPositions(t.prisma, f.projectA.id, 1);
-    // projectA belongs to orgA; claiming orgB is rejected.
+    // Phase 6 unit 4d-i — allocate-and-insert in one transaction (see the tie arm above). The
+    // forged tenant rolls the whole transaction back, allocation included, so the control plant
+    // that follows takes its own slot.
     await expect(
-      t.prisma.$executeRawUnsafe(
-        `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId") VALUES ('ev-forge','x',1,'${f.orgB.id}','${f.projectA.id}',${slot},'system','system:seed','Decision','x')`,
-      ),
+      insertRawEvent(t.prisma, {
+        projectId: f.projectA.id, organizationId: f.orgB.id, eventId: 'ev-forge',
+      }),
     ).rejects.toThrow(/foreign key|constraint/i);
-    // control: the project's REAL org is accepted at the same position slot.
-    await t.prisma.$executeRawUnsafe(
-      `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId") VALUES ('ev-real','x',1,'${f.orgA.id}','${f.projectA.id}',${slot},'system','system:seed','Decision','x')`,
-    );
+    // control: the project's REAL org is accepted.
+    await insertRawEvent(t.prisma, {
+      projectId: f.projectA.id, organizationId: f.orgA.id, eventId: 'ev-real',
+    });
     expect((await t.prisma.domainEvent.findUnique({ where: { eventId: 'ev-real' } }))?.organizationId).toBe(f.orgA.id);
   });
 
   it('the attribution truth table is a CHECK — invalid kind / human-without-actorId / system-without-systemActor all reject', async () => {
-    // Phase 6 unit 4d-i — allocated, not literal (see the tie arm above). Every arm here is
-    // expected to REJECT, so the positions are never used; the bound is `>` and not `=`, so an
-    // allocated-and-unused position is exactly as correct as a consumed one.
-    const ins = async (id: string, cols: string) => {
-      const at = await allocateStreamPositions(t.prisma, f.projectA.id, 1);
-      return t.prisma.$executeRawUnsafe(
-        `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","entityType","entityId",${cols.split('=')[0]}) VALUES ('${id}','x',1,'${f.orgA.id}','${f.projectA.id}',${at},'Decision','x',${cols.split('=')[1]})`,
-      );
-    };
+    // Phase 6 unit 4d-i — allocate-and-insert in one transaction (see the tie arm above). Every
+    // arm here REJECTS, and the rollback returns the allocation with it, so no arm consumes a
+    // position: `_t4d_allocation_bound` would refuse an increment whose position no event took.
+    const ins = (id: string, cols: string) =>
+      t.prisma.$transaction(async (tx) => {
+        const rows = await tx.$queryRawUnsafe<Array<{ at: bigint }>>(
+          `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1
+            WHERE "projectId" = $1 RETURNING "nextPosition" - 1 AS "at"`,
+          f.projectA.id,
+        );
+        return tx.$executeRawUnsafe(
+          `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","entityType","entityId",${cols.split('=')[0]}) VALUES ('${id}','x',1,'${f.orgA.id}','${f.projectA.id}',${Number(rows[0]!.at)},'Decision','x',${cols.split('=')[1]})`,
+        );
+      });
     // invalid actorKind
     await expect(ins('ev-badkind', `"actorKind"='robot'`)).rejects.toThrow(/constraint|check/i);
     // human with null actorId (actorId omitted → NULL)
