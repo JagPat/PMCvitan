@@ -3128,15 +3128,30 @@ model Notification {
 // judge. An effect leaves service by being RETIRED, never deleted: a historical event's key must
 // still resolve.
 model ExternalEffectCatalog {
-  effectKey       String    @id
+  /// The compiled catalog's coverage version. Part of the KEY, not a label: through the drain the
+  /// previous release emits the old version of a key while 4d-ii emits a new one, and both must
+  /// resolve at once. Under `effectKey` alone the new row collides with the old and a seed's
+  /// `ON CONFLICT DO NOTHING` keeps the stale definition.
+  coverageVersion String
+  effectKey       String
   eventType       String
   invalidate      Boolean
   pushRoles       Json?
   pushFamily      String?
+  /// The push-shape evidence the envelope and transition seals read. `requiresPush` says the
+  /// family OWES a push; `audience` says which shape — `broadcast` (roles EQUAL the ceiling),
+  /// `targeted` (a target within it) or `frozen`; `frozenAudience` and the family's constant,
+  /// decision-free `pushBody` are what a frozen family's push is compared against.
+  frozenAudience  Boolean
+  requiresPush    Boolean
+  audience        String?
+  pushBody        String?
   /// Whether an event of this type must be CLAIMED by exactly one fact. Seeded false; 4d-ii
   /// turns it on per key as its facts land.
   pairingRequired Boolean   @default(false)
   retiredAt       DateTime?
+
+  @@id([coverageVersion, effectKey])
 }
 
 // Phase 6 task 4d unit 4d-i (§D) — the drain attestation's evidence: which release is serving,

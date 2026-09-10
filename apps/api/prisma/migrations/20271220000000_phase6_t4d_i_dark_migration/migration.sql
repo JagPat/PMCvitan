@@ -2204,17 +2204,45 @@ CREATE UNIQUE INDEX IF NOT EXISTS "Notification_event_key"
 --
 -- `retiredAt` is a ONE-WAY stamp, gated: an effect key leaves service by being retired, never by
 -- being deleted, so a historical event's key still resolves.
+-- §A.2's ELEVEN columns, keyed by `(coverageVersion, effectKey)`. The first version of this file
+-- implemented six of them under `effectKey` alone (Codex round 1, findings 4 and 5), which cannot
+-- express the state the whole drain rests on: through the window the PREVIOUS release emits the
+-- old `coverageVersion` of a key while 4d-ii emits a new one, and both definitions must resolve
+-- deterministically at the same time. Under a single-column key the new row COLLIDES with the old
+-- and the seed's `ON CONFLICT DO NOTHING` silently keeps the stale definition — a drain that
+-- looks seeded and is not.
 CREATE TABLE IF NOT EXISTS "ExternalEffectCatalog" (
+    "coverageVersion" TEXT NOT NULL,
     "effectKey"       TEXT NOT NULL,
     "eventType"       TEXT NOT NULL,
     "invalidate"      BOOLEAN NOT NULL,
     "pushRoles"       JSONB,
     "pushFamily"      TEXT,
+    -- the push-shape evidence the envelope and transition seals read (#560's review round 1,
+    -- finding 3, and round 2's `audience`): `requiresPush` says the family OWES a push, so a
+    -- hand-run writer cannot seal a `noop` where the delivered service always announces;
+    -- `audience` says WHICH shape is owed — `broadcast` (roles EQUAL the ceiling), `targeted` (a
+    -- target within the ceiling) or `frozen` (the frozen-audience rule); `frozenAudience` and the
+    -- family's constant, decision-free `pushBody` are what the transition seal compares a frozen
+    -- family's push against. NO DEFAULT on `audience`: a pushing row without one is a row the
+    -- seal cannot judge, and silence there would read as permission.
+    "frozenAudience"  BOOLEAN NOT NULL,
+    "requiresPush"    BOOLEAN NOT NULL,
+    "audience"        TEXT,
+    "pushBody"        TEXT,
     -- §A.3 obligation 7's generic pairing: whether an event of this key must be CLAIMED by
     -- exactly one fact. Seeded false; 4d-ii turns it on per key as its facts land.
     "pairingRequired" BOOLEAN NOT NULL DEFAULT FALSE,
     "retiredAt"       TIMESTAMP(3),
-    CONSTRAINT "ExternalEffectCatalog_pkey" PRIMARY KEY ("effectKey")
+    CONSTRAINT "ExternalEffectCatalog_pkey" PRIMARY KEY ("coverageVersion", "effectKey"),
+    -- a pushing row names its shape; a non-pushing row names none.
+    CONSTRAINT "ExternalEffectCatalog_audience_check"
+      CHECK (("requiresPush" AND "audience" IN ('broadcast', 'targeted', 'frozen'))
+             OR (NOT "requiresPush" AND "audience" IS NULL)),
+    -- only a frozen-audience family carries a constant body, and it carries one.
+    CONSTRAINT "ExternalEffectCatalog_frozen_body_check"
+      CHECK (("frozenAudience" AND "audience" = 'frozen' AND "pushBody" IS NOT NULL)
+             OR (NOT "frozenAudience" AND "pushBody" IS NULL))
 );
 
 -- ── the release lease, DARK ──────────────────────────────────────────────────────────────────
@@ -2269,115 +2297,122 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- `apps/api/src/platform/external-effects.ts` rather than transcribed. `ON CONFLICT DO NOTHING`
 -- so an `ALWAYS_EXECUTE` replay adds keys that appeared since and never rewrites a row an
 -- operator or a later unit has moved.
-INSERT INTO "ExternalEffectCatalog" ("effectKey", "eventType", "invalidate", "pushRoles", "pushFamily") VALUES
-  ('activity.completion_requested', 'activity.completion_requested', true, '["pmc"]'::jsonb, NULL),
-  ('activity.created', 'activity.created', true, '["contractor","engineer"]'::jsonb, NULL),
-  ('activity.deleted', 'activity.deleted', true, NULL, NULL),
-  ('activity.labour_blocked', 'activity.labour_blocked', true, NULL, NULL),
-  ('activity.labour_unblocked', 'activity.labour_unblocked', true, NULL, NULL),
-  ('activity.material_blocked', 'activity.material_blocked', true, NULL, NULL),
-  ('activity.material_unblocked', 'activity.material_unblocked', true, NULL, NULL),
-  ('activity.override_granted', 'activity.override_granted', true, '["contractor","engineer"]'::jsonb, NULL),
-  ('activity.override_revoked', 'activity.override_revoked', true, NULL, NULL),
-  ('activity.signed_off', 'activity.signed_off', true, '["client","contractor"]'::jsonb, NULL),
-  ('activity.signoff_rejected', 'activity.signoff_rejected', true, NULL, NULL),
-  ('activity.started', 'activity.started', true, NULL, NULL),
-  ('activity.unfiled', 'activity.unfiled', true, NULL, NULL),
-  ('activity.updated', 'activity.updated', true, NULL, NULL),
-  ('activity_output.recorded', 'activity_output.recorded', true, NULL, NULL),
-  ('allocation.made', 'allocation.made', true, NULL, NULL),
-  ('allocation.released', 'allocation.released', true, NULL, NULL),
-  ('attendance.recorded', 'attendance.recorded', true, NULL, NULL),
-  ('attendance.revoked', 'attendance.revoked', true, NULL, NULL),
-  ('capacity.committed', 'capacity.committed', true, NULL, NULL),
-  ('capacity.defaulted', 'capacity.defaulted', true, NULL, NULL),
-  ('capacity.revised', 'capacity.revised', true, NULL, NULL),
-  ('commercial.money_moved', 'commercial.money_moved', true, NULL, NULL),
-  ('comparison.approved', 'comparison.approved', true, NULL, NULL),
-  ('dailylog.started', 'dailylog.started', true, NULL, NULL),
-  ('dailylog.submitted', 'dailylog.submitted', true, NULL, NULL),
-  ('decision.approved', 'decision.approved', true, '["contractor","engineer","pmc"]'::jsonb, NULL),
-  ('decision.change_requested', 'decision.change_requested', true, NULL, NULL),
-  ('decision.change_withdrawn', 'decision.change_withdrawn', true, NULL, NULL),
-  ('decision.consultation_requested', 'decision.consultation_requested', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'consultation_requested'),
-  ('decision.consultation_responded', 'decision.consultation_responded', true, '["pmc"]'::jsonb, 'consultation_responded'),
-  ('decision.drafted', 'decision.drafted', false, NULL, NULL),
-  ('decision.published', 'decision.published', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'decider'),
-  ('decision.reapproved', 'decision.reapproved', true, '["contractor","engineer","pmc"]'::jsonb, NULL),
-  ('decision.withdrawn', 'decision.withdrawn', true, NULL, NULL),
-  ('delivery.committed', 'delivery.committed', true, NULL, NULL),
-  ('delivery.defaulted', 'delivery.defaulted', true, NULL, NULL),
-  ('delivery.fulfilled', 'delivery.fulfilled', true, NULL, NULL),
-  ('delivery.revised', 'delivery.revised', true, NULL, NULL),
-  ('drawing.acknowledged', 'drawing.acknowledged', true, '["pmc"]'::jsonb, NULL),
-  ('drawing.activity_unlinked', 'drawing.activity_unlinked', true, NULL, NULL),
-  ('drawing.issued', 'drawing.issued', true, '["contractor","engineer"]'::jsonb, NULL),
-  ('drawing.issued_draft', 'drawing.issued', false, NULL, NULL),
-  ('drawing.published', 'drawing.published', true, '["contractor","engineer"]'::jsonb, NULL),
-  ('drawing.recipients_frozen', 'drawing.recipients_frozen', false, NULL, NULL),
-  ('drawing.refiled', 'drawing.refiled', true, NULL, NULL),
-  ('drawing.removed', 'drawing.removed', true, NULL, NULL),
-  ('drawing.revised', 'drawing.revised', true, '["contractor","engineer"]'::jsonb, NULL),
-  ('drawing.revised_draft', 'drawing.revised', false, NULL, NULL),
-  ('drawing.unfiled', 'drawing.unfiled', true, NULL, NULL),
-  ('inspection.approved', 'inspection.approved', true, '["client","contractor"]'::jsonb, NULL),
-  ('inspection.closing_created', 'inspection.closing_created', true, NULL, NULL),
-  ('inspection.created', 'inspection.created', true, '["engineer"]'::jsonb, NULL),
-  ('inspection.evidence_added', 'inspection.evidence_added', true, NULL, NULL),
-  ('inspection.evidence_removed', 'inspection.evidence_removed', true, NULL, NULL),
-  ('inspection.reinspection_created', 'inspection.reinspection_created', true, '["engineer"]'::jsonb, NULL),
-  ('inspection.rejected', 'inspection.rejected', true, NULL, NULL),
-  ('inspection.relabeled', 'inspection.relabeled', true, NULL, NULL),
-  ('inspection.submitted', 'inspection.submitted', true, NULL, NULL),
-  ('inspection.unfiled', 'inspection.unfiled', true, NULL, NULL),
-  ('issue.recorded', 'issue.recorded', true, NULL, NULL),
-  ('labour.comparison.approved', 'labour.comparison.approved', true, NULL, NULL),
-  ('labour.po.amended', 'labour.po.amended', true, NULL, NULL),
-  ('labour.po.cancelled', 'labour.po.cancelled', true, NULL, NULL),
-  ('labour.po.closed_short', 'labour.po.closed_short', true, NULL, NULL),
-  ('labour.po.issued', 'labour.po.issued', true, NULL, NULL),
-  ('labour.requisition.approved', 'labour.requisition.approved', true, NULL, NULL),
-  ('labour.requisition.submitted', 'labour.requisition.submitted', true, NULL, NULL),
-  ('labour_mismatch.recorded', 'labour_mismatch.recorded', true, NULL, NULL),
-  ('labour_mismatch.resolved', 'labour_mismatch.resolved', true, NULL, NULL),
-  ('labour_work.recorded', 'labour_work.recorded', true, NULL, NULL),
-  ('material.added', 'material.added', true, NULL, NULL),
-  ('material.mismatch_flagged', 'material.mismatch_flagged', true, '["contractor","pmc"]'::jsonb, NULL),
-  ('material.unfiled', 'material.unfiled', true, NULL, NULL),
-  ('media.refiled', 'media.refiled', true, NULL, NULL),
-  ('media.removed', 'media.removed', true, NULL, NULL),
-  ('media.uploaded', 'media.uploaded', true, NULL, NULL),
-  ('membership.added', 'membership.added', false, NULL, NULL),
-  ('membership.discipline_changed', 'membership.discipline_changed', false, NULL, NULL),
-  ('membership.removed', 'membership.removed', false, NULL, NULL),
-  ('membership.role_changed', 'membership.role_changed', false, NULL, NULL),
-  ('mismatch.resolved', 'mismatch.resolved', true, NULL, NULL),
-  ('node.created', 'node.created', true, NULL, NULL),
-  ('node.moved', 'node.moved', true, NULL, NULL),
-  ('node.published', 'node.published', true, NULL, NULL),
-  ('node.removed', 'node.removed', true, NULL, NULL),
-  ('node.renamed', 'node.renamed', true, NULL, NULL),
-  ('phase.created', 'phase.created', true, NULL, NULL),
-  ('phase.removed', 'phase.removed', true, NULL, NULL),
-  ('po.amended', 'po.amended', true, NULL, NULL),
-  ('po.cancelled', 'po.cancelled', true, NULL, NULL),
-  ('po.closed_short', 'po.closed_short', true, NULL, NULL),
-  ('po.issued', 'po.issued', true, NULL, NULL),
-  ('project.archived', 'project.archived', false, NULL, NULL),
-  ('project.created', 'project.created', false, NULL, NULL),
-  ('project.restored', 'project.restored', false, NULL, NULL),
-  ('project.updated', 'project.updated', false, NULL, NULL),
-  ('requirement.cancelled', 'requirement.cancelled', true, NULL, NULL),
-  ('requirement.created', 'requirement.created', true, NULL, NULL),
-  ('requirement.revised', 'requirement.revised', true, NULL, NULL),
-  ('requisition.approved', 'requisition.approved', true, NULL, NULL),
-  ('requisition.submitted', 'requisition.submitted', true, NULL, NULL),
-  ('skill_substitution.approved', 'skill_substitution.approved', true, NULL, NULL),
-  ('skill_substitution.revoked', 'skill_substitution.revoked', true, NULL, NULL),
-  ('stock.transacted', 'stock.transacted', true, NULL, NULL),
-  ('substitution.approved', 'substitution.approved', true, NULL, NULL),
-  ('substitution.revoked', 'substitution.revoked', true, NULL, NULL)
-ON CONFLICT ("effectKey") DO NOTHING;
+-- The seed DECLARES itself, which is what the INSERT arm above requires. Session-scoped rather
+-- than `SET LOCAL`, because this file is not wrapped in one transaction (Part 2's `ALTER TYPE`
+-- statements cannot be), and a `SET LOCAL` outside a transaction block sets nothing at all.
+SELECT set_config('vitan.phase6_4d_catalog', 'on', false);
+
+INSERT INTO "ExternalEffectCatalog" ("coverageVersion", "effectKey", "eventType", "invalidate", "pushRoles", "pushFamily", "frozenAudience", "requiresPush", "audience", "pushBody", "pairingRequired") VALUES
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.completion_requested', 'activity.completion_requested', true, '["pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.created', 'activity.created', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.deleted', 'activity.deleted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.labour_blocked', 'activity.labour_blocked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.labour_unblocked', 'activity.labour_unblocked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.material_blocked', 'activity.material_blocked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.material_unblocked', 'activity.material_unblocked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.override_granted', 'activity.override_granted', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.override_revoked', 'activity.override_revoked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.signed_off', 'activity.signed_off', true, '["client","contractor"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.signoff_rejected', 'activity.signoff_rejected', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.started', 'activity.started', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.unfiled', 'activity.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity.updated', 'activity.updated', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'activity_output.recorded', 'activity_output.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'allocation.made', 'allocation.made', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'allocation.released', 'allocation.released', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'attendance.recorded', 'attendance.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'attendance.revoked', 'attendance.revoked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'capacity.committed', 'capacity.committed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'capacity.defaulted', 'capacity.defaulted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'capacity.revised', 'capacity.revised', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'commercial.money_moved', 'commercial.money_moved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'comparison.approved', 'comparison.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'dailylog.started', 'dailylog.started', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'dailylog.submitted', 'dailylog.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.approved', 'decision.approved', true, '["contractor","engineer","pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.change_requested', 'decision.change_requested', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.change_withdrawn', 'decision.change_withdrawn', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.consultation_requested', 'decision.consultation_requested', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'consultation_requested', false, true, 'targeted', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.consultation_responded', 'decision.consultation_responded', true, '["pmc"]'::jsonb, 'consultation_responded', false, true, 'targeted', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.drafted', 'decision.drafted', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.published', 'decision.published', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'decider', false, true, 'targeted', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.reapproved', 'decision.reapproved', true, '["contractor","engineer","pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'decision.withdrawn', 'decision.withdrawn', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'delivery.committed', 'delivery.committed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'delivery.defaulted', 'delivery.defaulted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'delivery.fulfilled', 'delivery.fulfilled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'delivery.revised', 'delivery.revised', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.acknowledged', 'drawing.acknowledged', true, '["pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.activity_unlinked', 'drawing.activity_unlinked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.issued', 'drawing.issued', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.issued_draft', 'drawing.issued', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.published', 'drawing.published', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.recipients_frozen', 'drawing.recipients_frozen', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.refiled', 'drawing.refiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.removed', 'drawing.removed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.revised', 'drawing.revised', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.revised_draft', 'drawing.revised', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'drawing.unfiled', 'drawing.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.approved', 'inspection.approved', true, '["client","contractor"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.closing_created', 'inspection.closing_created', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.created', 'inspection.created', true, '["engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.evidence_added', 'inspection.evidence_added', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.evidence_removed', 'inspection.evidence_removed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.reinspection_created', 'inspection.reinspection_created', true, '["engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.rejected', 'inspection.rejected', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.relabeled', 'inspection.relabeled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.submitted', 'inspection.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'inspection.unfiled', 'inspection.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'issue.recorded', 'issue.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour.comparison.approved', 'labour.comparison.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour.po.amended', 'labour.po.amended', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour.po.cancelled', 'labour.po.cancelled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour.po.closed_short', 'labour.po.closed_short', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour.po.issued', 'labour.po.issued', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour.requisition.approved', 'labour.requisition.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour.requisition.submitted', 'labour.requisition.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour_mismatch.recorded', 'labour_mismatch.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour_mismatch.resolved', 'labour_mismatch.resolved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'labour_work.recorded', 'labour_work.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'material.added', 'material.added', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'material.mismatch_flagged', 'material.mismatch_flagged', true, '["contractor","pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'material.unfiled', 'material.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'media.refiled', 'media.refiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'media.removed', 'media.removed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'media.uploaded', 'media.uploaded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'membership.added', 'membership.added', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'membership.discipline_changed', 'membership.discipline_changed', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'membership.removed', 'membership.removed', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'membership.role_changed', 'membership.role_changed', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'mismatch.resolved', 'mismatch.resolved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'node.created', 'node.created', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'node.moved', 'node.moved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'node.published', 'node.published', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'node.removed', 'node.removed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'node.renamed', 'node.renamed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'phase.created', 'phase.created', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'phase.removed', 'phase.removed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'po.amended', 'po.amended', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'po.cancelled', 'po.cancelled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'po.closed_short', 'po.closed_short', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'po.issued', 'po.issued', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'project.archived', 'project.archived', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'project.created', 'project.created', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'project.restored', 'project.restored', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'project.updated', 'project.updated', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'requirement.cancelled', 'requirement.cancelled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'requirement.created', 'requirement.created', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'requirement.revised', 'requirement.revised', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'requisition.approved', 'requisition.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'requisition.submitted', 'requisition.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'skill_substitution.approved', 'skill_substitution.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'skill_substitution.revoked', 'skill_substitution.revoked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'stock.transacted', 'stock.transacted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'substitution.approved', 'substitution.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7', 'substitution.revoked', 'substitution.revoked', true, NULL, NULL, false, false, NULL, NULL, false)
+ON CONFLICT ("coverageVersion", "effectKey") DO NOTHING;
+
+SELECT set_config('vitan.phase6_4d_catalog', 'off', false);
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────
 -- PART 3d — THE GENERIC PAIRING MECHANISM AND THE KERNEL SEALS
@@ -2586,33 +2621,71 @@ CREATE TRIGGER "Notification_t4d_no_truncate" BEFORE TRUNCATE ON "Notification"
   FOR EACH STATEMENT EXECUTE FUNCTION platform_t4d_notification_no_truncate();
 
 -- ── the catalog's own seals ──────────────────────────────────────────────────────────────────
--- The catalog is what the pairing seal reads, so a writer who could delete a row could switch
--- the seal off for a whole event type. `retiredAt` is a ONE-WAY stamp; every other column is
--- frozen; the row is undeletable and the table untruncatable.
+-- The catalog is what the pairing, envelope and transition seals READ, so whoever can change a
+-- row can change what those seals judge. §A.2 states the rule as: rows are written ONLY by
+-- migrations under a named gate, DELETE refused, and UPDATE refused EXCEPT the one retirement
+-- stamp.
+--
+-- The first version of this file refused DELETE and froze `effectKey`/`eventType` only, while its
+-- own comment claimed "every other column is frozen" (Codex round 1, finding 5 — the sentence was
+-- right and the code was not, the same shape as the transaction predicates in R1-A). An ordinary
+-- depth-1 UPDATE could set `pairingRequired = false`, switching fact/event correspondence off for
+-- a whole event type, or rewrite `pushRoles` to redirect a trusted audience with no provenance at
+-- all.
 CREATE OR REPLACE FUNCTION platform_t4d_effect_catalog_sealed() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
+  IF TG_OP = 'INSERT' THEN
+    -- the 4c-iii-r mistake-proofing shape: a migration DECLARES itself, and nothing else writes.
+    IF COALESCE(current_setting('vitan.phase6_4d_catalog', true), '') <> 'on' THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: catalog entry `%` at coverage `%` was inserted outside a catalog migration — these rows are what the pairing, envelope and transition seals judge, so they are written only under `SET vitan.phase6_4d_catalog = ''on''` by a migration that says so',
+        NEW."effectKey", NEW."coverageVersion";
+    END IF;
+    RETURN NEW;
+  END IF;
+
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION
-      'phase6 4d-i: catalog entry `%` may not be DELETED — a historical event''s key must still resolve, and a missing row silently switches the pairing seal off for its whole event type. An effect leaves service by being RETIRED.',
-      OLD."effectKey";
+      'phase6 4d-i: catalog entry `%` at coverage `%` may not be DELETED — a historical event''s key must still resolve, and a missing row silently switches the pairing seal off for its whole event type. An effect leaves service by being RETIRED.',
+      OLD."effectKey", OLD."coverageVersion";
   END IF;
-  IF NEW."effectKey" IS DISTINCT FROM OLD."effectKey"
-     OR NEW."eventType" IS DISTINCT FROM OLD."eventType" THEN
+
+  -- THE ONE ADMITTED UPDATE: the retirement stamp, NULL → a timestamp, under the same gate.
+  -- Everything else about the row is evidence and does not move.
+  IF NEW."coverageVersion" IS DISTINCT FROM OLD."coverageVersion"
+     OR NEW."effectKey"      IS DISTINCT FROM OLD."effectKey"
+     OR NEW."eventType"      IS DISTINCT FROM OLD."eventType"
+     OR NEW."invalidate"     IS DISTINCT FROM OLD."invalidate"
+     OR NEW."pushRoles"      IS DISTINCT FROM OLD."pushRoles"
+     OR NEW."pushFamily"     IS DISTINCT FROM OLD."pushFamily"
+     OR NEW."frozenAudience" IS DISTINCT FROM OLD."frozenAudience"
+     OR NEW."requiresPush"   IS DISTINCT FROM OLD."requiresPush"
+     OR NEW."audience"       IS DISTINCT FROM OLD."audience"
+     OR NEW."pushBody"       IS DISTINCT FROM OLD."pushBody"
+     OR NEW."pairingRequired" IS DISTINCT FROM OLD."pairingRequired" THEN
     RAISE EXCEPTION
-      'phase6 4d-i: catalog entry `%` may not be re-keyed or re-typed — that is a delete and an insert wearing one row',
-      OLD."effectKey";
+      'phase6 4d-i: catalog entry `%` at coverage `%` is frozen — the ONLY admitted update is the retirement stamp. Switching `pairingRequired` off would disable fact/event correspondence for a whole event type, and rewriting `pushRoles` or `audience` would redirect a trusted audience with no provenance; a definition changes by a NEW coverage version, never in place.',
+      OLD."effectKey", OLD."coverageVersion";
   END IF;
-  IF OLD."retiredAt" IS NOT NULL AND NEW."retiredAt" IS DISTINCT FROM OLD."retiredAt" THEN
-    RAISE EXCEPTION
-      'phase6 4d-i: catalog entry `%` was retired at % — retirement is a ONE-WAY stamp and un-retiring an effect would revive a dispatch plan the release no longer implements',
-      OLD."effectKey", OLD."retiredAt";
+
+  IF NEW."retiredAt" IS DISTINCT FROM OLD."retiredAt" THEN
+    IF OLD."retiredAt" IS NOT NULL THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: catalog entry `%` was retired at % — retirement is a ONE-WAY stamp and un-retiring an effect would revive a dispatch plan the release no longer implements',
+        OLD."effectKey", OLD."retiredAt";
+    END IF;
+    IF COALESCE(current_setting('vitan.phase6_4d_catalog', true), '') <> 'on' THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: catalog entry `%` is retired by a catalog MIGRATION under `SET vitan.phase6_4d_catalog = ''on''`, never by an ordinary statement',
+        OLD."effectKey";
+    END IF;
   END IF;
   RETURN NEW;
 END $$;
 
 DROP TRIGGER IF EXISTS "ExternalEffectCatalog_t4d_sealed" ON "ExternalEffectCatalog";
 CREATE TRIGGER "ExternalEffectCatalog_t4d_sealed"
-  BEFORE UPDATE OR DELETE ON "ExternalEffectCatalog"
+  BEFORE INSERT OR UPDATE OR DELETE ON "ExternalEffectCatalog"
   FOR EACH ROW EXECUTE FUNCTION platform_t4d_effect_catalog_sealed();
 
 DROP TRIGGER IF EXISTS "ExternalEffectCatalog_t4d_no_truncate" ON "ExternalEffectCatalog";

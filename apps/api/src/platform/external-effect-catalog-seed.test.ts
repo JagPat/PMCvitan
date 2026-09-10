@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { EXTERNAL_EFFECTS } from './external-effects';
+import { EXTERNAL_EFFECTS, effectCoverageVersion } from './external-effects';
 
 /**
  * Phase 6 unit 4d-i — the catalog is compiled into the server AND projected as rows, and the two
@@ -27,43 +27,78 @@ const MIGRATION = join(
   '20271220000000_phase6_t4d_i_dark_migration', 'migration.sql',
 );
 
-type Row = { effectKey: string; eventType: string; invalidate: boolean; push: string[] | null; pushFamily: string | null };
+type Row = {
+  coverageVersion: string;
+  effectKey: string;
+  eventType: string;
+  invalidate: boolean;
+  push: string[] | null;
+  pushFamily: string | null;
+  frozenAudience: boolean;
+  requiresPush: boolean;
+  audience: string | null;
+  pushBody: string | null;
+};
 
 /** Parse the seed's VALUES tuples out of the migration. */
 function seededRows(): Row[] {
   const sql = readFileSync(MIGRATION, 'utf8');
   const start = sql.indexOf('INSERT INTO "ExternalEffectCatalog"');
   expect(start, 'the migration must carry the catalog seed').toBeGreaterThan(-1);
-  const end = sql.indexOf('ON CONFLICT ("effectKey") DO NOTHING;', start);
+  const end = sql.indexOf('ON CONFLICT ("coverageVersion", "effectKey") DO NOTHING;', start);
   expect(end, 'the seed must end with its ON CONFLICT clause').toBeGreaterThan(start);
 
   const rows: Row[] = [];
-  const re = /^ {2}\('([^']+)', '([^']+)', (true|false), (NULL|'(\[[^\]]*\])'::jsonb), (NULL|'([^']+)')\),?$/gm;
+  // Eleven columns since Codex round 1 (findings 4 and 5): the key gained `coverageVersion` and
+  // the push shape gained the four columns the envelope and transition seals read. The parser
+  // pins ALL of them — a tripwire that reads only the columns the first implementation happened
+  // to write is the same mistake the round is correcting.
+  const re = new RegExp(
+    String.raw`^ {2}\('([^']+)', '([^']+)', '([^']+)', (true|false), ` // coverage, key, type, invalidate
+    + String.raw`(NULL|'(\[[^\]]*\])'::jsonb), (NULL|'([^']+)'), `      // pushRoles, pushFamily
+    + String.raw`(true|false), (true|false), (NULL|'([^']+)'), (NULL|'([^']*)'), `  // frozen, requires, audience, body
+    + String.raw`(?:true|false)\),?$`,                                   // pairingRequired
+    'gm',
+  );
   const body = sql.slice(start, end);
   let m: RegExpExecArray | null;
   while ((m = re.exec(body)) !== null) {
     rows.push({
-      effectKey: m[1]!,
-      eventType: m[2]!,
-      invalidate: m[3] === 'true',
-      push: m[4] === 'NULL' ? null : (JSON.parse(m[5]!) as string[]),
-      pushFamily: m[6] === 'NULL' ? null : m[7]!,
+      coverageVersion: m[1]!,
+      effectKey: m[2]!,
+      eventType: m[3]!,
+      invalidate: m[4] === 'true',
+      push: m[5] === 'NULL' ? null : (JSON.parse(m[6]!) as string[]),
+      pushFamily: m[7] === 'NULL' ? null : m[8]!,
+      frozenAudience: m[9] === 'true',
+      requiresPush: m[10] === 'true',
+      audience: m[11] === 'NULL' ? null : m[12]!,
+      pushBody: m[13] === 'NULL' ? null : m[14]!,
     });
   }
   return rows;
 }
 
-/** The same shape, read off the compiled catalog. */
+/** The same shape, DERIVED from the compiled catalog exactly as the seed generator derives it. */
 function compiledRows(): Row[] {
   const catalog = EXTERNAL_EFFECTS as Record<string, { eventType: string; invalidate: boolean; push: readonly string[] | null; pushFamily?: string }>;
+  const coverageVersion = effectCoverageVersion();
   return Object.keys(catalog).sort().map((effectKey) => {
     const d = catalog[effectKey]!;
+    const requiresPush = d.push !== null;
     return {
+      coverageVersion,
       effectKey,
       eventType: d.eventType,
       invalidate: d.invalidate,
       push: d.push === null ? null : [...d.push].sort(),
       pushFamily: d.pushFamily ?? null,
+      // nothing compiled today is a frozen-audience family — those are 4d-ii's — so every seeded
+      // row is false and carries no constant body.
+      frozenAudience: false,
+      requiresPush,
+      audience: !requiresPush ? null : d.pushFamily ? 'targeted' : 'broadcast',
+      pushBody: null,
     };
   });
 }
@@ -80,7 +115,7 @@ describe('phase 6 unit 4d-i — the seeded effect catalog equals the compiled on
     expect(extra, 'seeded rows for keys the compiled catalog no longer declares — retire them, never delete').toEqual([]);
   });
 
-  it('seeds each key with the eventType, invalidate flag and push shape the code declares', () => {
+  it('seeds each key with the coverage version, eventType, invalidate flag and FULL push shape the code declares', () => {
     const seeded = new Map(seededRows().map((r) => [r.effectKey, r]));
     for (const want of compiledRows()) {
       expect(seeded.get(want.effectKey), `no seeded row for ${want.effectKey}`).toEqual(want);
