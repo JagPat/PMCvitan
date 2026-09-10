@@ -4,7 +4,7 @@ import { ForbiddenException, NotFoundException, UnauthorizedException } from '@n
 import * as bcrypt from 'bcryptjs';
 import { AuthService } from './auth.service';
 import { SmsService } from './sms.service';
-import { EmailService } from './email.service';
+import { EmailService } from '../platform/email.service';
 import { GoogleAuthService } from './google.service';
 import type { PrismaService } from '../prisma.service';
 

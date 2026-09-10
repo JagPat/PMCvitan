@@ -6,7 +6,7 @@ import { AppModule } from '../../src/app.module';
 import { configureApp } from '../../src/app-setup';
 import { PrismaService } from '../../src/prisma.service';
 import type { Role } from '../../src/common/auth';
-import { EmailService } from '../../src/auth/email.service';
+import { EmailService } from '../../src/platform/email.service';
 
 export interface TestApp {
   app: NestExpressApplication;

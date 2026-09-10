@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma.service';
 import { SmsService } from './sms.service';
-import { EmailService } from './email.service';
+import { EmailService } from '../platform/email.service';
 import { GoogleAuthService } from './google.service';
 import type { Role } from '../common/auth';
 import type {
