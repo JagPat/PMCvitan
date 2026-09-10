@@ -1,7 +1,7 @@
 import { HttpException, HttpStatus, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
-import { OtpStore } from '../auth/otp-store';
+import { OtpStore } from './otp-store';
 import { isProduction } from '../config';
 
 const OTP_TTL_MS = 10 * 60_000;
