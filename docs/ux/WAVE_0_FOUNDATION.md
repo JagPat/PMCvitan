@@ -221,6 +221,25 @@ Audit every action target against the 44×44 floor in the same pass.
 >
 > F-1c still owns the sweep of every surface this unit did not touch. What it no longer inherits is
 > a set of known violations it was never allowed to fix.
+>
+> **Amendment (2026-09-10, PR #584 review round 6): two more targets, and the limit of a sweep.**
+> The breadcrumb was given a height and not a WIDTH — the same omission this unit had already
+> caught on the register's `All` chip one round earlier and failed to carry one file over — and a
+> location name may be a single character (`createNodeSchema` accepts `min(1)`). The override
+> REVOKE control, an 11px glyph with no padding, was never measured by anything. Both are at
+> 44×44 now.
+>
+> **And neither is provable by the e2e sweep, for two different reasons that are worth separating.**
+> The revoke control needs a STATE the suite cannot reach: recording an override goes through
+> `overrideGate`, which refuses without a server, and this suite runs the API-less demo. The
+> breadcrumb is reachable but needs DATA the fixture does not contain: the demo's names are
+> "Ground Floor" and the like, so its crumbs are comfortably past 44px and the arm stays green
+> with the minimum removed — measured, not assumed. Both are therefore guarded at the DECLARATION
+> in `ux-consistency.test.tsx`, which this document's own criterion allows ("verified by computed
+> style, or by source"), and each guard was confirmed to fail when its minimum is deleted.
+>
+> A sweep proves the states it drives over the data it has. That is a smaller claim than it looks,
+> and it is the fifth distinct way this unit has now been caught overstating one.
 
 > 4. **A desktop-parity assertion must name a value.** `expect(sizes.every((s)
 >    => s > 0))` is true whether the rule is scoped or has escaped to every

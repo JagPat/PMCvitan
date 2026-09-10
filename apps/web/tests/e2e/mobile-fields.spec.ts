@@ -187,8 +187,16 @@ test('the surfaces whose targets F-1b raised hold the 44px floor', async ({ page
 
   await page.getByTestId('tab-site-schedule').click();
   await expect(page.locator('[data-testid^="sched-place-"]').first()).toBeVisible();
-  await sweepActionTargets(page, 'Schedule — breadcrumbs and drawing chips');
+  await sweepActionTargets(page, 'Schedule — as opened');
 
+  // #584 review round 6, finding 2 — THE OVERRIDE STATE CANNOT BE DRIVEN HERE, and the control it
+  // holds is guarded elsewhere. The revoke button exists only once an override is RECORDED, and
+  // recording one goes through `overrideGate`, which refuses without a server ("Gate overrides
+  // need the server") — this suite runs the API-less demo, so no click sequence reaches the state.
+  // Driving a different state and calling it covered is the failure this file has already made
+  // four times, so it is not repeated here. The control is raised to 44x44 in `ScheduleScreen`,
+  // and `ux-consistency.test.tsx` fails if that declaration is removed — Wave 0's own criterion
+  // allows verification "by computed style, or by source", and source is what this state affords.
   await page.getByTestId('tab-more').click();
   await page.getByTestId('more-item-decision-log').click();
   await expect(page.getByTestId('groupby-location')).toBeVisible();

@@ -182,8 +182,11 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
           {a.overrides!.map((o) => (
             <span key={o.id} data-testid={`override-chip-${o.id}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 9.5, padding: '3px 8px', borderRadius: 8, background: '#E6ECF3', color: '#31567F', border: '1px solid #C4D3E4' }}>
               OVERRIDE · {o.gate} → {o.state} · {o.actorName} · expires {new Date(o.expiresAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })} · {o.reason}
+              {/* 44x44 (#584 review round 6): revoking an override is a live gate change made with
+                  a thumb, and it was an 11px glyph with zero padding. `alignSelf: 'center'` keeps
+                  the taller control from stretching the chip it sits in. */}
               {onOverride && (
-                <button onClick={() => revokeOverride(a.id, o.id)} title="Revoke this override now" aria-label="Revoke override" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#31567F', display: 'flex', padding: 0 }}>
+                <button onClick={() => revokeOverride(a.id, o.id)} title="Revoke this override now" aria-label="Revoke override" data-testid={`revoke-override-${o.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#31567F', display: 'flex', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', minWidth: 44, minHeight: 44, padding: 0 }}>
                   <X size={11} />
                 </button>
               )}

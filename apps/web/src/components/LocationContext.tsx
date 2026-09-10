@@ -85,9 +85,16 @@ const crumb: CSSProperties = {
   // action target ≥44×44" without exception. Deferring it was the mistake round 5 caught: F-1c is
   // VALIDATION with no new design decisions, so a known violation parked there is parked nowhere.
   // The row is denser for it, and that is the trade this unit is the one allowed to make.
+  // BOTH AXES (#584 review round 6). Round 5 gave this a height and stopped, and a location name
+  // may legitimately be a single character — `createNodeSchema` accepts `min(1)` and the
+  // integration fixtures use `Z` — so a crumb was ~18px WIDE while passing a height-only floor.
+  // Round 5 had already caught the identical omission on the register's `All` chip (37px wide
+  // after its own height fix) and did not carry the lesson back here, one file over.
   minHeight: 44,
+  minWidth: 44,
   display: 'inline-flex',
   alignItems: 'center',
+  justifyContent: 'center',
   padding: '2px 3px',
   margin: 0,
   fontFamily: 'var(--font-sans)',
