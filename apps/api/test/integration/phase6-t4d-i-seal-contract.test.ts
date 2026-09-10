@@ -61,6 +61,14 @@ type SealContract = {
   plan: string;
   on: Record<string, Ops>;
   must: string[];
+  /**
+   * Tokens the body must NOT carry (#582's review round 8). `must` catches a rule that was never
+   * implemented; it says nothing when a rule is REMOVED and later creeps back. Two of round 8's
+   * corrections are removals — the membership seal's stepping-down bypass, and the
+   * `OLD.<col> IS NOT NULL` guard on the change request's birth provenance — and for those the
+   * register's claim is the absence. Without this, restoring either would leave the suite green.
+   */
+  forbid?: string[];
 };
 
 const B = (ops: string): Ops => ({ ops, when: 'BEFORE', row: true });
@@ -266,19 +274,29 @@ const REGISTER: Record<string, SealContract> = {
       'decision.awaiting_countersign', 'DecisionEvent'],
   },
   phase6_t4d_membership_transition_seal: {
-    rule: 'team management is an AUTHORIZED act (owner/admin authority, or `pmc`, or the subject '
-      + 'stepping down, judged from the transition\'s own pre- and post-state) and the pair is true',
-    plan: '§A.2 the membership paragraph',
+    rule: 'team management is an AUTHORIZED act (owner/admin authority, or `pmc` — with NO '
+      + 'stepping-down exception) and the pair is true, and the fact precedes its membership write',
+    plan: '§A.2 the membership paragraph; plan lines 560 and 2860; #582 round 8, findings 6 and 7',
     on: { 'MembershipTransition.MembershipTransition_t4d_seal': B('I') },
     // `platform_role_standing` was in this list until #582 round 4, finding 1, and its presence
     // here is what made the misplacement look correct: the register comparison genuinely was in
     // this body, so the oracle was green while the seal asked its question one statement too
     // early. The clause moved to the DEFERRED binding, and the token moved with it — a register
     // that names a clause by where it USED to live is a register that will accept it back.
+    // `m."xmin" = txid_current()` witnesses the ORDERING check that round 8's finding 6 made
+    // this side's job: the membership must not already have been written by this transaction.
+    // It is spelled with the alias so it cannot be satisfied by any other `txid_current()` a
+    // later edit might add — the "a token two rules can satisfy witnesses neither" weakness this
+    // register has already been corrected for three times.
+    //
+    // There is deliberately NO token for a self/stepping-down arm: round 8's finding 7 REMOVED
+    // it, and a register that still named it would accept its return.
     must: [
       'platform_user_orchestration_authority', 'platform_user_holds_role',
       'phase6_t4d_actor_bound',
+      'm."xmin" = txid_current()',
     ],
+    forbid: ['v_self_demotion'],
   },
   phase6_t4d_membership_transition_bound: {
     rule: 'the cited command SUCCEEDED in THIS transaction naming `NEW."membershipId"` as its '
@@ -458,11 +476,18 @@ const REGISTER: Record<string, SealContract> = {
     // The delivered `ChangeRequest_t4b2_seal` freezes `decisionId` alone and is a MERGED
     // migration, so every column this unit adds arrived unfrozen. `decisionId` is deliberately
     // absent from this list for that reason — it is the delivered seal's, not this one's.
+    // #582 round 8, finding 5 — the BIRTH set and the RESOLVER set are different rules and the
+    // register now says so. `OLD."resolvedByCommandId" IS NOT NULL` witnesses the resolver's
+    // close-once shape; the birth columns must NOT carry that guard, which `forbid` pins, because
+    // an `OLD ... IS NOT NULL` guard on them is exactly the NULL -> value hole the finding names.
     must: [
       'projectId', 'origin', 'revisionId',
       'sourceCommandId', 'requestedByRole', 'requestedByName',
       'resolvedByCommandId', 'resolvedByRole', 'resolvedByName',
+      'OLD."resolvedByCommandId" IS NOT NULL',
     ],
+    forbid: ['OLD."sourceCommandId" IS NOT NULL', 'OLD."requestedByRole" IS NOT NULL',
+      'OLD."requestedByName" IS NOT NULL'],
   },
   platform_t4d_event_pairing_claimed: {
     rule: 'an event of a pairing-required family is CLAIMED by exactly one fact',
@@ -490,10 +515,13 @@ const REGISTER: Record<string, SealContract> = {
     must: ['nextPosition'],
   },
   platform_t4d_stream_no_delete: {
-    rule: 'the counter is not deletable except as the project\'s own cascade',
-    plan: '§A.2 the allocator',
+    rule: 'the counter is not deletable except as the project\'s own cascade — and "cascade" is '
+      + 'the RI trigger DEPTH as well as the transaction flag',
+    plan: '§A.2 the allocator; plan lines 421 and 5079; #582 rounds 6 and 8',
     on: { 'ProjectEventStream.ProjectEventStream_t4d_no_delete': B('D') },
-    must: ['phase6.t4d_project_delete'],
+    // The flag alone stands `on` for the rest of a transaction that deleted ANY project, so a
+    // direct depth-1 delete of a second project's allocator rode it. Both halves or neither.
+    must: ['phase6.t4d_project_delete', 'pg_trigger_depth'],
   },
   platform_t4d_notification_binding: {
     rule: 'a notice bound to an event freezes `eventId`, `kind`, `decisionId` and `projectId`, and '
@@ -661,6 +689,11 @@ describe('phase 6 unit 4d-i — every seal is checked against its CONTRACT, not 
       if (def === undefined) continue;     // reported by the coverage arm
       for (const token of contract.must) {
         if (!def.includes(token)) missing.push(`${fn}: no \`${token}\` — the rule is: ${contract.rule} (${contract.plan})`);
+      }
+      for (const token of contract.forbid ?? []) {
+        if (def.includes(token)) {
+          missing.push(`${fn}: carries \`${token}\`, which the rule REMOVED — the rule is: ${contract.rule} (${contract.plan})`);
+        }
       }
     }
     expect(

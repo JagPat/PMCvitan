@@ -418,7 +418,7 @@ is a reader the enumeration missed:
 | 4 (P1) `cancelledAt` was left freely mutable, so a direct writer could suppress a leased push or un-cancel a stale one | §A.3 obligation 7 (the delivery seal); P37 | `OutboxDelivery_t4d_frozen` admits `cancelledAt` only as the NULL → timestamp write of the mark's own statement or the delivered leased/dead mark-only arm, never cleared or rewritten |
 | 5 (P1) the activation register's per-consumer sequence had no lock-before-append protocol; two appends could commit seq 2 then seq 1 and leave the mirror at the older fact | §A.3 obligation 7 (the delivery seal); P38 | the BEFORE INSERT takes the catalog row `FOR UPDATE` and requires `seq = activationSeq + 1`; the AFTER INSERT advances `active` and `activationSeq` together; the loser is refused with a stale sequence |
 | 6 (P2) `SnapshotService.shellSummary` counts `status === 'pending'` itself and never calls `countPending`, so the nav badge would read zero for an architect's awaiting obligation P31 asserts | §A.1 the readers; P31 | the shell badge is served by the SAME `countPending`; P31 asserts the badge for the architect's awaiting decision and the PMC's stranded one |
-| 7 (P1) a `ProjectEventStream` row could be deleted and reinserted at `N + 2`, bypassing the `+1` seal and leaving position N absent forever | §A.3 obligation 7 (the kernel envelope); §D 4d-i; P37 | DELETE refused outside the project-deletion cascade, INSERT admitted only at `nextPosition = 0` for a project without events, `ProjectEventStream_t4d_no_truncate` in `TRUNCATE_SEALS` (now FOURTEEN) |
+| 7 (P1) a `ProjectEventStream` row could be deleted and reinserted at `N + 2`, bypassing the `+1` seal and leaving position N absent forever | §A.3 obligation 7 (the kernel envelope); §D 4d-i; P37 | DELETE refused outside the project-deletion cascade — and "cascade" is the RI trigger DEPTH (`pg_trigger_depth() > 1`) AND the transaction-local project-deletion flag, both, exactly as the `MembershipTransition` exception already demands (#582's review rounds 6 and 8: the flag alone stands `on` for the rest of a transaction that deleted ANY project, so a direct depth-1 delete of a SECOND project's allocator rode it and left that project unable to emit) — INSERT admitted only at `nextPosition = 0` for a project without events, `ProjectEventStream_t4d_no_truncate` in `TRUNCATE_SEALS` (now FOURTEEN) |
 
 **Review round 2 on #561 (head `d5646595`) — nine findings, all P1, carried
 here, none dropped.** Six are second-order consequences of round 1's own
@@ -6377,6 +6377,58 @@ today's behaviour lives.
     the consultation request seal and `DecisionEvent_t4d_correspondence`, plus the
     wrapper that needs no marker.
 
+    **ROUND 8 — the four corrections that follow from one sentence: a seal must
+    ask a question its writer cannot answer at will** (#582's review round 8,
+    findings 1/2/4, 5, 6, 7 and 8).
+
+    *Fact-first is enforced from the FACT's side, and the self arm is gone.*
+    Round 6 made "the fact precedes the membership write" a sealed protocol, and
+    switched it on from the membership side by asking whether a member-command
+    receipt existed in the transaction. A writer chooses when its receipt
+    exists: membership first with no receipt, then reserve and complete it, then
+    the fact — and every deferred check passes at commit while the fact's live
+    authority read has seen the standing the write GRANTED. So the ordering is
+    enforced where it is a fact rather than a signal: at the fact's INSERT the
+    membership row must not already carry this transaction's `xmin`, the system
+    column no writer sets. An ADD is unaffected (its membership does not exist
+    yet, which is why the FK is deferred). With that in place line 560's
+    consequence is finally true, and the seal takes it: **the self-demotion arm
+    is REMOVED, not narrowed.** It admitted any transition whose subject was its
+    actor and whose direction was loss, so a contractor or engineer with no
+    authority could remove themselves — while the shipped `MembersService.remove`
+    refuses self-removal outright and P29b requires "a contractor's
+    self-transition refused". The exception existed for a live-read hazard that
+    fact-first dissolves: an authorized actor still holds their standing at the
+    moment the fact is written.
+
+    *Birth provenance and resolver provenance are two rules.* A single
+    `OLD.<col> IS NOT NULL` guard over all six `ChangeRequest` evidence columns
+    admits NULL → value on every one. For the resolver set that IS the closure;
+    for `sourceCommandId` and the requester pair it is a forgery route, and the
+    same freeze then makes the fabrication permanent. The birth set is frozen
+    against ANY update — a legacy row keeps its NULLs, a row that owes
+    provenance supplies it at INSERT — and each attribution pair is pinned as a
+    pair by CHECK (both halves or neither, and a present half non-blank).
+
+    *Every adopted register is audited against its source, not merely for
+    presence.* Round 7 asked this of `ProjectOrg` alone; `UserIdentity`,
+    `OrgUserAuthority` and `ProjectUserStanding` had the same shape — a
+    `db push`/P3005 baseline creates them before their seals exist, the
+    backfills skip an existing key, and whatever is sitting there is adopted and
+    frozen. Each is now audited: an identity that contradicts its `User`, an
+    authority row with no owner/admin `OrgMembership` behind it, a standing row
+    backed by neither an active membership in that role nor the membership-less
+    `pmc` claim. AUDIT, NOT REPAIR — `platform_t4d_register_writer` admits only
+    INSERT under the backfill gate, and correcting a row needs the
+    re-projection gate that belongs to 4d-iii. 4d-i adopts or refuses. Judged on
+    JUSTIFICATION only, never on `membershipId` equality, so a stale pointer
+    beside a real membership does not abort a healthy database — the shape of
+    round 6's zero-count defect, not repeated.
+
+    *And the allocator's cascade exception needs the cascade* — see the rule row
+    for finding 7 above. Raised at round 6 and not fixed until round 8; the arm
+    that would have caught it now exists.
+
     P28b's replay arm gains BOTH: the
     4d-i migration re-run against a post-4d-iii database, with the architect
     consultation request COMMITTING afterwards, RED against the unconditional
@@ -6510,6 +6562,28 @@ today's behaviour lives.
     the version its intents carry, which is the mechanism the column was built
     for. `pushOptional` is in that preimage for the same reason (#582's review
     round 5, finding 4).
+
+    **And the rule that mechanism implies binds 4d-i itself, not only 4d-i-b**
+    (#582's review round 8, finding 3). `DomainEvent_t4d_envelope` resolves an
+    intent by the EXACT `(coverageVersion, effectKey)` pair from the moment
+    4d-i commits — the intent has no dark window, unlike the actor pair — so
+    ANY migration that changes `effectCoverageVersion()` must seed the OUTGOING
+    generation beside the incoming one, or every event a still-serving process
+    emits during the rolling drain is refused, which is an outage for the length
+    of the drain rather than a dark rollout. 4d-i changes it: adding
+    `pushOptional` to the preimage moves the version from `6313b00c…` (what
+    `origin/main` computes) to `b731a407…`, and 4d-i seeded only the second.
+    The outgoing generation is seeded by COPYING the incoming rows, and that
+    copy is licensed by one measured fact — `pushOptional` was introduced to
+    DESCRIBE emit paths the previous release already takes, so the two releases
+    declare the same policy for all 107 keys and hash apart only because one of
+    them spells the extra tuple element. `phase6-t4d-i-catalog-generations.test.ts`
+    re-derives that equality from source on every run, so the licence cannot
+    outlive its proof; a release that genuinely changes a key's audience,
+    invalidation or push obligation seeds the outgoing generation with the
+    OUTGOING policy instead. The generation leaves service by RETIREMENT in
+    4d-i-b/4d-iii, once no lease serves it, which keeps it resolvable for
+    history while refusing to back a new event.
     **Why it is a separate unit rather than a later paragraph of 4d-i**: 4d-i
     reached #582's round 6 already carrying the whole of §A.3's fact/seal
     surface, and the pairing switch-on is the one part of it whose failure mode

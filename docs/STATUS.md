@@ -54,6 +54,28 @@ provenance binding read only `status`/`resultRef` (a hole in the contract's own 
 obligation 6 is amended with the code), the flip pairing admitted TWO finalizers, and the
 migration's abort advertised a repair for `User.role` that no operation can perform.
 
+**Round 8 is folded — seven P1s on `1a4740a8`, and two of them were RECURRENCES.** Classified
+before any code was written: one regression from my own round-5 fix (the coverage version moved
+when `pushOptional` joined the preimage, and only the new generation was seeded, so every event a
+still-serving parent-release process emits would be REFUSED for the whole rolling drain — the
+one finding that rejects live traffic); three missed related paths (`UserIdentity`,
+`OrgUserAuthority` and — not reported, found by tracing the rule — `ProjectUserStanding` all
+needed the source-agreement audit round 7 gave `ProjectOrg` alone, and the change request's BIRTH
+provenance needed the freeze its resolver set already had); one genuinely new (the membership
+seal's stepping-down arm let a contractor remove themselves, which the shipped service refuses
+outright); and TWO unfixed recurrences — fact-first keyed off receipt presence, which a writer
+times at will (raised round 7), and the allocator's cascade exception testing a transaction flag
+without the trigger depth beside it (raised round 6, unfixed until now). The recurrences are the
+part worth naming: both were reported, both were left, and neither had a behavioural arm that
+would have caught the gap. Each of the five now does.
+
+The two coverage generations are `6313b00c…` (what `origin/main` computes) and `b731a407…`
+(this head). They differ in the PREIMAGE only — same 107 keys, and this head's catalog hashed
+WITHOUT the `pushOptional` element is byte-identical to main's version — which is what licenses
+the migration seeding the outgoing generation by copying rather than transcribing.
+`phase6-t4d-i-catalog-generations.test.ts` re-derives that equality from source every run, so the
+licence cannot outlive its proof.
+
 The oracle is `test/integration/phase6-t4d-i-seal-contract.test.ts`: every trigger function the
 unit installs carries a register entry naming its rule, the plan location that states it, the
 operations and timing every installing trigger must fire on, and the tokens its body must

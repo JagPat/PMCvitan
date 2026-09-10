@@ -3,6 +3,15 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { effectCoverageVersion } from '../../src/platform/external-effects';
+
+/**
+ * THIS release's coverage generation. From round 8's finding 3 the migration seeds TWO — this one
+ * and the outgoing `6313b00c…` a still-serving process emits — so a fixture that picks a catalog
+ * row by `effectKey` alone now matches both and plants two events at one stream position. Every
+ * plant here stands in for a CURRENT writer, so it names the version a current writer computes.
+ */
+const COVERAGE = effectCoverageVersion();
 
 /**
  * Phase 6 unit 4d-i — THE SEAL-STRIPPED MIGRATION HARNESS (§C).
@@ -196,7 +205,8 @@ INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationI
          jsonb_build_object('effectKey','decision.published','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
                             'push', jsonb_build_object('body','ss','roles', jsonb_build_array('client')))
     FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
-   WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.published';
+   WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.published'
+     AND c."coverageVersion" = '${COVERAGE}';
 COMMIT;
 -- ONE LIVE LEASE for the drain-attestation arms: a serving process at catalog version 2 whose
 -- lease runs an hour out. The table is DARK, so nothing else in this fixture reads or writes it.
@@ -317,7 +327,8 @@ const ARMS: Arm[] = [
               SELECT 'ss-half','decision.drafted',1,'ss-org','ss-proj',s."nextPosition" - 1,'ss-user','human','Decision','ss-dec','pmc',
                      jsonb_build_object('effectKey','decision.drafted','coverageVersion',c."coverageVersion",'invalidate',c."invalidate")
                 FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
-               WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.drafted';
+               WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.drafted'
+                 AND c."coverageVersion" = '${COVERAGE}';
               COMMIT`,
     refusal: /carries half an actor envelope/,
   },
@@ -350,7 +361,8 @@ const ARMS: Arm[] = [
                      jsonb_build_object('effectKey','decision.published','coverageVersion',c."coverageVersion",'invalidate',false,
                                         'push', jsonb_build_object('body','ss','roles', jsonb_build_array('client')))
                 FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
-               WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.published';
+               WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.published'
+     AND c."coverageVersion" = '${COVERAGE}';
               COMMIT`,
     refusal: /claims invalidate=/,
   },
@@ -366,7 +378,8 @@ const ARMS: Arm[] = [
                      jsonb_build_object('effectKey','decision.approved','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
                                         'push', jsonb_build_object('body','ss','roles', jsonb_build_array('pmc','contractor','engineer','client')))
                 FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
-               WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.approved';
+               WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.approved'
+                 AND c."coverageVersion" = '${COVERAGE}';
               COMMIT`,
     refusal: /outside the ceiling/,
   },
@@ -486,7 +499,11 @@ const ARMS: Arm[] = [
     hostile: `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","sourceCommandId")
               VALUES ('ss-cr-ev','ss-dec','x',0,0,'withdrawn','ss-cmd');
               UPDATE "ChangeRequest" SET "sourceCommandId" = NULL WHERE "id" = 'ss-cr-ev'`,
-    refusal: /may not be replaced or cleared/,
+    // #582 round 8, finding 5 split this freeze in two, and `sourceCommandId` is BIRTH
+    // provenance, so it now answers with the birth message rather than the resolver one. The
+    // regex moved with the rule: leaving it matching the old sentence would have made this arm
+    // fail for a correction, which is the same "trace every consumer" step round 7 needed.
+    refusal: /at its BIRTH and it may not be written, replaced or cleared/,
   },
   {
     // Codex round 1, finding 10, and the column set beyond it. The register's whole purpose is
@@ -521,7 +538,8 @@ const ARMS: Arm[] = [
                      jsonb_build_object('effectKey','decision.approved','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
                                         'push', jsonb_build_object('body','   ','roles', c."pushRoles"))
                 FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
-               WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.approved'`,
+               WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.approved'
+                 AND c."coverageVersion" = '${COVERAGE}'`,
     refusal: /a push announces, so its body is a NONBLANK string/,
   },
   {
@@ -535,7 +553,8 @@ const ARMS: Arm[] = [
                      jsonb_build_object('effectKey','decision.approved','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
                                         'push', jsonb_build_object('body','ok','roles', c."pushRoles",'targetUserId','ss-client'))
                 FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
-               WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.approved'`,
+               WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.approved'
+                 AND c."coverageVersion" = '${COVERAGE}'`,
     refusal: /is a BROADCAST family, but the push of event .* also names a target/,
   },
   {
@@ -1169,5 +1188,278 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     expect(repaired.ok, repaired.output).toBe(true);
     const again = psql(RUN_DB, ['-f', MIGRATION]);
     expect(again.ok, `after the named repair the apply must succeed:\n${again.output}`).toBe(true);
+  }, 180_000);
+  /**
+   * #582's review round 8, findings 1, 2 and 4 — THE ADOPTED REGISTERS MUST AGREE WITH THEIR
+   * SOURCE, on the one path where they can predate their seals.
+   *
+   * A `prisma db push` / P3005 baseline creates these tables from `schema.prisma` before any raw
+   * trigger exists, so rows can be sitting in them that nothing vouched for. Every backfill skips
+   * an existing key, so whatever is there is ADOPTED and then frozen. This plants one bad row in
+   * each of the three registers and repairs them one at a time: each repair must move the abort
+   * on to the next, which is how the arm proves three separate audits rather than one.
+   */
+  it('a pre-baseline register row that contradicts its source aborts the apply, one audit at a time', () => {
+    psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+    const created = psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]);
+    expect(created.ok, created.output).toBe(true);
+
+    // the world, plus the three registers as `schema.prisma` would create them — UNSEALED, which
+    // is the whole premise: no `_t4d_` trigger exists on this database yet.
+    const seeded = psql(RUN_DB, ['-c', `
+      INSERT INTO "Org" ("id","name","slug") VALUES ('pb-org','PB Org','pb-org');
+      INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+        VALUES ('pb-proj','pb-org','PB Site','PB','','Finishing','PB-01','01 Jan 2026','31 Dec 2026',0,0,0);
+      INSERT INTO "User" ("id","projectId","role","name","phone") VALUES
+        ('pb-user','pb-proj','pmc','PB Real Name','+910000000021'),
+        ('pb-out','pb-proj','engineer','PB Outsider','+910000000022');
+      CREATE TABLE "UserIdentity" ("userId" TEXT NOT NULL, "displayName" TEXT NOT NULL,
+        CONSTRAINT "UserIdentity_pkey" PRIMARY KEY ("userId"));
+      CREATE TABLE "OrgUserAuthority" ("orgId" TEXT NOT NULL, "userId" TEXT NOT NULL, "role" TEXT NOT NULL,
+        CONSTRAINT "OrgUserAuthority_pkey" PRIMARY KEY ("orgId","userId"));
+      CREATE TABLE "ProjectUserStanding" ("projectId" TEXT NOT NULL, "userId" TEXT NOT NULL,
+        "role" TEXT NOT NULL, "membershipId" TEXT,
+        CONSTRAINT "ProjectUserStanding_pkey" PRIMARY KEY ("projectId","userId","role"));
+      -- (1) an identity that contradicts its account: from 4d-ii this name is what every fact freezes
+      INSERT INTO "UserIdentity" ("userId","displayName") VALUES ('pb-user','PB FORGED NAME');
+      -- (2) admin authority with no owner/admin OrgMembership behind it
+      INSERT INTO "OrgUserAuthority" ("orgId","userId","role") VALUES ('pb-org','pb-out','admin');
+      -- (3) pmc standing for a user with neither an active membership in it nor an org owner/admin row
+      INSERT INTO "ProjectUserStanding" ("projectId","userId","role","membershipId")
+        VALUES ('pb-proj','pb-out','pmc',NULL);
+    `]);
+    expect(seeded.ok, seeded.output).toBe(true);
+
+    const identity = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(identity.ok, 'the apply must REFUSE a "UserIdentity" row that contradicts its "User"').toBe(false);
+    expect(identity.output).toMatch(/"UserIdentity" row\(s\) disagree with the "User" they project/);
+    expect(identity.output, 'the abort must name the row so the operator can repair it')
+      .toMatch(/PB FORGED NAME/);
+
+    // repair (1) — the abort must now move to the authority register, not vanish
+    expect(psql(RUN_DB, ['-c',
+      `UPDATE "UserIdentity" SET "displayName" = 'PB Real Name' WHERE "userId" = 'pb-user'`]).ok).toBe(true);
+    const authority = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(authority.ok, 'the apply must REFUSE unbacked "OrgUserAuthority"').toBe(false);
+    expect(authority.output).toMatch(/"OrgUserAuthority" row\(s\) are backed by no owner\/admin "OrgMembership"/);
+    expect(authority.output).toMatch(/pb-out@pb-org/);
+
+    // repair (2) — on to the per-user standing register
+    expect(psql(RUN_DB, ['-c',
+      `DELETE FROM "OrgUserAuthority" WHERE "userId" = 'pb-out'`]).ok).toBe(true);
+    const standing = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(standing.ok, 'the apply must REFUSE unbacked "ProjectUserStanding"').toBe(false);
+    expect(standing.output).toMatch(/"ProjectUserStanding" row\(s\) are backed by neither an active "Membership"/);
+    expect(standing.output).toMatch(/pb-out on pb-proj as 'pmc'/);
+
+    // repair (3) — and only now does the whole unit apply
+    expect(psql(RUN_DB, ['-c',
+      `DELETE FROM "ProjectUserStanding" WHERE "userId" = 'pb-out'`]).ok).toBe(true);
+    const clean = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(clean.ok, `after all three named repairs the apply must succeed:\n${clean.output}`).toBe(true);
+  }, 300_000);
+
+  /**
+   * #582's review round 8, finding 8 — THE ALLOCATOR'S CASCADE EXCEPTION NEEDS THE CASCADE.
+   *
+   * Raised at round 6 and not fixed then; this is the arm that would have caught it. The
+   * transaction-local flag says only that SOME project is being deleted somewhere in the
+   * transaction, and it stays `on` afterwards, so a direct delete of a SECOND project's allocator
+   * rode it at depth 1. That project keeps its rows and loses its counter.
+   */
+  it('the project-deletion flag alone does not license deleting another project\'s allocator', () => {
+    buildRun([]);
+
+    // a second, unrelated project with its own allocator, and an event-free FIRST project whose
+    // deletion sets the flag legitimately.
+    const seed = psql(RUN_DB, ['-c', `
+      INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+        VALUES ('ss-proj-b','ss-org','SS B','SB','','Finishing','SB-01','01 Jan 2026','31 Dec 2026',0,0,0);
+      -- no explicit allocator row: the project's own trigger creates it at 0, and inserting one
+      -- here duplicates the primary key.
+    `]);
+    expect(seed.ok, seed.output).toBe(true);
+
+    // ONE transaction: delete the event-free project B (a real cascade, which sets the flag), then
+    // issue a DIRECT delete of project A's allocator. The second statement is at depth 1.
+    const ride = psql(RUN_DB, ['-c', `
+      BEGIN;
+      DELETE FROM "Project" WHERE "id" = 'ss-proj-b';
+      DELETE FROM "ProjectEventStream" WHERE "projectId" = 'ss-proj';
+      COMMIT;
+    `]);
+    expect(
+      ride.ok,
+      'a direct delete of another project\'s allocator must be REFUSED even while the '
+      + `project-deletion flag stands on — the flag is not evidence of THIS row's cascade:\n${ride.output}`,
+    ).toBe(false);
+    expect(ride.output).toMatch(/may not be DELETED/);
+
+    // and the allocator is still there, so the project can still emit
+    const left = psql(RUN_DB, ['-t', '-A', '-c',
+      `SELECT count(*) FROM "ProjectEventStream" WHERE "projectId" = 'ss-proj'`]);
+    expect(left.output.trim(), 'project A must keep its allocator').toBe('1');
+  }, 180_000);
+
+  /**
+   * #582's review round 8, finding 6 — FACT-FIRST CANNOT KEY OFF RECEIPT PRESENCE.
+   *
+   * Round 6 enforced the order from the membership side, switched on by "a member-command receipt
+   * exists in this transaction". A writer controls that timing: write the membership while no
+   * receipt exists, reserve and complete the receipt afterwards, insert the fact last, and every
+   * deferred check still passes at commit — while the fact's live authority read has seen the
+   * standing the write just granted. The order is now enforced where it is a fact rather than a
+   * signal: at the fact's insert, the membership must not already carry this transaction's `xmin`.
+   */
+  it('a membership written BEFORE its fact is refused however the receipt is timed', () => {
+    buildRun([]);
+
+    const seed = psql(RUN_DB, ['-c', `
+      INSERT INTO "User" ("id","projectId","role","name","phone")
+        VALUES ('ss-eng-p','ss-proj','engineer','SS Eng P','+910000000031');
+      INSERT INTO "Membership" ("id","projectId","userId","role","status")
+        VALUES ('ss-mem-p','ss-proj','ss-eng-p','engineer','active');
+    `]);
+    expect(seed.ok, seed.output).toBe(true);
+
+    // the exact ordering round 6's switch admitted: MEMBERSHIP first, with no receipt in the
+    // transaction yet, so the membership-side guard is off; the receipt and the fact follow.
+    const promoted = psql(RUN_DB, ['-c', `
+      BEGIN;
+      UPDATE "Membership" SET "role" = 'pmc' WHERE "id" = 'ss-mem-p';
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('ss-cmd-p','project','ss-org','ss-proj','ss-eng-p','members.updateRole','ss-key-p','ss-hash-p','reserved');
+      UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-p' WHERE "id" = 'ss-cmd-p';
+      INSERT INTO "MembershipTransition"
+        ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
+      VALUES ('ss-mt-p','ss-proj','ss-mem-p','ss-eng-p','engineer','active','pmc','active','ss-eng-p','pmc','SS Eng P','ss-cmd-p');
+      COMMIT;
+    `]);
+    expect(
+      promoted.ok,
+      'a transaction that writes the membership before its fact must be REFUSED — otherwise the '
+      + `fact's authority read sees the standing the write itself granted:\n${promoted.output}`,
+    ).toBe(false);
+    expect(promoted.output).toMatch(/this transaction has ALREADY written/);
+
+    // and the promotion did not happen
+    const role = psql(RUN_DB, ['-t', '-A', '-c',
+      `SELECT "role" FROM "Membership" WHERE "id" = 'ss-mem-p'`]);
+    expect(role.output.trim(), 'the self-promotion must have rolled back').toBe('engineer');
+  }, 180_000);
+
+  /**
+   * #582's review round 8, finding 7 — STEPPING DOWN IS NOT AN AUTHORITY.
+   *
+   * The seal carried a self arm admitting any transition whose subject was its actor and whose
+   * direction was loss. An active contractor or engineer could therefore remove THEMSELVES with a
+   * receipt-backed direct bundle, while the shipped `MembersService.remove` refuses self-removal
+   * outright and the plan requires "a contractor's self-transition refused" (P29b). The arm is
+   * gone: fact-first means an authorized actor still holds their standing when the fact is
+   * written, so the exception it existed for cannot arise.
+   */
+  it('a member with no team-management authority may not write their own removal', () => {
+    buildRun([]);
+
+    const seed = psql(RUN_DB, ['-c', `
+      INSERT INTO "User" ("id","projectId","role","name","phone")
+        VALUES ('ss-con-s','ss-proj','contractor','SS Con S','+910000000032');
+      INSERT INTO "Membership" ("id","projectId","userId","role","status")
+        VALUES ('ss-mem-s','ss-proj','ss-con-s','contractor','active');
+    `]);
+    expect(seed.ok, seed.output).toBe(true);
+
+    // fact FIRST, truthful frozen pair, real receipt, real membership write — everything correct
+    // except that the actor was never given authority over the team.
+    const selfOut = psql(RUN_DB, ['-c', `
+      BEGIN;
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('ss-cmd-s','project','ss-org','ss-proj','ss-con-s','members.remove','ss-key-s','ss-hash-s','reserved');
+      UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-s' WHERE "id" = 'ss-cmd-s';
+      INSERT INTO "MembershipTransition"
+        ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
+      VALUES ('ss-mt-s','ss-proj','ss-mem-s','ss-con-s','contractor','active','contractor','removed','ss-con-s','contractor','SS Con S','ss-cmd-s');
+      UPDATE "Membership" SET "status" = 'removed' WHERE "id" = 'ss-mem-s';
+      COMMIT;
+    `]);
+    expect(
+      selfOut.ok,
+      'a contractor removing themselves must be REFUSED — the shipped service refuses it and the '
+      + `plan names it explicitly:\n${selfOut.output}`,
+    ).toBe(false);
+    expect(selfOut.output).toMatch(/team management is an authorized act/);
+
+    // the PMC doing the same removal still commits — the fix narrowed the rule, it did not
+    // close the ordinary path.
+    const byPmc = psql(RUN_DB, ['-c', `
+      BEGIN;
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('ss-cmd-s2','project','ss-org','ss-proj','ss-user','members.remove','ss-key-s2','ss-hash-s2','reserved');
+      UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-s' WHERE "id" = 'ss-cmd-s2';
+      INSERT INTO "MembershipTransition"
+        ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
+      VALUES ('ss-mt-s2','ss-proj','ss-mem-s','ss-con-s','contractor','active','contractor','removed','ss-user','pmc','SS User','ss-cmd-s2');
+      UPDATE "Membership" SET "status" = 'removed' WHERE "id" = 'ss-mem-s';
+      COMMIT;
+    `]);
+    expect(byPmc.ok, `the PMC's removal of the same member must still commit:\n${byPmc.output}`).toBe(true);
+
+    // AND THE CASE THE ARM EXISTED FOR STILL COMMITS, which is what licenses removing it rather
+    // than narrowing it. P29b requires "a PMC's self-demotion accepted with the fact judged
+    // before the flip (the live read IS the pre-state)". The PMC re-roles THEMSELVES down to
+    // engineer: at the moment the fact is written they still hold `pmc`, so the ordinary
+    // authority read passes and no exception is needed. Without fact-first this would be the
+    // read that fails, and the arm would have been load-bearing after all.
+    const stepDown = psql(RUN_DB, ['-c', `
+      BEGIN;
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('ss-cmd-d','project','ss-org','ss-proj','ss-user','members.updateRole','ss-key-d','ss-hash-d','reserved');
+      UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem' WHERE "id" = 'ss-cmd-d';
+      INSERT INTO "MembershipTransition"
+        ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
+      VALUES ('ss-mt-d','ss-proj','ss-mem','ss-user','pmc','active','engineer','active','ss-user','pmc','SS User','ss-cmd-d');
+      UPDATE "Membership" SET "role" = 'engineer' WHERE "id" = 'ss-mem';
+      COMMIT;
+    `]);
+    expect(
+      stepDown.ok,
+      'a PMC stepping down through their own re-role must still COMMIT — the removed self arm '
+      + `existed for exactly this, and fact-first is what makes it unnecessary:\n${stepDown.output}`,
+    ).toBe(true);
+  }, 180_000);
+
+  /**
+   * #582's review round 8, finding 5 — BIRTH PROVENANCE IS WRITTEN AT INSERT OR NEVER.
+   *
+   * The freeze guarded every column with `OLD.<col> IS NOT NULL`, which admits NULL -> value on
+   * all six. For the resolver set that IS the closure. For the birth set it is a forgery route: a
+   * legacy request could be given a `requestedByRole` it never had, and the same freeze then made
+   * the fabrication permanent.
+   */
+  it('a legacy request cannot be given birth provenance it never carried', () => {
+    buildRun([]);
+
+    const seed = psql(RUN_DB, ['-c',
+      `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status")
+       VALUES ('ss-cr-b','ss-dec','legacy',0,0,'open')`]);
+    expect(seed.ok, seed.output).toBe(true);
+
+    for (const col of ['requestedByRole', 'requestedByName', 'sourceCommandId']) {
+      const value = col === 'sourceCommandId' ? 'ss-cmd' : (col === 'requestedByRole' ? 'architect' : 'Someone');
+      const filled = psql(RUN_DB, ['-c',
+        `UPDATE "ChangeRequest" SET "${col}" = '${value}' WHERE "id" = 'ss-cr-b'`]);
+      expect(
+        filled.ok,
+        `filling \`${col}\` on an already-open request must be REFUSED — who opened a request is `
+        + `settled when it is opened:\n${filled.output}`,
+      ).toBe(false);
+      expect(filled.output).toMatch(/at its BIRTH and it may not be written, replaced or cleared/);
+    }
+
+    // the RESOLVER set still closes once, which is the transition this freeze must not break.
+    const closed = psql(RUN_DB, ['-c',
+      `UPDATE "ChangeRequest" SET "resolvedByCommandId" = 'ss-cmd', "resolvedByRole" = 'pmc',
+              "resolvedByName" = 'SS User', "status" = 'withdrawn' WHERE "id" = 'ss-cr-b'`]);
+    expect(closed.ok, `the resolver set must still be fillable at closure:\n${closed.output}`).toBe(true);
   }, 180_000);
 });

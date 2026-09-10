@@ -1009,7 +1009,7 @@ CREATE TRIGGER "Membership_t4d_role_standing"
 -- `SET LOCAL` scopes the gate to this transaction, so nothing outside the migration can write a
 -- register directly even in the same session.
 DO $$
-DECLARE v_backfilled BIGINT; v_blank_names BIGINT; v_blank_sample TEXT; v_sample_org TEXT;
+DECLARE v_backfilled BIGINT; v_blank_names BIGINT; v_blank_sample TEXT; v_sample_org TEXT; v_sample TEXT;
 BEGIN
   PERFORM set_config('vitan.phase6_4d_standing_backfill', 'on', true);
 
@@ -1121,6 +1121,77 @@ BEGIN
       'phase6 4d-i ABORT: % "ProjectOrg" row(s) name an org their "Project" does not — %. The register is about to be FROZEN, and a mismatched mapping grants that org''s owners and admins team-management authority over a project that is not theirs. Correct the register (or the Project) before this migration adopts it; this file will not re-point a tenancy mapping on its own.',
       v_backfilled, v_sample_org;
   END IF;
+  -- AND EVERY OTHER ADOPTED REGISTER MUST AGREE WITH ITS SOURCE (#582's review round 8,
+  -- findings 1, 2 and 4). Round 7 asked this of `ProjectOrg` and of nothing else, and the audits
+  -- above have the same shape as the one it replaced: they prove a row is PRESENT and say nothing
+  -- about what it holds. That gap is only reachable on one path, and it is a supported one — a
+  -- `prisma db push` / P3005 baseline creates these tables from `schema.prisma` BEFORE any of
+  -- their raw seals exist, so rows can be sitting in them that no trigger ever vouched for. Every
+  -- backfill above then skips the existing key (`WHERE NOT EXISTS` / `ON CONFLICT DO NOTHING`),
+  -- the seals are installed around whatever is there, and the register is adopted as truth.
+  --
+  -- AUDIT, NOT REPAIR, and that is not a preference: `platform_t4d_register_writer` admits only
+  -- INSERT under `vitan.phase6_4d_standing_backfill`. Correcting a row needs UPDATE or DELETE,
+  -- which live behind `vitan.phase6_4d_standing_reprojection` — 4d-iii's fenced re-projection.
+  -- 4d-i adopts or refuses; it does not rewrite a register, exactly as the `ProjectOrg` audit
+  -- below already reasons for the tenancy mapping.
+
+  -- (i) IDENTITY. `UserIdentity.displayName` is a projection of `User.name`, and every 4d fact
+  -- freezes its actor's name by reading it. A stale or forged row makes that name canonical, so
+  -- from 4d-ii the immutable record names whoever the register says — and nothing corrects it
+  -- until that user happens to be renamed.
+  SELECT count(*), string_agg(format('%s (register says %L, User says %L)', u."id", i."displayName", u."name"), ', ' ORDER BY u."id")
+    INTO v_backfilled, v_sample
+    FROM "User" u JOIN "UserIdentity" i ON i."userId" = u."id"
+   WHERE i."displayName" IS DISTINCT FROM u."name";
+  IF v_backfilled > 0 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i ABORT: % "UserIdentity" row(s) disagree with the "User" they project — %. The register is about to become the canonical source of every frozen actor name, so adopting a row that already contradicts its account would attribute 4d facts to a name that account does not carry. Reconcile each row with its "User" (or correct the "User") before this migration adopts the register.',
+      v_backfilled, v_sample;
+  END IF;
+
+  -- (ii) ORG AUTHORITY. `OrgUserAuthority` is a projection of the owner/admin rows of
+  -- `OrgMembership`, and `platform_user_orchestration_authority` reads it to answer "may this
+  -- actor manage the team?". A row with no backing membership is authority with no source: it
+  -- makes its user a team manager over every project of that org, and the membership-transition
+  -- seal accepts them.
+  SELECT count(*), string_agg(format('%s@%s as %L', a."userId", a."orgId", a."role"), ', ' ORDER BY a."orgId", a."userId")
+    INTO v_backfilled, v_sample
+    FROM "OrgUserAuthority" a
+   WHERE NOT EXISTS (SELECT 1 FROM "OrgMembership" om
+                      WHERE om."orgId" = a."orgId" AND om."userId" = a."userId"
+                        AND om."role" = a."role" AND om."role" IN ('owner', 'admin'));
+  IF v_backfilled > 0 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i ABORT: % "OrgUserAuthority" row(s) are backed by no owner/admin "OrgMembership" — %. The register is about to be adopted as the answer to "may this actor manage the team?", and a row without its source grants that authority to someone the orgs tables never made an owner or admin. Remove the unbacked rows (or grant the membership they claim) before this migration adopts the register.',
+      v_backfilled, v_sample;
+  END IF;
+
+  -- (iii) PER-USER STANDING. Not reported in round 8, and the same rule: `ProjectUserStanding`
+  -- is what `platform_user_holds_role` answers from, so an unbacked row is a role its holder was
+  -- never given. Its two legitimate shapes are exactly the two arms backfilled above — an ACTIVE
+  -- membership in that role, or the membership-less `pmc` of an org owner/admin — and a row
+  -- matching neither is standing nobody granted. Judged on JUSTIFICATION only, never on
+  -- `membershipId` equality: a stale pointer beside a real membership is untidy, not a grant, and
+  -- aborting a deploy over it would repeat round 6''s zero-count defect of refusing a healthy
+  -- database.
+  SELECT count(*), string_agg(format('%s on %s as %L', s2."userId", s2."projectId", s2."role"), ', ' ORDER BY s2."projectId", s2."userId")
+    INTO v_backfilled, v_sample
+    FROM "ProjectUserStanding" s2
+   WHERE NOT EXISTS (SELECT 1 FROM "Membership" m
+                      WHERE m."projectId" = s2."projectId" AND m."userId" = s2."userId"
+                        AND m."role" = s2."role" AND m."status" = 'active')
+     AND NOT (s2."role" = 'pmc' AND s2."membershipId" IS NULL
+              AND EXISTS (SELECT 1 FROM "Project" p2
+                            JOIN "OrgMembership" om ON om."orgId" = p2."orgId"
+                           WHERE p2."id" = s2."projectId" AND om."userId" = s2."userId"
+                             AND om."role" IN ('owner', 'admin')));
+  IF v_backfilled > 0 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i ABORT: % "ProjectUserStanding" row(s) are backed by neither an active "Membership" in that role nor an org owner/admin''s membership-less `pmc` claim — %. The register is about to be adopted as the answer to "does this user hold this role here?", and an unbacked row is standing nobody granted. Remove the unbacked rows (or grant the membership they claim) before this migration adopts the register.',
+      v_backfilled, v_sample;
+  END IF;
+
   SELECT count(*) INTO v_backfilled FROM "Project" p
    WHERE NOT EXISTS (SELECT 1 FROM "ProjectRoleStanding" r
                       WHERE r."projectId" = p."id" AND r."role" = 'architect');
@@ -2094,6 +2165,23 @@ DO $$ BEGIN
     CHECK (("origin" = 'countersign_rejection') = ("revisionId" IS NOT NULL));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+-- THE ATTRIBUTION PAIRS ARE PAIRS (#582's review round 8, finding 5). A role without a name, or
+-- a name without a role, is half an attribution: it names an authority nobody can be checked
+-- against, or a person whose capacity is unstated. Both halves or neither, and a present half is
+-- non-blank — the all-NULL shape stays legal because legacy and drain-window rows carry it.
+DO $$ BEGIN
+  ALTER TABLE "ChangeRequest" ADD CONSTRAINT "ChangeRequest_requested_pair_check"
+    CHECK (("requestedByRole" IS NULL) = ("requestedByName" IS NULL)
+           AND ("requestedByRole" IS NULL OR btrim("requestedByRole", E' \t\n\x0B\f\r') <> '')
+           AND ("requestedByName" IS NULL OR btrim("requestedByName", E' \t\n\x0B\f\r') <> ''));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE "ChangeRequest" ADD CONSTRAINT "ChangeRequest_resolved_pair_check"
+    CHECK (("resolvedByRole" IS NULL) = ("resolvedByName" IS NULL)
+           AND ("resolvedByRole" IS NULL OR btrim("resolvedByRole", E' \t\n\x0B\f\r') <> '')
+           AND ("resolvedByName" IS NULL OR btrim("resolvedByName", E' \t\n\x0B\f\r') <> ''));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 DO $$ BEGIN
   ALTER TABLE "ChangeRequest" ADD CONSTRAINT "ChangeRequest_projectId_revisionId_fkey"
     FOREIGN KEY ("projectId", "revisionId") REFERENCES "DecisionApprovalRevision"("projectId", "id")
@@ -2190,10 +2278,30 @@ BEGIN
       OLD."id", v_col;
   END IF;
 
-  IF OLD."sourceCommandId" IS NOT NULL AND NEW."sourceCommandId" IS DISTINCT FROM OLD."sourceCommandId" THEN v_col := 'sourceCommandId';
-  ELSIF OLD."requestedByRole" IS NOT NULL AND NEW."requestedByRole" IS DISTINCT FROM OLD."requestedByRole" THEN v_col := 'requestedByRole';
-  ELSIF OLD."requestedByName" IS NOT NULL AND NEW."requestedByName" IS DISTINCT FROM OLD."requestedByName" THEN v_col := 'requestedByName';
-  ELSIF OLD."resolvedByCommandId" IS NOT NULL AND NEW."resolvedByCommandId" IS DISTINCT FROM OLD."resolvedByCommandId" THEN v_col := 'resolvedByCommandId';
+  -- THE BIRTH SET AND THE RESOLVER SET ARE NOT THE SAME RULE (#582's review round 8, finding 5).
+  -- The first form of this freeze guarded every column with `OLD.<col> IS NOT NULL`, which admits
+  -- NULL -> value on all six. For the resolver set that IS the legitimate transition: a request
+  -- opens unresolved and gains its closing receipt and actor pair when it closes. For the BIRTH
+  -- set it is a forgery route: `sourceCommandId` and the requester pair describe who OPENED the
+  -- request, which is settled at INSERT and cannot be learned later. During the drain a direct
+  -- UPDATE of a legacy request could set `requestedByRole = 'architect'` alone, or attach an
+  -- unrelated unused historical receipt, and the very same freeze would then make the fabricated
+  -- value permanent. So the birth set is frozen against ANY update — value, NULL, or blank alike:
+  -- a legacy row keeps its NULLs, and a row that owes provenance supplies it at INSERT where the
+  -- seals can judge it.
+  IF NEW."sourceCommandId" IS DISTINCT FROM OLD."sourceCommandId" THEN v_col := 'sourceCommandId';
+  ELSIF NEW."requestedByRole" IS DISTINCT FROM OLD."requestedByRole" THEN v_col := 'requestedByRole';
+  ELSIF NEW."requestedByName" IS DISTINCT FROM OLD."requestedByName" THEN v_col := 'requestedByName';
+  END IF;
+  IF v_col IS NOT NULL THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: change request % records % at its BIRTH and it may not be written, replaced or cleared afterwards — who opened a request is settled when it is opened, and a value filled in later is a claim about an act this row never witnessed.',
+      OLD."id", v_col;
+  END IF;
+
+  -- The resolver set closes ONCE: NULL -> value is the closure, and value -> anything else
+  -- (value -> NULL included) is a rewrite of who closed it.
+  IF OLD."resolvedByCommandId" IS NOT NULL AND NEW."resolvedByCommandId" IS DISTINCT FROM OLD."resolvedByCommandId" THEN v_col := 'resolvedByCommandId';
   ELSIF OLD."resolvedByRole" IS NOT NULL AND NEW."resolvedByRole" IS DISTINCT FROM OLD."resolvedByRole" THEN v_col := 'resolvedByRole';
   ELSIF OLD."resolvedByName" IS NOT NULL AND NEW."resolvedByName" IS DISTINCT FROM OLD."resolvedByName" THEN v_col := 'resolvedByName';
   END IF;
@@ -2384,21 +2492,52 @@ CREATE TRIGGER "MembershipTransition_t4d_no_truncate"
 -- The frozen `actorRole`/`actorName` pair is judged by the same shared helper every other 4d
 -- fact uses, so the window disposition for a membership-less `pmc` claim is identical here.
 CREATE OR REPLACE FUNCTION phase6_t4d_membership_transition_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_self_demotion BOOLEAN;
 BEGIN
-  -- LOSS is now read off the transition itself: the subject held an ACTIVE role before and does
-  -- not after. Under the invented columns this was `toStanding = 'not_held'`, which asked the same
-  -- question of a value the fact simply asserted; here it is computed from the pre- and post-state
-  -- the membership write is bound to, so a fact cannot talk its way into the self-demotion arm.
-  v_self_demotion := (NEW."actorId" = NEW."userId"
-                      AND NEW."fromStatus" = 'active'
-                      AND NEW."toStatus" IS DISTINCT FROM 'active');
+  -- THE ORDER, ENFORCED FROM THIS SIDE (#582's review round 8, finding 6). Every authority read
+  -- below judges the PRE-state, and it is only the pre-state because the fact is written BEFORE
+  -- the membership (plan line 2860). Round 6 enforced that from the membership side, switched on
+  -- by "a member-command receipt exists in this transaction" — and a receipt is something the
+  -- writer controls the timing of. Write the membership first while no receipt exists, and the
+  -- switch is off; reserve and complete the receipt afterwards, and insert the fact last, and
+  -- every deferred check still passes at commit while the checks below have read the standing the
+  -- write just GRANTED. An engineer promotes themselves to `pmc` and the seal calls them a PMC.
+  --
+  -- The switch cannot be made tamper-proof, so the ordering is enforced where it is a FACT rather
+  -- than a signal: at this insert the membership row must not already have been written by this
+  -- transaction. `xmin` is the system column no writer sets. An ADD is unaffected — its
+  -- `Membership` row does not exist yet, which is why the FK above is deferred — and a re-role or
+  -- removal carries a row whose `xmin` belongs to whatever transaction last touched it. Only the
+  -- membership-first ordering makes it equal to this one, and that ordering is now refused here
+  -- no matter when, or whether, a receipt appears.
+  IF EXISTS (
+    SELECT 1 FROM "Membership" m
+     WHERE m."id" = NEW."membershipId" AND m."xmin" = txid_current()::text::xid
+  ) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: MembershipTransition % describes membership %, which this transaction has ALREADY written — the fact comes FIRST, so the authority and frozen role it records are read against the standing the actor held BEFORE the write, never the standing the write grants them',
+      NEW."id", NEW."membershipId";
+  END IF;
 
-  IF NOT v_self_demotion
-     AND NOT platform_user_orchestration_authority(NEW."projectId", NEW."actorId")
+  -- THE SELF ARM IS GONE (#582's review round 8, finding 7). It admitted any transition whose
+  -- subject was its actor and whose direction was loss, and that is not who it was ever for: an
+  -- active contractor or engineer with no PMC or org-admin authority could reserve a
+  -- `members.remove` receipt, write their own active-to-removed transition, and pass — while the
+  -- shipped `MembersService.remove` refuses self-removal outright (`members.service.ts:229`,
+  -- "You cannot remove yourself") and the plan requires "a contractor's self-transition refused"
+  -- (P29b). The seal admitted a shape its only sanctioned producer never produces.
+  --
+  -- It is REMOVED rather than narrowed because the contract says the case does not need an arm.
+  -- The exception existed for a live-read hazard: an authorized actor giving up the very standing
+  -- the check reads would be refused by the standing they are in the act of losing. Fact-first
+  -- dissolves that — the fact precedes the membership write, so this read IS the pre-state, and
+  -- a PMC or owner/admin stepping down still holds their authority at this moment. Plan line 560
+  -- states the consequence in those words: "the self-demotion special case collapses into the one
+  -- rule". It could only be said once fact-first was actually enforceable, which is finding 6
+  -- above; the two are one correction and the ordering check is what makes this one safe.
+  IF NOT platform_user_orchestration_authority(NEW."projectId", NEW."actorId")
      AND NOT platform_user_holds_role(NEW."projectId", NEW."actorId", 'pmc') THEN
     RAISE EXCEPTION
-      'phase6 4d-i: MembershipTransition % attributes a standing change on project % to user %, who holds neither owner/admin authority in the project''s organisation nor active `pmc` standing on it, and is not the subject stepping down — team management is an authorized act',
+      'phase6 4d-i: MembershipTransition % attributes a standing change on project % to user %, who holds neither owner/admin authority in the project''s organisation nor active `pmc` standing on it — team management is an authorized act, and stepping down is not an exception to it (an authorized actor still holds their standing when this fact is written, because the fact precedes the membership write)',
       NEW."id", NEW."projectId", NEW."actorId";
   END IF;
 
@@ -3064,6 +3203,39 @@ INSERT INTO "ExternalEffectCatalog" ("coverageVersion", "effectKey", "eventType"
   ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'stock.transacted', 'stock.transacted', true, NULL, NULL, false, false, NULL, NULL, false),
   ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'substitution.approved', 'substitution.approved', true, NULL, NULL, false, false, NULL, NULL, false),
   ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'substitution.revoked', 'substitution.revoked', true, NULL, NULL, false, false, NULL, NULL, false)
+ON CONFLICT ("coverageVersion", "effectKey") DO NOTHING;
+
+-- AND THE GENERATION THAT IS STILL SERVING (#582's review round 8, finding 3). The seed above
+-- registers the generation THIS release computes. The envelope seal resolves an event's intent by
+-- the EXACT `(coverageVersion, effectKey)` pair and raises "which this database does not hold" on
+-- a miss, and it does so from the moment this migration commits — there is no dark window for the
+-- intent, unlike the actor pair. A rolling deploy therefore has previous-release processes still
+-- emitting under the version THEY compute, and with only one generation seeded every one of those
+-- events is refused: not a dark rollout but an outage for the duration of the drain.
+--
+-- The outgoing generation is `6313b00c…`, and it differs from `b731a407…` in the PREIMAGE only.
+-- `pushOptional` entered `canonicalCatalog()` at review round 5 (finding 4), and the flag was
+-- itself introduced by this unit at round 2 to DESCRIBE four emit paths the previous release
+-- already takes silently. So the two releases declare the same policy for all 107 keys and hash
+-- apart solely because one of them spells the fourth element of each tuple. Measured, not assumed:
+-- sha256 of `canonicalCatalog()` over this head's catalog WITHOUT the `pushOptional` element is
+-- `6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7`, which is exactly the version
+-- `origin/main` computes, over the same 107 keys with none added or removed.
+--
+-- That measured equality is what licenses copying the rows rather than transcribing a second
+-- literal block: the outgoing generation's policy IS this one's, so a copy cannot say anything the
+-- previous release does not already mean. It is NOT the general rule — a release that changes a
+-- key's audience, invalidation or push obligation must seed the outgoing generation with the
+-- OUTGOING policy — and `phase6-t4d-i-catalog-generations.test.ts` recomputes both versions from
+-- source and fails if this equality ever stops holding, so the licence cannot outlive its proof.
+-- The drain closes in 4d-i-b/4d-iii, which retires the old generation once no lease serves it;
+-- `retiredAt` keeps it resolvable for HISTORY while refusing to back a new event.
+INSERT INTO "ExternalEffectCatalog" ("coverageVersion", "effectKey", "eventType", "invalidate", "pushRoles", "pushFamily", "frozenAudience", "requiresPush", "audience", "pushBody", "pairingRequired")
+SELECT '6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7',
+       c."effectKey", c."eventType", c."invalidate", c."pushRoles", c."pushFamily",
+       c."frozenAudience", c."requiresPush", c."audience", c."pushBody", c."pairingRequired"
+  FROM "ExternalEffectCatalog" c
+ WHERE c."coverageVersion" = 'b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61'
 ON CONFLICT ("coverageVersion", "effectKey") DO NOTHING;
 
 SELECT set_config('vitan.phase6_4d_catalog', 'off', true);
@@ -4509,13 +4681,24 @@ BEGIN
   RETURN NEW;
 END $$;
 
+-- The exception is the project's own deletion cascade, and "cascade" is TWO local facts, not one
+-- (#582's review rounds 6 and 8 — the second time this was raised, and the first time it was
+-- fixed). The flag alone says only that SOME project is being deleted somewhere in this
+-- transaction: after deleting an event-free project A the flag stands `on` for the rest of the
+-- transaction, and a DIRECT `DELETE` of project B's allocator — depth 1, unrelated to A — was
+-- admitted by it. B keeps its project and its events and loses its counter, so B's next ordinary
+-- `emitEvent` fails on a row that is simply gone. Trigger depth is what distinguishes the RI
+-- cascade (depth 2 — measured) from a client statement (depth 1), so both are required, exactly
+-- as `phase6_t4d_membership_transition_immutable` above already demands and as the plan states
+-- the rule: DELETE refused OUTSIDE the project-deletion cascade, not "while a flag is on".
 CREATE OR REPLACE FUNCTION platform_t4d_stream_no_delete() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-  IF COALESCE(current_setting('phase6.t4d_project_delete', true), '') = 'on' THEN
+  IF pg_trigger_depth() > 1
+     AND COALESCE(current_setting('phase6.t4d_project_delete', true), '') = 'on' THEN
     RETURN OLD;
   END IF;
   RAISE EXCEPTION
-    'phase6 4d-i: the event-stream allocator for project % may not be DELETED — dropping and recreating the row is how the `+1` rule gets bypassed. It goes only with its project, under the deletion cascade.',
+    'phase6 4d-i: the event-stream allocator for project % may not be DELETED — dropping and recreating the row is how the `+1` rule gets bypassed. It goes only with its project, under the deletion cascade. (A cascade from the project''s own deletion is permitted; this is a direct delete.)',
     OLD."projectId";
 END $$;
 

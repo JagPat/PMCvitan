@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { PrismaService } from '../../src/prisma.service';
 
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { effectCoverageVersion } from '../../src/platform/external-effects';
 export interface TwoProjectFixture {
   orgA: { id: string };
   orgB: { id: string };
@@ -332,15 +333,22 @@ export async function insertRawEvent(
   const values = [...(spec.values ?? [])];
   return prisma.$transaction(async (tx) => {
     if (!ownIntent) {
-      // The NEWEST unretired definition of the key: through 4d-ii's drain two coverage versions
-      // of one key coexist, and a plant must name the one a current writer would emit.
+      // THIS RELEASE's definition of the key, named by version rather than ranked (#582's review
+      // round 8, finding 3). Two generations of every key now coexist from the moment 4d-i
+      // commits — the one this source computes and the outgoing one a still-serving process
+      // emits — so "pick a row for the key" is no longer a question with one answer. The previous
+      // form ordered by `coverageVersion DESC` and called the winner the newest, but a coverage
+      // version is a SHA-256: sorting it lexicographically ranks nothing, and the row it happened
+      // to return was decided by which hash sorted higher. A plant stands in for a CURRENT
+      // writer, so it names the version a current writer computes.
       const cat = await tx.$queryRawUnsafe<Array<{ coverageVersion: string; eventType: string; invalidate: boolean }>>(
         `SELECT "coverageVersion","eventType","invalidate" FROM "ExternalEffectCatalog"
-          WHERE "effectKey" = $1 AND "retiredAt" IS NULL ORDER BY "coverageVersion" DESC LIMIT 1`,
+          WHERE "effectKey" = $1 AND "coverageVersion" = $2 AND "retiredAt" IS NULL`,
         effectKey,
+        effectCoverageVersion(),
       );
       const row = cat[0];
-      if (!row) throw new Error(`insertRawEvent: no unretired ExternalEffectCatalog row for '${effectKey}'`);
+      if (!row) throw new Error(`insertRawEvent: no unretired ExternalEffectCatalog row for '${effectKey}' at coverage ${effectCoverageVersion()}`);
       columns.push('"dispatchIntent"');
       values.push(
         `'${JSON.stringify({ effectKey, coverageVersion: row.coverageVersion, invalidate: row.invalidate })}'::jsonb`,

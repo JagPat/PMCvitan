@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
 import { insertRawEvent, createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { emitEvent, type EmitInput } from '../../src/platform/events';
+import { effectCoverageVersion } from '../../src/platform/external-effects';
 import type { Actor } from '../../src/common/actor';
 
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
@@ -151,7 +152,11 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
           `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","entityType","entityId","dispatchIntent",${cols.split('=')[0]})`
           + ` SELECT '${id}','decision.drafted',1,'${f.orgA.id}','${f.projectA.id}',${Number(rows[0]!.at)},'Decision','x',`
           + ` jsonb_build_object('effectKey','decision.drafted','coverageVersion',c."coverageVersion",'invalidate',c."invalidate"),${cols.split('=')[1]}`
-          + ` FROM "ExternalEffectCatalog" c WHERE c."effectKey" = 'decision.drafted'`,
+          // Pinned to THIS release's generation: 4d-i seeds the outgoing one alongside (#582 round
+          // 8, finding 3), so the key alone matches two rows and would plant two events at one
+          // position.
+          + ` FROM "ExternalEffectCatalog" c WHERE c."effectKey" = 'decision.drafted'`
+          + ` AND c."coverageVersion" = '${effectCoverageVersion()}'`,
         );
       });
     // invalid actorKind
