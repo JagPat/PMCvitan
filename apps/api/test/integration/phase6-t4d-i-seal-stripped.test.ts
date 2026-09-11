@@ -1260,6 +1260,65 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
   }, 180_000);
 
   /**
+   * #582's review round 16, finding 2 — A GENUINELY RETIRED DATABASE REPLAYS AS A NO-OP, and
+   * this is the arm the SPLIT needed and did not have.
+   *
+   * Both halves are marker-aware: on a database that has run 4d-iii they must install no door,
+   * replace no seal and abort no audit. `phase6_t4d_retired_at_start()` is what every one of those
+   * gates asks, and it reads a setting established with `set_config(..., is_local => true)` — which
+   * is TRANSACTION-local. Splitting the unit into two Prisma migrations made them two
+   * transactions, so the first half's snapshot was discarded at its commit and the second half
+   * read the setting as absent: false, the "not retired yet" answer, for all eight of its gates.
+   *
+   * Every proof of the split measured that both files APPLY. They do — on a fresh database, where
+   * false is also the correct answer. That is a PROJECTION of "the split is correct": applying is
+   * one dimension and the marker-aware replay is a second, and only this arm asks the second.
+   *
+   * The sequence is the real one: apply the unit, retire it the way 4d-iii does (write the marker
+   * under its gate, drop the six doors), then replay both halves and require every door to STAY
+   * dropped. Against the unfixed second half the four decisions-side doors come back — on a live
+   * chain, where they refuse the very commands 4d-ii shipped.
+   */
+  it('a replay over a genuinely RETIRED database installs no door, in either half', () => {
+    buildRun([]);
+
+    // retire it exactly as 4d-iii does: the marker under its own gate, then the doors dropped
+    const retire = psql(RUN_DB, ['-c', `
+      BEGIN;
+      SET LOCAL vitan.phase6_4d_retire = 'on';
+      INSERT INTO "RolloutRetirement" ("unit","retiredBy") VALUES ('phase6-4d','4d-iii');
+      COMMIT;
+      DROP TRIGGER IF EXISTS "Decision_t4d_architect_reserved" ON "Decision";
+      DROP TRIGGER IF EXISTS "Decision_t4d_awaiting_reserved" ON "Decision";
+      DROP TRIGGER IF EXISTS "Membership_t4d_architect_reserved" ON "Membership";
+      DROP TRIGGER IF EXISTS "User_t4d_architect_reserved" ON "User";
+      DROP TRIGGER IF EXISTS "DecisionForward_t4d_reserved" ON "DecisionForward";
+      DROP TRIGGER IF EXISTS "DecisionEvent_t4d_kind_reserved" ON "DecisionEvent";
+    `]);
+    expect(retire.ok, retire.output).toBe(true);
+
+    // the predicate BOTH halves consult must now be true of this database
+    const retired = psql(RUN_DB, ['-t', '-A', '-c', 'SELECT phase6_t4d_retired()']);
+    expect(retired.output.trim(), 'the marker and the artifact together ARE retirement').toBe('t');
+
+    const replay = applyWhole();
+    expect(replay.ok, `the replay of a retired database must abort nothing:\n${replay.output}`).toBe(true);
+
+    const back = psql(RUN_DB, ['-t', '-A', '-c',
+      `SELECT coalesce(string_agg(tgname, ',' ORDER BY tgname), '') FROM pg_trigger
+        WHERE tgname IN ('Decision_t4d_architect_reserved', 'Decision_t4d_awaiting_reserved',
+                         'Membership_t4d_architect_reserved', 'User_t4d_architect_reserved',
+                         'DecisionForward_t4d_reserved', 'DecisionEvent_t4d_kind_reserved')
+          AND NOT tgisinternal`]);
+    expect(back.ok, back.output).toBe(true);
+    expect(
+      back.output.trim(),
+      'the replay re-created a reservation door on a database that has already retired it — on a '
+      + 'live chain those doors refuse the commands 4d-ii shipped',
+    ).toBe('');
+  }, 300_000);
+
+  /**
    * #582's review round 7, finding 2 — THE REGISTER MUST AGREE, NOT MERELY EXIST.
    *
    * `ProjectOrg` is the project→org mapping every tenancy join reads, and on the db-push/P3005

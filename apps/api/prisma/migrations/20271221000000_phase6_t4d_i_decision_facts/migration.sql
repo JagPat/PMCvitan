@@ -35,6 +35,32 @@
 
 BEGIN;
 
+-- ── THE RETIREMENT SNAPSHOT, TAKEN AGAIN ─────────────────────────────────────────────────────
+-- #582's review round 16, finding 2 — A REGRESSION THE SPLIT INTRODUCED, and the one gate every
+-- proof of the split missed.
+--
+-- `phase6_t4d_retired_at_start()` reads a setting the FIRST file establishes with
+-- `set_config(..., is_local => true)`. That is transaction-LOCAL, and the two halves are two
+-- Prisma migrations and therefore two transactions: the setting is discarded when the first one
+-- commits, and before this block existed nothing set it again. So the predicate was silently
+-- FALSE for all eight of its readers in this file — and false is the "not retired yet" answer.
+--
+-- On a fresh install that is the right answer by accident, which is exactly why it survived: every
+-- apply I measured was of a fresh or once-migrated database. The path it breaks is the mature
+-- `ALWAYS_EXECUTE` REPLAY of a database that has genuinely run 4d-iii, where the marker means
+-- "leave it alone" — and where a false predicate instead REINSTALLS the Decision reservation
+-- doors on a live chain, DOWNGRADES the consultation and correspondence seals from 4d-iii's
+-- bodies back to these weaker ones, and ABORTS the dark-table audit on fact tables 4d-ii
+-- legitimately filled.
+--
+-- Proving "both files apply" was a PROJECTION of proving the split correct. Applying is one
+-- dimension; the marker-aware replay is a second, and it had no arm until this round added one.
+DO $snapshot$
+BEGIN
+  PERFORM set_config('vitan.phase6_4d_retired_at_start',
+                     CASE WHEN phase6_t4d_retired() THEN 'on' ELSE 'off' END, true);
+END $snapshot$;
+
 -- ════════════════════════════════════════════════════════════════════════════════════════════
 -- PART 1 — THE CHAIN'S OWN RESERVATION DOORS (TRANSIENT)
 -- ════════════════════════════════════════════════════════════════════════════════════════════
