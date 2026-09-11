@@ -15,19 +15,23 @@ import { EXTERNAL_EFFECTS, effectCoverageVersion } from '../../src/platform/exte
  * With a single generation seeded, every one of those events is refused: not a dark rollout but
  * an outage lasting the whole drain.
  *
- * WHY THE VERSIONS DIVERGED. `pushOptional` was introduced by this unit at review round 2 to
- * DESCRIBE four emit paths the previous release already takes silently, and joined
- * `canonicalCatalog()`'s preimage at round 5 (finding 4) because it decides the sealed
- * `requiresPush`. Neither change altered a single key's policy — it made an existing behaviour
- * explicit — so the two releases declare the SAME catalog and hash apart only because one of them
- * spells the fourth element of each tuple.
+ * WHY THE VERSIONS DIVERGED, AND WHY THAT ANSWER CHANGED TWICE. `pushOptional` was introduced by
+ * this unit at round 2 to DESCRIBE four emit paths the previous release already takes silently,
+ * and joined the preimage at round 5 because it decides the sealed `requiresPush`. At that point
+ * the two releases declared the same POLICY and hashed apart only over the spelling of a tuple.
+ *
+ * They no longer do. Round 13 and then round 18 established that the flag could not express what
+ * it claimed — the obligation belongs to a BRANCH and `requiresPush` to a KEY — and split all four
+ * of its keys in two. So this release genuinely refuses a silent event at `activity.created`,
+ * `decision.published`, `inspection.created` and `inspection.approved`, and the previous release
+ * genuinely admits one. The divergence is a POLICY divergence now, which is exactly the case the
+ * paragraph below was written to catch.
  *
  * WHAT THIS SUITE HOLDS. The migration copies the current generation's rows to the outgoing
- * version rather than transcribing a second literal block, and that copy is licensed by exactly
- * one fact: the two generations' policy is identical. `licences the row copy` below RE-DERIVES
- * that fact from source on every run, so the licence cannot outlive its proof — the day a release
- * genuinely changes a key's audience, invalidation or push obligation, this goes red and the
- * outgoing generation must be seeded with the OUTGOING policy instead.
+ * version rather than transcribing a second literal block, and that copy is licensed by the
+ * DECLARED divergence below and nothing else. `licences the seed` RE-DERIVES the rest of the
+ * equality from source on every run, so the licence cannot outlive its proof — anything that
+ * diverges without being declared changes a hash and fails there.
  */
 
 /** The version this source computes — the generation a CURRENT writer emits under. */
@@ -35,46 +39,77 @@ const CURRENT = effectCoverageVersion();
 
 /**
  * The outgoing generation, as the migration names it. Not transcribed from the deployed database:
- * it is `canonicalCatalog()` over this same catalog with the `pushOptional` element absent, which
- * is precisely what the previous release's `canonicalCatalog()` emits. `licences the row copy`
- * asserts the two agree.
+ * it is `canonicalCatalog()` over this same catalog with the keys this release ADDED removed,
+ * which is precisely what the previous release's `canonicalCatalog()` emits. `licences the seed`
+ * asserts the two agree, and this constant is UNCHANGED by round 18 — the three new keys are
+ * skipped, and removing `pushOptional` from the preimage returns it to the shape the previous
+ * release always had.
  */
 const OUTGOING = '6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7';
 
 /**
- * THE DECLARED DIVERGENCE between the two generations (#582 review round 13, finding 3).
+ * THE DECLARED DIVERGENCE between the two generations (#582 rounds 13 and 18).
  *
- * Until this round the releases declared an IDENTICAL catalog and this file's licence was simply
- * "the same rows, a different preimage". Splitting `activity.created` ended that: the previous
- * release has one key there carrying the push exemption, this release has two — `activity.created`
- * which now OWES its announcement and `activity.created.init` which may not push at all.
+ * Round 13 split `activity.created`; round 18 split the other three keys that carried the same
+ * flag, which exhausts the class — the flag is gone, so no fifth key can be in this state. For
+ * each, the previous release has ONE key carrying the push exemption and this release has two:
+ * the original, which now OWES its announcement, and a `push: null` sibling for the branch that
+ * legitimately says nothing.
  *
  * The divergence is declared in ONE place, here and in the migration's seed, so the licence stays
- * a DERIVATION rather than becoming a pinned constant nobody can check. Note what is and is not
- * hash-affecting: the previous release's preimage does not contain the `pushOptional` element at
- * all, so restoring that flag changes no hash — only the ADDED KEY does. That is why removing it
- * alone reproduces the outgoing version exactly, and why an undeclared divergence still goes red.
+ * a DERIVATION rather than becoming a pinned constant nobody can check. Only the ADDED KEYS are
+ * hash-affecting: the previous release's preimage never contained the `pushOptional` element, so
+ * this release removing it restores the same five-element tuple and reproduces the outgoing
+ * version exactly. An undeclared divergence still goes red.
  */
-const ADDED_THIS_RELEASE = ['activity.created.init'];
+const ADDED_THIS_RELEASE = [
+  'activity.created.init',          // round 13, finding 3
+  'decision.published.record',      // round 18, finding 1
+  'inspection.created.init',        // round 18, finding 2
+  'inspection.approved.closing',    // round 18, finding 3
+];
 
-/** Keys whose `requiresPush` the previous release computed differently (it carried `pushOptional`). */
-const REQUIRES_PUSH_DIVERGENCE = new Map<string, boolean>([['activity.created', false]]);
+/**
+ * Keys whose `requiresPush` the previous release computed differently, because there it is ONE key
+ * carrying `pushOptional` — a silent branch and an announcing branch under one obligation.
+ *
+ * Round 13 split the first of these and round 18 split the other three, which is the whole of the
+ * class: after round 18 the flag does not exist, so no further key can be in this state. Each entry
+ * is a REAL policy divergence, not a preimage difference — the previous release genuinely admits a
+ * silent event at these keys and this release genuinely does not — and that is why the outgoing
+ * generation must be seeded with `FALSE` here rather than copied from this release's rows. Seeding
+ * this release's obligation would refuse every record publication, participant checklist
+ * initialisation and closing approval a still-serving process emits, for the whole drain.
+ */
+const REQUIRES_PUSH_DIVERGENCE = new Map<string, boolean>([
+  ['activity.created', false],
+  ['decision.published', false],
+  ['inspection.created', false],
+  ['inspection.approved', false],
+]);
 
-/** `canonicalCatalog()`, with the `pushOptional` element optionally withheld and keys optionally skipped. */
-function canonical(withPushOptional: boolean, skip: readonly string[] = []): string {
+/**
+ * `canonicalCatalog()`, with keys optionally skipped.
+ *
+ * The `withPushOptional` parameter is GONE (#582 round 18). It existed because this release's
+ * preimage carried a sixth element the previous release's did not; round 18 removed the flag, so
+ * both preimages are the same five elements again and the ONLY thing that separates the two
+ * generations is the key set. That is a simplification of the derivation, not a weakening of it:
+ * what the licence below asserts is unchanged, and it now has one fewer moving part to be wrong about.
+ */
+function canonical(skip: readonly string[] = []): string {
   const keys = Object.keys(EXTERNAL_EFFECTS).filter((k) => !skip.includes(k)).sort();
   return JSON.stringify(
     keys.map((k) => {
       const d = (EXTERNAL_EFFECTS as Record<string, {
         eventType: string; invalidate: boolean; push: readonly string[] | null;
-        pushFamily?: string; pushOptional?: true;
+        pushFamily?: string;
       }>)[k]!;
-      const base: unknown[] = [
+      return [
         k, d.eventType, d.invalidate,
         d.push === null ? null : [...d.push].slice().sort(),
         d.pushFamily ?? null,
       ];
-      return withPushOptional ? [...base, d.pushOptional === true] : base;
     }),
   );
 }
@@ -107,8 +142,8 @@ describe('phase 6 4d-i — the catalog carries every generation still being emit
     // bends. This is the derivation of that claim: remove the key this release added and the
     // previous release's own `canonicalCatalog()` output falls out exactly. Anything that
     // diverges WITHOUT being declared above changes this hash and fails here.
-    expect(sha(canonical(false, ADDED_THIS_RELEASE))).toBe(OUTGOING);
-    expect(sha(canonical(true))).toBe(CURRENT);
+    expect(sha(canonical(ADDED_THIS_RELEASE))).toBe(OUTGOING);
+    expect(sha(canonical())).toBe(CURRENT);
     expect(CURRENT).not.toBe(OUTGOING);
   });
 

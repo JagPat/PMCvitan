@@ -221,7 +221,9 @@ export class DecisionsService {
         await recordAudit(tx, { projectId, actor, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id });
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: input.publish ? 'decision.published' : 'decision.drafted', entityType: 'Decision', entityId: id, payload: { title: input.title },
-          effectKey: input.publish ? 'decision.published' : 'decision.drafted',
+          // #582 round 18, finding 1 — the RECORD arm has its own key. The obligation is a
+          // property of the branch, and the branch is already decided here.
+          effectKey: input.publish ? (record ? 'decision.published.record' : 'decision.published') : 'decision.drafted',
           // A one-step ISSUE carries the approval-demand push AT THE DECIDER (§A.3): the catalog
           // names the role CEILING; the persisted intent narrows to the actual decider — the
           // named member's USER for `member`, the role audience for `client`/`pmc`, and NOBODY
@@ -333,7 +335,7 @@ export class DecisionsService {
         await recordAudit(tx, { projectId, actor, action: 'decision.publish', entity: 'Decision', entityId: decisionId });
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: d.title },
-          effectKey: 'decision.published',
+          effectKey: record ? 'decision.published.record' : 'decision.published',   // #582 round 18, finding 1
           // §A.3: the approval demand pushes AT THE DECIDER; a record pushes at NOBODY (there
           // is nothing to approve — the bell notice above is the announcement).
           dispatch: record

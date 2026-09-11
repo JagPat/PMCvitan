@@ -128,16 +128,31 @@ export async function wipeDecisionEvents(
   // `DecisionEvent_t4d_append_only` refuses every UPDATE and DELETE on the register, and
   // `DecisionEvent_t4d_correspondence` is a DEFERRED constraint trigger — a wipe that removes an
   // audit row would otherwise leave its event unmatched and abort at commit.
-  await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
-  await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_append_only"');
-  await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_correspondence"');
-  try {
-    await prisma.decisionEvent.deleteMany({ where });
-  } finally {
-    await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_correspondence"');
-    await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_append_only"');
-    await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
-  }
+  //
+  // ONE INTERACTIVE TRANSACTION (#582's review round 18, finding 5). This was three separate
+  // auto-committed statements with a `try`/`finally` around the delete, and the `finally` is not
+  // the protection it looks like: `ALTER TABLE` takes ACCESS EXCLUSIVE and COMMITS IT AWAY at the
+  // end of each statement, so between the disable and the enable a PARALLEL suite on the shared
+  // integration database could update or delete immutable `DecisionEvent` evidence, and a process
+  // termination would leave the three triggers disabled permanently — `finally` does not run.
+  //
+  // Inside one transaction, DDL is transactional and rollback re-enables the seals; the lock is
+  // held to commit, so a parallel probe BLOCKS rather than observing the seal off. That is the
+  // shape `wipeDecisionsVia` below already had, with the reason written out in its own comment —
+  // this helper was the sibling that never got it. Every other bypass this unit added a `_t4d_`
+  // name to was checked and already holds it: `wipeDecisionsVia` (interactive), the arrays in
+  // `change-control.test.ts`, `phase1-baseline.test.ts` and `phase6-t4a-withdraw.test.ts`
+  // (`$transaction([...])`), and the single guarded `DO $$` blocks in `prisma/seed.ts` and
+  // `phase6-t4b-approval-attribution.test.ts`.
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_append_only"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_correspondence"');
+    await tx.decisionEvent.deleteMany({ where });
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_correspondence"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_append_only"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
+  }, { timeout: 60_000, maxWait: 30_000 });
 }
 
 /** Phase 6 unit 4b — an APPROVED decision is now permanent register evidence in a LIVE database:

@@ -112,4 +112,50 @@ describe('phase 6 unit 4d-i — $executeRawUnsafe is given ONE statement and onl
       + 'PostgreSQL never complains. Split it into its own $executeRawUnsafe call.',
     ).toEqual([]);
   });
+
+  /**
+   * Phase 6 unit 4d-i, #582 review round 18, finding 5 — A SANCTIONED BYPASS IS ONE TRANSACTION.
+   *
+   * `ALTER TABLE … DISABLE TRIGGER` takes ACCESS EXCLUSIVE and, as its own auto-committed
+   * statement, RELEASES it at once. A helper that disables, wipes and re-enables in three
+   * separate statements therefore leaves a real window on the shared integration database: a
+   * parallel suite can mutate the evidence the seal protects, and a process termination leaves
+   * the trigger disabled permanently, because `finally` does not run. Inside ONE transaction the
+   * DDL rolls back with a failure and the lock is held to commit, so a parallel probe blocks
+   * instead of seeing the seal off.
+   *
+   * `wipeDecisionsVia` had this from the start with the reason in its own comment;
+   * `wipeDecisionEvents`, six lines above it, did not — the sibling that never got the rule. So
+   * the rule is checked rather than remembered.
+   *
+   * MEASURED SCOPE, stated rather than implied (the round-1 rule for every tripwire in this
+   * unit): this reads the TWO files whose reset protocol this unit owns — the integration
+   * fixtures and the seed. It does NOT sweep individual suites, which reach the same discipline
+   * through `$transaction([...])` arrays and single guarded `DO $$` blocks that this parser
+   * cannot judge. What it holds is that a HELPER many suites share can never lose it.
+   */
+  it('every sanctioned seal bypass in the shared helpers runs inside one transaction', () => {
+    const OWNED = ['test/integration/fixtures.ts', 'prisma/seed.ts'];
+    const offending: string[] = [];
+    for (const rel of OWNED) {
+      const src = readFileSync(join(API_ROOT, rel), 'utf8');
+      // split into top-level `export function` / `export async function` bodies by a cheap but
+      // sufficient rule: a declaration line starts a region that runs to the next one.
+      const starts = [...src.matchAll(/^export (?:async )?function (\w+)/gm)];
+      for (let i = 0; i < starts.length; i += 1) {
+        const from = starts[i]!.index!;
+        const to = i + 1 < starts.length ? starts[i + 1]!.index! : src.length;
+        const body = src.slice(from, to);
+        if (!body.includes('DISABLE TRIGGER')) continue;
+        if (!body.includes('$transaction')) offending.push(`${rel}: ${starts[i]![1]}`);
+      }
+    }
+    expect(
+      offending.sort(),
+      'each of these disables a named seal OUTSIDE a transaction. The ACCESS EXCLUSIVE lock is '
+      + 'committed away between statements, so a parallel suite can write through the open seal '
+      + 'and a termination leaves it disabled for good. Wrap the whole disable → wipe → enable '
+      + 'sequence in one `prisma.$transaction`, as `wipeDecisionsVia` does.',
+    ).toEqual([]);
+  });
 });

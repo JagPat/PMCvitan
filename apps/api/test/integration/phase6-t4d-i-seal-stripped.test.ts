@@ -1993,6 +1993,102 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
   }, 180_000);
 
   /**
+   * #582's review round 18, findings 4 and 6 — THE REGISTERS' UNSTATED DEPENDENCY.
+   *
+   * Both findings were reported as live holes and NEITHER is one. Codex read the projection
+   * triggers correctly — `platform_t4d_project_org` projects `Project` INSERTs only, and
+   * `phase6_t4d_membership_role_standing` takes both coordinates from NEW, so a re-key would
+   * leave the old standing row behind — and then assumed nothing refuses the source write. Four
+   * things do, and each was DRIVEN before this arm was written:
+   *
+   *   · `UPDATE "Project" SET "orgId"` → `phase6_t4b2_project_org_frozen`
+   *   · `UPDATE "Membership" SET "projectId"` / `SET "userId"` → `membership_t4b_identity_frozen`
+   *   · `UPDATE "OrgMembership" SET "userId"` → `phase6_t4b2_org_membership_guard`
+   *   · `UPDATE "User" SET "id"` → this unit's own `UserIdentity_userId_fkey`
+   *
+   * THE FINDINGS ARE WRONG AND THE CLASS IS REAL, which is why this arm exists rather than a
+   * reply alone. Three of those four protections live in a MERGED migration this unit never
+   * names, and 4d-i's registers are exactly as trustworthy as they are: the day one is dropped or
+   * narrowed, `ProjectUserStanding` starts authorising a user on a project they left and
+   * `platform_user_orchestration_authority` starts answering for the wrong organisation — in
+   * silence, because every probe this unit owns would still be green. An unstated dependency is a
+   * dependency nobody maintains.
+   *
+   * So it is stated, and driven. The refusal must come from the named object in each case: if a
+   * later unit replaces one of these with something weaker, this goes red instead of the
+   * registers going quietly wrong.
+   */
+  it('the registers rest on FOUR source-identity freezes this unit does not own, and each one still refuses', () => {
+    buildRun([]);
+
+    const setup = psql(RUN_DB, ['-c',
+      `INSERT INTO "Org" ("id","name","slug") VALUES ('ss-org2','SS Org Two','ss-org-2');
+       INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+         VALUES ('ss-proj2','ss-org','SS Site Two','SS2','','Finishing','SS-02','01 Jan 2026','31 Dec 2026',0,0,0);
+       INSERT INTO "OrgMembership" ("id","orgId","userId","role") VALUES ('ss-om','ss-org','ss-user','owner');
+       -- a MEMBERSHIP-LESS account, because the answer to a user re-key depends on whether one
+       -- exists: see the two User cases below. (No backticks in this block: it lives inside a
+       -- TypeScript template literal.)
+       INSERT INTO "User" ("id","projectId","role","name","phone")
+         VALUES ('ss-loner','ss-proj','engineer','SS Loner','+910000000009')`]);
+    expect(setup.ok, `the second org/project fixture must build:\n${setup.output}`).toBe(true);
+
+    const cases: ReadonlyArray<{ what: string; sql: string; by: RegExp }> = [
+      {
+        what: 'a project may not be re-tenanted — ProjectOrg would keep the old org and go on ' +
+              'authorising its owners',
+        sql: `UPDATE "Project" SET "orgId" = 'ss-org2' WHERE "id" = 'ss-proj'`,
+        by: /phase6_t4b2_project_org_frozen|frozen standing-derivation chain/,
+      },
+      {
+        what: 'a membership may not be re-keyed to another project — the old ProjectUserStanding ' +
+              'row is never retracted by the projection',
+        sql: `UPDATE "Membership" SET "projectId" = 'ss-proj2' WHERE "id" = 'ss-mem'`,
+        by: /membership_t4b_identity_frozen|user\/project identity is frozen/,
+      },
+      {
+        what: 'a membership may not be re-keyed to another user — two standing rows would carry ' +
+              'one membershipId',
+        sql: `UPDATE "Membership" SET "userId" = 'ss-client' WHERE "id" = 'ss-mem'`,
+        by: /membership_t4b_identity_frozen|user\/project identity is frozen/,
+      },
+      {
+        what: 'an org membership may not be re-keyed — OrgUserAuthority mirrors it',
+        sql: `UPDATE "OrgMembership" SET "userId" = 'ss-client' WHERE "id" = 'ss-om'`,
+        by: /org_membership_guard|org-membership identity is frozen/,
+      },
+      // A USER RE-KEY IS REFUSED TWICE OVER, and which answer arrives depends on the account —
+      // measured, not assumed, because the first form of this arm expected the FK for both and
+      // the membership case answered first. `Membership.userId` cascades on update, so an account
+      // WITH a membership meets the cascade's own identity freeze before the FK is ever reached;
+      // an account WITHOUT one meets this unit's `UserIdentity` FK, which is `NO ACTION`. Both
+      // paths are driven, because "no path re-keys a user silently" is the claim.
+      {
+        what: 'a user account WITH a membership may not be re-keyed — the update cascades into ' +
+              'Membership.userId, which is itself frozen',
+        sql: `UPDATE "User" SET "id" = 'ss-user-x' WHERE "id" = 'ss-user'`,
+        by: /membership_t4b_identity_frozen|user\/project identity is frozen/,
+      },
+      {
+        what: 'a membership-less user account may not be re-keyed either — UserIdentity mirrors ' +
+              'the id and the frozen name is read through it',
+        sql: `UPDATE "User" SET "id" = 'ss-loner-x' WHERE "id" = 'ss-loner'`,
+        by: /UserIdentity_userId_fkey/,
+      },
+    ];
+
+    for (const c of cases) {
+      const r = psql(RUN_DB, ['-c', c.sql]);
+      expect(r.ok, `${c.what} — this write must be REFUSED, and it COMMITTED`).toBe(false);
+      expect(r.output,
+        `${c.what} — refused, but not by the object this unit depends on. The registers' ` +
+        'correctness rests on that specific protection, so a different answer here means the ' +
+        'dependency moved and nothing said so')
+        .toMatch(c.by);
+    }
+  }, 180_000);
+
+  /**
    * #582's review round 17 — THE FROZEN-PAIR REGISTER, AND WHY IT IS DISCOVERED RATHER THAN LISTED.
    *
    * Five rounds of this PR have found the same defect: a frozen `<act>ByRole`/`<act>ByName` pair

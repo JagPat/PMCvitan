@@ -65,15 +65,22 @@ and never asked what the complete set of shapes with no sanctioned writer until
   with no repair: its seals refuse DELETE and any `leaseUntil` decrease, so an
   adopted pre-baseline row makes 4d-iii's drain preflight report a still-serving
   previous release forever. Each half now audits the tables it creates.
-- **4d-i MOVES `effectCoverageVersion()`** — `pushOptional` joined the hashed
-  preimage in round 5, and round 13 split `activity.created.init` out — and
+- **4d-i MOVES `effectCoverageVersion()`** — rounds 13 and 18 split FOUR keys in
+  two, adding `activity.created.init`, `decision.published.record`,
+  `inspection.created.init` and `inspection.approved.closing` — and
   `OutboxBootstrap` throws when the compiled hash differs from the persisted
   `OutboxCutoverState`. Seeding both catalog generations answered the DRAIN
   dimension and left the CUTOVER-SEAL dimension untouched. 4d-i's deploy takes
   the same legacy/shadow → `outbox:seal-external` → outbox sequence 4d-ii takes,
-  stated in §D and §P6T4D. Keeping 4d-i hash-neutral was weighed and rejected:
-  it means backing `pushOptional` out of the preimage and re-opening the hole
-  round 5 closed.
+  stated in §D and §P6T4D. Hash-neutrality is not available: the added keys ARE
+  the fix for round 18's three P1s.
+- **The two coverage generations now differ in POLICY, not only in preimage**
+  (round 18). At those four keys the previous release admits a silent event and
+  this one does not, so the outgoing generation is seeded with
+  `requiresPush = false` there and without the four added keys. Copying this
+  release's obligation across would refuse every record publication, participant
+  checklist initialisation and closing approval a still-serving process emits,
+  for the whole drain.
 
 ### The migration is SPLIT in two, on JagPat's instruction
 

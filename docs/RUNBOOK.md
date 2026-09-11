@@ -1321,7 +1321,19 @@ That is the gate working, not a fault. 4d-i takes the same sequence 4d-ii takes:
 The seeded `ExternalEffectCatalog` rows are a DIFFERENT mechanism and do not
 substitute for this: two coverage generations keep a still-serving previous
 release's events resolvable through the drain, while the cutover seal is what
-lets the relay be the sole sender. The migration cannot write the seal — the
+lets the relay be the sole sender.
+
+Since #582's review round 18 the two generations no longer say the same thing.
+Four keys — `activity.created`, `decision.published`, `inspection.created` and
+`inspection.approved` — were single keys covering a silent branch AND an
+announcing one; this release splits each in two, so the announcing half now OWES
+its push. The OUTGOING generation is therefore seeded with `requiresPush = false`
+at those four and without the four added `.init`/`.record`/`.closing` keys, which
+is what keeps a previous-release record publication, participant checklist
+initialisation and closing approval committing for the whole drain. If you see an
+envelope refusal naming one of those four during a drain, the outgoing generation
+is missing or mis-seeded — check `ExternalEffectCatalog` for BOTH versions before
+anything else. The migration cannot write the seal — the
 seal is a statement about the PROCESS's compiled catalog, and only the process
 can make it.
 

@@ -5106,13 +5106,20 @@ before it. Each fact table carries:
    nothing) and `inspection.approved` (an approval closing an activity
    announces through the activity sign-off) — so the envelope seal below
    would have refused those four live emit paths at INSERT on 4d-i's deploy.
-   The compiled catalog therefore DECLARES the exception per key
-   (`pushOptional`), `requiresPush` derives as `push !== null &&
-   !pushOptional` under the same tripwire, and `buildDispatchIntent` refuses
-   a missing push on an obliged key so the two ends of the rule agree.
-   `pushOptional` is deliberately NOT part of `canonicalCatalog()`: the
-   coverage version identifies what a producer EMITS, so adding the field
-   leaves every persisted intent's `coverageVersion` resolvable. And the
+   The first answer was a per-key exception, `pushOptional`, with
+   `requiresPush` deriving as `push !== null && !pushOptional`. **That answer
+   was wrong and is withdrawn** (#582's review round 13, finding 3 and round
+   18, findings 1–3): the obligation belongs to a BRANCH and `requiresPush`
+   to a KEY, so exempting the silent branch released the announcing one with
+   it — an approvable publication could omit its decider demand, an ordinary
+   checklist creation its engineer notice, an ordinary approval its
+   contractor/client announcement, each still passing the envelope seal.
+   **A branch that does not announce gets its own `push: null` KEY**, the
+   four of them being `activity.created.init`, `decision.published.record`,
+   `inspection.created.init` and `inspection.approved.closing`, and
+   `requiresPush` is simply `push !== null` again. `buildDispatchIntent`
+   refuses a missing push on an obliged key with NO exemption, so the two
+   ends of the rule agree and the type system keeps them agreeing. And the
    `audience` shape follows PERMISSION, never obligation — keying the CHECK
    to `requiresPush` would leave those same four families' push shape
    unjudged, `decision.published`'s 4b decider narrowing among them — primary key `(coverageVersion,
@@ -6207,10 +6214,10 @@ today's behaviour lives.
       never retires.
 
     **AND 4d-i's DEPLOY CARRIES THE EXTERNAL-EFFECT RESEAL** (#582's review
-    round 15, finding 1). 4d-i MOVES `effectCoverageVersion()` — `pushOptional`
-    joined the hashed preimage in round 5 because it decides the sealed
-    `requiresPush`, and round 13 split `activity.created.init` out of
-    `activity.created` — and `OutboxBootstrap` THROWS at startup when the
+    round 15, finding 1). 4d-i MOVES `effectCoverageVersion()` — rounds 13 and
+    18 split four keys in two, so the catalog gains `activity.created.init`,
+    `decision.published.record`, `inspection.created.init` and
+    `inspection.approved.closing` — and `OutboxBootstrap` THROWS at startup when the
     compiled hash differs from the persisted `OutboxCutoverState`. Seeding both
     catalog generations answers the DRAIN dimension of that change and leaves
     the CUTOVER-SEAL dimension untouched, so an instance running
@@ -6221,11 +6228,25 @@ today's behaviour lives.
 
     So 4d-i takes the SAME sequence 4d-ii takes, and §P6T4D states it: deploy in
     `legacy` or `shadow`, run `outbox:seal-external` to record the new coverage,
-    then restart in `outbox`. The alternative — keeping 4d-i hash-neutral — was
-    weighed and rejected: it means backing `pushOptional` out of the preimage,
-    which re-opens the hole round 5 closed (two catalogs differing only in that
-    flag would seal different `requiresPush` rows under one version), and trades
-    a correctness fix for a deployment convenience.
+    then restart in `outbox`. Keeping 4d-i hash-neutral is not available at all
+    after round 18: the added keys ARE the hash change, and they are the fix for
+    three P1s. (The earlier form of this paragraph offered backing `pushOptional`
+    out of the preimage as the rejected alternative. Round 18 removed the flag
+    entirely, which does back it out of the preimage — and does NOT re-open the
+    hole round 5 closed, because the thing two catalogs could disagree about no
+    longer exists.)
+
+    **AND THE OUTGOING GENERATION IS NO LONGER A POLICY-IDENTICAL COPY.** Those
+    four keys are the exact set where this release and the previous one mean
+    different things: the previous release admits a silent event at
+    `activity.created`, `decision.published`, `inspection.created` and
+    `inspection.approved`, and this one does not. The migration therefore seeds
+    the outgoing generation with `requiresPush = FALSE` at those four and
+    without the four added keys — declared in one place in the seed and
+    re-derived by `phase6-t4d-i-catalog-generations.test.ts`. Copying this
+    release's obligation into the outgoing generation would refuse every record
+    publication, participant checklist initialisation and closing approval a
+    still-serving process emits, for the whole drain.
 
     Within the pair the ordering below is otherwise unchanged.
     **Part 0, the

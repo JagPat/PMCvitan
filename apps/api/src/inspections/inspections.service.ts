@@ -315,7 +315,7 @@ export class InspectionsService {
           }
           await tx.notification.create({ data: { projectId, text: body, color: '#3F7A54', time: 'just now' } });
           await recordAudit(tx, { projectId, actor, action: 'inspection.approve', entity: 'Inspection', entityId: inspectionId });
-          const approved = await emitEvent(tx, { projectId, actor, eventType: 'inspection.approved', entityType: 'Inspection', entityId: inspectionId, effectKey: 'inspection.approved', dispatch: activity ? {} : { push: { body } } });
+          const approved = await emitEvent(tx, { projectId, actor, eventType: 'inspection.approved', entityType: 'Inspection', entityId: inspectionId, effectKey: activity ? 'inspection.approved.closing' : 'inspection.approved', dispatch: activity ? {} : { push: { body } } });   // #582 round 18, finding 3 — the CLOSING branch announces through activity.signed_off and has its own key
           const localEvents: EmittedEventMeta[] = [approved];
           // A CLOSING inspection's approval CAUSES the activity sign-off — one causal chain.
           if (activity) localEvents.push(await emitEvent(tx, { projectId, actor, eventType: 'activity.signed_off', entityType: 'Activity', entityId: activity.id, causedByEventId: approved.eventId, payload: { closingInspectionId: inspectionId }, effectKey: 'activity.signed_off', dispatch: { push: { body } } }));

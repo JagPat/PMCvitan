@@ -288,7 +288,7 @@ export class InspectionParticipant {
     emitCtx: { projectId: string; actor: Actor },
   ): Promise<{ id: string }> {
     const created = await tx.inspection.create(args);
-    await emitEvent(tx, { projectId: emitCtx.projectId, actor: emitCtx.actor, eventType: 'inspection.created', entityType: 'Inspection', entityId: created.id, payload: { init: true }, effectKey: 'inspection.created', dispatch: {} });
+    await emitEvent(tx, { projectId: emitCtx.projectId, actor: emitCtx.actor, eventType: 'inspection.created', entityType: 'Inspection', entityId: created.id, payload: { init: true }, effectKey: 'inspection.created.init', dispatch: {} });   // #582 round 18, finding 2 — the SILENT initialiser has its own key
     return created;
   }
 }
