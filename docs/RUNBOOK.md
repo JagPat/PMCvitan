@@ -1300,6 +1300,31 @@ the same `User` row, forever.
 
 3. **Redeploy.** The audit now sees zero and the reservation installs.
 
+### Deploying 4d-i RESEALS the external-effect cutover
+
+4d-i changes the compiled `effectCoverageVersion()`, and `OutboxBootstrap`
+refuses to start when `OUTBOX_SENDER_MODE=outbox` and the persisted
+`OutboxCutoverState` seal names a different coverage:
+
+```
+OUTBOX_SENDER_MODE=outbox seal coverage <old> != compiled catalog <new>
+  — reseal (in legacy/shadow) after the external-effect catalog changed
+```
+
+That is the gate working, not a fault. 4d-i takes the same sequence 4d-ii takes:
+
+1. deploy the 4d-i build with `OUTBOX_SENDER_MODE=legacy` (or `shadow`);
+2. `outbox:status` clean, then `outbox:seal-external` — this records the NEW
+   coverage in the singleton seal;
+3. restart with `OUTBOX_SENDER_MODE=outbox`; startup verifies the seal.
+
+The seeded `ExternalEffectCatalog` rows are a DIFFERENT mechanism and do not
+substitute for this: two coverage generations keep a still-serving previous
+release's events resolvable through the drain, while the cutover seal is what
+lets the relay be the sole sender. The migration cannot write the seal — the
+seal is a statement about the PROCESS's compiled catalog, and only the process
+can make it.
+
 ### The decisions half: two more aborts, and they resolve the OTHER name
 
 `20271221000000_phase6_t4d_i_decision_facts` carries two audits of its own, both against the
@@ -1311,6 +1336,14 @@ does:
   sanctioned writer until 4d-ii, so a row present now was validated by none of the eligibility,
   pairing or provenance triggers the file installs, and the append-only seal would make it
   permanent evidence of an act nobody performed. **Remove the named rows.**
+
+  The REGISTERS half carries the same audit over the dark tables IT creates —
+  `MembershipTransition`, `DomainEventPairingClaim` and `ReleaseLease` — and aborts with
+  `dark table(s) already hold rows before this unit seals them`. Same repair, and the same
+  `migrate resolve --rolled-back` on the FIRST name. `ReleaseLease` is the one to read carefully:
+  its seals refuse DELETE and refuse any `leaseUntil` decrease, so a row adopted here can never be
+  removed or shortened afterwards and 4d-iii's drain preflight would read it as a previous-release
+  process that is still serving, forever. Clear it before the migration adopts it, not after.
 - `row(s) already carry this unit's 4d-only columns before it seals them` — a `ChangeRequest`,
   `DecisionApprovalRevision`, `DomainEvent`, `Notification` or consultation row is already in a
   4d shape. **Reset each named row to its legacy shape**: a `standard` request with no 4d

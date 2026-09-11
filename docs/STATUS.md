@@ -42,9 +42,38 @@ migration files, the schema mirror, the reset protocol, the fixtures and probes
 the seals force, and — under `src/` — EXACTLY the declarative schema-metadata
 mirrors the boundary tripwire pins to the Prisma DMMF, plus one call site that
 the `ChangeRequest.projectId` NOT NULL forces. No contract, no command, no route,
-no reader: those are 4d-ii's. Five reservation doors keep the architect chain
+no reader: those are 4d-ii's. SIX reservation doors keep the architect chain
 unwritable until 4d-iii retires them, so a still-serving previous-release
 instance cannot produce a value the release cannot read.
+
+### Round 15 — the reserved set is ONE enumeration, and the deploy carries a reseal
+
+Three P1s, all accepted, and two of them are the same omission at two ends: the
+reservation had been stated as a list of STATES, a list of ROLES and one TABLE,
+and never asked what the complete set of shapes with no sanctioned writer until
+4d-ii is. It has four kinds of member and §D now states them together.
+
+- **The audit register's KINDS were writable for the whole dark window.** The
+  weak correspondence's table has no entry for (`countersigned`, `pending`), so
+  it returned without judging anything at all; on an `approved` decision the
+  no-chain approval's own `decision.approved` event answered the row. Either
+  way the row committed, the append-only seal froze it, and 4d-iii's stronger
+  trigger judges only NEW rows. `DecisionEvent_t4d_kind_reserved` is the sixth
+  door — same shared function, same WHEN-clause shape, dropped with the other
+  five by 4d-iii, whose replay contract now names six.
+- **`ReleaseLease` was missing from the dark-table audit**, and it is the member
+  with no repair: its seals refuse DELETE and any `leaseUntil` decrease, so an
+  adopted pre-baseline row makes 4d-iii's drain preflight report a still-serving
+  previous release forever. Each half now audits the tables it creates.
+- **4d-i MOVES `effectCoverageVersion()`** — `pushOptional` joined the hashed
+  preimage in round 5, and round 13 split `activity.created.init` out — and
+  `OutboxBootstrap` throws when the compiled hash differs from the persisted
+  `OutboxCutoverState`. Seeding both catalog generations answered the DRAIN
+  dimension and left the CUTOVER-SEAL dimension untouched. 4d-i's deploy takes
+  the same legacy/shadow → `outbox:seal-external` → outbox sequence 4d-ii takes,
+  stated in §D and §P6T4D. Keeping 4d-i hash-neutral was weighed and rejected:
+  it means backing `pushOptional` out of the preimage and re-opening the hole
+  round 5 closed.
 
 ### The migration is SPLIT in two, on JagPat's instruction
 

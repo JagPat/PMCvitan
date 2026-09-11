@@ -360,6 +360,20 @@ const ARMS: Arm[] = [
     refusal: /"DecisionEvent" is the attributable audit register and is append-only/,
   },
   {
+    seal: 'DecisionEvent_t4d_kind_reserved',
+    what: 'the audit register\'s 4d-only KINDS are reserved, like the states they record',
+    // #582 round 15, finding 2. `countersigned` records an act whose command lands in 4d-ii, so
+    // in the dark window nothing can legitimately write this row — and, before this door, nothing
+    // refused it either. The WEAK correspondence's table has no entry for (`countersigned`,
+    // `pending`), so it returns NULL and judges nothing at all; on an `approved` decision it has
+    // one, and the approval's own `decision.approved` event answers it. Either way the row
+    // commits, `DecisionEvent_t4d_append_only` freezes it, and 4d-iii's stronger INSERT trigger
+    // judges only NEW rows — so it is permanent evidence of a countersign nobody performed.
+    hostile: `INSERT INTO "DecisionEvent" ("id","decisionId","type","actor","actorId","actorName","actorRole","payload")
+              VALUES ('ss-de-cs','ss-dec','countersigned','SS User','ss-user','SS User','pmc','{}'::jsonb)`,
+    refusal: /DecisionEvent\.type = a 4d-only kind is not writable yet/,
+  },
+  {
     seal: 'ExternalEffectCatalog_t4d_no_truncate',
     what: 'a projected register is never truncated — the STATEMENT is sealed, not just the row',
     hostile: `TRUNCATE "ExternalEffectCatalog"`,

@@ -81,7 +81,10 @@ const REGISTER: Record<string, SealContract> = {
   phase6_t4d_reserved: {
     rule: 'no row may enter a reserved architect-chain state between 4d-i and 4d-iii, and the '
       + 'door judges INSERT and UPDATE alike — an existing row moved into the state is the same '
-      + 'arrival as a new one',
+      + 'arrival as a new one. The reserved set is every SHAPE whose first sanctioned writer is '
+      + '4d-ii: the two chain states, the two architect roles, the forward FACT, and the audit '
+      + 'register KINDS that record the acts (#582 round 15, finding 2 — the kinds were the one '
+      + 'member the reservation had never covered)',
     plan: '§A.2 the reservation; §D 4d-i',
     on: {
       'Decision.Decision_t4d_architect_reserved': B('I U'),
@@ -89,6 +92,8 @@ const REGISTER: Record<string, SealContract> = {
       'Membership.Membership_t4d_architect_reserved': B('I U'),
       'User.User_t4d_architect_reserved': B('I U'),
       'DecisionForward.DecisionForward_t4d_reserved': B('I'),
+      // INSERT only: the register is append-only, so there is no UPDATE arm to reserve.
+      'DecisionEvent.DecisionEvent_t4d_kind_reserved': B('I'),
     },
     must: ['is not writable yet', 'TG_ARGV[0]', 'TG_TABLE_NAME'],
   },

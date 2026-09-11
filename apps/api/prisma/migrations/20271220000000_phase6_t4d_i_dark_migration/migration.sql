@@ -3113,6 +3113,50 @@ DROP TRIGGER IF EXISTS "ExternalEffectCatalog_t4d_no_truncate" ON "ExternalEffec
 CREATE TRIGGER "ExternalEffectCatalog_t4d_no_truncate" BEFORE TRUNCATE ON "ExternalEffectCatalog"
   FOR EACH STATEMENT EXECUTE FUNCTION platform_t4d_register_no_truncate();
 
+-- ── the DARK tables this file creates must be EMPTY when it seals them ───────────────────────
+-- #582's review round 9, finding 1 established the rule for the decisions half's three fact
+-- tables; round 15, finding 3 found the sweep one table SHORT, and the one it missed is the one
+-- with the worst failure mode.
+--
+-- The rule: a table 4d-i creates whose FIRST SANCTIONED WRITER is a later unit has, before
+-- retirement, exactly one correct population — none. On the supported `db push` / P3005 path
+-- `schema.prisma` creates the table before any raw seal exists, so a constraint-valid row can be
+-- sitting in it, validated by nothing, and the seals below then adopt and freeze it.
+--
+-- `ReleaseLease` is the one round 9 missed, and its adopted row is not merely false evidence —
+-- it is UNREPAIRABLE. `ReleaseLease_t4d_frozen` refuses a DELETE outright and refuses any
+-- `leaseUntil` decrease, so a pre-baseline row with an old `catalogVersion` and a far-future
+-- `leaseUntil` cannot be removed or shortened by anyone afterwards, and 4d-iii's drain preflight
+-- reads it as a previous-release process that is still serving — forever. The drain never
+-- attests, 4d-iii never runs, and the reservation never retires.
+--
+-- `MembershipTransition` and `DomainEventPairingClaim` are here for the ordinary reason: 4d-ii is
+-- their first writer too, and their append-only seals would make an adopted row permanent.
+--
+-- GATED ON THE RETIREMENT SNAPSHOT, because after 4d-iii these tables legitimately hold what
+-- 4d-ii wrote and an `ALWAYS_EXECUTE` replay over such a database must abort nothing (round 6's
+-- finding 1, the same gate the zero-count audit takes).
+DO $dark_registers$
+DECLARE v_table TEXT; v_rows BIGINT; v_found TEXT := '';
+BEGIN
+  IF phase6_t4d_retired_at_start() THEN
+    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the dark-table emptiness audit is SKIPPED (4d-ii has legitimately written these tables; this is a replay over a retired database)';
+  ELSE
+    FOREACH v_table IN ARRAY ARRAY['MembershipTransition', 'DomainEventPairingClaim',
+                                   'ReleaseLease'] LOOP
+      EXECUTE format('SELECT count(*) FROM %I', v_table) INTO v_rows;
+      IF v_rows > 0 THEN
+        v_found := v_found || format('%s%s (%s row(s))', CASE WHEN v_found = '' THEN '' ELSE ', ' END, v_table, v_rows);
+      END IF;
+    END LOOP;
+    IF v_found <> '' THEN
+      RAISE EXCEPTION
+        'phase6 4d-i ABORT: dark table(s) already hold rows before this unit seals them — %. These tables have no sanctioned writer until 4d-ii, so a row present now was validated by none of the triggers this file installs, and its seal would make it permanent — a ReleaseLease row worst of all, which no one can delete or shorten afterwards and which 4d-iii''s drain preflight would read as a still-serving previous release forever. Remove the rows (or, on a database that has genuinely run 4d-iii, restore its RolloutRetirement marker) before this migration adopts them.',
+        v_found;
+    END IF;
+  END IF;
+END $dark_registers$;
+
 -- ── the release lease's seals ────────────────────────────────────────────────────────────────
 -- Identity FROZEN after insert, the ONLY admitted update a NON-DECREASING `leaseUntil`, DELETE
 -- refused, `ReleaseLease_t4d_no_truncate` in `TRUNCATE_SEALS` (plan lines 401 and 6712; P38's

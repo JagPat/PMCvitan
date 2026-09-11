@@ -53,7 +53,7 @@ const INVENTORY: Record<string, string[]> = {
     'DecisionCountersign_t4d_seal',
   ],
   DecisionEvent: ['DecisionEvent_t4d_append_only', 'DecisionEvent_t4d_correspondence',
-    'DecisionEvent_t4d_renotified_claim'],
+    'DecisionEvent_t4d_kind_reserved', 'DecisionEvent_t4d_renotified_claim'],
   DecisionForward: [
     'DecisionForward_t4d_append_only',
     'DecisionForward_t4d_no_truncate',

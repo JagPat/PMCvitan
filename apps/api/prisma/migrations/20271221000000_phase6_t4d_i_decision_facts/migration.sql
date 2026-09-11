@@ -2034,6 +2034,54 @@ BEGIN
   END IF;
 END $$;
 
+-- ── the audit register's 4d-only KINDS are RESERVED, like the states they record ─────────────
+-- #582's review round 15, finding 2.
+--
+-- The reservation was applied to STATES (`Decision.status`, `Decision.deciderKind`), to ROLES
+-- (`Membership.role`, `User.role`) and to a TABLE (`DecisionForward`), and never to the audit
+-- register's KINDS — so four kinds recording acts that have no writer until 4d-ii were writable
+-- through the whole dark window.
+--
+-- THE HOLE, concretely. A no-chain direct approval is legal in the window: it commits `approved`
+-- and emits one `decision.approved`. The weak correspondence's table admits a `countersigned`
+-- audit row on an `approved` decision against `decision.approved` OR `decision.reapproved` —
+-- because after 4d-iii that IS the countersign's event — so the approval's own event answers it.
+-- `v_events` is 1, the per-type audit count is 1, and nothing in the WEAK body demands a
+-- `DecisionCountersign` fact, which is 4d-iii's full converse. The row commits, the append-only
+-- seal makes it permanent, and 4d-iii's stronger INSERT trigger judges only NEW rows, so it can
+-- never invalidate the one already there. `stranded_resolved` on an `approved` decision has the
+-- identical shape, and `forwarded` and `countersign_renotified` are the same class one step out.
+--
+-- THE FIX IS THE RESERVATION, not a widening of the weak body. These four kinds record acts whose
+-- COMMANDS do not exist until 4d-ii; a kind with no sanctioned writer is reserved exactly as a
+-- status with no installed seals is. Widening the weak correspondence to demand the fact would be
+-- the wrong instrument twice over: it would duplicate 4d-iii's converse in this file (two
+-- definitions of one rule, drifting), and it would still admit the kind, when the honest answer
+-- for the window is that the act cannot have happened.
+--
+-- Through the SAME `phase6_t4d_reserved` function and the same WHEN-clause shape as the other
+-- five doors, so 4d-iii drops SIX doors in one statement rather than five and a special case.
+DO $$
+DECLARE tg pg_trigger;
+BEGIN
+  IF phase6_t4d_retired_at_start() THEN RETURN; END IF;
+
+  SELECT * INTO tg FROM pg_trigger
+   WHERE tgname = 'DecisionEvent_t4d_kind_reserved'
+     AND tgrelid = '"DecisionEvent"'::regclass AND NOT tgisinternal;
+  IF NOT FOUND THEN
+    CREATE TRIGGER "DecisionEvent_t4d_kind_reserved" BEFORE INSERT ON "DecisionEvent"
+      FOR EACH ROW WHEN (NEW."type" IN ('countersigned', 'stranded_resolved', 'forwarded', 'countersign_renotified'))
+      EXECUTE FUNCTION phase6_t4d_reserved('DecisionEvent.type = a 4d-only kind');
+  ELSIF tg.tgenabled <> 'O'
+     OR tg.tgfoid::regproc::text <> 'phase6_t4d_reserved'
+     OR tg.tgtype <> 7 THEN            -- EXACTLY ROW(1) + BEFORE(2) + INSERT(4)
+    RAISE EXCEPTION
+      'phase6 4d-i: DecisionEvent_t4d_kind_reserved exists but does not reserve the 4d-only audit kinds (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P6T4D.',
+      tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
+  END IF;
+END $$;
+
 -- ── the DecisionEvent audit register: append-only, and CORRESPONDING ─────────────────────────
 -- The delivered `DecisionEvent_no_withdrawn_approval` refuses the DELETE of an approval row.
 -- 4d-i widens that to the whole register: an audit row is the attributable record that an act
@@ -2381,9 +2429,11 @@ BEGIN
   IF phase6_t4d_retired_at_start() THEN
     RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the dark-fact emptiness audit is SKIPPED (4d-ii has legitimately written these tables; this is a replay over a retired database)';
   ELSE
+    -- THE TABLES THIS FILE CREATES. `MembershipTransition`, `DomainEventPairingClaim` and
+    -- `ReleaseLease` are the registers half's, and it audits its own — a file cannot be said to
+    -- stand alone while another one checks its tables for it.
     FOREACH v_table IN ARRAY ARRAY['DecisionForward', 'DecisionCountersign',
-                                   'DecisionStrandedResolution', 'MembershipTransition',
-                                   'DomainEventPairingClaim'] LOOP
+                                   'DecisionStrandedResolution'] LOOP
       EXECUTE format('SELECT count(*) FROM %I', v_table) INTO v_rows;
       IF v_rows > 0 THEN
         v_found := v_found || format('%s%s (%s row(s))', CASE WHEN v_found = '' THEN '' ELSE ', ' END, v_table, v_rows);
