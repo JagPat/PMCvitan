@@ -18,13 +18,15 @@ Design authority for this programme. **v2** — reproduced against `main @ a3543
 > for F-1b, which remains Claude's existing PR #584 with the look locked
 > below.
 >
-> 1. **F-1b look — GO.** On phones (`max-width: 639px`): text-entry
->    controls compute to ≥16px; safety- and evidence-critical labels
->    ≥13px with real weight; every action target ≥44×44. Desktop authored
->    density is unchanged. **§6.7 override:** a shared `Field` primitive
->    is NOT required for F-1b. A mobile stylesheet floor that outranks
->    inline field sizes is an accepted guarantee; F-1c still verifies
->    computed style. Do not migrate the 134 call sites in this unit.
+> 1. **F-1b look — GO.** On the mobile shell (`max-width: 639.98px`,
+>    the same `<640px` boundary as `AppShell` / `BottomTabs` / `TopBar`):
+>    every `input`, `textarea`, and `select` computes to ≥16px; safety-
+>    and evidence-critical labels ≥13px with real weight; every action
+>    target ≥44×44. Desktop authored density is unchanged. **§6.7
+>    override:** a shared `Field` primitive is NOT required for F-1b. A
+>    mobile stylesheet floor that outranks inline field sizes is an
+>    accepted guarantee; F-1c still verifies computed style. Do not
+>    migrate the 134 call sites in this unit.
 > 2. **D1 drawings search — GO, queued.** Clone the Decision Log filter
 >    onto the Drawings register per `SEARCH_AND_NAV_PROPOSAL.md` §2.
 >    D2 global search stays specified-not-built. Do not open D1 while
@@ -55,7 +57,7 @@ Design authority for this programme. **v2** — reproduced against `main @ a3543
 ## Non-negotiable rules
 
 1. **Reproduce before you plan.** Every claim cites a file and line. Re-run each against current `HEAD`. If a claim no longer reproduces, say so and skip it — do not build against a stale finding. v1 of these docs contained four claims that were wrong or overstated; they are listed openly in the master brief's correction table. Treat this folder as a starting hypothesis, not as truth.
-2. **Sequencing is fixed for Waves 1–5.** Task 4 → Phase 6 collaborator units → Waves 1–5. **Wave 0 is the exception** (amended 2026-08-15, owner parallel directive): it runs NOW as a parallel track — F-1a shipped in PR #342, F-1b opens on that merge with §6.7's recorded default, F-1c after both — and no Wave-0 unit waits for Task 4 or Phase 6. Within the programme, Wave 0 still precedes Waves 1–5.
+2. **Sequencing is fixed for Waves 1–5.** Task 4 → Phase 6 collaborator units → Waves 1–5. **Wave 0 is the exception** (amended 2026-08-15, owner parallel directive): it runs NOW as a parallel track — F-1a shipped in PR #342, F-1b is open as #584 under the 2026-09-11 stylesheet-floor override (not the 2026-08-15 `Field` default), F-1c after both — and no Wave-0 unit waits for Task 4 or Phase 6. Within the programme, Wave 0 still precedes Waves 1–5.
 3. **One wave open at a time.** A wave opens only when the previous has cleared exact-head Codex review. Units *within* a wave are independent and may run in parallel — **except Wave 0**, where `F-1c` (per-surface validation) depends on both `F-1a` and `F-1b` and must run after them.
 4. **Scope discipline.** Decision-specific UX belongs to Task 4. Collaborator-portal UX belongs to its Phase 6 units. Nothing here authorises work in either.
 5. **Do not weaken gates.** Security, authorization, evidence, migration, offline, idempotency, module-boundary and exact-head Codex gates stand unchanged. Where this plan meets a security question — worker device binding especially — fix the security question first rather than designing around it.
