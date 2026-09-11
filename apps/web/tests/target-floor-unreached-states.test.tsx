@@ -55,11 +55,14 @@ describe('F-1b — the 44px floor in states the browser sweep cannot enter', () 
       ...scope.emptyProjectData(),
       activeProjectId: 'villa-b',
       projectLoadState: 'ready',
-      role: 'architect',
+      // `consultant`, not `architect`: the shell `Role` union deliberately does NOT carry
+      // `architect` — 4d-i reserves that role and 4d-ii is what widens the client — so a test
+      // that typed it there would be asserting a state the product cannot be in.
+      role: 'consultant',
       // the viewer IS the consultee — the session the sweep never has
-      sessionUserId: 'u-architect',
+      sessionUserId: 'u-consultant',
       members: [
-        { membershipId: 'm-1', userId: 'u-architect', name: 'Ar. Meera', role: 'architect', status: 'active' },
+        { membershipId: 'm-1', userId: 'u-consultant', name: 'Meera', role: 'consultant', status: 'active' },
         { membershipId: 'm-2', userId: 'u-pmc', name: 'PMC', role: 'pmc', status: 'active' },
       ] as never,
     });
@@ -71,7 +74,7 @@ describe('F-1b — the 44px floor in states the browser sweep cannot enter', () 
         { key: 'b', label: 'Quartz', material: 'Quartz', delta: 100, swatch: 's2' },
       ],
       consultations: [{
-        id: 'c-1', consulteeMembershipId: 'm-1', consulteeUserId: 'u-architect',
+        id: 'c-1', consulteeMembershipId: 'm-1', consulteeUserId: 'u-consultant',
         requestedById: 'u-pmc', question: 'Which reads better in daylight?', openCycle: 0,
         requestedAt: '2026-09-11T00:00:00.000Z',
       }],
