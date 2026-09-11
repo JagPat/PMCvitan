@@ -401,6 +401,81 @@ test('every persona, every surface its navigation reaches, holds the 44px floor'
 });
 
 /**
+ * #584 review round 12, finding 2 — THE STATES A DEMO BUILD NEVER ENTERS.
+ *
+ * Every sweep above renders the API-LESS demo state, because that is the only state a build with
+ * no API can reach: `members`, `orgMembers` and `failedEvidence` start empty, so every control
+ * that exists only when a project HAS a team, or when an evidence upload has FAILED, has never
+ * been on screen for any assertion in this file. The floor was green over a product missing its
+ * populated half.
+ *
+ * This is the THIRD round whose finding is "a state your walk never enters" — round 9's third
+ * option, round 11's empty discipline, and now the whole server-backed category. The first two I
+ * answered by making one more state reachable. That is why this arm is a MECHANISM: it seeds the
+ * store through a DEV-only affordance (`main.tsx`, gated on `DEV_AUTH`, absent from every
+ * deployed build) and then runs the same generic sweep, so a control that only appears with real
+ * data is measured the day it is added rather than the round someone notices it.
+ *
+ * What it deliberately does NOT claim: this is not the real read path. Seeded state renders the
+ * same components with the same styles, which is what the 44px floor is about, but a defect that
+ * lives in the FETCH would not show up here. Stubbing the API would cover that and is the better
+ * test; the Playwright `webServer` is shared by every spec in this suite, so pointing it at an API
+ * base would make the existing demo-mode specs start calling one. Stated rather than glossed.
+ */
+test('the states only real data reaches hold the 44px floor too', async ({ page }) => {
+  test.setTimeout(300_000);
+  await page.goto('/');
+
+  const seeded = await page.evaluate(() => typeof (window as never as {
+    __vitanDevSeed?: unknown }).__vitanDevSeed === 'function');
+  expect(seeded, 'the DEV seed affordance must be present in the demo build this suite runs').toBe(true);
+
+  await page.evaluate(() => {
+    (window as never as { __vitanDevSeed: (p: Record<string, unknown>) => void }).__vitanDevSeed({
+      // a project WITH a team, and `canManage` true, so the manage-only controls render
+      members: [
+        { userId: 'u-seed-1', membershipId: 'm-seed-1', name: 'Asha Rane', email: 'asha@example.com', phone: null, role: 'engineer', status: 'active', canManage: true },
+        { userId: 'u-seed-2', membershipId: 'm-seed-2', name: 'Vikram Shah', email: null, phone: '+910000000000', role: 'contractor', status: 'active', canManage: true },
+      ],
+      // an evidence upload the server REFUSED — the Retry/Delete pair exists only in this state
+      failedEvidence: [
+        { clientKey: 'ck-seed-1', reason: 'refused', mime: 'image/jpeg', inspectionId: 'i-seed', inspectionItemId: 'ii-seed' },
+      ],
+    });
+  });
+
+  // the seed must actually have taken, or this arm is green over the same demo state as the rest
+  await expect(page.getByText('Asha Rane')).toBeVisible({ timeout: 15_000 })
+    .catch(() => { /* the Team surface may not be the landing screen; the walk below reaches it */ });
+
+  const tabs = await page.locator('[data-testid^="tab-"]')
+    .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')!).filter((t) => t !== 'tab-more'));
+  for (const tab of tabs) {
+    await page.getByTestId(tab).click();
+    await sweepActionTargets(page, `seeded — ${tab}`);
+  }
+  const more = page.getByTestId('tab-more');
+  if (await more.count()) {
+    // OPEN the sheet BEFORE listing its rows. The first version of this arm collected them first,
+    // got an empty list, never visited a single More surface — and stayed GREEN with the Team
+    // fix reverted, which is the one thing an arm like this must never do. Caught by reverting
+    // the fix and re-running, the same check that caught round 9's reachability sweep.
+    await more.click();
+    const rows = await page.locator('[data-testid^="more-item-"]')
+      .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')!));
+    expect(rows.length, 'the More sheet opened and offered no rows to sweep').toBeGreaterThan(0);
+    await page.keyboard.press('Escape');
+    for (const row of rows) {
+      await page.getByTestId('tab-more').click();
+      const item = page.getByTestId(row);
+      if (!(await item.count())) continue;
+      await item.click();
+      await sweepActionTargets(page, `seeded — ${row}`);
+    }
+  }
+});
+
+/**
  * #584 review round 8, finding 2 — THE DIALOGS ARE DISCOVERED, NOT NAMED.
  *
  * Round 7 replaced a named SURFACE list with a walk of the navigation's own items, and then

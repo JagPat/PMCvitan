@@ -337,7 +337,9 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
             const on = r.id === rev.id;
             const s = statusMeta(r.status);
             return (
-              <button key={r.id} onClick={() => setRev(r)} style={{ display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', padding: '9px 11px', borderRadius: 9, cursor: 'pointer', border: `1px solid ${on ? 'var(--ink)' : 'var(--hairline)'}`, background: on ? 'rgba(35,33,28,.04)' : '#fff' }}>
+              // #584 review round 12 — selecting a revision is an ordinary phone interaction and
+              // these rows measured ~35px. Inside the viewer dialog, in the default demo.
+              <button key={r.id} onClick={() => setRev(r)} data-testid={`rev-${r.id}`} style={{ display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', minHeight: 44, padding: '9px 11px', borderRadius: 9, cursor: 'pointer', border: `1px solid ${on ? 'var(--ink)' : 'var(--hairline)'}`, background: on ? 'rgba(35,33,28,.04)' : '#fff' }}>
                 <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 12, width: 42 }}>Rev {r.rev}</span>
                 <span style={{ ...chip, background: s.bg, color: s.fg, borderColor: s.border }}>{s.label}</span>
                 <span style={{ fontSize: 11.5, color: 'var(--muted)', flex: 1 }}>{r.issuedAt} · {r.issuedBy}</span>
