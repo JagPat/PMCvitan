@@ -1983,6 +1983,59 @@ CREATE TRIGGER "DecisionApprovalRevision_t4d_one_flip"
 -- forged birth is the cheapest attack on the whole mechanism: a revision inserted `true` under a
 -- chain is a final approval no architect ever countersigned, and one inserted `false` with no
 -- chain can never be finalized, because neither finalizer exists.
+-- ── WHO MAY APPROVE: the frozen holder designation, or a PMC on their behalf ─────────────────
+-- #582's review round 19, finding 3 — and it is the distinction this file ALREADY names somewhere
+-- else. `phase6_t4d_forward_seal` carries the comment "the forward's own rule is AUTHORITY, which
+-- `phase6_t4d_actor_bound` does not supply", and the approval revision was then given
+-- `actor_bound` alone. Correspondence answers *is this pair true of this actor*; it says nothing
+-- about whether the actor may perform the act.
+--
+-- So an ACTIVE ENGINEER could reserve and complete a valid `decisions.approve` receipt, approve a
+-- CLIENT-held decision with their own truthful `engineer` pair, and pass every seal: the receipt
+-- is genuine, the pair is true, the transition is legal from the decision's side. Nothing asked
+-- whether an engineer may approve at all.
+--
+-- The designation is the rule, read under a share lock so a concurrent re-designation either
+-- commits first (and this approval is judged against the new holder) or waits behind it:
+--
+--   · `member`  — the approver IS the user the held membership resolves to, ACTIVE.
+--   · `client` / `pmc` / `architect` — the approver holds that role on the project, through the
+--     register, with the drain window's membership-less `pmc` derivation.
+--   · ON BEHALF — a PMC may approve for the holder. Then the PMC's own standing is what is
+--     judged here, and `onBehalfOf` must name someone who satisfies the designation, so the row
+--     still records WHOSE decision it was. A non-PMC may not use it.
+CREATE OR REPLACE FUNCTION phase6_t4d_approver_authorized(
+  p_project TEXT, p_decision TEXT, p_actor TEXT, p_on_behalf TEXT, p_row TEXT
+) RETURNS VOID LANGUAGE plpgsql VOLATILE AS $$
+DECLARE d RECORD; v_subject TEXT; v_ok BOOLEAN;
+BEGIN
+  SELECT "deciderKind"::text AS kind, "deciderMembershipId" AS mem INTO d
+    FROM "Decision" WHERE "projectId" = p_project AND "id" = p_decision FOR SHARE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'phase6 4d-i: % names decision %, which is not in project %', p_row, p_decision, p_project;
+  END IF;
+
+  -- The person whose designation must be satisfied: the actor, or the one they act for.
+  v_subject := COALESCE(p_on_behalf, p_actor);
+  IF p_on_behalf IS NOT NULL AND NOT platform_user_holds_role_windowed(p_project, p_actor, 'pmc') THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: % records actor % approving ON BEHALF of % without holding `pmc` on project % — acting for the holder is the PMC''s orchestration, and anyone else doing it is approving a decision that is not theirs under someone else''s name',
+      p_row, p_actor, p_on_behalf, p_project;
+  END IF;
+
+  IF d.kind = 'member' THEN
+    v_ok := d.mem IS NOT NULL AND platform_membership_active_user(p_project, d.mem) = v_subject;
+  ELSE
+    v_ok := platform_user_holds_role_windowed(p_project, v_subject, d.kind);
+  END IF;
+
+  IF NOT v_ok THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: % records an approval of decision % by %, who does not hold its `%` designation — a receipt and a truthful role/name pair prove WHO acted and say nothing about whether they MAY. (For `pmc`, the drain window''s membership-less org owner/admin is admitted; for `member`, the designation names one active membership.)',
+      p_row, p_decision, v_subject, d.kind;
+  END IF;
+END $$;
+
 CREATE OR REPLACE FUNCTION phase6_t4d_revision_birth() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE v_chain BOOLEAN; v_prev INT;
 BEGIN
@@ -2073,6 +2126,15 @@ BEGIN
     PERFORM phase6_t4d_actor_bound(NEW."projectId", NEW."approvedById",
                                    NEW."approvedByRole", NEW."approvedByName",
                                    'DecisionApprovalRevision ' || NEW."id");
+  END IF;
+
+  -- AND CORRESPONDENCE IS NOT AUTHORITY (#582 round 19, finding 3). Everything above proves the
+  -- pair is TRUE of `approvedById`; nothing above asks whether that actor may approve THIS
+  -- decision. Judged whenever an approver is named — the drain's legacy rows carry none, and a
+  -- row with nobody in it is already refused by the arm above when it carries a pair.
+  IF NEW."approvedById" IS NOT NULL THEN
+    PERFORM phase6_t4d_approver_authorized(NEW."projectId", NEW."decisionId", NEW."approvedById",
+                                           NEW."onBehalfOf", 'DecisionApprovalRevision ' || NEW."id");
   END IF;
   RETURN NEW;
 END $$;
@@ -2166,6 +2228,41 @@ BEGIN
       RAISE EXCEPTION
         'phase6 4d-i: decision % would hold % unfinalized approval revisions at commit (this one is version %) — a decision has at most ONE open approval, the head its finalizer acts on, and every revision below it is stranded beyond the reach of any countersign or resolution',
         NEW."decisionId", v_open, NEW."version";
+    END IF;
+
+  ELSE
+    -- (3) AND A FINALIZED BIRTH RIDES ONE TOO (#582's review round 19, finding 2).
+    --
+    -- (2) sat inside `IF NEW."finalized" = FALSE`, and its comment explains why: a provisional
+    -- birth is unreachable before 4d-iii, so it looked like the interesting one. What that missed
+    -- is that `finalized = true` is not only the LEGACY shape — it is also what the live no-chain
+    -- `decisions.approve` writes, on every approval this release performs. Scoping the transition
+    -- demand to the provisional branch therefore left the ORDINARY approval with none at all.
+    --
+    -- What that admits: reserve and complete a genuine `decisions.approve` receipt, insert a
+    -- revision one version above the head for a decision still sitting at `pending`, and commit.
+    -- The decision is never written, no `decision.approved` event is emitted, no audit row is
+    -- appended — and every seal passes, because each was asking about something else. The row is
+    -- then immutable, it advances the approval COUNT that 4c reads as the consultation cycle, and
+    -- it stands as the finalized provenance a later requirement cites. An approval that never
+    -- happened, permanently.
+    --
+    -- The demand is (2a)'s shape without its status: the decision was WRITTEN in this transaction.
+    -- Which status an approval may leave it in is already the delivered attribution seal's
+    -- question, and re-deciding it here would be round 8's mistake of judging a transition by the
+    -- state it left behind.
+    --
+    -- THE HISTORICAL IMPORT KEEPS ITS DOOR, by the same visible path it already uses: a legacy
+    -- revision is born finalized beside a decision nobody is touching, which is exactly this
+    -- shape, so `plantLegacyApprovalRevision` disables THIS trigger by name alongside the 4c
+    -- provenance seal it already disables. An unnamed writer gets nothing by accident.
+    SELECT TRUE INTO v_moved FROM "Decision" d
+     WHERE d."projectId" = NEW."projectId" AND d."id" = NEW."decisionId"
+       AND d."xmin" = txid_current()::text::xid;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: revision % is born FINALIZED beside decision %, which this transaction never wrote — a finalized approval IS the act that moves its decision, and one recorded without that act is an approval nobody performed while the register counts it as a cycle that happened. A historical import declares itself by disabling `DecisionApprovalRevision_t4d_birth_paired` by name, the way the 4c provenance seal is already declared.',
+        NEW."id", NEW."decisionId";
     END IF;
   END IF;
   RETURN NULL;
@@ -2363,6 +2460,7 @@ CREATE TRIGGER "DecisionEvent_t4d_renotified_claim"
 -- `draft_updated`, and `withdrawn` — is untouched: the seal judges only what it admits.
 CREATE OR REPLACE FUNCTION phase6_t4d_event_correspondence_weak() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
+  v_approver TEXT;                       -- #582 round 19, finding 4 — the act's own actor
   v_status   TEXT;
   v_project  TEXT;
   v_required TEXT[];
@@ -2438,6 +2536,50 @@ BEGIN
     RAISE EXCEPTION
       'phase6 4d-i: decision % carries % `%` audit rows written by this transaction — one act appends ONE row, and a second is a duplicate claim the append-only seal would make permanent',
       NEW."decisionId", v_audits, NEW."type";
+  END IF;
+
+  -- AND EXACTLY ONE OF WHAT IS NOT THE SAME AS ONE OF THE RIGHT THING
+  -- (#582's review round 19, finding 4).
+  --
+  -- Rounds 7 and 9 made this correspondence EXACT in both directions and left it ANONYMOUS. Every
+  -- count above is over type and kind; not one of them looks at WHO. So a bundle can carry an
+  -- otherwise-valid approval revision attributed to holder A while emitting the
+  -- `decision.approved` event and appending this audit row as user B: one event, one audit row,
+  -- one revision, every count satisfied — and three immutable records that disagree about who
+  -- approved. The push then announces B, because the consumer renders the event's envelope.
+  --
+  -- So the act's records are bound to the act's ROW. The approval revision written in this
+  -- transaction is the authority — it is what this file judges hardest, through the frozen pair,
+  -- the holder designation (round 19, finding 3) and the transition (finding 2) — and the event
+  -- and the audit row must name the same actor.
+  --
+  -- THE DRAIN KEEPS ITS EXCEPTION, and it is a NULL actor rather than a missing rule: a
+  -- previous-release audit row may carry no `actorId` at all, and no released code writes the
+  -- event envelope until 4d-ii. So each side is compared only when it names somebody. 4d-iii is
+  -- where both become required and this becomes total.
+  IF 'decision.approved' = ANY (v_required) OR 'decision.reapproved' = ANY (v_required) THEN
+    SELECT r."approvedById" INTO v_approver
+      FROM "DecisionApprovalRevision" r
+     WHERE r."projectId" = v_project AND r."decisionId" = NEW."decisionId"
+       AND r."xmin" = txid_current()::text::xid;
+
+    IF v_approver IS NOT NULL THEN
+      IF NEW."actorId" IS NOT NULL AND NEW."actorId" <> v_approver THEN
+        RAISE EXCEPTION
+          'phase6 4d-i: the `%` audit row for decision % is attributed to %, but the approval revision this transaction wrote records % as the approver — one act has one actor, and two immutable records naming different people leave a register that cannot say who decided',
+          NEW."type", NEW."decisionId", NEW."actorId", v_approver;
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM "DomainEvent" e
+         WHERE e."projectId" = v_project AND e."entityType" = 'Decision'
+           AND e."entityId" = NEW."decisionId" AND e."eventType" = ANY (v_required)
+           AND e."xmin" = txid_current()::text::xid
+           AND e."actorId" IS NOT NULL AND e."actorId" <> v_approver) THEN
+        RAISE EXCEPTION
+          'phase6 4d-i: the % event announcing decision % names an actor other than %, the approver the revision this transaction wrote records — the delivery stream is what the push renders, so a mismatch announces the approval under the wrong name and no later write can correct it',
+          array_to_string(v_required, ' or '), NEW."decisionId", v_approver;
+      END IF;
+    END IF;
   END IF;
   RETURN NULL;
 END $$;
@@ -2719,10 +2861,12 @@ END $dark_tables$;
 --                            cannot be raised. (The reported finding.)
 --   · `DecisionApprovalRevision` — a `finalized = false` row is an OPEN approval under no chain,
 --                            and the one-flip seal makes it permanently unfinalizable.
---   · `DomainEvent`        — a pre-baseline actor pair is permanent attribution the envelope seal
---                            never saw.
---   · `Notification`       — a kinded or event-bound notice the binding seals never judged.
 --   · the two consultation tables — the same frozen pair, with the same freeze.
+--
+--   · `DomainEvent` and `Notification` were HERE and MOVED to the registers half in round 19
+--     (finding 1). Their columns and the seals that judge them are that file's, so an abort here
+--     reported them AFTER those seals were committed and the repair it named was impossible. Each
+--     half audits what it creates.
 --
 -- Each abort names the rows, because "some table is wrong" is not a repair an operator can make.
 -- A blank pre-baseline pair may instead be refused earlier, by the CHECK that adds the nonblank
@@ -2744,8 +2888,6 @@ BEGIN
        || ' OR "resolvedByCommandId" IS NOT NULL OR "resolvedByRole" IS NOT NULL OR "resolvedByName" IS NOT NULL'),
       ('DecisionApprovalRevision', 'id',
        '"finalized" = FALSE OR "approvedFrom" IS NOT NULL OR "approvedByName" IS NOT NULL OR "approvedByRole" IS NOT NULL'),
-      ('DomainEvent', 'eventId', '"actorRole" IS NOT NULL OR "actorName" IS NOT NULL'),
-      ('Notification', 'id', '"kind" IS NOT NULL OR "eventId" IS NOT NULL'),
       ('DecisionConsultation', 'id', '"requestedByRole" IS NOT NULL OR "requestedByName" IS NOT NULL'),
       ('DecisionConsultationResponse', 'id', '"respondedByRole" IS NOT NULL OR "respondedByName" IS NOT NULL')
     ) AS v(tbl, idcol, pred) LOOP
@@ -2759,7 +2901,7 @@ BEGIN
     END LOOP;
     IF v_found <> '' THEN
       RAISE EXCEPTION
-        'phase6 4d-i ABORT: row(s) already carry this unit''s 4d-only columns before it seals them — %. These columns have no sanctioned writer until 4d-ii, so a value present now was judged by none of the eligibility, pairing, provenance or attribution triggers this file installs, and the freezes it installs would make each one permanent. Reset the named rows to their legacy shape (a `standard` request with no 4d evidence, a finalized revision, an event with no actor pair, an unbound notice, an unattributed consultation) before this migration adopts them.',
+        'phase6 4d-i ABORT: row(s) already carry this unit''s 4d-only columns before it seals them — %. These columns have no sanctioned writer until 4d-ii, so a value present now was judged by none of the eligibility, pairing, provenance or attribution triggers this file installs, and the freezes it installs would make each one permanent. Reset the named rows to their legacy shape (a `standard` request with no 4d evidence, a finalized revision, an unattributed consultation) before this migration adopts them. The consultation tables are append-only at the DELIVERED layer, so that reset needs the transactional repair in docs/RUNBOOK.md §P6T4D, which disables each blocking trigger by name and re-enables it in the same transaction.',
         v_found;
     END IF;
   END IF;

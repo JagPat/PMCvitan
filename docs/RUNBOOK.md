@@ -1358,11 +1358,67 @@ does:
   process that is still serving, forever. Clear it before the migration adopts it, not after.
 - `row(s) already carry this unit's 4d-only columns before it seals them` — a `ChangeRequest`,
   `DecisionApprovalRevision`, `DomainEvent`, `Notification` or consultation row is already in a
-  4d shape. **Reset each named row to its legacy shape**: a `standard` request with no 4d
-  evidence, a finalized revision, an event with no actor pair, an unbound notice, an unattributed
-  consultation. The delivered append-only seal on the approval register refuses a direct UPDATE,
-  so that one statement declares itself the way `sanctionedReset` does — §P6T4D's repair contract,
-  not a bypass.
+  4d shape. **Reset each named row to its legacy shape**, using the script below.
+
+#### The legacy-shape repair, executable as written
+
+**Why it is a script and not a sentence** (#582's review round 19, finding 1). The earlier text
+here said "reset each named row" and named ONE blocking trigger. Several tables are append-only at
+the DELIVERED layer, so the reset an operator typed was refused and the next deploy failed on the
+same rows. Two things changed: the `DomainEvent` and `Notification` arms MOVED to the registers
+half, so their abort rolls that file back and its seals are never committed; and what remains is
+given here as one transaction that disables each blocking trigger by name and re-enables it.
+
+Run it against the deploy database, adjusting the `WHERE` clauses to the ids the abort named — it
+resets nothing it is not pointed at:
+
+```sql
+BEGIN;
+  ALTER TABLE "DecisionConsultation"         DISABLE TRIGGER "DecisionConsultation_t4c_append_only";
+  ALTER TABLE "DecisionConsultationResponse" DISABLE TRIGGER "DecisionConsultationResponse_t4c_append_only";
+
+  UPDATE "ChangeRequest" SET "origin" = 'standard', "revisionId" = NULL,
+         "sourceCommandId" = NULL, "requestedByRole" = NULL, "requestedByName" = NULL,
+         "resolvedByCommandId" = NULL, "resolvedByRole" = NULL, "resolvedByName" = NULL
+   WHERE "id" IN (:ids);
+  UPDATE "DecisionApprovalRevision" SET "finalized" = TRUE, "approvedFrom" = NULL,
+         "approvedByName" = NULL, "approvedByRole" = NULL
+   WHERE "id" IN (:ids);
+  UPDATE "DecisionConsultation"
+     SET "requestedByRole" = NULL, "requestedByName" = NULL WHERE "id" IN (:ids);
+  UPDATE "DecisionConsultationResponse"
+     SET "respondedByRole" = NULL, "respondedByName" = NULL WHERE "id" IN (:ids);
+
+  ALTER TABLE "DecisionConsultationResponse" ENABLE TRIGGER "DecisionConsultationResponse_t4c_append_only";
+  ALTER TABLE "DecisionConsultation"         ENABLE TRIGGER "DecisionConsultation_t4c_append_only";
+COMMIT;
+```
+
+ONE TRANSACTION, for the reason every sanctioned bypass in this repository is one: `ALTER TABLE`
+commits its ACCESS EXCLUSIVE away at the end of each statement, so separate statements leave a
+window where another session can write through the open seal, and a termination between them
+leaves the seal off for good.
+
+`ChangeRequest` and `DecisionApprovalRevision` need no bypass **when the decisions half aborted** —
+its own freezes rolled back with it, and the delivered `ChangeRequest_t4b2_seal` guards `decisionId`
+alone. If you are repairing a database where the decisions half COMMITTED, you are past the audit
+and this is not the procedure you want.
+
+**The registers half's abort** (`4d-only KERNEL columns`) is repaired the same way, over its own
+two tables, and `DomainEvent` is append-only at the delivered layer:
+
+```sql
+BEGIN;
+  ALTER TABLE "DomainEvent" DISABLE TRIGGER "DomainEvent_append_only";
+  UPDATE "DomainEvent" SET "actorRole" = NULL, "actorName" = NULL WHERE "eventId" IN (:ids);
+  UPDATE "Notification" SET "kind" = NULL, "eventId" = NULL WHERE "id" IN (:ids);
+  ALTER TABLE "DomainEvent" ENABLE TRIGGER "DomainEvent_append_only";
+COMMIT;
+```
+
+Both scripts are DRIVEN by `phase6-t4d-i-seal-stripped.test.ts` — a baseline is built carrying a
+row in every shape the audits name, the scripts above are run verbatim, and the migration pair is
+then required to apply. A documented repair nobody has executed is not a repair.
 
 Both messages name the tables AND the rows, so the repair is the one they name. Then:
 

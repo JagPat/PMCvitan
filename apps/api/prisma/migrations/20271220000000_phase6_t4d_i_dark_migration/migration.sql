@@ -324,15 +324,7 @@ BEGIN
       p_row, COALESCE(p_role, '<null>'), COALESCE(p_name, '<null>');
   END IF;
 
-  v_holds := platform_user_holds_role(p_project, p_actor, p_role);
-
-  -- The WINDOW arm, for `pmc` only. Everything else is the register, in the window and after it.
-  IF NOT v_holds AND p_role = 'pmc' THEN
-    v_holds := platform_user_orchestration_authority(p_project, p_actor)
-               AND NOT EXISTS (SELECT 1 FROM "ProjectUserStanding" s
-                                WHERE s."projectId" = p_project AND s."userId" = p_actor
-                                  AND s."membershipId" IS NOT NULL);
-  END IF;
+  v_holds := platform_user_holds_role_windowed(p_project, p_actor, p_role);
 
   IF NOT v_holds THEN
     RAISE EXCEPTION
@@ -895,6 +887,28 @@ RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
      WHERE po."projectId" = p_project AND a."userId" = p_user
   );
 $$;
+
+-- THE REGISTER ANSWER, WITH THE DRAIN WINDOW'S ONE EXCEPTION — one definition, because round 19
+-- gave it a SECOND caller (#582's review round 19, finding 3: the approval-authority seal). It was
+-- inline in `phase6_t4d_actor_pair_true`; a second inline copy is a rule that can drift, which is
+-- the failure this unit has now recorded four times in other forms.
+--
+-- The exception is `pmc` ONLY: a membership-less org owner/admin has no fanned-out `pmc` row until
+-- 4d-iii re-projects, and the delivered `ProjectAccessService` authorizes exactly that actor with a
+-- `pmc` token (#572's review round 25, finding 8). It is tenancy-joined through `ProjectOrg`, so an
+-- owner of an UNRELATED organisation is refused (#572's review round 14, finding 1), and it is
+-- withheld the moment the actor has a membership-granted row, because then the register IS the
+-- answer.
+CREATE OR REPLACE FUNCTION platform_user_holds_role_windowed(p_project TEXT, p_user TEXT, p_role TEXT)
+RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
+  SELECT platform_user_holds_role(p_project, p_user, p_role)
+      OR (p_role = 'pmc'
+          AND platform_user_orchestration_authority(p_project, p_user)
+          AND NOT EXISTS (SELECT 1 FROM "ProjectUserStanding" s
+                           WHERE s."projectId" = p_project AND s."userId" = p_user
+                             AND s."membershipId" IS NOT NULL));
+$$;
+
 
 -- ── the ORGS-owned projection triggers ───────────────────────────────────────────────────────
 -- These read ONLY orgs tables (`Project`, `Membership`, `OrgMembership`, `User`) and write ONLY
@@ -3252,6 +3266,48 @@ BEGIN
     END IF;
   END IF;
 END $dark_registers$;
+
+-- ── and the 4d-only SHAPE of the tables THIS HALF adds columns to ────────────────────────────
+-- #582's review round 19, finding 1 — THE AUDIT MUST RUN WHERE ITS REPAIR IS STILL POSSIBLE.
+--
+-- These two arms were in the DECISIONS half, with the other four. Every arm there aborts that
+-- file's transaction — which is correct for the columns that file adds, and useless for these
+-- two: `DomainEvent.actorRole`/`actorName` and `Notification.kind`/`eventId` are added HERE, and
+-- the seals that judge them (`DomainEvent_t4d_envelope`, `Notification_t4d_binding`) are
+-- committed HERE. By the time the decisions half aborted, both were already standing, so the
+-- operator was told to "reset the named rows to their legacy shape" against a database that had
+-- just been given the seals refusing exactly that. Following the instruction changed nothing and
+-- the next deploy failed on the same rows.
+--
+-- Moving them is the whole fix, and it is the same rule round 15 applied to the dark-table audit:
+-- EACH HALF AUDITS WHAT IT CREATES. An abort here rolls this transaction back, so none of this
+-- file's seals is committed and the repair meets only the DELIVERED ones — which §P6T4D now names
+-- and disables by name in a repair an operator can paste.
+DO $legacy_shape_kernel$
+DECLARE spec RECORD; v_rows BIGINT; v_sample TEXT; v_found TEXT := '';
+BEGIN
+  IF phase6_t4d_retired_at_start() THEN
+    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the kernel legacy-shape audit is SKIPPED (4d-ii has legitimately written these columns; this is a replay over a retired database)';
+  ELSE
+    FOR spec IN SELECT * FROM (VALUES
+      ('DomainEvent', 'eventId', '"actorRole" IS NOT NULL OR "actorName" IS NOT NULL'),
+      ('Notification', 'id', '"kind" IS NOT NULL OR "eventId" IS NOT NULL')
+    ) AS v(tbl, idcol, pred) LOOP
+      EXECUTE format(
+        'SELECT count(*), COALESCE(left(string_agg(%I, '', '' ORDER BY %I), 100), '''') FROM %I WHERE %s',
+        spec.idcol, spec.idcol, spec.tbl, spec.pred) INTO v_rows, v_sample;
+      IF v_rows > 0 THEN
+        v_found := v_found || format('%s%s (%s row(s): %s)',
+          CASE WHEN v_found = '' THEN '' ELSE '; ' END, spec.tbl, v_rows, v_sample);
+      END IF;
+    END LOOP;
+    IF v_found <> '' THEN
+      RAISE EXCEPTION
+        'phase6 4d-i ABORT: row(s) already carry this unit''s 4d-only KERNEL columns before it seals them — %. These columns have no sanctioned writer until 4d-ii, so a value present now was judged by neither the envelope seal nor the notice binding this file installs, and both freeze what they find. Reset the named rows to their legacy shape (an event with no actor pair, an unbound notice) before this migration adopts them. `DomainEvent` is append-only at the DELIVERED layer, so that reset needs the transactional repair in docs/RUNBOOK.md §P6T4D, which disables `DomainEvent_append_only` by name and re-enables it in the same transaction.',
+        v_found;
+    END IF;
+  END IF;
+END $legacy_shape_kernel$;
 
 -- ── the release lease's seals ────────────────────────────────────────────────────────────────
 -- Identity FROZEN after insert, the ONLY admitted update a NON-DECREASING `leaseUntil`, DELETE

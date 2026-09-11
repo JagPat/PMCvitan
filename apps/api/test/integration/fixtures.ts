@@ -277,9 +277,18 @@ export async function plantLegacyApprovalRevision(
   prisma: PrismaService,
   data: { id: string; projectId: string; decisionId: string; version: number; optionKey: string; approvedById?: string | null; onBehalfOf?: string | null },
 ): Promise<void> {
+  // Phase 6 unit 4d-i, #582 round 19, finding 2 — TWO names now. A legacy revision is born
+  // FINALIZED beside a decision nobody is touching, and `DecisionApprovalRevision_t4d_birth_paired`
+  // refuses exactly that shape from this unit on, because it is also the shape a forged no-chain
+  // approval takes. The import declares itself the way it already declares itself for the 4c
+  // provenance seal: by name, guarded on the trigger existing, so the helper works on databases
+  // migrated to any point in the series.
   const toggle = (action: 'DISABLE' | 'ENABLE'): string =>
-    `DO $do$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionApprovalRevision_t4c_provenance') THEN `
-    + `EXECUTE 'ALTER TABLE "DecisionApprovalRevision" ${action} TRIGGER "DecisionApprovalRevision_t4c_provenance"'; END IF; END $do$`;
+    ['DecisionApprovalRevision_t4c_provenance', 'DecisionApprovalRevision_t4d_birth_paired']
+      .map((t) => `IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = '${t}') THEN `
+        + `EXECUTE 'ALTER TABLE "DecisionApprovalRevision" ${action} TRIGGER "${t}"'; END IF;`)
+      .join(' ')
+      .replace(/^/, 'DO $do$ BEGIN ') + ' END $do$';
   await prisma.$transaction([
     prisma.$executeRawUnsafe(toggle('DISABLE')),
     prisma.decisionApprovalRevision.create({
