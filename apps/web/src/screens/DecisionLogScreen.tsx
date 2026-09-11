@@ -418,7 +418,13 @@ function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDele
     );
   }
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: depth * 18, minHeight: 34 }} data-testid={`loc-row-${id}`}>
+    // Wave 0 / F-1b round 9 — `flexWrap` because the 44px floor MADE this row overflow. Three
+    // icon buttons went from ~23px to 44 (+63px), and a normal zone row then needed ~357px before
+    // the name got any width against ~310px of usable modal at 390px: the trailing rename and
+    // delete were pushed outside the visible modal. A correction that puts controls out of reach
+    // is worse than the undersized targets it fixed. The action group now drops to its own line
+    // instead of overflowing, and the name may shrink rather than shove.
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', paddingLeft: depth * 18, minHeight: 34 }} data-testid={`loc-row-${id}`}>
       {editing ? (
         <>
           <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commit(); }} style={{ ...fldD, flex: 1, minWidth: 0 }} />
@@ -427,22 +433,27 @@ function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDele
       ) : (
         <>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.1em', color: 'var(--faint)', width: 44, flex: 'none' }}>{kind.toUpperCase()}</span>
-          <span style={{ flex: 1, fontSize: 13.5, fontWeight: kind === 'zone' ? 600 : 400, color: draft ? 'var(--muted)' : 'var(--ink)' }}>{name}</span>
+          <span style={{ flex: '1 1 110px', minWidth: 0, overflowWrap: 'anywhere', fontSize: 13.5, fontWeight: kind === 'zone' ? 600 : 400, color: draft ? 'var(--muted)' : 'var(--ink)' }}>{name}</span>
           {draft && <span style={draftChip} data-testid={`loc-draft-${id}`}>DRAFT</span>}
           {draft && <Button variant="success" onClick={onPublish} data-testid={`loc-publish-${id}`} style={{ padding: '4px 9px', fontSize: 11 }}>Publish</Button>}
-          {onAddChild && (
-            <>
-              <button onClick={() => setAddingKind('room')} style={addChildBtn} data-testid={`loc-add-room-${id}`} title={`Add a room inside ${name}`} aria-label={`Add a room inside ${name}`}>+ Room</button>
-              <button onClick={() => setAddingKind('element')} style={addChildBtn} data-testid={`loc-add-element-${id}`} title={`Add an object inside ${name}`} aria-label={`Add an object inside ${name}`}>+ Object</button>
-            </>
-          )}
-          {onSaveAsModule && (
-            <button onClick={onSaveAsModule} style={iconBtn} data-testid={`loc-module-${id}`} title="Save this zone (rooms, objects, checklists) as a reusable module" aria-label={`Save ${name} as a module`}>
-              <BookmarkPlus size={13} />
-            </button>
-          )}
-          <button onClick={() => { setValue(name); setEditing(true); }} style={iconBtn} aria-label={`Rename ${name}`}><Pencil size={13} /></button>
-          <button onClick={onDelete} style={{ ...iconBtn, color: 'var(--red-solid)' }} aria-label={`Delete ${name}`}><Trash2 size={13} /></button>
+          {/* ONE group, so the actions wrap together and stay in a predictable order rather than
+              breaking apart mid-cluster. `marginLeft: auto` keeps them right-aligned while they
+              fit and is harmless once they take their own line. */}
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginLeft: 'auto' }}>
+            {onAddChild && (
+              <>
+                <button onClick={() => setAddingKind('room')} style={addChildBtn} data-testid={`loc-add-room-${id}`} title={`Add a room inside ${name}`} aria-label={`Add a room inside ${name}`}>+ Room</button>
+                <button onClick={() => setAddingKind('element')} style={addChildBtn} data-testid={`loc-add-element-${id}`} title={`Add an object inside ${name}`} aria-label={`Add an object inside ${name}`}>+ Object</button>
+              </>
+            )}
+            {onSaveAsModule && (
+              <button onClick={onSaveAsModule} style={iconBtn} data-testid={`loc-module-${id}`} title="Save this zone (rooms, objects, checklists) as a reusable module" aria-label={`Save ${name} as a module`}>
+                <BookmarkPlus size={13} />
+              </button>
+            )}
+            <button onClick={() => { setValue(name); setEditing(true); }} style={iconBtn} aria-label={`Rename ${name}`}><Pencil size={13} /></button>
+            <button onClick={onDelete} style={{ ...iconBtn, color: 'var(--red-solid)' }} aria-label={`Delete ${name}`}><Trash2 size={13} /></button>
+          </span>
         </>
       )}
     </div>

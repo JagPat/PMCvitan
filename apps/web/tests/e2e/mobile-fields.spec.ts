@@ -109,6 +109,73 @@ async function sweepActionTargets(page: Page, surface: string): Promise<void> {
     `${surface}: these action targets are under ${TOUCH}×${TOUCH} and are pressed with a thumb, `
     + `on site — ${JSON.stringify(small)}`,
   ).toEqual([]);
+
+  await sweepReachable(page, surface);
+}
+
+/**
+ * #584 review round 9 — A TARGET BIG ENOUGH AND OFF THE SIDE OF ITS CONTAINER IS NOT A TARGET.
+ *
+ * This arm exists because of a defect THIS UNIT introduced. Round 8 raised three icon buttons in
+ * the Locations manager from ~23px to 44px — the right fix by the rule this file enforces — and
+ * the extra width pushed the deepest zone rows past the dialog's edge. Every sweep in this file
+ * stayed green, because every sweep in this file measures SIZE. An accessibility fix made
+ * controls harder to reach and the proof could not see it.
+ *
+ * THE MEASUREMENT, because the first draft of this arm was written from a description and was
+ * GREEN against the unfixed source. At 390px, with round 8's sizes and no wrapping:
+ *
+ *     Delete Ground Floor   [377, 421]      the dialog body: overflow-x auto, box [20, 370],
+ *     Delete Entrance       [349, 393]      scrollWidth 520 against clientWidth 350
+ *
+ * So the controls are NOT unreachable in the absolute sense, and saying so would be false: the
+ * dialog body scrolls, and a user who discovers that can drag it ~170px sideways and press
+ * Delete. The first draft treated a scrollable ancestor as a rescue and therefore reported
+ * nothing — the honest reading of its own rule, applied to a rule that was too weak.
+ *
+ * The property worth asserting is the one this repository already applies to layout: an ACTION
+ * TARGET is reachable without scrolling sideways. Content may overflow into a scroller — a wide
+ * table, a diagram — but a delete button you reach by dragging a modal across a phone screen is
+ * the same defect as a page that scrolls horizontally. So the box compared against is the
+ * VISIBLE box of the nearest ancestor that clips or scrolls, and its scrollWidth is not a
+ * defence. Vertical position is not judged: pages scroll down, and that is ordinary.
+ */
+async function sweepReachable(page: Page, surface: string): Promise<void> {
+  const out = await page.$$eval(INTERACTIVE, (els, eps) =>
+    (els as HTMLElement[])
+      .filter((el) => el.offsetParent !== null)
+      .filter((el) => !el.closest('[data-dev-affordance]'))
+      .map((el) => {
+        // the nearest ancestor that clips OR scrolls decides what "visible" means here, and its
+        // scrollWidth is deliberately not consulted: a target that needs a sideways drag is the
+        // thing being measured, not an excuse for it.
+        let bounds = { left: 0, right: window.innerWidth };
+        for (let p = el.parentElement; p; p = p.parentElement) {
+          if (getComputedStyle(p).overflowX === 'visible') continue;
+          const pr = p.getBoundingClientRect();
+          bounds = { left: pr.left, right: pr.right };
+          break;
+        }
+        const r = el.getBoundingClientRect();
+        return { el, r, bounds };
+      })
+      .filter(({ r }) => r.width > 0 && r.height > 0)
+      .filter(({ r, bounds }) => r.left < bounds.left - eps || r.right > bounds.right + eps)
+      .map(({ el, r, bounds }) => ({
+        tag: el.tagName.toLowerCase(),
+        testid: el.getAttribute('data-testid') || '',
+        label: (el.textContent || '').trim().slice(0, 30)
+          || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '',
+        left: Math.round(r.left), right: Math.round(r.right),
+        clipLeft: Math.round(bounds.left), clipRight: Math.round(bounds.right),
+      })), SUBPIXEL);
+
+  expect(
+    out,
+    `${surface}: these action targets sit OUTSIDE the visible box of the container that holds `
+    + `them, so reaching one means dragging that container sideways on a phone — a 44px control `
+    + `you have to go looking for is not a fix — ${JSON.stringify(out)}`,
+  ).toEqual([]);
 }
 
 /** every control on the page that iOS would zoom for, with its computed size and a locator hint */
@@ -368,6 +435,53 @@ test('every dialog a surface can open holds the 44px floor', async ({ page }) =>
 });
 
 /**
+ * #584 review round 9 — THE THIRD OPTION, which no sweep in this file could reach.
+ *
+ * The dialog sweep above deliberately presses nothing INSIDE a dialog, and it is right not to:
+ * a modal's own buttons commit, delete and publish. But the decision modal's per-option REMOVE
+ * control only exists once there are more than two options, so that rule left a control this
+ * unit resized measured by nothing at all.
+ *
+ * This arm is the narrow, named exception. It presses exactly one control — "+ Add another
+ * option" — which adds a blank row and commits nothing, then measures the state that press
+ * creates. It is deliberately not folded into the discovery sweep: that arm's value is that it
+ * names nothing, and an exception written INTO it would be the beginning of a list again.
+ *
+ * It asserts REACHABILITY as well as size, because the three-option row is the widest this
+ * dialog can be and is therefore where the round-8 regression would reappear.
+ */
+test('the decision modal holds the floor with a third option, and keeps its controls in reach', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('tab-more').click();
+  await page.getByTestId('more-item-decision-log').click();
+
+  const issue = page.getByTestId('issue-decision');
+  await expect(
+    issue,
+    'this arm measures the ISSUE dialog; if the persona cannot open it the arm would pass having '
+    + 'measured nothing, which is the failure this file keeps being caught in',
+  ).toBeVisible();
+  await issue.click();
+
+  const dialog = page.locator('[role="dialog"]');
+  await expect(dialog).toBeVisible();
+
+  // two options are the born state, so the remove control does not exist yet — asserted, so a
+  // future change that ships three by default cannot make this arm measure the wrong state.
+  await expect(page.getByTestId('dec-opt-0-remove')).toHaveCount(0);
+
+  await dialog.getByRole('button', { name: '+ Add another option' }).click();
+  await expect(page.getByTestId('dec-opt-2')).toBeVisible();
+  await expect(
+    page.getByTestId('dec-opt-2-remove'),
+    'the third option is what BRINGS the remove control into existence — if it is absent the '
+    + 'press above did not do what this arm claims',
+  ).toBeVisible();
+
+  await sweepActionTargets(page, 'decision modal — three options');
+});
+
+/**
  * #584 review round 4, finding 2 — the ENTRY ANIMATION may not shrink a pressed control.
  *
  * This arm exists because the fix it guards is invisible to every other arm here: the Daily Log
@@ -609,3 +723,4 @@ test('the daily log offers no action target below the 44px floor', async ({ page
  * the fixes above plus the measured inventory recorded in the brief for F-1c. The Daily Log's
  * multi-state sweep stays, because that surface IS this unit's named subject.
  */
+

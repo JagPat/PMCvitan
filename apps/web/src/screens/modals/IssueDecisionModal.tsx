@@ -132,8 +132,12 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
           <div key={o.id} style={{ marginTop: 14, padding: 12, border: '1px solid var(--hairline)', borderRadius: 12, background: 'var(--panel)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)' }}>OPTION {String.fromCharCode(65 + i)}</span>
+              {/* Wave 0 / F-1b round 9 — this control only EXISTS once a third option is added, and
+                  the dialog sweep deliberately does not press controls inside dialogs, so no arm
+                  ever reached the state that renders it. The floor applies to a control the user
+                  can reach, not to one a sweep happens to see. */}
               {options.length > 2 && (
-                <button onClick={() => setOptions((prev) => prev.filter((_, j) => j !== i))} aria-label={`Remove option ${i + 1}`} style={{ marginLeft: 'auto', background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex' }}>
+                <button onClick={() => setOptions((prev) => prev.filter((_, j) => j !== i))} aria-label={`Remove option ${i + 1}`} data-testid={`dec-opt-${i}-remove`} style={{ marginLeft: 'auto', minWidth: 44, minHeight: 44, background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
                   <X size={15} />
                 </button>
               )}
