@@ -1480,7 +1480,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       try {
         // drain the publication into a SERVABLE decisions.inbox generation (the live apply path)
         await t.prisma.$transaction(async (tx) => {
-          await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id, payload: {}, effectKey: 'decision.published', dispatch: {} });
+          await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id, payload: {}, effectKey: 'decision.published.record', dispatch: {} });
         });
         await drain();
         const before = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
@@ -1522,7 +1522,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         const id2 = 'DL-t4a-r12w-2';
         await seedPublishedOn(projW, id2, 'Post-repair decision');
         await t.prisma.$transaction(async (tx) => {
-          await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id2, payload: {}, effectKey: 'decision.published', dispatch: {} });
+          await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id2, payload: {}, effectKey: 'decision.published.record', dispatch: {} });
         });
         await drain();
         const stuck = await t.prisma.outboxDelivery.count({ where: { consumer: 'decisions.inbox', projectId: projW, status: { in: ['pending', 'leased'] } } });
@@ -1812,7 +1812,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       try {
         for (const id of [idW, idK]) {
           await t.prisma.$transaction(async (tx) => {
-            await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id, payload: {}, effectKey: 'decision.published', dispatch: {} });
+            await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id, payload: {}, effectKey: 'decision.published.record', dispatch: {} });
           });
         }
         await drain();
@@ -1859,7 +1859,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         const id2 = 'DL-t4a-r13w-2';
         await seedPublishedOn(projW, id2, 'Post-repair decision');
         await t.prisma.$transaction(async (tx) => {
-          await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id2, payload: {}, effectKey: 'decision.published', dispatch: {} });
+          await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id2, payload: {}, effectKey: 'decision.published.record', dispatch: {} });
         });
         await drain();
         expect(await t.prisma.outboxDelivery.count({ where: { consumer: 'decisions.inbox', projectId: projW, status: { in: ['pending', 'leased'] } } })).toBe(0);
@@ -2021,7 +2021,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       try {
         for (const id of [idMissing, idStale]) {
           await t.prisma.$transaction(async (tx) => {
-            await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id, payload: {}, effectKey: 'decision.published', dispatch: {} });
+            await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id, payload: {}, effectKey: 'decision.published.record', dispatch: {} });
           });
         }
         await drain();
