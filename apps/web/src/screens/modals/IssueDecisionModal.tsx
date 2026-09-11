@@ -151,11 +151,16 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
                   {SWATCH_KEYS.map((k) => <option key={k} value={k}>{k}</option>)}
                 </select>
                 <span style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid var(--hairline)', background: o.photo ? `center/cover url(${o.photo.preview})` : swatchGradient(o.swatch) }} />
-                <label style={{ fontSize: 12, color: 'var(--accent)', cursor: 'pointer' }}>
+                {/* the file input is display:none, so the LABEL is the whole tap target and carries
+                    the floor itself — #584 review round 10, finding 1 */}
+                <label style={{ fontSize: 12, color: 'var(--accent)', cursor: 'pointer', minHeight: 44, display: 'inline-flex', alignItems: 'center' }} data-testid={`dec-opt-${i}-photo`}>
                   {o.photo ? 'Change photo' : 'Add sample photo'}
                   <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => pickPhoto(i, e.target.files?.[0] ?? null)} />
                 </label>
-                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
+                {/* the radio's own box is a 13px platform affordance, so the LABEL is the target
+                    and carries the floor — self-found once the label rule and the More-details
+                    expansion brought this state into the sweep at all */}
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, minHeight: 44 }} data-testid={`dec-opt-${i}-recommended`}>
                   <input type="radio" name="recommended" checked={o.recommended} onChange={() => setOpt(i, { recommended: true })} /> Recommended
                 </label>
               </div>

@@ -66,7 +66,26 @@ const INTERACTIVE = [
   '[role="button"]:not([aria-disabled="true"])',
   'a[href]',
   'input:not([disabled]):not([type="hidden"])',
+  // #584 review round 10, finding 1 — A LABEL CAN BE THE WHOLE TARGET. The photo picker in the
+  // decision modal is a `<label>` wrapping a `display:none` file input: the input is filtered out
+  // by the visibility test (correctly — it has no box), and the label was in no selector, so the
+  // one thing a thumb can actually press was measured by nothing. Labels are admitted here and
+  // narrowed in the filter below to the ones that ARE the only target.
+  //
+  // This is the same observation round 3 made about buttons, one level down: widening the type
+  // list is not the same as covering every way a control is presented.
+  'label',
 ].join(', ');
+
+/*
+ * A label counts as its own action target only when the control it activates has no box of its
+ * own — a hidden file input, and nothing else. A label beside a visible text field is not a
+ * second target: that field is measured directly, and counting its label too would let a tall row
+ * excuse a small control, which is the mistake the checkbox rule below is careful not to make.
+ *
+ * The rule is spelled inline at both sweep sites rather than shared, because a `page.$$eval`
+ * callback is serialised into the browser and cannot close over a function defined out here.
+ */
 
 /**
  * The shared action-target sweep. The Daily Log arm keeps its own state-by-state version below
@@ -78,6 +97,13 @@ async function sweepActionTargets(page: Page, surface: string): Promise<void> {
     (els as HTMLElement[])
       .filter((el) => el.offsetParent !== null)
       .filter((el) => !el.closest('[data-dev-affordance]'))
+      .filter((el) => {
+        // a label is a target only when the control it activates has none of its own
+        if (el.tagName !== 'LABEL') return true;
+        const controls = el.querySelectorAll('input, select, textarea, button');
+        return controls.length > 0
+          && [...controls].every((c) => (c as HTMLElement).offsetParent === null);
+      })
       .map((el) => {
         // A CHECKBOX OR RADIO IS MEASURED AT ITS LABEL when one encloses it. The native box is a
         // platform affordance — 13px on every browser, and forcing it larger changes a control
@@ -145,6 +171,12 @@ async function sweepReachable(page: Page, surface: string): Promise<void> {
     (els as HTMLElement[])
       .filter((el) => el.offsetParent !== null)
       .filter((el) => !el.closest('[data-dev-affordance]'))
+      .filter((el) => {
+        if (el.tagName !== 'LABEL') return true;
+        const controls = el.querySelectorAll('input, select, textarea, button');
+        return controls.length > 0
+          && [...controls].every((c) => (c as HTMLElement).offsetParent === null);
+      })
       .map((el) => {
         // the nearest ancestor that clips OR scrolls decides what "visible" means here, and its
         // scrollWidth is deliberately not consulted: a target that needs a sideways drag is the
@@ -372,15 +404,44 @@ test('every persona, every surface its navigation reaches, holds the 44px floor'
  * that changed state cannot leak into the next one.
  */
 test('every dialog a surface can open holds the 44px floor', async ({ page }) => {
-  // pressing every control on three surfaces is minutes of work, not seconds, and the project
+  // pressing every control on every surface is minutes of work, not seconds, and the project
   // default is 30s. The cost is the price of discovery: a named list runs in two seconds and is
-  // wrong one round later, which this file has now demonstrated twice.
-  test.setTimeout(300_000);
-  const surfaces = ['tab-site-schedule', 'more-item-decision-log', 'more-item-drawings'];
+  // wrong one round later, which this file has now demonstrated three times.
+  test.setTimeout(900_000);
+
+  // #584 review round 10, finding 2 — AND THE SURFACES ARE DISCOVERED TOO.
+  //
+  // Round 8 made the DIALOGS discovered and left their SURFACES a list of three names. That is
+  // round 7's defect one level up, and it cost exactly what the previous two cost: the PMC's
+  // Inspection Review surface was reachable, opened a New checklist dialog holding a ~35px
+  // add-item control and icon-only removals below that, and no arm here ever pressed its opener.
+  //
+  // The surfaces now come from the navigation itself, the way the persona sweep above takes
+  // them. ONE persona — the PMC, who reaches the most — because this arm's cost is per surface
+  // and the floor is a property of a control, not of who is looking at it; the persona sweep
+  // above is what covers every role's own surfaces.
+  await page.goto('/');
+  await page.locator('[data-dev-affordance="role-switcher"] select').selectOption('pmc');
+  const tabs = await page
+    .locator('[data-testid^="tab-"]')
+    .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')!).filter((t) => t !== 'tab-more'));
+  await page.getByTestId('tab-more').click();
+  const rows = await page
+    .locator('[data-testid^="more-item-"]')
+    .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')!));
+  await page.keyboard.press('Escape');
+
+  const surfaces = [...tabs, ...rows];
+  expect(
+    surfaces.length,
+    'the navigation must offer surfaces to walk — an empty list would make this arm pass having '
+    + 'opened nothing, which is the shape this file keeps being caught in',
+  ).toBeGreaterThan(3);
   const seen: string[] = [];
 
   const openSurface = async (surface: string): Promise<void> => {
     await page.goto('/');
+    await page.locator('[data-dev-affordance="role-switcher"] select').selectOption('pmc');
     if (surface.startsWith('more-item-')) {
       await page.getByTestId('tab-more').click();
       await page.getByTestId(surface).click();
@@ -478,7 +539,59 @@ test('the decision modal holds the floor with a third option, and keeps its cont
     + 'press above did not do what this arm claims',
   ).toBeVisible();
 
-  await sweepActionTargets(page, 'decision modal — three options');
+  // AND THE COLLAPSED STATE IS NOT THE ONLY STATE (#584 review round 10, finding 1). The photo
+  // picker lives inside `MoreDetails`, which is shut by default — so even the discovery arm,
+  // which opens this dialog, never renders the control the finding is about. Expanding it is one
+  // press of a disclosure toggle and commits nothing.
+  await page.getByTestId('dec-opt-0-more-toggle').click();
+  await expect(page.getByTestId('dec-opt-0-more-body')).toBeVisible();
+
+  await sweepActionTargets(page, 'decision modal — three options, details open');
+});
+
+/**
+ * #584 review round 10, finding 2's second half — THE CHECKLIST'S "ADD ITEM" STATE.
+ *
+ * The discovery arm above now reaches the Inspection Review surface and opens its New checklist
+ * dialog, which measures the add-item control. It still does not press that control, and it is
+ * right not to — the same rule that keeps it from pressing Publish. But the per-item REMOVE
+ * buttons only exist once a checklist has more than one item, so, exactly as with the decision
+ * modal's third option, a control this unit resized would otherwise be measured by nothing.
+ *
+ * The same narrow, named exception: one press of "+ Add item", which commits nothing.
+ */
+test('the checklist modal holds the floor once a second item exists', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('[data-dev-affordance="role-switcher"] select').selectOption('pmc');
+  await page.getByTestId('tab-more').click();
+  await page.getByTestId('more-item-inspect-review').click();
+
+  const opener = page.getByTestId('new-checklist');
+  await expect(
+    opener,
+    'this arm measures the New checklist dialog; if the PMC cannot open it the arm would pass '
+    + 'having measured nothing',
+  ).toBeVisible();
+  await opener.click();
+
+  const dialog = page.locator('[role="dialog"]');
+  await expect(dialog).toBeVisible();
+  // one item is the born state, so no remove control exists yet — asserted, so a future default
+  // of two cannot make this arm measure a state it did not create.
+  // located by ACCESSIBLE NAME, not by a test id this round added: an arm that can only find its
+  // subject on the fixed source cannot be measured RED, and an arm nobody has seen fail proves
+  // nothing. The aria-label is on the control before and after the fix.
+  const removeFirst = dialog.getByRole('button', { name: 'Remove item 1' });
+  await expect(removeFirst).toHaveCount(0);
+
+  await page.getByTestId('chk-add-item').click();
+  await expect(page.getByTestId('chk-item-1')).toBeVisible();
+  await expect(
+    removeFirst,
+    'the second item is what BRINGS the remove control into existence',
+  ).toBeVisible();
+
+  await sweepActionTargets(page, 'checklist modal — two items');
 });
 
 /**
