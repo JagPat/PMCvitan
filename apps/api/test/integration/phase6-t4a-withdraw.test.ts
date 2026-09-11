@@ -560,6 +560,20 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
             receiptId,
             id,
           );
+          // AND THE APPROVAL MOVES ITS DECISION (#582's review round 19, finding 2). A revision
+          // born FINALIZED — which is every approval this release performs — must leave its
+          // decision `approved` in the SAME transaction, because `xmin` alone is satisfied by a
+          // no-op write and an approval that moves nothing is an approval nobody performed. The
+          // register-only shape this arm used to commit is now unrepresentable at the database.
+          //
+          // That makes session A a MORE faithful "an approval is committing concurrently with a
+          // withdrawal" than it was, which is this arm's whole subject; it is written after the
+          // revision insert so the lock choreography the arm measures is unchanged (the insert's
+          // own trigger already took `FOR UPDATE` on this row). The withdrawal's REGISTER arm is
+          // unaffected and still covered without a race by `never-approved (forward)` above,
+          // which plants a legacy revision beside a pending decision through the named bypass.
+          await tx.$executeRawUnsafe(
+            `UPDATE "Decision" SET "status"='approved' WHERE "id"=$1`, id);
           inserted();
           await gate;
         },
@@ -576,10 +590,15 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       await waitUntilBlocked(`%UPDATE "Decision" SET "status"='withdrawn'%`);
       release();
       await a; // the revision commits
-      const rb = await b; // the withdrawal resumes and the forward arm counts the committed row
-      expect(rb.status).toBe('rejected');
-      expect(String((rb as { reason: unknown }).reason)).toMatch(/approval revision/);
-      expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('pending');
+      const rb = await b; // the withdrawal resumes and meets the committed approval
+      expect(rb.status, 'the withdrawal must lose the race, whichever arm answers').toBe('rejected');
+      // The REASON moved with round 19 and the arm says which and why rather than being loosened:
+      // session A now commits a whole approval, so the withdrawal meets an `approved` decision and
+      // the SOURCE-STATE arm answers before the register arm can. Both are the seal refusing to
+      // step over a committed approval; pinning either one alone would make this arm fragile about
+      // a detail it does not exist to measure, so it requires one of the two BY NAME.
+      expect(String((rb as { reason: unknown }).reason)).toMatch(/approval revision|only a published pending/);
+      expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('approved');
       expect(await t.prisma.decisionApprovalRevision.count({ where: { decisionId: id } })).toBe(1);
     });
   });

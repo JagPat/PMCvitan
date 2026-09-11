@@ -2218,12 +2218,21 @@ BEGIN
     -- revision is born finalized beside a decision nobody is touching, which is exactly this
     -- shape, so `plantLegacyApprovalRevision` disables THIS trigger by name alongside the 4c
     -- provenance seal it already disables. An unnamed writer gets nothing by accident.
+    -- AND IT IS THE STATUS, NOT MERELY A WRITE. `xmin` alone is satisfied by a NO-OP UPDATE — a
+    -- write that changes nothing — so "this transaction wrote the decision" costs an attacker one
+    -- extra statement and nothing else: the decision stays `pending`, every seal that judges the
+    -- decision row permits a non-transition, and the forged revision lands anyway. That is round
+    -- 11's finding 3 exactly, which strengthened the PROVISIONAL arm above for the same reason and
+    -- left this branch unwritten. A finalized approval is DEFINED by where it leaves its decision,
+    -- and the delivered `decision_t4b_attribution_seal` says where that is: the approval tuple may
+    -- first be written only by `pending`/`change` -> `approved`.
     SELECT TRUE INTO v_moved FROM "Decision" d
      WHERE d."projectId" = NEW."projectId" AND d."id" = NEW."decisionId"
+       AND d."status"::text = 'approved'
        AND d."xmin" = txid_current()::text::xid;
     IF NOT FOUND THEN
       RAISE EXCEPTION
-        'phase6 4d-i: revision % is born FINALIZED beside decision %, which this transaction never wrote — a finalized approval IS the act that moves its decision, and one recorded without that act is an approval nobody performed while the register counts it as a cycle that happened. A historical import declares itself by disabling `DecisionApprovalRevision_t4d_birth_paired` by name, the way the 4c provenance seal is already declared.',
+        'phase6 4d-i: revision % is born FINALIZED, but decision % does not end this transaction as an `approved` row this transaction wrote — a finalized approval IS the act that moves its decision into the approved family, and one recorded without that act is an approval nobody performed while the register counts it as a cycle that happened. A historical import declares itself by disabling `DecisionApprovalRevision_t4d_birth_paired` by name, the way the 4c provenance seal is already declared.',
         NEW."id", NEW."decisionId";
     END IF;
   END IF;
