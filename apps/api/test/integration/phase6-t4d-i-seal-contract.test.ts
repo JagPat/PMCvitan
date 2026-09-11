@@ -130,11 +130,19 @@ const REGISTER: Record<string, SealContract> = {
       'DecisionCountersign.DecisionCountersign_t4d_provenance_bound': C('I'),
       'DecisionForward.DecisionForward_t4d_provenance_bound': C('I'),
       'DecisionStrandedResolution.DecisionStrandedResolution_t4d_provenance_bound': C('I'),
+      // #582 round 20, finding 1 — the change request's BIRTH receipt was frozen by round 8 and
+      // judged by nothing, so a standard request could cite any unused historical receipt. It
+      // joins the same binding, conditionally: the trigger's WHEN clause keeps the previous
+      // release's all-null shape out of it entirely.
+      'ChangeRequest.ChangeRequest_t4d_source_bound': C('I'),
     },
     must: [
       'succeeded', 'commandType', 'actorId',
       'decisions.forward', 'decisions.countersign', 'decisions.resolveStrandedCountersign',
       'forwardedById', 'countersignedById', 'resolvedById',
+      // and the request's two origins take DIFFERENT kinds — a disagreement receipt may not back
+      // a standard request, or `origin` would be a label with nothing behind it.
+      'decisions.requestChange', 'decisions.disagree', 'requestedById', 'countersign_rejection',
       // #582 round 4, finding 3 — the receipt must be THIS transaction's. `txid_current` would
       // not witness it: this body has no other use of it today, but the membership binding
       // learned in round 3 that a token a second clause can satisfy witnesses neither, so the
@@ -197,7 +205,14 @@ const REGISTER: Record<string, SealContract> = {
       + 'SET of projects this transaction is deleting, not a boolean',
     plan: '§A.2 the cascade exception; #582 round 12, finding 5',
     on: {},
-    must: ['current_setting', 'position('],
+    // #582 round 20, finding 2 — the witness MOVED with the rule. `position(` pinned a
+    // DELIMITED-STRING encoding, and that encoding was the defect: `Project.id` is
+    // unconstrained TEXT, so an id containing the delimiter made a SURVIVING project read
+    // as deleting. The set is a `jsonb` array now and membership is structural, so the
+    // token is the operator that asks it. Leaving the old token would have failed this arm
+    // for a correction — which is the register doing its job, and the reason it is edited
+    // here rather than loosened.
+    must: ['current_setting', '? p_project'],
   },
   phase6_t4d_disagreement_paired: {
     rule: 'the `awaiting_countersign → change` TRANSITION owes its open `countersign_rejection` '

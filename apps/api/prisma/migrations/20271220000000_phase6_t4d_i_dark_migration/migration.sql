@@ -607,13 +607,28 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 --   fact delete at depth 2 with the flag on, and B's permanent evidence is erased while B remains.
 --
 -- Appending keeps the multi-row property (every deleted id is present when the cascades fire) and
--- restores the one the boolean lost (WHICH ids). Delimited on both sides so a containment test
--- cannot match a prefix of a longer id.
+-- restores the one the boolean lost (WHICH ids).
+--
+-- AND THE SET IS A SET, NOT A STRING WITH SEPARATORS IN IT (#582's review round 20, finding 2).
+-- The first form of this stored `,id,` fragments and tested containment, with a comment claiming
+-- the delimiters made it safe. They defend against a PREFIX and against nothing else: `Project.id`
+-- is unconstrained TEXT, so an id may CONTAIN the delimiter. Deleting an event-free project whose
+-- id is `x,B,y` records `,x,B,y,`, and `phase6_t4d_project_is_deleting('B')` then answers TRUE for
+-- a project that is not being deleted at all — after which a hard delete of a membership in the
+-- SURVIVING project B cascades into `MembershipTransition` at nested depth and is licensed to
+-- erase B's immutable evidence. That is the exact harm round 12 introduced this flag to prevent,
+-- reached through the encoding instead of through the logic.
+--
+-- A `jsonb` array has no delimiter to smuggle: element identity is structural, `?` tests exact
+-- membership, and an id containing commas, brackets or quotes is just a string. The GUC is still a
+-- GUC because it must be TRANSACTION-LOCAL and visible at nested trigger depth — a temp table
+-- would be neither without more machinery than the question needs.
 CREATE OR REPLACE FUNCTION phase6_t4d_project_deleting() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM set_config(
     'phase6.t4d_project_delete',
-    COALESCE(current_setting('phase6.t4d_project_delete', true), '') || ',' || OLD."id" || ',',
+    (COALESCE(NULLIF(current_setting('phase6.t4d_project_delete', true), ''), '[]')::jsonb
+      || to_jsonb(OLD."id"))::text,
     true);
   RETURN OLD;
 END $$;
@@ -623,8 +638,8 @@ END $$;
 -- readers, and round 12 named one.
 CREATE OR REPLACE FUNCTION phase6_t4d_project_is_deleting(p_project TEXT) RETURNS BOOLEAN
 LANGUAGE sql STABLE AS $$
-  SELECT position(',' || p_project || ',' IN
-                  COALESCE(current_setting('phase6.t4d_project_delete', true), '')) > 0;
+  SELECT COALESCE(NULLIF(current_setting('phase6.t4d_project_delete', true), ''), '[]')::jsonb
+         ? p_project;
 $$;
 
 DROP TRIGGER IF EXISTS "Project_t4d_deleting" ON "Project";
@@ -2867,6 +2882,45 @@ BEGIN
   RETURN NEW;
 END $$;
 
+-- ── the PREREQUISITE this unit seals ON TOP OF ──────────────────────────────────────────────
+-- #582's review round 20, finding 3. Everything 4d-i installs rests on one property of the event
+-- ledger: a `DomainEvent` row is APPEND-ONLY. The facts cite events, the pairing claims cite
+-- events, §A.3 obligation 7 compares a fact's frozen pair against its event's envelope — and all
+-- of that is evidence only while the event cannot be rewritten or erased beneath it.
+--
+-- That property is NOT this unit's. It belongs to `20261015000000_phase2_event_envelope`, which
+-- installs `DomainEvent_append_only` as a RAW trigger — and a raw trigger is exactly what
+-- `prisma db push` does not reproduce. On the supported P3005 adoption path `migrate.sh` marks
+-- that migration applied from the schema it can see, so the ledger under a sealed fact system can
+-- be mutable while every migration reads as present. The envelope seal below does not close it:
+-- it freezes `actorRole`/`actorName` on UPDATE and says nothing about DELETE, so a direct delete
+-- takes the event, cascades away its `DomainEventPairingClaim`, and leaves an immutable fact
+-- citing nothing — with the INSERT-time correspondence checks never rerun.
+--
+-- 4d-i does not install a second append-only trigger: two definitions of one rule drift, and this
+-- rule is another unit's to state. It VERIFIES the prerequisite and refuses to seal without it,
+-- which is the same answer this file gives everywhere a precondition is not its own to create.
+DO $ledger_prereq$
+DECLARE tg pg_trigger;
+BEGIN
+  IF phase6_t4d_retired_at_start() THEN
+    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the ledger-prerequisite check is SKIPPED (this is a replay over a retired database)';
+  ELSE
+    SELECT * INTO tg FROM pg_trigger
+     WHERE tgname = 'DomainEvent_append_only'
+       AND tgrelid = '"DomainEvent"'::regclass AND NOT tgisinternal;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION
+        'phase6 4d-i ABORT: `DomainEvent_append_only` is not installed on this database. It is `20261015000000_phase2_event_envelope`''s raw trigger, and `prisma db push` does not reproduce raw triggers — so on the P3005 adoption path that migration can read as applied while the property it exists for is absent. 4d-i seals a FACT system on top of that ledger: its facts cite events, its pairing claims cite events, and obligation 7 compares a fact''s frozen pair against its event''s envelope. None of that is evidence while an event can be rewritten or deleted under it. Re-apply `20261015000000_phase2_event_envelope`''s raw statements (or restore them from that migration file) before this one. See docs/RUNBOOK.md §P6T4D.';
+    END IF;
+    IF tg.tgenabled <> 'O' THEN
+      RAISE EXCEPTION
+        'phase6 4d-i ABORT: `DomainEvent_append_only` is installed but DISABLED (tgenabled=%). A sanctioned reset disables it for exactly one wipe and re-enables it in the same transaction; one left off is the ledger unsealed. Re-enable it before this migration seals facts on top of it.',
+        tg.tgenabled;
+    END IF;
+  END IF;
+END $ledger_prereq$;
+
 DROP TRIGGER IF EXISTS "DomainEvent_t4d_envelope" ON "DomainEvent";
 CREATE TRIGGER "DomainEvent_t4d_envelope" BEFORE INSERT OR UPDATE ON "DomainEvent"
   FOR EACH ROW EXECUTE FUNCTION platform_t4d_event_envelope();
@@ -2965,6 +3019,48 @@ BEGIN
     'phase6 4d-i: the event-stream allocator for project % may not be DELETED — dropping and recreating the row is how the `+1` rule gets bypassed. It goes only with its project, under the deletion cascade. (A cascade from the project''s own deletion is permitted; this is a direct delete.)',
     OLD."projectId";
 END $$;
+
+-- ── the heads THIS SEAL WILL FREEZE are audited first ────────────────────────────────────────
+-- #582's review round 20, finding 4 — and it is the same rule this unit already applies to every
+-- other adopted table, missed here because `ProjectEventStream` did not read like an adopted one.
+-- It is: on the supported `db push` / P3005 baseline the table exists, populated, before any raw
+-- 4d guard does, and its heads were maintained by application code alone.
+--
+-- What the seal below does is make `nextPosition` move ONLY by exactly `+1`. That is the right
+-- rule and it has a precondition nobody checked: that each head is already the stream's true next
+-- position. A head AHEAD of the events (10 with events through 4) is accepted, the next legitimate
+-- emit writes position 10, and 5..9 are permanently missing — `dispatchOrdered` waits for a
+-- position no writer will ever allocate. A head BEHIND them collides on the next emit. And because
+-- the seal admits only `+1`, the ordinary repair — set the head to the right number — is refused
+-- from the moment it commits. The audit has to run BEFORE the seal, or it cannot be acted on.
+--
+-- Diagnostic-first, bounded, and marker-gated like its siblings: it names the projects and their
+-- two numbers, because "some stream is wrong" is not a repair an operator can make.
+DO $stream_heads$
+DECLARE v_rows BIGINT; v_sample TEXT;
+BEGIN
+  IF phase6_t4d_retired_at_start() THEN
+    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the stream-head audit is SKIPPED (this is a replay over a retired database)';
+  ELSE
+    SELECT count(*), COALESCE(left(string_agg(q.txt, '; ' ORDER BY q.txt), 400), '')
+      INTO v_rows, v_sample
+      FROM (
+        SELECT format('%s (head %s, events through %s)', s."projectId", s."nextPosition",
+                      COALESCE(e.top::text, '<none>')) AS txt
+          FROM "ProjectEventStream" s
+          LEFT JOIN (SELECT "projectId", max("streamPosition") AS top
+                       FROM "DomainEvent" GROUP BY "projectId") e
+            ON e."projectId" = s."projectId"
+         WHERE s."nextPosition" <> COALESCE(e.top + 1, 0)
+      ) q;
+
+    IF v_rows > 0 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i ABORT: % event stream(s) carry a head that is not one past their last event — %. The allocation seal installed below admits ONLY `nextPosition` = OLD + 1, so from the moment it commits the ordinary repair is refused: a head AHEAD of the events strands every position between them (dispatchOrdered waits forever for one no writer will allocate) and a head BEHIND them collides on the next emit. Set each named head to one past that project''s highest `DomainEvent."streamPosition"` (or to 0 where the project has no events) before this migration seals it. On a database that has genuinely run 4d-iii, restore its RolloutRetirement marker instead.',
+        v_rows, v_sample;
+    END IF;
+  END IF;
+END $stream_heads$;
 
 DROP TRIGGER IF EXISTS "ProjectEventStream_t4d_allocation" ON "ProjectEventStream";
 CREATE TRIGGER "ProjectEventStream_t4d_allocation"

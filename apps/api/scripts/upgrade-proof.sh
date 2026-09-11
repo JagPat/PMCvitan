@@ -4502,6 +4502,13 @@ VALUES ('UP4CII-CMD','project','org-legacy','p1','USER-1','decisions.approve','k
 INSERT INTO "DecisionApprovalRevision"("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
 VALUES ('UP4CI-REV','p1','UP4A-D2',99,'a',now(),'USER-1','UP4CII-CMD');
 UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='UP4A-D2', "completedAt"=now() WHERE "id"='UP4CII-CMD';
+-- #582's review round 19, finding 2 — AND THE APPROVAL MOVES ITS DECISION. This block asserts
+-- "the shape the REAL writer produces is accepted", and the real writer's shape gained a clause:
+-- a revision born FINALIZED must leave its decision `approved` in the same transaction, because
+-- `xmin` alone is satisfied by a no-op write and an approval that moves nothing is an approval
+-- nobody performed. Adding it here keeps this assertion about the real shape rather than about a
+-- shape the database no longer admits — which is the whole point of the pair above and below it.
+UPDATE "Decision" SET "status"='approved' WHERE "id"='UP4A-D2' AND "projectId"='p1';
 COMMIT;
 SQL
 assert "4c-ii: the accepted revision names the approval command it is the product of" \

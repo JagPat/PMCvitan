@@ -590,6 +590,23 @@ const ARMS: Arm[] = [
     refusal: /never reached/,
   },
   {
+    // #582's review round 20, finding 1 — THE BIRTH RECEIPT WAS FROZEN AND NEVER JUDGED.
+    //
+    // Round 8 made `sourceCommandId` immutable from the moment it lands; round 17 bound the
+    // requester PAIR to its actor. Between them nothing asked what the receipt IS, so a direct
+    // standard-request bundle could cite any unused historical same-project `CommandExecution` —
+    // the FK is satisfied, the unique index is satisfied — and the freeze then made that false
+    // provenance permanent, past anything 4d-iii's future-write seals can reach.
+    //
+    // `ss-cmd-hist` is exactly that: a succeeded, same-project receipt committed by the FIXTURE's
+    // transaction and cited by nothing. Everything else about this request is legitimate.
+    seal: 'ChangeRequest_t4d_source_bound',
+    what: 'a change request may not cite a receipt an EARLIER transaction completed',
+    hostile: `INSERT INTO "ChangeRequest" ("id","decisionId","projectId","reason","costImpact","timeImpactDays","status","sourceCommandId")
+              VALUES ('ss-cr-hist','ss-dec','ss-proj','borrowed provenance',0,0,'open','ss-cmd-hist')`,
+    refusal: /completed by an EARLIER transaction/,
+  },
+  {
     seal: 'ChangeRequest_t4d_evidence_frozen',
     what: 'a written command receipt cannot be CLEARED off a change request',
     // #582 round 3, finding 4 — the delivered `ChangeRequest_t4b2_seal` freezes `decisionId`
@@ -599,6 +616,11 @@ const ARMS: Arm[] = [
     hostile: `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","sourceCommandId")
               VALUES ('ss-cr-ev','ss-dec','x',0,0,'withdrawn','ss-cmd');
               UPDATE "ChangeRequest" SET "sourceCommandId" = NULL WHERE "id" = 'ss-cr-ev'`,
+    // #582 round 20, finding 1 put a DEFERRED binding in front of this write: the planted receipt
+    // is a `decisions.forward` completed in the fixture's own transaction, which the new seal
+    // refuses before this freeze is ever reached. It is omitted alongside, so the arm still
+    // measures the FREEZE — the object it names — rather than the binding.
+    alsoStrip: ['ChangeRequest_t4d_source_bound'],
     // #582 round 8, finding 5 split this freeze in two, and `sourceCommandId` is BIRTH
     // provenance, so it now answers with the birth message rather than the resolver one. The
     // regex moved with the rule: leaving it matching the old sentence would have made this arm

@@ -736,12 +736,32 @@ BEGIN
       ARRAY['decisions.forward', 'decisions.disagree', 'decisions.resolveStrandedCountersign']
     WHEN 'DecisionCountersign' THEN ARRAY['decisions.countersign']
     WHEN 'DecisionStrandedResolution' THEN ARRAY['decisions.resolveStrandedCountersign']
+    -- #582's review round 20, finding 1 — THE CHANGE REQUEST'S BIRTH RECEIPT IS PROVENANCE TOO,
+    -- and it was FROZEN without ever being judged. Round 8 made `sourceCommandId` immutable from
+    -- the moment it lands and round 17 bound the requester PAIR to its actor; between them nothing
+    -- asked what the receipt IS. A direct standard-request bundle could therefore cite any unused
+    -- historical same-project `CommandExecution` — the FK is satisfied, the unique index is
+    -- satisfied — and the freeze then made that false provenance permanent, beyond anything
+    -- 4d-iii's future-write seals can reach.
+    --
+    -- The kinds are the ones that OPEN a request, keyed to the discriminator the row already
+    -- carries: a `standard` request is opened by `decisions.requestChange`, and a
+    -- `countersign_rejection` by the architect's `decisions.disagree`. Naming them per origin
+    -- rather than as one list is the round-7 rule (bind each command to the shape it performs):
+    -- a disagreement receipt may not back a standard request, or the origin column would be a
+    -- label with nothing behind it.
+    WHEN 'ChangeRequest' THEN
+      CASE to_jsonb(NEW) ->> 'origin'
+        WHEN 'countersign_rejection' THEN ARRAY['decisions.disagree']
+        ELSE ARRAY['decisions.requestChange']
+      END
     ELSE NULL
   END;
   v_actor_column := CASE TG_TABLE_NAME
     WHEN 'DecisionForward' THEN 'forwardedById'
     WHEN 'DecisionCountersign' THEN 'countersignedById'
     WHEN 'DecisionStrandedResolution' THEN 'resolvedById'
+    WHEN 'ChangeRequest' THEN 'requestedById'
     ELSE NULL
   END;
   IF v_types IS NULL OR v_actor_column IS NULL THEN
@@ -1388,6 +1408,20 @@ END $$;
 DROP TRIGGER IF EXISTS "ChangeRequest_t4d_birth_pair" ON "ChangeRequest";
 CREATE TRIGGER "ChangeRequest_t4d_birth_pair" BEFORE INSERT ON "ChangeRequest"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_change_request_birth_pair();
+
+-- The change request joins the same binding, CONDITIONALLY (#582 round 20, finding 1). The three
+-- facts above always carry a receipt; a change request may not — the currently deployed
+-- `requestChange` writes none, and 4d-iii is what makes it required — so the drain's all-null
+-- shape must stay admitted. A `WHEN` clause is the right instrument rather than an early RETURN in
+-- the body: the trigger does not fire at all for a legacy row, so nothing about the previous
+-- release's writes changes, and the rule reads off the trigger definition instead of off a branch
+-- inside a function shared with three tables that do not need it.
+DROP TRIGGER IF EXISTS "ChangeRequest_t4d_source_bound" ON "ChangeRequest";
+CREATE CONSTRAINT TRIGGER "ChangeRequest_t4d_source_bound"
+  AFTER INSERT ON "ChangeRequest"
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW WHEN (NEW."sourceCommandId" IS NOT NULL)
+  EXECUTE FUNCTION phase6_t4d_provenance_bound();
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────
 -- PART 3f — THE DELIVERED SEALS, WIDENED
