@@ -60,7 +60,15 @@ export function DrawingsScreen() {
   // discipline comes from the active membership (live API); the demo persona has no
   // membership, so a consultant there falls back to a representative discipline.
   const myMembership = memberships.find((m) => m.projectId === activeProjectId);
-  const myDiscipline = myMembership?.discipline ?? (role === 'consultant' && memberships.length === 0 ? 'structural' : undefined);
+  // The demo persona has no membership, so a consultant there falls back to a representative
+  // discipline. It is `mep` — the screen's own worked example above, "a lighting consultant ->
+  // the MEP set" — and NOT an arbitrary pick (#584 review round 11). The seed files four
+  // architectural drawings, one structural and one other, and NONE in MEP, so this is the one
+  // choice that renders the valid-and-empty state: a project with drawings, none in the viewer's
+  // discipline. The previous fallback was `structural`, which the seed populates, so the empty
+  // branch below — and the escape that is the only way out of it — could not be reached by any
+  // walk of the product at all, and its action target sat at 19px unmeasured.
+  const myDiscipline = myMembership?.discipline ?? (role === 'consultant' && memberships.length === 0 ? 'mep' : undefined);
   const scopeKey = role === 'consultant' && myDiscipline ? drawingDisciplineFor(myDiscipline) : null;
   const [scoped, setScoped] = useState(true); // consultants default to their discipline
 
@@ -138,8 +146,30 @@ export function DrawingsScreen() {
 
       {scopeKey && scoped && groups.length === 0 && drawings.length > 0 && (
         <div style={{ marginTop: 30, textAlign: 'center', color: 'var(--muted)', fontSize: 13.5 }}>
-          No {scopeLabel} drawings filed yet —{' '}
-          <button onClick={() => setScoped(false)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--accent)', fontSize: 13.5, padding: 0 }}>show all disciplines</button>.
+          No {scopeLabel} drawings filed yet.
+          {/* #584 review round 11 — the escape from a valid-but-empty discipline scope, measured at
+              116 x 15 the first time any walk reached this branch. A zero-padding caption is not a
+              target, and this one is the only way out of a screen showing the viewer nothing. */}
+          <div style={{ marginTop: 4 }}>
+            <button
+              onClick={() => setScoped(false)}
+              data-testid="scope-all-empty"
+              style={{
+                minHeight: 44,
+                display: 'inline-flex',
+                alignItems: 'center',
+                padding: '0 12px',
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                color: 'var(--accent)',
+                fontSize: 13.5,
+                fontWeight: 600,
+              }}
+            >
+              Show all disciplines
+            </button>
+          </div>
         </div>
       )}
 
@@ -483,7 +513,13 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+// #584 review round 11 — these two toggles shipped at 26px tall and no sweep had ever measured
+// them, because the persona walk took its role list from `TopBar`'s switcher and that switcher
+// omitted `consultant`. They are the consultant's primary control on this surface.
 const scopeBtn = (active: boolean): CSSProperties => ({
+  minHeight: 44,
+  display: 'inline-flex',
+  alignItems: 'center',
   padding: '6px 11px',
   borderRadius: 8,
   border: 'none',

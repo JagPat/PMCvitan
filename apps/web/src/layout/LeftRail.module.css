@@ -74,6 +74,8 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  /* #584 review round 11 — the rail is a SHELL, and a phone in landscape renders it. */
+  min-height: 44px;
   padding: 7px 12px;
   border-radius: 8px;
   border: 1px solid rgba(237, 231, 218, 0.2);
@@ -107,6 +109,7 @@
   align-items: center;
   justify-content: space-between;
   text-align: left;
+  min-height: 44px;
   padding: 11px 12px;
   margin-bottom: 3px;
   border-radius: 9px;
@@ -161,10 +164,19 @@
   color: rgba(237, 231, 218, 0.45);
   margin-top: 2px;
 }
+/* #584 review round 11 — THE SAME BELL, THE OTHER SHELL. On `main` this rule and `TopBar`'s were
+   identical 34x34 twins. An earlier head of this PR raised the TopBar one to 44 and wrote beside
+   it that the bell "sits in the shell, so it is on every screen at every viewport" — which was
+   false, because there are TWO shells: `TopBar` renders below 640px and this rail renders at and
+   above it, and an iPhone 14 in landscape is 844px wide. One control, two sites, one fix. */
 .bell {
   position: relative;
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
+  /* and `flex: none`, because the footer is a `space-between` flex row and the project name beside
+     it is free to grow: at 44px with no flex guard the bell measured 41.1 wide. A fixed width is
+     not a floor while a sibling can compress it (#584 review round 11). */
+  flex: none;
   border: 1px solid rgba(237, 231, 218, 0.2);
   background: transparent;
   border-radius: 7px;

@@ -1,8 +1,5 @@
 import { useStore } from '@/store/store';
-import { ROLE_LABEL, ROLE_SUBTITLE } from '@/lib/screens';
-import type { Role } from '@vitan/shared';
-
-const ROLES: Role[] = ['pmc', 'client', 'engineer', 'contractor', 'consultant'];
+import { ROLE_LABEL, ROLE_SUBTITLE, ROLES } from '@/lib/screens';
 
 /**
  * Persona switcher — the session/identity control. Until auth (Phase 7) this
@@ -34,6 +31,7 @@ export function RolePicker({ compact = false }: { compact?: boolean }) {
               key={r}
               onClick={() => setRole(r)}
               style={{
+                minHeight: 44,
                 padding: '9px 4px',
                 borderRadius: 8,
                 fontFamily: 'var(--font-sans)',

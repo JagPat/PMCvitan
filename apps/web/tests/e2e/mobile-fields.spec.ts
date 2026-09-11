@@ -1,4 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
+// the product's own role list, so this file cannot drift from it (#584 review round 11)
+import { ROLES } from '../../src/lib/screens';
 
 /**
  * Wave 0 / unit F-1b — NO TEXT-ENTRY CONTROL FALLS BELOW 16px ON MOBILE.
@@ -346,6 +348,21 @@ test('every persona, every surface its navigation reaches, holds the 44px floor'
     .evaluateAll((els) => els.map((e) => (e as HTMLOptionElement).value));
   expect(personas.length, 'the persona switcher must offer the roles this sweep walks').toBeGreaterThan(1);
 
+  // #584 review round 11 — AND IT MUST OFFER *EVERY* ROLE THE PRODUCT DEFINES.
+  //
+  // "Nothing here is a named list" was true of the surfaces and false of the PERSONAS: the walk
+  // takes them from one switcher's options, and that switcher was a hand-written array that had
+  // fallen a role behind the `Role` union. `consultant` was missing, so this arm — whose whole
+  // claim is EVERY persona — had never once walked the consultant, and the discipline-scoped
+  // drawing register it alone reaches shipped two 26px toggles and a 15px escape that no sweep in
+  // this file could see. A list derived from a list is only as complete as its source, so the
+  // source is now pinned here rather than trusted.
+  expect(
+    [...personas].sort(),
+    'the persona switcher must offer EVERY role the product defines — a switcher a role behind the '
+    + 'union silently removes that persona\'s whole surface set from this sweep',
+  ).toEqual([...ROLES].sort());
+
   for (const persona of personas) {
     await page.goto('/');
     await page.locator('[data-dev-affordance="role-switcher"] select').selectOption(persona);
@@ -661,6 +678,53 @@ test('desktop keeps its authored density — the floor is a MOBILE floor, not a 
  */
 test.describe('phone landscape', () => {
   test.use({ viewport: { width: 844, height: 390 }, hasTouch: true, isMobile: true });
+
+  /**
+   * #584 review round 11 — THE SECOND SHELL, WHICH NO SWEEP IN THIS FILE HAD EVER RENDERED.
+   *
+   * Round 1 established that a rotated phone is 844 x 390 and taught this file that the width-only
+   * rule stops applying there. I applied that lesson to FONT SIZE and to nothing else — the arm
+   * above measures `font-size` and goes home — while the comment inside it already said the app
+   * "has stopped treating this device as a phone". It had, in a way that matters far more than
+   * type: at 844px `BottomTabs` is `display:none` and `LeftRail` renders, so rotating a phone
+   * swaps the ENTIRE navigation shell for one that every action-target sweep in this file, all of
+   * which run at 390px portrait, had never laid eyes on.
+   *
+   * What sat there: `LeftRail`'s bell at 34x34 — the identical twin of the `TopBar` bell this very
+   * PR raised to 44, under a comment claiming the bell was fixed "on every screen at every
+   * viewport" — plus its Sign out at ~33px, its nav rows at ~38px, the rail's Create trigger and
+   * the rail's persona buttons. One control, two shells, one fix, and a sentence asserting
+   * completeness that stopped anyone looking for the other half.
+   *
+   * So this is the generic sweep, unchanged, pointed at the shell the 640px boundary hides. It
+   * walks the rail's own nav rather than the bottom tabs, because in this shell the bottom tabs do
+   * not exist.
+   */
+  test('the rail shell a rotated phone renders holds the 44px floor', async ({ page }) => {
+    test.setTimeout(300_000);
+    await page.goto('/');
+
+    // the rail IS the navigation here; assert that rather than assume it, so this arm cannot
+    // quietly pass by sweeping the mobile shell a second time.
+    await expect(page.locator('aside')).toBeVisible();
+    expect(
+      await page.getByTestId('tab-inbox').count() > 0
+        && await page.getByTestId('tab-inbox').isVisible().catch(() => false),
+      'at 844px the bottom tabs must be gone — if they are visible this arm is measuring the '
+      + 'phone shell again and proves nothing about the rail',
+    ).toBe(false);
+
+    await sweepActionTargets(page, 'landscape rail shell — as it opens');
+
+    // and every screen the rail's own navigation reaches, discovered from the rail, not named.
+    const rows = await page.locator('aside nav button').evaluateAll((els) =>
+      els.map((e) => (e.textContent || '').trim()).filter(Boolean));
+    expect(rows.length, 'the rail must offer navigation rows to walk').toBeGreaterThan(0);
+    for (const row of rows) {
+      await page.locator('aside nav button', { hasText: row }).first().click();
+      await sweepActionTargets(page, `landscape rail shell — ${row}`);
+    }
+  });
 
   test('the field floor still applies, so iOS Safari does not zoom on rotation', async ({ page }) => {
     await page.goto('/');

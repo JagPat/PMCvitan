@@ -1,15 +1,13 @@
 import { useState } from 'react';
 import { useStore } from '@/store/store';
 import { Bell, Power, ChevronDown } from '@/lib/icons';
-import { ROLE_LABEL } from '@/lib/screens';
+import { ROLE_LABEL, ROLES } from '@/lib/screens';
+import type { Role } from '@vitan/shared';
 import { DEV_AUTH } from '@/data/apiGateway';
 import { useProjectSwitch } from './useProjectSwitch';
 import { ProjectSheet } from './MobileSheet';
-import type { Role } from '@vitan/shared';
 import logo from '@/assets/vitan-logo.jpeg';
 import styles from './TopBar.module.css';
-
-const ROLES: Role[] = ['pmc', 'client', 'engineer', 'contractor'];
 
 /**
  * Compact top bar — mobile only (<640px). Holds the ACTIVE PROJECT (the mobile equivalent of
