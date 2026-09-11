@@ -3,18 +3,24 @@
 --
 -- THE SECOND HALF OF THE SPLIT. `20271220000000_phase6_t4d_i_dark_migration` installs the
 -- retirement marker, the three shared helpers, the platform registers, the orgs membership fact
--- and the kernel; this file installs the decisions half and DEPENDS ON ALL OF IT. The dependency
+-- and the WHOLE platform kernel — envelope, allocator, notice binding and pairing mechanism, none
+-- of it divided; this file installs the decisions half and DEPENDS ON ALL OF IT. The dependency
 -- runs one way only, which is what made the seam a seam: nothing in the first file names a table
 -- created here, while the seals here read the registers, call the shared helpers and claim
 -- pairings through the kernel.
 --
 -- It is therefore ordered immediately after its partner and is not independently appliable —
--- exactly as a stacked review unit should be.
+-- exactly as a stacked review unit should be. Both files are re-runnable against an
+-- already-migrated database, measured rather than assumed, which is what the `ALWAYS_EXECUTE`
+-- baseline path and the harness's repaired re-applies rest on.
 --
 -- WHAT IS HERE: the enum values for the chain's own states, the doors that reserve those states
 -- and the forward fact, the three decisions-owned fact tables with their seven obligation seals,
--- the existing-table columns those seals read, the delivered 4b and 4c seals widened with their
--- architect arms, and the approval register's finality key.
+-- the existing-table columns those seals read (on `ChangeRequest`, `DecisionApprovalRevision`,
+-- the two consultation tables and the two requirement-spec tables) with the audit that refuses a
+-- pre-baseline row already in a 4d-only shape, the decisions-owned `DecisionEvent` audit
+-- register's append-only and correspondence seals, the delivered 4b and 4c seals widened with
+-- their architect arms, and the approval register's finality key.
 --
 -- MIGRATION-ONLY and DARK, on the same terms as its partner: no service, controller, query,
 -- emitter, participant or UI change rides with it. 4d-ii carries the application half.
@@ -2205,126 +2211,6 @@ BEGIN
     AFTER INSERT ON "DecisionEvent" DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION phase6_t4d_event_correspondence_weak();
 END $$;
-
--- ── the stream ALLOCATION seals ──────────────────────────────────────────────────────────────
--- `ProjectEventStream.nextPosition` is the allocator for `DomainEvent.streamPosition`, and the
--- guarantee every projection cursor rests on is that positions are issued ONCE, CONTIGUOUSLY,
--- and one per event. §A.2 states that as five objects, and the first version of this file
--- installed two of them with the first weakened (Codex round 1, findings 3 and 7; the jump was
--- already a KNOWN defect — the plan records it as #554's review round 2, finding 1 — so this is
--- a rule the contract had fixed and the implementation re-opened).
---
---   · `_t4d_allocation`      IMMEDIATE, admits ONLY `OLD + 1`. Never a jump, never a decrement.
---   · `_t4d_allocation_bound` DEFERRED, per INCREMENT: the position that increment allocated
---                             (`OLD."nextPosition"`) carries an event of THIS transaction.
---   · `_t4d_init`            BEFORE INSERT, admits only `nextPosition = 0` on a project with no
---                             events — so the row cannot be reintroduced further along.
---   · `_t4d_no_delete`       the row cannot be dropped and recreated to bypass the `+1` rule
---                             (#561's review round 1, finding 7), except under the project
---                             cascade `Project_t4d_deleting` marks.
---   · `_t4d_no_truncate`     the statement-level twin, in `TRUNCATE_SEALS`.
---
--- WHY A JUMP MATTERS, in the product's own terms: starting at N, a direct update to N+2 with no
--- events passed the old pair, and the next legitimate emit then wrote N+2 — leaving N and N+1
--- empty forever. `dispatchOrdered` waits for the next expected position and would never advance
--- past the hole, and every rebuild reports a replay gap.
-CREATE OR REPLACE FUNCTION platform_t4d_stream_allocation() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-BEGIN
-  IF NEW."nextPosition" <> OLD."nextPosition" + 1 THEN
-    RAISE EXCEPTION
-      'phase6 4d-i: the event-stream allocator for project % moves by exactly one (saw % → %) — a jump leaves positions nobody can fill, which stalls `dispatchOrdered` at the hole and makes every rebuild report a replay gap; a decrement re-issues positions that already carry events',
-      OLD."projectId", OLD."nextPosition", NEW."nextPosition";
-  END IF;
-  RETURN NEW;
-END $$;
-
--- PER INCREMENT, not per final value. A DEFERRED constraint trigger fires once per UPDATE and
--- each firing carries the row image FROM THAT UPDATE, which is exactly the granularity this rule
--- needs: `OLD."nextPosition"` is the position THAT increment handed out. (The earlier final-value
--- comparison misread the same fact — it treated a per-update image as the committed state and
--- refused correct transactions, 493 tests across 55 files. The image is not wrong; asking it the
--- wrong question was.)
-CREATE OR REPLACE FUNCTION platform_t4d_stream_allocation_bound() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_allocated BIGINT;
-BEGIN
-  IF TG_OP <> 'UPDATE' THEN RETURN NULL; END IF;
-  v_allocated := OLD."nextPosition";
-  IF NOT EXISTS (
-    SELECT 1 FROM "DomainEvent" e
-     WHERE e."projectId" = NEW."projectId"
-       AND e."streamPosition" = v_allocated
-       AND e."xmin" = txid_current()::text::xid
-  ) THEN
-    RAISE EXCEPTION
-      'phase6 4d-i: the event-stream allocator for project % issued position % and this transaction wrote no event there — an allocation without its event is a permanent hole in the stream, and allocations are one-to-one with events',
-      NEW."projectId", v_allocated;
-  END IF;
-  RETURN NULL;
-END $$;
-
--- The counter row is BORN at zero on a project that has no events. Without this, a transaction
--- could delete the row and reinsert it further along, no UPDATE trigger firing at all.
-CREATE OR REPLACE FUNCTION platform_t4d_stream_init() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-BEGIN
-  IF NEW."nextPosition" <> 0 THEN
-    RAISE EXCEPTION
-      'phase6 4d-i: a project event stream is created at position 0 (project % arrived at %) — a stream introduced further along skips positions no event can ever fill',
-      NEW."projectId", NEW."nextPosition";
-  END IF;
-  IF EXISTS (SELECT 1 FROM "DomainEvent" e WHERE e."projectId" = NEW."projectId") THEN
-    RAISE EXCEPTION
-      'phase6 4d-i: project % already holds events, so its allocator cannot be created afresh at 0 — that would re-issue every position the stream has already used',
-      NEW."projectId";
-  END IF;
-  RETURN NEW;
-END $$;
-
--- The exception is the project's own deletion cascade, and "cascade" is TWO local facts, not one
--- (#582's review rounds 6 and 8 — the second time this was raised, and the first time it was
--- fixed). The flag alone says only that SOME project is being deleted somewhere in this
--- transaction: after deleting an event-free project A the flag stands `on` for the rest of the
--- transaction, and a DIRECT `DELETE` of project B's allocator — depth 1, unrelated to A — was
--- admitted by it. B keeps its project and its events and loses its counter, so B's next ordinary
--- `emitEvent` fails on a row that is simply gone. Trigger depth is what distinguishes the RI
--- cascade (depth 2 — measured) from a client statement (depth 1), so both are required, exactly
--- as `phase6_t4d_membership_transition_immutable` above already demands and as the plan states
--- the rule: DELETE refused OUTSIDE THIS PROJECT'S deletion cascade, not "while a flag is on".
-CREATE OR REPLACE FUNCTION platform_t4d_stream_no_delete() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-BEGIN
-  -- the SIBLING SITE (#582 round 12, finding 5, unreported half). The flag has two readers and
-  -- the finding named one; the hole is identical here — B's allocator row erased on A's cascade.
-  IF pg_trigger_depth() > 1 AND phase6_t4d_project_is_deleting(OLD."projectId") THEN
-    RETURN OLD;
-  END IF;
-  RAISE EXCEPTION
-    'phase6 4d-i: the event-stream allocator for project % may not be DELETED — dropping and recreating the row is how the `+1` rule gets bypassed. It goes only with its project, under the deletion cascade. (A cascade from the project''s own deletion is permitted; this is a direct delete.)',
-    OLD."projectId";
-END $$;
-
-DROP TRIGGER IF EXISTS "ProjectEventStream_t4d_allocation" ON "ProjectEventStream";
-CREATE TRIGGER "ProjectEventStream_t4d_allocation"
-  BEFORE UPDATE ON "ProjectEventStream"
-  FOR EACH ROW EXECUTE FUNCTION platform_t4d_stream_allocation();
-
-DROP TRIGGER IF EXISTS "ProjectEventStream_t4d_allocation_bound" ON "ProjectEventStream";
-CREATE CONSTRAINT TRIGGER "ProjectEventStream_t4d_allocation_bound"
-  AFTER UPDATE ON "ProjectEventStream" DEFERRABLE INITIALLY DEFERRED
-  FOR EACH ROW EXECUTE FUNCTION platform_t4d_stream_allocation_bound();
-
-DROP TRIGGER IF EXISTS "ProjectEventStream_t4d_init" ON "ProjectEventStream";
-CREATE TRIGGER "ProjectEventStream_t4d_init"
-  BEFORE INSERT ON "ProjectEventStream"
-  FOR EACH ROW EXECUTE FUNCTION platform_t4d_stream_init();
-
-DROP TRIGGER IF EXISTS "ProjectEventStream_t4d_no_delete" ON "ProjectEventStream";
-CREATE TRIGGER "ProjectEventStream_t4d_no_delete"
-  BEFORE DELETE ON "ProjectEventStream"
-  FOR EACH ROW EXECUTE FUNCTION platform_t4d_stream_no_delete();
-
-DROP TRIGGER IF EXISTS "ProjectEventStream_t4d_no_truncate" ON "ProjectEventStream";
-CREATE TRIGGER "ProjectEventStream_t4d_no_truncate"
-  BEFORE TRUNCATE ON "ProjectEventStream"
-  FOR EACH STATEMENT EXECUTE FUNCTION platform_t4d_register_no_truncate();
 
 -- ── the spec tables' finality CARRIER ────────────────────────────────────────────────────────
 -- A requirement spec's provenance is an approval that REALLY happened — the delivered FK already

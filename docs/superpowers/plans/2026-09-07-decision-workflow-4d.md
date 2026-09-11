@@ -6102,8 +6102,8 @@ today's behaviour lives.
 
     | order | migration | carries |
     |---|---|---|
-    | 1 | `20271220000000_phase6_t4d_i_dark_migration` | Part 0, Part 1's shared refusal function and the two orgs-owned STANDING doors (`Membership_t4d_architect_reserved`, `User_t4d_architect_reserved`) with their diagnostic-first audits, the four adopted platform registers and their baseline audits, `MembershipTransition` and the orgs membership seals, `ExternalEffectCatalog` with both seeded coverage generations, `ReleaseLease`, and the generic pairing mechanism with the kernel envelope / allocation / notification seals |
-    | 2 | `20271221000000_phase6_t4d_i_decision_facts` | the two Decision CHAIN doors (`Decision_t4d_architect_reserved`, `Decision_t4d_awaiting_reserved`), Part 2's enum statements, the three fact tables with their seven obligations, the 4d-only columns added to tables that already existed with their legacy-shape audit, the widened 4b/4c seals that read the facts (`DecisionForward_t4d_reserved` among them), and the approval finality key |
+    | 1 | `20271220000000_phase6_t4d_i_dark_migration` | Part 0's retirement marker and its seals, the shared refusal function and the two orgs-owned architect-STANDING doors with their diagnostic-first audits, the four adopted platform registers (`ProjectOrg`, `ProjectRoleStanding`, `ProjectUserStanding`, `UserIdentity`) with their writers, backfills and baseline audits, `OrgUserAuthority`, the orgs-owned `MembershipTransition` fact and the membership seals around it, `ExternalEffectCatalog` with both seeded coverage generations, `ReleaseLease`, the generic pairing mechanism (`DomainEventPairingClaim`, `platform_claim_event_pairing`, `DomainEvent_t4d_pairing_claimed`), and the WHOLE KERNEL — the envelope columns and `DomainEvent_t4d_envelope`, the five `ProjectEventStream_t4d_*` allocation seals, the notice binding, and the `platform_tx_*` / `platform_role_*` reads |
+    | 2 | `20271221000000_phase6_t4d_i_decision_facts` | the two Decision CHAIN doors, Part 2's enum values, the three decisions-owned fact tables with their seven obligations (`DecisionForward_t4d_reserved` among them), the 4d-only columns added to `ChangeRequest`, `DecisionApprovalRevision`, the two consultation tables and the two requirement-spec tables with their legacy-shape audit, the `DecisionEvent` audit register's append-only and correspondence seals, the delivered 4b/4c seals widened with their architect arms, and the approval finality key |
 
     THE DOORS SPLIT WITH THEIR SUBJECT, which is why the reservation is not
     torn in half: `phase6_t4d_reserved()` and the two doors that reserve
@@ -6112,17 +6112,39 @@ today's behaviour lives.
     Part 2's enum values are the chain's vocabulary and go with it — the file's
     own note already records why that is not a coupling (*nothing in THIS
     transaction consumes either value — every comparison above and below is
-    made on `::text`*). The three shared helpers that cross the seam —
-    `phase6_t4d_reserved`, `phase6_t4d_fact_no_truncate`,
-    `phase6_t4d_actor_bound` — are DEFINED in the first file and called from
-    both, which is the direction the seam allows.
+    made on `::text`*).
 
-    The measured proof of the seam is three-sided and belongs in the packet:
-    the register and kernel regions contain ZERO references to the three fact
-    tables; a function-level pass over all 79 defined functions finds only
-    those three first-file → second-file calls, all shared helpers; and the
-    FIRST FILE APPLIES STANDALONE to a fresh database, as well as the pair
-    applying in order. `20271221000000` is a later migration in the ordinary
+    AND THE KERNEL IS NOT DIVIDED. The envelope seal, the five
+    `ProjectEventStream_t4d_*` allocation seals, the notice binding and the
+    generic pairing mechanism are platform-owned, so they are all in the first
+    file: a platform-owned seal in a file named for the decisions facts would be
+    a module-ownership defect whatever the line count. (The first partition put
+    the allocation seals on the decisions side — a section label trusted instead
+    of the file read — and they were moved before anything was pushed. The
+    `DecisionEvent` register's seals stay in the second file because that
+    register is decisions-owned and its correspondence reads the facts.)
+
+    The measured proof of the seam belongs in the packet, and it is a
+    measurement of the FILES rather than of the partition's section labels:
+
+    · **79 functions**, 51 defined in the first file and 28 in the second, with
+      no name defined twice.
+    · **The first file calls NOTHING the second defines** — the dependency is
+      one-way. The second calls twelve functions the first defines:
+      `phase6_t4d_reserved`, `phase6_t4d_retired_at_start`,
+      `phase6_t4d_fact_no_truncate`, `phase6_t4d_actor_bound`,
+      `phase6_t4d_membership_transition_bound`, `platform_claim_event_pairing`,
+      `platform_membership_active_user`, `platform_role_has_holder`,
+      `platform_role_standing`, `platform_tx_event`, `platform_tx_event_count`
+      and `platform_user_holds_role`.
+    · **No statement in the first file names a decisions fact table.** The two
+      occurrences of those names in it are both explanatory comments — one
+      naming a door the second file installs, one naming the pairing collision
+      the per-branch claimant rule avoids.
+    · **The first file APPLIES STANDALONE** to a fresh database, the pair
+      applies in order, and BOTH are re-runnable against an already-migrated
+      database — which is what `ALWAYS_EXECUTE`'s baseline replay rests on, and
+      is measured rather than assumed. `20271221000000` is a later migration in the ordinary
     Prisma sense, so it is deployed, recorded, resolved and rolled back
     SEPARATELY — `migrate.sh` reads the failed name out of Prisma's output and
     §P6T4D's recovery names the half that failed, because resolving the other

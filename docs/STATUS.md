@@ -57,21 +57,32 @@ registers — with their baseline audits and their writers — separate cleanly 
 the decisions fact tables and their pairing seals, with no dependency in that
 direction: the registers do not read a fact table; the fact seals read the
 registers. So `20271220000000_phase6_t4d_i_dark_migration` carries the retirement
-marker, the architect-STANDING doors and their audits, the registers,
-`MembershipTransition`, the catalog with both coverage generations, `ReleaseLease`
-and the kernel; `20271221000000_phase6_t4d_i_decision_facts` carries the Decision
-CHAIN doors, the enum values, the three fact tables with their seven obligations,
-the 4d-only columns and the widened 4b/4c seals.
+marker, the three shared helpers, the architect-STANDING doors and their audits,
+the four registers with their writers and baseline audits, `MembershipTransition`
+and the membership seals, and the WHOLE platform kernel — the catalog with both
+coverage generations, `ReleaseLease`, the event envelope, the five
+`ProjectEventStream` allocation seals, the notice binding and the generic pairing
+mechanism. `20271221000000_phase6_t4d_i_decision_facts` carries the Decision CHAIN
+doors, the enum values, the three fact tables with their seven obligations, the
+4d-only columns with their legacy-shape audit, the `DecisionEvent` register's
+seals, the widened 4b/4c seals and the approval finality key.
 
-Measured three ways before anything was rewritten: the register and kernel
-regions contain zero references to the three fact tables; a function-level pass
-over all 79 defined functions finds only three first-file → second-file calls,
-all of them shared helpers (`phase6_t4d_reserved`,
-`phase6_t4d_fact_no_truncate`, `phase6_t4d_actor_bound`, defined in the first
-file); and the first file APPLIES STANDALONE, as well as the pair applying in
-order. No window opens between the two commits: the chain doors reserve enum
-values the SECOND file adds, after it creates them, so in the interval no writer
-can name either value at all.
+The kernel is NOT divided, and that is a rule rather than a convenience: a
+platform-owned seal sitting in a file named for the decisions facts would be a
+module-ownership defect whatever the line count. The first partition left the five
+`ProjectEventStream_t4d_*` allocation seals on the decisions side — a section
+label I trusted instead of reading the file — and they were moved before anything
+was pushed.
+
+Measured against the FILES, not against the partition's section labels: 79
+functions, 51 in the first file and 28 in the second, no name defined twice; the
+first file calls nothing the second defines, while the second calls twelve
+functions the first defines; no statement in the first file names a decisions
+fact table (the two occurrences of those names there are both comments); and the
+first file APPLIES STANDALONE, the pair applies in order, and both are re-runnable
+against an already-migrated database. No window opens between the two commits:
+the chain doors reserve enum values the SECOND file adds, after it creates them,
+so in the interval no writer can name either value at all.
 
 **#582 keeps the FIRST half; the second is a stacked PR from its branch.** The
 dependency direction forces that order — the registers land first or the facts
