@@ -112,7 +112,7 @@ describe('Phase 4 Task 1 — labour capability + type-routed demand + workforce 
     // Phase 6 unit 4d-i — through the NAMED bypass: `DecisionEvent_t4d_correspondence` demands
     // the `decision.approved` event beside an `approved` audit row on an `approved` decision, and
     // this plant stands in for an approval that already happened (see the helper's contract).
-    await plantLegacyDecisionAudit(t.prisma, () => seedPublishedDecision(t.prisma, {
+    await plantLegacyDecisionAudit(t.prisma, (tx) => seedPublishedDecision(tx, {
       id, projectId, title: id, room: 'Living', photoSwatch: 'sw', status: 'approved',
       authorId: f.memberUser.id, approvedOption: 'Option A',
       events: { create: [{ type: 'approved', actor: 'member' }] },

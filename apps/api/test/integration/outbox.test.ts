@@ -399,20 +399,20 @@ describe('PR C Task 3 — external-effect cutover seal (live PG)', () => {
     // a pre-4d shape cannot satisfy the 4d envelope seal by construction. The bypass names the
     // four triggers it turns off and sets the allocator past the plant before turning them back
     // on — never an implicit hole.
-    await plantLegacyEvent(t.prisma, projectId, pos, async () => {
-    await t.prisma.$executeRawUnsafe(
+    await plantLegacyEvent(t.prisma, projectId, pos, async (tx) => {
+    await tx.$executeRawUnsafe(
       `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent") ` +
       `VALUES ('${evId}','decision.approved',1,'${f.orgA.id}','${projectId}',${pos},'system','system:seed','Decision','D',${intent})`,
     );
     const leaseCols = status === 'leased' ? ',"leaseOwner","leaseExpiresAt"' : '';
     const leaseVals = status === 'leased' ? ", 'sender-x', now() + interval '30 seconds'" : '';
-    await t.prisma.$executeRawUnsafe(
+    await tx.$executeRawUnsafe(
       `INSERT INTO "OutboxDelivery" ("id","eventId","projectId","consumer","consumerKind","deliveryAction","streamPosition","status","payload","updatedAt"${leaseCols}) ` +
       `VALUES ('${delId}','${evId}','${projectId}','socket.invalidation','unordered','dispatch',${pos},'${status}','${payload}'::jsonb, now()${leaseVals})`,
     );
     // the push delivery is a recorded no-op (a compat/legacy event carries no push) — present so the
     // seal's gap check sees every active external consumer covered for this event.
-    await t.prisma.$executeRawUnsafe(
+    await tx.$executeRawUnsafe(
       `INSERT INTO "OutboxDelivery" ("id","eventId","projectId","consumer","consumerKind","deliveryAction","streamPosition","status","updatedAt") ` +
       `VALUES ('${delId}-push','${evId}','${projectId}','webpush.notify','unordered','noop',${pos},'succeeded', now())`,
     );
@@ -484,16 +484,33 @@ describe('PR C Task 3 — external-effect cutover seal (live PG)', () => {
     // Phase 6 unit 4d-i — both arms are LEGACY-SHAPE plants at chosen positions, so both run under
     // the NAMED BYPASS. The subject here is the CUTOVER seal's intent rule; the 4d envelope seal
     // would otherwise answer first and the arm would stop measuring what it names.
-    await plantLegacyEvent(t.prisma, p, 301, async () => {
-      // null intent → refused by the seal trigger
-      await expect(
-        t.prisma.$executeRawUnsafe(
+    // TWO SCOPED PLANTS, not one (#582's review round 22, finding 1). The bypass is now one
+    // interactive transaction, and a refused statement ABORTS a PostgreSQL transaction — so the
+    // "refused, then a valid one commits" pair cannot share a plant: every statement after the
+    // refusal would fail with `current transaction is aborted` and the arm would pass for the
+    // wrong reason. Each probe therefore gets its own bypass, which is also the truer shape: they
+    // are two independent writes against the sealed cutover, not one compound act.
+    //
+    // The refusal is asserted on the WHOLE call, because that is where it now surfaces: the
+    // rejection rolls the transaction back, which restores the four seals — the property this
+    // finding is about — and re-raises.
+    await expect(
+      plantLegacyEvent(t.prisma, p, 300, async (tx) => {
+        // null intent → refused by the seal trigger
+        await tx.$executeRawUnsafe(
           `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId") ` +
           `VALUES ('seal-null-after','decision.approved',1,'${f.orgA.id}','${p}',300,'system','system:seed','Decision','D')`,
-        ),
-      ).rejects.toThrow(/cutover is sealed/);
-      // a valid current-intent event still commits
-      await t.prisma.$executeRawUnsafe(
+        );
+      }),
+    ).rejects.toThrow(/cutover is sealed/);
+    // and the bypass left the ledger SEALED behind it — the rollback is the point, so it is
+    // asserted rather than assumed.
+    expect(await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT count(*) AS n FROM pg_trigger WHERE tgname IN ('DomainEvent_t4d_envelope','DomainEvent_t4d_pairing_claimed') AND tgenabled <> 'O' AND NOT tgisinternal`,
+    )).toEqual([{ n: 0n }]);
+    // a valid current-intent event still commits
+    await plantLegacyEvent(t.prisma, p, 301, async (tx) => {
+      await tx.$executeRawUnsafe(
         `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent") ` +
         `VALUES ('seal-ok-after','decision.approved',1,'${f.orgA.id}','${p}',301,'system','system:seed','Decision','D','${intent}'::jsonb)`,
       );

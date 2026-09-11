@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { Prisma } from '@prisma/client';
 import type { PrismaService } from '../../src/prisma.service';
 
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
@@ -234,7 +235,7 @@ type TxClient = Parameters<Parameters<PrismaService['$transaction']>[0]>[0];
  *  arm re-validates the holder's standing — the project must hold an active member of the
  *  decision's decider role, `client` by default.) Returns the published row. */
 export async function seedPublishedDecision(
-  prisma: PrismaService,
+  prisma: PrismaService | Prisma.TransactionClient,
   data: { id: string } & Record<string, unknown>,
   options?: Array<Record<string, unknown>>,
 ): Promise<{ id: string }> {
@@ -242,13 +243,22 @@ export async function seedPublishedDecision(
     { label: 'Option A', optionKey: 'a', material: 'Granite', delta: 0, swatch: 'sw1', recommended: true, order: 0 },
     { label: 'Option B', optionKey: 'b', material: 'Quartz', delta: 20000, swatch: 'sw2', recommended: false, order: 1 },
   ];
-  return prisma.$transaction(async (tx) => {
+  const body = async (tx: Prisma.TransactionClient): Promise<{ id: string }> => {
     await tx.decision.create({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       data: { ...(data as any), publishedAt: null, options: { createMany: { data: opts as any } } },
     });
     return tx.decision.update({ where: { id: data.id }, data: { publishedAt: new Date() } });
-  });
+  };
+  // JOINS a transaction it is handed, opens one when it is not (#582's review round 22, finding
+  // 1). The create-then-publish pair must be atomic — the round-9 zero-option floor is DEFERRED
+  // and a publish committed on its own would be judged without its options — and since round 22
+  // the legacy-audit bypass IS a transaction, so a caller inside one has no `$transaction` to
+  // give. PostgreSQL has no nested transactions to open here anyway: a second one would be a
+  // second connection, outside the bypass, with the seals still on.
+  return '$transaction' in prisma
+    ? prisma.$transaction(body)
+    : body(prisma);
 }
 
 /**
@@ -429,7 +439,7 @@ export async function plantLegacyEvent<T>(
   prisma: PrismaService,
   projectId: string,
   highestPosition: number,
-  plant: () => Promise<T>,
+  plant: (tx: Prisma.TransactionClient) => Promise<T>,
 ): Promise<T> {
   const NAMES: Array<[table: string, trigger: string]> = [
     ['DomainEvent', 'DomainEvent_t4d_envelope'],
@@ -443,21 +453,36 @@ export async function plantLegacyEvent<T>(
         `IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = '${trigger}') THEN `
         + `EXECUTE 'ALTER TABLE "${table}" ${action} TRIGGER "${trigger}"'; END IF; `).join('')
     + 'END $do$';
-  await prisma.$executeRawUnsafe(toggle('DISABLE'));
-  try {
-    const out = await plant();
+  // ONE INTERACTIVE TRANSACTION (#582's review round 22, finding 1) — and this helper is the
+  // reason round 18's finding 5 is worth re-reading. That round fixed `wipeDecisionEvents` and
+  // wrote an inventory into its comment claiming every other bypass this unit added a `_t4d_`
+  // name to already held the property. The inventory was NOT EXHAUSTIVE: it named the arrays and
+  // the guarded `DO $$` blocks and omitted THIS helper and `plantLegacyDecisionAudit`, which are
+  // exactly that kind of bypass and held nothing. A list asserted to be complete is worse than no
+  // list, because the next reader stops looking — the same defect #572's round 4, finding 3
+  // recorded against a synthesis list of mine.
+  //
+  // The hazard is round 18's, unchanged: `ALTER TABLE` takes ACCESS EXCLUSIVE and COMMITS IT AWAY
+  // at the end of each statement, so between the disable and the enable these four seals are off
+  // for every session on the shared integration database, and a terminated process leaves them
+  // off permanently — `finally` does not run. Inside one transaction the DDL is transactional, a
+  // rollback restores the seals, and the lock is held to commit so a parallel probe BLOCKS rather
+  // than observing an unsealed ledger. A `plant` that THROWS therefore rolls the whole bypass
+  // back, which is the shape the expected-refusal arms want anyway.
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(toggle('DISABLE'));
+    const out = await plant(tx);
     // the counter is set PAST the hand-chosen positions, so the allocator is never left behind its
     // own stream once the seals go back on. Conditional: a counter already ahead is left alone.
-    await prisma.$executeRawUnsafe(
+    await tx.$executeRawUnsafe(
       `UPDATE "ProjectEventStream" SET "nextPosition" = $2::bigint + 1
         WHERE "projectId" = $1 AND "nextPosition" < $2::bigint + 1`,
       projectId,
       highestPosition,
     );
+    await tx.$executeRawUnsafe(toggle('ENABLE'));
     return out;
-  } finally {
-    await prisma.$executeRawUnsafe(toggle('ENABLE'));
-  }
+  }, { timeout: 60_000, maxWait: 30_000 });
 }
 
 /**
@@ -481,15 +506,17 @@ export async function plantLegacyEvent<T>(
  */
 export async function plantLegacyDecisionAudit<T>(
   prisma: PrismaService,
-  plant: () => Promise<T>,
+  plant: (tx: Prisma.TransactionClient) => Promise<T>,
 ): Promise<T> {
   const toggle = (action: 'DISABLE' | 'ENABLE'): string =>
     `DO $do$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_t4d_correspondence') THEN `
     + `EXECUTE 'ALTER TABLE "DecisionEvent" ${action} TRIGGER "DecisionEvent_t4d_correspondence"'; END IF; END $do$`;
-  await prisma.$executeRawUnsafe(toggle('DISABLE'));
-  try {
-    return await plant();
-  } finally {
-    await prisma.$executeRawUnsafe(toggle('ENABLE'));
-  }
+  // ONE INTERACTIVE TRANSACTION, for the reason set out on `plantLegacyEvent` above: this is the
+  // other helper round 18's "every other bypass was checked" inventory left out.
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(toggle('DISABLE'));
+    const out = await plant(tx);
+    await tx.$executeRawUnsafe(toggle('ENABLE'));
+    return out;
+  }, { timeout: 60_000, maxWait: 30_000 });
 }

@@ -151,7 +151,7 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     // committed `approved` carry its `decision.approved` event in the SAME transaction. Every
     // delivered writer does; this fixture is standing in for an approval that happened before
     // this database existed, and the seal is right to refuse it rather than guess.
-    await plantLegacyDecisionAudit(t.prisma, () => t.prisma.$transaction(async (tx) => {
+    await plantLegacyDecisionAudit(t.prisma, async (tx) => {
       await tx.decision.create({
         data: {
           id, projectId, title: id, room: 'Living', photoSwatch: 'sw', status: 'approved',
@@ -164,7 +164,7 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
         },
       });
       await tx.decision.update({ where: { id }, data: { publishedAt: new Date() } });
-    }));
+    });
     // the register head: version = the recorded approval count, pinning the selected option.
     // Planted through the named bypass (Phase 6 unit 4c-ii): this row stands in for an approval
     // that already happened, and the provenance seal is right to refuse a fresh one with no

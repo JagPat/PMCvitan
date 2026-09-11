@@ -122,6 +122,37 @@ const REGISTER: Record<string, SealContract> = {
     },
     must: ['TRUNCATE'],
   },
+  // ── #582's review round 22 ──────────────────────────────────────────────────────────────────
+  phase6_t4d_decision_approved_here: {
+    rule: 'a `pending`/`change` -> `approved` move RECORDS ITSELF as it happens, so a deferred '
+      + 'seal can tell the ACT from the STATE — no predicate over the decision\'s final row can, '
+      + 'because the row is identical whether this transaction moved it or found it that way',
+    plan: '§B.4 the finalized birth (#582 round 19, finding 2; round 22, finding 3)',
+    on: { 'Decision.Decision_t4d_approval_transition': B('U') },
+    must: [
+      // the ENTRY set is the delivered attribution seal's, not a wider one
+      "'pending'", "'change'", "'approved'",
+      // transaction-local, and a jsonb ARRAY rather than a delimited string — round 20, finding 2
+      'set_config', 'phase6.t4d_decision_approved', 'to_jsonb',
+    ],
+  },
+  phase6_t4d_change_request_closure_bound: {
+    rule: 'the CLOSURE receipt is judged, not merely frozen: a COMPLETED same-transaction receipt '
+      + 'of a command that CLOSES a request, run by the recorded resolver, whose result is the '
+      + 'request (withdrawal) or the decision it moved (re-approval)',
+    plan: '§A.3 obligation 6, the resolver column set (#572 rounds 5 and 6; #582 round 22, finding 2)',
+    on: { 'ChangeRequest.ChangeRequest_t4d_closure_bound': C('U') },
+    must: [
+      'succeeded', 'commandType', 'actorId', 'resolvedById',
+      // BOTH writers of `resolvedById`, derived from the column they qualify — naming one would
+      // refuse an ordinary re-approval the moment 4d-ii populates the column
+      'decisions.withdrawChange', 'decisions.approve',
+      // the result differs by command, which is why this is not a branch of the birth binding
+      'decisionId',
+      // the receipt is THIS transaction's, under the alias no other clause here uses
+      'receiptThisTx',
+    ],
+  },
   phase6_t4d_provenance_bound: {
     rule: 'the fact cites a COMPLETED receipt whose result names the row or its bundle PRIMARY, '
       + 'AND the receipt is IDENTIFIED first — the right KIND of command, run by the SAME actor',
