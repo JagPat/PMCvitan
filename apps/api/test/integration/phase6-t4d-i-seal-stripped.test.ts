@@ -252,6 +252,22 @@ INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","
          ('ss-opt-b','ss-dec','Option B','b','Quartz',100,'sw2',1);
 UPDATE "Decision" SET "publishedAt" = now() WHERE "id" = 'ss-dec';
 COMMIT;
+-- #582's review round 22, finding 3 — AN ALREADY-APPROVED DECISION, committed HERE.
+-- The attack that round names is a NO-OP update against a decision that is ALREADY approved: it
+-- supplies the xmin round 19 asked for and leaves the status round 19's strengthening asked for,
+-- while transitioning nothing. Reproducing it needs a decision whose approval happened in an
+-- EARLIER transaction, which ss-dec (pending) cannot be. The transition below is a real one, so
+-- this block also stands as the legitimate path the new seal must keep admitting.
+-- (No backticks in this block: it lives inside a TypeScript template literal.)
+BEGIN;
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt")
+  VALUES ('ss-dec2','ss-proj','SS Approved Decision','Hall','pending','sw',NULL);
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch","order")
+  VALUES ('ss-opt2-a','ss-dec2','Option A','a','Granite',0,'sw1',0),
+         ('ss-opt2-b','ss-dec2','Option B','b','Quartz',100,'sw2',1);
+UPDATE "Decision" SET "publishedAt" = now() WHERE "id" = 'ss-dec2';
+UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'ss-dec2';
+COMMIT;
 -- one real event at a position taken from the allocator, and one SUCCEEDED command receipt: the
 -- referents the fact and claim arms need, so their hostile writes are refused by the SEAL under
 -- test and not by a foreign key that never had a row to point at.
@@ -588,6 +604,48 @@ const ARMS: Arm[] = [
     hostile: `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status")
               VALUES ('ss-cr','ss-dec','x',0,0,'open')`,
     refusal: /never reached/,
+  },
+  {
+    // #582's review round 22, finding 3 — A STATE IS NOT AN ACT.
+    //
+    // Round 19's finding 2 asked the finalized birth to ride its transition; round 19's first
+    // answer, `xmin` alone, was satisfied by a NO-OP UPDATE, and the strengthening that followed
+    // added the END STATUS. This is that same hole one step along: a no-op against a decision that
+    // is ALREADY approved writes the row (the `xmin`) and leaves it approved (the status), and
+    // transitions nothing. `ss-dec2` was approved in the FIXTURE's transaction, so the update
+    // below changes no value and performs no move — and the forged finalized revision becomes the
+    // head that 4c counts as a consultation cycle.
+    seal: 'DecisionApprovalRevision_t4d_birth_paired',
+    what: 'a FINALIZED revision may not be born beside a decision this transaction never MOVED',
+    hostile: `UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'ss-dec2';
+              INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
+              VALUES ('ss-rev-noop','ss-proj','ss-dec2',1,'a',now(),'ss-user')`,
+    // the 4c provenance seal stands in front of this write for a different reason — a revision
+    // with no `decisions.approve` receipt — so it is omitted alongside and the arm measures the
+    // TRANSITION demand it names.
+    alsoStrip: ['DecisionApprovalRevision_t4c_provenance'],
+    refusal: /transition of decision/,
+  },
+  {
+    // #582's review round 22, finding 2 — THE CLOSURE RECEIPT WAS FROZEN AND NEVER JUDGED, which
+    // is the sibling round 20's finding 1 left standing when it bound the BIRTH receipt.
+    //
+    // The request is born in the previous release's shape (no `sourceCommandId`), which the birth
+    // binding's WHEN clause keeps out of it entirely — so nothing but the new closure binding is
+    // in front of this write. `ss-cmd-hist` is a succeeded, same-project receipt the FIXTURE
+    // committed and nothing cites: the FK is satisfied, the one-use unique index is satisfied, and
+    // the resolver pair is TRUE of `ss-user`. Everything a forger controls is in order.
+    seal: 'ChangeRequest_t4d_closure_bound',
+    what: 'a closure may not cite a receipt an EARLIER transaction completed',
+    hostile: `INSERT INTO "ChangeRequest" ("id","decisionId","projectId","reason","costImpact","timeImpactDays","status")
+              VALUES ('ss-cr-cl','ss-dec','ss-proj','borrowed closure',0,0,'open');
+              UPDATE "ChangeRequest" SET "resolvedByCommandId" = 'ss-cmd-hist', "resolvedById" = 'ss-user',
+                     "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn'
+               WHERE "id" = 'ss-cr-cl'`,
+    // the phrase is the CLOSURE message's own — the birth binding's earlier-transaction refusal
+    // shares the first half of that sentence, and an arm that either message could satisfy
+    // witnesses neither (rounds 3 and 5, in the contract oracle).
+    refusal: /past withdrawal or approval/,
   },
   {
     // #582's review round 20, finding 1 — THE BIRTH RECEIPT WAS FROZEN AND NEVER JUDGED.
@@ -950,6 +1008,13 @@ const STRIPPED_BY_PROBE: Record<string, string> = {
 };
 
 const COVERED_BY_CLASS: Record<string, string> = {
+  // #582 round 22, finding 3 — `Decision_t4d_approval_transition` RECORDS the approval move; it
+  // refuses nothing. Stripping it does not admit a hostile write, it makes the database refuse
+  // MORE (the birth seal then sees an empty set), so the strip-vs-whole shape cannot express it.
+  // Its mechanism is exercised in both directions by the arm that drives the no-op attack: whole,
+  // the recorder stays silent on a no-op and the birth is refused; and the fixture's own real
+  // `pending` -> `approved` transition is admitted, which is the recorder firing.
+  Decision_t4d_approval_transition: 'DecisionApprovalRevision_t4d_birth_paired',
   // platform_t4d_register_no_truncate — one function, many registers
   ChangeRequest_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
   DecisionCountersign_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
@@ -2764,8 +2829,19 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     // the RESOLVER set still closes once, which is the transition this freeze must not break —
     // and since round 16, finding 4, it closes ONLY as a whole: on the open -> closed transition,
     // naming the resolver, with the pair true of them. This is that shape.
+    // AND THE CLOSURE RECEIPT IS NOW JUDGED (#582's review round 22, finding 2), so this statement
+    // had to become a TRUE closure rather than a shaped one. It used to cite `ss-cmd` — a
+    // `decisions.forward` receipt completed in the FIXTURE's transaction — and passed, because
+    // nothing read the receipt's kind, actor or transaction. `ChangeRequest_t4d_closure_bound`
+    // refuses exactly that now, so the arm mints its own withdrawal receipt in this statement's
+    // transaction, by the ledger protocol (reserved on insert, completed by update — a receipt
+    // born terminal is a command that never ran). One `-c` is one transaction, which is what the
+    // binding requires and what a real `decisions.withdrawChange` does.
     const closed = psql(RUN_DB, ['-c',
-      `UPDATE "ChangeRequest" SET "resolvedByCommandId" = 'ss-cmd', "resolvedById" = 'ss-user',
+      `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+         VALUES ('ss-cmd-wd','project','ss-org','ss-proj','ss-user','decisions.withdrawChange','ss-key-wd','ss-hash-wd','reserved');
+       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-cr-b' WHERE "id" = 'ss-cmd-wd';
+       UPDATE "ChangeRequest" SET "resolvedByCommandId" = 'ss-cmd-wd', "resolvedById" = 'ss-user',
               "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn'
         WHERE "id" = 'ss-cr-b'`]);
     expect(closed.ok, `the resolver set must still be fillable at closure:\n${closed.output}`).toBe(true);
