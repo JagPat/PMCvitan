@@ -117,6 +117,22 @@ COMMIT and could not before. `STRIPPED_BY_PROBE` is new: the coverage tripwire r
 only, so a seal a standalone probe strips looked unproven; it now declares them, and a declaration
 naming a probe that does not exist fails.
 
+**Round 11 is folded — four P1s on `ad0a6ef7`, two of them one class on its fourth round.** The
+adoption audit asked whether the tables this unit CREATES are empty and never asked the same of the
+COLUMNS it adds to tables that already existed — where a `db push` baseline can leave values that
+no trigger judged and the next write freezes. The audit now covers every such table and names the
+rows. The nonblank rule for a frozen role/name pair reached its last two sites: `DomainEvent`'s
+actor envelope, which round 11 named and where coherence was checked but presence was not, and
+`DecisionApprovalRevision`'s approval pair, which it did not name.
+
+The third is a weakening I chose deliberately in round 10 and wrote a reason for. I bound the
+provisional birth with the decision's `xmin` rather than its resulting state, arguing that pinning
+a state would repeat round 8's mistake. A no-op `UPDATE` satisfies `xmin`, so a second provisional
+revision could be added beside the first. The birth is now bound to the state a provisional
+approval produces AND to the one-open-approval invariant the file had been assuming all along. The
+fourth is new: the approved-entry seal read architect standing outside the readiness fence, so the
+losing interleaving commits a decision awaiting a countersigner just removed.
+
 The oracle is `test/integration/phase6-t4d-i-seal-contract.test.ts`: every trigger function the
 unit installs carries a register entry naming its rule, the plan location that states it, the
 operations and timing every installing trigger must fire on, and the tokens its body must

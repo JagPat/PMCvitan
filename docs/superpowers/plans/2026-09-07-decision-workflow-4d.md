@@ -6534,6 +6534,71 @@ today's behaviour lives.
     seals a standalone probe strips rather than an arm, so the coverage tripwire
     can see them and a declaration naming a probe that does not exist fails.
 
+    **ROUND 11 — the adoption audit asked about TABLES and not about COLUMNS, and a
+    weakening I chose deliberately was wrong** (#582's review round 11, findings 1-4).
+
+    Two of the four are the same class recurring for a fourth round, and the
+    generalisation is no longer about seals: **when a rule is found missing at one
+    site, the fix is the sweep of every site the rule names, and the sweep is
+    written into this plan so the next round cannot rediscover it.**
+
+    **(1) THE 4d-ONLY SHAPE OF EXISTING TABLES.** Round 8 audited the adopted
+    registers; round 9 audited the dark fact tables and the catalog. Neither asked
+    the same question of the COLUMNS this unit adds to tables that were already
+    there, and on the supported `db push` / P3005 baseline those columns can exist,
+    populated, before any raw 4d trigger does — so every value in them is judged by
+    nothing and frozen by the next write. The audit now covers the whole class, and
+    the class is enumerated here so it stays covered: `ChangeRequest` (the reported
+    site: a `countersign_rejection` row no disagreement produced, frozen on the
+    spot, unjudgeable by an INSERT-only pairing seal, and occupying the one-open
+    slot the real rejection needs), `DecisionApprovalRevision` (a `finalized =
+    false` row is an OPEN approval under no chain that the one-flip seal makes
+    permanently unfinalizable), `DomainEvent` (a pre-baseline actor pair), and the
+    consultation pairs. Before retirement each must be in its LEGACY shape, named
+    row by row in the abort.
+
+    **(2) A FROZEN PAIR IS NONBLANK, at its last two sites.** The rule was already
+    carried by the consultation pair, the change request's two pairs and the three
+    fact tables' pairs. Sweeping it leaves exactly two members unguarded:
+    `DomainEvent`'s actor envelope — which round 11 named, and where coherence was
+    checked while presence was not, so two empty strings satisfied it and 4d-iii's
+    "every new human event carries the pair" would be satisfied by an envelope
+    naming nobody — and `DecisionApprovalRevision`'s approval pair, which the
+    finding did NOT name and which its finalizer reads to decide what the
+    finalizing event says.
+
+    **(3) A NO-OP UPDATE IS NOT A TRANSITION, and round 10's reasoning was wrong.**
+    Round 10 bound the provisional birth with the decision's `xmin` and recorded
+    why: "pinning a final status here would repeat round 8's mistake of judging a
+    transition by the state it left behind". That was a deliberate weakening and it
+    was mistaken. `xmin` is satisfied by a write that changes nothing, so a bundle
+    could touch an already-`awaiting_countersign` decision and add a SECOND
+    provisional revision. Round 8's mistake was reading a state INSTEAD of a
+    transition where the transition was the rule; here the state IS the rule,
+    because a provisional approval is defined by where it leaves its decision, and
+    `Decision_t4d_entry_seal` already owns which transitions may reach that state.
+    Two arms now: the birth's decision must END `awaiting_countersign` as a row this
+    transaction wrote, and a decision holds AT MOST ONE unfinalized revision — the
+    invariant `phase6_t4d_provisional_head` has been assuming all along, since "the"
+    head is only well defined when there is one.
+
+    **(4) THE STANDING READ IS FENCED.** The approved-entry seal read
+    `platform_role_standing` without the project readiness key, which the delivered
+    4b lifecycle trigger takes for publication and for `approved → change` and for
+    neither transition judged here. Unfenced, this transaction reads one architect
+    and pauses while the last architect's removal takes the key, sees only the
+    still-committed open decision, decrements to zero and commits — leaving a
+    decision awaiting a countersigner who no longer exists, the exact state the arm
+    was written to prevent. `phase6_try_readiness` is taken first, and refuses
+    rather than waits, for the reason the revision birth seal gives.
+
+    §C gains two arms (the blank envelope, the blank approval pair), a
+    legacy-shape apply probe that plants TWO tables and requires both to be named,
+    and the no-op-UPDATE attack driven against the state the provisional arm just
+    committed. The readiness fence is proven by a two-session measurement — the key
+    held elsewhere, the transition refused by name — and pinned in the contract
+    oracle, because a single-session harness cannot hold a lock against itself.
+
     P28b's replay arm gains BOTH: the
     4d-i migration re-run against a post-4d-iii database, with the architect
     consultation request COMMITTING afterwards, RED against the unconditional

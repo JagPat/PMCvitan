@@ -612,6 +612,35 @@ const ARMS: Arm[] = [
     refusal: /has not been inserted yet — the fact comes FIRST/,
   },
   {
+    // #582 round 11, finding 2 — COHERENT IS NOT PRESENT. Both halves are non-null, so the
+    // pair-coherence arm passes on them; the append-only seal then makes an envelope that names
+    // nobody permanent, and 4d-iii's "every new human event carries the pair" is satisfied by it.
+    seal: 'DomainEvent_t4d_envelope',
+    what: 'an actor envelope of blanks attributes nothing and is refused',
+    hostile: `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+              INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","actorId","entityType","entityId","actorRole","actorName","dispatchIntent")
+              SELECT 'ss-blankactor','decision.published',1,'ss-org','ss-proj',s."nextPosition" - 1,'human','ss-user','Decision','ss-dec','   ','   ',
+                     jsonb_build_object('effectKey','decision.published','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
+                                        'push', jsonb_build_object('body','ok','roles', jsonb_build_array('client')))
+                FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+               WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.published'
+                 AND c."coverageVersion" = '${COVERAGE}'`,
+    refusal: /carries a BLANK actor envelope/,
+  },
+  {
+    // the SIBLING SITE the finding did not name. Sweeping "a frozen role/name pair is nonblank"
+    // across the unit leaves exactly two members unguarded, and this is the other one.
+    seal: 'DecisionApprovalRevision_t4d_birth',
+    what: 'an approval pair of blanks attributes nothing and is refused',
+    hostile: `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+                VALUES ('ss-cmd-bp','project','ss-org','ss-proj','ss-user','decisions.approve','ss-key-bp','ss-hash-bp','reserved');
+              UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec' WHERE "id" = 'ss-cmd-bp';
+              INSERT INTO "DecisionApprovalRevision"
+                ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId","finalized","approvedByName","approvedByRole")
+              VALUES ('ss-rev-bp','ss-proj','ss-dec',1,'a',now(),'ss-user','ss-cmd-bp',TRUE,'  ','  ')`,
+    refusal: /carries a BLANK approval pair/,
+  },
+  {
     // #582 round 10, finding 5 — TWO BIRTHS, ONE APPROVAL. Consecutive versions clear the
     // `(projectId, decisionId, version)` key, and each cites its own valid `decisions.approve`
     // receipt, so the 4c provenance seal passes on both. The project carries no architect here, so
@@ -785,7 +814,6 @@ const COVERED_BY_CLASS: Record<string, string> = {
   Membership_t4d_holder_guard: 'Membership_t4d_architect_reserved',
   MembershipTransition_t4d_append_only: 'DecisionForward_t4d_reserved',
   MembershipTransition_t4d_seal: 'DecisionForward_t4d_reserved',
-  DecisionApprovalRevision_t4d_birth: 'Decision_t4d_awaiting_reserved',
   DecisionApprovalRevision_t4d_one_flip: 'Decision_t4d_awaiting_reserved',
   DecisionApprovalRevision_t4d_flip_paired: 'Decision_t4d_awaiting_reserved',
   DecisionConsultation_t4d_attribution: 'Decision_t4d_awaiting_reserved',
@@ -1402,6 +1430,92 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
   }, 300_000);
 
   /**
+   * #582's review round 11, finding 1 — THE 4d-ONLY SHAPE OF TABLES THAT ALREADY EXISTED.
+   *
+   * The sibling audit proves the tables this unit CREATES are empty. This one proves the same
+   * about the columns it ADDS to tables that were already there — the case the round-9 audit
+   * never asked, and the one a `db push` / P3005 baseline actually produces, because those
+   * columns can exist and be populated before a single raw 4d trigger does.
+   *
+   * Two tables are planted, not one. The finding named `ChangeRequest`; the class covers every
+   * table gaining a 4d-only column, and `DecisionApprovalRevision` is the member with the worst
+   * consequence — a pre-baseline `finalized = false` row is an OPEN approval under no chain that
+   * the one-flip seal then makes permanently unfinalizable.
+   */
+  it('a pre-baseline row already in a 4d-only shape aborts the apply', () => {
+    psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+    expect(psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]).ok).toBe(true);
+
+    const seeded = psql(RUN_DB, ['-c', `
+      INSERT INTO "Org" ("id","name","slug") VALUES ('ls-org','LS Org','ls-org');
+      INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+        VALUES ('ls-proj','ls-org','LS Site','LS','','Finishing','LS-01','01 Jan 2026','31 Dec 2026',0,0,0);
+      INSERT INTO "User" ("id","projectId","role","name","phone") VALUES
+        ('ls-user','ls-proj','pmc','LS User','+910000000041'),
+        ('ls-client','ls-proj','client','LS Client','+910000000042');
+      -- the delivered 4b publication seal requires an ACTIVE holder of the decider role, so the
+      -- world this plants is the world that seal admits.
+      INSERT INTO "Membership" ("id","projectId","userId","role","status") VALUES
+        ('ls-mem','ls-proj','ls-user','pmc','active'),
+        ('ls-mem-c','ls-proj','ls-client','client','active');
+      -- born UNPUBLISHED, given its option floor, published second — the order the delivered 4b
+      -- seals admit (options are frozen once the question is published, and a published choice
+      -- needs two of them).
+      INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt")
+        VALUES ('ls-dec','ls-proj','LS Decision','Hall','pending','sw',NULL);
+      INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch","order")
+        VALUES ('ls-opt-a','ls-dec','A','a','Granite',0,'sw1',0),
+               ('ls-opt-b','ls-dec','B','b','Quartz',100,'sw2',1);
+      UPDATE "Decision" SET "publishedAt" = now() WHERE "id" = 'ls-dec';
+      -- THE COLUMNS ARE CREATED HERE, the way prisma db push creates them: from schema.prisma,
+      -- before any raw 4d trigger exists. That is the whole premise of this arm and of its
+      -- sibling above — on this database they do NOT exist yet, because the base template is the
+      -- pre-4d-i world, so a plant that assumed them would be measuring nothing.
+      -- (No backticks in this block: it lives inside a TypeScript template literal.)
+      ALTER TABLE "DecisionApprovalRevision" ADD COLUMN "finalized" BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE "ChangeRequest" ADD COLUMN "projectId" TEXT;
+      ALTER TABLE "ChangeRequest" ADD COLUMN "origin" TEXT NOT NULL DEFAULT 'standard';
+      ALTER TABLE "ChangeRequest" ADD COLUMN "revisionId" TEXT;
+      -- and the rows that sit in them, vouched for by nothing THIS unit installs. The 4c
+      -- provenance seal is already on this database (4c-ii is a merged migration), so the
+      -- revision carries a real approval receipt and is legal in every respect 4c judges — which
+      -- is the point: its ONLY illegal aspect is the 4d column, and no 4d seal exists yet to see
+      -- it.
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('ls-cmd','project','ls-org','ls-proj','ls-user','decisions.approve','ls-key','ls-hash','reserved');
+      UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ls-dec' WHERE "id" = 'ls-cmd';
+      INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId","finalized")
+        VALUES ('ls-rev','ls-proj','ls-dec',1,'a',now(),'ls-user','ls-cmd',FALSE);
+      INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId")
+        VALUES ('ls-cr','ls-proj','ls-dec','planted',0,0,'open','countersign_rejection','ls-rev');
+    `]);
+    expect(seeded.ok, seeded.output).toBe(true);
+
+    const applied = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(applied.ok, 'the apply must REFUSE rows already carrying 4d-only values').toBe(false);
+    expect(applied.output).toMatch(/already carry this unit's 4d-only columns before it seals them/);
+    // BOTH tables are named, which is what makes this the class and not the reported site
+    expect(applied.output).toMatch(/ChangeRequest \(1 row\(s\): ls-cr\)/);
+    expect(applied.output).toMatch(/DecisionApprovalRevision \(1 row\(s\): ls-rev\)/);
+
+    // and the named repair is the repair that works
+    // THE REPAIR IS THE SANCTIONED BYPASS, named. The aborted apply installed none of this
+    // unit's seals, but the DELIVERED append-only seal on the approval register is already there
+    // and refuses every direct UPDATE — correctly. So the repair declares itself by name for
+    // exactly that statement, the same contract `plantLegacyApprovalRevision` and
+    // `sanctionedReset` use, and the same one §P6T4D tells an operator to use.
+    const repaired = psql(RUN_DB, ['-c', `
+      DELETE FROM "ChangeRequest" WHERE "id" = 'ls-cr';
+      ALTER TABLE "DecisionApprovalRevision" DISABLE TRIGGER "DecisionApprovalRevision_append_only";
+      UPDATE "DecisionApprovalRevision" SET "finalized" = TRUE WHERE "id" = 'ls-rev';
+      ALTER TABLE "DecisionApprovalRevision" ENABLE TRIGGER "DecisionApprovalRevision_append_only";
+    `]);
+    expect(repaired.ok, `the named repair must be applicable:\n${repaired.output}`).toBe(true);
+    const clean = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(clean.ok, `after the named repairs the apply must succeed:\n${clean.output}`).toBe(true);
+  }, 300_000);
+
+  /**
    * THE PAIR CHECKS, which are CONSTRAINTS and so cannot be stripped by name — the harness omits
    * `CREATE TRIGGER` statements, and a CHECK either exists or does not. The constraint NAME in the
    * refusal is what identifies which object spoke, which is the same thing a strip proves.
@@ -1892,10 +2006,19 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     UPDATE "Decision" SET "status" = 'awaiting_countersign' WHERE "id" = 'ss-dec';`;
 
   it('the awaiting_countersign to change transition owes its rejection request', () => {
-    const bare = `${PROVISIONAL}
-      UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'ss-dec'`;
+    // THE DISAGREEMENT IS A SEPARATE COMMAND, and this probe drives it that way. An earlier draft
+    // reused the provisional-approval block as setup INSIDE the same transaction, which made the
+    // decision end at `change` — so `phase6_t4d_revision_birth_paired` refused the bundle before
+    // this door was ever reached, and the arm measured the wrong object. Approve-then-disagree in
+    // ONE transaction is not a path the plan gives a row to; the provisional act is committed
+    // first, exactly as the architect's rejection arrives later.
+    const bare = `UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'ss-dec'`;
+    const bundled = `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId")
+         VALUES ('ss-cr-rej','ss-dec','the architect disagrees',0,0,'open','countersign_rejection','ss-rev-p');
+       UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'ss-dec'`;
 
     buildRun([...AWAITING_DOORS, 'Decision_t4d_disagreement_paired']);
+    expect(psql(RUN_DB, ['-c', PROVISIONAL]).ok, 'the provisional act must commit first').toBe(true);
     const stripped = psql(RUN_DB, ['-c', bare]);
     expect(
       stripped.ok,
@@ -1903,6 +2026,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     ).toBe(true);
 
     buildRun(AWAITING_DOORS);
+    expect(psql(RUN_DB, ['-c', PROVISIONAL]).ok, 'the provisional act must commit first').toBe(true);
     const whole = psql(RUN_DB, ['-c', bare]);
     expect(whole.ok, 'the disagreement without its request must be REFUSED').toBe(false);
     expect(whole.output).toMatch(/in this transaction with no open .countersign_rejection. request/);
@@ -1910,11 +2034,9 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     // the BUNDLE — the same transition carrying the request — must commit, which is what makes
     // the refusal above a rule about the bundle rather than about the transition.
     buildRun(AWAITING_DOORS);
-    const bundled = psql(RUN_DB, ['-c', `${PROVISIONAL}
-      INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId")
-        VALUES ('ss-cr-rej','ss-dec','the architect disagrees',0,0,'open','countersign_rejection','ss-rev-p');
-      UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'ss-dec'`]);
-    expect(bundled.ok, `the disagreement BUNDLE must COMMIT:\n${bundled.output}`).toBe(true);
+    expect(psql(RUN_DB, ['-c', PROVISIONAL]).ok, 'the provisional act must commit first').toBe(true);
+    const ok = psql(RUN_DB, ['-c', bundled]);
+    expect(ok.ok, `the disagreement BUNDLE must COMMIT:\n${ok.output}`).toBe(true);
   }, 300_000);
 
   it('a GENERIC forward of an already-changed decision still commits', () => {
@@ -1969,11 +2091,33 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     buildRun(AWAITING_DOORS);
     const whole = psql(RUN_DB, ['-c', orphan]);
     expect(whole.ok, 'a provisional revision with no transition behind it must be REFUSED').toBe(false);
-    expect(whole.output).toMatch(/born PROVISIONAL beside decision .*, which this transaction never wrote/);
+    expect(whole.output).toMatch(/born PROVISIONAL, but decision .* does not end this transaction as an .awaiting_countersign. row/);
 
     // and the WHOLE provisional act — revision plus its transition — must commit.
     buildRun(AWAITING_DOORS);
     const paired = psql(RUN_DB, ['-c', PROVISIONAL]);
     expect(paired.ok, `the provisional approval and its transition must COMMIT:\n${paired.output}`).toBe(true);
+
+    // #582 round 11, finding 3 — AND A NO-OP UPDATE IS NOT A TRANSITION. Round 10 bound the
+    // provisional birth with `xmin` alone and I wrote down why; a write that changes nothing
+    // satisfies it, so a SECOND provisional revision could be inserted beside the first while the
+    // decision already sat in `awaiting_countersign`. The decision is left with two open
+    // approvals and every revision below the head is beyond the reach of any finalizer.
+    //
+    // Run against the database the arm above just committed, which is the state the attack needs.
+    const second = psql(RUN_DB, ['-c',
+      `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+         VALUES ('ss-cmd-pv2','project','ss-org','ss-proj','ss-user','decisions.approve','ss-key-pv2','ss-hash-pv2','reserved');
+       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec' WHERE "id" = 'ss-cmd-pv2';
+       UPDATE "Decision" SET "room" = "room" WHERE "id" = 'ss-dec';
+       INSERT INTO "DecisionApprovalRevision"
+         ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId","finalized","approvedFrom","approvedByName","approvedByRole")
+       VALUES ('ss-rev-p2','ss-proj','ss-dec',2,'a',now(),'ss-user','ss-cmd-pv2',FALSE,'pending','SS User','pmc')`]);
+    expect(
+      second.ok,
+      'a second provisional revision, admitted by a no-op UPDATE, must be REFUSED — one decision '
+      + 'holds at most ONE open approval',
+    ).toBe(false);
+    expect(second.output).toMatch(/unfinalized approval revisions at commit/);
   }, 300_000);
 });

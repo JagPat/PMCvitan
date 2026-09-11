@@ -212,7 +212,10 @@ const REGISTER: Record<string, SealContract> = {
     rule: 'entry into the approved family is gated on the chain state the transition asserts',
     plan: '§A.2 the entry seal',
     on: { 'Decision.Decision_t4d_entry_seal': B('I U') },
-    must: ['status'],
+    // #582 round 11, finding 4 — the standing read is FENCED. Without the key the count is read
+    // outside the lock that serialises standing changes against decision writes, and the losing
+    // interleaving commits a decision awaiting a countersigner who has just been removed.
+    must: ['status', 'phase6_try_readiness'],
   },
   phase6_t4d_holder_standing_seal: {
     rule: 'a decision designated to the ARCHITECT ROLE may not be born, published or reopened '
@@ -226,14 +229,17 @@ const REGISTER: Record<string, SealContract> = {
       + 'revision born final under an ACTIVE chain is refused',
     plan: '§B.4',
     on: { 'DecisionApprovalRevision.DecisionApprovalRevision_t4d_birth': B('I') },
-    must: ['finalized', 'approvedFrom', 'approvedByName', 'approvedByRole'],
+    must: ['finalized', 'approvedFrom', 'approvedByName', 'approvedByRole', 'BLANK approval pair'],
   },
   phase6_t4d_revision_birth_paired: {
     rule: 'ONE approval births ONE revision, and a PROVISIONAL birth rides the transition that '
       + 'put its decision into `awaiting_countersign`',
     plan: '§B.4; P31c; #582 round 10, finding 5',
     on: { 'DecisionApprovalRevision.DecisionApprovalRevision_t4d_birth_paired': C('I') },
-    must: ['count(*)', 'v_births <> 1', 'txid_current()', "NEW.\"finalized\" = FALSE"],
+    // round 11, finding 3: `xmin` alone is satisfied by a no-op UPDATE, so the birth is bound to
+    // the STATE a provisional approval produces and to the one-open-approval invariant.
+    must: ['count(*)', 'v_births <> 1', 'txid_current()', "NEW.\"finalized\" = FALSE",
+      'awaiting_countersign', 'v_open > 1'],
   },
   phase6_t4d_revision_one_flip: {
     rule: 'finality is ONE-WAY and a finalized revision is undeletable',
@@ -495,6 +501,9 @@ const REGISTER: Record<string, SealContract> = {
       // family was satisfiable by a target the consumer then drops as non-actionable.
       "jsonb_typeof(v_push -> 'targetUserId')",
       'retiredAt', 'invalidate', 'requiresPush', 'pushRoles', 'audience', 'targetUserIds',
+      // #582 round 11, finding 2 — coherence is not presence: a pair of blanks satisfies the
+      // null-pair arm on both halves and records nobody, permanently.
+      'BLANK actor envelope',
     ],
   },
   phase6_t4d_change_request_evidence_frozen: {

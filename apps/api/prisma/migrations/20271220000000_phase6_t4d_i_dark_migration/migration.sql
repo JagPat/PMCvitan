@@ -3680,6 +3680,19 @@ BEGIN
         'phase6 4d-i: event % carries half an actor envelope (role %, name %) — the pair is written together or not at all, so a fact comparing it cannot pass on one half and skip the other',
         NEW."eventId", COALESCE(NEW."actorRole", '<null>'), COALESCE(NEW."actorName", '<null>');
     END IF;
+    -- AND A PRESENT HALF IS NONBLANK (#582 round 11, finding 2). Coherence is not presence: a
+    -- pair of empty strings satisfies the arm above on both halves, the append-only seal below
+    -- then makes it permanent, and 4d-iii's "every new human event carries the pair" is satisfied
+    -- by two values that name nobody. This is the same rule the consultation pair, the change
+    -- request's two pairs and the three fact tables' pairs already carry — spelled over ASCII
+    -- whitespace, not the space character alone, like every other one of them.
+    IF NEW."actorRole" IS NOT NULL
+       AND (btrim(NEW."actorRole", E' \t\n\x0B\f\r') = ''
+            OR btrim(NEW."actorName", E' \t\n\x0B\f\r') = '') THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: event % carries a BLANK actor envelope (role `%`, name `%`) — the pair is the permanent record of WHO acted, and a blank half attributes nothing while looking attributed',
+        NEW."eventId", NEW."actorRole", NEW."actorName";
+    END IF;
     IF NEW."actorRole" IS NOT NULL AND NEW."actorKind" <> 'human' THEN
       RAISE EXCEPTION
         'phase6 4d-i: event % is a `%` event and may not carry a human actor envelope — a system actor has no role and no display name to freeze',
@@ -4150,6 +4163,24 @@ BEGIN
         'phase6 4d-i: decision % may not enter `awaiting_countersign` from `%` — a provisional approval is made from an OPEN decision',
         OLD."id", OLD."status";
     END IF;
+    -- THE STANDING READ IS FENCED (#582 round 11, finding 4). The delivered 4b lifecycle trigger
+    -- takes the project readiness key for publication and for `approved → change`, and for
+    -- neither of the two transitions judged here. Without it the count below is read outside the
+    -- fence that serialises standing changes against decision writes: this transaction reads ONE
+    -- architect and pauses; the last architect's removal takes the key, sees only the
+    -- still-committed open decision, decrements the count to zero and commits; this transaction
+    -- then commits a decision awaiting a countersigner who no longer exists — stranded from
+    -- birth, which is the exact state the arm below exists to prevent. Taking the key first makes
+    -- the two orderings the only two outcomes: one lands a direct approval, the other lands an
+    -- awaiting transition with an architect still present.
+    --
+    -- `phase6_try_readiness` rather than a wait, for the reason the revision birth seal gives:
+    -- a trigger that blocks on a lock held elsewhere turns a refusal into a hang.
+    IF NOT phase6_try_readiness(OLD."projectId") THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: the project readiness key is held elsewhere — decision %''s entry into `awaiting_countersign` is refused rather than judged against an architect count another transaction is moving',
+        OLD."id";
+    END IF;
     IF platform_role_standing(OLD."projectId", 'architect') = 0 THEN
       RAISE EXCEPTION
         'phase6 4d-i: project % holds no ACTIVE architect, so decision % cannot enter `awaiting_countersign` — with the chain off an approval lands `approved` directly, and a decision left awaiting a countersigner who does not exist is stranded from birth',
@@ -4557,6 +4588,19 @@ BEGIN
       'phase6 4d-i: revision % is born PROVISIONAL and must record the act its finalizer will emit from — `approvedFrom`, `approvedByName` and `approvedByRole` are all required on a revision born unfinalized',
       NEW."id";
   END IF;
+
+  -- THE SAME PAIR, THE SAME RULE (#582 round 11, finding 2's SIBLING SITE — not reported).
+  -- Round 11 named the event envelope. The class is "a frozen role/name pair is nonblank", and
+  -- sweeping it across the unit leaves exactly two members unguarded: `DomainEvent`, which the
+  -- finding named, and this one. Required-not-null is not presence, and a countersign reads this
+  -- pair to decide what its finalizing event says about who approved.
+  IF NEW."approvedByRole" IS NOT NULL
+     AND (btrim(NEW."approvedByRole", E' \t\n\x0B\f\r') = ''
+          OR btrim(COALESCE(NEW."approvedByName", ''), E' \t\n\x0B\f\r') = '') THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: revision % carries a BLANK approval pair (role `%`, name `%`) — the pair is frozen at the act and read by its finalizer, and a blank half attributes nothing while looking attributed',
+      NEW."id", NEW."approvedByRole", COALESCE(NEW."approvedByName", '<null>');
+  END IF;
   RETURN NEW;
 END $$;
 
@@ -4599,7 +4643,7 @@ CREATE TRIGGER "DecisionApprovalRevision_t4d_birth"
 --     by `Decision_t4d_entry_seal`, and pinning a final status here would repeat round 8's
 --     mistake of judging a transition by the state it left behind.
 CREATE OR REPLACE FUNCTION phase6_t4d_revision_birth_paired() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_births BIGINT; v_moved BOOLEAN;
+DECLARE v_births BIGINT; v_moved BOOLEAN; v_open BIGINT;
 BEGIN
   SELECT count(*) INTO v_births FROM "DecisionApprovalRevision" r
    WHERE r."projectId" = NEW."projectId" AND r."decisionId" = NEW."decisionId"
@@ -4611,13 +4655,44 @@ BEGIN
   END IF;
 
   IF NEW."finalized" = FALSE THEN
+    -- (2a) THE DECISION ENDS WHERE A PROVISIONAL APPROVAL PUTS IT (#582 round 11, finding 3).
+    --
+    -- Round 10 asked only whether this transaction WROTE the decision, and wrote down why:
+    -- "pinning a final status here would repeat round 8's mistake of judging a transition by the
+    -- state it left behind". That reasoning was wrong, and wrong in a way I could have tested. A
+    -- no-op `UPDATE` satisfies `xmin` — it is a write that changes nothing — so a bundle could
+    -- touch an already-`awaiting_countersign` decision and insert a second provisional revision
+    -- beside the first. Round 8's mistake was reading a state INSTEAD of the transition where the
+    -- transition was the rule; here the state IS the rule, because a provisional approval is
+    -- defined by where it leaves its decision, and `Decision_t4d_entry_seal` already owns the
+    -- question of which transitions may reach that state.
     SELECT TRUE INTO v_moved FROM "Decision" d
      WHERE d."projectId" = NEW."projectId" AND d."id" = NEW."decisionId"
+       AND d."status"::text = 'awaiting_countersign'
        AND d."xmin" = txid_current()::text::xid;
     IF NOT FOUND THEN
       RAISE EXCEPTION
-        'phase6 4d-i: revision % is born PROVISIONAL beside decision %, which this transaction never wrote — a provisional approval is made BY the transition that puts its decision into `awaiting_countersign`, and a revision with no transition behind it is an approval nobody performed',
+        'phase6 4d-i: revision % is born PROVISIONAL, but decision % does not end this transaction as an `awaiting_countersign` row this transaction wrote — a provisional approval IS the act that parks a decision for its countersigner, and one that leaves its decision elsewhere is an approval nobody performed',
         NEW."id", NEW."decisionId";
+    END IF;
+
+    -- (2b) AND A DECISION HOLDS AT MOST ONE OPEN APPROVAL, which is the invariant the attack
+    -- actually breaks and the one this file has been ASSUMING all along:
+    -- `phase6_t4d_provisional_head` resolves "the" provisional head as the highest-version
+    -- unfinalized revision, which is only well defined when there is one. Two of them strand
+    -- every revision below the head — no finalizer can ever reach it, because both the
+    -- countersign and the `completed` resolution are sealed onto the head — while the register's
+    -- COUNT, which 4c reads as cycle evidence, reports approvals that never happened.
+    --
+    -- Asked over the decision's WHOLE history rather than this transaction's rows, because a
+    -- second provisional revision is equally corrupt whenever it arrives.
+    SELECT count(*) INTO v_open FROM "DecisionApprovalRevision" r
+     WHERE r."projectId" = NEW."projectId" AND r."decisionId" = NEW."decisionId"
+       AND r."finalized" = FALSE;
+    IF v_open > 1 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: decision % would hold % unfinalized approval revisions at commit (this one is version %) — a decision has at most ONE open approval, the head its finalizer acts on, and every revision below it is stranded beyond the reach of any countersign or resolution',
+        NEW."decisionId", v_open, NEW."version";
     END IF;
   END IF;
   RETURN NULL;
@@ -5171,5 +5246,70 @@ BEGIN
     END IF;
   END IF;
 END $dark_tables$;
+
+-- ── and the 4d-only SHAPE of the tables that ALREADY EXISTED ─────────────────────────────────
+-- #582 round 11, finding 1, and the class it belongs to. The audit above asks whether the tables
+-- this unit CREATES are empty. It never asked the same question of the columns this unit ADDS to
+-- tables that were already there — and on the supported `db push` / P3005 baseline path those
+-- columns can exist, populated, before a single raw 4d trigger does. Everything this unit
+-- installs is then an INSERT-time or UPDATE-time seal, so a row already sitting in a 4d shape is
+-- validated by nothing and frozen by the next write.
+--
+-- THE SWEEP, not the reported site. Round 11 named `ChangeRequest`, and fixing that alone is the
+-- habit rounds 8, 9 and 10 were each caught in. Every table gaining a 4d-only column is listed
+-- here, and each is required to be in its LEGACY shape before retirement:
+--
+--   · `ChangeRequest`      — a `countersign_rejection` row produced by no disagreement
+--                            transition, whose evidence freeze makes its 4d columns immutable on
+--                            the spot, whose INSERT-only pairing seal can never judge it, and
+--                            which occupies the one-open-request slot so the real rejection
+--                            cannot be raised. (The reported finding.)
+--   · `DecisionApprovalRevision` — a `finalized = false` row is an OPEN approval under no chain,
+--                            and the one-flip seal makes it permanently unfinalizable.
+--   · `DomainEvent`        — a pre-baseline actor pair is permanent attribution the envelope seal
+--                            never saw.
+--   · `Notification`       — a kinded or event-bound notice the binding seals never judged.
+--   · the two consultation tables — the same frozen pair, with the same freeze.
+--
+-- Each abort names the rows, because "some table is wrong" is not a repair an operator can make.
+-- A blank pre-baseline pair may instead be refused earlier, by the CHECK that adds the nonblank
+-- rule to the column; both refuse, and this one explains.
+--
+-- GATED ON THE RETIREMENT SNAPSHOT for the same reason the audit above is: after 4d-iii every one
+-- of these shapes is the ordinary product of 4d-ii, and an `ALWAYS_EXECUTE` replay must abort on
+-- none of them.
+DO $legacy_shape$
+DECLARE spec RECORD; v_rows BIGINT; v_sample TEXT; v_found TEXT := '';
+BEGIN
+  IF phase6_t4d_retired_at_start() THEN
+    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the legacy-shape audit is SKIPPED (4d-ii has legitimately written these columns; this is a replay over a retired database)';
+  ELSE
+    FOR spec IN SELECT * FROM (VALUES
+      ('ChangeRequest', 'id',
+       '"origin" <> ''standard'' OR "revisionId" IS NOT NULL OR "sourceCommandId" IS NOT NULL'
+       || ' OR "requestedByRole" IS NOT NULL OR "requestedByName" IS NOT NULL'
+       || ' OR "resolvedByCommandId" IS NOT NULL OR "resolvedByRole" IS NOT NULL OR "resolvedByName" IS NOT NULL'),
+      ('DecisionApprovalRevision', 'id',
+       '"finalized" = FALSE OR "approvedFrom" IS NOT NULL OR "approvedByName" IS NOT NULL OR "approvedByRole" IS NOT NULL'),
+      ('DomainEvent', 'eventId', '"actorRole" IS NOT NULL OR "actorName" IS NOT NULL'),
+      ('Notification', 'id', '"kind" IS NOT NULL OR "eventId" IS NOT NULL'),
+      ('DecisionConsultation', 'id', '"requestedByRole" IS NOT NULL OR "requestedByName" IS NOT NULL'),
+      ('DecisionConsultationResponse', 'id', '"respondedByRole" IS NOT NULL OR "respondedByName" IS NOT NULL')
+    ) AS v(tbl, idcol, pred) LOOP
+      EXECUTE format(
+        'SELECT count(*), COALESCE(left(string_agg(%I, '', '' ORDER BY %I), 100), '''') FROM %I WHERE %s',
+        spec.idcol, spec.idcol, spec.tbl, spec.pred) INTO v_rows, v_sample;
+      IF v_rows > 0 THEN
+        v_found := v_found || format('%s%s (%s row(s): %s)',
+          CASE WHEN v_found = '' THEN '' ELSE '; ' END, spec.tbl, v_rows, v_sample);
+      END IF;
+    END LOOP;
+    IF v_found <> '' THEN
+      RAISE EXCEPTION
+        'phase6 4d-i ABORT: row(s) already carry this unit''s 4d-only columns before it seals them — %. These columns have no sanctioned writer until 4d-ii, so a value present now was judged by none of the eligibility, pairing, provenance or attribution triggers this file installs, and the freezes it installs would make each one permanent. Reset the named rows to their legacy shape (a `standard` request with no 4d evidence, a finalized revision, an event with no actor pair, an unbound notice, an unattributed consultation) before this migration adopts them.',
+        v_found;
+    END IF;
+  END IF;
+END $legacy_shape$;
 
 COMMIT;
