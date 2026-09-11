@@ -790,6 +790,51 @@ const ARMS: Arm[] = [
     refusal: /carries a blank attribution pair/,
   },
   {
+    // ── #582's review round 17, the class-3 SWEEP ───────────────────────────────────────────
+    // Round 16 gave three frozen role/name pairs their correspondence and the sweep of that
+    // round ran along the tables its findings NAMED. These three arms are the pairs it did not
+    // reach, and each is the same sentence: NONBLANK IS NOT CORRESPONDENCE, and a rule about
+    // the SECOND write says nothing about the first.
+    //
+    // (1) THE KERNEL ENVELOPE. The pair had coherence, non-blankness, a human-actor arm and an
+    // immutability arm, and nothing asked whether it was true of `actorId`. It is the worst site
+    // of the three to leave unjudged, because §A.3 obligation 7 makes this envelope the thing
+    // every FACT's pair is compared against — a forged envelope is not just a false byline, it
+    // is the standard a judged pair is measured by.
+    //
+    // The write is legitimate in every other respect the envelope judges: allocated by
+    // incrementing the stream in this transaction, at `nextPosition - 1`, with the dispatch
+    // intent built from the live catalog row — exactly the fixture's own plant. The one defect
+    // is `architect`, a role `ss-user` does not hold.
+    seal: 'DomainEvent_t4d_envelope',
+    what: 'an event envelope may not freeze a role its actor does not hold',
+    hostile: `BEGIN;
+              UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+              INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","actorId","actorRole","actorName","entityType","entityId","dispatchIntent")
+                SELECT 'ss-ev-forged','decision.published',1,'ss-org','ss-proj',s."nextPosition" - 1,'human','ss-user','architect','SS User','Decision','ss-dec',
+                       jsonb_build_object('effectKey','decision.published','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
+                                          'push', jsonb_build_object('body','ss','roles', jsonb_build_array('client')))
+                  FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+                 WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.published'
+                   AND c."coverageVersion" = '${COVERAGE}';
+              COMMIT`,
+    refusal: /a role that actor does not hold on project/,
+  },
+  {
+    // (2) THE CHANGE REQUEST'S BIRTH PAIR — the sibling COLUMN SET of round 16's finding 4, in
+    // the very trigger that fix was written into. The resolver pair three arms below it is
+    // judged by `phase6_t4d_actor_bound`; the requester pair had a CHECK for its shape, a total
+    // freeze against any later write, and nothing that asked whether it was true.
+    //
+    // Everything else about this request is legitimate — a real decision, a real requester — so
+    // only the new seal can refuse it.
+    seal: 'ChangeRequest_t4d_birth_pair',
+    what: 'a change request may not be BORN attributing itself to a role its requester does not hold',
+    hostile: `INSERT INTO "ChangeRequest" ("id","decisionId","projectId","reason","costImpact","timeImpactDays","status","requestedById","requestedByRole","requestedByName")
+              VALUES ('ss-cr-forged','ss-dec','ss-proj','forged birth',0,0,'open','ss-user','architect','SS User')`,
+    refusal: /a role that actor does not hold on project/,
+  },
+  {
     // #582 round 7, finding 3 — the shape, not just the set. `ss-mem-c` is an ACTIVE client
     // membership; the fact records it arriving into active from a removed state, and cites a
     // REMOVAL. Everything else agrees — the receipt succeeded in this transaction, its actor is
@@ -858,6 +903,18 @@ const STRIPPED_BY_PROBE: Record<string, string> = {
   // #582 round 10, finding 2 — `awaiting_countersign` is reserved until 4d-iii, so the transition
   // this door judges does not exist on a database where the doors still stand.
   Decision_t4d_disagreement_paired: 'the awaiting_countersign to change transition owes its rejection request',
+
+  // #582 round 17 — these two were declared COVERED_BY_CLASS with a reason that was never driven
+  // ("a 4d-ii service path, unreachable while the doors stand"), and the reason was wrong. They
+  // ARE unreachable, for a different reason entirely: the DELIVERED `<table>_t4c_append_only`
+  // refuses every UPDATE to both tables and sorts BEFORE `_t4d_` in the name order PostgreSQL
+  // fires row triggers in. So the declaration moves here, where it must name an `it()` that
+  // exists and that DRIVES the claim — and the day another unit replaces or re-orders that
+  // delivered seal, the probe goes red rather than this line going quietly stale.
+  DecisionConsultation_t4d_attribution:
+    'the 4d attribution freeze is unreachable, and the DELIVERED 4c append-only seal is why',
+  DecisionConsultationResponse_t4d_attribution:
+    'the 4d attribution freeze is unreachable, and the DELIVERED 4c append-only seal is why',
 };
 
 const COVERED_BY_CLASS: Record<string, string> = {
@@ -927,8 +984,6 @@ const COVERED_BY_CLASS: Record<string, string> = {
   MembershipTransition_t4d_seal: 'DecisionForward_t4d_reserved',
   DecisionApprovalRevision_t4d_one_flip: 'Decision_t4d_awaiting_reserved',
   DecisionApprovalRevision_t4d_flip_paired: 'Decision_t4d_awaiting_reserved',
-  DecisionConsultation_t4d_attribution: 'Decision_t4d_awaiting_reserved',
-  DecisionConsultationResponse_t4d_attribution: 'Decision_t4d_awaiting_reserved',
   DecisionEvent_t4d_correspondence: 'DecisionEvent_t4d_append_only',
 };
 
@@ -1882,6 +1937,204 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status")
        VALUES ('ss-cr-legacy','ss-dec','x',0,0,'open')`]);
     expect(legacyCr.ok, `a legacy request carrying no attribution must COMMIT:\n${legacyCr.output}`).toBe(true);
+  }, 180_000);
+
+  /**
+   * #582's review round 17 — A CLASS DECLARATION, MEASURED.
+   *
+   * Round 17's sweep reported the consultation pair as fillable by a later UPDATE: the freeze
+   * keys on `OLD IS NOT NULL`, and every rule the pair has lives in a BEFORE INSERT trigger. The
+   * reasoning was right about the two triggers and WRONG about the database, and this arm is what
+   * found that out — the "stripped ⇒ accepted" half of the strip arm written for it came back
+   * REFUSED, by an object the arm had never named.
+   *
+   * `phase6_t4c_consultation_append_only` is a DELIVERED 4c seal installed on both tables as
+   * `<table>_t4c_append_only` BEFORE UPDATE OR DELETE. PostgreSQL fires row triggers in NAME
+   * order, `_t4c_` sorts before `_t4d_`, and it refuses every update outright — so the whole of
+   * `phase6_t4d_consultation_attribution_frozen` is unreachable, freeze and all.
+   *
+   * That is why both `_t4d_attribution` triggers sit in `COVERED_BY_CLASS` rather than having
+   * strip arms. A class declaration is a claim, and this unit has now been bitten twice by claims
+   * that were never driven, so the claim is driven here: the update is attempted on a WHOLE
+   * migration and the refusal must come from the delivered seal BY NAME. If a later unit replaces
+   * or re-orders that seal, this arm goes red and the rule that is currently unreachable becomes
+   * a rule that has to work.
+   */
+  it('the 4d attribution freeze is unreachable, and the DELIVERED 4c append-only seal is why', () => {
+    buildRun([]);
+
+    const born = psql(RUN_DB, ['-c',
+      `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+         VALUES ('ss-cmd-con-u','project','ss-org','ss-proj','ss-user','consultations.request','ss-key-con-u','ss-hash-con-u','reserved');
+       INSERT INTO "DecisionConsultation"
+         ("id","projectId","decisionId","requestedById","consulteeMembershipId","consulteeUserId","question","openCycle","sourceCommandId")
+       VALUES ('ss-con-u','ss-proj','ss-dec','ss-user','ss-mem-c','ss-client','born with no attribution at all',0,'ss-cmd-con-u');
+       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-con-u' WHERE "id" = 'ss-cmd-con-u'`]);
+    expect(born.ok, `a consultation with the all-null legacy pair must COMMIT — it is the drain shape:\n${born.output}`).toBe(true);
+
+    const fill = psql(RUN_DB, ['-c',
+      `UPDATE "DecisionConsultation" SET "requestedByRole" = 'architect', "requestedByName" = 'SS User' WHERE "id" = 'ss-con-u'`]);
+    expect(fill.ok, 'handing a consultation an attribution pair it was not born with must be REFUSED').toBe(false);
+    expect(fill.output,
+      'the refusal must come from the DELIVERED 4c append-only seal — that is the whole reason the '
+      + '4d attribution freeze is declared covered by its class instead of being stripped, and if '
+      + 'some other object answers here that declaration no longer holds')
+      .toMatch(/phase6_t4c_consultation_append_only/);
+
+    // the same, on the response table, because the class entry covers BOTH
+    const fillResponse = psql(RUN_DB, ['-At', '-c',
+      `SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+        WHERE NOT t.tgisinternal AND t.tgname = 'DecisionConsultationResponse_t4c_append_only'
+          AND c.relname = 'DecisionConsultationResponse' AND t.tgenabled = 'O'
+          AND t.tgtype = 27`]);   // ROW(1) + BEFORE(2) + DELETE(8) + UPDATE(16)
+    expect(fillResponse.output.trim(),
+      'the response table must carry the same delivered append-only seal, enabled, on UPDATE and DELETE')
+      .toBe('1');
+  }, 180_000);
+
+  /**
+   * #582's review round 17 — THE FROZEN-PAIR REGISTER, AND WHY IT IS DISCOVERED RATHER THAN LISTED.
+   *
+   * Five rounds of this PR have found the same defect: a frozen `<act>ByRole`/`<act>ByName` pair
+   * given the rules about its SHAPE — written together, each half nonblank — and never the rule
+   * that makes it evidence, which is that it is TRUE of the actor it names. Round 11 found it at
+   * the approval pair, round 16 at the consultation pair and the change request's resolver, round
+   * 17 at the kernel envelope and the change request's BIRTH pair. Each round fixed the pairs its
+   * findings NAMED and the next round found another.
+   *
+   * A list of pairs maintained by hand reproduces exactly that failure, so this arm does not keep
+   * one. It ASKS THE DATABASE for every column whose name ends in `ByRole` (or is `actorRole`)
+   * and which has the matching name column beside it, and requires the register below to have an
+   * entry for each. A pair added by a later unit therefore cannot be silent: it fails here the
+   * day its column lands, before anything can write to it.
+   *
+   * For each pair the register names TWO objects, because the class has two halves and this PR
+   * has now been caught by both:
+   *
+   *   · `judgedBy` — the seal that judges the pair when it is WRITTEN. Its body must call the
+   *     shared correspondence (`phase6_t4d_actor_bound`, or `phase6_t4d_actor_pair_true` where
+   *     the fact-side preconditions do not apply). Nonblank is not correspondence.
+   *   · `frozenBy` + `firstWrite` — the seal that governs the pair AFTERWARDS, and a token from
+   *     its body witnessing that it refuses the pair ARRIVING later rather than only being
+   *     rewritten. A one-way rule keyed on `OLD IS NOT NULL` governs the second write and says
+   *     nothing about the first, which is how the consultation pair stayed fillable by UPDATE
+   *     through sixteen rounds.
+   *
+   * This arm is STRUCTURAL and does not replace the driven ones: the three strip arms above prove
+   * the refusals actually happen, one named seal at a time. What this adds is that no pair can be
+   * left out of them in silence.
+   */
+  const FROZEN_PAIRS: Record<string,
+    { judgedBy: string; frozenBy: string; firstWrite: string } | { judgedBy: null; why: string }> = {
+    'ChangeRequest.requestedByRole': {
+      judgedBy: 'phase6_t4d_change_request_birth_pair',
+      frozenBy: 'phase6_t4d_change_request_evidence_frozen', firstWrite: 'at its BIRTH',
+    },
+    'ChangeRequest.resolvedByRole': {
+      judgedBy: 'phase6_t4d_change_request_evidence_frozen',
+      frozenBy: 'phase6_t4d_change_request_evidence_frozen', firstWrite: 'does not CLOSE it',
+    },
+    'DecisionApprovalRevision.approvedByRole': {
+      judgedBy: 'phase6_t4d_revision_birth',
+      frozenBy: 'phase6_t4d_revision_one_flip',
+      firstWrite: 'IS DISTINCT FROM OLD."approvedByRole"',
+    },
+    'DecisionConsultation.requestedByRole': {
+      judgedBy: 'phase6_t4d_consultation_attribution_present',
+      frozenBy: 'phase6_t4d_consultation_attribution_frozen', firstWrite: 'was not born with',
+    },
+    'DecisionConsultationResponse.respondedByRole': {
+      judgedBy: 'phase6_t4d_consultation_attribution_present',
+      frozenBy: 'phase6_t4d_consultation_attribution_frozen', firstWrite: 'was not born with',
+    },
+    'DecisionCountersign.countersignedByRole': {
+      judgedBy: 'phase6_t4d_countersign_seal',
+      frozenBy: 'phase6_t4d_fact_append_only', firstWrite: 'append-only register',
+    },
+    'DecisionForward.forwardedByRole': {
+      judgedBy: 'phase6_t4d_forward_seal',
+      frozenBy: 'phase6_t4d_fact_append_only', firstWrite: 'append-only register',
+    },
+    'DecisionStrandedResolution.resolvedByRole': {
+      judgedBy: 'phase6_t4d_stranded_seal',
+      frozenBy: 'phase6_t4d_fact_append_only', firstWrite: 'append-only register',
+    },
+    'MembershipTransition.actorRole': {
+      judgedBy: 'phase6_t4d_membership_transition_seal',
+      frozenBy: 'phase6_t4d_membership_transition_immutable', firstWrite: 'is immutable',
+    },
+    'DomainEvent.actorRole': {
+      judgedBy: 'platform_t4d_event_envelope',
+      frozenBy: 'platform_t4d_event_envelope', firstWrite: 'is immutable',
+    },
+
+    // THE ONE DISCOVERED PAIR THIS UNIT DOES NOT BIND, named rather than left silent.
+    //
+    // `DecisionEvent.actorRole`/`actorName` is DELIVERED — `20260920000000_phase1_change_control_
+    // _diagnostic` added it, and it is a merged migration whose bytes do not change. It is written
+    // by the CURRENTLY DEPLOYED release through `resolveActor`, which takes the pair from
+    // `User.role` and `User.name`. That is a DIFFERENT AUTHORITY from the register this unit
+    // installs: `ProjectUserStanding` is projected from `Membership.role`, and the two disagree
+    // for any account whose `User.role` is not its membership role. Binding this pair in 4d-i
+    // would therefore refuse writes from the release that is still serving, mid-drain — the one
+    // thing a dark migration may not do — so it is 4d-ii's, where the writer itself moves onto the
+    // register. 4d-i does make the exposure permanent (`DecisionEvent_t4d_append_only` freezes the
+    // row), and the reserved-value audit in the decisions half is what keeps the 4d-only kinds out
+    // of it in the meantime.
+    'DecisionEvent.actorRole': {
+      judgedBy: null,
+      why: 'delivered by the merged phase-1 migration and written from User.role by the deployed '
+        + 'release; binding it here would refuse that writer through the drain (4d-ii owns it)',
+    },
+  };
+
+  it('every frozen role/name pair is DISCOVERED from the database, and each one this unit adds is judged against its actor', () => {
+    buildRun([]);
+
+    const discovery = psql(RUN_DB, ['-At', '-c',
+      `SELECT c.table_name || '.' || c.column_name
+         FROM information_schema.columns c
+        WHERE c.table_schema = 'public'
+          AND (c.column_name LIKE '%ByRole' OR c.column_name = 'actorRole')
+          AND EXISTS (SELECT 1 FROM information_schema.columns n
+                       WHERE n.table_schema = 'public' AND n.table_name = c.table_name
+                         AND n.column_name = replace(replace(c.column_name, 'ByRole', 'ByName'),
+                                                     'actorRole', 'actorName'))
+        ORDER BY 1`]);
+    expect(discovery.ok, `the pair discovery query failed:\n${discovery.output}`).toBe(true);
+    const found = discovery.output.split('\n').map((l) => l.trim()).filter(Boolean);
+
+    expect(found.length, 'the discovery found no frozen pairs at all — the query is broken, not the schema')
+      .toBeGreaterThan(0);
+    expect(found.slice().sort()).toEqual(Object.keys(FROZEN_PAIRS).sort());
+
+    const src = psql(RUN_DB, ['-At', '-R', '\u0001', '-F', '\u0002', '-c',
+      `SELECT p.proname, p.prosrc FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'`]);
+    expect(src.ok, `reading the installed function bodies failed:\n${src.output}`).toBe(true);
+    const bodies = new Map<string, string>(
+      src.output.split('\u0001').map((r) => r.split('\u0002')).filter((r) => r.length === 2)
+        .map(([name, body]) => [name.trim(), body] as [string, string]));
+
+    for (const [pair, entry] of Object.entries(FROZEN_PAIRS)) {
+      if (entry.judgedBy === null) continue;
+      const judge = bodies.get(entry.judgedBy);
+      expect(judge, `${pair} names ${entry.judgedBy} as its judge and no such function is installed`)
+        .toBeTruthy();
+      expect(judge,
+        `${pair} is judged by ${entry.judgedBy}, whose body never calls the shared correspondence — `
+        + 'a pair with rules only about its SHAPE attributes an act to whoever the writer names')
+        .toMatch(/phase6_t4d_actor_(bound|pair_true)/);
+
+      const freeze = bodies.get(entry.frozenBy);
+      expect(freeze, `${pair} names ${entry.frozenBy} as its freeze and no such function is installed`)
+        .toBeTruthy();
+      expect(freeze,
+        `${pair} is frozen by ${entry.frozenBy}, whose body does not carry ${JSON.stringify(entry.firstWrite)} — `
+        + 'nothing there refuses the pair ARRIVING after the act, which is a write the judge above never sees')
+        .toContain(entry.firstWrite);
+    }
   }, 180_000);
 
   /**

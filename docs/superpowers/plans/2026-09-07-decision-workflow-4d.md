@@ -6127,16 +6127,28 @@ today's behaviour lives.
     The measured proof of the seam belongs in the packet, and it is a
     measurement of the FILES rather than of the partition's section labels:
 
-    · **79 functions**, 51 defined in the first file and 28 in the second, with
-      no name defined twice.
+    · **81 functions**, 52 defined in the first file and 29 in the second, with
+      no name defined twice. (Round 17 added two: `phase6_t4d_actor_pair_true`
+      in the first file, where the shared correspondence was factored out of
+      `phase6_t4d_actor_bound` so the kernel envelope can call it without the
+      fact-side preconditions, and `phase6_t4d_change_request_birth_pair` in the
+      second.)
     · **The first file calls NOTHING the second defines** — the dependency is
-      one-way. The second calls twelve functions the first defines:
+      one-way. The second calls **eleven** functions the first defines:
       `phase6_t4d_reserved`, `phase6_t4d_retired_at_start`,
       `phase6_t4d_fact_no_truncate`, `phase6_t4d_actor_bound`,
-      `phase6_t4d_membership_transition_bound`, `platform_claim_event_pairing`,
-      `platform_membership_active_user`, `platform_role_has_holder`,
-      `platform_role_standing`, `platform_tx_event`, `platform_tx_event_count`
-      and `platform_user_holds_role`.
+      `platform_claim_event_pairing`, `platform_membership_active_user`,
+      `platform_role_has_holder`, `platform_role_standing`,
+      `platform_tx_event`, `platform_tx_event_count` and
+      `platform_user_holds_role`.
+
+      **This said TWELVE, and the twelfth was never a call.**
+      `phase6_t4d_membership_transition_bound` appears in the second file in a
+      COMMENT and nowhere else. The figure came from counting NAME OCCURRENCES
+      rather than call sites — the same method-versus-object slip rounds 13 and
+      15 recorded in other forms, in a paragraph that presents itself as a
+      measurement. It is re-measured here with comments stripped and on word
+      boundaries, which is also how the count above is now taken.
     · **No statement in the first file names a decisions fact table.** The two
       occurrences of those names in it are both explanatory comments — one
       naming a door the second file installs, one naming the pairing collision

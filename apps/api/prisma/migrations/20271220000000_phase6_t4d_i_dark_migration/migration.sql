@@ -33,10 +33,12 @@
 --   Part 0  the RETIREMENT MARKER table and its seals. FIRST, because every marker-aware
 --           statement in both files reads it, and on a fresh database the relation does not exist
 --           yet (#572's review round 25, finding 4).
---   Part 0b the three SHARED helpers: the refusal function every reservation door uses, the
---           generic append-only TRUNCATE seal, and the frozen-pair actor binding that reads the
---           registers under the identity lock. Defined here because the second file calls all
---           three and a function defined twice is a function that can differ.
+--   Part 0b the SHARED helpers: the refusal function every reservation door uses, the generic
+--           append-only TRUNCATE seal, and the frozen-pair actor binding that reads the registers
+--           under the identity lock — which is TWO functions since round 17, because the
+--           correspondence has two callers with different preconditions (see
+--           `phase6_t4d_actor_pair_true`). Defined here because the second file calls them and a
+--           function defined twice is a function that can differ.
 --   Part 3  the seal-and-audit body: the architect-STANDING doors, the registers, the membership
 --           fact and the kernel.
 --
@@ -286,18 +288,40 @@ END $$;
 -- §B.1 TRY-ACQUIRE-OR-REFUSE: reentrant on the service path (the command already holds the
 -- key), acquired and held to commit on a free direct write, REFUSED when contended. A seal
 -- never waits inside a trigger, so no lock-order inversion can exist.
-CREATE OR REPLACE FUNCTION phase6_t4d_actor_bound(
+-- THE CORRESPONDENCE IS ONE RULE, AND IT HAS TWO CALLERS WITH DIFFERENT PRECONDITIONS
+-- (#582's review round 17, the class-3 sweep).
+--
+-- `phase6_t4d_actor_bound` is the FACT-side entry point and carries two preconditions that are
+-- properties of recording a fact — the readiness fence and project operability. The kernel's
+-- event ENVELOPE carries the same frozen pair and may not carry either precondition:
+--
+--   · OPERABILITY — `project.archived` is itself an event, emitted in the transaction that
+--     archives the project, so an operability arm on the envelope would refuse the very event
+--     that records the archival. A fact about a decision on a dead project is meaningless; an
+--     EVENT about the project dying is the record of it.
+--   · READINESS — `phase6_try_readiness` REFUSES rather than waits when another transaction
+--     holds the key. Every fact write in this unit is inside a command that already holds it,
+--     but `emitEvent` is the kernel's and is reached from paths that do not, so an arm there
+--     would turn a concurrent emit on one project into a refusal. A seal may not narrow the
+--     kernel to close a hole in attribution.
+--
+-- So the CORRESPONDENCE — the part that asks whether the pair is TRUE of the actor — is factored
+-- out here and both callers share it. One definition, so the two cannot drift, which is the
+-- failure this unit has now made four times in other forms.
+CREATE OR REPLACE FUNCTION phase6_t4d_actor_pair_true(
   p_project TEXT, p_actor TEXT, p_role TEXT, p_name TEXT, p_row TEXT
 ) RETURNS VOID LANGUAGE plpgsql VOLATILE AS $$
 DECLARE
   v_name TEXT;
   v_holds BOOLEAN;
 BEGIN
-  IF NOT phase6_try_readiness(p_project) THEN
-    RAISE EXCEPTION 'phase6 4d-i: the project readiness key is held elsewhere — this direct write of % is refused rather than waiting inside a trigger', p_row;
-  END IF;
-  IF NOT phase6_project_operable(p_project) THEN
-    RAISE EXCEPTION 'phase6 4d-i: project % is archived — no decision fact may be recorded against it (%)', p_project, p_row;
+  -- A pair with no actor is not attribution. Callers that can reach here with a NULL actor say
+  -- so in their own message first; this is the backstop, so no caller can skip the question by
+  -- forgetting to ask it.
+  IF p_actor IS NULL THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: % freezes the role `%` and the name `%` and names NOBODY — a frozen pair is evidence about a person, and there is no person here for it to be true of',
+      p_row, COALESCE(p_role, '<null>'), COALESCE(p_name, '<null>');
   END IF;
 
   v_holds := platform_user_holds_role(p_project, p_actor, p_role);
@@ -332,6 +356,20 @@ BEGIN
       'phase6 4d-i: % freezes the name %, but user %''s account name is % — the frozen pair is evidence of WHO acted, and a supplied name that is not the account''s is refused at the fact',
       p_row, p_name, p_actor, v_name;
   END IF;
+END $$;
+
+-- and the FACT-side entry point: the two preconditions above, then the shared correspondence.
+CREATE OR REPLACE FUNCTION phase6_t4d_actor_bound(
+  p_project TEXT, p_actor TEXT, p_role TEXT, p_name TEXT, p_row TEXT
+) RETURNS VOID LANGUAGE plpgsql VOLATILE AS $$
+BEGIN
+  IF NOT phase6_try_readiness(p_project) THEN
+    RAISE EXCEPTION 'phase6 4d-i: the project readiness key is held elsewhere — this direct write of % is refused rather than waiting inside a trigger', p_row;
+  END IF;
+  IF NOT phase6_project_operable(p_project) THEN
+    RAISE EXCEPTION 'phase6 4d-i: project % is archived — no decision fact may be recorded against it (%)', p_project, p_row;
+  END IF;
+  PERFORM phase6_t4d_actor_pair_true(p_project, p_actor, p_role, p_name, p_row);
 END $$;
 -- PART 3 — THE SEAL-AND-AUDIT TRANSACTION
 -- ════════════════════════════════════════════════════════════════════════════════════════════
@@ -2760,6 +2798,35 @@ BEGIN
       RAISE EXCEPTION
         'phase6 4d-i: event % is a `%` event and may not carry a human actor envelope — a system actor has no role and no display name to freeze',
         NEW."eventId", NEW."actorKind";
+    END IF;
+
+    -- AND NONBLANK IS NOT CORRESPONDENCE (#582's review round 17, the class-3 sweep, and the
+    -- SIBLING of round 16's finding 6 — the same rule, at the table the consultation fix did not
+    -- reach).
+    --
+    -- Everything above this point is a rule about the pair's SHAPE: written together, each half
+    -- nonblank, legal only on a human actor, immutable once written. None of them asks whether
+    -- the pair is TRUE of `actorId`. So a writer that names a legitimate actor could attach any
+    -- nonblank role and name it liked, the freeze below would make it permanent, and the append-
+    -- only event stream has no repair: 4d-iii judges new rows, never committed ones.
+    --
+    -- And this envelope is not a byline. §A.3 obligation 7 makes it the thing every fact's own
+    -- frozen pair is COMPARED AGAINST — the fact seals ask whether the fact and the event that
+    -- records the same act agree. An unjudged envelope therefore does not merely lie on its own
+    -- row; it becomes the standard a judged pair is measured by, and a forged envelope written
+    -- first would make the matching forged fact pass the correspondence.
+    --
+    -- It goes through the CORRESPONDENCE half of the shared binding, not through
+    -- `phase6_t4d_actor_bound`: the reasons the envelope may carry neither the readiness fence
+    -- nor the operability arm are stated at `phase6_t4d_actor_pair_true` itself.
+    IF NEW."actorRole" IS NOT NULL THEN
+      IF NEW."actorId" IS NULL THEN
+        RAISE EXCEPTION
+          'phase6 4d-i: event % carries the actor envelope (`%`, `%`) with no `actorId` — the pair is the permanent record of WHO acted, and a role and a name with nobody behind them attribute the act to an account that does not exist',
+          NEW."eventId", NEW."actorRole", NEW."actorName";
+      END IF;
+      PERFORM phase6_t4d_actor_pair_true(NEW."projectId", NEW."actorId", NEW."actorRole",
+                                         NEW."actorName", 'DomainEvent ' || NEW."eventId");
     END IF;
     RETURN NEW;
   END IF;

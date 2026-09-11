@@ -1334,6 +1334,61 @@ DROP TRIGGER IF EXISTS "ChangeRequest_t4d_evidence_frozen" ON "ChangeRequest";
 CREATE TRIGGER "ChangeRequest_t4d_evidence_frozen" BEFORE UPDATE ON "ChangeRequest"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_change_request_evidence_frozen();
 
+-- ── and the BIRTH pair is JUDGED, not merely shaped and then frozen ──────────────────────────
+-- #582's review round 17, the class-3 sweep — the SIBLING COLUMN SET of round 16's finding 4, in
+-- the very trigger that fix was written into.
+--
+-- Round 16 gave the RESOLVER pair its correspondence: admitted only on the closure, naming a
+-- resolver, with the pair judged by `phase6_t4d_actor_bound`. The BIRTH pair sitting three arms
+-- above it got the other half of round 16's answer — frozen against ANY update, so it cannot be
+-- filled in later — and nothing ever asked whether the value it is born with is TRUE. Its whole
+-- protection is the CHECK: both halves or neither, each nonblank. Both are rules about SHAPE.
+--
+-- So a writer that opens a request legitimately — a real `requestedById`, a real project — may
+-- freeze `requestedByRole = 'architect'` and any name it likes against it, and the freeze this
+-- unit added then makes that permanent evidence. That is the same sentence round 16 wrote about
+-- the consultation pair and about the resolver pair, at the third of the three tables, left
+-- standing because the sweep of that round ran along the tables the findings NAMED.
+--
+-- Two consequences, not one: the pair is what `DecisionLogScreen` and the reapproval notice
+-- render as the requester's byline, and §A.3 obligation 7 compares it against the envelope of
+-- the event that records the same act — so a forged birth pair also decides what the
+-- correspondence between fact and event is measured against.
+--
+-- A SEPARATE TRIGGER rather than an arm inside `phase6_t4d_change_request_project`: that seal's
+-- rule is the drain shim for `projectId` and nothing else, and a seal whose name states one rule
+-- while its body judges two is the exact defect this PR's round 1 produced an oracle for.
+--
+-- The drain shape is untouched: the previous release's `requestChange` writes neither half, the
+-- CHECK admits the all-null pair, and this returns before judging anything. 4d-iii is what makes
+-- the pair required.
+CREATE OR REPLACE FUNCTION phase6_t4d_change_request_birth_pair() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  -- SHAPE IS THE CHECK'S, AND THIS TRIGGER MAY NOT ANSWER FOR IT. A row constraint is evaluated
+  -- AFTER every BEFORE trigger has run, so a half or blank pair reaching here is a row the CHECK
+  -- is about to refuse by name — and judging it first would replace
+  -- `ChangeRequest_requested_pair_check` in the error an operator sees, and in the probe that
+  -- proves the CHECK exists. (Measured: it did exactly that when this seal was first written.)
+  -- One object, one rule: the CHECK owns both-or-neither and nonblank, this owns correspondence.
+  IF NEW."requestedByRole" IS NULL OR NEW."requestedByName" IS NULL
+     OR btrim(NEW."requestedByRole", E' \t\n\x0B\f\r') = ''
+     OR btrim(NEW."requestedByName", E' \t\n\x0B\f\r') = '' THEN
+    RETURN NEW;                       -- the legacy / drain shape, or a row the CHECK will refuse
+  END IF;
+  IF NEW."requestedById" IS NULL THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: change request % is born with the requester pair (`%`, `%`) and no `requestedById` — a role and a name with nobody to be true of is not attribution.',
+      NEW."id", NEW."requestedByRole", NEW."requestedByName";
+  END IF;
+  PERFORM phase6_t4d_actor_bound(NEW."projectId", NEW."requestedById", NEW."requestedByRole",
+                                 NEW."requestedByName", 'ChangeRequest ' || NEW."id");
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "ChangeRequest_t4d_birth_pair" ON "ChangeRequest";
+CREATE TRIGGER "ChangeRequest_t4d_birth_pair" BEFORE INSERT ON "ChangeRequest"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_change_request_birth_pair();
+
 -- ────────────────────────────────────────────────────────────────────────────────────────────
 -- PART 3f — THE DELIVERED SEALS, WIDENED
 -- ────────────────────────────────────────────────────────────────────────────────────────────
@@ -2484,6 +2539,41 @@ BEGIN
       'phase6 4d-i: the frozen attribution pair on %.% is evidence of WHO acted and may not be rewritten (% / % → % / %)',
       TG_TABLE_NAME, NEW."id",
       COALESCE(v_old_role, '<null>'), COALESCE(v_old_name, '<null>'),
+      COALESCE(v_new_role, '<null>'), COALESCE(v_new_name, '<null>');
+  END IF;
+
+  -- AND ONE-WAY GOVERNS THE SECOND WRITE, WHICH SAYS NOTHING ABOUT THE FIRST — a rule this unit
+  -- owes, and one that is CURRENTLY UNREACHABLE HERE. Both halves of that are measured, and both
+  -- are stated, because the second half is what round 17's sweep got wrong.
+  --
+  -- THE RULE. The arm above keys on `OLD IS NOT NULL`, so NULL -> value passes it by
+  -- construction, and every rule this pair has — nonblank, and since round 16 the
+  -- `phase6_t4d_actor_bound` correspondence — lives in
+  -- `phase6_t4d_consultation_attribution_present`, which is BEFORE **INSERT**. On the face of it
+  -- an all-null legacy row could therefore be handed a pair by a later UPDATE with nothing asked
+  -- of it. Unlike the change request's RESOLVER set this pair has no later act to be written on:
+  -- a consultation's requester and a response's responder are settled at the instant the row is
+  -- written, exactly like the change request's BIRTH set. So the rule is the birth set's rule.
+  --
+  -- WHY IT CANNOT FIRE TODAY, and this is the correction. The DELIVERED 4c seal
+  -- `phase6_t4c_consultation_append_only` is installed on BOTH tables as
+  -- `<table>_t4c_append_only`, BEFORE UPDATE OR DELETE, and PostgreSQL fires row triggers in NAME
+  -- order: `_t4c_` sorts before `_t4d_`, so it answers first and refuses EVERY update to either
+  -- table. The whole of `phase6_t4d_consultation_attribution_frozen` — this arm and the freeze
+  -- above it — is therefore unreachable, which is also why the harness declares that trigger
+  -- covered by its class rather than stripping it.
+  --
+  -- Round 17 reported this as a live hole and it is not one. It is written anyway, and the
+  -- statement of the rule is the reason: this seal's completeness may not DEPEND on another
+  -- unit's seal continuing to exist. 4d-iii replaces seals by name, and a rule left half-stated
+  -- here is one that becomes a hole the moment the object in front of it moves. The harness
+  -- proves the unreachability rather than asserting it, so if that ever changes the arm goes red
+  -- instead of this comment going quietly stale.
+  IF (v_old_role IS NULL AND v_new_role IS NOT NULL)
+     OR (v_old_name IS NULL AND v_new_name IS NOT NULL) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: %.% is being given an attribution pair (`%`, `%`) it was not born with — who asked for advice and who gave it is settled when the row is written, and a pair supplied afterwards is a claim about an act this update did not perform. The INSERT seal is where the pair is judged against the actor; there is nothing here to judge it against.',
+      TG_TABLE_NAME, NEW."id",
       COALESCE(v_new_role, '<null>'), COALESCE(v_new_name, '<null>');
   END IF;
   RETURN NEW;

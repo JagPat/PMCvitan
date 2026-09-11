@@ -218,12 +218,23 @@ const REGISTER: Record<string, SealContract> = {
     on: { 'DecisionStrandedResolution.DecisionStrandedResolution_t4d_paired': C('I') },
     must: ['Decision', 'outcome'],
   },
-  phase6_t4d_actor_bound: {
+  // #582 round 17 — the correspondence is ONE rule with TWO callers whose preconditions differ,
+  // so it is factored: the fact side keeps the readiness fence and the operability arm, and the
+  // kernel envelope — which records the archival of a project and is emitted outside the fence —
+  // calls the correspondence alone. Registered as two entries because they are two rules.
+  phase6_t4d_actor_pair_true: {
     rule: 'the frozen role/name pair is TRUE of the actor: the role held on the project, the name '
       + 'the account carries, read under the identity row lock',
     plan: '§A.3 obligation 3',
     on: {},
-    must: ['UserIdentity', 'FOR UPDATE', 'displayName'],
+    must: ['UserIdentity', 'FOR UPDATE', 'displayName', 'platform_user_holds_role'],
+  },
+  phase6_t4d_actor_bound: {
+    rule: 'a FACT\'s frozen pair carries the correspondence AND the two preconditions of recording '
+      + 'a fact — the readiness fence and an operable project',
+    plan: '§A.3 obligation 3; §B.1',
+    on: {},
+    must: ['phase6_try_readiness', 'phase6_project_operable', 'phase6_t4d_actor_pair_true'],
   },
 
   // ── the decision-side doors and seals ───────────────────────────────────────────────────────
@@ -303,7 +314,19 @@ const REGISTER: Record<string, SealContract> = {
       'DecisionConsultation.DecisionConsultation_t4d_attribution': B('U'),
       'DecisionConsultationResponse.DecisionConsultationResponse_t4d_attribution': B('U'),
     },
-    must: ['frozen'],
+    // #582 round 17 — one-way keyed on `OLD IS NOT NULL` governs the SECOND write and says
+    // nothing about the first, so an all-null legacy row could be handed a pair by UPDATE with
+    // neither the nonblank rule nor the correspondence, both of which are BEFORE INSERT.
+    must: ['frozen', 'was not born with'],
+  },
+  // #582 round 17 — the BIRTH pair had a shape CHECK and a total freeze and nothing that asked
+  // whether it was true; round 16 had given the resolver pair three arms below it exactly that.
+  phase6_t4d_change_request_birth_pair: {
+    rule: 'a change request\'s requester pair is judged against `requestedById` at the INSERT that '
+      + 'settles it — the only moment it can be judged, because it is frozen from then on',
+    plan: '§A.3 obligation 3; #582 round 17',
+    on: { 'ChangeRequest.ChangeRequest_t4d_birth_pair': B('I') },
+    must: ['requestedByRole', 'requestedById', 'phase6_t4d_actor_bound'],
   },
   phase6_t4d_change_request_project: {
     rule: 'the previous release\'s `requestChange` names no project, so the shim fills it from the '
@@ -533,6 +556,10 @@ const REGISTER: Record<string, SealContract> = {
       // #582 round 11, finding 2 — coherence is not presence: a pair of blanks satisfies the
       // null-pair arm on both halves and records nobody, permanently.
       'BLANK actor envelope',
+      // #582 round 17 — and nonblank is not CORRESPONDENCE. §A.3 obligation 7 makes this
+      // envelope the thing every fact's own pair is compared against, so an unjudged one
+      // is not merely a false byline: it is the standard a judged pair is measured by.
+      'phase6_t4d_actor_pair_true',
     ],
   },
   phase6_t4d_change_request_evidence_frozen: {
