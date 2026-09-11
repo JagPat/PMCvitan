@@ -207,8 +207,35 @@ report_4c_iiir_migration_failure() {
 # row would re-role the membership, resolve the failed migration, redeploy — and abort on the
 # same row, forever. So the `User` half is named as what it actually is: a direct, audited
 # statement, printed in full, because there is no command to point at.
+#
+# 4d-i IS TWO MIGRATION FILES (the split at the register/decisions-fact seam). Only the first —
+# `…_dark_migration` — carries the architect reservation and the identity audit this recovery is
+# about; the second, `…_decision_facts`, carries the dark fact tables and their own audits, whose
+# messages name the rows and survive on their own (they RAISE from a DO block that is the last
+# statement, so nothing follows to overwrite the error Prisma reports). What BOTH need from this
+# function is the `migrate resolve --rolled-back` step, and it must name THE HALF THAT FAILED:
+# resolving the wrong one leaves the real failure recorded and the next deploy stops at P3009
+# again, on a migration the operator believes they already cleared.
 report_4d_i_migration_failure() {
-  printf '%s\n' "$1" | grep -q '20271220000000_phase6_t4d_i_dark_migration' || return 0
+  _failed_half=''
+  for _half in 20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d_i_decision_facts; do
+    printf '%s\n' "$1" | grep -q "$_half" && _failed_half="$_half"
+  done
+  [ -n "$_failed_half" ] || return 0
+  if [ "$_failed_half" = 20271221000000_phase6_t4d_i_decision_facts ]; then
+    echo "[migrate] That failure is the 4d-i decisions half. Its audits name the tables and rows"
+    echo "[migrate] they refuse — a dark fact table that already holds rows, or rows already"
+    echo "[migrate] carrying this unit's 4d-only columns — so read the abort and remove or reset"
+    echo "[migrate] exactly what it names, then:"
+    echo "[migrate]   1. prisma migrate resolve --rolled-back $_failed_half"
+    echo "[migrate]      (without this the next deploy stops at P3009 — the schema rolled back, but the"
+    echo "[migrate]       failed attempt is still recorded)"
+    echo "[migrate]   2. redeploy"
+    echo "[migrate] The registers half committed and stays committed; it is a separate migration and"
+    echo "[migrate] must NOT be resolved or re-run by hand."
+    echo "[migrate] Full detail: docs/RUNBOOK.md §P6T4D."
+    return 0
+  fi
   echo "[migrate] That failure is the 4d-i dark migration. Its own message is swallowed by the"
   echo "[migrate] aborted transaction, so the recovery is repeated here. The audit names BOTH"
   echo "[migrate] tables and they take DIFFERENT repairs:"
@@ -223,7 +250,7 @@ report_4d_i_migration_failure() {
   echo "[migrate]       Per row and keyed by id, never a blanket UPDATE: the column records what"
   echo "[migrate]       each person is, and one sweep would flatten several answers into one."
   echo "[migrate]       The doors rolled back with the aborted transaction, so it meets no seal."
-  echo "[migrate]   2. prisma migrate resolve --rolled-back 20271220000000_phase6_t4d_i_dark_migration"
+  echo "[migrate]   2. prisma migrate resolve --rolled-back $_failed_half"
   echo "[migrate]      (without this the next deploy stops at P3009 — the schema rolled back, but the"
   echo "[migrate]       failed attempt is still recorded)"
   echo "[migrate]   3. redeploy; the audit then sees zero and the reservation installs"
@@ -421,6 +448,14 @@ if echo "$out" | grep -q "P3005"; then
   # re-runnable (CREATE TABLE IF NOT EXISTS, DROP TRIGGER IF EXISTS before each CREATE TRIGGER,
   # CREATE OR REPLACE FUNCTION, guarded constraints and indexes), verified by re-applying each
   # against an already-migrated database.
+  #
+  # BOTH HALVES OF 4d-i are on the list, and listing only one would be the same class of mistake.
+  # The unit is two files at the register/decisions-fact seam; a db-push baseline reproduces the
+  # modeled tables and columns of both and NONE of the raw doors, audits or seals of either. The
+  # first half's architect reservation is meaningless while the second half's Decision chain doors
+  # are absent, and the second half's dark fact tables would be adopted and frozen with no audit
+  # having asked whether they are empty. Both are re-runnable on the same terms as the 4c files
+  # above.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -435,7 +470,8 @@ if echo "$out" | grep -q "P3005"; then
 20271210000000_inspection_assignee_frozen
 20271216000000_inspection_submit_authority_fence
 20271217000000_inspection_evidence_authority_fence
-20271220000000_phase6_t4d_i_dark_migration"
+20271220000000_phase6_t4d_i_dark_migration
+20271221000000_phase6_t4d_i_decision_facts"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

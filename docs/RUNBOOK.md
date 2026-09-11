@@ -1180,6 +1180,28 @@ condition this seal exists to prevent.
 `prisma migrate deploy` stops with a message beginning `phase6 4d-i ABORT:` and naming a count of
 `Membership` and `User` rows that already spell the role `architect`, with up to ten of each.
 
+### 4d-i is TWO migrations, and the recovery names the one that failed
+
+The unit ships as two files applied in order:
+
+| order | migration | what it carries |
+|---|---|---|
+| 1 | `20271220000000_phase6_t4d_i_dark_migration` | the architect/awaiting reservation doors, the four adopted platform registers and their baseline audits, `MembershipTransition`, `ExternalEffectCatalog` and its two seeded coverage generations, `ReleaseLease`, and the generic pairing mechanism with the kernel envelope / allocation / notification seals |
+| 2 | `20271221000000_phase6_t4d_i_decision_facts` | the Decision chain's own doors, the three dark fact tables (`DecisionForward`, `DecisionCountersign`, `DecisionStrandedResolution`) with their seven obligations, the 4d-only columns added to tables that already existed, and the widened 4b/4c seals that read them |
+
+They are separate because the dependency runs one way only: the fact seals read the registers, and
+no register reads a fact table. The first half therefore applies and stands alone; the second
+applies on top of it.
+
+**This matters for recovery.** Prisma records each migration separately, so a
+`migrate resolve --rolled-back` must name THE HALF THAT FAILED. Resolving the other one leaves the
+real failure recorded and the next deploy stops at P3009 again — on a migration the operator
+believes they already cleared. `scripts/migrate.sh` reads the failed name out of Prisma's own
+output and prints it back; the steps below spell out which half each abort comes from.
+
+Every abort described in this section EXCEPT the two named under "the decisions half" below comes
+from the FIRST migration.
+
 ### What happened, and what did NOT happen
 
 4d-i RESERVES the architect chain: between this migration and 4d-iii no row may carry
@@ -1273,17 +1295,46 @@ the same `User` row, forever.
    ```
 
    Without this the next deploy stops at P3009: the schema rolled back, but the failed attempt is
-   still recorded.
+   still recorded. This abort comes from the FIRST half, so that is the name to resolve — see
+   "4d-i is TWO migrations" above.
 
 3. **Redeploy.** The audit now sees zero and the reservation installs.
+
+### The decisions half: two more aborts, and they resolve the OTHER name
+
+`20271221000000_phase6_t4d_i_decision_facts` carries two audits of its own, both against the
+`prisma db push` / P3005 baseline where its tables and columns can exist before any 4d trigger
+does:
+
+- `dark fact table(s) already hold rows before this unit seals them` — `DecisionForward`,
+  `DecisionCountersign` or `DecisionStrandedResolution` is non-empty. These tables have no
+  sanctioned writer until 4d-ii, so a row present now was validated by none of the eligibility,
+  pairing or provenance triggers the file installs, and the append-only seal would make it
+  permanent evidence of an act nobody performed. **Remove the named rows.**
+- `row(s) already carry this unit's 4d-only columns before it seals them` — a `ChangeRequest`,
+  `DecisionApprovalRevision`, `DomainEvent`, `Notification` or consultation row is already in a
+  4d shape. **Reset each named row to its legacy shape**: a `standard` request with no 4d
+  evidence, a finalized revision, an event with no actor pair, an unbound notice, an unattributed
+  consultation. The delivered append-only seal on the approval register refuses a direct UPDATE,
+  so that one statement declares itself the way `sanctionedReset` does — §P6T4D's repair contract,
+  not a bypass.
+
+Both messages name the tables AND the rows, so the repair is the one they name. Then:
+
+```
+prisma migrate resolve --rolled-back 20271221000000_phase6_t4d_i_decision_facts
+```
+
+and redeploy. The registers half committed and STAYS committed — it is a separate migration, it
+is not implicated by either audit, and it must not be resolved or re-run by hand.
 
 `scripts/migrate.sh` prints these steps itself (`report_4d_i_migration_failure`), the `User`
 statement included, because the migration's own message is swallowed by the aborted transaction.
 
 ### The baseline path runs the audit too
 
-4d-i is in `ALWAYS_EXECUTE`, so a P3005 `db push` baseline replays it rather than marking it
-applied. That is required for correctness — the reservation and the audit are the whole point of
+BOTH halves of 4d-i are in `ALWAYS_EXECUTE`, so a P3005 `db push` baseline replays them rather
+than marking them applied. That is required for correctness — the reservation and the audit are the whole point of
 the unit — and it means the same abort and the same repair apply on a baselined database.
 
 ### The reservation is retired by 4d-iii, not by hand

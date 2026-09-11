@@ -49,11 +49,35 @@ const COVERAGE = effectCoverageVersion();
  * fails the suite, so a later unit cannot add a seal and leave it unproven.
  */
 
-const MIGRATION = join(
-  __dirname, '..', '..', 'prisma', 'migrations',
-  '20271220000000_phase6_t4d_i_dark_migration', 'migration.sql',
-);
 const MIGRATIONS_DIR = join(__dirname, '..', '..', 'prisma', 'migrations');
+
+/**
+ * THE UNIT IS TWO MIGRATION FILES, applied in this order.
+ *
+ * #582's lifecycle asked six times for a split, and the seam it was finally split at is the one
+ * this harness has to straddle: the four adopted platform registers, their baseline audits and
+ * their writers separate cleanly from the decisions fact tables and their pairing seals, with no
+ * dependency in that direction — the registers do not read a fact table; the fact seals read the
+ * registers. So `MIGRATION` applies first and STANDS ALONE, and `FACTS` applies on top of it.
+ *
+ * Every claim this suite makes is about the UNIT and not about either file, so the strip is
+ * performed across the PAIR: a seal named for omission must be created exactly once across BOTH
+ * files, and a name that matched nothing in either is the same tautology the single-file guard
+ * existed to refuse. An arm that applies one file by name does so because the audit it measures
+ * lives in that file, and the abort it asserts is that file's abort.
+ */
+const UNIT_DIRS = [
+  '20271220000000_phase6_t4d_i_dark_migration',
+  '20271221000000_phase6_t4d_i_decision_facts',
+] as const;
+/** the registers half — the catalog, the four adopted registers, MembershipTransition, the
+ *  kernel envelope/allocation/notification seals, and the generic pairing mechanism */
+const MIGRATION = join(MIGRATIONS_DIR, UNIT_DIRS[0], 'migration.sql');
+/** the decisions half — the three dark fact tables, their seven obligations, and the widened
+ *  4b/4c seals that read them */
+const FACTS = join(MIGRATIONS_DIR, UNIT_DIRS[1], 'migration.sql');
+/** the whole unit, in apply order */
+const UNIT_FILES = [MIGRATION, FACTS] as const;
 
 /**
  * The OUTGOING generation this unit seeds beside its own — `origin/main`'s coverage version. Read
@@ -66,7 +90,6 @@ const OUTGOING = (() => {
   if (!m) throw new Error('the outgoing coverage generation could not be read from the migration');
   return m[1]!;
 })();
-const UNIT_DIR = '20271220000000_phase6_t4d_i_dark_migration';
 
 const BASE_DB = 't4d_seal_stripped_base';
 const RUN_DB = 't4d_seal_stripped_run';
@@ -112,21 +135,30 @@ let tmp: string;
  * The strip still binds to a REAL installer — it asserts the loop that names the suffix is in the
  * file — and `buildRun` then asserts the trigger is genuinely ABSENT before any hostile write.
  */
-function stripSeal(sql: string, name: string): string {
+function stripSeal(sources: readonly string[], name: string): string[] {
   const re = new RegExp(`(^[ \\t]*)CREATE (?:CONSTRAINT )?TRIGGER "${name}"[\\s\\S]*?;`, 'gm');
-  const matches = sql.match(re);
-  if (matches !== null) {
-    expect(matches, `"${name}" must be created exactly once for the strip to mean anything`).toHaveLength(1);
-    return sql.replace(re, (_m, indent: string) => (indent.length > 0 ? `${indent}NULL;` : ''));
+  // counted across the PAIR, not per file: the unit is two files now, and "exactly once in the
+  // file I happened to look at" would pass for a seal created in both.
+  const hits = sources.reduce((n, sql) => n + (sql.match(re)?.length ?? 0), 0);
+  if (hits > 0) {
+    expect(hits, `"${name}" must be created exactly once across the unit for the strip to mean anything`).toBe(1);
+    return sources.map((sql) => sql.replace(re, (_m, indent: string) => (indent.length > 0 ? `${indent}NULL;` : '')));
   }
   const table = name.replace(/_t4d_.*$/, '');
   const suffix = name.slice(table.length);
+  // the DROP is appended to the file that carries the LOOP, because that is the file whose apply
+  // creates the trigger — appending it to the other one would run before the CREATE and fail.
+  const carrier = sources.findIndex((sql) => sql.includes(`t || '${suffix}'`));
   expect(
-    sql.includes(`t || '${suffix}'`),
-    `"${name}" appears in the migration neither as a literal CREATE nor as a loop over '${suffix}' — `
+    carrier,
+    `"${name}" appears in the unit neither as a literal CREATE nor as a loop over '${suffix}' — `
     + 'the strip would omit nothing and the arm would be a tautology',
-  ).toBe(true);
-  return `${sql}\n-- seal-stripped harness: this ONE named object omitted\nDROP TRIGGER "${name}" ON "${table}";\n`;
+  ).toBeGreaterThanOrEqual(0);
+  return sources.map((sql, i) => (
+    i === carrier
+      ? `${sql}\n-- seal-stripped harness: this ONE named object omitted\nDROP TRIGGER "${name}" ON "${table}";\n`
+      : sql
+  ));
 }
 
 /** Build a scratch database at the point BEFORE this unit's migration. */
@@ -134,7 +166,8 @@ function buildBase(): void {
   psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${BASE_DB}" WITH (FORCE)`]);
   const created = psql('postgres', ['-c', `CREATE DATABASE "${BASE_DB}"`]);
   expect(created.ok, created.output).toBe(true);
-  for (const dir of readdirSync(MIGRATIONS_DIR).filter((d) => d !== UNIT_DIR && !d.endsWith('.toml')).sort()) {
+  const unit = new Set<string>(UNIT_DIRS);
+  for (const dir of readdirSync(MIGRATIONS_DIR).filter((d) => !unit.has(d) && !d.endsWith('.toml')).sort()) {
     const file = join(MIGRATIONS_DIR, dir, 'migration.sql');
     // Everything is applied the way Prisma applies it (one transaction, stop on error), because
     // some migrations take a LOCK TABLE and LOCK outside a transaction is an error. A migration
@@ -157,15 +190,18 @@ function buildRun(strip: readonly string[]): void {
   const created = psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]);
   expect(created.ok, created.output).toBe(true);
 
-  let sql = readFileSync(MIGRATION, 'utf8');
-  for (const name of strip) sql = stripSeal(sql, name);
-  const file = join(tmp, 'migration.sql');
-  writeFileSync(file, sql);
-  const applied = psql(RUN_DB, ['-f', file]);
-  expect(
-    applied.ok,
-    `the ${strip.length === 0 ? 'whole' : `${strip.join('+')}-stripped`} migration must APPLY:\n${applied.output}`,
-  ).toBe(true);
+  let sources: string[] = UNIT_FILES.map((f) => readFileSync(f, 'utf8'));
+  for (const name of strip) sources = stripSeal(sources, name);
+  const what = strip.length === 0 ? 'whole' : `${strip.join('+')}-stripped`;
+  sources.forEach((sql, i) => {
+    const file = join(tmp, `unit-${i}.sql`);
+    writeFileSync(file, sql);
+    const applied = psql(RUN_DB, ['-f', file]);
+    expect(
+      applied.ok,
+      `the ${what} migration must APPLY (${UNIT_DIRS[i]}):\n${applied.output}`,
+    ).toBe(true);
+  });
 
   for (const name of strip) {
     const present = psql(RUN_DB, ['-t', '-A', '-c',
@@ -175,6 +211,21 @@ function buildRun(strip: readonly string[]): void {
 
   const fx = psql(RUN_DB, ['-c', FIXTURE]);
   expect(fx.ok, `the world every arm writes against must plant cleanly:\n${fx.output}`).toBe(true);
+}
+
+/**
+ * The WHOLE unit, applied in order to the current run database. Both files are re-runnable by
+ * construction (`CREATE TABLE IF NOT EXISTS`, `DROP TRIGGER IF EXISTS` before each CREATE,
+ * `CREATE OR REPLACE FUNCTION`, guarded constraints and indexes) — which is what migrate.sh's
+ * ALWAYS_EXECUTE list rests on — so the arms that repair a planted database and re-apply use
+ * this, and get the whole unit rather than the half that aborted.
+ */
+function applyWhole(): { ok: boolean; output: string } {
+  for (const file of UNIT_FILES) {
+    const r = psql(RUN_DB, ['-f', file]);
+    if (!r.ok) return r;
+  }
+  return { ok: true, output: '' };
 }
 
 /**
@@ -1122,7 +1173,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
          CONSTRAINT "ExternalEffectCatalog_pkey" PRIMARY KEY ("coverageVersion", "effectKey"))`]);
     expect(baseline.ok, baseline.output).toBe(true);
 
-    const applied = psql(RUN_DB, ['-f', MIGRATION]);
+    const applied = applyWhole();
     expect(applied.ok, `the unit must apply over a db-push baseline:\n${applied.output}`).toBe(true);
 
     const checks = psql(RUN_DB, ['-t', '-A', '-c',
@@ -1171,7 +1222,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
        INSERT INTO "RolloutRetirement" ("unit","retiredBy") VALUES ('phase6-4d','someone')`]);
     expect(baseline.ok, baseline.output).toBe(true);
 
-    const applied = psql(RUN_DB, ['-f', MIGRATION]);
+    const applied = applyWhole();
     expect(applied.ok, `the unit must apply over a marker-bearing baseline:\n${applied.output}`).toBe(true);
 
     const installed = psql(RUN_DB, ['-t', '-A', '-c',
@@ -1232,7 +1283,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     // and the same database, with the mapping corrected by the operator, applies.
     const repaired = psql(RUN_DB, ['-c', `UPDATE "ProjectOrg" SET "orgId" = 'po-org-a' WHERE "projectId" = 'po-proj'`]);
     expect(repaired.ok, repaired.output).toBe(true);
-    const again = psql(RUN_DB, ['-f', MIGRATION]);
+    const again = applyWhole();
     expect(again.ok, `once the register agrees, the same apply must succeed:\n${again.output}`).toBe(true);
   }, 180_000);
 
@@ -1290,39 +1341,67 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
    * Measuring only "it applies" would not be a proof of atomicity: it would pass with no BEGIN at
    * all. So the arm injects a raise at the very END of the file — after every object has been
    * created — and requires the database to carry NONE of them afterwards.
+   *
+   * SPLIT INTO TWO FILES, the claim is per file and the measurement is a DIFFERENCE rather than a
+   * zero. Prisma applies and records each migration separately, so each half is its own atomic
+   * unit and an operator resolving one has the other's state untouched. For the registers half
+   * the difference is from an empty database and the old `= 0` still holds exactly; for the
+   * decisions half the registers are legitimately there first, and asserting zero would be
+   * asserting the wrong thing — what must be true is that the poisoned apply changed NOTHING.
    */
-  it('the migration is ONE transaction: a raise at the end leaves no object behind', () => {
-    psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
-    const created = psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]);
-    expect(created.ok, created.output).toBe(true);
+  const UNIT_INVENTORY = `SELECT (SELECT count(*) FROM pg_trigger WHERE tgname LIKE '%\\_t4d\\_%' AND NOT tgisinternal)
+        || '/' || (SELECT count(*) FROM pg_class WHERE relname IN
+             ('RolloutRetirement','ExternalEffectCatalog','ReleaseLease','MembershipTransition','DomainEventPairingClaim',
+              'DecisionForward','DecisionCountersign','DecisionStrandedResolution'))
+        || '/' || (SELECT count(*) FROM pg_proc WHERE proname LIKE 'phase6\\_t4d\\_%')`;
 
-    const sql = readFileSync(MIGRATION, 'utf8');
-    expect(sql.includes('\nBEGIN;\n'), 'the migration must open its own transaction').toBe(true);
-    expect(sql.trimEnd().endsWith('COMMIT;'), 'the migration must close its own transaction').toBe(true);
+  it('each half of the unit is ONE transaction: a raise at the end leaves no object behind', () => {
+    UNIT_FILES.forEach((unitFile, i) => {
+      psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+      const created = psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]);
+      expect(created.ok, created.output).toBe(true);
 
-    // the raise goes BEFORE the COMMIT, so everything above it has already run
-    const poisoned = sql.replace(
-      /COMMIT;\s*$/,
-      "DO $probe$ BEGIN RAISE EXCEPTION 'seal-stripped harness: atomicity probe'; END $probe$;\nCOMMIT;\n",
-    );
-    const file = join(tmp, 'atomicity.sql');
-    writeFileSync(file, poisoned);
-    const applied = psql(RUN_DB, ['-f', file]);
-    expect(applied.ok, 'the poisoned apply must FAIL — otherwise the probe measured nothing').toBe(false);
-    expect(applied.output).toMatch(/atomicity probe/);
+      // every EARLIER half applies normally — the half under test is the only poisoned one
+      for (const earlier of UNIT_FILES.slice(0, i)) {
+        const r = psql(RUN_DB, ['-f', earlier]);
+        expect(r.ok, `${UNIT_DIRS[i]}'s atomicity probe needs its predecessor applied:\n${r.output}`).toBe(true);
+      }
+      const before = psql(RUN_DB, ['-t', '-A', '-c', UNIT_INVENTORY]);
+      expect(before.ok, before.output).toBe(true);
 
-    // and nothing it created survives
-    const left = psql(RUN_DB, ['-t', '-A', '-c',
-      `SELECT (SELECT count(*) FROM pg_trigger WHERE tgname LIKE '%\\_t4d\\_%' AND NOT tgisinternal)
-            + (SELECT count(*) FROM pg_class WHERE relname IN ('RolloutRetirement','ExternalEffectCatalog','ReleaseLease','MembershipTransition','DomainEventPairingClaim'))
-            + (SELECT count(*) FROM pg_proc WHERE proname LIKE 'phase6\\_t4d\\_%')`]);
-    expect(left.ok, left.output).toBe(true);
-    expect(
-      left.output.trim(),
-      'the failed apply left objects behind — the unit is NOT atomic, and §P6T4D\'s recovery would '
-      + 'be telling an operator something untrue',
-    ).toBe('0');
-  }, 180_000);
+      const sql = readFileSync(unitFile, 'utf8');
+      expect(sql.includes('\nBEGIN;\n'), `${UNIT_DIRS[i]} must open its own transaction`).toBe(true);
+      expect(sql.trimEnd().endsWith('COMMIT;'), `${UNIT_DIRS[i]} must close its own transaction`).toBe(true);
+
+      // the raise goes BEFORE the COMMIT, so everything above it has already run
+      const poisoned = sql.replace(
+        /COMMIT;\s*$/,
+        "DO $probe$ BEGIN RAISE EXCEPTION 'seal-stripped harness: atomicity probe'; END $probe$;\nCOMMIT;\n",
+      );
+      const file = join(tmp, `atomicity-${i}.sql`);
+      writeFileSync(file, poisoned);
+      const applied = psql(RUN_DB, ['-f', file]);
+      expect(
+        applied.ok,
+        `the poisoned apply of ${UNIT_DIRS[i]} must FAIL — otherwise the probe measured nothing`,
+      ).toBe(false);
+      expect(applied.output).toMatch(/atomicity probe/);
+
+      // and nothing it created survives: the inventory is exactly what it was before
+      const after = psql(RUN_DB, ['-t', '-A', '-c', UNIT_INVENTORY]);
+      expect(after.ok, after.output).toBe(true);
+      expect(
+        after.output.trim(),
+        `the failed apply of ${UNIT_DIRS[i]} left objects behind — that half is NOT atomic, and `
+        + '§P6T4D\'s recovery would be telling an operator something untrue',
+      ).toBe(before.output.trim());
+      // the registers half starts from an empty database, so its difference is also an absolute
+      // zero — the claim the single-file arm used to make, kept rather than weakened
+      if (i === 0) {
+        expect(before.output.trim(), 'the registers half must be measured from an EMPTY base').toBe('0/0/0');
+      }
+    });
+  }, 300_000);
 
   /**
    * #582's review round 3, finding 2 — an account whose identity cannot be projected ABORTS the
@@ -1351,7 +1430,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     // message names is the repair that works.
     const repaired = psql(RUN_DB, ['-c', `UPDATE "User" SET "name" = 'BN User' WHERE "id" = 'bn-user'`]);
     expect(repaired.ok, repaired.output).toBe(true);
-    const again = psql(RUN_DB, ['-f', MIGRATION]);
+    const again = applyWhole();
     expect(again.ok, `after the named repair the apply must succeed:\n${again.output}`).toBe(true);
   }, 180_000);
   /**
@@ -1471,7 +1550,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     // repair (5) — and only now does the whole unit apply
     expect(psql(RUN_DB, ['-c',
       `DELETE FROM "ProjectUserStanding" WHERE "userId" = 'pb-out' AND "role" = 'pmc'`]).ok).toBe(true);
-    const clean = psql(RUN_DB, ['-f', MIGRATION]);
+    const clean = applyWhole();
     expect(clean.ok, `after all five named repairs the apply must succeed:\n${clean.output}`).toBe(true);
   }, 300_000);
 
@@ -1537,7 +1616,12 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     `]);
     expect(seeded.ok, seeded.output).toBe(true);
 
-    const applied = psql(RUN_DB, ['-f', MIGRATION]);
+    // The columns this audit reads are added by the DECISIONS half, and the audit sits with
+    // them. The registers half applies first and cleanly — which is itself part of the claim:
+    // the seam holds, and a planted 4d-only row is not a register's problem.
+    const dark = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(dark.ok, `the registers half is not implicated and must apply:\n${dark.output}`).toBe(true);
+    const applied = psql(RUN_DB, ['-f', FACTS]);
     expect(applied.ok, 'the apply must REFUSE rows already carrying 4d-only values').toBe(false);
     expect(applied.output).toMatch(/already carry this unit's 4d-only columns before it seals them/);
     // BOTH tables are named, which is what makes this the class and not the reported site
@@ -1557,7 +1641,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       ALTER TABLE "DecisionApprovalRevision" ENABLE TRIGGER "DecisionApprovalRevision_append_only";
     `]);
     expect(repaired.ok, `the named repair must be applicable:\n${repaired.output}`).toBe(true);
-    const clean = psql(RUN_DB, ['-f', MIGRATION]);
+    const clean = applyWhole();
     expect(clean.ok, `after the named repairs the apply must succeed:\n${clean.output}`).toBe(true);
   }, 300_000);
 
@@ -1860,7 +1944,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     // and once removed, BOTH generations are seeded from the literal — the amplification round 8
     // introduced is gone, so the outgoing generation cannot inherit a row the literal never said.
     expect(psql(RUN_DB, ['-c', `DELETE FROM "ExternalEffectCatalog"`]).ok).toBe(true);
-    const clean = psql(RUN_DB, ['-f', MIGRATION]);
+    const clean = applyWhole();
     expect(clean.ok, `after removing the conflicting row the apply must succeed:\n${clean.output}`).toBe(true);
     const gens = psql(RUN_DB, ['-t', '-A', '-c',
       `SELECT count(DISTINCT "coverageVersion") || ':' || count(*) FROM "ExternalEffectCatalog"
@@ -1929,14 +2013,16 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     `]);
     expect(seeded.ok, seeded.output).toBe(true);
 
-    const applied = psql(RUN_DB, ['-f', MIGRATION]);
+    const dark = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(dark.ok, `the registers half is not implicated and must apply:\n${dark.output}`).toBe(true);
+    const applied = psql(RUN_DB, ['-f', FACTS]);
     expect(applied.ok, 'the apply must REFUSE a dark fact table that already holds rows').toBe(false);
     expect(applied.output).toMatch(/dark fact table\(s\) already hold rows before this unit seals them/);
     expect(applied.output).toMatch(/DecisionForward \(1 row\(s\)\)/);
 
     // and the named repair works
     expect(psql(RUN_DB, ['-c', `DELETE FROM "DecisionForward"`]).ok).toBe(true);
-    const clean = psql(RUN_DB, ['-f', MIGRATION]);
+    const clean = applyWhole();
     expect(clean.ok, `after removing the ghost row the apply must succeed:\n${clean.output}`).toBe(true);
   }, 300_000);
 

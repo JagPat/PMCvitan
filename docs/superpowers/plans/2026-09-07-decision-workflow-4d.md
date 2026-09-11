@@ -6068,7 +6068,7 @@ today's behaviour lives.
   repository's migration review-unit rule, and this plan takes the seam):
 
   - **4d-i, the migration unit — MIGRATION-ONLY in the template's sense**:
-    its diff touches `prisma/` (the migration file, the schema mirror, the
+    its diff touches `prisma/` (the two migration files, the schema mirror, the
     seed's reset protocol), `test/` (the fixtures, the resets, the tripwires
     and the probes the seals force), `scripts/` (the proofs' named plant
     bypass) and, under `src/`, EXACTLY the declarative schema-metadata
@@ -6089,8 +6089,57 @@ today's behaviour lives.
     exactly that boundary stated in its `Migration/service seam` line, and
     its packet lists every `src/` path it touches with the registry line each
     adds — the reviewable proof that nothing else moved; any other `src/`
-    path in its diff is a scope finding. ONE additive
-    migration file in FOUR parts, ordered so no window opens. **Part 0, the
+    path in its diff is a scope finding.
+
+    **TWO additive migration files, applied in order** (JagPat's instruction
+    during #582's review round 13: *split #582 at the seam you proposed*, after
+    the lifecycle reported twelve finding-bearing heads against a limit of five
+    and asked for a split six times). The seam is a DEPENDENCY DIRECTION, not a
+    line count: the four adopted platform registers — with their baseline
+    audits and their writers — separate cleanly from the decisions fact tables
+    and their pairing seals, with no dependency in that direction. The
+    registers do not read a fact table; the fact seals read the registers. So:
+
+    | order | migration | carries |
+    |---|---|---|
+    | 1 | `20271220000000_phase6_t4d_i_dark_migration` | Part 0, Part 1's shared refusal function and the two orgs-owned STANDING doors (`Membership_t4d_architect_reserved`, `User_t4d_architect_reserved`) with their diagnostic-first audits, the four adopted platform registers and their baseline audits, `MembershipTransition` and the orgs membership seals, `ExternalEffectCatalog` with both seeded coverage generations, `ReleaseLease`, and the generic pairing mechanism with the kernel envelope / allocation / notification seals |
+    | 2 | `20271221000000_phase6_t4d_i_decision_facts` | the two Decision CHAIN doors (`Decision_t4d_architect_reserved`, `Decision_t4d_awaiting_reserved`), Part 2's enum statements, the three fact tables with their seven obligations, the 4d-only columns added to tables that already existed with their legacy-shape audit, the widened 4b/4c seals that read the facts (`DecisionForward_t4d_reserved` among them), and the approval finality key |
+
+    THE DOORS SPLIT WITH THEIR SUBJECT, which is why the reservation is not
+    torn in half: `phase6_t4d_reserved()` and the two doors that reserve
+    architect STANDING go with the registers that record standing; the three
+    doors that reserve the Decision CHAIN go with the facts the chain writes.
+    Part 2's enum values are the chain's vocabulary and go with it — the file's
+    own note already records why that is not a coupling (*nothing in THIS
+    transaction consumes either value — every comparison above and below is
+    made on `::text`*). The three shared helpers that cross the seam —
+    `phase6_t4d_reserved`, `phase6_t4d_fact_no_truncate`,
+    `phase6_t4d_actor_bound` — are DEFINED in the first file and called from
+    both, which is the direction the seam allows.
+
+    The measured proof of the seam is three-sided and belongs in the packet:
+    the register and kernel regions contain ZERO references to the three fact
+    tables; a function-level pass over all 79 defined functions finds only
+    those three first-file → second-file calls, all shared helpers; and the
+    FIRST FILE APPLIES STANDALONE to a fresh database, as well as the pair
+    applying in order. `20271221000000` is a later migration in the ordinary
+    Prisma sense, so it is deployed, recorded, resolved and rolled back
+    SEPARATELY — `migrate.sh` reads the failed name out of Prisma's output and
+    §P6T4D's recovery names the half that failed, because resolving the other
+    leaves the real failure recorded.
+
+    AND NO WINDOW OPENS BETWEEN THE TWO COMMITS. Between the first file's
+    commit and the second's, the chain doors do not yet exist — and neither
+    does the vocabulary they reserve: `DeciderKind.architect` and
+    `DecisionStatus.awaiting_countersign` are enum values the SECOND file adds,
+    after it has created the doors. Both columns are enum-typed, so in that
+    window no writer can name either value at all; the doors are created first
+    and the values second, inside one transaction, so the reservation is in
+    force from the instant the vocabulary exists. That ordering is the reason
+    Part 2 travels with Part 1's chain doors rather than staying behind.
+
+    Within the pair the ordering below is otherwise unchanged.
+    **Part 0, the
     marker transaction** (#572's review round 25, finding 4 — correcting round
     23's own fix): `RolloutRetirement(unit TEXT PRIMARY KEY, retiredAt,
     retiredBy)` with its seals, created and COMMITTED FIRST, because every

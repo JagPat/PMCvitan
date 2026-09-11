@@ -37,14 +37,46 @@ when the resolved step is not a bare task, so a named `work_item` with no
 while claiming to name a unit. `scripts/autonomous-status-state.test.mjs` holds
 that guard, and it is what corrected this edit.
 
-**Nothing is deployed and nothing is reachable.** 4d-i is additive and dark: one
-migration file, the schema mirror, the reset protocol, the fixtures and probes
+**Nothing is deployed and nothing is reachable.** 4d-i is additive and dark: TWO
+migration files, the schema mirror, the reset protocol, the fixtures and probes
 the seals force, and — under `src/` — EXACTLY the declarative schema-metadata
 mirrors the boundary tripwire pins to the Prisma DMMF, plus one call site that
 the `ChangeRequest.projectId` NOT NULL forces. No contract, no command, no route,
 no reader: those are 4d-ii's. Five reservation doors keep the architect chain
 unwritable until 4d-iii retires them, so a still-serving previous-release
 instance cannot produce a value the release cannot read.
+
+### The migration is SPLIT in two, on JagPat's instruction
+
+The lifecycle reported twelve finding-bearing heads against a limit of five and
+asked for a split six times; I proposed a seam in the round-12 comment, held it
+for the Board, and was told *split #582 at the seam you proposed* after round 13.
+
+The seam is a DEPENDENCY DIRECTION, not a line count. The four adopted platform
+registers — with their baseline audits and their writers — separate cleanly from
+the decisions fact tables and their pairing seals, with no dependency in that
+direction: the registers do not read a fact table; the fact seals read the
+registers. So `20271220000000_phase6_t4d_i_dark_migration` carries the retirement
+marker, the architect-STANDING doors and their audits, the registers,
+`MembershipTransition`, the catalog with both coverage generations, `ReleaseLease`
+and the kernel; `20271221000000_phase6_t4d_i_decision_facts` carries the Decision
+CHAIN doors, the enum values, the three fact tables with their seven obligations,
+the 4d-only columns and the widened 4b/4c seals.
+
+Measured three ways before anything was rewritten: the register and kernel
+regions contain zero references to the three fact tables; a function-level pass
+over all 79 defined functions finds only three first-file → second-file calls,
+all of them shared helpers (`phase6_t4d_reserved`,
+`phase6_t4d_fact_no_truncate`, `phase6_t4d_actor_bound`, defined in the first
+file); and the first file APPLIES STANDALONE, as well as the pair applying in
+order. No window opens between the two commits: the chain doors reserve enum
+values the SECOND file adds, after it creates them, so in the interval no writer
+can name either value at all.
+
+**#582 keeps the FIRST half; the second is a stacked PR from its branch.** The
+dependency direction forces that order — the registers land first or the facts
+have nothing to read. `open_pr` above stays #582 while both are open, because it
+names the head of the stack the runner follows.
 
 **Review round 1 is folded, all seventeen findings, on this same PR.** Thirteen were the SAME
 defect made thirteen times — a seal whose prose above it stated the contract's rule correctly
