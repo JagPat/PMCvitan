@@ -4927,8 +4927,15 @@ assert "4d-i: UserIdentity equals the User display names it mirrors" \
 assert_rejects "4d-i: the architect DESIGNATION is reserved on the upgraded database" \
   "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"ageDays\",\"authorId\",\"deciderKind\") VALUES ('UP4D-H1','p1','Reserved','Hall','pending',0,'USER-1','architect')" \
   "Decision.deciderKind = architect is not writable yet"
+# The row moved out from under this assertion in round 19 (finding 2): the 4c-ii "real writer
+# shape" block above now leaves `UP4A-D2` APPROVED, because a revision born finalized must move its
+# decision. Driving an approved row to `awaiting_countersign` is refused by a t4a/t4b TRANSITION
+# seal, which sorts before `Decision_t4d_awaiting_reserved` and answers first — so this assertion
+# stopped measuring the door it names. It takes a decision the fixture leaves PENDING instead, and
+# the expectation stays strict rather than being widened to accept whichever seal replies: the
+# point is that the RESERVATION is what refuses, on a database where the transition itself is legal.
 assert_rejects "4d-i: the chain STATE is reserved on the upgraded database" \
-  "UPDATE \"Decision\" SET \"status\"='awaiting_countersign' WHERE \"id\"='UP4A-D2'" \
+  "UPDATE \"Decision\" SET \"status\"='awaiting_countersign' WHERE \"id\"='UP4A-D5'" \
   "awaiting_countersign is not writable yet|architect"
 assert_rejects "4d-i: an architect MEMBERSHIP is reserved on the upgraded database" \
   "INSERT INTO \"Membership\"(\"id\",\"projectId\",\"userId\",\"role\",\"status\") VALUES ('UP4D-M1','p1','USER-1','architect','active')" \
