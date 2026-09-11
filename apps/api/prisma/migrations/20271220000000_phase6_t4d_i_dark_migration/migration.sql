@@ -1341,6 +1341,67 @@ BEGIN
       v_backfilled, v_sample;
   END IF;
 
+  -- AND EACH ADOPTED REGISTER MUST BE COMPLETE, NOT ONLY CORRECT (#582's review round 21).
+  -- Round 21's two findings are ONE error in two directions — the stream audit read FROM the
+  -- register, so it never visited a project the register was missing, and it proved a boundary
+  -- value where the seal presumes a whole property. The three audits above are the first
+  -- direction exactly: each reads FROM the register (a JOIN, or a `NOT EXISTS` over its rows) and
+  -- therefore judges only the keys the register already holds. A SOURCE row with no register row
+  -- is invisible to all three.
+  --
+  -- The backfills above do reach every such source row, and that is precisely why this is
+  -- asserted rather than inferred: `ProjectOrg` (round 3, finding 2) and the architect standing
+  -- are covered by their backfills the same way and are STILL audited, because a register whose
+  -- completeness the seals depend on may not rest on a reader's reading of the insert above it.
+  -- The two failures are not symmetric, either. An unbacked row grants standing nobody gave and
+  -- is loud; a MISSING row silently refuses a command its holder is entitled to, from 4d-ii,
+  -- with no message naming the cause — the round-3 finding-2 failure, at three more sites.
+  --
+  -- Each arm is the exact converse of the audit above it, over the same source predicate its
+  -- backfill used, so the pair covers the register in both directions.
+  --
+  -- AND ITS REACHABILITY IS STATED, because an unreachable check whose status nobody wrote down
+  -- is the defect round 17's finding 3 produced here. On the backfill path all three arms are
+  -- UNREACHABLE, and that is provable rather than hoped: each INSERT above selects every source
+  -- row its arm looks for, and its `ON CONFLICT` key equals the source's own unique key
+  -- (`User.id`; `OrgMembership` is `@@unique([orgId, userId])`, which is `OrgUserAuthority`'s
+  -- whole primary key; the standing insert is keyed on the `(projectId, userId, role)` triple it
+  -- writes), so no source row can be filtered out and no second source row can steal its key.
+  -- MEASURED both ways on a pre-4d database carrying an active `pmc` membership: unmodified, the
+  -- file applies and this block is silent; with one word added to the standing backfill's WHERE
+  -- (`AND m."role" <> 'pmc'`, a plausible future narrowing), it aborts naming that exact user,
+  -- project and role.
+  --
+  -- So this is a TRIPWIRE on the backfill, in the role `ProjectOrg`'s completeness check (round
+  -- 3, finding 2) and the architect zero-count check below already play — both equally
+  -- unreachable today, and both kept. What it catches is the next edit that narrows a source
+  -- predicate, which is exactly how round 21's stream audit came to read a subset.
+  SELECT count(*), COALESCE(left(string_agg(q.txt, ', ' ORDER BY q.txt), 300), '')
+    INTO v_backfilled, v_sample
+    FROM (
+      SELECT format('"UserIdentity" missing for "User" %s', u."id") AS txt
+        FROM "User" u
+       WHERE NOT EXISTS (SELECT 1 FROM "UserIdentity" i WHERE i."userId" = u."id")
+      UNION ALL
+      SELECT format('"OrgUserAuthority" missing for %s@%s (%L)', om."userId", om."orgId", om."role")
+        FROM "OrgMembership" om
+       WHERE om."role" IN ('owner', 'admin')
+         AND NOT EXISTS (SELECT 1 FROM "OrgUserAuthority" a
+                          WHERE a."orgId" = om."orgId" AND a."userId" = om."userId")
+      UNION ALL
+      SELECT format('"ProjectUserStanding" missing for %s on %s as %L', m."userId", m."projectId", m."role")
+        FROM "Membership" m
+       WHERE m."status" = 'active'
+         AND NOT EXISTS (SELECT 1 FROM "ProjectUserStanding" s3
+                          WHERE s3."projectId" = m."projectId" AND s3."userId" = m."userId"
+                            AND s3."role" = m."role")
+    ) q;
+  IF v_backfilled > 0 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i ABORT: % adopted register row(s) are MISSING for a source row that requires one, after the backfill above ran — %. These registers are what the 4d seals answer from: `UserIdentity` supplies every frozen actor name, `OrgUserAuthority` answers "may this actor manage the team?", and `ProjectUserStanding` answers "does this user hold this role here?". A source row with no register row is therefore a user, an org manager or a role-holder whose commands are refused from 4d-ii for a reason no message names. 4d-i adopts or refuses and does not rewrite a register (`platform_t4d_register_writer` admits only the fenced INSERT above; correcting rows is 4d-iii''s fenced re-projection), so the missing rows are DIAGNOSED: give each named source row its register row, or remove the source, before this migration adopts the registers.',
+      v_backfilled, v_sample;
+  END IF;
+
   SELECT count(*) INTO v_backfilled FROM "Project" p
    WHERE NOT EXISTS (SELECT 1 FROM "ProjectRoleStanding" r
                       WHERE r."projectId" = p."id" AND r."role" = 'architect');
@@ -2452,7 +2513,42 @@ DECLARE
   v_extra BIGINT; v_extra_s TEXT;
   v_bad   BIGINT; v_bad_s   TEXT;
   v_ret   BIGINT; v_ret_s   TEXT;
+  v_alien BIGINT; v_alien_s TEXT;
 BEGIN
+  -- (0) FOREIGN GENERATIONS — a row in no generation this migration seeds (#582's round 21).
+  --
+  -- The same defect round 21 found in the stream audit, at the other end of this file: arms (1)
+  -- to (3) all scope themselves to `coverageVersion IN (the seeded generations)`, and the seal
+  -- they precede governs the WHOLE TABLE. `DomainEvent_t4d_envelope` resolves an event's intent
+  -- by the exact `(coverageVersion, effectKey)` pair it carries, wherever that pair lives — so a
+  -- row sitting at some third version is a working dispatch policy that no release compiled and
+  -- no audit ever looked at, and a direct insert naming that version is admitted by it. Reachable
+  -- on the one path all of these audits exist for: `prisma db push` creates this table from
+  -- `schema.prisma` before any 4d guard, and whatever is in it survives.
+  --
+  -- MARKER-GATED, and that is the whole reason this is a separate arm rather than a widening of
+  -- (1). Before retirement the two generations this file seeds are the only ones anything has
+  -- written — 4d-i introduces the table's contents and 4d-ii is the next writer — so a third is
+  -- evidence of a hand. AFTER 4d-iii, a third generation is the ordinary healthy state (4d-ii
+  -- computes its own, and retirement stamps rather than deletes), and an ungated arm would abort
+  -- an `ALWAYS_EXECUTE` replay on exactly that, which is #582 round 6, finding 1's mistake.
+  IF NOT phase6_t4d_retired_at_start() THEN
+    SELECT count(*), COALESCE(left(string_agg(q.txt, ', ' ORDER BY q.txt), 200), '')
+      INTO v_alien, v_alien_s
+      FROM (SELECT format('%s (%s row(s))', x."coverageVersion", count(*)) AS txt
+              FROM "ExternalEffectCatalog" x
+             WHERE NOT EXISTS (SELECT 1 FROM "_t4d_catalog_seed" t
+                                WHERE t."coverageVersion" = x."coverageVersion")
+             GROUP BY x."coverageVersion") q;
+    IF v_alien > 0 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i ABORT: % "ExternalEffectCatalog" row(s) sit in a coverage generation this migration does not seed — %. The envelope seal resolves an event by the exact (coverageVersion, effectKey) it carries, whatever generation that is, so these rows are a dispatch policy no release compiled and none of the audits below would ever have read. Until 4d-iii retires this unit, the only generations anything has written are the two seeded here. Remove the rows (or, on a database that has genuinely run 4d-iii, restore its RolloutRetirement marker) before this migration adopts the catalog.',
+        v_alien, v_alien_s;
+    END IF;
+  ELSE
+    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the foreign-generation audit is SKIPPED (4d-ii has legitimately computed its own generation; this is a replay over a retired database)';
+  END IF;
+
   -- (1) EXTRAS — a key present in a seeded generation that this release did not compile.
   SELECT count(*), COALESCE(left(string_agg(format('(%s, %s)', x."coverageVersion", x."effectKey"), ', ' ORDER BY x."effectKey"), 200), '')
     INTO v_extra, v_extra_s
@@ -2882,42 +2978,63 @@ BEGIN
   RETURN NEW;
 END $$;
 
--- ── the PREREQUISITE this unit seals ON TOP OF ──────────────────────────────────────────────
--- #582's review round 20, finding 3. Everything 4d-i installs rests on one property of the event
--- ledger: a `DomainEvent` row is APPEND-ONLY. The facts cite events, the pairing claims cite
--- events, §A.3 obligation 7 compares a fact's frozen pair against its event's envelope — and all
--- of that is evidence only while the event cannot be rewritten or erased beneath it.
+-- ── the PREREQUISITES this unit seals ON TOP OF ─────────────────────────────────────────────
+-- #582's review round 20, finding 3, SWEPT at round 21. Everything 4d-i installs rests on two
+-- properties of the event ledger that this unit does not own, and both are stated by ONE earlier
+-- migration, `20261015000000_phase2_event_envelope`, in the ONE form `prisma db push` does not
+-- reproduce: a RAW trigger. On the supported P3005 adoption path `migrate.sh` marks that
+-- migration applied from the schema it can see, so the ledger under a sealed fact system can be
+-- missing either property while every migration reads as present.
 --
--- That property is NOT this unit's. It belongs to `20261015000000_phase2_event_envelope`, which
--- installs `DomainEvent_append_only` as a RAW trigger — and a raw trigger is exactly what
--- `prisma db push` does not reproduce. On the supported P3005 adoption path `migrate.sh` marks
--- that migration applied from the schema it can see, so the ledger under a sealed fact system can
--- be mutable while every migration reads as present. The envelope seal below does not close it:
--- it freezes `actorRole`/`actorName` on UPDATE and says nothing about DELETE, so a direct delete
--- takes the event, cascades away its `DomainEventPairingClaim`, and leaves an immutable fact
--- citing nothing — with the INSERT-time correspondence checks never rerun.
+--   `DomainEvent_append_only` — a `DomainEvent` row is APPEND-ONLY. The facts cite events, the
+--   pairing claims cite events, §A.3 obligation 7 compares a fact's frozen pair against its
+--   event's envelope — and all of that is evidence only while the event cannot be rewritten or
+--   erased beneath it. The envelope seal below does not close it: it freezes
+--   `actorRole`/`actorName` on UPDATE and says nothing about DELETE, so a direct delete takes the
+--   event, cascades away its `DomainEventPairingClaim`, and leaves an immutable fact citing
+--   nothing — with the INSERT-time correspondence checks never rerun.
 --
--- 4d-i does not install a second append-only trigger: two definitions of one rule drift, and this
--- rule is another unit's to state. It VERIFIES the prerequisite and refuses to seal without it,
--- which is the same answer this file gives everywhere a precondition is not its own to create.
+--   `Project_ensure_event_stream` — every project commits WITH its allocator. Round 20 verified
+--   only the first of the two, and round 21 named the cost: without this one a project can hold
+--   `DomainEvent` rows and no `ProjectEventStream` row, and `platform_t4d_stream_init` below then
+--   makes that state permanent (a new stream is admitted only at 0, and only for a project with
+--   no events), so the project can never be given an allocator again. The stream audit further
+--   down refuses the already-broken projects; this refuses the database that keeps producing
+--   them.
+--
+-- THE INVENTORY, so the sweep is checkable rather than asserted: `20261015000000_phase2_event_envelope`
+-- installs exactly two triggers — `DomainEvent_append_only` (line 115) and
+-- `Project_ensure_event_stream` (line 135). Both are verified here; that migration has no third.
+--
+-- 4d-i does not install a second copy of either: two definitions of one rule drift, and these
+-- rules are another unit's to state. It VERIFIES the prerequisites and refuses to seal without
+-- them, which is the same answer this file gives everywhere a precondition is not its own.
 DO $ledger_prereq$
-DECLARE tg pg_trigger;
+DECLARE spec RECORD; tg pg_trigger;
 BEGIN
   IF phase6_t4d_retired_at_start() THEN
     RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the ledger-prerequisite check is SKIPPED (this is a replay over a retired database)';
   ELSE
-    SELECT * INTO tg FROM pg_trigger
-     WHERE tgname = 'DomainEvent_append_only'
-       AND tgrelid = '"DomainEvent"'::regclass AND NOT tgisinternal;
-    IF NOT FOUND THEN
-      RAISE EXCEPTION
-        'phase6 4d-i ABORT: `DomainEvent_append_only` is not installed on this database. It is `20261015000000_phase2_event_envelope`''s raw trigger, and `prisma db push` does not reproduce raw triggers — so on the P3005 adoption path that migration can read as applied while the property it exists for is absent. 4d-i seals a FACT system on top of that ledger: its facts cite events, its pairing claims cite events, and obligation 7 compares a fact''s frozen pair against its event''s envelope. None of that is evidence while an event can be rewritten or deleted under it. Re-apply `20261015000000_phase2_event_envelope`''s raw statements (or restore them from that migration file) before this one. See docs/RUNBOOK.md §P6T4D.';
-    END IF;
-    IF tg.tgenabled <> 'O' THEN
-      RAISE EXCEPTION
-        'phase6 4d-i ABORT: `DomainEvent_append_only` is installed but DISABLED (tgenabled=%). A sanctioned reset disables it for exactly one wipe and re-enables it in the same transaction; one left off is the ledger unsealed. Re-enable it before this migration seals facts on top of it.',
-        tg.tgenabled;
-    END IF;
+    FOR spec IN SELECT * FROM (VALUES
+      ('DomainEvent_append_only', 'DomainEvent',
+       'a `DomainEvent` row can be rewritten or deleted under the facts that cite it. 4d-i seals a FACT system on top of that ledger: its facts cite events, its pairing claims cite events, and obligation 7 compares a fact''s frozen pair against its event''s envelope. None of that is evidence while the event beneath it can move'),
+      ('Project_ensure_event_stream', 'Project',
+       'a project can be created with no `ProjectEventStream` row. `platform_t4d_stream_init`, installed by this file, admits a new stream only at position 0 and only for a project holding no events — so the first such project to emit is permanently without an allocator, and every `emitEvent` on it fails')
+    ) AS v(tgname, tbl, harm) LOOP
+      SELECT * INTO tg FROM pg_trigger
+       WHERE tgname = spec.tgname
+         AND tgrelid = format('%I', spec.tbl)::regclass AND NOT tgisinternal;
+      IF NOT FOUND THEN
+        RAISE EXCEPTION
+          'phase6 4d-i ABORT: `%` is not installed on "%". It is `20261015000000_phase2_event_envelope`''s RAW trigger, and `prisma db push` does not reproduce raw triggers — so on the P3005 adoption path that migration can read as applied while the property it exists for is absent. Without it, %. Re-apply `20261015000000_phase2_event_envelope`''s raw statements (or restore them from that migration file) before this one. See docs/RUNBOOK.md §P6T4D.',
+          spec.tgname, spec.tbl, spec.harm;
+      END IF;
+      IF tg.tgenabled <> 'O' THEN
+        RAISE EXCEPTION
+          'phase6 4d-i ABORT: `%` is installed on "%" but DISABLED (tgenabled=%). A sanctioned reset disables a seal for exactly one wipe and re-enables it in the same transaction; one left off is the property gone. Without it, %. Re-enable it before this migration seals on top of it.',
+          spec.tgname, spec.tbl, tg.tgenabled, spec.harm;
+      END IF;
+    END LOOP;
   END IF;
 END $ledger_prereq$;
 
@@ -3020,43 +3137,79 @@ BEGIN
     OLD."projectId";
 END $$;
 
--- ── the heads THIS SEAL WILL FREEZE are audited first ────────────────────────────────────────
+-- ── the streams THIS SEAL WILL FREEZE are audited first ──────────────────────────────────────
 -- #582's review round 20, finding 4 — and it is the same rule this unit already applies to every
 -- other adopted table, missed here because `ProjectEventStream` did not read like an adopted one.
 -- It is: on the supported `db push` / P3005 baseline the table exists, populated, before any raw
 -- 4d guard does, and its heads were maintained by application code alone.
 --
--- What the seal below does is make `nextPosition` move ONLY by exactly `+1`. That is the right
--- rule and it has a precondition nobody checked: that each head is already the stream's true next
--- position. A head AHEAD of the events (10 with events through 4) is accepted, the next legitimate
--- emit writes position 10, and 5..9 are permanently missing — `dispatchOrdered` waits for a
--- position no writer will ever allocate. A head BEHIND them collides on the next emit. And because
--- the seal admits only `+1`, the ordinary repair — set the head to the right number — is refused
--- from the moment it commits. The audit has to run BEFORE the seal, or it cannot be acted on.
+-- What the seals below do is make `nextPosition` move ONLY by exactly `+1`, and admit a NEW
+-- stream only at 0 for a project holding no events. Those are the right rules and they have a
+-- precondition: that each project ALREADY has a counter, and that the counter is the stream's
+-- true next position over a contiguous run of positions.
 --
--- Diagnostic-first, bounded, and marker-gated like its siblings: it names the projects and their
--- two numbers, because "some stream is wrong" is not a repair an operator can make.
+-- ROUND 21 SAYS THIS AUDIT PROVED NEITHER, AND BOTH FINDINGS ARE ONE ERROR — the audit asked its
+-- question of a SUBSET of the rows the seal governs, in two different directions:
+--
+--   (1) THE POPULATION. It read `FROM "ProjectEventStream"`, and that table is a SUBSET of the
+--       projects: `ProjectEventStream.projectId` and `DomainEvent.projectId` are both foreign
+--       keys to `Project`, so `Project` IS the population and a project with events and NO
+--       counter row was never visited. That state is reachable on the same baseline path: the
+--       counter is created by `Project_ensure_event_stream`, a RAW trigger of
+--       `20261015000000_phase2_event_envelope`, and `prisma db push` does not reproduce raw
+--       triggers. The seal then makes it PERMANENT — `platform_t4d_stream_init` refuses a
+--       creation at anything but 0, and refuses a creation at 0 for a project that holds events,
+--       so after this migration commits that project can never be given an allocator at all and
+--       every `emitEvent` fails on the missing counter.
+--
+--   (2) THE PROPERTY. `nextPosition = max(streamPosition) + 1` is the HEAD, and the guarantee the
+--       cursors rest on is CONTIGUITY. Events at 0 and 2 with a head of 3 satisfied the old
+--       predicate while position 1 is missing for good: `dispatchOrdered` stalls there and a
+--       rebuild reports a gap. The allocation seals constrain only FUTURE increments, so they can
+--       neither detect nor repair a hole that is already committed.
+--
+-- Contiguity is `min = 0 AND count(*) = max + 1`, and `count(*)` is exact because
+-- `DomainEvent` carries `@@unique([projectId, streamPosition])` — no position can appear twice,
+-- so a run of `max + 1` distinct values starting at 0 has no hole in it.
+--
+-- The audit has to run BEFORE the seals, or none of it can be acted on. Diagnostic-first and
+-- bounded like its siblings: it names each project and which of the three shapes it is in,
+-- because "some stream is wrong" is not a repair an operator can make.
 DO $stream_heads$
 DECLARE v_rows BIGINT; v_sample TEXT;
 BEGIN
   IF phase6_t4d_retired_at_start() THEN
-    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the stream-head audit is SKIPPED (this is a replay over a retired database)';
+    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the stream audit is SKIPPED (this is a replay over a retired database)';
   ELSE
-    SELECT count(*), COALESCE(left(string_agg(q.txt, '; ' ORDER BY q.txt), 400), '')
+    SELECT count(*), COALESCE(left(string_agg(q.txt, '; ' ORDER BY q.txt), 500), '')
       INTO v_rows, v_sample
       FROM (
-        SELECT format('%s (head %s, events through %s)', s."projectId", s."nextPosition",
-                      COALESCE(e.top::text, '<none>')) AS txt
-          FROM "ProjectEventStream" s
-          LEFT JOIN (SELECT "projectId", max("streamPosition") AS top
+        SELECT CASE
+                 WHEN s."projectId" IS NULL AND e."projectId" IS NULL
+                   THEN format('%s (NO counter row, no events — create it at 0)', p."id")
+                 WHEN s."projectId" IS NULL
+                   THEN format('%s (NO counter row, events through %s — create it at %s)',
+                               p."id", e.top, e.top + 1)
+                 WHEN e."projectId" IS NOT NULL AND (e.bottom <> 0 OR e.n <> e.top + 1)
+                   THEN format('%s (head %s, events through %s, but only %s of the %s positions from 0 are present — the stream has a HOLE)',
+                               p."id", s."nextPosition", e.top, e.n, e.top + 1)
+                 ELSE format('%s (head %s, events through %s)',
+                             p."id", s."nextPosition", COALESCE(e.top::text, '<none>'))
+               END AS txt
+          FROM "Project" p
+          LEFT JOIN "ProjectEventStream" s ON s."projectId" = p."id"
+          LEFT JOIN (SELECT "projectId", max("streamPosition") AS top,
+                            min("streamPosition") AS bottom, count(*) AS n
                        FROM "DomainEvent" GROUP BY "projectId") e
-            ON e."projectId" = s."projectId"
-         WHERE s."nextPosition" <> COALESCE(e.top + 1, 0)
+            ON e."projectId" = p."id"
+         WHERE s."projectId" IS NULL
+            OR s."nextPosition" <> COALESCE(e.top + 1, 0)
+            OR (e."projectId" IS NOT NULL AND (e.bottom <> 0 OR e.n <> e.top + 1))
       ) q;
 
     IF v_rows > 0 THEN
       RAISE EXCEPTION
-        'phase6 4d-i ABORT: % event stream(s) carry a head that is not one past their last event — %. The allocation seal installed below admits ONLY `nextPosition` = OLD + 1, so from the moment it commits the ordinary repair is refused: a head AHEAD of the events strands every position between them (dispatchOrdered waits forever for one no writer will allocate) and a head BEHIND them collides on the next emit. Set each named head to one past that project''s highest `DomainEvent."streamPosition"` (or to 0 where the project has no events) before this migration seals it. On a database that has genuinely run 4d-iii, restore its RolloutRetirement marker instead.',
+        'phase6 4d-i ABORT: % project event stream(s) are not in the shape the seals below adopt — %. Three shapes, one repair window: a project with NO counter row cannot be given one after this migration commits (`platform_t4d_stream_init` admits a new stream only at 0, and only for a project holding no events), a head that is not one past the last event can never be corrected (the allocation seal admits ONLY `nextPosition` = OLD + 1), and a HOLE in the positions is unreachable by either seal because both judge future writes alone. Repair each named project BEFORE this migration: INSERT the missing counter at the number given, and set each wrong head to one past that project''s highest `DomainEvent."streamPosition"` (0 where it has no events). A HOLE is closed by INSERTING an event at the missing position — the delivered `DomainEvent_append_only` refuses UPDATE and DELETE and admits INSERT, so filling the gap touches no committed position and invalidates no ordered consumer''s checkpoint. Re-numbering the events above the hole instead is an UPDATE of `streamPosition`, which that trigger refuses: it needs the transactional repair in docs/RUNBOOK.md §P6T4D, and it moves every position an ordered consumer has already checkpointed on. On a database that has genuinely run 4d-iii, restore its RolloutRetirement marker instead. See docs/RUNBOOK.md §P6T4D.',
         v_rows, v_sample;
     END IF;
   END IF;

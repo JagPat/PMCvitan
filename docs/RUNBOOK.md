@@ -1186,7 +1186,7 @@ The unit ships as two files applied in order:
 
 | order | migration | what it carries |
 |---|---|---|
-| 1 | `20271220000000_phase6_t4d_i_dark_migration` | Part 0's retirement marker and its seals, the shared refusal function and the two orgs-owned architect-STANDING doors with their diagnostic-first audits, the four adopted platform registers (`ProjectOrg`, `ProjectRoleStanding`, `ProjectUserStanding`, `UserIdentity`) with their writers, backfills and baseline audits, `OrgUserAuthority`, the orgs-owned `MembershipTransition` fact and the membership seals around it, `ExternalEffectCatalog` with both seeded coverage generations, `ReleaseLease`, the generic pairing mechanism (`DomainEventPairingClaim`, `platform_claim_event_pairing`, `DomainEvent_t4d_pairing_claimed`), and the WHOLE KERNEL — the envelope columns and `DomainEvent_t4d_envelope`, the five `ProjectEventStream_t4d_*` allocation seals, the notice binding, and the `platform_tx_*` / `platform_role_*` reads |
+| 1 | `20271220000000_phase6_t4d_i_dark_migration` | Part 0's retirement marker and its seals, the shared refusal function and the two orgs-owned architect-STANDING doors with their diagnostic-first audits, the four adopted platform registers (`ProjectOrg`, `ProjectRoleStanding`, `ProjectUserStanding`, `UserIdentity`) with their writers, backfills and baseline audits, `OrgUserAuthority`, the orgs-owned `MembershipTransition` fact and the membership seals around it, `ExternalEffectCatalog` with both seeded coverage generations, `ReleaseLease`, the generic pairing mechanism (`DomainEventPairingClaim`, `platform_claim_event_pairing`, `DomainEvent_t4d_pairing_claimed`), and the WHOLE KERNEL — the envelope columns and `DomainEvent_t4d_envelope`, the five `ProjectEventStream_t4d_*` allocation seals (preceded by the stream ADOPTION audit: every project has a counter, at its stream's true next position, over positions contiguous from 0), the notice binding, and the `platform_tx_*` / `platform_role_*` reads. It also VERIFIES, rather than installing, the two RAW triggers of `20261015000000_phase2_event_envelope` that `prisma db push` does not reproduce and that 4d-i seals on top of — `DomainEvent_append_only` and `Project_ensure_event_stream` — and refuses to commit without either |
 | 2 | `20271221000000_phase6_t4d_i_decision_facts` | the two Decision CHAIN doors, Part 2's enum values, the three decisions-owned fact tables with their seven obligations (`DecisionForward_t4d_reserved` among them), the 4d-only columns added to `ChangeRequest`, `DecisionApprovalRevision`, the two consultation tables and the two requirement-spec tables with their legacy-shape audit, the `DecisionEvent` audit register's append-only and correspondence seals, the delivered 4b/4c seals widened with their architect arms, and the approval finality key |
 
 They are separate because the dependency runs one way only: the fact seals read the registers, and
@@ -1337,6 +1337,32 @@ anything else. The migration cannot write the seal — the
 seal is a statement about the PROCESS's compiled catalog, and only the process
 can make it.
 
+### A catalog row in a generation this migration does not seed
+
+The abort begins `phase6 4d-i ABORT: N "ExternalEffectCatalog" row(s) sit in a coverage
+generation this migration does not seed` and names each foreign `coverageVersion` with its row
+count. 4d-i seeds exactly two generations — the one this release compiles and the outgoing one —
+and until 4d-iii retires the unit those are the only generations anything has written. A row
+anywhere else is a dispatch policy no release computed, and `DomainEvent_t4d_envelope` will
+resolve an event against it by the exact `(coverageVersion, effectKey)` the event carries.
+
+**Repair — remove the rows.** The catalog's write seal admits writes only under
+`vitan.phase6_4d_catalog`, so this runs in one transaction that says so:
+
+```sql
+BEGIN;
+SET LOCAL vitan.phase6_4d_catalog = 'on';
+DELETE FROM "ExternalEffectCatalog" WHERE "coverageVersion" = '<the named version>';
+COMMIT;
+```
+
+(Before 4d-i has ever applied, the seal does not exist yet and the bare `DELETE` is enough.) If
+the named version is one a release of yours genuinely serves, do not delete it — that is a
+deploy ordering problem, not a repair: the release that computes it must seed it through its own
+migration. On a database that has genuinely run 4d-iii, restore its `RolloutRetirement` marker
+instead; this audit is marker-gated because after retirement a third generation is 4d-ii's own
+and entirely legitimate.
+
 ### The decisions half: two more aborts, and they resolve the OTHER name
 
 `20271221000000_phase6_t4d_i_decision_facts` carries two audits of its own, both against the
@@ -1431,6 +1457,78 @@ is not implicated by either audit, and it must not be resolved or re-run by hand
 
 `scripts/migrate.sh` prints these steps itself (`report_4d_i_migration_failure`), the `User`
 statement included, because the migration's own message is swallowed by the aborted transaction.
+
+### The registers half: the two RAW ledger prerequisites
+
+The abort begins `phase6 4d-i ABORT:` and names a trigger — `DomainEvent_append_only` or
+`Project_ensure_event_stream` — as **not installed** or **DISABLED**. Both belong to
+`20261015000000_phase2_event_envelope`, both are RAW triggers, and `prisma db push` reproduces
+neither: on the P3005 baseline path that migration can read as applied while the property it
+exists for is absent. 4d-i seals a fact system on top of both, so it verifies them and refuses
+rather than installing a second copy of another unit's rule.
+
+**Repair — restore the missing trigger from the migration that owns it.** The functions survive a
+`db push` (they are not triggers); only the bindings are lost, so in the ordinary case re-creating
+the trigger is enough:
+
+```sql
+BEGIN;
+-- append-only: a DomainEvent row is never rewritten or erased
+CREATE TRIGGER "DomainEvent_append_only"
+  BEFORE UPDATE OR DELETE ON "DomainEvent"
+  FOR EACH ROW EXECUTE FUNCTION "domainEvent_append_only"();
+-- every project commits WITH its stream counter
+CREATE TRIGGER "Project_ensure_event_stream"
+  AFTER INSERT ON "Project"
+  FOR EACH ROW EXECUTE FUNCTION "project_ensure_event_stream"();
+COMMIT;
+```
+
+If either FUNCTION is also missing, re-apply the raw statements from
+`apps/api/prisma/migrations/20261015000000_phase2_event_envelope/migration.sql` (they are the two
+`CREATE OR REPLACE FUNCTION` / `CREATE TRIGGER` pairs at the foot of that file). If the abort says
+DISABLED rather than missing, a sanctioned reset was interrupted between its `DISABLE` and its
+`ENABLE`: `ALTER TABLE "<table>" ENABLE TRIGGER "<name>";`.
+
+### The registers half: an event stream that is not in the shape the seals adopt
+
+The abort begins `phase6 4d-i ABORT: N project event stream(s) are not in the shape the seals
+below adopt` and names each project with one of three shapes. **Repair every one of them before
+the next deploy attempt**, because each of the three is refused after 4d-i commits — the audit is
+the only moment the repair exists:
+
+| the abort says | what is wrong | repair |
+|---|---|---|
+| `(NO counter row, no events — create it at 0)` | the project never got its `ProjectEventStream` row | `INSERT INTO "ProjectEventStream"("projectId","nextPosition") VALUES ('<project>', 0);` |
+| `(NO counter row, events through N — create it at N+1)` | same, and the project has already emitted | `INSERT INTO "ProjectEventStream"("projectId","nextPosition") VALUES ('<project>', <N+1>);` — **only before 4d-i**: afterwards `platform_t4d_stream_init` admits a new stream at 0 alone, and refuses 0 for a project holding events, so the project can never be given an allocator again |
+| `(head H, events through N)` with `H <> N+1` | the counter is ahead of or behind its own stream | `UPDATE "ProjectEventStream" SET "nextPosition" = <N+1> WHERE "projectId" = '<project>';` — **only before 4d-i**: the allocation seal then admits only `OLD + 1` |
+| `... but only K of the N+1 positions from 0 are present — the stream has a HOLE` | a position between 0 and N was never written, or was removed | fill it, below |
+
+**The hole.** Find the missing positions:
+
+```sql
+SELECT g.pos
+  FROM generate_series(0, (SELECT max("streamPosition") FROM "DomainEvent" WHERE "projectId" = '<project>')) AS g(pos)
+ WHERE NOT EXISTS (SELECT 1 FROM "DomainEvent" e
+                    WHERE e."projectId" = '<project>' AND e."streamPosition" = g.pos);
+```
+
+Close each one with an INSERT at that position. `DomainEvent_append_only` refuses UPDATE and
+DELETE and **admits INSERT**, so this needs no bypass, touches no committed position, and
+invalidates no ordered consumer's checkpoint:
+
+```sql
+INSERT INTO "DomainEvent"
+  ("eventId","eventType","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId")
+VALUES (gen_random_uuid()::text, 'ops.stream.gapFilled',
+        (SELECT "orgId" FROM "Project" WHERE "id" = '<project>'), '<project>', <pos>,
+        'system', 'operator-repair', 'Project', '<project>');
+```
+
+Re-numbering the events above the hole is the other repair and is worse on both counts: it is an
+UPDATE of `streamPosition`, which the delivered append-only trigger refuses (so it needs the
+transactional bypass pattern shown under *The legacy-shape repair* above), and it moves every
+position an ordered consumer has already checkpointed on. Prefer the fill.
 
 ### The baseline path runs the audit too
 
