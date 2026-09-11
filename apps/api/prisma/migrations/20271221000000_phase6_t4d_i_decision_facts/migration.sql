@@ -1353,6 +1353,87 @@ END $$;
 DROP TRIGGER IF EXISTS "ChangeRequest_t4d_evidence_frozen" ON "ChangeRequest";
 CREATE TRIGGER "ChangeRequest_t4d_evidence_frozen" BEFORE UPDATE ON "ChangeRequest"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_change_request_evidence_frozen();
+-- ── and the CLOSURE receipt is judged too (#582's review round 22, finding 2) ────────────────
+-- THE SIBLING ROUND 20's FINDING 1 LEFT STANDING. That round found `ChangeRequest.sourceCommandId`
+-- frozen and never judged, and bound it: round 8 had made it immutable on landing and round 17 had
+-- bound the requester PAIR to its actor, and between them nothing asked what the receipt IS. The
+-- fix was applied to the BIRTH receipt and stopped there. `resolvedByCommandId` is the same column
+-- one act later — a receipt, frozen one-way by the arm above, with a composite FK and a one-use
+-- UNIQUE index and nothing that reads its command type, its actor or its transaction.
+--
+-- So the same forgery, at the closure: a direct writer supplies a TRUTHFUL resolver pair (round
+-- 16's arm is satisfied), cites any unused same-project `CommandExecution` (the FK is satisfied,
+-- the unique index is satisfied), closes the request and performs an otherwise-valid restoration.
+-- The one-way freeze then makes that false provenance permanent, and 4d-iii's seals judge future
+-- writes only — there is no later moment at which an already-closed row is re-examined.
+--
+-- THE COMMAND SET IS DERIVED, not listed from memory. §A.3 obligation 6 states it as a rule about
+-- the ACT: `resolvedByCommandId` is owed by EVERY command that writes `resolvedById`, which the
+-- delivered service says is `decisions.withdrawChange` and `decisions.approve`'s re-approval
+-- closure (#572's review rounds 5 and 6 — round 5 named `withdrawChange` alone and round 6 found
+-- that an ordinary re-approval from `change` would roll back for it). Naming one of the two here
+-- would refuse an ordinary re-approval the moment 4d-ii populates the column.
+--
+-- AND THE RESULT DIFFERS BY COMMAND, which is why this is its own function rather than a branch of
+-- `phase6_t4d_provenance_bound`: a `withdrawChange` receipt's result is the REQUEST it closed, and
+-- an `approve` receipt's result is the DECISION it moved — the closure is a consequence of that
+-- approval, not its result. One token meaning two things is the defect rounds 3 and 5 corrected in
+-- the contract oracle; the two shapes are spelled separately here for the same reason.
+--
+-- DEFERRED, so 4d-ii may write the receipt and the command's completion in either order within
+-- its transaction, exactly as every other provenance binding in this unit is deferred.
+CREATE OR REPLACE FUNCTION phase6_t4d_change_request_closure_bound() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE c RECORD;
+BEGIN
+  SELECT "status", "resultRef", "commandType", "actorId",
+         "xmin" = txid_current()::text::xid AS "receiptThisTx"
+    INTO c FROM "CommandExecution"
+   WHERE "projectId" = NEW."projectId" AND "id" = NEW."resolvedByCommandId";
+
+  IF NOT FOUND OR c."status" <> 'succeeded' THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: change request % cites a closure receipt that did not succeed in this transaction — the receipt must be COMPLETED by the command that closed the request',
+      NEW."id";
+  END IF;
+  IF NOT COALESCE(c."receiptThisTx", FALSE) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: change request % cites closure receipt %, which was completed by an EARLIER transaction — a receipt lying around from a past withdrawal or approval cannot back a closure performed now, and the freeze above makes the claim permanent',
+      NEW."id", NEW."resolvedByCommandId";
+  END IF;
+  IF c."commandType" NOT IN ('decisions.withdrawChange', 'decisions.approve') THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: change request % cites a `%` closure receipt, which is not a command that closes a request (expected `decisions.withdrawChange` or `decisions.approve`) — provenance names the act, and a receipt borrowed from an unrelated command proves nothing about this one',
+      NEW."id", c."commandType";
+  END IF;
+  IF c."actorId" IS DISTINCT FROM NEW."resolvedById" THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: change request % attributes its closure to %, but its receipt was run by % — the closure and the receipt are one act seen twice, and a truthful resolver pair naming someone who ran no command is exactly the forgery the frozen pair exists to prevent',
+      NEW."id", COALESCE(NEW."resolvedById", '<null>'), COALESCE(c."actorId", '<null>');
+  END IF;
+
+  -- the RESULT, per command. A withdrawal's result is the request; an approval's is the decision
+  -- whose move closed it, and the request must be one this decision actually carries.
+  IF c."commandType" = 'decisions.withdrawChange' THEN
+    IF c."resultRef" IS DISTINCT FROM NEW."id" THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: change request % cites a `decisions.withdrawChange` receipt whose result names % — a withdrawal''s result IS the request it closed, and a receipt for another result cannot be borrowed',
+        NEW."id", COALESCE(c."resultRef", '<null>');
+    END IF;
+  ELSIF c."resultRef" IS DISTINCT FROM NEW."decisionId" THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: change request % cites a `decisions.approve` receipt whose result names %, not this request''s decision % — a re-approval closes the request of the decision it moved and no other',
+      NEW."id", COALESCE(c."resultRef", '<null>'), NEW."decisionId";
+  END IF;
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS "ChangeRequest_t4d_closure_bound" ON "ChangeRequest";
+CREATE CONSTRAINT TRIGGER "ChangeRequest_t4d_closure_bound"
+  AFTER UPDATE ON "ChangeRequest" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW
+  WHEN (NEW."resolvedByCommandId" IS NOT NULL AND OLD."resolvedByCommandId" IS NULL)
+  EXECUTE FUNCTION phase6_t4d_change_request_closure_bound();
+
 
 -- ── and the BIRTH pair is JUDGED, not merely shaped and then frozen ──────────────────────────
 -- #582's review round 17, the class-3 sweep — the SIBLING COLUMN SET of round 16's finding 4, in
@@ -2173,6 +2254,51 @@ CREATE TRIGGER "DecisionApprovalRevision_t4d_birth"
 --     ended at a particular status — the status question is already asked from the decision side
 --     by `Decision_t4d_entry_seal`, and pinning a final status here would repeat round 8's
 --     mistake of judging a transition by the state it left behind.
+-- ── the APPROVAL TRANSITION register (#582's review round 22, finding 3) ─────────────────────
+-- Round 19's finding 2 asked the finalized birth to ride its transition, and round 19's own first
+-- answer — `xmin` alone — was too weak because a NO-OP UPDATE satisfies it. The strengthening
+-- added the END STATE, and round 22 says that is the SAME defect one step along: a no-op UPDATE
+-- against a decision that is ALREADY `approved` supplies the `xmin` and leaves the status at
+-- `approved`, so both clauses pass with no transition at all. A direct receipt-backed bundle can
+-- then insert a higher-version finalized revision beside an untouched approved decision, and the
+-- fabricated revision becomes the head that 4c reads as a consultation cycle.
+--
+-- A STATE IS NOT AN ACT, and no predicate over the decision's final row can tell them apart —
+-- the row looks identical whether this transaction moved it or found it that way. The act has to
+-- be recorded WHERE IT IS VISIBLE, which is the update itself, with OLD in hand. So the
+-- transition registers itself: a BEFORE UPDATE trigger on `Decision` appends the decision's id to
+-- a TRANSACTION-LOCAL set when, and only when, this update performs `pending`/`change` ->
+-- `approved`. The deferred birth seal then asks whether its decision is in that set.
+--
+-- The admitted entries are the DELIVERED `decision_t4b_attribution_seal`'s: it states that the
+-- approval tuple may first be written only by `pending`/`change` -> `approved`, and this register
+-- must say the same thing or the two seals disagree about what an approval is. If a later unit
+-- adds a third entry transition it moves this set with the seal that states it.
+--
+-- A jsonb ARRAY, not a delimited string, for round 20 finding 2's reason: `Decision.id` is
+-- unconstrained TEXT, so any delimiter can appear INSIDE an id and a containment test on a
+-- concatenated string answers TRUE for a decision the transaction never touched. `?` on a jsonb
+-- array has no delimiter to smuggle.
+CREATE OR REPLACE FUNCTION phase6_t4d_decision_approved_here() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD."status"::text IN ('pending', 'change') AND NEW."status"::text = 'approved' THEN
+    PERFORM set_config('phase6.t4d_decision_approved',
+      (COALESCE(NULLIF(current_setting('phase6.t4d_decision_approved', true), ''), '[]')::jsonb
+        || to_jsonb(NEW."id"))::text, true);
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "Decision_t4d_approval_transition" ON "Decision";
+CREATE TRIGGER "Decision_t4d_approval_transition" BEFORE UPDATE ON "Decision"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_decision_approved_here();
+
+CREATE OR REPLACE FUNCTION phase6_t4d_decision_approved_in_tx(p_decision TEXT) RETURNS BOOLEAN
+LANGUAGE sql STABLE AS $$
+  SELECT COALESCE(NULLIF(current_setting('phase6.t4d_decision_approved', true), ''), '[]')::jsonb
+         ? p_decision;
+$$;
+
 CREATE OR REPLACE FUNCTION phase6_t4d_revision_birth_paired() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE v_births BIGINT; v_moved BOOLEAN; v_open BIGINT;
 BEGIN
@@ -2260,13 +2386,27 @@ BEGIN
     -- left this branch unwritten. A finalized approval is DEFINED by where it leaves its decision,
     -- and the delivered `decision_t4b_attribution_seal` says where that is: the approval tuple may
     -- first be written only by `pending`/`change` -> `approved`.
+    -- AND IT IS THE TRANSITION, NOT THE END STATE (#582's review round 22, finding 3). The
+    -- paragraph above is right that `xmin` alone is a no-op's to supply, and the answer it gave —
+    -- add the final status — has the SAME hole one step along: a no-op UPDATE against a decision
+    -- that is ALREADY `approved` writes the row (satisfying `xmin`) and leaves it `approved`
+    -- (satisfying the status), with nothing transitioned. Only the update itself can tell an act
+    -- from a state, because only it holds OLD — so `Decision_t4d_approval_transition` records the
+    -- `pending`/`change` -> `approved` move in a transaction-local set as it happens, and this is
+    -- the reader. The end state is still required beside it: the transition must also still STAND
+    -- at commit, or a later statement in the same transaction could move the decision back out of
+    -- the approved family and leave the finalized revision behind.
+    IF NOT phase6_t4d_decision_approved_in_tx(NEW."decisionId") THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: revision % is born FINALIZED, but no `pending`/`change` -> `approved` transition of decision % was performed in this transaction — a finalized approval IS the act that moves its decision into the approved family, and a write that leaves an already-approved decision approved performs no such act while the register counts the revision as a cycle that happened. A historical import declares itself by disabling `DecisionApprovalRevision_t4d_birth_paired` by name, the way the 4c provenance seal is already declared.',
+        NEW."id", NEW."decisionId";
+    END IF;
     SELECT TRUE INTO v_moved FROM "Decision" d
      WHERE d."projectId" = NEW."projectId" AND d."id" = NEW."decisionId"
-       AND d."status"::text = 'approved'
-       AND d."xmin" = txid_current()::text::xid;
+       AND d."status"::text = 'approved';
     IF NOT FOUND THEN
       RAISE EXCEPTION
-        'phase6 4d-i: revision % is born FINALIZED, but decision % does not end this transaction as an `approved` row this transaction wrote — a finalized approval IS the act that moves its decision into the approved family, and one recorded without that act is an approval nobody performed while the register counts it as a cycle that happened. A historical import declares itself by disabling `DecisionApprovalRevision_t4d_birth_paired` by name, the way the 4c provenance seal is already declared.',
+        'phase6 4d-i: revision % is born FINALIZED and decision % was moved into `approved` in this transaction, but it does not END the transaction there — an approval that is walked back by a later statement leaves an immutable finalized revision recording a cycle the register no longer agrees happened.',
         NEW."id", NEW."decisionId";
     END IF;
   END IF;
