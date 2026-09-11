@@ -11,6 +11,34 @@ Design authority for this programme. **v2** — reproduced against `main @ a3543
 
 ## Status — read before doing anything
 
+> **Owner design GO (2026-09-11).** JagPat approved the frontend look of
+> four pending items before further UX implementation. This is design
+> authority, not a merge, and it does not start a competing producer on
+> #582 or #584. Execution stays queued behind the open 4d-i unit except
+> for F-1b, which remains Claude's existing PR #584 with the look locked
+> below.
+>
+> 1. **F-1b look — GO.** On the mobile shell (`@media (width < 640px)`,
+>    the complement of `BottomTabs` / `TopBar` `min-width: 640px`, so
+>    639.99px is included): every `input`, `textarea`, and `select`
+>    computes to ≥16px; safety- and evidence-critical labels ≥13px with
+>    real weight; every action target ≥44×44. Desktop authored density
+>    is unchanged. **§6.7 override:** a shared `Field` primitive is NOT
+>    required for F-1b. A mobile stylesheet floor that outranks inline
+>    field sizes is an accepted guarantee; F-1c still verifies computed
+>    style. Do not migrate the 134 call sites in this unit.
+> 2. **D1 drawings search — GO, queued.** Clone the Decision Log filter
+>    onto the Drawings register per `SEARCH_AND_NAV_PROPOSAL.md` §2.
+>    D2 global search stays specified-not-built. Do not open D1 while
+>    #582 is the product task.
+> 3. **Client type scale-up — GO, queued.** Client Health and Client
+>    Decisions: 18–20px base on desktop/iPad, larger photos; engineer and
+>    worker surfaces stay single-column large-target. Wave 1 leftover;
+>    do not open it while #582 is the product task.
+> 4. **Contractor capture unit 0 — already cleared.** The 2026-09-11 GO
+>    confirms the fail-closed API (#459). It does **not** open units 1–6;
+>    those still need a per-unit Board GO.
+
 > **Amendment (2026-08-15):** the owner directed that independent
 > activities run in PARALLEL, superseding the original "after Task 4"
 > sequencing for Wave 0. These docs LANDED (this folder) and **unit F-1a is
@@ -20,15 +48,16 @@ Design authority for this programme. **v2** — reproduced against `main @ a3543
 > default (2026-08-15 — the shared field primitive, the option the
 > foundation doc marks preferred; the owner may override asynchronously);
 > **F-1c** follows both. Waves 1–5 keep their original gating below.
+> **The 2026-09-11 owner GO above is that asynchronous override for F-1b.**
 
 - **The remaining Phase 6 collaborator work still gates waves 1–5.** Leave the active Task 4 plan/review/correction work completely undisturbed. Do not mix anything from this folder into it.
-- **Wave 4 is blocked** on worker authentication and device binding (§6.2), and on the worker/mistri experience shape (§6.3). **Wave 5 acceptance is blocked** on weekly-report export (§6.1) and architect rejection authority (§6.5). **Wave 3 is not implementation-ready** until the `CommercialScreen` split is decided. **F-1b**'s field-primitive question is SETTLED by §6.7's recorded autonomous default (2026-08-15 — the shared primitive; owner override asynchronous). Settle each remaining question before its stage opens.
+- **Wave 4 is blocked** on worker authentication and device binding (§6.2), and on the worker/mistri experience shape (§6.3). **Wave 5 acceptance is blocked** on weekly-report export (§6.1) and architect rejection authority (§6.5). **Wave 3 is not implementation-ready** until the `CommercialScreen` split is decided. **F-1b**'s field-primitive question is OVERRIDDEN by the 2026-09-11 owner GO (mobile stylesheet floor, not a shared `Field`). Settle each remaining question before its stage opens.
 - **Re-audit before planning.** These findings were reproduced at `a35439439a30`. For WAVES 1–5, Phase 6 will change the interface inventory — re-run every reproduction step against the post-Phase-6 head and re-derive the surface map from the final screen list. A WAVE-0 unit instead re-runs its reproduction steps against the CURRENT head at the moment it opens (amended 2026-08-15: F-1a did exactly this; F-1b does the same when it opens — it does not wait for Phase 6).
 
 ## Non-negotiable rules
 
 1. **Reproduce before you plan.** Every claim cites a file and line. Re-run each against current `HEAD`. If a claim no longer reproduces, say so and skip it — do not build against a stale finding. v1 of these docs contained four claims that were wrong or overstated; they are listed openly in the master brief's correction table. Treat this folder as a starting hypothesis, not as truth.
-2. **Sequencing is fixed for Waves 1–5.** Task 4 → Phase 6 collaborator units → Waves 1–5. **Wave 0 is the exception** (amended 2026-08-15, owner parallel directive): it runs NOW as a parallel track — F-1a shipped in PR #342, F-1b opens on that merge with §6.7's recorded default, F-1c after both — and no Wave-0 unit waits for Task 4 or Phase 6. Within the programme, Wave 0 still precedes Waves 1–5.
+2. **Sequencing is fixed for Waves 1–5.** Task 4 → Phase 6 collaborator units → Waves 1–5. **Wave 0 is the exception** (amended 2026-08-15, owner parallel directive): it runs NOW as a parallel track — F-1a shipped in PR #342, F-1b is open as #584 under the 2026-09-11 stylesheet-floor override (not the 2026-08-15 `Field` default), F-1c after both — and no Wave-0 unit waits for Task 4 or Phase 6. Within the programme, Wave 0 still precedes Waves 1–5.
 3. **One wave open at a time.** A wave opens only when the previous has cleared exact-head Codex review. Units *within* a wave are independent and may run in parallel — **except Wave 0**, where `F-1c` (per-surface validation) depends on both `F-1a` and `F-1b` and must run after them.
 4. **Scope discipline.** Decision-specific UX belongs to Task 4. Collaborator-portal UX belongs to its Phase 6 units. Nothing here authorises work in either.
 5. **Do not weaken gates.** Security, authorization, evidence, migration, offline, idempotency, module-boundary and exact-head Codex gates stand unchanged. Where this plan meets a security question — worker device binding especially — fix the security question first rather than designing around it.
