@@ -37,6 +37,14 @@ Run against current `HEAD` **at the moment the unit opens** (amended 2026-08-15:
 > computed-style pass remains F-1c's per-surface verification, not the
 > mechanism of the guarantee. The owner may override asynchronously — a
 > genuine owner reply choosing otherwise re-plans F-1b at that point.
+>
+> **Owner override (2026-09-11, JagPat design GO).** F-1b does **not**
+> introduce `components/Field.tsx` and does **not** migrate the 134
+> inline field styles. The ≥16px mobile guarantee is a stylesheet floor
+> under `max-width: 639px` that outranks inline sizes. Desktop density
+> stays as authored. Critical labels ≥13px with weight. Every action
+> target ≥44×44, verified in a real browser. F-1c still does the
+> computed-style pass. PR #584 remains the F-1b vehicle.
 
 ---
 

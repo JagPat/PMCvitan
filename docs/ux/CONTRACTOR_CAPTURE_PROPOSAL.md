@@ -133,7 +133,9 @@ the unit's own reproduce-first barrier probes against real code at its own revie
 the only place the repository verifies concurrency mechanics; this proposal binds the
 invariants and their owners, and no unit may ship with an obligation below unproven:
 
-0. **Fail closed now** (service only, no schema): the three writes are OPEN at the API
+0. **Fail closed now** (service only, no schema): **DELIVERED AND CLEARED** as PR #459.
+   JagPat's 2026-09-11 design GO confirms this unit and does **not** open units 1–6.
+   The three writes were OPEN at the API
    today (§2) and create immutable evidence, so before any attribution work begins, each
    service refuses a CONTRACTOR caller outright — a named, tested refusal inside the same
    transactions that will later hold the ownership check. This is NOT O3: the grants stay
