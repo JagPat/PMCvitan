@@ -2352,20 +2352,6 @@ BEGIN
     -- `Decision_t4d_approval_transition` appends the decision to this set when the status CHANGES
     -- INTO `awaiting_countersign`. The end state is kept beside it so a later statement in the
     -- same transaction cannot park the decision, plant the revision and then move it away.
-    IF NOT phase6_t4d_decision_awaiting_in_tx(NEW."decisionId") THEN
-      RAISE EXCEPTION
-        'phase6 4d-i: revision % is born PROVISIONAL, but no move of decision % INTO `awaiting_countersign` was performed in this transaction — a provisional approval IS the act that parks a decision for its countersigner, and a write that leaves an already-parked decision parked performs no such act while a second immutable revision claims it did',
-        NEW."id", NEW."decisionId";
-    END IF;
-    SELECT TRUE INTO v_moved FROM "Decision" d
-     WHERE d."projectId" = NEW."projectId" AND d."id" = NEW."decisionId"
-       AND d."status"::text = 'awaiting_countersign';
-    IF NOT FOUND THEN
-      RAISE EXCEPTION
-        'phase6 4d-i: revision % is born PROVISIONAL and decision % was parked in this transaction, but it does not END the transaction as an `awaiting_countersign` row — a parking that is walked back by a later statement leaves an immutable provisional revision recording a wait nobody is holding',
-        NEW."id", NEW."decisionId";
-    END IF;
-
     -- (2b) AND A DECISION HOLDS AT MOST ONE OPEN APPROVAL, which is the invariant the attack
     -- actually breaks and the one this file has been ASSUMING all along:
     -- `phase6_t4d_provisional_head` resolves "the" provisional head as the highest-version
@@ -2383,6 +2369,27 @@ BEGIN
       RAISE EXCEPTION
         'phase6 4d-i: decision % would hold % unfinalized approval revisions at commit (this one is version %) — a decision has at most ONE open approval, the head its finalizer acts on, and every revision below it is stranded beyond the reach of any countersign or resolution',
         NEW."decisionId", v_open, NEW."version";
+    END IF;
+
+    -- THE ORDER OF (2b) AND (2c) IS LOAD-BEARING (#582 round 22, the class sweep). Both refuse a
+    -- SECOND provisional revision beside an already-parked decision, and (2b) is the rule that
+    -- shape actually breaks — round 11's finding 3 drives exactly it and names this message. Put
+    -- the move-demand first and that arm would start passing because something else said no,
+    -- which is the abbreviation this PR's round 1 wrote an oracle for. The move-demand is the
+    -- GENERAL rule and answers what (2b) cannot see: a FIRST provisional revision with no
+    -- transition behind it at all.
+    IF NOT phase6_t4d_decision_awaiting_in_tx(NEW."decisionId") THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: revision % is born PROVISIONAL, but no move of decision % INTO `awaiting_countersign` was performed in this transaction — a provisional approval IS the act that parks a decision for its countersigner, and a write that leaves an already-parked decision parked performs no such act while a second immutable revision claims it did',
+        NEW."id", NEW."decisionId";
+    END IF;
+    SELECT TRUE INTO v_moved FROM "Decision" d
+     WHERE d."projectId" = NEW."projectId" AND d."id" = NEW."decisionId"
+       AND d."status"::text = 'awaiting_countersign';
+    IF NOT FOUND THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: revision % is born PROVISIONAL and decision % was parked in this transaction, but it does not END the transaction as an `awaiting_countersign` row — a parking that is walked back by a later statement leaves an immutable provisional revision recording a wait nobody is holding',
+        NEW."id", NEW."decisionId";
     END IF;
 
   ELSE
