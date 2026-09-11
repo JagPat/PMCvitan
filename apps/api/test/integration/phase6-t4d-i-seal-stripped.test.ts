@@ -3029,7 +3029,11 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     buildRun(AWAITING_DOORS);
     const whole = psql(RUN_DB, ['-c', orphan]);
     expect(whole.ok, 'a provisional revision with no transition behind it must be REFUSED').toBe(false);
-    expect(whole.output).toMatch(/born PROVISIONAL, but decision .* does not end this transaction as an .awaiting_countersign. row/);
+    // #582 round 22, the class sweep — the arm's subject is unchanged (a provisional revision with
+    // no transition behind it) but the rule it meets now names the MOVE rather than the end state,
+    // because a no-op against an already-parked decision satisfied the state. The orphan here
+    // performs no move at all, so it is the move-demand that answers first.
+    expect(whole.output).toMatch(/born PROVISIONAL, but no move of decision .* INTO .awaiting_countersign./);
 
     // and the WHOLE provisional act — revision plus its transition — must commit.
     buildRun(AWAITING_DOORS);
