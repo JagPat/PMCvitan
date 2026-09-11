@@ -116,6 +116,78 @@ BEGIN
   END IF;
 END $$;
 
+-- ── and the AUDIT the doors owe: nothing may ALREADY hold a reserved value ───────────────────
+-- #582's review round 16, findings 1 and 5, which are ONE rule stated at two tables:
+--
+--   A DOOR THAT RESERVES A VALUE IS HALF AN ANSWER. It judges NEW and UPDATED rows; it cannot see
+--   a row that already holds the value. The other half is a diagnostic-first AUDIT that refuses
+--   the apply while one exists — and the registers half has carried exactly that for
+--   `Membership.role` and `User.role` since round 1. `Decision` and `DecisionEvent.type` never
+--   got it, and round 15's own new kind door shipped protecting future inserts only, which is the
+--   same omission made one round after the rule was restated.
+--
+-- The exposure is the supported `db push` / P3005 baseline. `DeciderKind` and `DecisionStatus`
+-- carry the widened values from `schema.prisma` there, and `DecisionEvent.type` is an
+-- unconstrained TEXT column, so all three can already hold a reserved value before any raw
+-- trigger exists. What each adopted row then means:
+--
+--   · `Decision.status = 'awaiting_countersign'` — a decision waiting for a countersign with no
+--     provisional revision to countersign and no `DecisionCountersign` fact to produce.
+--     `phase6_t4d_provisional_head` finds no head, so neither the countersign nor the stranded
+--     resolution can resolve it: unfinalizable by construction.
+--   · `Decision.deciderKind = 'architect'` — a decision held by a designation whose standing
+--     register is empty, so it has no holder any surface can resolve.
+--   · `DecisionEvent.type` in the four 4d-only kinds — evidence of an act whose command does not
+--     exist, which `DecisionEvent_t4d_append_only` then makes permanent and which 4d-iii's
+--     stronger INSERT correspondence can never examine, because it judges only NEW rows.
+--
+-- DIAGNOSTIC-FIRST and BOUNDED, like its siblings: the doors above are already installed (and
+-- with them the locks), so this counts a settled table, names up to ten of each, and aborts.
+-- Gated on the retirement snapshot, because after 4d-iii every one of these values is legitimate.
+DO $reserved_rows$
+DECLARE
+  v_awaiting BIGINT; v_architect BIGINT; v_kinds BIGINT;
+  v_sample TEXT; v_found TEXT := '';
+BEGIN
+  IF phase6_t4d_retired_at_start() THEN
+    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the reserved-value audit is SKIPPED (these values are legitimate after 4d-iii)';
+    RETURN;
+  END IF;
+
+  SELECT count(*) INTO v_awaiting FROM "Decision" WHERE "status"::text = 'awaiting_countersign';
+  IF v_awaiting > 0 THEN
+    SELECT string_agg(q.id, ', ') INTO v_sample FROM (
+      SELECT "id" AS id FROM "Decision" WHERE "status"::text = 'awaiting_countersign' ORDER BY "id" LIMIT 10) q;
+    v_found := v_found || format('%s"Decision"."status" = awaiting_countersign: %s row(s) [%s]',
+                                 CASE WHEN v_found = '' THEN '' ELSE '; ' END, v_awaiting, v_sample);
+  END IF;
+
+  SELECT count(*) INTO v_architect FROM "Decision" WHERE "deciderKind"::text = 'architect';
+  IF v_architect > 0 THEN
+    SELECT string_agg(q.id, ', ') INTO v_sample FROM (
+      SELECT "id" AS id FROM "Decision" WHERE "deciderKind"::text = 'architect' ORDER BY "id" LIMIT 10) q;
+    v_found := v_found || format('%s"Decision"."deciderKind" = architect: %s row(s) [%s]',
+                                 CASE WHEN v_found = '' THEN '' ELSE '; ' END, v_architect, v_sample);
+  END IF;
+
+  SELECT count(*) INTO v_kinds FROM "DecisionEvent"
+   WHERE "type" IN ('countersigned', 'stranded_resolved', 'forwarded', 'countersign_renotified');
+  IF v_kinds > 0 THEN
+    SELECT string_agg(q.id, ', ') INTO v_sample FROM (
+      SELECT "id" AS id FROM "DecisionEvent"
+       WHERE "type" IN ('countersigned', 'stranded_resolved', 'forwarded', 'countersign_renotified')
+       ORDER BY "id" LIMIT 10) q;
+    v_found := v_found || format('%s"DecisionEvent"."type" in the 4d-only kinds: %s row(s) [%s]',
+                                 CASE WHEN v_found = '' THEN '' ELSE '; ' END, v_kinds, v_sample);
+  END IF;
+
+  IF v_found <> '' THEN
+    RAISE EXCEPTION
+      'phase6 4d-i ABORT: row(s) already hold a value this unit RESERVES until 4d-iii — %. The doors installed just above judge new and updated rows and cannot see these; the seals below would adopt and freeze them. An awaiting decision has no provisional revision to countersign and is unfinalizable by construction; an architect-held decision has no holder any surface can resolve; a 4d-only audit kind is evidence of an act whose command does not exist until 4d-ii. Return the named decisions to a state this release can serve (`pending`, `approved` or `change`, with a `client`, `pmc`, `member` or `none` designation) and remove the named audit rows, then re-run. On a database that has genuinely run 4d-iii, restore its RolloutRetirement marker instead. See docs/RUNBOOK.md §P6T4D.',
+      v_found;
+  END IF;
+END $reserved_rows$;
+
 -- ════════════════════════════════════════════════════════════════════════════════════════════
 -- PART 2 — THE ENUM ADDITIONS
 -- ════════════════════════════════════════════════════════════════════════════════════════════

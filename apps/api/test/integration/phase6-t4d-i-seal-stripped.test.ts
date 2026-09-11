@@ -2050,6 +2050,90 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
   }, 300_000);
 
   /**
+   * #582's review round 16, findings 1 and 5 — A DOOR THAT RESERVES A VALUE IS HALF AN ANSWER.
+   *
+   * The doors judge NEW and UPDATED rows. They cannot see a row that already holds the value, and
+   * on the supported db-push/P3005 baseline one can: `schema.prisma` carries the widened
+   * `DeciderKind` and `DecisionStatus`, and `DecisionEvent.type` is unconstrained TEXT. The
+   * registers half has carried the other half — a diagnostic-first audit — for `Membership.role`
+   * and `User.role` since round 1; `Decision` and `DecisionEvent` never got it, and round 15's own
+   * kind door shipped protecting future inserts only.
+   *
+   * Three plants, repaired one at a time: each repair must move the abort on to the next, which is
+   * how the arm proves three questions rather than one.
+   */
+  it('a pre-existing RESERVED value aborts the apply, one value at a time', () => {
+    psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+    expect(psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]).ok).toBe(true);
+
+    // the db-push baseline's vocabulary: `schema.prisma` declares both widened enums, so a
+    // baselined database has the values before any raw trigger exists. ADD VALUE runs outside a
+    // transaction here for the same reason the base builder applies such files that way.
+    for (const alter of [
+      `ALTER TYPE "DeciderKind" ADD VALUE IF NOT EXISTS 'architect'`,
+      `ALTER TYPE "DecisionStatus" ADD VALUE IF NOT EXISTS 'awaiting_countersign'`,
+    ]) expect(psql(RUN_DB, ['-c', alter]).ok, alter).toBe(true);
+
+    const seeded = psql(RUN_DB, ['-c', `
+      INSERT INTO "Org" ("id","name","slug") VALUES ('rv-org','RV Org','rv-org');
+      INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+        VALUES ('rv-proj','rv-org','RV Site','RV','','Finishing','RV-01','01 Jan 2026','31 Dec 2026',0,0,0);
+      INSERT INTO "User" ("id","projectId","role","name","phone") VALUES
+        ('rv-user','rv-proj','pmc','RV User','+910000000051'),
+        ('rv-client','rv-proj','client','RV Client','+910000000052');
+      INSERT INTO "Membership" ("id","projectId","userId","role","status") VALUES
+        ('rv-mem','rv-proj','rv-user','pmc','active'),
+        ('rv-mem-c','rv-proj','rv-client','client','active');
+      -- born unpublished with their option floor and published in the SAME transaction, the shape
+      -- the delivered 4b seals admit (the fixture at the top of this file does the same)
+      BEGIN;
+      INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt")
+        VALUES ('rv-await','rv-proj','RV Awaiting','Hall','pending','sw',NULL);
+      -- the architect-held one is born holding the designation and stays a DRAFT: the delivered 4b
+      -- freeze refuses re-pointing a published decision's decider, so on a real baseline a row
+      -- like this arrives that way rather than being moved into it.
+      INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt","deciderKind")
+        VALUES ('rv-arch','rv-proj','RV Architect','Hall','pending','sw',NULL,'architect');
+      INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch","order") VALUES
+        ('rv-o1','rv-await','A','a','Granite',0,'s1',0), ('rv-o2','rv-await','B','b','Quartz',1,'s2',1);
+      UPDATE "Decision" SET "publishedAt" = now() WHERE "id" = 'rv-await';
+      COMMIT;
+      -- and THEN the reserved status, which on a db-push baseline arrives with no trigger to judge
+      -- it: the vocabulary is in the enum and nothing in this release refuses the write.
+      UPDATE "Decision" SET "status" = 'awaiting_countersign' WHERE "id" = 'rv-await';
+      INSERT INTO "DecisionEvent" ("id","decisionId","type","actor","actorId","actorName","actorRole","payload")
+        VALUES ('rv-de','rv-await','forwarded','RV User','rv-user','RV User','pmc','{}'::jsonb);
+    `]);
+    expect(seeded.ok, seeded.output).toBe(true);
+
+    // the registers half is not implicated and applies
+    const dark = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(dark.ok, `the registers half must apply:\n${dark.output}`).toBe(true);
+
+    const awaiting = psql(RUN_DB, ['-f', FACTS]);
+    expect(awaiting.ok, 'a decision already AWAITING must refuse the apply').toBe(false);
+    expect(awaiting.output).toMatch(/already hold a value this unit RESERVES/);
+    expect(awaiting.output).toMatch(/awaiting_countersign: 1 row\(s\) \[rv-await\]/);
+    // all three are named in ONE abort — an operator repairs once, not three times
+    expect(awaiting.output).toMatch(/architect: 1 row\(s\) \[rv-arch\]/);
+    expect(awaiting.output).toMatch(/4d-only kinds: 1 row\(s\) \[rv-de\]/);
+
+    // repair the decision states; the audit must then name only the audit row
+    expect(psql(RUN_DB, ['-c',
+      `UPDATE "Decision" SET "status" = 'pending' WHERE "id" = 'rv-await';
+       DELETE FROM "Decision" WHERE "id" = 'rv-arch'`]).ok).toBe(true);
+    const kinds = psql(RUN_DB, ['-f', FACTS]);
+    expect(kinds.ok, 'a 4d-only audit kind must still refuse the apply').toBe(false);
+    expect(kinds.output).toMatch(/4d-only kinds: 1 row\(s\) \[rv-de\]/);
+    expect(kinds.output).not.toMatch(/awaiting_countersign: /);
+
+    // and the named repair is the repair that works
+    expect(psql(RUN_DB, ['-c', `DELETE FROM "DecisionEvent" WHERE "id" = 'rv-de'`]).ok).toBe(true);
+    const clean = applyWhole();
+    expect(clean.ok, `after the named repairs the apply must succeed:\n${clean.output}`).toBe(true);
+  }, 300_000);
+
+  /**
    * #582's review round 9, finding 1 — THE DARK FACT TABLES MUST BE EMPTY WHEN 4d-i SEALS THEM.
    *
    * Round 8 audited the four adopted REGISTERS and left the fact tables alone. Same db-push
