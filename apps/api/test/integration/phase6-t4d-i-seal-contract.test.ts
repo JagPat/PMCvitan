@@ -343,8 +343,10 @@ const REGISTER: Record<string, SealContract> = {
   },
   phase6_t4d_event_correspondence_weak: {
     rule: 'an audit row corresponds to an event emitted IN THE SAME TRANSACTION — a historical '
-      + 'event of the same type does not satisfy a later audit insert',
-    plan: '§A.3 obligation 4; #582 round 1, finding 3; round 7, finding 4',
+      + 'event of the same type does not satisfy a later audit insert — and both name the actor '
+      + 'the branch\'s OWN act row recorded',
+    plan: '§A.3 obligation 4; #582 round 1, finding 3; round 7, finding 4; round 19, finding 4; '
+      + 'round 23, finding 3',
     on: { 'DecisionEvent.DecisionEvent_t4d_correspondence': C('I') },
     // #582 round 7, finding 4 — `platform_tx_event` alone is satisfied by the WEAKER question.
     // §A.3 says exactly ONE, and `platform_tx_event_count` was written for it (its own doc
@@ -353,7 +355,12 @@ const REGISTER: Record<string, SealContract> = {
     // distinguishes an existence check from an exactness check.
     // #582 round 9, finding 5 — round 7's count was ONE-SIDED: each audit row demanded one
     // event and nothing demanded one audit row. `v_audits` witnesses the converse.
-    must: ['platform_tx_event_count', 'v_events > 1', 'v_audits > 1'],
+    // #582 round 23, finding 3 — round 19's ACTOR binding had no token at all, so the oracle was
+    // silent while that rule covered one branch of nine and mis-bound two more. `v_row` is the
+    // per-branch authority's name and exists nowhere else; the two column names witness the
+    // branches whose authority is NOT the approval revision, which is the whole of the finding.
+    must: ['platform_tx_event_count', 'v_events > 1', 'v_audits > 1',
+      'v_row', 'countersignedById', 'requestedById'],
   },
   phase6_t4d_consultation_attribution_frozen: {
     rule: 'the 4c consultation attribution columns are frozen once written',

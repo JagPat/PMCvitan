@@ -2388,6 +2388,201 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
   }, 180_000);
 
   /**
+   * #582's review round 23, finding 1 — AN APPROVAL ENTRY IS A NAMED PAIR OF TRANSITIONS, not
+   * every move that happens to land on `approved`.
+   *
+   * Round 22 built the transition register because only the UPDATE itself, holding OLD, can tell
+   * an act from a state. It then recorded ANY change into `approved`, while the exception message
+   * it feeds — and the comment three lines above it — both say `pending`/`change` -> `approved`.
+   * The delivered `Decision_t4b_attribution_seal` is where that pair comes from: the approval
+   * tuple may first be written only by that move, and `DecisionApprovalRevision.approvedFrom`
+   * carries a CHECK admitting those two sources and no third.
+   *
+   * After 4d-iii there IS a third move onto `approved` — the stranded completion, which finishes
+   * an already-made provisional approval out of `awaiting_countersign` and writes no new approval
+   * at all. A bundle that performs a genuine one can ride it: mint a real `decisions.approve`
+   * receipt, insert a higher-version FINALIZED revision beside it, and the birth seal sees a
+   * register entry, an `approved` end state and one new revision. The fabricated approval becomes
+   * the immutable head and inflates the cycle count 4c reads.
+   *
+   * Two-sided, because a register that recorded NOTHING would also refuse the first half.
+   */
+  it('a finalized revision rides an approval ENTRY, and a stranded completion is not one', () => {
+    // The three 4d-i objects that stand in front of an `awaiting_countersign` decision at all —
+    // the reservation door, the entry seal's architect demand, and the provisional-birth pairing.
+    // The seal under test, `DecisionApprovalRevision_t4d_birth_paired`, stays installed.
+    buildRun(['Decision_t4d_awaiting_reserved', 'Decision_t4d_entry_seal', 'Decision_t4d_awaiting_paired']);
+
+    // parked by an EARLIER transaction, which is what a decision awaiting its countersigner is
+    expect(psql(RUN_DB, ['-c',
+      `UPDATE "Decision" SET "status" = 'awaiting_countersign' WHERE "id" = 'ss-dec'`]).ok).toBe(true);
+
+    const stranded = psql(RUN_DB, ['-c', `
+      BEGIN;
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('ss-cmd-str','project','ss-org','ss-proj','ss-user','decisions.approve','ss-key-str','ss-hash-str','reserved');
+      UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec' WHERE "id" = 'ss-cmd-str';
+      UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'ss-dec';
+      INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
+        VALUES ('ss-rev-str','ss-proj','ss-dec',1,'a',now(),'ss-user','ss-cmd-str');
+      COMMIT;
+    `]);
+    expect(
+      stranded.ok,
+      'a FINALIZED revision born on an `awaiting_countersign` -> `approved` completion must be '
+      + 'REFUSED — that move finishes an approval already made and writes no new one, so a '
+      + `revision riding it is an approval cycle nobody performed:\n${stranded.output}`,
+    ).toBe(false);
+    expect(stranded.output).toMatch(/transition of decision/);
+
+    // AND THE REAL ENTRY STILL COMMITS. A register that recorded no move would refuse this too,
+    // which is the shape this half exists to exclude.
+    const born = psql(RUN_DB, ['-c', `
+      BEGIN;
+      INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt")
+        VALUES ('ss-dec3','ss-proj','SS Entry','Hall','pending','sw',NULL);
+      INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch","order")
+        VALUES ('ss-opt3-a','ss-dec3','Option A','a','Granite',0,'sw1',0),
+               ('ss-opt3-b','ss-dec3','Option B','b','Quartz',100,'sw2',1);
+      UPDATE "Decision" SET "publishedAt" = now() WHERE "id" = 'ss-dec3';
+      COMMIT;
+    `]);
+    expect(born.ok, `the entry fixture must commit:\n${born.output}`).toBe(true);
+
+    const entry = psql(RUN_DB, ['-c', `
+      BEGIN;
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('ss-cmd-ent','project','ss-org','ss-proj','ss-user','decisions.approve','ss-key-ent','ss-hash-ent','reserved');
+      UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec3' WHERE "id" = 'ss-cmd-ent';
+      UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'ss-dec3';
+      INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
+        VALUES ('ss-rev-ent','ss-proj','ss-dec3',1,'a',now(),'ss-user','ss-cmd-ent');
+      COMMIT;
+    `]);
+    expect(entry.ok, `a real \`pending\` -> \`approved\` entry must COMMIT:\n${entry.output}`).toBe(true);
+  }, 180_000);
+
+  /**
+   * #582's review round 23, finding 2 — THE CLOSURE RECEIPT'S ADMITTED RESULT IS THE DECISION,
+   * for BOTH writers, and round 22 wrote the opposite for one of them.
+   *
+   * §D settles this in terms the plan states twice and then lists under "Deliberately NOT done":
+   * a `ChangeRequest` CLOSURE is admitted with a `resultRef` naming the closed row's `decisionId`,
+   * "which is what both writers already return", and re-pointing `withdrawChange`'s receipt at the
+   * request is the alternative the plan REJECTS — a command whose subject is the decision does not
+   * get its receipt moved to satisfy a seal. Round 22 split the rule by command anyway and
+   * demanded `NEW."id"` on the withdrawal arm, which refuses every ordinary withdrawal the moment
+   * 4d-ii starts writing the column: `decisions.service.ts` completes it with `resultRef:
+   * decisionId`.
+   *
+   * Two-sided, because a binding that admitted ANY receipt would also pass the first half.
+   */
+  it('a closure cites the receipt its command actually completes — the decision, for both writers', () => {
+    buildRun([]);
+
+    const shipped = psql(RUN_DB, ['-c', `
+      BEGIN;
+      INSERT INTO "ChangeRequest" ("id","decisionId","projectId","reason","costImpact","timeImpactDays","status")
+        VALUES ('ss-cr-wd','ss-dec','ss-proj','withdraw me',0,0,'open');
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('ss-cmd-wd','project','ss-org','ss-proj','ss-user','decisions.withdrawChange','ss-key-wd','ss-hash-wd','reserved');
+      UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec' WHERE "id" = 'ss-cmd-wd';
+      UPDATE "ChangeRequest" SET "resolvedByCommandId" = 'ss-cmd-wd', "resolvedById" = 'ss-user',
+             "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn'
+       WHERE "id" = 'ss-cr-wd';
+      COMMIT;
+    `]);
+    expect(
+      shipped.ok,
+      'the SHIPPED withdrawal bundle must COMMIT — `decisions.withdrawChange` completes its '
+      + 'receipt with `resultRef: decisionId`, and §D admits exactly that shape for a closure:\n'
+      + `${shipped.output}`,
+    ).toBe(true);
+
+    // AND A RECEIPT FOR ANOTHER DECISION IS STILL REFUSED: the admitted shape is THIS row's
+    // decision, not any decision.
+    const borrowed = psql(RUN_DB, ['-c', `
+      BEGIN;
+      INSERT INTO "ChangeRequest" ("id","decisionId","projectId","reason","costImpact","timeImpactDays","status")
+        VALUES ('ss-cr-wd2','ss-dec','ss-proj','borrowed result',0,0,'open');
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('ss-cmd-wd2','project','ss-org','ss-proj','ss-user','decisions.withdrawChange','ss-key-wd2','ss-hash-wd2','reserved');
+      UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec2' WHERE "id" = 'ss-cmd-wd2';
+      UPDATE "ChangeRequest" SET "resolvedByCommandId" = 'ss-cmd-wd2', "resolvedById" = 'ss-user',
+             "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn'
+       WHERE "id" = 'ss-cr-wd2';
+      COMMIT;
+    `]);
+    expect(
+      borrowed.ok,
+      `a closure receipt naming ANOTHER decision must still be refused:\n${borrowed.output}`,
+    ).toBe(false);
+    expect(borrowed.output).toMatch(/not this request's decision|closes the request of the decision it moved/);
+  }, 180_000);
+
+  /**
+   * #582's review round 23, finding 3 — THE EFFECT ACTOR BINDING IS PER-BRANCH, and round 19's
+   * finding 4 bound ONE branch.
+   *
+   * That round's own words are "the act's records are bound to the act's ROW", and the row it
+   * named was the approval revision. The correspondence seal, though, answers for nine branches,
+   * and each of the others has an act row of its own written in the same transaction: the change
+   * request's `requestedById` and `resolvedById`, the countersign's `countersignedById`, the
+   * stranded resolution's `resolvedById`, the forward's `forwardedById`. Gating the whole binding
+   * on `decision.approved`/`decision.reapproved` left every one of those unasked — so a request
+   * recorded as A can append its audit row and emit its event as B, permanently.
+   *
+   * Two-sided, because a binding that refused every mismatch AND every match would pass the first
+   * half while breaking the shipped writer.
+   */
+  it('every decision effect names the actor its OWN act row recorded, branch by branch', () => {
+    buildRun([]);
+
+    const forged = psql(RUN_DB, ['-c', `
+      BEGIN;
+      UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'ss-dec';
+      INSERT INTO "ChangeRequest" ("id","decisionId","projectId","reason","costImpact","timeImpactDays","status","requestedById","requestedByRole","requestedByName")
+        VALUES ('ss-cr-actor','ss-dec','ss-proj','who asked?',0,0,'open','ss-user','pmc','SS User');
+      UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+      INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+        SELECT 'ss-ev-actor','decision.change_requested',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec',
+               jsonb_build_object('effectKey','decision.change_requested','coverageVersion',c."coverageVersion",'invalidate',c."invalidate")
+          FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+         WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.change_requested'
+           AND c."coverageVersion" = '${COVERAGE}';
+      INSERT INTO "DecisionEvent" ("id","decisionId","type","actor","actorId")
+        VALUES ('ss-de-actor','ss-dec','change_requested','SS Client','ss-client');
+      COMMIT;
+    `]);
+    expect(
+      forged.ok,
+      'an audit row attributing a change request to someone other than its requester must be '
+      + `REFUSED — both rows are immutable, and the register would carry two answers:\n${forged.output}`,
+    ).toBe(false);
+    expect(forged.output).toMatch(/change request this transaction opened/);
+
+    // AND THE TRUTHFUL BUNDLE COMMITS, which is the shipped `requestChange` path.
+    buildRun([]);
+    const truthful = psql(RUN_DB, ['-c', `
+      BEGIN;
+      UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'ss-dec';
+      INSERT INTO "ChangeRequest" ("id","decisionId","projectId","reason","costImpact","timeImpactDays","status","requestedById","requestedByRole","requestedByName")
+        VALUES ('ss-cr-actor-ok','ss-dec','ss-proj','who asked?',0,0,'open','ss-user','pmc','SS User');
+      UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+      INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+        SELECT 'ss-ev-actor-ok','decision.change_requested',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec',
+               jsonb_build_object('effectKey','decision.change_requested','coverageVersion',c."coverageVersion",'invalidate',c."invalidate")
+          FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+         WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.change_requested'
+           AND c."coverageVersion" = '${COVERAGE}';
+      INSERT INTO "DecisionEvent" ("id","decisionId","type","actor","actorId")
+        VALUES ('ss-de-actor-ok','ss-dec','change_requested','SS User','ss-user');
+      COMMIT;
+    `]);
+    expect(truthful.ok, `the truthful bundle must COMMIT:\n${truthful.output}`).toBe(true);
+  }, 180_000);
+
+  /**
    * #582's review round 9, finding 2 — A PRE-BASELINE CATALOG ROW THAT DISAGREES WITH THE LITERAL.
    *
    * Round 8 made this WORSE before round 9 fixed it: the outgoing-generation copy read the REAL
@@ -2843,10 +3038,15 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     // transaction, by the ledger protocol (reserved on insert, completed by update — a receipt
     // born terminal is a command that never ran). One `-c` is one transaction, which is what the
     // binding requires and what a real `decisions.withdrawChange` does.
+    // AND ITS RESULT IS THE DECISION (#582's review round 23, finding 2). Round 22 wrote
+    // `resultRef = 'ss-cr-b'` here to match the rule it had just invented; §D's actual ruling is
+    // the closed row's `decisionId`, which is what the shipped command returns. The probe moved
+    // with the rule — leaving it citing the request would have kept this arm passing against a
+    // seal no real writer can satisfy, which is the whole failure mode round 22 introduced.
     const closed = psql(RUN_DB, ['-c',
       `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
          VALUES ('ss-cmd-wd','project','ss-org','ss-proj','ss-user','decisions.withdrawChange','ss-key-wd','ss-hash-wd','reserved');
-       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-cr-b' WHERE "id" = 'ss-cmd-wd';
+       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec' WHERE "id" = 'ss-cmd-wd';
        UPDATE "ChangeRequest" SET "resolvedByCommandId" = 'ss-cmd-wd', "resolvedById" = 'ss-user',
               "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn'
         WHERE "id" = 'ss-cr-b'`]);
