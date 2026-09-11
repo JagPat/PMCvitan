@@ -9,6 +9,10 @@ import styles from './responsive.module.css';
 
 const toggleBase: CSSProperties = {
   flex: 1,
+  // Wave 0 / F-1b round 7 — the Pass / Fail / N.A. verdicts measured 51×35. They are pressed
+  // one-handed, on site, with a glove or a wet thumb, and a mis-tap records the wrong verdict
+  // against a physical item. Padding alone left them 9px short; the floor is stated.
+  minHeight: 44,
   padding: '9px 0',
   borderRadius: 9,
   fontFamily: 'var(--font-sans)',
@@ -210,6 +214,8 @@ export function EngineerChecklistScreen() {
                     aria-label="Add photo"
                     style={{
                       flex: 1,
+                      // Wave 0 / F-1b round 7 — 35px tall before this; see `toggleBase`.
+                      minHeight: 44,
                       padding: '9px 0',
                       borderRadius: 9,
                       cursor: frozen ? 'not-allowed' : 'pointer',
@@ -235,7 +241,10 @@ export function EngineerChecklistScreen() {
                 )}
                 {it.state === 'fail' && (
                   <div style={{ marginTop: 10, background: '#FBF0EF', border: '1px solid #E7CBC7', borderRadius: 9, padding: '9px 11px' }}>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--red-solid)', letterSpacing: '.1em' }}>FAIL REQUIRES NOTE + PHOTO EVIDENCE</div>
+                    {/* #584 review round 1, finding 3 — the fail-evidence REQUIREMENT is what the engineer must
+                        do before this checklist can be submitted, so it leaves metadata type for F-1b's 13px
+                        floor with real weight. The letter-spacing goes with the mono face. */}
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--red-solid)' }}>Fail requires a note + photo evidence</div>
                     <input
                       value={it.note}
                       onChange={(e) => setNote(i, e.target.value)}
@@ -264,7 +273,9 @@ export function EngineerChecklistScreen() {
             the picker exists to fix: work nobody can see is work nobody can recover. */}
         {failedEvidence.length > 0 && (
           <div style={{ marginTop: 12, background: '#FBF0EF', border: '1px solid #E7CBC7', borderRadius: 12, padding: '11px 13px' }} data-testid="evidence-failed">
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--red-solid)', letterSpacing: '.1em' }}>PHOTOS THE SERVER REFUSED — CHOOSE FOR EACH</div>
+            {/* #584 review round 1, finding 3 — a refused photo is evidence that did not land, and this
+                line is the instruction to deal with each one; 13px with weight, not an eyebrow. */}
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--red-solid)' }}>Photos the server refused — choose for each</div>
             {failedEvidence.map((f) => (
               <div key={f.clientKey} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
                 <span style={{ flex: 1, fontSize: 12.5 }} data-testid={`evidence-failed-${f.clientKey}`}>
@@ -276,8 +287,8 @@ export function EngineerChecklistScreen() {
                     {evidenceOrigin(f.inspectionId, f.inspectionItemId)}
                   </span>
                 </span>
-                <button onClick={() => void retryFailedEvidence(f.clientKey)} data-testid={`evidence-retry-${f.clientKey}`} style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid var(--ink)', background: '#fff', cursor: 'pointer', fontSize: 12 }}>Retry</button>
-                <button onClick={() => void deleteFailedEvidence(f.clientKey)} data-testid={`evidence-delete-${f.clientKey}`} style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid var(--red-solid)', color: 'var(--red-solid)', background: '#fff', cursor: 'pointer', fontSize: 12 }}>Delete</button>
+                <button onClick={() => void retryFailedEvidence(f.clientKey)} data-testid={`evidence-retry-${f.clientKey}`} style={{ minHeight: 44, padding: '6px 12px', borderRadius: 8, border: '1px solid var(--ink)', background: '#fff', cursor: 'pointer', fontSize: 12 }}>Retry</button>
+                <button onClick={() => void deleteFailedEvidence(f.clientKey)} data-testid={`evidence-delete-${f.clientKey}`} style={{ minHeight: 44, padding: '6px 12px', borderRadius: 8, border: '1px solid var(--red-solid)', color: 'var(--red-solid)', background: '#fff', cursor: 'pointer', fontSize: 12 }}>Delete</button>
               </div>
             ))}
           </div>

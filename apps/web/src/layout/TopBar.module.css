@@ -103,10 +103,17 @@
 .select option {
   color: #23211c;
 }
+/* Wave 0 / F-1b — the notifications bell meets the 44×44 action-target floor.
+
+   RETRACTED, round 11: this comment used to read "it sits in the shell, so it is on every screen
+   at every viewport". That was wrong in a way that hid a real defect. There are TWO shells — this
+   bar below 640px, `LeftRail` at and above it — and on `main` each carried an identical 34×34
+   bell. Raising this one did not raise that one, and the sentence asserting completeness is why
+   nobody went looking. `LeftRail.module.css` now carries the same floor and the same note. */
 .bell {
   position: relative;
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   border: 1px solid rgba(237, 231, 218, 0.2);
   background: transparent;
   border-radius: 8px;

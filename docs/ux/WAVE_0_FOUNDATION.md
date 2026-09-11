@@ -93,6 +93,43 @@ Re-measure if any palette value changes. Do not assume a token passes because it
 
 ## Unit F-1b — mobile field and touch corrections
 
+> **Amendment (F-1b's own opening head, `f44e0eba`) — the guarantee is a CSS FLOOR, not the
+> primitive; the §6.7 default is superseded by its own reasoning.**
+>
+> The reproduce-first step was re-run at this head, as this document requires, and two of the
+> five claims no longer reproduce: `:focus-visible` has **3** matches, not 0, and the
+> `outline:none` sites now sit under F-1a's global replacement rule. Both are F-1a's, and are
+> dropped here.
+>
+> Claim 3 does not reproduce either — but in the other direction. The brief counts **8 field
+> constants**. The measured count at this head is **134 text-entry controls across 14 files**
+> (`input` other than checkbox/radio/file/range/button-like, `textarea`, `select`), of which
+> **45 are inside `CommercialScreen.tsx`** — the 162 KB file Wave 3 must split before anyone
+> may touch it.
+>
+> §6.7 chose the shared primitive *because* it makes the ≥16px property "structurally
+> guaranteed and testable at source". At 8 sites that holds. At 134 it does not: a primitive
+> guarantees only the call sites that adopt it, nothing stops the 135th, and the migration
+> alone would exceed the review-unit limit while forcing a Wave-3 prerequisite. The option was
+> chosen for a property, and at the real count it no longer delivers that property.
+>
+> F-1b therefore delivers the property by a **mobile field floor** in `styles/global.css`: an
+> `@media (max-width: 639px)` rule setting `font-size: 16px !important` on every text-entry
+> control. `!important` is what makes it work — the screens write their sizes as INLINE style
+> attributes, and only an important author declaration outranks an inline one, the same cascade
+> fact F-1a's forced-colors rule already depends on. **Verified in Chromium, not assumed:**
+> inline 13.5 / 12.5 / 14px controls all compute to 16px at 390px, and at 1280px the rule is
+> out of range so every surface keeps its authored desktop density (which this unit's brief
+> explicitly permits, and forbids only on mobile).
+>
+> This covers every control that exists and every control anyone adds later — which is what
+> §6.7 wanted. No `components/Field.tsx` is introduced: an unused primitive added to satisfy
+> the letter of a decision whose reasoning no longer holds is not a guarantee, it is ceremony.
+> **The owner may override asynchronously**, exactly as §6.7's own amendment provides.
+>
+> Proof lives in `apps/web/tests/e2e/mobile-fields.spec.ts` — a real browser at 390×844, and a
+> GENERIC sweep rather than a named list, because a named list is what went stale here.
+
 ### Fields to 16px
 Raise all 8 field styles to `fontSize: 16` — via the shared primitive if that route was chosen above. Where desktop density genuinely suffers, scale **down** at `min-width: 640px` — never below 16px on mobile.
 
@@ -106,6 +143,212 @@ Anything that changes what a user must **do** goes to ≥13px with real weight. 
 Audit every action target against the 44×44 floor in the same pass.
 
 **Done when:** all 8 field styles ≥16px on mobile (verified by computed style, or by source if the primitive was introduced); no safety- or evidence-critical text below 13px; every action target ≥44×44; iOS Safari focuses every field without zooming.
+
+> **F-1b IS NOT CLEARED** (2026-09-11, PR #584 review round 15). The criterion
+> above is unchanged and it is not met: the round-14 source count found **86**
+> shipped action targets below the floor. Round 14 retracted the CLAIM and left
+> this sentence standing, which made the unit's own completion criterion
+> knowingly false — the correction is stated here, at the criterion, and not
+> only in the amendment that found the number.
+>
+> **F-1b clears when EITHER** every one of the 86 meets the floor, **OR** the
+> Board records an exception naming the exact surfaces it covers. Until one of
+> those, F-1b is open and **F-1c must not start** — its own preamble makes
+> clearing F-1b a precondition and forbids new design decisions, so beginning it
+> on an unmet prerequisite would push this question into a unit that has no
+> licence to answer it.
+
+> **Amendment (2026-09-10, PR #584 review round 1 — four accepted findings):**
+>
+> 1. **The floor is not a WIDTH.** `max-width: 639px` releases in phone
+>    LANDSCAPE — an iPhone 14 rotated is 844 × 390 CSS px — at exactly the
+>    moment the device is still a phone and Safari still zooms. Worse, the
+>    app's own shell has already switched to `LeftRail` at that width, so the
+>    surface is serving authored desktop density to a phone. The rule gains a
+>    second condition on the SHORT side: `(max-height: 549px) and
+>    (orientation: landscape) and (pointer: coarse)` — the height excludes a
+>    landscape iPad (768px tall, and iPadOS does not zoom), the pointer test
+>    excludes a desktop window dragged short.
+> 2. **The action-target sweep must enter every STATE**, not measure the one
+>    that happens to render. Two undersized controls sat behind states the
+>    first sweep never entered: `Check out` (30px, visible only while checked
+>    IN) and the stale-data `Retry`.
+> 3. **This section's four named labels are the contract**, not examples: the
+>    fail-evidence requirement, the server-refused photo list, the presence
+>    proof and the issued-to status all leave metadata type for the 13px floor
+>    with real weight. The first head raised the material verdict alone.
+> **Amendment (2026-09-10, PR #584 review round 2):** the action-target audit is EVERY
+> reachable surface, not the one this section names. Round 1 swept the Daily Log only, which let
+> the unit claim a generic audit while three shipped controls stayed under the floor — the worker
+> and mistri sign-out buttons (34×34, 36×36) and the Places photo thumbnails (34×34). All three
+> are raw `button` elements the `Button` primitive's minimum never reaches; all three are fixed.
+>
+> **Retraction (2026-09-10, PR #584 review round 3, finding 2):** the paragraph below claimed a
+> **~0.982 ancestor content scale** on Schedule, "measured" at 43.2px on controls whose CSS box is
+> 44px, and deferred it to F-1c as a layout blocker. **There is no such scale, and the measurement
+> was an artifact of when it was taken.** `ScheduleRow` carries `animation: 'vpop .3s'`
+> (`ScheduleScreen.tsx`), and the `vpop` keyframe (`global.css`) runs `scale(0.98)` to
+> `transform: none`. A row sampled just after mount is mid-animation: 44 × 0.982 = 43.2, which is
+> the number that was recorded as permanent. A third of a second later the same control is 44px.
+> Left standing, this entry would have sent F-1c to remove a layout constraint that does not
+> exist. The controls this unit raised to 44 CSS px are at 44 real px.
+>
+> **Correction to the correction (2026-09-10, PR #584 review round 4, finding 2):** the retraction
+> above was right that there is no ancestor content scale and wrong about what followed. 43.2px was
+> a real measurement of a real thumb target: `vpop` scaled the whole ROW, so its 44×44 buttons were
+> ~43.1×43.1 for the animation's 300ms — undersized exactly while the row is arriving under a thumb
+> already reaching for it. Round 3 answered that by freezing animation in the test, which stopped
+> the inventory seeing it and changed nothing for the user. `scale()` is now gone from the `vpop`
+> keyframe — `translateY` moves a box without resizing it, so the rise and fade stay and the floor
+> holds from the first frame — and the sweep deliberately does NOT freeze motion, so a future entry
+> animation that shrinks a control fails here instead of hiding. This applies to every `vpop`
+> container with controls in it, not only Schedule: the Toast, the Modal and the notification panel
+> were all scaling their own buttons.
+>
+> **And the per-surface sweeps were measuring one dev-only control** (round 4, finding 1). Schedule's
+> and Drawings' own fields live behind dialogs, so those arms measured the TopBar persona `<select>`
+> — present on every screen, dev-only, and enough to make an empty sweep look populated. Each sweep
+> now states how many fields it must find, dev affordances are excluded from the count, and the
+> dialogs that hold the fields are opened.
+>
+> **Amendment (2026-09-10, PR #584 review round 5): the deferral is WITHDRAWN and the targets are
+> raised.** Round 2 parked three known sub-floor groups in F-1c as "density decisions" — the
+> Schedule breadcrumbs (`sched-place-*-crumb-*`, ~18px), the drawing chips (`sched-dwg-*`, ~21px)
+> and the decision register's group-by row (26px). That was the wrong unit to send them to. F-1c is
+> defined in this document as validation that "applies F-1a/b and proves them", with no new design
+> decisions in it, while F-1b's completion criterion above says "every action target >=44x44" with
+> no exception written into it. A known violation deferred to a unit that cannot decide anything is
+> deferred nowhere, and F-1b would have been cleared with the rule it states unmet.
+>
+> All three are at the floor now, and raising them is a real density change to two dense surfaces —
+> which is the trade this unit is the one entitled to make. The drawing chip keeps its 9.5px mono
+> label: the floor governs the HIT AREA, and shrinking a governing drawing number to satisfy a
+> touch rule would trade one rule for another.
+>
+> **And the inventory that named those three was itself incomplete.** Sweeping the decision
+> register — rather than reading it — turned up four status filter chips at 24px, three collapsible
+> group headers at 35px, and `groupby-flat` at 37px WIDE after the height fix, because the floor is
+> 44 in BOTH axes and the round-2 note had only ever looked at one. All are raised, and
+> `mobile-fields.spec.ts` sweeps both surfaces so the claim rests on a measurement. The lesson is
+> the one this unit keeps relearning: an inventory written from a reading lists what the author
+> noticed; only a sweep lists what is there.
+>
+> F-1c still owns the sweep of every surface this unit did not touch. What it no longer inherits is
+> a set of known violations it was never allowed to fix.
+>
+> **Amendment (2026-09-10, PR #584 review round 6): two more targets, and the limit of a sweep.**
+> The breadcrumb was given a height and not a WIDTH — the same omission this unit had already
+> caught on the register's `All` chip one round earlier and failed to carry one file over — and a
+> location name may be a single character (`createNodeSchema` accepts `min(1)`). The override
+> REVOKE control, an 11px glyph with no padding, was never measured by anything. Both are at
+> 44×44 now.
+>
+> **And neither is provable by the e2e sweep, for two different reasons that are worth separating.**
+> The revoke control needs a STATE the suite cannot reach: recording an override goes through
+> `overrideGate`, which refuses without a server, and this suite runs the API-less demo. The
+> breadcrumb is reachable but needs DATA the fixture does not contain: the demo's names are
+> "Ground Floor" and the like, so its crumbs are comfortably past 44px and the arm stays green
+> with the minimum removed — measured, not assumed. Both are therefore guarded at the DECLARATION
+> in `ux-consistency.test.tsx`, which this document's own criterion allows ("verified by computed
+> style, or by source"), and each guard was confirmed to fail when its minimum is deleted.
+>
+> A sweep proves the states it drives over the data it has. That is a smaller claim than it looks,
+> and it is the fifth distinct way this unit has now been caught overstating one.
+>
+> **Amendment (2026-09-10, PR #584 review round 7): the deferral is over — the audit is EVERY
+> persona and EVERY surface its navigation reaches.** This finding has now been raised four times,
+> and the first three answers all had the same shape: re-scope the PROOF rather than meet the
+> CRITERION. Round 2 swept the Daily Log and deferred the rest to F-1c. Round 5 swept the two
+> surfaces this unit had changed and deferred the rest to F-1c. Round 7 named three more shipped
+> controls under the floor — `TeamAccessScreen`'s zero-padding Back action, its ~36px language
+> chips, `PhotoViewer`'s 40×40 close — and would have named a fourth set next round, because the
+> DEFERRAL was the defect and not the list.
+>
+> The criterion above says "every action target >=44x44" with no exception, so `mobile-fields.spec.ts`
+> now walks the personas the switcher itself offers, and for each one every bottom tab and every
+> More-sheet row the nav itself renders, sweeping each. Nothing in it is a named list: a screen
+> added tomorrow is swept the day it appears. Run against the previous head it is RED on the first
+> violation it meets (the decision register's 42px search input); with the fixes it is green across
+> all four personas.
+>
+> **And text-entry controls are ACTION TARGETS.** Round 3's fix widened the sweep's element types
+> and then wrote a carve-out — "a text field is typed into, not pressed" — that put every
+> non-button input back out of scope, and `textarea` was never in the query at all, so no textarea
+> in the product had ever been measured. The sentence is false about the FIRST interaction: a thumb
+> has to land on the field before a keyboard exists. Behind that carve-out sat Schedule's dialog
+> fields (`fldS`, 42px), the Decision Register's inline location editors (34px), the Drafts
+> screen's decider selects (32px) and the Drawings dialog's file control (21px). All are at the
+> floor; the carve-out is gone.
+>
+> **What the measured walk turned up beyond what round 7 named** — because an inventory written
+> from a reading lists what the author noticed, and this one was run: the Engineer checklist's
+> Pass / Fail / N.A. verdicts and its five Add-photo buttons at 51x35, and the Drafts screen's five
+> decider controls at 32px. The verdict toggles are the ones worth naming: they are pressed
+> one-handed on site, and a mis-tap records the wrong verdict against a physical item.
+>
+> **And the `Button` primitive's floor was overridable.** `...style` was spread AFTER `minHeight:
+> 44`, so `style={{ minHeight: 34 }}` replaced the floor outright while the comment beside it
+> promised a caller "cannot go shorter by accident". That is this unit's own recurring defect in
+> its own primitive: prose stating a rule the mechanism does not implement. The floor is now
+> clamped after the caller's styles — taller still wins, shorter cannot — in both axes, with four
+> arms in `ux-consistency.test.tsx` that fail against the previous shape.
+>
+> **F-1c no longer inherits a cross-surface sweep.** What it still owns is the states this suite
+> cannot drive: modal dialogs past the four swept here, multi-step flows past their first step, a
+> recorded gate override, the stale-snapshot banner, and any surface that needs seeded location
+> data or a signed-in session.
+
+> 4. **A desktop-parity assertion must name a value.** `expect(sizes.every((s)
+>    => s > 0))` is true whether the rule is scoped or has escaped to every
+>    width, so it passed in the world it existed to rule out. It now asserts a
+>    known dense control keeps its authored sub-16px size.
+
+> **Amendment (2026-09-11, PR #584 review round 14): the "every target" claim is RETRACTED, and
+> what replaces it is a count.**
+>
+> Round 14 named three more controls under the floor, and all three sit in states no walk can
+> enter: the consultation RESPONDER's recommendation selector (the sweep asks the questions; being
+> asked one is a different session), Team Access's phone-step and worker-OTP text actions (three
+> and four transitions into a machine the sweep cannot advance without signing itself out), and a
+> Team screen COMPANY row's edit and remove icons (the demo store ships `companies` empty). All
+> three are fixed, and `tests/target-floor-unreached-states.test.tsx` renders each state directly
+> in jsdom — no layout, so it asserts the floor DECLARATION reaches the element, which is the half
+> the browser could not observe at all. Each arm was proven RED with its fix reverted.
+>
+> **But five rounds of the same class is a fact about the INSTRUMENT.** Rounds 9, 11, 12, 13 and 14
+> each found the rule correct and the reach short: a third option, an empty discipline, a
+> server-backed category, a state opened by interaction, and now three states that need a different
+> session, a different machine state and a non-empty collection. So the source was counted instead
+> of the walk. `apps/web/src` declares **282** interactive elements (`button`, `select`, `input`,
+> `textarea`, `a`). Resolving each one's style — inline literal, spread, module-level constant,
+> style-returning function — and computing its box from an explicit `height`/`minHeight` or from
+> font size plus vertical padding: **176 reach 44px, 86 do not**, 15 are styled by CSS module (where
+> the floors are, and the browser sweep does measure them) and 5 carry no style. The median short
+> box is **29px** and **78 of the 86 are at or under 32px**, well outside the ±5px error in that
+> arithmetic. Fifty of them are on `CommercialScreen`, which is capability-gated and which no
+> persona in the sweep can reach at all.
+>
+> The walk is therefore measuring something closer to a third of the product's targets, and
+> "every action target >=44x44" has been resting on it since round 7. That sentence is withdrawn
+> here: what this unit can honestly claim is that every target the persona walk reaches, plus the
+> states the jsdom companion renders, meets the floor.
+>
+> **The remaining 86 are F-1b's OWN remaining work, not a new unit** (corrected at round 15: round
+> 14 called them "its own unit", which is how a criterion gets left behind — the work moves, the
+> Done-when stays, and the unit reads as clear while its own sentence is false). They fall into two
+> groups, and only one of them is a question:
+>
+> · **~50 are dense ledger FORM CONTROLS** — `CommercialScreen`'s shared `input`/`select` style at
+>   12.5px with 7px of padding (≈29px), and `LabourScreen`'s five of the same shape. Raising these
+>   to 44 changes how much of a claim or a muster roll fits on one screen. **Whether the field floor
+>   governs a desktop-first ledger, or that surface gets a stated exception, is the Board's call.**
+> · **~36 are standalone ACTION BUTTONS** — the bordered amber `Retry` at 18–24px on Commercial,
+>   Drawings, Labour, Materials and the Engineer checklist; the Places controls at 17–39px; single
+>   buttons on Drafts, Team, Inspection Review, MobileSheet and NotificationPanel. These carry no
+>   density question: they are the exact subject F-1b names, and they are mechanical.
+>
+> Neither group is deferred out of the unit. F-1b stays OPEN until the buttons are raised and the
+> Board answers the ledger question, per the clearance condition recorded at the criterion above.
 
 ---
 

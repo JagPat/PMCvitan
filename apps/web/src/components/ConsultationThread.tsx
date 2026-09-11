@@ -97,7 +97,12 @@ export function ConsultationThread({ decision }: { decision: Decision }) {
                 aria-label="Recommend an option"
                 value={recommend}
                 onChange={(e) => setRecommend(e.target.value === '' ? '' : Number(e.target.value))}
-                style={{ fontSize: 12, padding: '5px 8px', borderRadius: 8, border: '1px solid var(--hairline)' }}
+                // #584 review round 14 — the SIBLING of the "Who to ask" select round 13 fixed,
+                // on the other side of the same conversation. Round 13 raised the requester's
+                // selector and left the consultee's, because the walk signs in as the requester
+                // and `mine` is resolved from `sessionUserId`: the responder's compose box is a
+                // state no persona in the sweep ever occupies.
+                style={{ fontSize: 12, minHeight: 44, padding: '5px 8px', borderRadius: 8, border: '1px solid var(--hairline)' }}
               >
                 <option value="">No recommendation</option>
                 {decision.options.map((o, i) => (
@@ -132,7 +137,9 @@ export function ConsultationThread({ decision }: { decision: Decision }) {
             aria-label="Who to ask"
             value={consultee}
             onChange={(e) => setConsultee(e.target.value)}
-            style={{ fontSize: 12, padding: '5px 8px', borderRadius: 8, border: '1px solid var(--hairline)', width: '100%' }}
+            // #584 review round 13 — the compose state is reached by pressing a DISCLOSURE, not by
+            // navigating, so no sweep had rendered it.
+            style={{ fontSize: 12, minHeight: 44, padding: '5px 8px', borderRadius: 8, border: '1px solid var(--hairline)', width: '100%' }}
           >
             <option value="">Choose a member…</option>
             {askable.map((m) => (

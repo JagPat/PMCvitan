@@ -228,21 +228,24 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
                       <div style={{ display: 'flex', gap: 8, marginTop: 7, paddingLeft: 24, alignItems: 'center' }}>
                         <label style={{ fontSize: 11.5, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 5 }}>
                           ×
-                          <input type="number" min={1} max={20} value={sel.count} onChange={(e) => setPick(m.id, { count: Math.max(1, Math.min(20, Number(e.target.value) || 1)) })} style={{ width: 52, height: 30, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 13 }} />
+                          {/* Wave 0 / F-1b round 8 — 30 -> 44 across the new-project grafting
+                              row. These are typed into on a phone while standing on site, and a
+                              30px box is under the floor by a third. */}
+                          <input type="number" min={1} max={20} value={sel.count} onChange={(e) => setPick(m.id, { count: Math.max(1, Math.min(20, Number(e.target.value) || 1)) })} style={{ width: 52, height: 44, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 13 }} />
                         </label>
                         {m.anchorKind === 'zone' && (
-                          <input value={sel.underZone} onChange={(e) => setPick(m.id, { underZone: e.target.value })} placeholder="Under zone (Ground Floor)" style={{ flex: 1, minWidth: 0, height: 30, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12.5 }} />
+                          <input value={sel.underZone} onChange={(e) => setPick(m.id, { underZone: e.target.value })} placeholder="Under zone (Ground Floor)" style={{ flex: 1, minWidth: 0, height: 44, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12.5 }} />
                         )}
                         {m.anchorKind === 'room' && (
                           <>
-                            <select value={sel.roomTargetKind} onChange={(e) => setPick(m.id, { roomTargetKind: e.target.value as 'room' | 'zone' })} data-testid={`np-target-kind-${m.id}`} aria-label={`Where ${m.name} grafts`} style={{ height: 30, padding: '0 6px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12 }}>
+                            <select value={sel.roomTargetKind} onChange={(e) => setPick(m.id, { roomTargetKind: e.target.value as 'room' | 'zone' })} data-testid={`np-target-kind-${m.id}`} aria-label={`Where ${m.name} grafts`} style={{ height: 44, padding: '0 6px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12 }}>
                               <option value="room">Under room…</option>
                               <option value="zone">Under zone…</option>
                             </select>
                             {sel.roomTargetKind === 'room' ? (
-                              <input value={sel.underRoom} onChange={(e) => setPick(m.id, { underRoom: e.target.value })} placeholder="Room name (Master Bedroom)" data-testid={`np-under-room-${m.id}`} style={{ flex: 1, minWidth: 0, height: 30, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12.5 }} />
+                              <input value={sel.underRoom} onChange={(e) => setPick(m.id, { underRoom: e.target.value })} placeholder="Room name (Master Bedroom)" data-testid={`np-under-room-${m.id}`} style={{ flex: 1, minWidth: 0, height: 44, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12.5 }} />
                             ) : (
-                              <input value={sel.underZone} onChange={(e) => setPick(m.id, { underZone: e.target.value })} placeholder="Zone name (Entrance)" data-testid={`np-under-zone-${m.id}`} style={{ flex: 1, minWidth: 0, height: 30, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12.5 }} />
+                              <input value={sel.underZone} onChange={(e) => setPick(m.id, { underZone: e.target.value })} placeholder="Zone name (Entrance)" data-testid={`np-under-zone-${m.id}`} style={{ flex: 1, minWidth: 0, height: 44, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12.5 }} />
                             )}
                           </>
                         )}
@@ -267,10 +270,12 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
 }
 
 const label0: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.22em', color: 'rgba(237,231,218,.4)', marginBottom: 6 };
-const pill: CSSProperties = { width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '9px 11px', borderRadius: 9, border: '1px solid rgba(237,231,218,.16)', background: 'rgba(237,231,218,.04)', color: 'var(--sidebar-text)' };
+// #584 review round 11 — the rail's project trigger, at 217x34 the first time the target sweep
+// rendered the rail shell at all. The rail is what a phone shows in landscape.
+const pill: CSSProperties = { width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 44, padding: '9px 11px', borderRadius: 9, border: '1px solid rgba(237,231,218,.16)', background: 'rgba(237,231,218,.04)', color: 'var(--sidebar-text)' };
 const panel: CSSProperties = { position: 'absolute', left: 0, right: 0, top: '100%', marginTop: 6, zIndex: 20, background: '#2a2823', border: '1px solid rgba(237,231,218,.16)', borderRadius: 10, padding: 5, boxShadow: '0 12px 32px rgba(0,0,0,.4)' };
 function row(on: boolean): CSSProperties {
-  return { width: '100%', display: 'flex', alignItems: 'center', gap: 8, padding: '9px 10px', borderRadius: 7, border: 'none', background: on ? 'rgba(180,70,46,.2)' : 'transparent', color: 'rgba(237,231,218,.85)', fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', textAlign: 'left' };
+  return { width: '100%', display: 'flex', alignItems: 'center', gap: 8, minHeight: 44, padding: '9px 10px', borderRadius: 7, border: 'none', background: on ? 'rgba(180,70,46,.2)' : 'transparent', color: 'rgba(237,231,218,.85)', fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', textAlign: 'left' };
 }
 const roleTag: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.06em', color: 'rgba(237,231,218,.5)', textTransform: 'uppercase' };
 const fld: CSSProperties = { width: '100%', height: 44, marginTop: 14, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink)', outline: 'none' };

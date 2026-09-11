@@ -422,7 +422,7 @@ function IntentReality({
           </button>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
             {photos.slice(1, 4).map((p) => (
-              <button key={p.id} onClick={() => onZoom(p.url)} style={{ width: 34, height: 34, borderRadius: 6, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
+              <button key={p.id} onClick={() => onZoom(p.url)} style={{ width: 44, height: 44, borderRadius: 6, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
                 <img src={p.url} alt="Site photo" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               </button>
             ))}

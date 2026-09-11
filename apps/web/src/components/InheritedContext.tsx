@@ -110,10 +110,15 @@ const path: CSSProperties = {
   overflowWrap: 'anywhere',
 };
 
+// #584 review round 13 — reached only by choosing an option INSIDE the Places create menu, which
+// the dialog-discovery arm never pressed: it stopped at the first dialog and reloaded.
 const change: CSSProperties = {
   flex: 'none',
   background: 'transparent',
   border: 'none',
+  minHeight: 44,
+  display: 'inline-flex',
+  alignItems: 'center',
   padding: '4px 2px',
   fontFamily: 'var(--font-sans)',
   fontSize: 12.5,

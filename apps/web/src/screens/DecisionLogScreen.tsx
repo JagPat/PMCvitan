@@ -112,7 +112,7 @@ export function DecisionLogScreen() {
           {GROUP_OPTIONS.map((g) => {
             const on = groupBy === g.key;
             return (
-              <button key={g.key} onClick={() => setGroupBy(g.key)} data-testid={`groupby-${g.key}`} style={{ padding: '6px 11px', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 600, background: on ? 'var(--ink)' : 'transparent', color: on ? '#fff' : 'var(--muted)' }}>
+              <button key={g.key} onClick={() => setGroupBy(g.key)} data-testid={`groupby-${g.key}`} style={{ padding: '6px 11px', minHeight: 44, minWidth: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 600, background: on ? 'var(--ink)' : 'transparent', color: on ? '#fff' : 'var(--muted)' }}>
                 {g.label}
               </button>
             );
@@ -124,7 +124,7 @@ export function DecisionLogScreen() {
         {STATUS_FILTERS.map((s) => {
           const on = statuses.has(s.key);
           return (
-            <button key={s.key} onClick={() => toggleStatus(s.key)} data-testid={`filter-${s.key}`} style={{ padding: '5px 11px', borderRadius: 20, cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, border: `1px solid ${on ? 'var(--ink)' : 'var(--hairline)'}`, background: on ? 'var(--ink)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }}>
+            <button key={s.key} onClick={() => toggleStatus(s.key)} data-testid={`filter-${s.key}`} style={{ padding: '5px 11px', minHeight: 44, minWidth: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 20, cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, border: `1px solid ${on ? 'var(--ink)' : 'var(--hairline)'}`, background: on ? 'var(--ink)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }}>
               {s.label}
             </button>
           );
@@ -145,7 +145,7 @@ export function DecisionLogScreen() {
                 <button
                   onClick={() => toggleGroup(g.key)}
                   data-testid={`group-head-${g.key}`}
-                  style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 9, padding: '9px 4px', background: 'transparent', border: 'none', borderBottom: '1px solid var(--hairline)', cursor: 'pointer', textAlign: 'left', marginBottom: isCollapsed ? 0 : 12 }}
+                  style={{ width: '100%', minHeight: 44, display: 'flex', alignItems: 'center', gap: 9, padding: '9px 4px', background: 'transparent', border: 'none', borderBottom: '1px solid var(--hairline)', cursor: 'pointer', textAlign: 'left', marginBottom: isCollapsed ? 0 : 12 }}
                 >
                   <ChevronRight size={15} style={{ transform: isCollapsed ? 'none' : 'rotate(90deg)', transition: 'transform .15s', color: 'var(--muted)' }} />
                   <span style={{ fontWeight: 700, fontSize: 15 }}>{g.label}</span>
@@ -344,7 +344,11 @@ export function ManageLocationsModal({ onClose }: { onClose: () => void }) {
           <input value={newZone} onChange={(e) => setNewZone(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addZone(); }} placeholder="Add a zone (e.g. Ground Floor)" style={{ ...fldD, flex: 1, minWidth: 0 }} data-testid="manage-new-zone" />
           <Button variant="ink" onClick={addZone} style={{ padding: '0 14px', fontSize: 12.5 }}>Add</Button>
         </div>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--muted)', cursor: 'pointer', marginBottom: 4 }}>
+        {/* Wave 0 / F-1b round 8 — the checkbox itself is a native 13px box; the LABEL is what a
+            thumb lands on, and label activation forwards to the control, so the 44px band goes
+            here. The box is left native: forcing a checkbox larger changes a platform affordance
+            for no gain, and the rule is about what the thumb meets. */}
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minHeight: 44, fontSize: 12, color: 'var(--muted)', cursor: 'pointer', marginBottom: 4 }}>
           <input type="checkbox" checked={asDraft} onChange={(e) => setAsDraft(e.target.checked)} data-testid="manage-zone-draft" />
           Add as a private draft (publish later)
         </label>
@@ -407,38 +411,49 @@ function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDele
   if (addingKind) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: (depth + 1) * 18, minHeight: 34 }} data-testid={`loc-row-${id}`}>
-        <input autoFocus value={childName} onChange={(e) => setChildName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commitChild(); }} placeholder={`New ${addingKind === 'room' ? 'room' : 'object'} in ${name}`} style={{ ...fldD, flex: 1, minWidth: 0, height: 34 }} data-testid={`loc-add-input-${id}`} />
+        <input autoFocus value={childName} onChange={(e) => setChildName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commitChild(); }} placeholder={`New ${addingKind === 'room' ? 'room' : 'object'} in ${name}`} style={{ ...fldD, flex: 1, minWidth: 0 }} data-testid={`loc-add-input-${id}`} />
         <button onClick={commitChild} style={iconBtn} aria-label={`Add inside ${name}`}>✓</button>
         <button onClick={() => { setAddingKind(null); setChildName(''); }} style={iconBtn} aria-label="Cancel">✕</button>
       </div>
     );
   }
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: depth * 18, minHeight: 34 }} data-testid={`loc-row-${id}`}>
+    // Wave 0 / F-1b round 9 — `flexWrap` because the 44px floor MADE this row overflow. Three
+    // icon buttons went from ~23px to 44 (+63px), and a normal zone row then needed ~357px before
+    // the name got any width against ~310px of usable modal at 390px: the trailing rename and
+    // delete were pushed outside the visible modal. A correction that puts controls out of reach
+    // is worse than the undersized targets it fixed. The action group now drops to its own line
+    // instead of overflowing, and the name may shrink rather than shove.
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', paddingLeft: depth * 18, minHeight: 34 }} data-testid={`loc-row-${id}`}>
       {editing ? (
         <>
-          <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commit(); }} style={{ ...fldD, flex: 1, minWidth: 0, height: 34 }} />
+          <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commit(); }} style={{ ...fldD, flex: 1, minWidth: 0 }} />
           <button onClick={commit} style={iconBtn} aria-label="Save">✓</button>
         </>
       ) : (
         <>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.1em', color: 'var(--faint)', width: 44, flex: 'none' }}>{kind.toUpperCase()}</span>
-          <span style={{ flex: 1, fontSize: 13.5, fontWeight: kind === 'zone' ? 600 : 400, color: draft ? 'var(--muted)' : 'var(--ink)' }}>{name}</span>
+          <span style={{ flex: '1 1 110px', minWidth: 0, overflowWrap: 'anywhere', fontSize: 13.5, fontWeight: kind === 'zone' ? 600 : 400, color: draft ? 'var(--muted)' : 'var(--ink)' }}>{name}</span>
           {draft && <span style={draftChip} data-testid={`loc-draft-${id}`}>DRAFT</span>}
           {draft && <Button variant="success" onClick={onPublish} data-testid={`loc-publish-${id}`} style={{ padding: '4px 9px', fontSize: 11 }}>Publish</Button>}
-          {onAddChild && (
-            <>
-              <button onClick={() => setAddingKind('room')} style={addChildBtn} data-testid={`loc-add-room-${id}`} title={`Add a room inside ${name}`} aria-label={`Add a room inside ${name}`}>+ Room</button>
-              <button onClick={() => setAddingKind('element')} style={addChildBtn} data-testid={`loc-add-element-${id}`} title={`Add an object inside ${name}`} aria-label={`Add an object inside ${name}`}>+ Object</button>
-            </>
-          )}
-          {onSaveAsModule && (
-            <button onClick={onSaveAsModule} style={iconBtn} data-testid={`loc-module-${id}`} title="Save this zone (rooms, objects, checklists) as a reusable module" aria-label={`Save ${name} as a module`}>
-              <BookmarkPlus size={13} />
-            </button>
-          )}
-          <button onClick={() => { setValue(name); setEditing(true); }} style={iconBtn} aria-label={`Rename ${name}`}><Pencil size={13} /></button>
-          <button onClick={onDelete} style={{ ...iconBtn, color: 'var(--red-solid)' }} aria-label={`Delete ${name}`}><Trash2 size={13} /></button>
+          {/* ONE group, so the actions wrap together and stay in a predictable order rather than
+              breaking apart mid-cluster. `marginLeft: auto` keeps them right-aligned while they
+              fit and is harmless once they take their own line. */}
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginLeft: 'auto' }}>
+            {onAddChild && (
+              <>
+                <button onClick={() => setAddingKind('room')} style={addChildBtn} data-testid={`loc-add-room-${id}`} title={`Add a room inside ${name}`} aria-label={`Add a room inside ${name}`}>+ Room</button>
+                <button onClick={() => setAddingKind('element')} style={addChildBtn} data-testid={`loc-add-element-${id}`} title={`Add an object inside ${name}`} aria-label={`Add an object inside ${name}`}>+ Object</button>
+              </>
+            )}
+            {onSaveAsModule && (
+              <button onClick={onSaveAsModule} style={iconBtn} data-testid={`loc-module-${id}`} title="Save this zone (rooms, objects, checklists) as a reusable module" aria-label={`Save ${name} as a module`}>
+                <BookmarkPlus size={13} />
+              </button>
+            )}
+            <button onClick={() => { setValue(name); setEditing(true); }} style={iconBtn} aria-label={`Rename ${name}`}><Pencil size={13} /></button>
+            <button onClick={onDelete} style={{ ...iconBtn, color: 'var(--red-solid)' }} aria-label={`Delete ${name}`}><Trash2 size={13} /></button>
+          </span>
         </>
       )}
     </div>
@@ -449,6 +464,14 @@ const addChildBtn: CSSProperties = {
   background: 'transparent',
   border: '1px dashed rgba(35,33,28,.3)',
   borderRadius: 6,
+  // Wave 0 / F-1b round 8 — these live in the Manage locations dialog, which the round-7 walk
+  // reached no more than the round-2 and round-5 sweeps did: it opened four NAMED dialogs, and a
+  // named list is the same defect as a named surface list. The label keeps its 10.5px mono size —
+  // the floor governs the HIT AREA, not the type.
+  minHeight: 44,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
   padding: '2px 7px',
   fontSize: 10.5,
   cursor: 'pointer',
@@ -468,5 +491,12 @@ const draftChip: CSSProperties = {
   flex: 'none',
 };
 
-const iconBtn: CSSProperties = { background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', padding: 5 };
-const fldD: CSSProperties = { height: 42, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none' };
+// Wave 0 / F-1b round 8 — the glyph-only rename / delete / save / confirm controls of the
+// Manage locations tree. A 13px icon in 5px of padding is a 23px target, and these are the
+// controls that RENAME and DELETE a location decisions are filed against.
+const iconBtn: CSSProperties = { background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 44, minHeight: 44, padding: 5 };
+// Wave 0 / F-1b round 7 — 42 → 44. A text field is a POINTER TARGET before it is a text
+// field: a thumb has to land on it to focus it, and the 44×44 floor has no exception for
+// "typed into rather than pressed". That exception is what my round-3 sweep wrote into its
+// filter, and it is why this control sat four pixels under the floor for four more rounds.
+const fldD: CSSProperties = { height: 44, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none' };

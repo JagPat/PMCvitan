@@ -195,6 +195,23 @@ export const ROLE_LABEL: Record<Role, string> = {
   consultant: 'Consultant',
 };
 
+/**
+ * THE persona list — every role the product renders a session for, in switcher order.
+ *
+ * #584 review round 11: there were two hand-written copies of this list and they disagreed.
+ * `RolePicker` (the rail) carried five; `TopBar` (the phone) carried four and omitted
+ * `consultant`. That is not only a missing dev affordance: the cross-surface sweep in
+ * `mobile-fields.spec.ts` derives "every persona the product offers" from the TOPBAR switcher's
+ * own options, so the consultant's entire surface set — the discipline-scoped drawing register,
+ * its scope toggle and its empty-discipline escape — had never been measured by the arm whose
+ * whole point is that nothing is a named list.
+ *
+ * Derived from `ROLE_LABEL`, which is a `Record<Role, string>`: adding a role to the union forces
+ * a label here and BOTH switchers gain the option with no further edit. A hand-written array
+ * would just be the same defect waiting for the next role.
+ */
+export const ROLES = Object.keys(ROLE_LABEL) as Role[];
+
 export const ROLE_SUBTITLE: Record<Role, string> = {
   pmc: 'Architect · full access',
   client: 'Owner · Mr. & Mrs. Shah',

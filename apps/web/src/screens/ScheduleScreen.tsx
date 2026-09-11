@@ -102,7 +102,7 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)' }}>{a.id}</span>
             <ActivityChip status={a.status} />
             {onEdit && (
-              <button onClick={() => onEdit(a)} aria-label={`Edit ${a.name}`} data-testid={`edit-${a.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 2 }}>
+              <button onClick={() => onEdit(a)} aria-label={`Edit ${a.name}`} data-testid={`edit-${a.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 2, flex: 'none', width: 44, height: 44 }}>
                 <Pencil size={12} />
               </button>
             )}
@@ -118,7 +118,11 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
               onClick={() => setScreen('drawings')}
               data-testid={`sched-dwg-${a.id}`}
               title={`Governed by ${linkedDrawing.number} — open the Drawings register`}
-              style={{ marginTop: 6, display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer', background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 6, padding: '3px 7px', fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--muted)' }}
+              // minHeight 44 (#584 review round 5): this opens the Drawings register, so it is a
+              // thumb target and owes the floor. The label stays 9.5px mono — the FLOOR is about
+              // the hit area, not the type size, and shrinking a governing drawing number would
+              // trade one rule for another.
+              style={{ marginTop: 6, display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer', background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 6, padding: '3px 7px', minHeight: 44, fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--muted)' }}
             >
               <PencilRuler size={11} /> {linkedDrawing.number} · Rev {linkedDrawing.current.rev}
             </button>
@@ -156,7 +160,7 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
               below states the blocked reason and the next valid step. Revoking an override
               already recorded stays available on its chip. */}
           {onOverride && a.status !== 'blocked' && (
-            <button onClick={() => onOverride(a)} title="Record a gate override (expires automatically)" aria-label={`Override a gate on ${a.name}`} data-testid={`override-${a.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 2, marginTop: 1 }}>
+            <button onClick={() => onOverride(a)} title="Record a gate override (expires automatically)" aria-label={`Override a gate on ${a.name}`} data-testid={`override-${a.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 2, marginTop: 1, flex: 'none', width: 44, height: 44 }}>
               <ShieldCheck size={13} />
             </button>
           )}
@@ -178,8 +182,11 @@ function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPc
           {a.overrides!.map((o) => (
             <span key={o.id} data-testid={`override-chip-${o.id}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 9.5, padding: '3px 8px', borderRadius: 8, background: '#E6ECF3', color: '#31567F', border: '1px solid #C4D3E4' }}>
               OVERRIDE · {o.gate} → {o.state} · {o.actorName} · expires {new Date(o.expiresAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })} · {o.reason}
+              {/* 44x44 (#584 review round 6): revoking an override is a live gate change made with
+                  a thumb, and it was an 11px glyph with zero padding. `alignSelf: 'center'` keeps
+                  the taller control from stretching the chip it sits in. */}
               {onOverride && (
-                <button onClick={() => revokeOverride(a.id, o.id)} title="Revoke this override now" aria-label="Revoke override" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#31567F', display: 'flex', padding: 0 }}>
+                <button onClick={() => revokeOverride(a.id, o.id)} title="Revoke this override now" aria-label="Revoke override" data-testid={`revoke-override-${o.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#31567F', display: 'flex', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', minWidth: 44, minHeight: 44, padding: 0 }}>
                   <X size={11} />
                 </button>
               )}
@@ -263,7 +270,7 @@ function PhaseGroup({ phase, activities, todayPct, onEdit, onDeletePhase, onOver
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{ fontWeight: 700, fontSize: 17, letterSpacing: '-.01em' }}>{phase.name}</div>
             {onDeletePhase && (
-              <button onClick={() => onDeletePhase(phase.id)} aria-label={`Remove phase ${phase.name}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 2 }}>
+              <button onClick={() => onDeletePhase(phase.id)} aria-label={`Remove phase ${phase.name}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 2, flex: 'none', width: 44, height: 44 }}>
                 <X size={14} />
               </button>
             )}
@@ -569,5 +576,8 @@ function AddPhaseModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-const fldS: CSSProperties = { height: 42, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none', marginTop: 4 };
+// Wave 0 / F-1b round 7 — 42 → 44, for the reason recorded on `fldD`: every control in the
+// Plan activity, Add phase and Override dialogs is built from this constant, and each of them
+// is tapped before it is typed into.
+const fldS: CSSProperties = { height: 44, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none', marginTop: 4 };
 const lblS: CSSProperties = { flex: 1, fontSize: 11.5, color: 'var(--muted)', display: 'flex', flexDirection: 'column' };

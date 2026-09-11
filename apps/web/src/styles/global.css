@@ -68,6 +68,50 @@ a {
   }
 }
 
+/* The MOBILE FIELD FLOOR (Wave 0 / F-1b).
+   Mobile Safari zooms the viewport when a text-entry control smaller than 16px takes focus,
+   and it does not zoom back out — the user is left panned into a form they must scroll
+   sideways to read, one-handed, on site. 16px is the threshold at which iOS stops doing it;
+   it is not a taste.
+
+   WHY A RULE AND NOT A PRIMITIVE. §6.7 of the UX programme chose a shared field primitive so
+   the property would be "structurally guaranteed and testable at source". That reasoning was
+   written against the brief's count of EIGHT field styles. At F-1b's opening head the real
+   count is 134 text-entry controls across 14 files — 45 of them inside the 162 KB
+   CommercialScreen that Wave 3 has to split before anyone may touch it. A primitive
+   guarantees only the call sites that adopt it, and nothing stops the 135th. This rule
+   guarantees every control that exists and every control anyone adds later, which is the
+   property that was actually wanted. `components/Field.tsx` still carries the shared style
+   so new code has one thing to reach for.
+
+   WHY !important. The screens write their sizes as INLINE style attributes, and only an
+   important author declaration outranks an inline one in the cascade — the same fact the
+   forced-colors rule above already depends on. Verified in Chromium, not assumed: inline
+   13.5px / 12.5px / 14px controls all compute to 16px under this rule at 390px wide.
+
+   MOBILE ONLY. Above 640px the rule is out of range and each surface keeps the density it
+   was designed with; the brief permits scaling down at desktop and forbids it on mobile.
+
+   AND PHONE LANDSCAPE, which a width-only rule misses (#584 review round 1, finding 1). A
+   phone rotated to landscape has a CSS viewport WIDER than 639px — an iPhone 14 is 844 x 390 —
+   so `max-width: 639px` alone stops applying at exactly the moment the phone is still a phone,
+   and Safari zooms the same 12-14px controls it was written to protect. The second condition
+   is therefore the SHORT side rather than the long one: a viewport under 550px TALL, in
+   landscape, on a COARSE pointer. Each part is load-bearing — the height catches the phone
+   (390px) and not a tablet (a landscape iPad is 768px tall, and iPadOS does not zoom); the
+   pointer test keeps a desktop browser window someone dragged short out of it, where the
+   authored density is correct and no zoom exists to prevent.
+
+   Checkbox, radio, file, range and the button-like input types are excluded: iOS does not
+   zoom for them, and forcing 16px would change their box for nothing. */
+@media (max-width: 639px), (max-height: 549px) and (orientation: landscape) and (pointer: coarse) {
+  input:not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']):not([type='color']):not([type='submit']):not([type='button']):not([type='reset']):not([type='image']),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
 /* custom scrollbars (opt-in) */
 .vscroll::-webkit-scrollbar {
   width: 9px;
@@ -82,10 +126,19 @@ a {
 }
 
 /* animations */
+/* NO `scale()` HERE (#584 review round 4, finding 2). `vpop` is the entry animation for the
+   Toast, the Modal, the notification panel and the Schedule and Decision rows — every one of
+   which CONTAINS pressed controls. A `scale(0.98)` on the container shrinks its buttons with it,
+   so a 44×44 target measured 43.1×43.1 for the first 300ms of its life: undersized exactly while
+   it is arriving under a thumb reaching for it. Round 3 answered a mis-diagnosis of this by
+   freezing animation in the SIZE INVENTORY, which stopped the test seeing it and changed nothing
+   for the user — the reason the test now measures mid-animation instead. `translateY` moves the
+   box without resizing it, so the rise and the fade stay and the floor holds from the first
+   frame. Any future entry animation on a container with controls owes the same rule. */
 @keyframes vpop {
   from {
     opacity: 0;
-    transform: translateY(6px) scale(0.98);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;

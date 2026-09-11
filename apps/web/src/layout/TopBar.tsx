@@ -1,15 +1,13 @@
 import { useState } from 'react';
 import { useStore } from '@/store/store';
 import { Bell, Power, ChevronDown } from '@/lib/icons';
-import { ROLE_LABEL } from '@/lib/screens';
+import { ROLE_LABEL, ROLES } from '@/lib/screens';
+import type { Role } from '@vitan/shared';
 import { DEV_AUTH } from '@/data/apiGateway';
 import { useProjectSwitch } from './useProjectSwitch';
 import { ProjectSheet } from './MobileSheet';
-import type { Role } from '@vitan/shared';
 import logo from '@/assets/vitan-logo.jpeg';
 import styles from './TopBar.module.css';
-
-const ROLES: Role[] = ['pmc', 'client', 'engineer', 'contractor'];
 
 /**
  * Compact top bar — mobile only (<640px). Holds the ACTIVE PROJECT (the mobile equivalent of
@@ -47,7 +45,13 @@ export function TopBar() {
       </div>
       <div className={styles.right}>
         {DEV_AUTH ? (
-          <label className={styles.selectWrap}>
+          // `data-dev-affordance` marks this as a DEV-ONLY control for the field-target sweep in
+          // `mobile-fields.spec.ts`. `DEV_AUTH` is on only for the local demo and dev builds
+          // (`VITE_ALLOW_DEV_AUTH`, or no API base at all), so the persona switcher never renders
+          // in a real deployment and owes no thumb-target floor — but the e2e runs the demo build,
+          // where it does render, so the exclusion has to be stated in the DOM rather than left to
+          // a selector that happens not to reach it (#584 review round 3, finding 1).
+          <label className={styles.selectWrap} data-dev-affordance="role-switcher">
             <span className={styles.viewingAs}>as</span>
             <select value={role} onChange={(e) => setRole(e.target.value as Role)} className={styles.select} aria-label="Viewing as">
               {ROLES.map((r) => (

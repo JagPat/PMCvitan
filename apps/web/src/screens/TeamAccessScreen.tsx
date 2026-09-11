@@ -44,7 +44,10 @@ const WORKERS = [
 
 function BackBtn({ onClick, label }: { onClick: () => void; label: string }) {
   return (
-    <button onClick={onClick} style={{ background: 'transparent', border: 'none', fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--muted)', cursor: 'pointer', padding: 0, alignSelf: 'flex-start' }}>
+    // Wave 0 / F-1b round 7 — `padding: 0` made this a ~16px-tall text line, and it is the ONLY
+    // way out of the worker jobcard and the mistri view. `alignSelf: 'flex-start'` keeps it left,
+    // so the floor is added as a box rather than as stretch.
+    <button onClick={onClick} style={{ background: 'transparent', border: 'none', fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--muted)', cursor: 'pointer', padding: '0 8px', minHeight: 44, minWidth: 44, display: 'inline-flex', alignItems: 'center', alignSelf: 'flex-start' }}>
       ← {label}
     </button>
   );
@@ -193,7 +196,11 @@ export function TeamAccessScreen() {
         <button
           onClick={accGoLogin}
           data-testid="go-login"
-          style={{ background: 'transparent', border: 'none', color: 'var(--muted)', fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', marginTop: 14, alignSelf: 'center' }}
+          // #584 review round 14 — through the SHARED `linkBtn`, which has carried the floor
+          // since round 7. This action and the OTP resend below were written inline before
+          // `linkBtn` existed and never moved onto it, so the floor reached three of the five
+          // bare text actions on this screen. Only the font size differs from the shared style.
+          style={{ ...linkBtn, fontSize: 12.5 }}
         >
           Architect / Client / Contractor? Sign in with email
         </button>
@@ -495,7 +502,8 @@ export function TeamAccessScreen() {
         <button
           onClick={requestOtp}
           disabled={sending}
-          style={{ background: 'transparent', border: 'none', color: 'var(--muted)', fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, cursor: sending ? 'default' : 'pointer', marginTop: 8, alignSelf: 'center' }}
+          // #584 review round 14 — the second inline survivor; see `go-login` above.
+          style={{ ...linkBtn, marginTop: 8, cursor: sending ? 'default' : 'pointer' }}
         >
           {t.resend}
         </button>
@@ -558,7 +566,7 @@ export function TeamAccessScreen() {
             <div style={{ fontSize: 13, color: 'rgba(237,231,218,.6)' }}>{t.hi},</div>
             <div style={{ fontWeight: 700, fontSize: 19 }}>{worker?.name ?? ''}</div>
           </div>
-          <button onClick={accReset} aria-label="Sign out" style={{ background: 'rgba(237,231,218,.14)', border: 'none', color: 'var(--sidebar-text)', width: 34, height: 34, borderRadius: 9, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <button onClick={accReset} aria-label="Sign out" style={{ background: 'rgba(237,231,218,.14)', border: 'none', color: 'var(--sidebar-text)', width: 44, height: 44, borderRadius: 9, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Power size={16} />
           </button>
         </div>
@@ -609,7 +617,7 @@ export function TeamAccessScreen() {
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.16em', color: 'var(--amber-text)' }}>{trade ? tradeLabel(trade) : ''} · IN-CHARGE</div>
           <div style={{ fontSize: 22, fontWeight: 700, marginTop: 3 }}>Mistri Iqbal</div>
         </div>
-        <button onClick={accReset} aria-label="Sign out" style={{ background: 'var(--panel)', border: '1px solid rgba(35,33,28,.15)', width: 36, height: 36, borderRadius: 9, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <button onClick={accReset} aria-label="Sign out" style={{ background: 'var(--panel)', border: '1px solid rgba(35,33,28,.15)', width: 44, height: 44, borderRadius: 9, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <Power size={15} />
         </button>
       </div>
@@ -647,6 +655,13 @@ export function TeamAccessScreen() {
 function langStyle(active: boolean): CSSProperties {
   return {
     flex: 1,
+    // Wave 0 / F-1b round 7 — measured 115×33. This control chooses the language the worker
+    // reads their own jobcard in; it is the first thing they press and the one they press with
+    // the least confidence.
+    minHeight: 44,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
     padding: '8px 4px',
     borderRadius: 9,
     fontFamily: 'var(--font-sans)',
@@ -669,6 +684,14 @@ const linkBtn: CSSProperties = {
   cursor: 'pointer',
   marginTop: 14,
   alignSelf: 'center',
+  // Wave 0 / F-1b round 7 — a bare text button owes the same floor as a bordered one; nothing
+  // about the thumb changes because the border was dropped.
+  minHeight: 44,
+  minWidth: 44,
+  padding: '0 12px',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
 };
 
 const loginField: CSSProperties = {
