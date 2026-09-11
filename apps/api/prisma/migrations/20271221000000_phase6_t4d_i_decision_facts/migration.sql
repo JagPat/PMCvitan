@@ -55,10 +55,26 @@ BEGIN;
 --
 -- Proving "both files apply" was a PROJECTION of proving the split correct. Applying is one
 -- dimension; the marker-aware replay is a second, and it had no arm until this round added one.
+--
+-- AND THE VERDICT RESTS ON *THIS* FILE'S OWN EVIDENCE, not on `phase6_t4d_retired()`.
+-- Round 7's fix made the retirement predicate name an artifact 4d-i creates, so that a FORGED
+-- marker on a db-push baseline reads as false until the real unit has run. That works while the
+-- verdict is taken before the artifact exists — which is true of the registers half, and false
+-- here: by the time this transaction starts, the registers half has COMMITTED
+-- `phase6_t4d_membership_transition_seal`, so `phase6_t4d_retired()` would call a forged marker
+-- genuine and this whole file would skip. (Measured: the harness's forged-marker arm went red on
+-- exactly that, expecting four doors and finding one.)
+--
+-- The answer is round 7's own design applied PER FILE: this half's verdict names an artifact THIS
+-- half creates — `phase6_t4d_forward_seal`, a few hundred lines below — and is taken here, before
+-- it exists. Forged marker, no such function: false, and every door installs. Genuinely retired
+-- database: both halves' artifacts are present, and both halves skip.
 DO $snapshot$
 BEGIN
   PERFORM set_config('vitan.phase6_4d_retired_at_start',
-                     CASE WHEN phase6_t4d_retired() THEN 'on' ELSE 'off' END, true);
+                     CASE WHEN EXISTS (SELECT 1 FROM "RolloutRetirement" WHERE "unit" = 'phase6-4d')
+                           AND to_regproc('phase6_t4d_forward_seal') IS NOT NULL
+                          THEN 'on' ELSE 'off' END, true);
 END $snapshot$;
 
 -- ════════════════════════════════════════════════════════════════════════════════════════════
@@ -1276,6 +1292,41 @@ BEGIN
       'phase6 4d-i: change request % already records % as provenance and it may not be replaced or cleared — the receipt and the frozen actor pair are written ONCE, by the command that performed the act they describe.',
       OLD."id", v_col;
   END IF;
+
+  -- AND "WRITTEN ONCE" IS NOT "WRITTEN ON THE CLOSURE" (#582's review round 16, finding 4).
+  -- One-way is a rule about the SECOND write. It says nothing about WHEN the first may happen,
+  -- and the arm above admitted each resolver column independently, on any update, with the
+  -- request still `open`. So a direct writer prefills a forged `resolvedByRole`/`resolvedByName`
+  -- on an open standard request; a still-serving previous-release `withdrawChange` then closes it
+  -- by setting the genuine `resolvedById` and leaves the forged pair untouched; nothing compares
+  -- the two, the arm above makes the pair immutable from that moment, and 4d-iii's closure trigger
+  -- sees no future transition to judge. Permanent false attribution, assembled from two writes
+  -- that are each legal on their own.
+  --
+  -- The resolver set is therefore admitted ONLY on the act it describes: the request LEAVING
+  -- `open`, in the same statement, with the pair TRUE of the resolver. The drain shape is
+  -- untouched — a previous-release closure writes `resolvedById` and leaves these three NULL,
+  -- which stays admitted; 4d-iii is what makes them required.
+  IF (OLD."resolvedByRole" IS NULL AND NEW."resolvedByRole" IS NOT NULL)
+     OR (OLD."resolvedByName" IS NULL AND NEW."resolvedByName" IS NOT NULL)
+     OR (OLD."resolvedByCommandId" IS NULL AND NEW."resolvedByCommandId" IS NOT NULL) THEN
+    IF NOT (OLD."status" = 'open' AND NEW."status" <> 'open') THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: change request % gains resolver provenance on an update that does not CLOSE it (`%` -> `%`) — the receipt and the frozen pair describe the act of closing, and a value written at any other moment is a claim about an act this update did not perform.',
+        OLD."id", OLD."status", NEW."status";
+    END IF;
+    IF NEW."resolvedById" IS NULL THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: change request % records resolver provenance with no `resolvedById` — a role and a name with nobody to be true of is not attribution.',
+        OLD."id";
+    END IF;
+    -- the pair is EVIDENCE, so it is judged exactly as every other frozen pair in this unit is:
+    -- the role must be one the resolver holds, and the name must be the register's.
+    IF NEW."resolvedByRole" IS NOT NULL THEN
+      PERFORM phase6_t4d_actor_bound(NEW."projectId", NEW."resolvedById", NEW."resolvedByRole",
+                                     NEW."resolvedByName", 'ChangeRequest ' || NEW."id");
+    END IF;
+  END IF;
   RETURN NEW;
 END $$;
 
@@ -2459,12 +2510,12 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- and a pair that IS present is judged at INSERT, not only frozen afterwards: a blank role or a
 -- blank name satisfies the CHECK above (neither is null) while attributing nothing at all.
 CREATE OR REPLACE FUNCTION phase6_t4d_consultation_attribution_present() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_role TEXT; v_name TEXT;
+DECLARE v_role TEXT; v_name TEXT; v_actor TEXT;
 BEGIN
   IF TG_TABLE_NAME = 'DecisionConsultation' THEN
-    v_role := NEW."requestedByRole"; v_name := NEW."requestedByName";
+    v_role := NEW."requestedByRole"; v_name := NEW."requestedByName"; v_actor := NEW."requestedById";
   ELSE
-    v_role := NEW."respondedByRole"; v_name := NEW."respondedByName";
+    v_role := NEW."respondedByRole"; v_name := NEW."respondedByName"; v_actor := NEW."respondedById";
   END IF;
   IF v_role IS NULL THEN RETURN NEW; END IF;   -- the legacy all-null shape, admitted by the CHECK
   IF btrim(v_role, E' \t\n\x0B\f\r') = '' OR btrim(v_name, E' \t\n\x0B\f\r') = '' THEN
@@ -2472,6 +2523,20 @@ BEGIN
       'phase6 4d-i: %.% carries a blank attribution pair (role `%`, name `%`) — the pair is evidence of WHO acted, it is frozen the moment it lands, and a blank half attributes nothing while looking attributed',
       TG_TABLE_NAME, NEW."id", COALESCE(v_role, '<null>'), COALESCE(v_name, '<null>');
   END IF;
+
+  -- AND NONBLANK IS NOT TRUE (#582's review round 16, finding 6). Round 6 gave this pair the
+  -- coherence rule (both or neither) and round 6's own follow-up gave it the nonblank rule, and
+  -- BOTH are rules about the pair's SHAPE. Neither asks whether it is true of anybody. The
+  -- delivered 4c request seal validates `requestedById` and stops there, so a direct write could
+  -- name a legitimately authorized requester and attach any nonblank role and name it liked — and
+  -- the freeze above makes that permanent. It is not only a false byline: the response emitter
+  -- reads the FROZEN request-time role to choose its push audience, so a forged `architect` there
+  -- misdirects the announcement as well as the attribution.
+  --
+  -- So it goes through `phase6_t4d_actor_bound`, like every other frozen pair in this unit: the
+  -- role must be one the actor holds on this project, and the name must be the register's.
+  PERFORM phase6_t4d_actor_bound(NEW."projectId", v_actor, v_role, v_name,
+                                 TG_TABLE_NAME || ' ' || NEW."id");
   RETURN NEW;
 END $$;
 

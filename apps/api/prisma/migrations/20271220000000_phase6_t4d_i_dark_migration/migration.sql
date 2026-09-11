@@ -946,6 +946,22 @@ DECLARE
   p RECORD;
 BEGIN
   FOR p IN SELECT "id" FROM "Project" WHERE "orgId" = v_org LOOP
+    -- #582's review round 16, finding 3 — THIS FAN-OUT MAY NOT RETRACT A ROW IT DID NOT ASSERT.
+    --
+    -- `(project, user, 'pmc')` has TWO possible authors: this derivation, for a membership-less
+    -- owner or admin, and `Membership_t4d_role_standing`, for a member whose actual role IS
+    -- `pmc`. The condition below correctly declines to ASSERT the derived row where a membership
+    -- stands — but it expressed that as `apply(..., FALSE)`, and false is a DELETE. So any insert
+    -- or role change on the `OrgMembership` of someone who is also an active PMC on one of the
+    -- org's projects erased the MEMBERSHIP's row. `platform_user_holds_role` then denies a real
+    -- PMC and every 4d fact seal refuses their authorized actions, with nothing to say why.
+    --
+    -- Declining to write and writing FALSE are not the same statement. Where the membership owns
+    -- the row this loop says nothing at all.
+    CONTINUE WHEN EXISTS (
+      SELECT 1 FROM "Membership" m
+       WHERE m."projectId" = p."id" AND m."userId" = v_user
+         AND m."status" = 'active' AND m."role" = 'pmc');
     PERFORM platform_user_standing_apply(
       p."id", v_user, 'pmc', NULL,
       v_authoritative AND NOT EXISTS (

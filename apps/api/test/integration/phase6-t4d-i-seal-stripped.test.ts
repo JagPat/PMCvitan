@@ -2380,10 +2380,13 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       expect(filled.output).toMatch(/at its BIRTH and it may not be written, replaced or cleared/);
     }
 
-    // the RESOLVER set still closes once, which is the transition this freeze must not break.
+    // the RESOLVER set still closes once, which is the transition this freeze must not break —
+    // and since round 16, finding 4, it closes ONLY as a whole: on the open -> closed transition,
+    // naming the resolver, with the pair true of them. This is that shape.
     const closed = psql(RUN_DB, ['-c',
-      `UPDATE "ChangeRequest" SET "resolvedByCommandId" = 'ss-cmd', "resolvedByRole" = 'pmc',
-              "resolvedByName" = 'SS User', "status" = 'withdrawn' WHERE "id" = 'ss-cr-b'`]);
+      `UPDATE "ChangeRequest" SET "resolvedByCommandId" = 'ss-cmd', "resolvedById" = 'ss-user',
+              "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn'
+        WHERE "id" = 'ss-cr-b'`]);
     expect(closed.ok, `the resolver set must still be fillable at closure:\n${closed.output}`).toBe(true);
   }, 180_000);
 
