@@ -715,12 +715,17 @@ const ARMS: Arm[] = [
     seal: 'DecisionApprovalRevision_t4d_birth',
     what: 'an approval pair must be TRUE of its approver, not merely nonblank',
     hostile: `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
-                VALUES ('ss-cmd-fp','project','ss-org','ss-proj','ss-user','decisions.approve','ss-key-fp','ss-hash-fp','reserved');
+                VALUES ('ss-cmd-fp','project','ss-org','ss-proj','ss-client','decisions.approve','ss-key-fp','ss-hash-fp','reserved');
               UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec' WHERE "id" = 'ss-cmd-fp';
               INSERT INTO "DecisionApprovalRevision"
                 ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId","finalized","approvedByName","approvedByRole")
-              VALUES ('ss-rev-fp','ss-proj','ss-dec',1,'a',now(),'ss-user','ss-cmd-fp',TRUE,'Somebody Else','architect')`,
+              VALUES ('ss-rev-fp','ss-proj','ss-dec',1,'a',now(),'ss-client','ss-cmd-fp',TRUE,'Somebody Else','architect')`,
     refusal: /a role that actor does not hold on project/,
+    // #582 round 19, finding 2 — `_t4d_birth_paired` now also demands that a FINALIZED birth ride
+    // the transition that produced it, and these plants are deliberately orphans. It stands in
+    // front of the seal under test at COMMIT, so it is stripped with it; the whole-migration run
+    // still has to answer with this seal's own message, which is what binds the arm to it.
+    alsoStrip: ['DecisionApprovalRevision_t4d_birth_paired'],
   },
   {
     // #582 round 11, finding 2 — COHERENT IS NOT PRESENT. Both halves are non-null, so the
@@ -744,12 +749,17 @@ const ARMS: Arm[] = [
     seal: 'DecisionApprovalRevision_t4d_birth',
     what: 'an approval pair of blanks attributes nothing and is refused',
     hostile: `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
-                VALUES ('ss-cmd-bp','project','ss-org','ss-proj','ss-user','decisions.approve','ss-key-bp','ss-hash-bp','reserved');
+                VALUES ('ss-cmd-bp','project','ss-org','ss-proj','ss-client','decisions.approve','ss-key-bp','ss-hash-bp','reserved');
               UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec' WHERE "id" = 'ss-cmd-bp';
               INSERT INTO "DecisionApprovalRevision"
                 ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId","finalized","approvedByName","approvedByRole")
-              VALUES ('ss-rev-bp','ss-proj','ss-dec',1,'a',now(),'ss-user','ss-cmd-bp',TRUE,'  ','  ')`,
+              VALUES ('ss-rev-bp','ss-proj','ss-dec',1,'a',now(),'ss-client','ss-cmd-bp',TRUE,'  ','  ')`,
     refusal: /carries a BLANK approval pair/,
+    // #582 round 19, finding 2 — `_t4d_birth_paired` now also demands that a FINALIZED birth ride
+    // the transition that produced it, and these plants are deliberately orphans. It stands in
+    // front of the seal under test at COMMIT, so it is stripped with it; the whole-migration run
+    // still has to answer with this seal's own message, which is what binds the arm to it.
+    alsoStrip: ['DecisionApprovalRevision_t4d_birth_paired'],
   },
   {
     // #582 round 10, finding 5 — TWO BIRTHS, ONE APPROVAL. Consecutive versions clear the
@@ -760,14 +770,14 @@ const ARMS: Arm[] = [
     seal: 'DecisionApprovalRevision_t4d_birth_paired',
     what: 'one approval births ONE revision — sibling versions citing different receipts are refused',
     hostile: `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
-                VALUES ('ss-cmd-r1','project','ss-org','ss-proj','ss-user','decisions.approve','ss-key-r1','ss-hash-r1','reserved'),
-                       ('ss-cmd-r2','project','ss-org','ss-proj','ss-user','decisions.approve','ss-key-r2','ss-hash-r2','reserved');
+                VALUES ('ss-cmd-r1','project','ss-org','ss-proj','ss-client','decisions.approve','ss-key-r1','ss-hash-r1','reserved'),
+                       ('ss-cmd-r2','project','ss-org','ss-proj','ss-client','decisions.approve','ss-key-r2','ss-hash-r2','reserved');
               UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec'
                WHERE "id" IN ('ss-cmd-r1','ss-cmd-r2');
               INSERT INTO "DecisionApprovalRevision"
                 ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
-              VALUES ('ss-rev-1','ss-proj','ss-dec',1,'a',now(),'ss-user','ss-cmd-r1'),
-                     ('ss-rev-2','ss-proj','ss-dec',2,'a',now(),'ss-user','ss-cmd-r2')`,
+              VALUES ('ss-rev-1','ss-proj','ss-dec',1,'a',now(),'ss-client','ss-cmd-r1'),
+                     ('ss-rev-2','ss-proj','ss-dec',2,'a',now(),'ss-client','ss-cmd-r2')`,
     refusal: /rows BORN in this transaction/,
   },
   {
@@ -2822,11 +2832,11 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     VALUES ('ss-mt-ar','ss-proj','ss-mem-ar','ss-arch',NULL,NULL,'architect','active','ss-user','pmc','SS User','ss-cmd-ar');
     INSERT INTO "Membership" ("id","projectId","userId","role","status") VALUES ('ss-mem-ar','ss-proj','ss-arch','architect','active');
     INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
-      VALUES ('ss-cmd-pv','project','ss-org','ss-proj','ss-user','decisions.approve','ss-key-pv','ss-hash-pv','reserved');
+      VALUES ('ss-cmd-pv','project','ss-org','ss-proj','ss-client','decisions.approve','ss-key-pv','ss-hash-pv','reserved');
     UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec' WHERE "id" = 'ss-cmd-pv';
     INSERT INTO "DecisionApprovalRevision"
       ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId","finalized","approvedFrom","approvedByName","approvedByRole")
-    VALUES ('ss-rev-p','ss-proj','ss-dec',1,'a',now(),'ss-user','ss-cmd-pv',FALSE,'pending','SS User','pmc');
+    VALUES ('ss-rev-p','ss-proj','ss-dec',1,'a',now(),'ss-client','ss-cmd-pv',FALSE,'pending','SS Client','client');
     UPDATE "Decision" SET "status" = 'awaiting_countersign' WHERE "id" = 'ss-dec';`;
 
   it('the awaiting_countersign to change transition owes its rejection request', () => {
@@ -2931,12 +2941,12 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     // Run against the database the arm above just committed, which is the state the attack needs.
     const second = psql(RUN_DB, ['-c',
       `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
-         VALUES ('ss-cmd-pv2','project','ss-org','ss-proj','ss-user','decisions.approve','ss-key-pv2','ss-hash-pv2','reserved');
+         VALUES ('ss-cmd-pv2','project','ss-org','ss-proj','ss-client','decisions.approve','ss-key-pv2','ss-hash-pv2','reserved');
        UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec' WHERE "id" = 'ss-cmd-pv2';
        UPDATE "Decision" SET "room" = "room" WHERE "id" = 'ss-dec';
        INSERT INTO "DecisionApprovalRevision"
          ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId","finalized","approvedFrom","approvedByName","approvedByRole")
-       VALUES ('ss-rev-p2','ss-proj','ss-dec',2,'a',now(),'ss-user','ss-cmd-pv2',FALSE,'pending','SS User','pmc')`]);
+       VALUES ('ss-rev-p2','ss-proj','ss-dec',2,'a',now(),'ss-client','ss-cmd-pv2',FALSE,'pending','SS Client','client')`]);
     expect(
       second.ok,
       'a second provisional revision, admitted by a no-op UPDATE, must be REFUSED — one decision '

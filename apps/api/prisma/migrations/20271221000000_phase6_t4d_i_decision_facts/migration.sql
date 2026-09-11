@@ -1983,59 +1983,6 @@ CREATE TRIGGER "DecisionApprovalRevision_t4d_one_flip"
 -- forged birth is the cheapest attack on the whole mechanism: a revision inserted `true` under a
 -- chain is a final approval no architect ever countersigned, and one inserted `false` with no
 -- chain can never be finalized, because neither finalizer exists.
--- ── WHO MAY APPROVE: the frozen holder designation, or a PMC on their behalf ─────────────────
--- #582's review round 19, finding 3 — and it is the distinction this file ALREADY names somewhere
--- else. `phase6_t4d_forward_seal` carries the comment "the forward's own rule is AUTHORITY, which
--- `phase6_t4d_actor_bound` does not supply", and the approval revision was then given
--- `actor_bound` alone. Correspondence answers *is this pair true of this actor*; it says nothing
--- about whether the actor may perform the act.
---
--- So an ACTIVE ENGINEER could reserve and complete a valid `decisions.approve` receipt, approve a
--- CLIENT-held decision with their own truthful `engineer` pair, and pass every seal: the receipt
--- is genuine, the pair is true, the transition is legal from the decision's side. Nothing asked
--- whether an engineer may approve at all.
---
--- The designation is the rule, read under a share lock so a concurrent re-designation either
--- commits first (and this approval is judged against the new holder) or waits behind it:
---
---   · `member`  — the approver IS the user the held membership resolves to, ACTIVE.
---   · `client` / `pmc` / `architect` — the approver holds that role on the project, through the
---     register, with the drain window's membership-less `pmc` derivation.
---   · ON BEHALF — a PMC may approve for the holder. Then the PMC's own standing is what is
---     judged here, and `onBehalfOf` must name someone who satisfies the designation, so the row
---     still records WHOSE decision it was. A non-PMC may not use it.
-CREATE OR REPLACE FUNCTION phase6_t4d_approver_authorized(
-  p_project TEXT, p_decision TEXT, p_actor TEXT, p_on_behalf TEXT, p_row TEXT
-) RETURNS VOID LANGUAGE plpgsql VOLATILE AS $$
-DECLARE d RECORD; v_subject TEXT; v_ok BOOLEAN;
-BEGIN
-  SELECT "deciderKind"::text AS kind, "deciderMembershipId" AS mem INTO d
-    FROM "Decision" WHERE "projectId" = p_project AND "id" = p_decision FOR SHARE;
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'phase6 4d-i: % names decision %, which is not in project %', p_row, p_decision, p_project;
-  END IF;
-
-  -- The person whose designation must be satisfied: the actor, or the one they act for.
-  v_subject := COALESCE(p_on_behalf, p_actor);
-  IF p_on_behalf IS NOT NULL AND NOT platform_user_holds_role_windowed(p_project, p_actor, 'pmc') THEN
-    RAISE EXCEPTION
-      'phase6 4d-i: % records actor % approving ON BEHALF of % without holding `pmc` on project % — acting for the holder is the PMC''s orchestration, and anyone else doing it is approving a decision that is not theirs under someone else''s name',
-      p_row, p_actor, p_on_behalf, p_project;
-  END IF;
-
-  IF d.kind = 'member' THEN
-    v_ok := d.mem IS NOT NULL AND platform_membership_active_user(p_project, d.mem) = v_subject;
-  ELSE
-    v_ok := platform_user_holds_role_windowed(p_project, v_subject, d.kind);
-  END IF;
-
-  IF NOT v_ok THEN
-    RAISE EXCEPTION
-      'phase6 4d-i: % records an approval of decision % by %, who does not hold its `%` designation — a receipt and a truthful role/name pair prove WHO acted and say nothing about whether they MAY. (For `pmc`, the drain window''s membership-less org owner/admin is admitted; for `member`, the designation names one active membership.)',
-      p_row, p_decision, v_subject, d.kind;
-  END IF;
-END $$;
-
 CREATE OR REPLACE FUNCTION phase6_t4d_revision_birth() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE v_chain BOOLEAN; v_prev INT;
 BEGIN
@@ -2128,14 +2075,29 @@ BEGIN
                                    'DecisionApprovalRevision ' || NEW."id");
   END IF;
 
-  -- AND CORRESPONDENCE IS NOT AUTHORITY (#582 round 19, finding 3). Everything above proves the
-  -- pair is TRUE of `approvedById`; nothing above asks whether that actor may approve THIS
-  -- decision. Judged whenever an approver is named — the drain's legacy rows carry none, and a
-  -- row with nobody in it is already refused by the arm above when it carries a pair.
-  IF NEW."approvedById" IS NOT NULL THEN
-    PERFORM phase6_t4d_approver_authorized(NEW."projectId", NEW."decisionId", NEW."approvedById",
-                                           NEW."onBehalfOf", 'DecisionApprovalRevision ' || NEW."id");
-  END IF;
+  -- AND CORRESPONDENCE IS NOT AUTHORITY — a real gap, and NOT 4d-i's to close
+  -- (#582's review round 19, finding 3; measured, then backed out).
+  --
+  -- The finding is right about this seal: everything above proves the frozen pair is TRUE of
+  -- `approvedById` and nothing asks whether that actor may approve THIS decision, so an actor with
+  -- a genuine receipt and a truthful pair can record an approval of a decision they do not hold.
+  --
+  -- THE BINDING WAS WRITTEN, INSTALLED AND MEASURED, and it is not dark. With
+  -- `phase6_t4d_approver_authorized` wired here, the api integration suite went from 1585 passing
+  -- to **30 failures across ten files**, every one of them this rule — 29 `does not hold its
+  -- `client` designation` and one `member`. Those are the DELIVERED `decisions.approve` paths
+  -- exercised by suites that pass today. Whether the service is genuinely approving without holder
+  -- authority, or the register does not yet carry the standing this predicate reads, the
+  -- consequence is the same and it is disqualifying HERE: 4d-i is a DARK migration, and a seal that
+  -- refuses thirty currently-legal service writes is not dark. Shipping it would break the running
+  -- release at the moment the migration commits, which is the one thing this unit may not do — the
+  -- same line round 18 drew around `DecisionEvent.actorRole`, for the same reason.
+  --
+  -- SO IT IS OWED BY 4d-ii, where the writer itself moves onto the register and the question can be
+  -- answered by changing the writer and the seal together. The plan's §D carries it as an
+  -- obligation of that unit, with this measurement, so it is a scheduled correction rather than a
+  -- silence. `phase6_t4d_approver_authorized` is NOT installed by this file: a function defined
+  -- with the right rule in its comment and left unwired is the defect rounds 1 and 2 both found.
   RETURN NEW;
 END $$;
 
