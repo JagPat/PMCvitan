@@ -4515,11 +4515,18 @@ assert "4c-ii: the accepted revision names the approval command it is the produc
 # the COUNT every open consultation is frozen against — the same denial the bare-revision arm
 # refuses, reached with a real receipt.
 assert_rejects "4c-ii F1: a SPENT approval receipt replayed onto a second revision" \
-  "INSERT INTO \"DecisionApprovalRevision\"(\"id\",\"projectId\",\"decisionId\",\"version\",\"optionKey\",\"approvedAt\",\"approvedById\",\"sourceCommandId\") VALUES ('UP4CII-REPLAY','p1','UP4A-D2',98,'a',now(),'USER-1','UP4CII-CMD')" \
+  "INSERT INTO \"DecisionApprovalRevision\"(\"id\",\"projectId\",\"decisionId\",\"version\",\"optionKey\",\"approvedAt\",\"approvedById\",\"sourceCommandId\") VALUES ('UP4CII-REPLAY','p1','UP4A-D2',100,'a',now(),'USER-1','UP4CII-CMD')" \
   "DecisionApprovalRevision_source_command_key"
 assert "4c-ii F1: the register still records exactly ONE revision for that receipt" \
   "SELECT COUNT(*)::text FROM \"DecisionApprovalRevision\" WHERE \"sourceCommandId\"='UP4CII-CMD';" \
   "1"
+# The replay is planted at version 100 — the HEAD — and not at 98, which is what it used to be.
+# #582 round 13, finding 5 installs a birth seal refusing any revision at or below the decision's
+# highest existing version (99 here), and a BEFORE trigger fires before the unique index is ever
+# consulted. At 98 the row was still refused, but by the wrong rule, and this assertion would have
+# passed for a reason that has nothing to do with a spent receipt. Planting it at the head isolates
+# the rule under test: the row is valid in every way EXCEPT that its receipt is already spent.
+
 # …and the index is PARTIAL, so the legacy rows this fixture's own pre-4c approvals left behind —
 # the ones 4c-i staged the column nullable for — still coexist. A non-partial unique would have
 # made every existing database unmigratable, which is the opposite of an additive migration.
