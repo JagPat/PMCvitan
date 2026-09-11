@@ -1411,18 +1411,36 @@ BEGIN
       NEW."id", COALESCE(NEW."resolvedById", '<null>'), COALESCE(c."actorId", '<null>');
   END IF;
 
-  -- the RESULT, per command. A withdrawal's result is the request; an approval's is the decision
-  -- whose move closed it, and the request must be one this decision actually carries.
-  IF c."commandType" = 'decisions.withdrawChange' THEN
-    IF c."resultRef" IS DISTINCT FROM NEW."id" THEN
-      RAISE EXCEPTION
-        'phase6 4d-i: change request % cites a `decisions.withdrawChange` receipt whose result names % — a withdrawal''s result IS the request it closed, and a receipt for another result cannot be borrowed',
-        NEW."id", COALESCE(c."resultRef", '<null>');
-    END IF;
-  ELSIF c."resultRef" IS DISTINCT FROM NEW."decisionId" THEN
+  -- the RESULT, AND IT IS THE SAME SHAPE FOR BOTH WRITERS (#582's review round 23, finding 2).
+  --
+  -- Round 22 split this by command and demanded, of a withdrawal, a `resultRef` naming the REQUEST
+  -- — reasoning, in its own message, that "a withdrawal's result IS the request it closed". §D had
+  -- already settled the question the other way, and settled it about this exact pair of writers:
+  -- the admitted closure shape is "a `resultRef` naming the closed row's `decisionId`, which is
+  -- what both writers already return", and re-pointing `withdrawChange`'s receipt at the
+  -- `ChangeRequest` is listed there under "Deliberately NOT done" — a command whose subject is the
+  -- decision does not get its receipt moved so that a seal can recognise it.
+  --
+  -- So round 22's arm was not a strengthening but a REGRESSION against a ruling, and one that
+  -- breaks rather than over-refuses: `decisions.service.ts` completes `decisions.withdrawChange`
+  -- with `resultRef: decisionId`, so from the moment 4d-ii writes `resolvedByCommandId` every
+  -- ordinary withdrawal would reach commit carrying the correct same-transaction receipt and roll
+  -- back here. The rule a seal enforces is the plan's, not the one the seal's author finds
+  -- persuasive while writing it.
+  --
+  -- One check, not two: the closure's receipt names THIS row's decision. The commandType gate
+  -- above still says WHICH commands may close a request; this says what their result must be.
+  --
+  -- THE WHOLE `resultRef` INVENTORY, since the defect was a shape invented where the plan had
+  -- ruled, and the question is therefore "where else does this unit assert a result shape". Three
+  -- sites, all now agreeing with §D: the generic `phase6_t4d_provenance_bound` above admits the
+  -- row itself or the bundle's PRIMARY fact (§D's two shapes); `phase6_t4d_membership_transition_bound`
+  -- in the register half admits the membership id, which is what §D says all three member commands
+  -- return; and this one, §D's third shape, for a CLOSURE. No fourth site asserts one.
+  IF c."resultRef" IS DISTINCT FROM NEW."decisionId" THEN
     RAISE EXCEPTION
-      'phase6 4d-i: change request % cites a `decisions.approve` receipt whose result names %, not this request''s decision % — a re-approval closes the request of the decision it moved and no other',
-      NEW."id", COALESCE(c."resultRef", '<null>'), NEW."decisionId";
+      'phase6 4d-i: change request % cites a `%` closure receipt whose result names %, not this request''s decision % — a closure''s receipt belongs to the command that MOVED the decision, so its result is that decision and a receipt for another result cannot be borrowed',
+      NEW."id", c."commandType", COALESCE(c."resultRef", '<null>'), NEW."decisionId";
   END IF;
   RETURN NULL;
 END $$;
@@ -2270,23 +2288,42 @@ CREATE TRIGGER "DecisionApprovalRevision_t4d_birth"
 -- a TRANSACTION-LOCAL set when, and only when, this update performs `pending`/`change` ->
 -- `approved`. The deferred birth seal then asks whether its decision is in that set.
 --
--- The admitted entries are the DELIVERED `decision_t4b_attribution_seal`'s: it states that the
--- approval tuple may first be written only by `pending`/`change` -> `approved`, and this register
--- must say the same thing or the two seals disagree about what an approval is. If a later unit
--- adds a third entry transition it moves this set with the seal that states it.
+-- The admitted entries are the DELIVERED `Decision_t4b_attribution_seal`'s: it states that the
+-- approval tuple may first be written only by `pending`/`change` -> `approved` (this unit widens
+-- its target to `approved`/`awaiting_countersign`, and not its SOURCE), and this register must say
+-- the same thing or the two seals disagree about what an approval is. If a later unit adds a third
+-- entry transition it moves this set with the seal that states it.
 --
 -- A jsonb ARRAY, not a delimited string, for round 20 finding 2's reason: `Decision.id` is
 -- unconstrained TEXT, so any delimiter can appear INSIDE an id and a containment test on a
 -- concatenated string answers TRUE for a decision the transaction never touched. `?` on a jsonb
 -- array has no delimiter to smuggle.
+-- AND THE SOURCE IS PART OF THE MOVE (#582's review round 23, finding 1).
+--
+-- Round 22 wrote this recorder with a comment saying "which moves are legal is
+-- `Decision_t4d_entry_seal`'s question and is not re-decided here", and recorded EVERY change into
+-- `approved`. Both halves of that sentence were wrong. `Decision_t4d_entry_seal` judges entry into
+-- `awaiting_countersign` and nothing else — it never asks about `approved` at all — so deferring
+-- to it left the approved side with no source rule anywhere. And the rule was not being
+-- "re-decided": the exception this register feeds says `pending`/`change` -> `approved` in those
+-- words, and the paragraph above says it too, so the recorder was the ONE place that disagreed.
+--
+-- What the omission admits arrives with 4d-iii: `awaiting_countersign` -> `approved` is the
+-- STRANDED COMPLETION, which finishes an approval already made and writes no new one. A bundle
+-- performing a valid one can carry a genuine `decisions.approve` receipt and a higher-version
+-- FINALIZED revision beside it; the birth seal below then sees a register entry, an `approved` end
+-- state and one new revision, and the fabricated approval becomes the immutable head that 4c
+-- counts as a consultation cycle. `DecisionApprovalRevision.approvedFrom` carries a CHECK over
+-- exactly `('pending', 'change')` for the same reason — a revision cannot even NAME a third
+-- source, so a register that admitted one would be recording an act the fact table cannot express.
 CREATE OR REPLACE FUNCTION phase6_t4d_decision_approved_here() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-  -- A MOVE, stated as a move: the status CHANGED and it changed INTO this state. Which moves are
-  -- legal is `Decision_t4d_entry_seal`'s question and is not re-decided here — a recorder that
-  -- listed the admitted entries would be a second definition of that rule, and two definitions of
-  -- one rule drift. This records only that a move happened, which is the whole of what the birth
-  -- seals need and nothing they do not.
-  IF OLD."status"::text IS DISTINCT FROM NEW."status"::text THEN
+  -- A MOVE, stated as a move: FROM an open decision, and INTO this state. Which transitions are
+  -- otherwise legal stays with the seals that own them; what this records is the ENTRY pair the
+  -- delivered attribution seal names, because that pair is what the birth seals below mean by an
+  -- approval and a third source would not be one.
+  IF OLD."status"::text IN ('pending', 'change')
+     AND NEW."status"::text IS DISTINCT FROM OLD."status"::text THEN
     IF NEW."status"::text = 'approved' THEN
       PERFORM set_config('phase6.t4d_decision_approved',
         (COALESCE(NULLIF(current_setting('phase6.t4d_decision_approved', true), ''), '[]')::jsonb
@@ -2646,6 +2683,8 @@ CREATE TRIGGER "DecisionEvent_t4d_renotified_claim"
 CREATE OR REPLACE FUNCTION phase6_t4d_event_correspondence_weak() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   v_approver TEXT;                       -- #582 round 19, finding 4 — the act's own actor
+  v_actor_hi TEXT;                       -- #582 round 23, finding 3 — and it is ONE actor, not any
+  v_row      TEXT;
   v_status   TEXT;
   v_project  TEXT;
   v_required TEXT[];
@@ -2742,28 +2781,122 @@ BEGIN
   -- previous-release audit row may carry no `actorId` at all, and no released code writes the
   -- event envelope until 4d-ii. So each side is compared only when it names somebody. 4d-iii is
   -- where both become required and this becomes total.
-  IF 'decision.approved' = ANY (v_required) OR 'decision.reapproved' = ANY (v_required) THEN
-    SELECT r."approvedById" INTO v_approver
+  -- AND THE BINDING IS PER-BRANCH, BECAUSE THE ACT'S ROW IS (#582's review round 23, finding 3).
+  --
+  -- Round 19 wrote the rule correctly — "the act's records are bound to the act's ROW" — and then
+  -- gated the whole block on `decision.approved`/`decision.reapproved`, which is one branch of the
+  -- nine this seal answers for. Every other branch has an act row of its own, written in the same
+  -- transaction and already judged hard by this file, and not one of them was asked: a standard
+  -- request recorded against requester A could append its `change_requested` audit row and emit its
+  -- event as B, a closure attributed and receipt-bound to resolver C could append both
+  -- `change_withdrawn` effects as B, and the type and kind counts above pass either way. The rows
+  -- are then immutable and 4d-iii's full converse cannot revisit them.
+  --
+  -- It also ran the binding for two branches whose authority is SOMEONE ELSE. `countersigned` and
+  -- `stranded_resolved` carry `decision.approved`/`decision.reapproved` in `v_required` — they
+  -- announce the approval they finalize — so the gate was true for them, and the revision they
+  -- touch matches `xmin` because the countersign FLIPS `finalized` on it and this unit is what made
+  -- that UPDATE legal. The seal therefore demanded that the countersigner BE the approver, which is
+  -- the one thing a countersign never is: from 4d-ii every valid countersign would have rolled back
+  -- here. `xmin` means "written here" and stopped meaning "born here" the moment the append-only
+  -- seal was replaced by `DecisionApprovalRevision_t4d_one_flip`, and only this branch table
+  -- noticed. THE OTHER TWO READERS OF THAT ROW'S `xmin` WERE CHECKED and neither is exposed:
+  -- `phase6_t4d_awaiting_paired` filters `finalized = FALSE`, which a flipped row can never
+  -- satisfy, and the birth seal's own count is reached only from an INSERT and already refuses a
+  -- second matching row whatever wrote it. This was the only one.
+  --
+  -- So the authority is resolved BY BRANCH, from the fact that records the act:
+  --
+  --   approved / reapproved   → DecisionApprovalRevision."approvedById"     (the approval)
+  --   countersigned           → DecisionCountersign."countersignedById"     (the finalizer)
+  --   stranded_resolved       → DecisionStrandedResolution."resolvedById"   (the resolver)
+  --   change_requested        → ChangeRequest."requestedById"               (the request opened here)
+  --   change_withdrawn        → ChangeRequest."resolvedById"                (the request closed here)
+  --   forwarded               → DecisionForward."forwardedById"             (the displacing actor)
+  --   countersign_renotified  → none: the re-notification writes no fact row, and §A.3 makes this
+  --                             audit row itself the branch's primary — there is nothing behind it
+  --                             to disagree with, which is a silence this comment states rather
+  --                             than leaves.
+  --
+  -- min/max rather than a bare `SELECT INTO`, which takes an arbitrary row in silence: if two act
+  -- rows of one branch name different people the binding must refuse rather than pick one. The
+  -- per-fact count seals elsewhere in this file already make that unreachable on every path they
+  -- cover; this says so where the value is read, so a branch they do not cover cannot pass by luck.
+  -- Both aggregates SKIP NULLs, so the question they answer is "everyone this branch's act rows
+  -- name is the same person" — a row that names nobody is the drain's own shape and is left to the
+  -- columns' own NOT NULL rules rather than invented here.
+  --
+  -- THE DRAIN KEEPS ITS EXCEPTION on both sides, unchanged: a NULL authority (no fact row yet) and
+  -- a NULL actor (a previous-release audit row, or an envelope no released code writes until
+  -- 4d-ii) are each compared only when they name somebody.
+  v_approver := NULL; v_actor_hi := NULL; v_row := NULL;
+  IF NEW."type" IN ('approved', 'reapproved') THEN
+    -- No born-versus-flipped filter is needed HERE, and the min/max in this branch is why: if a
+    -- bundle both births a revision and flips another in one transaction, the two `approvedById`
+    -- values either agree — in which case there is nothing to pick between — or differ, and the
+    -- ambiguity arm below refuses rather than choosing one in silence.
+    v_row := 'the approval revision this transaction wrote';
+    SELECT min(r."approvedById"), max(r."approvedById") INTO v_approver, v_actor_hi
       FROM "DecisionApprovalRevision" r
      WHERE r."projectId" = v_project AND r."decisionId" = NEW."decisionId"
        AND r."xmin" = txid_current()::text::xid;
+  ELSIF NEW."type" = 'countersigned' THEN
+    v_row := 'the countersign this transaction wrote';
+    SELECT min(c."countersignedById"), max(c."countersignedById") INTO v_approver, v_actor_hi
+      FROM "DecisionCountersign" c
+     WHERE c."projectId" = v_project AND c."decisionId" = NEW."decisionId"
+       AND c."xmin" = txid_current()::text::xid;
+  ELSIF NEW."type" = 'stranded_resolved' THEN
+    v_row := 'the stranded resolution this transaction wrote';
+    SELECT min(r."resolvedById"), max(r."resolvedById") INTO v_approver, v_actor_hi
+      FROM "DecisionStrandedResolution" r
+     WHERE r."projectId" = v_project AND r."decisionId" = NEW."decisionId"
+       AND r."xmin" = txid_current()::text::xid;
+  ELSIF NEW."type" = 'forwarded' THEN
+    v_row := 'the forward this transaction wrote';
+    SELECT min(f."forwardedById"), max(f."forwardedById") INTO v_approver, v_actor_hi
+      FROM "DecisionForward" f
+     WHERE f."projectId" = v_project AND f."decisionId" = NEW."decisionId"
+       AND f."xmin" = txid_current()::text::xid;
+  ELSIF NEW."type" = 'change_requested' THEN
+    -- OPEN, which is what a request BORN here is. `ChangeRequest` is written twice in its life, so
+    -- `xmin` alone would also match the row this transaction CLOSED; the status separates them
+    -- exactly, and each side reads the column its own act wrote.
+    v_row := 'the change request this transaction opened';
+    SELECT min(cr."requestedById"), max(cr."requestedById") INTO v_approver, v_actor_hi
+      FROM "ChangeRequest" cr
+     WHERE cr."projectId" = v_project AND cr."decisionId" = NEW."decisionId"
+       AND cr."status" = 'open'
+       AND cr."xmin" = txid_current()::text::xid;
+  ELSIF NEW."type" = 'change_withdrawn' THEN
+    v_row := 'the change request this transaction closed';
+    SELECT min(cr."resolvedById"), max(cr."resolvedById") INTO v_approver, v_actor_hi
+      FROM "ChangeRequest" cr
+     WHERE cr."projectId" = v_project AND cr."decisionId" = NEW."decisionId"
+       AND cr."status" <> 'open'
+       AND cr."xmin" = txid_current()::text::xid;
+  END IF;
 
-    IF v_approver IS NOT NULL THEN
-      IF NEW."actorId" IS NOT NULL AND NEW."actorId" <> v_approver THEN
-        RAISE EXCEPTION
-          'phase6 4d-i: the `%` audit row for decision % is attributed to %, but the approval revision this transaction wrote records % as the approver — one act has one actor, and two immutable records naming different people leave a register that cannot say who decided',
-          NEW."type", NEW."decisionId", NEW."actorId", v_approver;
-      END IF;
-      IF EXISTS (
-        SELECT 1 FROM "DomainEvent" e
-         WHERE e."projectId" = v_project AND e."entityType" = 'Decision'
-           AND e."entityId" = NEW."decisionId" AND e."eventType" = ANY (v_required)
-           AND e."xmin" = txid_current()::text::xid
-           AND e."actorId" IS NOT NULL AND e."actorId" <> v_approver) THEN
-        RAISE EXCEPTION
-          'phase6 4d-i: the % event announcing decision % names an actor other than %, the approver the revision this transaction wrote records — the delivery stream is what the push renders, so a mismatch announces the approval under the wrong name and no later write can correct it',
-          array_to_string(v_required, ' or '), NEW."decisionId", v_approver;
-      END IF;
+  IF v_approver IS NOT NULL THEN
+    IF v_approver IS DISTINCT FROM v_actor_hi THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: decision % carries SEVERAL % rows written by this transaction naming different actors (% and %) — the `%` audit row cannot be bound to an act whose own records disagree about who performed it',
+        NEW."decisionId", v_row, v_approver, v_actor_hi, NEW."type";
+    END IF;
+    IF NEW."actorId" IS NOT NULL AND NEW."actorId" <> v_approver THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: the `%` audit row for decision % is attributed to %, but % records % as the actor — one act has one actor, and two immutable records naming different people leave a register that cannot say who decided',
+        NEW."type", NEW."decisionId", NEW."actorId", v_row, v_approver;
+    END IF;
+    IF EXISTS (
+      SELECT 1 FROM "DomainEvent" e
+       WHERE e."projectId" = v_project AND e."entityType" = 'Decision'
+         AND e."entityId" = NEW."decisionId" AND e."eventType" = ANY (v_required)
+         AND e."xmin" = txid_current()::text::xid
+         AND e."actorId" IS NOT NULL AND e."actorId" <> v_approver) THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: the % event announcing decision % names an actor other than %, which % records — the delivery stream is what the push renders, so a mismatch announces the act under the wrong name and no later write can correct it',
+        array_to_string(v_required, ' or '), NEW."decisionId", v_approver, v_row;
     END IF;
   END IF;
   RETURN NULL;
