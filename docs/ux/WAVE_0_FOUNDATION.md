@@ -289,6 +289,44 @@ Audit every action target against the 44×44 floor in the same pass.
 >    width, so it passed in the world it existed to rule out. It now asserts a
 >    known dense control keeps its authored sub-16px size.
 
+> **Amendment (2026-09-11, PR #584 review round 14): the "every target" claim is RETRACTED, and
+> what replaces it is a count.**
+>
+> Round 14 named three more controls under the floor, and all three sit in states no walk can
+> enter: the consultation RESPONDER's recommendation selector (the sweep asks the questions; being
+> asked one is a different session), Team Access's phone-step and worker-OTP text actions (three
+> and four transitions into a machine the sweep cannot advance without signing itself out), and a
+> Team screen COMPANY row's edit and remove icons (the demo store ships `companies` empty). All
+> three are fixed, and `tests/target-floor-unreached-states.test.tsx` renders each state directly
+> in jsdom — no layout, so it asserts the floor DECLARATION reaches the element, which is the half
+> the browser could not observe at all. Each arm was proven RED with its fix reverted.
+>
+> **But five rounds of the same class is a fact about the INSTRUMENT.** Rounds 9, 11, 12, 13 and 14
+> each found the rule correct and the reach short: a third option, an empty discipline, a
+> server-backed category, a state opened by interaction, and now three states that need a different
+> session, a different machine state and a non-empty collection. So the source was counted instead
+> of the walk. `apps/web/src` declares **282** interactive elements (`button`, `select`, `input`,
+> `textarea`, `a`). Resolving each one's style — inline literal, spread, module-level constant,
+> style-returning function — and computing its box from an explicit `height`/`minHeight` or from
+> font size plus vertical padding: **176 reach 44px, 86 do not**, 15 are styled by CSS module (where
+> the floors are, and the browser sweep does measure them) and 5 carry no style. The median short
+> box is **29px** and **78 of the 86 are at or under 32px**, well outside the ±5px error in that
+> arithmetic. Fifty of them are on `CommercialScreen`, which is capability-gated and which no
+> persona in the sweep can reach at all.
+>
+> The walk is therefore measuring something closer to a third of the product's targets, and
+> "every action target >=44x44" has been resting on it since round 7. That sentence is withdrawn
+> here: what this unit can honestly claim is that every target the persona walk reaches, plus the
+> states the jsdom companion renders, meets the floor.
+>
+> **Closing the remaining 86 is its own unit, and it carries a product question this one must not
+> answer alone.** `CommercialScreen`'s fifty are dense money-ledger controls at 12.5px with 7px
+> padding; raising them to 44 changes how much of a claim fits on one screen. `LabourScreen`'s
+> seven and the requirement-spec selects are the same shape. Whether the field floor governs a
+> desktop-first ledger, or whether that surface gets a stated exception, is a decision for the
+> Board and not a P2 fold — so it is proposed as a unit rather than swept in here, with the
+> enumeration above as its inventory.
+
 ---
 
 ## Unit F-1c — per-surface validation

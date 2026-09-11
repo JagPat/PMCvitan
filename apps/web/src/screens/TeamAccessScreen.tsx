@@ -196,7 +196,11 @@ export function TeamAccessScreen() {
         <button
           onClick={accGoLogin}
           data-testid="go-login"
-          style={{ background: 'transparent', border: 'none', color: 'var(--muted)', fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', marginTop: 14, alignSelf: 'center' }}
+          // #584 review round 14 — through the SHARED `linkBtn`, which has carried the floor
+          // since round 7. This action and the OTP resend below were written inline before
+          // `linkBtn` existed and never moved onto it, so the floor reached three of the five
+          // bare text actions on this screen. Only the font size differs from the shared style.
+          style={{ ...linkBtn, fontSize: 12.5 }}
         >
           Architect / Client / Contractor? Sign in with email
         </button>
@@ -498,7 +502,8 @@ export function TeamAccessScreen() {
         <button
           onClick={requestOtp}
           disabled={sending}
-          style={{ background: 'transparent', border: 'none', color: 'var(--muted)', fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, cursor: sending ? 'default' : 'pointer', marginTop: 8, alignSelf: 'center' }}
+          // #584 review round 14 — the second inline survivor; see `go-login` above.
+          style={{ ...linkBtn, marginTop: 8, cursor: sending ? 'default' : 'pointer' }}
         >
           {t.resend}
         </button>

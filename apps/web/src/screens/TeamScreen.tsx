@@ -604,4 +604,8 @@ const cardStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 1
 const fld: CSSProperties = { height: 44, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink)', outline: 'none' };
 const roleChip: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 700, letterSpacing: '.06em', padding: '4px 9px', borderRadius: 6, border: '1px solid var(--hairline)', color: 'var(--muted)', textTransform: 'uppercase' };
 const discChip: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 8.5, fontWeight: 700, letterSpacing: '.06em', padding: '2px 6px', borderRadius: 5, border: '1px solid var(--accent)', color: 'var(--accent)', textTransform: 'uppercase' };
-const iconBtn: CSSProperties = { background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 4 };
+// #584 review round 14 — a 16px glyph with 4px of padding is a 24px target. Round 13 raised the
+// MEMBER row's Remove button and left this one, which serves the COMPANY rows: the demo store
+// ships an empty `companies` array, so neither ordinary walk nor the round-13 server-backed seed
+// ever rendered a company row for the sweep to measure.
+const iconBtn: CSSProperties = { background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 44, minHeight: 44, padding: 4 };
