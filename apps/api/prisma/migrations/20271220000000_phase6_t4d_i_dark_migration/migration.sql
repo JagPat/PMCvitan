@@ -1199,7 +1199,21 @@ BEGIN
               AND EXISTS (SELECT 1 FROM "Project" p2
                             JOIN "OrgMembership" om ON om."orgId" = p2."orgId"
                            WHERE p2."id" = s2."projectId" AND om."userId" = s2."userId"
-                             AND om."role" IN ('owner', 'admin')));
+                             AND om."role" IN ('owner', 'admin'))
+              -- MEMBERSHIP-LESS MEANS WHAT IT SAYS (#582 round 10, finding 3). Round 9 bound the
+              -- pointer and left the word unbound: the arm asked for an owner/admin and never
+              -- that the claim be membership-less, so an owner carrying an ACTIVE `engineer`
+              -- membership was adopted as a `pmc` too. Both the projection writer (arm (3) above,
+              -- `NOT (v_after AND ...)` recomputed only while the user has no active presence)
+              -- and the backfill (the arm immediately above it) spell the condition this way,
+              -- and an audit that admits what its own writer would never produce is not auditing
+              -- the writer's rule. The cost is not tidiness: through the 4d-i → 4d-iii window
+              -- `platform_user_holds_role` answers from this register, so the fact seals accept
+              -- `actorRole = 'pmc'` from that engineer and FREEZE it — permanent authority
+              -- evidence for standing the orgs tables never granted.
+              AND NOT EXISTS (SELECT 1 FROM "Membership" m3
+                               WHERE m3."projectId" = s2."projectId" AND m3."userId" = s2."userId"
+                                 AND m3."status" = 'active'));
   IF v_backfilled > 0 THEN
     RAISE EXCEPTION
       'phase6 4d-i ABORT: % "ProjectUserStanding" row(s) are backed by neither an active "Membership" of that exact user, role AND id, nor an org owner/admin''s membership-less `pmc` claim — %. The register is about to be adopted as the answer to "does this user hold this role here?" AND as the answer to "who holds this membership?" — `platform_membership_active_user` resolves the holder by `membershipId` alone — so an unbacked row is standing nobody granted and a mispointed one hands a forward to the wrong person. Remove or repoint the rows (or grant the membership they claim) before this migration adopts the register.',
@@ -1984,9 +1998,9 @@ END $$;
 -- transition it records, and a seal that demanded one order would reject valid bundles.
 
 CREATE OR REPLACE FUNCTION phase6_t4d_forward_paired() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE d RECORD;
+DECLARE d RECORD; v_facts BIGINT;
 BEGIN
-  SELECT "status"::text AS status, "deciderKind"::text AS kind, "deciderMembershipId"
+  SELECT "deciderKind"::text AS kind, "deciderMembershipId"
     INTO d FROM "Decision" WHERE "projectId" = NEW."projectId" AND "id" = NEW."decisionId";
 
   IF d.kind IS DISTINCT FROM NEW."toDesignationKind"
@@ -1998,17 +2012,72 @@ BEGIN
       COALESCE(d.kind, '<missing>'), COALESCE(d."deciderMembershipId", '<role>');
   END IF;
 
-  -- The disagreement's FORWARD-ON: a forward out of `awaiting_countersign` is legal only inside
-  -- the bundle that also opens the `countersign_rejection` request. Judged here rather than at
-  -- INSERT because the request may be written after the forward.
-  IF d.status = 'change' AND NOT EXISTS (
-       SELECT 1 FROM "ChangeRequest" cr
-        WHERE cr."projectId" = NEW."projectId" AND cr."decisionId" = NEW."decisionId"
-          AND cr."status" = 'open' AND cr."origin" = 'countersign_rejection'
-     ) THEN
+  -- ONE ACT, ONE FACT — AND "ONE" IS A COUNT (#582 round 10, finding 1).
+  --
+  -- The arm above compares each fact against the FINAL holder, which every fact naming that
+  -- holder satisfies at once. So two `DecisionForward` rows with identical designations and
+  -- DISTINCT receipts pass together: `DecisionForward_command_key` is `(projectId,
+  -- sourceCommandId)`, so the index bounds facts per RECEIPT and says nothing about facts per
+  -- MUTATION, and the provenance seal above binds each row to its own valid receipt. The result
+  -- is two immutable rows, two frozen actors, each claiming to have performed the single
+  -- hand-off the register records — the same permanent contradiction `phase6_t4d_revision_flip_paired`
+  -- refuses for finalizers, asked here of the act rather than of the effect.
+  --
+  -- Counted on the DECISION, not on the designation: a genuine two-hop bundle (A → B → C) is
+  -- already impossible, because at commit only the C row can match the holder and the A row is
+  -- refused as orphan evidence above. So one transaction that moves a decision's holder holds
+  -- exactly one forward fact, and any other number is refused here.
+  SELECT count(*) INTO v_facts FROM "DecisionForward" f
+   WHERE f."projectId" = NEW."projectId" AND f."decisionId" = NEW."decisionId"
+     AND f."xmin" = txid_current()::text::xid;
+  IF v_facts <> 1 THEN
     RAISE EXCEPTION
-      'phase6 4d-i: decision % ended this transaction in `change` with DecisionForward % and no open `countersign_rejection` request — the forward-on is a BUNDLE, and the transition without its request leaves a decision whose reason no reader can see and which neither approve nor withdrawChange can close',
-      NEW."decisionId", NEW."id";
+      'phase6 4d-i: decision % carries % DecisionForward rows written by THIS transaction for one hand-off — a holder mutation is ONE act with ONE attributable record, and duplicate facts citing different receipts are two immutable actors claiming a single mutation (row %)',
+      NEW."decisionId", v_facts, NEW."id";
+  END IF;
+  RETURN NULL;
+END $$;
+
+-- ── the DISAGREEMENT transition owes its request, judged WHERE THE TRANSITION IS ─────────────
+-- #582 round 10, finding 2, and it is a REGRESSION of my own round-8 fix rather than a new gap.
+-- Round 8 put this demand inside the forward's reverse seal, keyed on the decision's status at
+-- commit being `change`. That predicate is not the rule. The plan's transition table (line 5759)
+-- and the P30 paragraph (line 3349) both name the obligation on the TRANSITION —
+-- "the DB door admits `awaiting_countersign → change` ONLY when the transaction also carries the
+-- `countersign_rejection` request" — and final status `change` is a state, not a transition:
+--
+--   · it is TOO WIDE. `decisions.forward` on a decision ALREADY in `change` moves only the
+--     holder; that decision's open request is a `standard` one, so the round-8 arm aborted at
+--     commit an ordinary generic forward the plan explicitly permits ("the holder mutation
+--     (forward, generic or forward-on)" is its own row in the same table). A seal that refuses
+--     the delivered path is worse than the gap it closed.
+--   · it is TOO NARROW. The disagreement's other shape — the reject-back, which opens the
+--     request without handing the decision anywhere — writes no `DecisionForward` at all, so the
+--     round-8 arm never judged it.
+--
+-- The transition can only be seen where OLD is in hand, which is the same architectural sentence
+-- round 6's finding 2 wrote about the membership pre-state and plan line 2915 wrote before that.
+-- A DEFERRED constraint trigger on `Decision` has both: OLD and NEW are the images of the
+-- statement that fired it, and the demand is still asked at COMMIT, because the request may be
+-- written after the transition inside the same bundle.
+--
+-- The `returned` stranded resolution is the third route across this transition and owes the same
+-- request (`phase6_t4d_stranded_paired` demands it from the resolution side); one door over the
+-- transition covers all three shapes, and no shape is exempted.
+CREATE OR REPLACE FUNCTION phase6_t4d_disagreement_paired() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD."status"::text <> 'awaiting_countersign' OR NEW."status"::text <> 'change' THEN
+    RETURN NULL;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM "ChangeRequest" cr
+     WHERE cr."projectId" = NEW."projectId" AND cr."decisionId" = NEW."id"
+       AND cr."status" = 'open' AND cr."origin" = 'countersign_rejection'
+  ) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: decision % crossed `awaiting_countersign → change` in this transaction with no open `countersign_rejection` request — the disagreement is a BUNDLE (reject-back, forward-on or `returned` resolution alike), and the transition without its request leaves a decision whose reason no reader can see and which neither approve nor withdrawChange can close',
+      NEW."id";
   END IF;
   RETURN NULL;
 END $$;
@@ -2083,6 +2152,10 @@ DROP TRIGGER IF EXISTS "DecisionStrandedResolution_t4d_paired" ON "DecisionStran
 CREATE CONSTRAINT TRIGGER "DecisionStrandedResolution_t4d_paired"
   AFTER INSERT ON "DecisionStrandedResolution" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_stranded_paired();
+DROP TRIGGER IF EXISTS "Decision_t4d_disagreement_paired" ON "Decision";
+CREATE CONSTRAINT TRIGGER "Decision_t4d_disagreement_paired"
+  AFTER UPDATE ON "Decision" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_disagreement_paired();
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────
 -- PART 3e (partial) — THE EXISTING-TABLE COLUMNS THE FACT SEALS ABOVE READ
@@ -2741,6 +2814,8 @@ DECLARE
   v_from_stat  TEXT;
   v_to_role    TEXT;
   v_to_stat    TEXT;
+  v_here       BIGINT;
+  v_match      BIGINT;
 BEGIN
   -- OLD and NEW are records, and plpgsql has no expression that picks between two of them, so
   -- the fields are read explicitly per operation rather than through a CASE over the rows.
@@ -2774,23 +2849,47 @@ BEGIN
   --
   --     It DEMANDS nothing: a membership write with no fact passes this arm untouched, which is
   --     what keeps the unit dark while the delivered member commands still write no facts.
-  IF EXISTS (
-    SELECT 1 FROM "MembershipTransition" mt
-     WHERE mt."projectId" = v_project AND mt."membershipId" = v_membership
-       AND mt."xmin" = txid_current()::text::xid
-  ) AND NOT EXISTS (
-    SELECT 1 FROM "MembershipTransition" mt
-     WHERE mt."projectId" = v_project AND mt."membershipId" = v_membership
-       AND mt."xmin" = txid_current()::text::xid
-       AND mt."userId" = v_user
-       AND mt."fromRole" IS NOT DISTINCT FROM v_from_role
-       AND mt."fromStatus" IS NOT DISTINCT FROM v_from_stat
-       AND mt."toRole" IS NOT DISTINCT FROM v_to_role
-       AND mt."toStatus" IS NOT DISTINCT FROM v_to_stat
-  ) THEN
+  SELECT count(*) INTO v_here FROM "MembershipTransition" mt
+   WHERE mt."projectId" = v_project AND mt."membershipId" = v_membership
+     AND mt."xmin" = txid_current()::text::xid;
+
+  -- The MATCHING count is taken once and answers all three arms below: "is there a fact for this
+  -- write", "is there more than one", and "does the chain's flip carry one".
+  SELECT count(*) INTO v_match FROM "MembershipTransition" mt
+   WHERE mt."projectId" = v_project AND mt."membershipId" = v_membership
+     AND mt."xmin" = txid_current()::text::xid
+     AND mt."userId" = v_user
+     AND mt."fromRole" IS NOT DISTINCT FROM v_from_role
+     AND mt."fromStatus" IS NOT DISTINCT FROM v_from_stat
+     AND mt."toRole" IS NOT DISTINCT FROM v_to_role
+     AND mt."toStatus" IS NOT DISTINCT FROM v_to_stat;
+
+  IF v_here > 0 AND v_match = 0 THEN
     RAISE EXCEPTION
       'phase6 4d-i: a MembershipTransition written in this transaction for membership % on project % does not describe the write that happened — this write moved user % (%, %) → (%, %), and a fact that names any other move is permanent evidence of an act nobody performed',
       v_membership, v_project, v_user, COALESCE(v_from_role, '<none>'), COALESCE(v_from_stat, '<none>'),
+      COALESCE(v_to_role, '<none>'), COALESCE(v_to_stat, '<none>');
+  END IF;
+
+  -- AND EXACTLY ONE OF THEM (#582 round 10, finding 4) — the same sentence the forward's reverse
+  -- seal now carries, for the same reason. `MembershipTransition_command_key` is
+  -- `(projectId, membershipId, sourceCommandId)`, so it bounds facts per RECEIPT: a direct bundle
+  -- can reserve two `members.updateRole` receipts, insert two IDENTICAL transitions citing them,
+  -- perform ONE membership write and complete both receipts. Every clause above is satisfied by
+  -- each row separately — they describe the write correctly, which is exactly what makes the
+  -- duplicate invisible to an existence test — and the register is left with two immutable,
+  -- differently-attributed records of one standing change.
+  --
+  -- Counted over the SHAPE rather than over the membership, which is the difference between
+  -- refusing a forgery and refusing a legitimate bundle: a transaction that moves one membership
+  -- twice (A → B, then B → C) fires this trigger twice with different OLD/NEW images, and each
+  -- invocation counts only the fact matching ITS transition, so both find one. Two facts naming
+  -- the SAME move cannot be two acts.
+  IF v_match > 1 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: % MembershipTransition rows written by THIS transaction describe one and the same standing change of membership % on project % — user % (%, %) → (%, %). A standing change is ONE act with ONE attributable record, and duplicates citing different receipts are two immutable actors claiming a single write.',
+      v_match, v_membership, v_project, v_user,
+      COALESCE(v_from_role, '<none>'), COALESCE(v_from_stat, '<none>'),
       COALESCE(v_to_role, '<none>'), COALESCE(v_to_stat, '<none>');
   END IF;
 
@@ -2809,16 +2908,7 @@ BEGIN
   -- while the fact claimed a `not_held → held` arrival that never happened. Comparing
   -- `(fromRole, fromStatus, toRole, toStatus)` against OLD and NEW is the plan's own sentence
   -- (line 2915) and closes it: the fact must describe the write, end to end.
-  IF NOT EXISTS (
-    SELECT 1 FROM "MembershipTransition" mt
-     WHERE mt."projectId" = v_project AND mt."membershipId" = v_membership
-       AND mt."userId" = v_user
-       AND mt."fromRole" IS NOT DISTINCT FROM v_from_role
-       AND mt."fromStatus" IS NOT DISTINCT FROM v_from_stat
-       AND mt."toRole" IS NOT DISTINCT FROM v_to_role
-       AND mt."toStatus" IS NOT DISTINCT FROM v_to_stat
-       AND mt."xmin" = txid_current()::text::xid
-  ) THEN
+  IF v_match = 0 THEN
     RAISE EXCEPTION
       'phase6 4d-i: membership % on project % moved architect standing (%, %) → (%, %) in this transaction with no MembershipTransition written HERE naming user % and that exact transition — the chain is armed and disarmed by attributable ACTS, never by a bare row write, never by an older act reused, and never by a fact that describes a different move',
       v_membership, v_project, COALESCE(v_from_role, '<none>'), COALESCE(v_from_stat, '<none>'),
@@ -4474,6 +4564,69 @@ DROP TRIGGER IF EXISTS "DecisionApprovalRevision_t4d_birth" ON "DecisionApproval
 CREATE TRIGGER "DecisionApprovalRevision_t4d_birth"
   BEFORE INSERT ON "DecisionApprovalRevision"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_revision_birth();
+
+-- ── and a BIRTH is ONE act, PAIRED with the transition it was made by ────────────────────────
+-- #582 round 10, finding 5 — the third site of this round's single rule, and the seal above
+-- cannot carry it: `phase6_t4d_revision_birth` is BEFORE INSERT and per row, so it sees one
+-- revision at a time and no row written after it. Everything below is a COMMIT question.
+--
+-- (1) EXACTLY ONE BIRTH PER DECISION PER TRANSACTION. `DecisionApprovalRevision` is keyed by
+--     `(projectId, decisionId, version)`, so the index does not bound births — it bounds births
+--     PER VERSION, and consecutive versions are exactly how the duplicate presents. After 4d-iii
+--     a direct bundle can reserve two `decisions.approve` receipts, insert versions n and n+1 as
+--     PROVISIONAL revisions around a single `pending → awaiting_countersign` transition, and both
+--     satisfy the birth seal above independently. Only the higher-version head is ever reachable
+--     by a finalizer, so the lower one is a permanent, immutable, unfinalizable approval sitting
+--     in the register 4c reads as cycle evidence: the cycle count moves past open consultations
+--     that were never answered, which is precisely the forgery `sourceCommandId` was added to
+--     stop. Two acts cannot make one approval.
+--
+--     Counted over ALL births, not the provisional ones alone, because the no-chain direct
+--     approve writes exactly one revision too and a duplicate there inflates the same count. A
+--     historical import that plants several revisions of one decision in ONE transaction must
+--     declare itself by name the way `plantLegacyApprovalRevision` already declares itself for
+--     the 4c provenance seal — the sanctioned bypass is the visible path, and no unnamed writer
+--     gets it by accident.
+--
+-- (2) A PROVISIONAL BIRTH RIDES A TRANSITION. `finalized = false` is unreachable before 4d-iii
+--     (the chain is reserved) and is written only by the provisional approve, whose transaction
+--     moves the decision — so a provisional revision inserted beside an UNTOUCHED decision is an
+--     approval no act performed. Scoped to the provisional birth on purpose: legacy rows and
+--     every drain-window approval are born `true` (the column's default is `true` for exactly
+--     that reason), and demanding a transition of those would refuse the imports the register is
+--     required to keep admitting. The demand is that the decision was WRITTEN here, not that it
+--     ended at a particular status — the status question is already asked from the decision side
+--     by `Decision_t4d_entry_seal`, and pinning a final status here would repeat round 8's
+--     mistake of judging a transition by the state it left behind.
+CREATE OR REPLACE FUNCTION phase6_t4d_revision_birth_paired() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_births BIGINT; v_moved BOOLEAN;
+BEGIN
+  SELECT count(*) INTO v_births FROM "DecisionApprovalRevision" r
+   WHERE r."projectId" = NEW."projectId" AND r."decisionId" = NEW."decisionId"
+     AND r."xmin" = txid_current()::text::xid;
+  IF v_births <> 1 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: decision % carries % DecisionApprovalRevision rows BORN in this transaction (including version %) — an approval is ONE act with ONE revision, and sibling births citing different receipts leave every revision below the head permanently unfinalizable while the register''s COUNT reports approval cycles that never happened',
+      NEW."decisionId", v_births, NEW."version";
+  END IF;
+
+  IF NEW."finalized" = FALSE THEN
+    SELECT TRUE INTO v_moved FROM "Decision" d
+     WHERE d."projectId" = NEW."projectId" AND d."id" = NEW."decisionId"
+       AND d."xmin" = txid_current()::text::xid;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: revision % is born PROVISIONAL beside decision %, which this transaction never wrote — a provisional approval is made BY the transition that puts its decision into `awaiting_countersign`, and a revision with no transition behind it is an approval nobody performed',
+        NEW."id", NEW."decisionId";
+    END IF;
+  END IF;
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS "DecisionApprovalRevision_t4d_birth_paired" ON "DecisionApprovalRevision";
+CREATE CONSTRAINT TRIGGER "DecisionApprovalRevision_t4d_birth_paired"
+  AFTER INSERT ON "DecisionApprovalRevision" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_revision_birth_paired();
 
 -- ── the FLIP is PAIRED, in both directions (§B.4) — with EXACTLY ONE finalizer ───────────────
 -- A finalized-only flip with NEITHER pairing fact is unrepresentable. The two legal finalizers

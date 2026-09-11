@@ -6468,6 +6468,72 @@ today's behaviour lives.
     had. A documented wrong reason is worse than an undocumented gap, because the
     next reader trusts it; the correction is recorded at the audit itself.
 
+    **ROUND 10 — one rule with four spellings, and a rule I put in the wrong
+    place** (#582's review round 10, findings 1-5).
+
+    The rule is: **a fact that records an act is COUNTED, not found.** Every
+    deferred reverse-pairing seal asks "does a fact describing this write exist?",
+    and every one of them is satisfied by any number of facts. The index that
+    would have bounded the number does not: each of these tables is unique on a
+    key that CARRIES the receipt — `DecisionForward_command_key` is
+    `(projectId, sourceCommandId)`, `MembershipTransition_command_key` is
+    `(projectId, membershipId, sourceCommandId)`, and a revision's key carries
+    `version` — so two facts citing two receipts, or two revisions at consecutive
+    versions, slip past the index and then past the existence test, which they
+    satisfy SEPARATELY because each of them is individually truthful. The register
+    is left holding two immutable, differently-attributed records of one act.
+
+    Enumerated rather than patched three times: the pairing family is the forward,
+    the countersign, the stranded resolution, the architect standing write and the
+    revision birth. The countersign and the stranded resolution are already bounded
+    — `DecisionCountersign_revision_key` and
+    `DecisionStrandedResolution_revision_key` are keyed on the revision, not on the
+    receipt — and the other three are exactly the three reported. So: the forward's
+    reverse seal counts same-transaction forwards of its decision and demands ONE;
+    the architect pairing counts the facts matching THIS write's `(user, fromRole,
+    fromStatus, toRole, toStatus)` shape and demands one, which leaves a
+    transaction that moves one membership twice free to record both moves; and a
+    new deferred `DecisionApprovalRevision_t4d_birth_paired` demands one birth per
+    decision per transaction and, on a PROVISIONAL birth alone, a decision this
+    transaction actually wrote.
+
+    **And the disagreement's demand moves to the transition, because round 8 put it
+    on a state.** Round 8 made the forward's reverse seal demand an open
+    `countersign_rejection` request whenever the decision ENDED the transaction in
+    `change`. That predicate is not this rule. It is too wide — `decisions.forward`
+    on a decision already in `change` moves only the holder, its open request is an
+    ordinary `standard` one, and the seal aborted at commit the generic forward the
+    transition table gives its own row ("the holder mutation (forward, generic or
+    forward-on)") — and too narrow, because the reject-back writes no forward at
+    all and was never judged. The obligation belongs where this plan already put
+    it (line 3349: "the DB door admits `awaiting_countersign → change` ONLY when
+    the transaction also carries the `countersign_rejection` request"), and a
+    transition can only be seen from the side that holds OLD. A new DEFERRED
+    constraint trigger on `Decision` — `Decision_t4d_disagreement_paired` — reads
+    `OLD."status" = 'awaiting_countersign' AND NEW."status" = 'change'` and asks
+    for the request at COMMIT, covering all three shapes the transition has:
+    reject-back, forward-on, and the `returned` resolution.
+
+    **The standing audit's `pmc` arm gains the predicate the word already means.**
+    Round 9 bound `membershipId` and left "membership-less" unbound: the arm asked
+    only for an org owner/admin, so an owner carrying an ACTIVE `engineer`
+    membership was adopted as a `pmc` too. The projection writer and the backfill
+    both spell the condition "NO active membership on the project", and an audit
+    that admits what its own writer would never produce is not auditing the
+    writer's rule. Through the 4d-i → 4d-iii window `platform_user_holds_role`
+    answers from this register, so the fact seals accept `actorRole = 'pmc'` from
+    that engineer and FREEZE it.
+
+    §C's harness gains five measured probes and one register: the twin forward
+    bundle, the twin transition facts, the twin revision births, the bare
+    disagreement and the orphan provisional revision are each RED against the
+    previous head and refused by their own seal's message here; the generic
+    forward of an already-`change` decision — the write round 8 aborted, reproduced
+    against `d65d214e` — must COMMIT; the pre-baseline register probe gains a fifth
+    repair for the memberful `pmc` claim; and `STRIPPED_BY_PROBE` declares the
+    seals a standalone probe strips rather than an arm, so the coverage tripwire
+    can see them and a declaration naming a probe that does not exist fails.
+
     P28b's replay arm gains BOTH: the
     4d-i migration re-run against a post-4d-iii database, with the architect
     consultation request COMMITTING afterwards, RED against the unconditional

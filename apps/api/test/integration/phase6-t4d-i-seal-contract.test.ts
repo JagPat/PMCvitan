@@ -169,10 +169,23 @@ const REGISTER: Record<string, SealContract> = {
     must: ['version', 'finalized', 'ORDER BY'],
   },
   phase6_t4d_forward_paired: {
-    rule: 'a forward fact and its holder mutation commit together, in both directions',
-    plan: '§A.3 obligation 2',
+    rule: 'a forward fact and its holder mutation commit together, in both directions — and ONE '
+      + 'mutation carries EXACTLY ONE fact',
+    plan: '§A.3 obligation 2; #582 round 10, finding 1',
     on: { 'DecisionForward.DecisionForward_t4d_paired': C('I') },
-    must: ['Decision'],
+    must: ['Decision', 'count(*)', "v_facts <> 1"],
+    // Round 8 answered the disagreement question here, keyed on the status the decision ENDED
+    // at, and so aborted the generic forward of an already-`change` decision (#582 round 10,
+    // finding 2). The question moved to `phase6_t4d_disagreement_paired`, where OLD is in hand;
+    // the tokens must not come back.
+    forbid: ['countersign_rejection', "d.status = 'change'"],
+  },
+  phase6_t4d_disagreement_paired: {
+    rule: 'the `awaiting_countersign → change` TRANSITION owes its open `countersign_rejection` '
+      + 'request — every shape of it: reject-back, forward-on and the `returned` resolution',
+    plan: 'plan lines 3349 and 5759; #582 round 10, finding 2',
+    on: { 'Decision.Decision_t4d_disagreement_paired': C('U') },
+    must: ['awaiting_countersign', "'change'", 'countersign_rejection', 'OLD."status"'],
   },
   phase6_t4d_countersign_paired: {
     rule: 'a countersign fact and its decision transition commit together',
@@ -214,6 +227,13 @@ const REGISTER: Record<string, SealContract> = {
     plan: '§B.4',
     on: { 'DecisionApprovalRevision.DecisionApprovalRevision_t4d_birth': B('I') },
     must: ['finalized', 'approvedFrom', 'approvedByName', 'approvedByRole'],
+  },
+  phase6_t4d_revision_birth_paired: {
+    rule: 'ONE approval births ONE revision, and a PROVISIONAL birth rides the transition that '
+      + 'put its decision into `awaiting_countersign`',
+    plan: '§B.4; P31c; #582 round 10, finding 5',
+    on: { 'DecisionApprovalRevision.DecisionApprovalRevision_t4d_birth_paired': C('I') },
+    must: ['count(*)', 'v_births <> 1', 'txid_current()', "NEW.\"finalized\" = FALSE"],
   },
   phase6_t4d_revision_one_flip: {
     rule: 'finality is ONE-WAY and a finalized revision is undeletable',
@@ -377,8 +397,12 @@ const REGISTER: Record<string, SealContract> = {
     // the DIRECTION of the move. The pre-state went unbound, so a same-value update on an
     // already-active membership let a fabricated arrival through. All four transition columns are
     // the rule now, so all four are the tokens.
+    // #582 round 10, finding 4 — and one existence test could not say "exactly one". The
+    // per-receipt index bounds facts per RECEIPT, so the count is the only thing that bounds them
+    // per WRITE.
     must: ['txid_current', '"userId" = v_user', "'architect'",
-      'v_from_role', 'v_from_stat', 'v_to_role', 'v_to_stat'],
+      'v_from_role', 'v_from_stat', 'v_to_role', 'v_to_stat',
+      'count(*)', 'v_match > 1'],
   },
   phase6_t4d_membership_guard: {
     rule: 'a membership change may not orphan the named holder of an open decision',

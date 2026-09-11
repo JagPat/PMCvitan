@@ -30,11 +30,13 @@ const INVENTORY: Record<string, string[]> = {
   Decision: [
     'Decision_t4d_architect_reserved',
     'Decision_t4d_awaiting_reserved',
+    'Decision_t4d_disagreement_paired',
     'Decision_t4d_entry_seal',
     'Decision_t4d_holder_standing',
   ],
   DecisionApprovalRevision: [
     'DecisionApprovalRevision_t4d_birth',
+    'DecisionApprovalRevision_t4d_birth_paired',
     'DecisionApprovalRevision_t4d_flip_paired',
     'DecisionApprovalRevision_t4d_one_flip',
   ],

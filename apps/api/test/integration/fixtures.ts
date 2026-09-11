@@ -274,6 +274,17 @@ export async function plantLegacyApprovalRevision(
         approvedById: data.approvedById ?? null, onBehalfOf: data.onBehalfOf ?? null,
       },
     }),
+    // THE DEFERRED QUEUE IS FLUSHED BEFORE THE SEAL GOES BACK ON (#582 round 10).
+    //
+    // PostgreSQL refuses `ALTER TABLE` while the table carries pending trigger events, and 4d-i's
+    // `DecisionApprovalRevision_t4d_birth_paired` is a DEFERRED constraint trigger on INSERT — so
+    // from that unit onward the plant above queues an event and the re-enable below fails with
+    // 55006. `reset-list-closure.test.ts` hit the same rule when it planted the two fact rows and
+    // solved it the same way. Flushing here also means the birth pairing actually JUDGES the
+    // planted row rather than being deferred past this transaction's end: a legacy row is born
+    // `finalized = true` (the column's default) and is the only birth in its transaction, so it
+    // passes — which is the right answer and one this fixture should be made to hear.
+    prisma.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE'),
     prisma.$executeRawUnsafe(toggle('ENABLE')),
   ]);
 }

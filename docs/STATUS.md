@@ -93,6 +93,30 @@ Six new arms, each measured RED against `f33efafb` and GREEN after. One of them 
 in my own harness: round 8's change-request pair CHECKs were added with the freeze proven and the
 constraints themselves never exercised.
 
+**Round 10 is folded — five P1s on `d65d214e`, and four of them are one rule.** The rule: *a fact
+that records an act is COUNTED, not found.* Three deferred reverse-pairing seals asked whether a
+matching fact EXISTS, and each of those tables is unique on a key that carries the receipt
+(`DecisionForward_command_key`, `MembershipTransition_command_key`) or the version (a revision's
+key) — so two receipts buy two individually-truthful facts for one act, and the register is left
+holding two immutable, differently-attributed records of a single write. The family was enumerated
+before anything was written: the countersign and the stranded resolution are already bounded by
+revision-keyed indexes, and the three reported are exactly the three that are not. Each now counts.
+
+The fifth is a REGRESSION of my own round-8 fix. Round 8 made the forward's reverse seal demand an
+open `countersign_rejection` request whenever the decision ENDED the transaction in `change` — a
+state, not a transition. It aborted at commit the ordinary generic forward of an
+already-`change` decision (reproduced against `d65d214e`) and never judged the reject-back, which
+writes no forward at all. The demand moved to `Decision_t4d_disagreement_paired`, a deferred
+constraint trigger that reads `OLD."status" = 'awaiting_countersign' AND NEW."status" = 'change'`
+— the only side that can see a transition — and covers all three of its shapes. And the standing
+audit's `pmc` arm gained the no-active-membership predicate that its own writer and backfill both
+mean by "membership-less".
+
+Five probes measured RED against `d65d214e` and GREEN here, plus the generic forward that must
+COMMIT and could not before. `STRIPPED_BY_PROBE` is new: the coverage tripwire read the ARMS list
+only, so a seal a standalone probe strips looked unproven; it now declares them, and a declaration
+naming a probe that does not exist fails.
+
 The oracle is `test/integration/phase6-t4d-i-seal-contract.test.ts`: every trigger function the
 unit installs carries a register entry naming its rule, the plan location that states it, the
 operations and timing every installing trigger must fire on, and the tokens its body must

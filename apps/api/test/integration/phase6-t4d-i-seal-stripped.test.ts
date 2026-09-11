@@ -577,6 +577,29 @@ const ARMS: Arm[] = [
     refusal: /is a BROADCAST family, but the push of event .* also names a target/,
   },
   {
+    // #582 round 10, finding 4 — TWO FACTS, ONE WRITE. Every clause of the pairing is satisfied by
+    // each row SEPARATELY, which is exactly what an existence test cannot see: the two rows
+    // describe the write truthfully and differ only in the receipt they cite, and
+    // `MembershipTransition_command_key` bounds facts per receipt. The add is an ENGINEER, so no
+    // reservation door stands in front of it and the arm measures the pairing alone.
+    seal: 'Membership_t4d_architect_provenance',
+    what: 'two identical transition facts citing different receipts cannot record ONE membership write',
+    hostile: `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+                VALUES ('ss-cmd-t1','project','ss-org','ss-proj','ss-user','members.add','ss-key-t1','ss-hash-t1','reserved'),
+                       ('ss-cmd-t2','project','ss-org','ss-proj','ss-user','members.add','ss-key-t2','ss-hash-t2','reserved');
+              UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-e'
+               WHERE "id" IN ('ss-cmd-t1','ss-cmd-t2');
+              INSERT INTO "User" ("id","projectId","role","name","phone")
+                VALUES ('ss-eng','ss-proj','engineer','SS Eng','+910000000021');
+              INSERT INTO "MembershipTransition"
+                ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
+              VALUES ('ss-mt-t1','ss-proj','ss-mem-e','ss-eng',NULL,NULL,'engineer','active','ss-user','pmc','SS User','ss-cmd-t1'),
+                     ('ss-mt-t2','ss-proj','ss-mem-e','ss-eng',NULL,NULL,'engineer','active','ss-user','pmc','SS User','ss-cmd-t2');
+              INSERT INTO "Membership" ("id","projectId","userId","role","status")
+                VALUES ('ss-mem-e','ss-proj','ss-eng','engineer','active')`,
+    refusal: /describe one and the same standing change of membership/,
+  },
+  {
     // #582 round 6, finding 2 — the ORDER. A member command that writes the membership before its
     // fact is refused: the fact's live authority read must see the PRE-state, and after 4d-iii a
     // membership-first bundle lets an actor's own promotion authorise itself.
@@ -587,6 +610,25 @@ const ARMS: Arm[] = [
               UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-c' WHERE "id" = 'ss-cmd-ord';
               UPDATE "Membership" SET "status" = 'active' WHERE "id" = 'ss-mem-c'`,
     refusal: /has not been inserted yet — the fact comes FIRST/,
+  },
+  {
+    // #582 round 10, finding 5 — TWO BIRTHS, ONE APPROVAL. Consecutive versions clear the
+    // `(projectId, decisionId, version)` key, and each cites its own valid `decisions.approve`
+    // receipt, so the 4c provenance seal passes on both. The project carries no architect here, so
+    // both are born final — the same duplicate reaches the register through the no-chain approve
+    // as through the provisional one, which is why the count is not scoped to the provisional arm.
+    seal: 'DecisionApprovalRevision_t4d_birth_paired',
+    what: 'one approval births ONE revision — sibling versions citing different receipts are refused',
+    hostile: `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+                VALUES ('ss-cmd-r1','project','ss-org','ss-proj','ss-user','decisions.approve','ss-key-r1','ss-hash-r1','reserved'),
+                       ('ss-cmd-r2','project','ss-org','ss-proj','ss-user','decisions.approve','ss-key-r2','ss-hash-r2','reserved');
+              UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec'
+               WHERE "id" IN ('ss-cmd-r1','ss-cmd-r2');
+              INSERT INTO "DecisionApprovalRevision"
+                ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
+              VALUES ('ss-rev-1','ss-proj','ss-dec',1,'a',now(),'ss-user','ss-cmd-r1'),
+                     ('ss-rev-2','ss-proj','ss-dec',2,'a',now(),'ss-user','ss-cmd-r2')`,
+    refusal: /rows BORN in this transaction/,
   },
   {
     // #582 round 6, finding 5 — a half or blank attribution pair is frozen the moment it lands,
@@ -661,6 +703,23 @@ const ARMS: Arm[] = [
  * the same loop or the same paragraph of the migration — so stripping it would re-measure a
  * function this suite already measured. A seal with its OWN body does not belong here.
  */
+/**
+ * Seals stripped by a STANDALONE probe rather than by an arm, each with the probe that strips it.
+ *
+ * An arm's whole-migration run strips nothing, so a seal standing BEHIND a reservation door — or
+ * behind a state the door makes unreachable — cannot be an arm: the door would answer for both
+ * runs. Those seals get their own `it()`, which strips the door on both sides and the seal on one.
+ * They are still measured two-sidedly; the coverage tripwire below simply cannot see the strip
+ * list of a probe it does not parse, so the probe declares itself here.
+ *
+ * This is NOT `COVERED_BY_CLASS`: these seals have their own bodies and their own hostile writes.
+ */
+const STRIPPED_BY_PROBE: Record<string, string> = {
+  // #582 round 10, finding 2 — `awaiting_countersign` is reserved until 4d-iii, so the transition
+  // this door judges does not exist on a database where the doors still stand.
+  Decision_t4d_disagreement_paired: 'the awaiting_countersign to change transition owes its rejection request',
+};
+
 const COVERED_BY_CLASS: Record<string, string> = {
   // platform_t4d_register_no_truncate — one function, many registers
   ChangeRequest_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
@@ -1112,13 +1171,26 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     expect(installed.length, 'the unit installs a substantial inventory; an empty read is a broken query')
       .toBeGreaterThan(60);
 
-    const stripped = new Set(ARMS.flatMap((a) => [a.seal, ...(a.alsoStrip ?? [])]));
+    const stripped = new Set([...ARMS.flatMap((a) => [a.seal, ...(a.alsoStrip ?? [])]),
+      ...Object.keys(STRIPPED_BY_PROBE)]);
     const undeclared = installed.filter((n) => !stripped.has(n) && !(n in COVERED_BY_CLASS));
     expect(
       undeclared,
       'these seals are installed by 4d-i and neither stripped by an arm here nor declared in '
       + 'COVERED_BY_CLASS with the arm that exercises their mechanism. A seal nobody can point at '
       + 'is a seal nobody proved.',
+    ).toEqual([]);
+
+    // a probe declaration must name a probe that EXISTS in this file, or the register rots the
+    // same way an inventory of what was built rots: silently, and in the direction of claiming
+    // more coverage than there is.
+    const own = readFileSync(join(__dirname, 'phase6-t4d-i-seal-stripped.test.ts'), 'utf8');
+    const missingProbe = Object.entries(STRIPPED_BY_PROBE)
+      .filter(([, title]) => !own.includes(`it('${title}'`))
+      .map(([name, title]) => `${name} -> ${title}`);
+    expect(
+      missingProbe,
+      'a probe declaration must name an `it()` that exists in this file',
     ).toEqual([]);
 
     // and the declarations point at arms that actually exist
@@ -1296,11 +1368,37 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     expect(pointer.output).toMatch(/"ProjectUserStanding" row\(s\) are backed by neither an active "Membership" of that exact user, role AND id/);
     expect(pointer.output).toMatch(/membershipId 'pb-mem-b'/);
 
-    // repair (4) — and only now does the whole unit apply
+    // repair (4) — on to the LAST shape, which round 9 still adopted
     expect(psql(RUN_DB, ['-c',
       `UPDATE "ProjectUserStanding" SET "membershipId" = 'pb-mem-a' WHERE "userId" = 'pb-user'`]).ok).toBe(true);
+
+    // (5) round 10, finding 3 — a MEMBERSHIP-LESS `pmc` claim for a user who is not
+    // membership-less. `pb-out` becomes an org OWNER, which is the whole justification round 9's
+    // arm asked for, while keeping the ACTIVE engineer membership planted above. Neither the
+    // projection writer nor the backfill would ever produce this row — both recompute the `pmc`
+    // arm only while the user has no active presence on the project — and adopting it hands
+    // `platform_user_holds_role` a `pmc` answer for an engineer, which the fact seals then FREEZE
+    // as authority evidence for the whole 4d-i → 4d-iii window.
+    expect(psql(RUN_DB, ['-c', `
+      INSERT INTO "OrgMembership" ("id","orgId","userId","role") VALUES ('pb-om','pb-org','pb-out','owner');
+      INSERT INTO "ProjectUserStanding" ("projectId","userId","role","membershipId")
+        VALUES ('pb-proj','pb-out','pmc',NULL);
+    `]).ok).toBe(true);
+    const memberful = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(
+      memberful.ok,
+      'a membership-less `pmc` claim for a user WITH an active membership must REFUSE the apply — '
+      + '"membership-less" is the writer\'s own condition, and an owner who is also an active '
+      + 'engineer is not membership-less',
+    ).toBe(false);
+    expect(memberful.output).toMatch(/"ProjectUserStanding" row\(s\) are backed by neither an active "Membership"/);
+    expect(memberful.output).toMatch(/pb-out on pb-proj as 'pmc'/);
+
+    // repair (5) — and only now does the whole unit apply
+    expect(psql(RUN_DB, ['-c',
+      `DELETE FROM "ProjectUserStanding" WHERE "userId" = 'pb-out' AND "role" = 'pmc'`]).ok).toBe(true);
     const clean = psql(RUN_DB, ['-f', MIGRATION]);
-    expect(clean.ok, `after all four named repairs the apply must succeed:\n${clean.output}`).toBe(true);
+    expect(clean.ok, `after all five named repairs the apply must succeed:\n${clean.output}`).toBe(true);
   }, 300_000);
 
   /**
@@ -1702,4 +1800,180 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
               "resolvedByName" = 'SS User', "status" = 'withdrawn' WHERE "id" = 'ss-cr-b'`]);
     expect(closed.ok, `the resolver set must still be fillable at closure:\n${closed.output}`).toBe(true);
   }, 180_000);
+
+  /**
+   * #582's review round 10, finding 1 — ONE HAND-OFF, ONE FACT.
+   *
+   * Not an ARM, for the reason the receipt probe above is not one: `DecisionForward_t4d_reserved`
+   * stands in front of the table and would answer the whole-migration run with its own message. So
+   * the DOOR is stripped on both sides and the pairing seal alone is the difference between them.
+   *
+   * The hostile bundle is truthful in every respect a reviewer would check by eye: two receipts,
+   * each reserved and completed here, each naming its own forward as its result; two facts, each
+   * displacing the holder the decision actually carries and naming the holder it actually gets;
+   * one holder mutation. `DecisionForward_command_key` is `(projectId, sourceCommandId)`, so the
+   * index bounds facts per RECEIPT and admits both — and the holder comparison, which each fact
+   * passes separately, is exactly the check that cannot tell one act from two.
+   */
+  it('one holder mutation carries exactly ONE forward fact', () => {
+    const cols = '("id","projectId","decisionId","fromDesignationKind","toDesignationKind",'
+      + '"forwardedById","forwardedByRole","forwardedByName","reason","sourceCommandId")';
+    const receipt = (id: string, ref: string): string =>
+      `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+         VALUES ('${id}','project','ss-org','ss-proj','ss-user','decisions.forward','key-${id}','hash-${id}','reserved');
+       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = '${ref}' WHERE "id" = '${id}';`;
+
+    const twin = `${receipt('ss-cmd-d1', 'ss-fwd-d1')}${receipt('ss-cmd-d2', 'ss-fwd-d2')}
+       INSERT INTO "DecisionForward" ${cols} VALUES
+         ('ss-fwd-d1','ss-proj','ss-dec','client','pmc','ss-user','pmc','SS User','because','ss-cmd-d1'),
+         ('ss-fwd-d2','ss-proj','ss-dec','client','pmc','ss-user','pmc','SS User','because','ss-cmd-d2');
+       UPDATE "Decision" SET "deciderKind" = 'pmc' WHERE "id" = 'ss-dec'`;
+
+    buildRun(['DecisionForward_t4d_reserved', 'DecisionForward_t4d_paired']);
+    const stripped = psql(RUN_DB, ['-c', twin]);
+    expect(
+      stripped.ok,
+      'with the pairing seal OMITTED the twin bundle must be ACCEPTED — if something else refuses '
+      + `it, this probe measures that other object and proves nothing here:\n${stripped.output}`,
+    ).toBe(true);
+
+    buildRun(['DecisionForward_t4d_reserved']);
+    const whole = psql(RUN_DB, ['-c', twin]);
+    expect(
+      whole.ok,
+      'with the pairing seal STANDING two immutable facts may not claim one hand-off',
+    ).toBe(false);
+    expect(whole.output).toMatch(/DecisionForward rows written by THIS transaction for one hand-off/);
+
+    // and the SINGLE fact must still commit, or the count above would be a seal that refuses
+    // every forward and the probe would prove nothing about cardinality.
+    buildRun(['DecisionForward_t4d_reserved']);
+    const one = psql(RUN_DB, ['-c',
+      `${receipt('ss-cmd-d3', 'ss-fwd-d3')}
+       INSERT INTO "DecisionForward" ${cols}
+       VALUES ('ss-fwd-d3','ss-proj','ss-dec','client','pmc','ss-user','pmc','SS User','because','ss-cmd-d3');
+       UPDATE "Decision" SET "deciderKind" = 'pmc' WHERE "id" = 'ss-dec'`]);
+    expect(one.ok, `one forward for one hand-off must COMMIT:\n${one.output}`).toBe(true);
+  }, 300_000);
+
+  /**
+   * #582's review round 10, finding 2 — THE DISAGREEMENT'S DEMAND BELONGS ON THE TRANSITION, and
+   * this probe is the regression test for a rule I put in the wrong place in round 8.
+   *
+   * Two halves, and both are needed. The first shows the demand is REAL where the transition is:
+   * `awaiting_countersign → change` without its open `countersign_rejection` request is refused,
+   * and with it commits. The second shows what round 8 broke: a GENERIC forward of a decision
+   * already in `change` — whose open request is an ordinary `standard` one — must commit, because
+   * moving a holder is not a disagreement. Round 8 keyed on the status the decision ENDED at, so
+   * it aborted exactly that ordinary path.
+   *
+   * The three reservation doors are stripped on both sides: they are 4d-iii's to drop, and the
+   * state under test is unreachable while they stand.
+   */
+  const AWAITING_DOORS = ['Decision_t4d_awaiting_reserved',
+    'Membership_t4d_architect_reserved', 'User_t4d_architect_reserved'];
+
+  /** an active architect, added FACT-FIRST, and a PROVISIONAL approval parked for them. */
+  const PROVISIONAL = `
+    INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+      VALUES ('ss-cmd-ar','project','ss-org','ss-proj','ss-user','members.add','ss-key-ar','ss-hash-ar','reserved');
+    UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-mem-ar' WHERE "id" = 'ss-cmd-ar';
+    INSERT INTO "User" ("id","projectId","role","name","phone") VALUES ('ss-arch','ss-proj','architect','SS Arch','+910000000031');
+    INSERT INTO "MembershipTransition"
+      ("id","projectId","membershipId","userId","fromRole","fromStatus","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
+    VALUES ('ss-mt-ar','ss-proj','ss-mem-ar','ss-arch',NULL,NULL,'architect','active','ss-user','pmc','SS User','ss-cmd-ar');
+    INSERT INTO "Membership" ("id","projectId","userId","role","status") VALUES ('ss-mem-ar','ss-proj','ss-arch','architect','active');
+    INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+      VALUES ('ss-cmd-pv','project','ss-org','ss-proj','ss-user','decisions.approve','ss-key-pv','ss-hash-pv','reserved');
+    UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec' WHERE "id" = 'ss-cmd-pv';
+    INSERT INTO "DecisionApprovalRevision"
+      ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId","finalized","approvedFrom","approvedByName","approvedByRole")
+    VALUES ('ss-rev-p','ss-proj','ss-dec',1,'a',now(),'ss-user','ss-cmd-pv',FALSE,'pending','SS User','pmc');
+    UPDATE "Decision" SET "status" = 'awaiting_countersign' WHERE "id" = 'ss-dec';`;
+
+  it('the awaiting_countersign to change transition owes its rejection request', () => {
+    const bare = `${PROVISIONAL}
+      UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'ss-dec'`;
+
+    buildRun([...AWAITING_DOORS, 'Decision_t4d_disagreement_paired']);
+    const stripped = psql(RUN_DB, ['-c', bare]);
+    expect(
+      stripped.ok,
+      `with the transition door OMITTED the bare disagreement must be ACCEPTED:\n${stripped.output}`,
+    ).toBe(true);
+
+    buildRun(AWAITING_DOORS);
+    const whole = psql(RUN_DB, ['-c', bare]);
+    expect(whole.ok, 'the disagreement without its request must be REFUSED').toBe(false);
+    expect(whole.output).toMatch(/in this transaction with no open .countersign_rejection. request/);
+
+    // the BUNDLE — the same transition carrying the request — must commit, which is what makes
+    // the refusal above a rule about the bundle rather than about the transition.
+    buildRun(AWAITING_DOORS);
+    const bundled = psql(RUN_DB, ['-c', `${PROVISIONAL}
+      INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId")
+        VALUES ('ss-cr-rej','ss-dec','the architect disagrees',0,0,'open','countersign_rejection','ss-rev-p');
+      UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'ss-dec'`]);
+    expect(bundled.ok, `the disagreement BUNDLE must COMMIT:\n${bundled.output}`).toBe(true);
+  }, 300_000);
+
+  it('a GENERIC forward of an already-changed decision still commits', () => {
+    const cols = '("id","projectId","decisionId","fromDesignationKind","toDesignationKind",'
+      + '"forwardedById","forwardedByRole","forwardedByName","reason","sourceCommandId")';
+    buildRun(['DecisionForward_t4d_reserved']);
+
+    // a decision in `change` carrying an ordinary STANDARD request — the state round 8's arm
+    // could not tell apart from a disagreement, because it read the status and not the move.
+    const changed = psql(RUN_DB, ['-c',
+      `UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'ss-dec';
+       INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status")
+         VALUES ('ss-cr-std','ss-dec','please revisit',0,0,'open')`]);
+    expect(changed.ok, `the standard change state must plant cleanly:\n${changed.output}`).toBe(true);
+
+    // a SEPARATE transaction: nothing here is a disagreement, only the holder moves.
+    const generic = psql(RUN_DB, ['-c',
+      `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+         VALUES ('ss-cmd-gf','project','ss-org','ss-proj','ss-user','decisions.forward','ss-key-gf','ss-hash-gf','reserved');
+       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-fwd-gf' WHERE "id" = 'ss-cmd-gf';
+       INSERT INTO "DecisionForward" ${cols}
+       VALUES ('ss-fwd-gf','ss-proj','ss-dec','client','pmc','ss-user','pmc','SS User','handing on','ss-cmd-gf');
+       UPDATE "Decision" SET "deciderKind" = 'pmc' WHERE "id" = 'ss-dec'`]);
+    expect(
+      generic.ok,
+      'a generic forward of a decision already in `change` must COMMIT — the plan gives the holder '
+      + 'mutation its own row and asks no request of it; round 8 aborted this at commit by reading '
+      + `the status instead of the transition:\n${generic.output}`,
+    ).toBe(true);
+  }, 300_000);
+
+  /**
+   * #582's review round 10, finding 5, second arm — A PROVISIONAL BIRTH RIDES A TRANSITION.
+   *
+   * `finalized = false` is written by the provisional approve alone, and that command moves its
+   * decision. A provisional revision inserted beside an untouched decision is an approval no act
+   * performed — and, unlike the duplicate above, it is invisible to a count, because there is only
+   * one of it.
+   */
+  it('a PROVISIONAL revision may not be born beside an untouched decision', () => {
+    // everything of PROVISIONAL except the transition that ends it.
+    const orphan = PROVISIONAL.replace(
+      `UPDATE "Decision" SET "status" = 'awaiting_countersign' WHERE "id" = 'ss-dec';`, '');
+
+    buildRun([...AWAITING_DOORS, 'DecisionApprovalRevision_t4d_birth_paired']);
+    const stripped = psql(RUN_DB, ['-c', orphan]);
+    expect(
+      stripped.ok,
+      `with the birth pairing OMITTED the orphan provisional revision must be ACCEPTED:\n${stripped.output}`,
+    ).toBe(true);
+
+    buildRun(AWAITING_DOORS);
+    const whole = psql(RUN_DB, ['-c', orphan]);
+    expect(whole.ok, 'a provisional revision with no transition behind it must be REFUSED').toBe(false);
+    expect(whole.output).toMatch(/born PROVISIONAL beside decision .*, which this transaction never wrote/);
+
+    // and the WHOLE provisional act — revision plus its transition — must commit.
+    buildRun(AWAITING_DOORS);
+    const paired = psql(RUN_DB, ['-c', PROVISIONAL]);
+    expect(paired.ok, `the provisional approval and its transition must COMMIT:\n${paired.output}`).toBe(true);
+  }, 300_000);
 });
