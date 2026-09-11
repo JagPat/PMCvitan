@@ -18,15 +18,15 @@ Design authority for this programme. **v2** — reproduced against `main @ a3543
 > for F-1b, which remains Claude's existing PR #584 with the look locked
 > below.
 >
-> 1. **F-1b look — GO.** On the mobile shell (`max-width: 639.98px`,
->    the same `<640px` boundary as `AppShell` / `BottomTabs` / `TopBar`):
->    every `input`, `textarea`, and `select` computes to ≥16px; safety-
->    and evidence-critical labels ≥13px with real weight; every action
->    target ≥44×44. Desktop authored density is unchanged. **§6.7
->    override:** a shared `Field` primitive is NOT required for F-1b. A
->    mobile stylesheet floor that outranks inline field sizes is an
->    accepted guarantee; F-1c still verifies computed style. Do not
->    migrate the 134 call sites in this unit.
+> 1. **F-1b look — GO.** On the mobile shell (`@media (width < 640px)`,
+>    the complement of `BottomTabs` / `TopBar` `min-width: 640px`, so
+>    639.99px is included): every `input`, `textarea`, and `select`
+>    computes to ≥16px; safety- and evidence-critical labels ≥13px with
+>    real weight; every action target ≥44×44. Desktop authored density
+>    is unchanged. **§6.7 override:** a shared `Field` primitive is NOT
+>    required for F-1b. A mobile stylesheet floor that outranks inline
+>    field sizes is an accepted guarantee; F-1c still verifies computed
+>    style. Do not migrate the 134 call sites in this unit.
 > 2. **D1 drawings search — GO, queued.** Clone the Decision Log filter
 >    onto the Drawings register per `SEARCH_AND_NAV_PROPOSAL.md` §2.
 >    D2 global search stays specified-not-built. Do not open D1 while
