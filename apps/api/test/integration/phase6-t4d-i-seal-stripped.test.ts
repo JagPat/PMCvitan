@@ -617,13 +617,19 @@ const ARMS: Arm[] = [
     // head that 4c counts as a consultation cycle.
     seal: 'DecisionApprovalRevision_t4d_birth_paired',
     what: 'a FINALIZED revision may not be born beside a decision this transaction never MOVED',
-    hostile: `UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'ss-dec2';
-              INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
-              VALUES ('ss-rev-noop','ss-proj','ss-dec2',1,'a',now(),'ss-user')`,
-    // the 4c provenance seal stands in front of this write for a different reason — a revision
-    // with no `decisions.approve` receipt — so it is omitted alongside and the arm measures the
-    // TRANSITION demand it names.
-    alsoStrip: ['DecisionApprovalRevision_t4c_provenance'],
+    // RECEIPT-BACKED, which is the bundle Codex describes and also what the harness's own
+    // tautology guard forced: `DecisionApprovalRevision_t4c_provenance` is a DELIVERED 4c-ii
+    // trigger, so `alsoStrip` — which omits objects THIS unit creates — cannot take it out of the
+    // way. Satisfying it instead is the better arm: the forger mints a real `decisions.approve`
+    // receipt by the ledger protocol, naming the decision as its result, so 4c's provenance seal
+    // is answered truthfully and the ONLY thing left between the forged revision and the register
+    // is the transition demand this arm names.
+    hostile: `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+              VALUES ('ss-cmd-noop','project','ss-org','ss-proj','ss-user','decisions.approve','ss-key-noop','ss-hash-noop','reserved');
+              UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec2' WHERE "id" = 'ss-cmd-noop';
+              UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'ss-dec2';
+              INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
+              VALUES ('ss-rev-noop','ss-proj','ss-dec2',1,'a',now(),'ss-user','ss-cmd-noop')`,
     refusal: /transition of decision/,
   },
   {

@@ -124,16 +124,18 @@ const REGISTER: Record<string, SealContract> = {
   },
   // ── #582's review round 22 ──────────────────────────────────────────────────────────────────
   phase6_t4d_decision_approved_here: {
-    rule: 'a `pending`/`change` -> `approved` move RECORDS ITSELF as it happens, so a deferred '
-      + 'seal can tell the ACT from the STATE — no predicate over the decision\'s final row can, '
-      + 'because the row is identical whether this transaction moved it or found it that way',
-    plan: '§B.4 the finalized birth (#582 round 19, finding 2; round 22, finding 3)',
+    rule: 'a MOVE into `approved` or `awaiting_countersign` RECORDS ITSELF as it happens, so a '
+      + 'deferred birth seal can tell the ACT from the STATE — no predicate over the decision\'s '
+      + 'final row can, because the row is identical whether this transaction moved it or found '
+      + 'it that way. WHICH moves are legal stays `Decision_t4d_entry_seal`\'s question',
+    plan: '§B.4 both revision births (#582 round 19, finding 2; round 22, finding 3 and its sweep)',
     on: { 'Decision.Decision_t4d_approval_transition': B('U') },
     must: [
-      // the ENTRY set is the delivered attribution seal's, not a wider one
-      "'pending'", "'change'", "'approved'",
+      // a MOVE, not a state: the status must have CHANGED, and into one of the two parked/final
+      // entries the birth seals are about
+      'IS DISTINCT FROM', "'approved'", "'awaiting_countersign'",
       // transaction-local, and a jsonb ARRAY rather than a delimited string — round 20, finding 2
-      'set_config', 'phase6.t4d_decision_approved', 'to_jsonb',
+      'set_config', 'phase6.t4d_decision_approved', 'phase6.t4d_decision_awaiting', 'to_jsonb',
     ],
   },
   phase6_t4d_change_request_closure_bound: {

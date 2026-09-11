@@ -2281,10 +2281,21 @@ CREATE TRIGGER "DecisionApprovalRevision_t4d_birth"
 -- array has no delimiter to smuggle.
 CREATE OR REPLACE FUNCTION phase6_t4d_decision_approved_here() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-  IF OLD."status"::text IN ('pending', 'change') AND NEW."status"::text = 'approved' THEN
-    PERFORM set_config('phase6.t4d_decision_approved',
-      (COALESCE(NULLIF(current_setting('phase6.t4d_decision_approved', true), ''), '[]')::jsonb
-        || to_jsonb(NEW."id"))::text, true);
+  -- A MOVE, stated as a move: the status CHANGED and it changed INTO this state. Which moves are
+  -- legal is `Decision_t4d_entry_seal`'s question and is not re-decided here — a recorder that
+  -- listed the admitted entries would be a second definition of that rule, and two definitions of
+  -- one rule drift. This records only that a move happened, which is the whole of what the birth
+  -- seals need and nothing they do not.
+  IF OLD."status"::text IS DISTINCT FROM NEW."status"::text THEN
+    IF NEW."status"::text = 'approved' THEN
+      PERFORM set_config('phase6.t4d_decision_approved',
+        (COALESCE(NULLIF(current_setting('phase6.t4d_decision_approved', true), ''), '[]')::jsonb
+          || to_jsonb(NEW."id"))::text, true);
+    ELSIF NEW."status"::text = 'awaiting_countersign' THEN
+      PERFORM set_config('phase6.t4d_decision_awaiting',
+        (COALESCE(NULLIF(current_setting('phase6.t4d_decision_awaiting', true), ''), '[]')::jsonb
+          || to_jsonb(NEW."id"))::text, true);
+    END IF;
   END IF;
   RETURN NEW;
 END $$;
@@ -2296,6 +2307,12 @@ CREATE TRIGGER "Decision_t4d_approval_transition" BEFORE UPDATE ON "Decision"
 CREATE OR REPLACE FUNCTION phase6_t4d_decision_approved_in_tx(p_decision TEXT) RETURNS BOOLEAN
 LANGUAGE sql STABLE AS $$
   SELECT COALESCE(NULLIF(current_setting('phase6.t4d_decision_approved', true), ''), '[]')::jsonb
+         ? p_decision;
+$$;
+
+CREATE OR REPLACE FUNCTION phase6_t4d_decision_awaiting_in_tx(p_decision TEXT) RETURNS BOOLEAN
+LANGUAGE sql STABLE AS $$
+  SELECT COALESCE(NULLIF(current_setting('phase6.t4d_decision_awaiting', true), ''), '[]')::jsonb
          ? p_decision;
 $$;
 
@@ -2323,13 +2340,29 @@ BEGIN
     -- transition was the rule; here the state IS the rule, because a provisional approval is
     -- defined by where it leaves its decision, and `Decision_t4d_entry_seal` already owns the
     -- question of which transitions may reach that state.
+    -- AND THE SIBLING OF ROUND 22's FINDING 3 IS HERE (#582 round 22, the class sweep). The
+    -- paragraph above names the no-op hazard exactly — "a bundle could touch an already-
+    -- `awaiting_countersign` decision and insert a second provisional revision beside the first" —
+    -- and then answers it with the END STATE, which that same no-op also satisfies. It is the
+    -- finalized arm's defect verbatim, written one screen higher, and the argument that "here the
+    -- state IS the rule" does not rescue it: the hazard the paragraph names is a SECOND revision
+    -- beside a decision already parked, and the status is true of exactly that case.
+    --
+    -- The transition register answers both arms, and it records a MOVE rather than a state:
+    -- `Decision_t4d_approval_transition` appends the decision to this set when the status CHANGES
+    -- INTO `awaiting_countersign`. The end state is kept beside it so a later statement in the
+    -- same transaction cannot park the decision, plant the revision and then move it away.
+    IF NOT phase6_t4d_decision_awaiting_in_tx(NEW."decisionId") THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: revision % is born PROVISIONAL, but no move of decision % INTO `awaiting_countersign` was performed in this transaction — a provisional approval IS the act that parks a decision for its countersigner, and a write that leaves an already-parked decision parked performs no such act while a second immutable revision claims it did',
+        NEW."id", NEW."decisionId";
+    END IF;
     SELECT TRUE INTO v_moved FROM "Decision" d
      WHERE d."projectId" = NEW."projectId" AND d."id" = NEW."decisionId"
-       AND d."status"::text = 'awaiting_countersign'
-       AND d."xmin" = txid_current()::text::xid;
+       AND d."status"::text = 'awaiting_countersign';
     IF NOT FOUND THEN
       RAISE EXCEPTION
-        'phase6 4d-i: revision % is born PROVISIONAL, but decision % does not end this transaction as an `awaiting_countersign` row this transaction wrote — a provisional approval IS the act that parks a decision for its countersigner, and one that leaves its decision elsewhere is an approval nobody performed',
+        'phase6 4d-i: revision % is born PROVISIONAL and decision % was parked in this transaction, but it does not END the transaction as an `awaiting_countersign` row — a parking that is walked back by a later statement leaves an immutable provisional revision recording a wait nobody is holding',
         NEW."id", NEW."decisionId";
     END IF;
 
