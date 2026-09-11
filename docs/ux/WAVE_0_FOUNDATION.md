@@ -144,6 +144,20 @@ Audit every action target against the 44×44 floor in the same pass.
 
 **Done when:** all 8 field styles ≥16px on mobile (verified by computed style, or by source if the primitive was introduced); no safety- or evidence-critical text below 13px; every action target ≥44×44; iOS Safari focuses every field without zooming.
 
+> **F-1b IS NOT CLEARED** (2026-09-11, PR #584 review round 15). The criterion
+> above is unchanged and it is not met: the round-14 source count found **86**
+> shipped action targets below the floor. Round 14 retracted the CLAIM and left
+> this sentence standing, which made the unit's own completion criterion
+> knowingly false — the correction is stated here, at the criterion, and not
+> only in the amendment that found the number.
+>
+> **F-1b clears when EITHER** every one of the 86 meets the floor, **OR** the
+> Board records an exception naming the exact surfaces it covers. Until one of
+> those, F-1b is open and **F-1c must not start** — its own preamble makes
+> clearing F-1b a precondition and forbids new design decisions, so beginning it
+> on an unmet prerequisite would push this question into a unit that has no
+> licence to answer it.
+
 > **Amendment (2026-09-10, PR #584 review round 1 — four accepted findings):**
 >
 > 1. **The floor is not a WIDTH.** `max-width: 639px` releases in phone
@@ -319,13 +333,22 @@ Audit every action target against the 44×44 floor in the same pass.
 > here: what this unit can honestly claim is that every target the persona walk reaches, plus the
 > states the jsdom companion renders, meets the floor.
 >
-> **Closing the remaining 86 is its own unit, and it carries a product question this one must not
-> answer alone.** `CommercialScreen`'s fifty are dense money-ledger controls at 12.5px with 7px
-> padding; raising them to 44 changes how much of a claim fits on one screen. `LabourScreen`'s
-> seven and the requirement-spec selects are the same shape. Whether the field floor governs a
-> desktop-first ledger, or whether that surface gets a stated exception, is a decision for the
-> Board and not a P2 fold — so it is proposed as a unit rather than swept in here, with the
-> enumeration above as its inventory.
+> **The remaining 86 are F-1b's OWN remaining work, not a new unit** (corrected at round 15: round
+> 14 called them "its own unit", which is how a criterion gets left behind — the work moves, the
+> Done-when stays, and the unit reads as clear while its own sentence is false). They fall into two
+> groups, and only one of them is a question:
+>
+> · **~50 are dense ledger FORM CONTROLS** — `CommercialScreen`'s shared `input`/`select` style at
+>   12.5px with 7px of padding (≈29px), and `LabourScreen`'s five of the same shape. Raising these
+>   to 44 changes how much of a claim or a muster roll fits on one screen. **Whether the field floor
+>   governs a desktop-first ledger, or that surface gets a stated exception, is the Board's call.**
+> · **~36 are standalone ACTION BUTTONS** — the bordered amber `Retry` at 18–24px on Commercial,
+>   Drawings, Labour, Materials and the Engineer checklist; the Places controls at 17–39px; single
+>   buttons on Drafts, Team, Inspection Review, MobileSheet and NotificationPanel. These carry no
+>   density question: they are the exact subject F-1b names, and they are mechanical.
+>
+> Neither group is deferred out of the unit. F-1b stays OPEN until the buttons are raised and the
+> Board answers the ledger question, per the clearance condition recorded at the criterion above.
 
 ---
 
