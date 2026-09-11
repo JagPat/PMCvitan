@@ -132,7 +132,9 @@ export function ConsultationThread({ decision }: { decision: Decision }) {
             aria-label="Who to ask"
             value={consultee}
             onChange={(e) => setConsultee(e.target.value)}
-            style={{ fontSize: 12, padding: '5px 8px', borderRadius: 8, border: '1px solid var(--hairline)', width: '100%' }}
+            // #584 review round 13 — the compose state is reached by pressing a DISCLOSURE, not by
+            // navigating, so no sweep had rendered it.
+            style={{ fontSize: 12, minHeight: 44, padding: '5px 8px', borderRadius: 8, border: '1px solid var(--hairline)', width: '100%' }}
           >
             <option value="">Choose a member…</option>
             {askable.map((m) => (

@@ -413,8 +413,15 @@ test('every persona, every surface its navigation reaches, holds the 44px floor'
  * option, round 11's empty discipline, and now the whole server-backed category. The first two I
  * answered by making one more state reachable. That is why this arm is a MECHANISM: it seeds the
  * store through a DEV-only affordance (`main.tsx`, gated on `DEV_AUTH`, absent from every
- * deployed build) and then runs the same generic sweep, so a control that only appears with real
- * data is measured the day it is added rather than the round someone notices it.
+ * deployed build) and then runs the same generic sweep.
+ *
+ * RETRACTED, round 13. This comment used to end "...so a control that only appears with real data
+ * is measured the day it is added rather than the round someone notices it." It did not do that.
+ * The arm seeded `failedEvidence` and then stayed in the default `pmc` role walking PMC
+ * navigation — and that row renders only on the ENGINEER's checklist, so the data was seeded and
+ * never rendered, and its ~28px Retry/Delete pair went on being unmeasured while this arm
+ * reported green. SEEDING A STATE IS NOT REACHING IT, and the sentence I wrote skipped exactly
+ * that gap. The arm walks every persona now and ASSERTS the seeded rows actually appeared.
  *
  * What it deliberately does NOT claim: this is not the real read path. Seeded state renders the
  * same components with the same styles, which is what the 44px floor is about, but a defect that
@@ -422,14 +429,8 @@ test('every persona, every surface its navigation reaches, holds the 44px floor'
  * test; the Playwright `webServer` is shared by every spec in this suite, so pointing it at an API
  * base would make the existing demo-mode specs start calling one. Stated rather than glossed.
  */
-test('the states only real data reaches hold the 44px floor too', async ({ page }) => {
-  test.setTimeout(300_000);
-  await page.goto('/');
-
-  const seeded = await page.evaluate(() => typeof (window as never as {
-    __vitanDevSeed?: unknown }).__vitanDevSeed === 'function');
-  expect(seeded, 'the DEV seed affordance must be present in the demo build this suite runs').toBe(true);
-
+/** The seed, re-applied per persona so each walk is independent of the one before it. */
+async function seedServerBackedState(page: Page): Promise<void> {
   await page.evaluate(() => {
     (window as never as { __vitanDevSeed: (p: Record<string, unknown>) => void }).__vitanDevSeed({
       // a project WITH a team, and `canManage` true, so the manage-only controls render
@@ -443,36 +444,60 @@ test('the states only real data reaches hold the 44px floor too', async ({ page 
       ],
     });
   });
+}
 
-  // the seed must actually have taken, or this arm is green over the same demo state as the rest
-  await expect(page.getByText('Asha Rane')).toBeVisible({ timeout: 15_000 })
-    .catch(() => { /* the Team surface may not be the landing screen; the walk below reaches it */ });
+test('the states only real data reaches hold the 44px floor too', async ({ page }) => {
+  test.setTimeout(900_000);
+  await page.goto('/');
 
-  const tabs = await page.locator('[data-testid^="tab-"]')
-    .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')!).filter((t) => t !== 'tab-more'));
-  for (const tab of tabs) {
-    await page.getByTestId(tab).click();
-    await sweepActionTargets(page, `seeded — ${tab}`);
-  }
-  const more = page.getByTestId('tab-more');
-  if (await more.count()) {
-    // OPEN the sheet BEFORE listing its rows. The first version of this arm collected them first,
-    // got an empty list, never visited a single More surface — and stayed GREEN with the Team
-    // fix reverted, which is the one thing an arm like this must never do. Caught by reverting
-    // the fix and re-running, the same check that caught round 9's reachability sweep.
+  const seeded = await page.evaluate(() => typeof (window as never as {
+    __vitanDevSeed?: unknown }).__vitanDevSeed === 'function');
+  expect(seeded, 'the DEV seed affordance must be present in the demo build this suite runs').toBe(true);
+
+  // EVERY persona, not just the default one (#584 review round 13, finding 2). The seed is global
+  // but the SURFACES are per-role: the failed-evidence row renders on the ENGINEER's checklist and
+  // nowhere else, so seeding it and walking PMC navigation measured nothing it added.
+  let sawTeam = false;
+  let sawEvidence = false;
+
+  for (const persona of ROLES) {
+    await page.locator('[data-dev-affordance="role-switcher"] select').selectOption(persona);
+    await seedServerBackedState(page);
+
+    const tabs = await page.locator('[data-testid^="tab-"]')
+      .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')!).filter((t) => t !== 'tab-more'));
+    for (const tab of tabs) {
+      await page.getByTestId(tab).click();
+      if (await page.getByText('Asha Rane').count()) sawTeam = true;
+      if (await page.locator('[data-testid^="evidence-retry-"]').count()) sawEvidence = true;
+      await sweepActionTargets(page, `seeded ${persona} — ${tab}`);
+    }
+
+    const more = page.getByTestId('tab-more');
+    if (!(await more.count())) continue;
+    // OPEN the sheet BEFORE listing its rows. Round 12's version collected them first, got an
+    // empty list, visited no More surface at all — and stayed GREEN with the Team fix reverted,
+    // which is the one thing an arm like this must never do.
     await more.click();
     const rows = await page.locator('[data-testid^="more-item-"]')
       .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')!));
-    expect(rows.length, 'the More sheet opened and offered no rows to sweep').toBeGreaterThan(0);
+    expect(rows.length, `${persona}: the More sheet opened and offered no rows to sweep`).toBeGreaterThan(0);
     await page.keyboard.press('Escape');
     for (const row of rows) {
       await page.getByTestId('tab-more').click();
       const item = page.getByTestId(row);
       if (!(await item.count())) continue;
       await item.click();
-      await sweepActionTargets(page, `seeded — ${row}`);
+      if (await page.getByText('Asha Rane').count()) sawTeam = true;
+      if (await page.locator('[data-testid^="evidence-retry-"]').count()) sawEvidence = true;
+      await sweepActionTargets(page, `seeded ${persona} — ${row}`);
     }
   }
+
+  // THE SEED MUST HAVE RENDERED. Without these two, this arm is green over the same demo state as
+  // every other sweep in the file — which is exactly what round 12's version was.
+  expect(sawTeam, 'no persona ever rendered the seeded team — the seed measured nothing').toBe(true);
+  expect(sawEvidence, 'no persona ever rendered the seeded failed evidence — the state this arm exists for was never on screen').toBe(true);
 });
 
 /**
