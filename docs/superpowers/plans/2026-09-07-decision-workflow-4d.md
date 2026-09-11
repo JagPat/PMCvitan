@@ -6599,6 +6599,49 @@ today's behaviour lives.
     held elsewhere, the transition refused by name — and pinned in the contract
     oracle, because a single-session harness cannot hold a lock against itself.
 
+    **ROUND 12 — a rule has DIMENSIONS, and I swept the one the finding named**
+    (#582's review round 12, findings 1-6).
+
+    Five of the six are my own recent fixes, and they share one shape that is
+    sharper than "fix the class, not the site" — because rounds 10 and 11 both
+    claimed to fix the class and both left this behind:
+
+    | the rule | the dimension I swept | the dimension I did not |
+    |---|---|---|
+    | a fact's shape matches its command | `updateRole`'s two ends | `add`'s source, `remove`'s destination |
+    | a frozen pair is trustworthy | nonblank | coherent, and TRUE of the actor |
+    | adopt nothing unaudited | the incoming generation | the OUTGOING generation |
+    | one act, one flip | per membership | per PROJECT |
+    | a pairing holds in BOTH directions | fact → decision | decision → fact |
+
+    **So the check to run before calling a class swept is not "which other sites
+    have this rule?" but "which other DIMENSIONS does this rule have?"** —
+    direction, scope, generation, shape, property. Sites are found by grep;
+    dimensions are not, and every one of these five was invisible to the search
+    that found its sibling.
+
+    The sixth is genuinely new and is the one worth reading twice: **the
+    project-cascade exception was two facts and neither of them was WHICH
+    project.** Trigger depth proves a nested cascade; the transaction-local flag
+    proved only that *a* project was being deleted. Delete an event-free project A
+    and then hard-delete a membership in a SURVIVING project B, and B's fact rides
+    its own FK cascade at depth 2 with A's flag on — permanent evidence erased
+    from a project that still exists. The flag is now an accumulating SET of ids
+    and the seals ask whether THIS row's project is in it. The original reasoning
+    for the boolean is preserved at the site because half of it is still right:
+    4c-iii measured that a SINGLE-id flag breaks under a multi-row
+    `DELETE FROM "Project" WHERE …`, since the cascades fire after the statement.
+    That ruled out one id. It did not rule out a set, and a boolean was the wrong
+    conclusion from a correct premise. The flag has TWO readers and the finding
+    named one; both move together, which is this round's own rule applied to
+    itself.
+
+    §C gains two arms (an `add` receipt backing a live re-role; an approval pair
+    that is nonblank and false), a cross-project cascade probe that also asserts a
+    project's OWN deletion still carries its facts, a two-crossings probe with its
+    one-crossing control, the converse-direction arm on the awaiting entry, and the
+    outgoing generation folded into the catalog-conflict probe.
+
     P28b's replay arm gains BOTH: the
     4d-i migration re-run against a post-4d-iii database, with the architect
     consultation request COMMITTING afterwards, RED against the unconditional

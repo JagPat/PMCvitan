@@ -29,6 +29,7 @@ const INVENTORY: Record<string, string[]> = {
   ChangeRequest: ['ChangeRequest_t4d_evidence_frozen', 'ChangeRequest_t4d_no_truncate', 'ChangeRequest_t4d_project'],
   Decision: [
     'Decision_t4d_architect_reserved',
+    'Decision_t4d_awaiting_paired',
     'Decision_t4d_awaiting_reserved',
     'Decision_t4d_disagreement_paired',
     'Decision_t4d_entry_seal',

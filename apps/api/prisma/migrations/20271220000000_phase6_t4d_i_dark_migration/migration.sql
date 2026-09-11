@@ -548,16 +548,39 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- belongs — and publishes the fact as a TRANSACTION-LOCAL flag the platform seals read. They
 -- consult the flag, never the table, so no platform invariant depends on orgs' physical schema.
 --
--- The flag is a BOOLEAN and not the deleting project's id, for the reason 4c-iii measured:
--- under a multi-row `DELETE FROM "Project" WHERE …` PostgreSQL queues the RI cascades as
--- AFTER-statement actions, so an id-valued flag would hold only the LAST row's id by the time
--- they fire and every earlier project's cascade would be wrongly refused — which is exactly the
--- shape the shared fixture teardown uses.
+-- The flag is an ACCUMULATING SET of project ids, and it was a plain boolean until #582's review
+-- round 12, finding 5. The original reasoning is preserved because half of it is still right and
+-- explains the shape: 4c-iii measured that under a multi-row `DELETE FROM "Project" WHERE …`
+-- PostgreSQL queues the RI cascades as AFTER-statement actions, so a SINGLE-ID flag would hold
+-- only the last row's id by the time they fire and every earlier project's cascade would be
+-- wrongly refused — the exact shape the shared fixture teardown uses. That ruled out one id. It
+-- did not rule out a SET, and a boolean was the wrong conclusion from a correct premise:
+--
+--   the flag said "some project is being deleted in this transaction", and the seals that read it
+--   treated that as "THIS row's project is being deleted". A transaction can delete an event-free
+--   project A and then hard-delete a membership in a SURVIVING project B: the FK cascade runs B's
+--   fact delete at depth 2 with the flag on, and B's permanent evidence is erased while B remains.
+--
+-- Appending keeps the multi-row property (every deleted id is present when the cascades fire) and
+-- restores the one the boolean lost (WHICH ids). Delimited on both sides so a containment test
+-- cannot match a prefix of a longer id.
 CREATE OR REPLACE FUNCTION phase6_t4d_project_deleting() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-  PERFORM set_config('phase6.t4d_project_delete', 'on', true);
+  PERFORM set_config(
+    'phase6.t4d_project_delete',
+    COALESCE(current_setting('phase6.t4d_project_delete', true), '') || ',' || OLD."id" || ',',
+    true);
   RETURN OLD;
 END $$;
+
+-- The one place the membership test is spelled, so the two seals that ask it cannot drift apart —
+-- which is how finding 5's sibling site would otherwise have been missed: the flag has TWO
+-- readers, and round 12 named one.
+CREATE OR REPLACE FUNCTION phase6_t4d_project_is_deleting(p_project TEXT) RETURNS BOOLEAN
+LANGUAGE sql STABLE AS $$
+  SELECT position(',' || p_project || ',' IN
+                  COALESCE(current_setting('phase6.t4d_project_delete', true), '')) > 0;
+$$;
 
 DROP TRIGGER IF EXISTS "Project_t4d_deleting" ON "Project";
 CREATE TRIGGER "Project_t4d_deleting"
@@ -2152,10 +2175,53 @@ DROP TRIGGER IF EXISTS "DecisionStrandedResolution_t4d_paired" ON "DecisionStran
 CREATE CONSTRAINT TRIGGER "DecisionStrandedResolution_t4d_paired"
   AFTER INSERT ON "DecisionStrandedResolution" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_stranded_paired();
+-- ── and the ENTRY into `awaiting_countersign` owes its provisional revision ──────────────────
+-- #582 round 12, finding 6, and it is the converse of round 10's and round 11's work rather than
+-- a new idea. Every pairing in this unit is stated IN BOTH DIRECTIONS — a fact with no write is
+-- an orphan, a write with no fact is unattributable — and the revision birth got one of them:
+-- `phase6_t4d_revision_birth_paired` refuses a provisional revision whose decision did not land
+-- `awaiting_countersign`, and NOTHING refused the transition that lands there carrying no
+-- revision at all.
+--
+-- After 4d-iii drops the reservation door that is a direct `pending → awaiting_countersign`
+-- update under an active chain, committing with no revision, no receipt, no event, no audit row
+-- and no notice. The decision is then unfinalizable by construction: both the countersign and the
+-- stranded resolution resolve their subject through `phase6_t4d_provisional_head`, which has no
+-- head to find. The decision sits in the architect's queue forever.
+--
+-- DEFERRED, because the revision may be written before or after the transition inside the
+-- command's transaction — the same reason the seal in the other direction is deferred. Counted,
+-- not merely found, because that is this file's settled answer to "one act, one fact": the
+-- revision seal already refuses a second provisional head, and demanding exactly one here means
+-- neither direction can be satisfied by a number the other would refuse.
+CREATE OR REPLACE FUNCTION phase6_t4d_awaiting_paired() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_born BIGINT;
+BEGIN
+  IF NEW."status"::text <> 'awaiting_countersign'
+     OR OLD."status"::text = 'awaiting_countersign' THEN
+    RETURN NULL;
+  END IF;
+
+  SELECT count(*) INTO v_born FROM "DecisionApprovalRevision" r
+   WHERE r."projectId" = NEW."projectId" AND r."decisionId" = NEW."id"
+     AND r."finalized" = FALSE
+     AND r."xmin" = txid_current()::text::xid;
+  IF v_born <> 1 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: decision % entered `awaiting_countersign` in this transaction with % PROVISIONAL revisions born here — the state IS a parked approval, so the act that enters it writes exactly one, and a decision parked with none can never be finalized: both the countersign and the stranded resolution act on a provisional head that does not exist',
+      NEW."id", v_born;
+  END IF;
+  RETURN NULL;
+END $$;
+
 DROP TRIGGER IF EXISTS "Decision_t4d_disagreement_paired" ON "Decision";
 CREATE CONSTRAINT TRIGGER "Decision_t4d_disagreement_paired"
   AFTER UPDATE ON "Decision" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_disagreement_paired();
+DROP TRIGGER IF EXISTS "Decision_t4d_awaiting_paired" ON "Decision";
+CREATE CONSTRAINT TRIGGER "Decision_t4d_awaiting_paired"
+  AFTER UPDATE ON "Decision" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_awaiting_paired();
 
 -- ────────────────────────────────────────────────────────────────────────────────────────────
 -- PART 3e (partial) — THE EXISTING-TABLE COLUMNS THE FACT SEALS ABOVE READ
@@ -2539,8 +2605,10 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 CREATE OR REPLACE FUNCTION phase6_t4d_membership_transition_immutable() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
-    IF pg_trigger_depth() > 1
-       AND coalesce(current_setting('phase6.t4d_project_delete', true), '') = 'on' THEN
+    -- #582 round 12, finding 5: the flag names WHICH projects are going, and this fact's own
+    -- project must be one of them. Depth alone admits any nested delete; "some project is being
+    -- deleted" admits a surviving project's fact riding another project's cascade.
+    IF pg_trigger_depth() > 1 AND phase6_t4d_project_is_deleting(OLD."projectId") THEN
       RETURN OLD;
     END IF;
     RAISE EXCEPTION
@@ -2726,15 +2794,25 @@ BEGIN
   -- moves the ROLE of a membership that is active on both sides — a re-role is not a way in or
   -- out. Nothing here constrains a removal's role or an addition's, because the plan does not:
   -- only the standing edge each command owns is asserted.
-  IF c."commandType" = 'members.remove' AND NEW."toStatus" = 'active' THEN
+  -- EACH COMMAND'S WHOLE SHAPE, both ends (#582 round 12, finding 1). Round 7's finding 3 asked
+  -- for "the transition shape each command performs" and this seal gave `updateRole` both ends
+  -- while giving `add` and `remove` one each — the standing EDGE, on the reasoning that the plan
+  -- constrains nothing else. That reasoning confused "the role is unconstrained" with "the
+  -- source is unconstrained". An `add` that begins from an ACTIVE membership is not an add: a
+  -- bundle citing a valid `members.add` receipt could re-role a live engineer to `architect`,
+  -- pass `toStatus = 'active'` and the exact OLD/NEW pairing, and arm the chain with permanent
+  -- evidence naming an addition that never happened.
+  IF c."commandType" = 'members.remove' AND NEW."toStatus" IS DISTINCT FROM 'removed' THEN
     RAISE EXCEPTION
-      'phase6 4d-i: MembershipTransition % records membership % becoming `active`, but cites a `members.remove` receipt — a removal is the command that ends a standing, never the one that grants it, and this fact would stand forever as an addition authorised by a removal',
-      NEW."id", NEW."membershipId";
-  END IF;
-  IF c."commandType" = 'members.add' AND NEW."toStatus" <> 'active' THEN
-    RAISE EXCEPTION
-      'phase6 4d-i: MembershipTransition % records membership % becoming `%`, but cites a `members.add` receipt — an add ends with the membership ACTIVE (re-activation of a removed member goes through it too), so a fact that ends anywhere else was produced by a different command',
+      'phase6 4d-i: MembershipTransition % records membership % ending at `%`, but cites a `members.remove` receipt — a removal ENDS a standing and lands `removed`; a fact that ends anywhere else was produced by a different command and would stand forever as that command''s act authorised by a removal',
       NEW."id", NEW."membershipId", NEW."toStatus";
+  END IF;
+  IF c."commandType" = 'members.add'
+     AND (NEW."toStatus" <> 'active'
+          OR (NEW."fromStatus" IS NOT NULL AND NEW."fromStatus" <> 'removed')) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: MembershipTransition % records membership % moving % → `%`, but cites a `members.add` receipt — an add ends ACTIVE and begins from nothing at all or from `removed` (a re-activation goes through it too). A fact that begins from a LIVE standing is a re-role, and citing an add for it arms the chain with evidence of an act nobody performed',
+      NEW."id", NEW."membershipId", COALESCE(NEW."fromStatus", '<none>'), NEW."toStatus";
   END IF;
   IF c."commandType" = 'members.updateRole'
      AND (NEW."toStatus" <> 'active' OR NEW."fromStatus" IS DISTINCT FROM 'active'
@@ -2816,6 +2894,7 @@ DECLARE
   v_to_stat    TEXT;
   v_here       BIGINT;
   v_match      BIGINT;
+  v_flips      BIGINT;
 BEGIN
   -- OLD and NEW are records, and plpgsql has no expression that picks between two of them, so
   -- the fields are read explicitly per operation rather than through a CASE over the rows.
@@ -2908,6 +2987,25 @@ BEGIN
   -- while the fact claimed a `not_held → held` arrival that never happened. Comparing
   -- `(fromRole, fromStatus, toRole, toStatus)` against OLD and NEW is the plan's own sentence
   -- (line 2915) and closes it: the fact must describe the write, end to end.
+  -- AND ONE CROSSING PER PROJECT (#582 round 12, finding 4). Round 10's count is scoped to the
+  -- MEMBERSHIP, so one transaction could activate two different architect memberships on the
+  -- same project, each with its own truthful fact and receipt, and both invocations would see
+  -- exactly one match. The plan's contract is one flip per PROJECT per transaction, and the
+  -- reason is the crossing itself: `activeCount` is read after the writes, so two simultaneous
+  -- activations both carry the final count and NEITHER records the zero-to-one crossing that
+  -- drives countersign re-notification. Counted over the facts, which is where the crossing is
+  -- claimed, and over both directions — two departures are as ambiguous as two arrivals.
+  SELECT count(*) INTO v_flips FROM "MembershipTransition" mt
+   WHERE mt."projectId" = v_project
+     AND mt."xmin" = txid_current()::text::xid
+     AND ((mt."fromRole" IS NOT DISTINCT FROM 'architect' AND mt."fromStatus" IS NOT DISTINCT FROM 'active')
+          <> (mt."toRole" IS NOT DISTINCT FROM 'architect' AND mt."toStatus" IS NOT DISTINCT FROM 'active'));
+  IF v_flips > 1 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: project % carries % architect standing crossings in ONE transaction (this one is membership %) — the chain turns on and off ONE act at a time, because the crossing is what the re-notification reads and two crossings leave neither of them recording a zero-to-one move',
+      v_project, v_flips, v_membership;
+  END IF;
+
   IF v_match = 0 THEN
     RAISE EXCEPTION
       'phase6 4d-i: membership % on project % moved architect standing (%, %) → (%, %) in this transaction with no MembershipTransition written HERE naming user % and that exact transition — the chain is armed and disarmed by attributable ACTS, never by a bare row write, never by an older act reused, and never by a fact that describes a different move',
@@ -3395,6 +3493,43 @@ ON CONFLICT ("coverageVersion", "effectKey") DO NOTHING;
 -- source and fails if this equality ever stops holding, so the licence cannot outlive its proof.
 -- The drain closes in 4d-i-b/4d-iii, which retires the old generation once no lease serves it;
 -- `retiredAt` keeps it resolvable for HISTORY while refusing to back a new event.
+-- AND THE OUTGOING GENERATION IS AUDITED TOO (#582 round 12, finding 3). Round 9 made the
+-- literal the only thing either generation is seeded FROM, and audited pre-existing rows at the
+-- INCOMING keys only. The outgoing copy kept its bare `ON CONFLICT DO NOTHING`, so on the
+-- `db push` / P3005 path a constraint-valid but WRONG row already at an outgoing key — say
+-- `decision.approved` with `invalidate = false` — survives and is sealed. A still-serving
+-- previous-release emitter's ordinary intent is then refused at commit, or a forged intent
+-- matching the bad row is accepted; either way the drain breaks on the generation that exists
+-- precisely to keep it open.
+--
+-- Same rule, same shape, the other generation: compare before adopting, and REFUSE rather than
+-- keep. The sweep is the point — round 9 wrote "a definition changes by a new coverage version,
+-- never in place, so adoption was never the right verb" and then left adoption in place here.
+DO $outgoing_audit$
+DECLARE v_bad BIGINT; v_sample TEXT;
+BEGIN
+  SELECT count(*), COALESCE(left(string_agg(x."effectKey", ', ' ORDER BY x."effectKey"), 160), '')
+    INTO v_bad, v_sample
+    FROM "ExternalEffectCatalog" x
+    JOIN "_t4d_catalog_seed" c ON c."effectKey" = x."effectKey"
+   WHERE x."coverageVersion" = '6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7'
+     AND c."coverageVersion" = 'b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61'
+     AND (x."eventType" IS DISTINCT FROM c."eventType"
+          OR x."invalidate" IS DISTINCT FROM c."invalidate"
+          OR x."pushRoles" IS DISTINCT FROM c."pushRoles"
+          OR x."pushFamily" IS DISTINCT FROM c."pushFamily"
+          OR x."frozenAudience" IS DISTINCT FROM c."frozenAudience"
+          OR x."requiresPush" IS DISTINCT FROM c."requiresPush"
+          OR x."audience" IS DISTINCT FROM c."audience"
+          OR x."pushBody" IS DISTINCT FROM c."pushBody"
+          OR x."pairingRequired" IS DISTINCT FROM c."pairingRequired");
+  IF v_bad > 0 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i ABORT: % row(s) already exist at an OUTGOING coverage key this migration seeds and DISAGREE with the compiled catalog — %. The outgoing generation is what keeps a still-serving previous release resolvable through the drain, so adopting a row that already contradicts the definition would refuse that release''s ordinary events (or admit a forged intent that matches the bad row). Remove the disagreeing rows before this migration seeds the generation.',
+      v_bad, v_sample;
+  END IF;
+END $outgoing_audit$;
+
 INSERT INTO "ExternalEffectCatalog" ("coverageVersion", "effectKey", "eventType", "invalidate", "pushRoles", "pushFamily", "frozenAudience", "requiresPush", "audience", "pushBody", "pairingRequired")
 SELECT '6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7',
        c."effectKey", c."eventType", c."invalidate", c."pushRoles", c."pushFamily",
@@ -4589,17 +4724,42 @@ BEGIN
       NEW."id";
   END IF;
 
-  -- THE SAME PAIR, THE SAME RULE (#582 round 11, finding 2's SIBLING SITE — not reported).
-  -- Round 11 named the event envelope. The class is "a frozen role/name pair is nonblank", and
-  -- sweeping it across the unit leaves exactly two members unguarded: `DomainEvent`, which the
-  -- finding named, and this one. Required-not-null is not presence, and a countersign reads this
-  -- pair to decide what its finalizing event says about who approved.
-  IF NEW."approvedByRole" IS NOT NULL
-     AND (btrim(NEW."approvedByRole", E' \t\n\x0B\f\r') = ''
-          OR btrim(COALESCE(NEW."approvedByName", ''), E' \t\n\x0B\f\r') = '') THEN
+  -- THE APPROVAL PAIR IS A FROZEN PAIR, AND THE RULE FOR ONE HAS THREE PARTS (#582 round 11
+  -- finding 2's sibling site, completed by round 12 finding 2).
+  --
+  -- Round 11 applied ONE of the three — nonblank — and stopped, which is the same shape as every
+  -- other miss this unit has made: the rule was swept along the dimension the finding named and
+  -- no other. A frozen role/name pair is trustworthy only when it is (a) BOTH halves or neither,
+  -- (b) each half nonblank, and (c) TRUE of the actor it names. Every other frozen pair in this
+  -- file goes through `phase6_t4d_actor_bound` for (c); this one went through nothing, so a
+  -- hand-run provisional approval could cite a legitimate approver and store any nonblank role
+  -- and name it liked — and the finalized notice then renders that name, permanently.
+  --
+  -- (a) also closes the hole round 11 left open in the other direction: keying the check on
+  -- `approvedByRole IS NOT NULL` meant a row carrying only `approvedByName` skipped it entirely.
+  IF (NEW."approvedByRole" IS NULL) <> (NEW."approvedByName" IS NULL) THEN
     RAISE EXCEPTION
-      'phase6 4d-i: revision % carries a BLANK approval pair (role `%`, name `%`) — the pair is frozen at the act and read by its finalizer, and a blank half attributes nothing while looking attributed',
-      NEW."id", NEW."approvedByRole", COALESCE(NEW."approvedByName", '<null>');
+      'phase6 4d-i: revision % carries half an approval pair (role %, name %) — the pair is written together or not at all, and a half pair is a name with no standing behind it or a standing with nobody in it',
+      NEW."id", COALESCE(NEW."approvedByRole", '<null>'), COALESCE(NEW."approvedByName", '<null>');
+  END IF;
+  IF NEW."approvedByRole" IS NOT NULL THEN
+    IF btrim(NEW."approvedByRole", E' \t\n\x0B\f\r') = ''
+       OR btrim(NEW."approvedByName", E' \t\n\x0B\f\r') = '' THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: revision % carries a BLANK approval pair (role `%`, name `%`) — the pair is frozen at the act and read by its finalizer, and a blank half attributes nothing while looking attributed',
+        NEW."id", NEW."approvedByRole", NEW."approvedByName";
+    END IF;
+    -- and it must be TRUE of the approver. `approvedById` is the account; the pair is what the
+    -- finalizing event and the notice will say about them, so it is checked against the register
+    -- under the identity lock exactly as every decision fact's pair is.
+    IF NEW."approvedById" IS NULL THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: revision % carries an approval pair but names no approver — a frozen pair is evidence ABOUT somebody, and there is nobody here for it to be true of',
+        NEW."id";
+    END IF;
+    PERFORM phase6_t4d_actor_bound(NEW."projectId", NEW."approvedById",
+                                   NEW."approvedByRole", NEW."approvedByName",
+                                   'DecisionApprovalRevision ' || NEW."id");
   END IF;
   RETURN NEW;
 END $$;
@@ -5025,11 +5185,12 @@ END $$;
 -- `emitEvent` fails on a row that is simply gone. Trigger depth is what distinguishes the RI
 -- cascade (depth 2 — measured) from a client statement (depth 1), so both are required, exactly
 -- as `phase6_t4d_membership_transition_immutable` above already demands and as the plan states
--- the rule: DELETE refused OUTSIDE the project-deletion cascade, not "while a flag is on".
+-- the rule: DELETE refused OUTSIDE THIS PROJECT'S deletion cascade, not "while a flag is on".
 CREATE OR REPLACE FUNCTION platform_t4d_stream_no_delete() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-  IF pg_trigger_depth() > 1
-     AND COALESCE(current_setting('phase6.t4d_project_delete', true), '') = 'on' THEN
+  -- the SIBLING SITE (#582 round 12, finding 5, unreported half). The flag has two readers and
+  -- the finding named one; the hole is identical here — B's allocator row erased on A's cascade.
+  IF pg_trigger_depth() > 1 AND phase6_t4d_project_is_deleting(OLD."projectId") THEN
     RETURN OLD;
   END IF;
   RAISE EXCEPTION

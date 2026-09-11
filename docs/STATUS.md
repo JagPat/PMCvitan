@@ -133,6 +133,20 @@ approval produces AND to the one-open-approval invariant the file had been assum
 fourth is new: the approved-entry seal read architect standing outside the readiness fence, so the
 losing interleaving commits a decision awaiting a countersigner just removed.
 
+**Round 12 is folded — six P1s on `1dbdb11f`, and five are one shape.** Not "the site and not the
+class": rounds 10 and 11 both fixed the class. This time the rule's other DIMENSION went unswept —
+a command's shape has three commands and I bound one; a frozen pair has three properties and I
+applied one; the catalog audit has two generations and I audited one; the flip count has two scopes
+and I used one; a pairing has two directions and I wrote one. Sites are found by grep; dimensions
+are not. The check before calling a class swept is now "which dimensions does this rule have", and
+it is written into the plan.
+
+The sixth is new and is the sharpest: the project-cascade exception was trigger depth plus a boolean
+saying *a* project was being deleted — never WHICH. A transaction could delete an event-free project
+A and hard-delete a membership in a surviving project B, and B's permanent evidence went with A's
+cascade. The flag is an accumulating set of ids now, and both of its readers — the finding named
+one — ask whether this row's project is in it.
+
 The oracle is `test/integration/phase6-t4d-i-seal-contract.test.ts`: every trigger function the
 unit installs carries a register entry naming its rule, the plan location that states it, the
 operations and timing every installing trigger must fire on, and the tokens its body must

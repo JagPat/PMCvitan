@@ -180,6 +180,20 @@ const REGISTER: Record<string, SealContract> = {
     // the tokens must not come back.
     forbid: ['countersign_rejection', "d.status = 'change'"],
   },
+  phase6_t4d_awaiting_paired: {
+    rule: 'the ENTRY into `awaiting_countersign` owes exactly one provisional revision born in '
+      + 'the same transaction — the converse of the birth pairing',
+    plan: '§B.4; #582 round 12, finding 6',
+    on: { 'Decision.Decision_t4d_awaiting_paired': C('U') },
+    must: ['awaiting_countersign', 'OLD."status"', "r.\"finalized\" = FALSE", 'v_born <> 1'],
+  },
+  phase6_t4d_project_is_deleting: {
+    rule: 'the project-cascade exception is bound to the FACT\'s own project — the flag is the '
+      + 'SET of projects this transaction is deleting, not a boolean',
+    plan: '§A.2 the cascade exception; #582 round 12, finding 5',
+    on: {},
+    must: ['current_setting', 'position('],
+  },
   phase6_t4d_disagreement_paired: {
     rule: 'the `awaiting_countersign → change` TRANSITION owes its open `countersign_rejection` '
       + 'request — every shape of it: reject-back, forward-on and the `returned` resolution',
@@ -229,7 +243,10 @@ const REGISTER: Record<string, SealContract> = {
       + 'revision born final under an ACTIVE chain is refused',
     plan: '§B.4',
     on: { 'DecisionApprovalRevision.DecisionApprovalRevision_t4d_birth': B('I') },
-    must: ['finalized', 'approvedFrom', 'approvedByName', 'approvedByRole', 'BLANK approval pair'],
+    // #582 round 12, finding 2 — a frozen pair is coherent, nonblank AND true of its actor; the
+    // third part is what every other pair in this unit gets from `phase6_t4d_actor_bound`.
+    must: ['finalized', 'approvedFrom', 'approvedByName', 'approvedByRole', 'BLANK approval pair',
+      'half an approval pair', 'phase6_t4d_actor_bound'],
   },
   phase6_t4d_revision_birth_paired: {
     rule: 'ONE approval births ONE revision, and a PROVISIONAL birth rides the transition that '
@@ -345,8 +362,11 @@ const REGISTER: Record<string, SealContract> = {
       // the three member commands, which makes the three interchangeable: a `members.remove`
       // receipt could back a transition INTO active. These three tokens are the per-command
       // shape rules, each unique to its arm, so the register cannot be satisfied by the set test.
-      "'members.remove' AND NEW.\"toStatus\" = 'active'",
-      "'members.add' AND NEW.\"toStatus\" <> 'active'",
+      // #582 round 12, finding 1 — and each arm is the command's WHOLE shape now, not the
+      // standing edge it owns. The tokens moved with the rules: an add's SOURCE and a removal's
+      // DESTINATION are what round 7's fix left unbound, so they are what the register pins.
+      "'members.remove' AND NEW.\"toStatus\" IS DISTINCT FROM 'removed'",
+      "NEW.\"fromStatus\" IS NOT NULL AND NEW.\"fromStatus\" <> 'removed'",
       // NOT the bare `'members.updateRole'` string: that already appears in the three-command
       // ARRAY above, so it is satisfied by the very body this token exists to reject — the
       // "a token two rules can satisfy witnesses neither" weakness rounds 3 and 5 corrected
@@ -372,7 +392,9 @@ const REGISTER: Record<string, SealContract> = {
       + 'project\'s deletion',
     plan: '§A.3 obligation 1; #572 round 12, finding 5',
     on: { 'MembershipTransition.MembershipTransition_t4d_append_only': B('D U') },
-    must: ['phase6.t4d_project_delete'],
+    // #582 round 12, finding 5 — the readers no longer test the flag's VALUE; they ask
+    // `phase6_t4d_project_is_deleting` whether THIS row's project is one of the going ones.
+    must: ['phase6_t4d_project_is_deleting'],
   },
   phase6_t4d_membership_fact_first: {
     rule: 'a member command writes its FACT before the membership — so the fact\'s live authority '
@@ -406,9 +428,11 @@ const REGISTER: Record<string, SealContract> = {
     // #582 round 10, finding 4 — and one existence test could not say "exactly one". The
     // per-receipt index bounds facts per RECEIPT, so the count is the only thing that bounds them
     // per WRITE.
+    // #582 round 12, finding 4 — and the crossing is counted per PROJECT, because that is the
+    // scope the contract states and the scope the re-notification reads.
     must: ['txid_current', '"userId" = v_user', "'architect'",
       'v_from_role', 'v_from_stat', 'v_to_role', 'v_to_stat',
-      'count(*)', 'v_match > 1'],
+      'count(*)', 'v_match > 1', 'v_flips > 1'],
   },
   phase6_t4d_membership_guard: {
     rule: 'a membership change may not orphan the named holder of an open decision',
@@ -559,7 +583,7 @@ const REGISTER: Record<string, SealContract> = {
     on: { 'ProjectEventStream.ProjectEventStream_t4d_no_delete': B('D') },
     // The flag alone stands `on` for the rest of a transaction that deleted ANY project, so a
     // direct depth-1 delete of a second project's allocator rode it. Both halves or neither.
-    must: ['phase6.t4d_project_delete', 'pg_trigger_depth'],
+    must: ['phase6_t4d_project_is_deleting', 'pg_trigger_depth'],
   },
   platform_t4d_notification_binding: {
     rule: 'a notice bound to an event freezes `eventId`, `kind`, `decisionId` and `projectId`, and '
