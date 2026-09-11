@@ -851,7 +851,11 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
           `UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='${d}', "completedAt"=now() WHERE "id"='${receipt}'`);
       }, { timeout: 30_000 });
     };
-    await expect(registerOnlyApproval()).rejects.toThrow(/does not end this transaction as an `approved` row/u);
+    // #582 round 22, the class sweep — the ARM'S SUBJECT IS UNCHANGED (a register-only approval
+    // must not commit) and the rule that refuses it now names the MOVE rather than the end state,
+    // because a no-op against an already-approved decision satisfied the state. This bundle
+    // performs no move at all, so the move-demand is what answers.
+    await expect(registerOnlyApproval()).rejects.toThrow(/no `pending`\/`change` -> `approved` transition of decision/u);
   });
 
   // ── P14 (Codex round 2, F3) ─────────────────────────────────────────────────────────────────
