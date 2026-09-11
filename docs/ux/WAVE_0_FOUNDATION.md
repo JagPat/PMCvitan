@@ -37,6 +37,20 @@ Run against current `HEAD` **at the moment the unit opens** (amended 2026-08-15:
 > computed-style pass remains F-1c's per-surface verification, not the
 > mechanism of the guarantee. The owner may override asynchronously — a
 > genuine owner reply choosing otherwise re-plans F-1b at that point.
+>
+> **Owner override (2026-09-11, JagPat design GO).** F-1b does **not**
+> introduce `components/Field.tsx` and does **not** migrate the 134
+> inline field styles. The ≥16px mobile guarantee is a stylesheet floor
+> on the **mobile shell**: `@media (width < 640px)` — the complement of
+> `BottomTabs` / `TopBar` `min-width: 640px`, so a fractional width such
+> as 639.99px is included. Do not use `max-width: 639px` or
+> `max-width: 639.98px`; both leave a band where mobile chrome is still
+> visible. Under that query every `input`, `textarea`, and `select`
+> computes to ≥16px (an `!important` author rule is accepted so the
+> floor outranks inline sizes). Desktop density stays as authored.
+> Critical labels ≥13px with weight. Every action target ≥44×44,
+> verified in a real browser. F-1c still does the computed-style pass.
+> PR #584 remains the F-1b vehicle.
 
 ---
 
@@ -94,7 +108,7 @@ Re-measure if any palette value changes. Do not assume a token passes because it
 ## Unit F-1b — mobile field and touch corrections
 
 ### Fields to 16px
-Raise all 8 field styles to `fontSize: 16` — via the shared primitive if that route was chosen above. Where desktop density genuinely suffers, scale **down** at `min-width: 640px` — never below 16px on mobile.
+**Owner override (2026-09-11).** Do not raise the eight inline field styles and do not introduce a shared `Field` primitive. The guarantee is a stylesheet floor on the mobile shell: `@media (width < 640px)` — the complement of `BottomTabs`/`TopBar` `min-width: 640px`. `max-width: 639px` and `max-width: 639.98px` both miss fractional widths below 640px (e.g. 639.99px) where those hide rules are still false and mobile chrome remains visible. Under `(width < 640px)` every `input`, `textarea`, and `select` computes to ≥16px; an `input, textarea` rule alone fails the Done-when, because the same field-style families style sub-16px selects (`ProjectSwitcher` `fld`, `ScheduleScreen` `fldS`). Desktop authored density is unchanged; do not scale desktop down. Aligning `AppShell`/`LeftRail`'s `639.98px` queries to the same `< 640px` test is in-scope for #584 if those files are touched; it is not a second unit.
 
 `EngineerChecklistScreen:150` is the most important: the fail-note input, used one-handed on site mid-inspection, today triggering an iOS zoom the user cannot undo.
 
@@ -105,7 +119,7 @@ Anything that changes what a user must **do** goes to ≥13px with real weight. 
 `DailyLogScreen:249` — the mismatch control — becomes a **44×44** button: full-width, bordered, thumb-reachable. It currently has a hit area of roughly 84 × 12 px, and it is the control that blocks wrong material reaching the wall.
 Audit every action target against the 44×44 floor in the same pass.
 
-**Done when:** all 8 field styles ≥16px on mobile (verified by computed style, or by source if the primitive was introduced); no safety- or evidence-critical text below 13px; every action target ≥44×44; iOS Safari focuses every field without zooming.
+**Done when:** every `input`, `textarea`, and `select` is ≥16px on the mobile shell (`@media (width < 640px)`, verified by computed style, including a fractional width such as 639.99px); no safety- or evidence-critical text below 13px; every action target ≥44×44; iOS Safari focuses every field without zooming. Desktop density is unchanged.
 
 ---
 
