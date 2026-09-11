@@ -92,9 +92,21 @@ export const EXTERNAL_EFFECTS = {
   'decision.consultation_requested': { eventType: 'decision.consultation_requested', invalidate: true, push: ['pmc', 'client', 'contractor', 'engineer', 'consultant'], pushFamily: 'consultation_requested' },
   'decision.consultation_responded': { eventType: 'decision.consultation_responded', invalidate: true, push: ['pmc'], pushFamily: 'consultation_responded' },
   // ── activities ─────────────────────────────────────────────────────────────────────────────
-  // `pushOptional`: the activities PARTICIPANT initialises an activity for a foreign command
-  // and announces nothing (`activity.participant.ts`, the `init` emit).
-  'activity.created': { eventType: 'activity.created', invalidate: true, push: ['engineer', 'contractor'], pushOptional: true },
+  // TWO PRODUCERS, TWO KEYS (#582 review round 13, finding 3). These were one key carrying
+  // `pushOptional`, and that flag is not a description — it sets the SEALED `requiresPush` the
+  // envelope seal enforces. One key meant the exemption written for the silent producer also
+  // released the announcing one: `ActivitiesService.create` always supplies "Schedule updated…",
+  // but with `requiresPush = false` a regressed or forged bundle could omit `dispatch.push`
+  // entirely, satisfy `DomainEvent_t4d_envelope`, and suppress the announcement in silence.
+  //
+  // The obligation is per KEY, so producers that owe different obligations need different keys.
+  // Both still carry the same `eventType`: the projection and every consumer read `eventType`,
+  // and nothing about the activity that was created differs — only who owes an announcement.
+  'activity.created': { eventType: 'activity.created', invalidate: true, push: ['engineer', 'contractor'] },
+  // the activities PARTICIPANT initialising an activity for a foreign command — announces nothing
+  // (`activity.participant.ts`, the `init` emit), so it may not push at all rather than merely
+  // being excused from pushing.
+  'activity.created.init': { eventType: 'activity.created', invalidate: true, push: null },
   'activity.updated': { eventType: 'activity.updated', invalidate: true, push: null },
   'activity.deleted': { eventType: 'activity.deleted', invalidate: true, push: null },
   'activity.started': { eventType: 'activity.started', invalidate: true, push: null },

@@ -1829,7 +1829,33 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       'a wrong row at an OUTGOING coverage key must REFUSE the apply too — the drain depends on '
       + 'that generation being the compiled definition',
     ).toBe(false);
-    expect(outgoing.output).toMatch(/already exist at an OUTGOING coverage key this migration seeds and DISAGREE/);
+    // #582 round 13 — the message is now the SHARED one, because there is now one audit rather
+    // than two. The probe asserts the generation in the named pair instead of a per-generation
+    // sentence, so it cannot pass against an audit that only looks at the incoming keys.
+    expect(outgoing.output).toMatch(/already exist at a key this migration seeds and DISAGREE with the compiled catalog/);
+    expect(outgoing.output).toContain(OUTGOING);
+
+    // #582 round 13, finding 1 — AN EXTRA KEY. The audit was an inner JOIN, so it judged the
+    // INTERSECTION of the catalog and the compiled set: a constraint-valid row at a key this
+    // release never compiled matched nothing, survived, and was sealed. The envelope seal then
+    // resolves a direct event against it — an invented event type with an invented dispatch
+    // policy — because nothing ever asked whether the generation held keys the compiled set does
+    // not.
+    expect(psql(RUN_DB, ['-c', `
+      DELETE FROM "ExternalEffectCatalog";
+      INSERT INTO "ExternalEffectCatalog"
+        ("coverageVersion","effectKey","eventType","invalidate","pushRoles","pushFamily","frozenAudience","requiresPush","audience","pushBody","pairingRequired")
+      VALUES ('${COVERAGE}', 'forged.key', 'forged.key', false, NULL, NULL, false, false, NULL, NULL, false);
+    `]).ok).toBe(true);
+    const extra = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(
+      extra.ok,
+      'an UNCOMPILED key in a seeded generation must REFUSE the apply — an inner join judges the '
+      + 'intersection and a row outside it is a working event nobody wrote',
+    ).toBe(false);
+    expect(extra.output).toMatch(/under a key this release never compiled/);
+    expect(extra.output).toContain('forged.key');
+
 
     // and once removed, BOTH generations are seeded from the literal — the amplification round 8
     // introduced is gone, so the outgoing generation cannot inherit a row the literal never said.
@@ -1840,6 +1866,30 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       `SELECT count(DISTINCT "coverageVersion") || ':' || count(*) FROM "ExternalEffectCatalog"
         WHERE "effectKey" = 'decision.approved' AND "invalidate" = true`]);
     expect(gens.output.trim(), 'both generations must carry the LITERAL definition').toBe('2:2');
+
+    // #582 round 13, finding 6 — AND A COLUMN THE COMPARISON DID NOT NAME. The tuple listed nine
+    // definition columns and omitted `retiredAt`, so an otherwise perfect row carrying a
+    // retirement stamp passed, survived `ON CONFLICT DO NOTHING`, and made the envelope seal
+    // refuse every ordinary event at that key from this migration's commit onward. Retirement is
+    // 4d-iii's act; before it, a stamp is always wrong.
+    //
+    // The row is stamped on a GENUINELY SEEDED one rather than transcribed here: hand-writing the
+    // other nine columns is the same projection mistake this finding is about, and the first
+    // version of this probe proved it by tripping the DISAGREEMENT arm instead.
+    expect(psql(RUN_DB, ['-c', `
+      BEGIN;
+      SET LOCAL vitan.phase6_4d_catalog = 'on';
+      UPDATE "ExternalEffectCatalog" SET "retiredAt" = CURRENT_TIMESTAMP
+       WHERE "effectKey" = 'decision.approved' AND "coverageVersion" = '${COVERAGE}';
+      COMMIT;
+    `]).ok).toBe(true);
+    const retired = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(
+      retired.ok,
+      'a PRE-RETIRED row in a seeded generation must REFUSE the apply — nine of ten columns is a '
+      + 'projection of the row, and the tenth closes the key',
+    ).toBe(false);
+    expect(retired.output).toMatch(/already stamped retired/);
   }, 300_000);
 
   /**

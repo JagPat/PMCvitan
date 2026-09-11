@@ -147,6 +147,19 @@ A and hard-delete a membership in a surviving project B, and B's permanent evide
 cascade. The flag is an accumulating set of ids now, and both of its readers — the finding named
 one — ask whether this row's project is in it.
 
+**Round 13 is folded — six P1s on `37ffe855`, and five are again my own fixes.** One level deeper
+than round 12: not the sites a rule reaches, nor the dimensions it has, but what the CHECK ITSELF
+discards. An inner join judges the intersection and lets an uncompiled key through; a nine-column
+tuple judges nine of ten and lets a retirement stamp through; a count says how many rows there are
+and nothing about what is in the one it admits; and the birth seal bound a revision's value, its
+pairing and its count while leaving its POSITION free, so a version below the maximum parks a
+decision no finalizer can reach. The two catalog audits are one total audit now, over a seed table
+that carries both generations.
+
+Finding 3 cost more than it looks: splitting the over-broad `activity.created` push exemption adds
+a catalog key, which ends the identical-catalog licence the outgoing generation's row copy rested
+on. The outgoing generation is now seeded with a DECLARED divergence naming the key it bends.
+
 The oracle is `test/integration/phase6-t4d-i-seal-contract.test.ts`: every trigger function the
 unit installs carries a register entry naming its rule, the plan location that states it, the
 operations and timing every installing trigger must fire on, and the tokens its body must

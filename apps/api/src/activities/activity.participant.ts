@@ -426,7 +426,7 @@ export class ActivityParticipant {
     emitCtx: { projectId: string; actor: Actor },
   ): Promise<{ id: string }> {
     const created = await tx.activity.create(args);
-    await emitEvent(tx, { projectId: emitCtx.projectId, actor: emitCtx.actor, eventType: 'activity.created', entityType: 'Activity', entityId: created.id, payload: { init: true }, effectKey: 'activity.created', dispatch: {} });
+    await emitEvent(tx, { projectId: emitCtx.projectId, actor: emitCtx.actor, eventType: 'activity.created', entityType: 'Activity', entityId: created.id, payload: { init: true }, effectKey: 'activity.created.init', dispatch: {} });
     return created;
   }
 

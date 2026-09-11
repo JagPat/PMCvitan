@@ -6642,6 +6642,35 @@ today's behaviour lives.
     one-crossing control, the converse-direction arm on the awaiting entry, and the
     outgoing generation folded into the catalog-conflict probe.
 
+    **ROUND 13 — I VERIFIED A PROJECTION AND CLAIMED THE OBJECT** (#582's review round 13,
+    findings 1-6). Five of six are again insufficiencies in my own recent fixes, and the shape is
+    one step deeper than round 12's dimensions:
+
+    | the check | what it actually judged | what the rule is about |
+    |---|---|---|
+    | catalog audit: a JOIN | the INTERSECTION of catalog and compiled set | every row in the generation |
+    | catalog audit: a 9-column tuple | the nine columns named | the whole row, `retiredAt` included |
+    | awaiting-entry: a COUNT | how many provisional revisions | what is IN the one it admits |
+    | revision birth: value, pairing, count | that a head exists | that it is the NEXT head |
+
+    **An inner join is a projection of the row set; a column list is a projection of the row; a
+    count is a projection of the rows.** Each of these checks discarded exactly the information
+    the rule needed and then reported success. Round 10 learned "counted, not found"; round 12
+    learned "one dimension of several"; this is the same error at the level of the CHECK'S OWN
+    SHAPE — before asking whether a check covers every site or every dimension, ask what the check
+    throws away.
+
+    The two catalog audits are now ONE total audit over `_t4d_catalog_seed`, which carries the
+    compiled expectation for BOTH generations; a second audit block was a second chance to
+    diverge, and it had already diverged. The outgoing generation is no longer a blanket copy
+    either: splitting `activity.created` (finding 3) ends the identical-catalog licence the copy
+    rested on, so the divergence is DECLARED at the seed with the key it bends and why, and
+    `licences the row copy` still re-derives the rest of the equality from source.
+
+    Finding 2 is the one-site habit again: round 2's finding 10 established marker-aware
+    replacement for the correspondence trigger and I applied it there and nowhere else, leaving
+    the 4c consultation widening to overwrite its own post-retirement body on a mature replay.
+
     P28b's replay arm gains BOTH: the
     4d-i migration re-run against a post-4d-iii database, with the architect
     consultation request COMMITTING afterwards, RED against the unconditional

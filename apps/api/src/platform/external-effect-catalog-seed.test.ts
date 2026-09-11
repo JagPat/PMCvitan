@@ -49,8 +49,13 @@ function seededRows(): Row[] {
   // what the compiled catalog says, and the seed is the VALUES list wherever it lands.
   const start = sql.indexOf('INSERT INTO "_t4d_catalog_seed"');
   expect(start, 'the migration must carry the catalog seed literal').toBeGreaterThan(-1);
-  const end = sql.indexOf('-- ANY ROW ALREADY AT ONE OF THESE KEYS', start);
-  expect(end, 'the seed literal must be followed by its conflict audit').toBeGreaterThan(start);
+  // #582 round 13 — the end anchor is the literal's own TERMINATOR, not the prose that used to
+  // follow it. This parser pinned the audit's opening COMMENT, so rewording that comment (which
+  // round 13 did, making the audit total) silently detached the parser from the literal and it
+  // read nothing. A tripwire that depends on the wording of a sentence is not a tripwire; the
+  // statement's closing `;` at the start of a line is a fact about the SQL.
+  const end = sql.indexOf('\n;', start);
+  expect(end, 'the seed literal must be terminated').toBeGreaterThan(start);
 
   const rows: Row[] = [];
   // Eleven columns since Codex round 1 (findings 4 and 5): the key gained `coverageVersion` and

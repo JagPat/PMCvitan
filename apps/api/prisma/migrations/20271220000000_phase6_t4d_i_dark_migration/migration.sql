@@ -2195,17 +2195,30 @@ CREATE CONSTRAINT TRIGGER "DecisionStrandedResolution_t4d_paired"
 -- revision seal already refuses a second provisional head, and demanding exactly one here means
 -- neither direction can be satisfied by a number the other would refuse.
 CREATE OR REPLACE FUNCTION phase6_t4d_awaiting_paired() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_born BIGINT;
+DECLARE v_born BIGINT; v_from TEXT;
 BEGIN
   IF NEW."status"::text <> 'awaiting_countersign'
      OR OLD."status"::text = 'awaiting_countersign' THEN
     RETURN NULL;
   END IF;
 
-  SELECT count(*) INTO v_born FROM "DecisionApprovalRevision" r
+  -- COUNTED AND THEN READ (#582 round 13, finding 4). Round 12 counted the provisional births and
+  -- stopped there, which is the same shape as round 10's "found, not counted" one level along: a
+  -- count settles HOW MANY rows there are and says nothing about WHAT IS IN THEM. The row this
+  -- count admits carries `approvedFrom`, the discriminator its finalizer reads to decide between
+  -- `decision.approved` and `decision.reapproved` — so a receipt-backed `pending -> awaiting_countersign`
+  -- bundle could store `approvedFrom = 'change'`, satisfy every seal in this file, and make the
+  -- countersign announce a REAPPROVAL of a decision that had never been approved once.
+  SELECT count(*), min(r."approvedFrom") INTO v_born, v_from
+    FROM "DecisionApprovalRevision" r
    WHERE r."projectId" = NEW."projectId" AND r."decisionId" = NEW."id"
      AND r."finalized" = FALSE
      AND r."xmin" = txid_current()::text::xid;
+  IF v_born = 1 AND v_from IS DISTINCT FROM OLD."status"::text THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: decision % entered `awaiting_countersign` FROM `%` but its provisional revision records `approvedFrom = %` — the discriminator is what the countersign and the stranded resolution read to choose between `decision.approved` and `decision.reapproved`, so a revision that misreports its own source makes the finalizer announce an act that never happened',
+      NEW."id", OLD."status", COALESCE(v_from, '<null>');
+  END IF;
   IF v_born <> 1 THEN
     RAISE EXCEPTION
       'phase6 4d-i: decision % entered `awaiting_countersign` in this transaction with % PROVISIONAL revisions born here — the state IS a parked approval, so the act that enters it writes exactly one, and a decision parked with none can never be finalized: both the countersign and the stranded resolution act on a provisional head that does not exist',
@@ -3330,123 +3343,188 @@ CREATE TEMP TABLE "_t4d_catalog_seed" (
 ) ON COMMIT DROP;
 
 INSERT INTO "_t4d_catalog_seed" ("coverageVersion", "effectKey", "eventType", "invalidate", "pushRoles", "pushFamily", "frozenAudience", "requiresPush", "audience", "pushBody", "pairingRequired") VALUES
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.completion_requested', 'activity.completion_requested', true, '["pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.created', 'activity.created', true, '["contractor","engineer"]'::jsonb, NULL, false, false, 'broadcast', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.deleted', 'activity.deleted', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.labour_blocked', 'activity.labour_blocked', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.labour_unblocked', 'activity.labour_unblocked', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.material_blocked', 'activity.material_blocked', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.material_unblocked', 'activity.material_unblocked', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.override_granted', 'activity.override_granted', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.override_revoked', 'activity.override_revoked', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.signed_off', 'activity.signed_off', true, '["client","contractor"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.signoff_rejected', 'activity.signoff_rejected', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.started', 'activity.started', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.unfiled', 'activity.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity.updated', 'activity.updated', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'activity_output.recorded', 'activity_output.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'allocation.made', 'allocation.made', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'allocation.released', 'allocation.released', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'attendance.recorded', 'attendance.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'attendance.revoked', 'attendance.revoked', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'capacity.committed', 'capacity.committed', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'capacity.defaulted', 'capacity.defaulted', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'capacity.revised', 'capacity.revised', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'commercial.money_moved', 'commercial.money_moved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'comparison.approved', 'comparison.approved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'dailylog.started', 'dailylog.started', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'dailylog.submitted', 'dailylog.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.approved', 'decision.approved', true, '["contractor","engineer","pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.change_requested', 'decision.change_requested', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.change_withdrawn', 'decision.change_withdrawn', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.consultation_requested', 'decision.consultation_requested', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'consultation_requested', false, true, 'targeted', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.consultation_responded', 'decision.consultation_responded', true, '["pmc"]'::jsonb, 'consultation_responded', false, true, 'targeted', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.drafted', 'decision.drafted', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.published', 'decision.published', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'decider', false, false, 'targeted', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.reapproved', 'decision.reapproved', true, '["contractor","engineer","pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'decision.withdrawn', 'decision.withdrawn', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'delivery.committed', 'delivery.committed', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'delivery.defaulted', 'delivery.defaulted', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'delivery.fulfilled', 'delivery.fulfilled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'delivery.revised', 'delivery.revised', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.acknowledged', 'drawing.acknowledged', true, '["pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.activity_unlinked', 'drawing.activity_unlinked', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.issued', 'drawing.issued', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.issued_draft', 'drawing.issued', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.published', 'drawing.published', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.recipients_frozen', 'drawing.recipients_frozen', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.refiled', 'drawing.refiled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.removed', 'drawing.removed', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.revised', 'drawing.revised', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.revised_draft', 'drawing.revised', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'drawing.unfiled', 'drawing.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.approved', 'inspection.approved', true, '["client","contractor"]'::jsonb, NULL, false, false, 'broadcast', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.closing_created', 'inspection.closing_created', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.created', 'inspection.created', true, '["engineer"]'::jsonb, NULL, false, false, 'broadcast', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.evidence_added', 'inspection.evidence_added', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.evidence_removed', 'inspection.evidence_removed', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.reinspection_created', 'inspection.reinspection_created', true, '["engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.rejected', 'inspection.rejected', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.relabeled', 'inspection.relabeled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.submitted', 'inspection.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'inspection.unfiled', 'inspection.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'issue.recorded', 'issue.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour.comparison.approved', 'labour.comparison.approved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour.po.amended', 'labour.po.amended', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour.po.cancelled', 'labour.po.cancelled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour.po.closed_short', 'labour.po.closed_short', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour.po.issued', 'labour.po.issued', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour.requisition.approved', 'labour.requisition.approved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour.requisition.submitted', 'labour.requisition.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour_mismatch.recorded', 'labour_mismatch.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour_mismatch.resolved', 'labour_mismatch.resolved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'labour_work.recorded', 'labour_work.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'material.added', 'material.added', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'material.mismatch_flagged', 'material.mismatch_flagged', true, '["contractor","pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'material.unfiled', 'material.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'media.refiled', 'media.refiled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'media.removed', 'media.removed', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'media.uploaded', 'media.uploaded', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'membership.added', 'membership.added', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'membership.discipline_changed', 'membership.discipline_changed', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'membership.removed', 'membership.removed', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'membership.role_changed', 'membership.role_changed', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'mismatch.resolved', 'mismatch.resolved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'node.created', 'node.created', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'node.moved', 'node.moved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'node.published', 'node.published', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'node.removed', 'node.removed', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'node.renamed', 'node.renamed', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'phase.created', 'phase.created', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'phase.removed', 'phase.removed', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'po.amended', 'po.amended', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'po.cancelled', 'po.cancelled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'po.closed_short', 'po.closed_short', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'po.issued', 'po.issued', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'project.archived', 'project.archived', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'project.created', 'project.created', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'project.restored', 'project.restored', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'project.updated', 'project.updated', false, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'requirement.cancelled', 'requirement.cancelled', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'requirement.created', 'requirement.created', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'requirement.revised', 'requirement.revised', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'requisition.approved', 'requisition.approved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'requisition.submitted', 'requisition.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'skill_substitution.approved', 'skill_substitution.approved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'skill_substitution.revoked', 'skill_substitution.revoked', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'stock.transacted', 'stock.transacted', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'substitution.approved', 'substitution.approved', true, NULL, NULL, false, false, NULL, NULL, false),
-  ('b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61', 'substitution.revoked', 'substitution.revoked', true, NULL, NULL, false, false, NULL, NULL, false)
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'activity.completion_requested', 'activity.completion_requested', true, '["pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'activity.created', 'activity.created', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'activity.created.init', 'activity.created', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'activity.deleted', 'activity.deleted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'activity.labour_blocked', 'activity.labour_blocked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'activity.labour_unblocked', 'activity.labour_unblocked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'activity.material_blocked', 'activity.material_blocked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'activity.material_unblocked', 'activity.material_unblocked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'activity.override_granted', 'activity.override_granted', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'activity.override_revoked', 'activity.override_revoked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'activity.signed_off', 'activity.signed_off', true, '["client","contractor"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'activity.signoff_rejected', 'activity.signoff_rejected', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'activity.started', 'activity.started', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'activity.unfiled', 'activity.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'activity.updated', 'activity.updated', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'activity_output.recorded', 'activity_output.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'allocation.made', 'allocation.made', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'allocation.released', 'allocation.released', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'attendance.recorded', 'attendance.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'attendance.revoked', 'attendance.revoked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'capacity.committed', 'capacity.committed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'capacity.defaulted', 'capacity.defaulted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'capacity.revised', 'capacity.revised', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'commercial.money_moved', 'commercial.money_moved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'comparison.approved', 'comparison.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'dailylog.started', 'dailylog.started', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'dailylog.submitted', 'dailylog.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'decision.approved', 'decision.approved', true, '["contractor","engineer","pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'decision.change_requested', 'decision.change_requested', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'decision.change_withdrawn', 'decision.change_withdrawn', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'decision.consultation_requested', 'decision.consultation_requested', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'consultation_requested', false, true, 'targeted', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'decision.consultation_responded', 'decision.consultation_responded', true, '["pmc"]'::jsonb, 'consultation_responded', false, true, 'targeted', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'decision.drafted', 'decision.drafted', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'decision.published', 'decision.published', true, '["client","consultant","contractor","engineer","pmc"]'::jsonb, 'decider', false, false, 'targeted', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'decision.reapproved', 'decision.reapproved', true, '["contractor","engineer","pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'decision.withdrawn', 'decision.withdrawn', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'delivery.committed', 'delivery.committed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'delivery.defaulted', 'delivery.defaulted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'delivery.fulfilled', 'delivery.fulfilled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'delivery.revised', 'delivery.revised', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'drawing.acknowledged', 'drawing.acknowledged', true, '["pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'drawing.activity_unlinked', 'drawing.activity_unlinked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'drawing.issued', 'drawing.issued', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'drawing.issued_draft', 'drawing.issued', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'drawing.published', 'drawing.published', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'drawing.recipients_frozen', 'drawing.recipients_frozen', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'drawing.refiled', 'drawing.refiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'drawing.removed', 'drawing.removed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'drawing.revised', 'drawing.revised', true, '["contractor","engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'drawing.revised_draft', 'drawing.revised', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'drawing.unfiled', 'drawing.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'inspection.approved', 'inspection.approved', true, '["client","contractor"]'::jsonb, NULL, false, false, 'broadcast', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'inspection.closing_created', 'inspection.closing_created', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'inspection.created', 'inspection.created', true, '["engineer"]'::jsonb, NULL, false, false, 'broadcast', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'inspection.evidence_added', 'inspection.evidence_added', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'inspection.evidence_removed', 'inspection.evidence_removed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'inspection.reinspection_created', 'inspection.reinspection_created', true, '["engineer"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'inspection.rejected', 'inspection.rejected', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'inspection.relabeled', 'inspection.relabeled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'inspection.submitted', 'inspection.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'inspection.unfiled', 'inspection.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'issue.recorded', 'issue.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'labour.comparison.approved', 'labour.comparison.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'labour.po.amended', 'labour.po.amended', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'labour.po.cancelled', 'labour.po.cancelled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'labour.po.closed_short', 'labour.po.closed_short', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'labour.po.issued', 'labour.po.issued', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'labour.requisition.approved', 'labour.requisition.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'labour.requisition.submitted', 'labour.requisition.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'labour_mismatch.recorded', 'labour_mismatch.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'labour_mismatch.resolved', 'labour_mismatch.resolved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'labour_work.recorded', 'labour_work.recorded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'material.added', 'material.added', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'material.mismatch_flagged', 'material.mismatch_flagged', true, '["contractor","pmc"]'::jsonb, NULL, false, true, 'broadcast', NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'material.unfiled', 'material.unfiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'media.refiled', 'media.refiled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'media.removed', 'media.removed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'media.uploaded', 'media.uploaded', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'membership.added', 'membership.added', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'membership.discipline_changed', 'membership.discipline_changed', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'membership.removed', 'membership.removed', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'membership.role_changed', 'membership.role_changed', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'mismatch.resolved', 'mismatch.resolved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'node.created', 'node.created', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'node.moved', 'node.moved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'node.published', 'node.published', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'node.removed', 'node.removed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'node.renamed', 'node.renamed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'phase.created', 'phase.created', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'phase.removed', 'phase.removed', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'po.amended', 'po.amended', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'po.cancelled', 'po.cancelled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'po.closed_short', 'po.closed_short', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'po.issued', 'po.issued', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'project.archived', 'project.archived', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'project.created', 'project.created', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'project.restored', 'project.restored', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'project.updated', 'project.updated', false, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'requirement.cancelled', 'requirement.cancelled', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'requirement.created', 'requirement.created', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'requirement.revised', 'requirement.revised', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'requisition.approved', 'requisition.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'requisition.submitted', 'requisition.submitted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'skill_substitution.approved', 'skill_substitution.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'skill_substitution.revoked', 'skill_substitution.revoked', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'stock.transacted', 'stock.transacted', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'substitution.approved', 'substitution.approved', true, NULL, NULL, false, false, NULL, NULL, false),
+  ('cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4', 'substitution.revoked', 'substitution.revoked', true, NULL, NULL, false, false, NULL, NULL, false)
 ;
 
--- ANY ROW ALREADY AT ONE OF THESE KEYS MUST SAY WHAT THE LITERAL SAYS. A disagreement is not
--- something to overwrite — the catalog is frozen and a definition changes by a NEW coverage
--- version, never in place — so the apply REFUSES and names the columns that differ.
+-- THE OUTGOING GENERATION IS PART OF THE COMPILED EXPECTATION, not a copy made after the audit
+-- (#582 round 13). Round 12 audited it in a second block of its own; a second block is a second
+-- chance to diverge, and it diverged immediately — it inherited the JOIN and the nine columns.
+-- Materialising it into `_t4d_catalog_seed` means ONE audit and ONE insert cover both generations
+-- and a third generation would be covered the day it is added.
+-- AND IT IS NO LONGER A BLANKET COPY (#582 round 13, finding 3). Until this round the two
+-- generations declared an identical catalog and the copy was licensed by exactly that fact.
+-- Splitting `activity.created` ended it: the previous release has ONE key there, carrying the
+-- push exemption, and this release has two — `activity.created` which now OWES its announcement
+-- and `activity.created.init` which may not push at all. The outgoing generation must therefore
+-- be the PREVIOUS release's catalog, not this one's, or a still-serving previous-release process
+-- would be judged against an obligation its own code does not know about and every ordinary
+-- `activity.created` it emits would be refused for the whole drain.
+--
+-- The divergence is DECLARED here rather than discovered: two lines, each naming the key it bends
+-- and why. `licences the row copy` in the catalog-generations suite re-derives the rest of the
+-- equality from source on every run, so anything that diverges WITHOUT being declared here still
+-- goes red.
+INSERT INTO "_t4d_catalog_seed" ("coverageVersion", "effectKey", "eventType", "invalidate", "pushRoles", "pushFamily", "frozenAudience", "requiresPush", "audience", "pushBody", "pairingRequired")
+SELECT '6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7',
+       c."effectKey", c."eventType", c."invalidate", c."pushRoles", c."pushFamily", c."frozenAudience",
+       -- DIVERGENCE 1: the previous release computes `requiresPush = false` here, because its
+       -- single `activity.created` carries `pushOptional` for the silent participant emit.
+       CASE WHEN c."effectKey" = 'activity.created' THEN FALSE ELSE c."requiresPush" END,
+       c."audience", c."pushBody", c."pairingRequired"
+  FROM "_t4d_catalog_seed" c
+ WHERE c."coverageVersion" = 'cd32f183774d5741715f3fac2ee3186040b52b9cf7494a09d318c0a5f19cd3f4'
+   -- DIVERGENCE 2: the previous release has no separate key for the silent producer.
+   AND c."effectKey" <> 'activity.created.init';
+
+-- THE AUDIT IS TOTAL, AND UNTIL #582 ROUND 13 IT WAS A PROJECTION OF ITSELF (findings 1 and 6).
+--
+-- Round 9 wrote this as an inner JOIN over nine definition columns. Both halves of that shape
+-- lose information, and each loss is a live hole on the supported `db push` / P3005 baseline:
+--
+--   * a JOIN judges the INTERSECTION. A constraint-valid row at a key this release never
+--     compiled is in the catalog and in no join result, so it survives, is sealed, and
+--     `platform_t4d_event_envelope` will then resolve a direct event against it — an invented
+--     event type with an invented dispatch policy, admitted because nothing ever asked whether
+--     the generation held keys the compiled set does not.
+--   * nine columns judged of a ten-column row. `retiredAt` was not compared, so an otherwise
+--     perfect row carrying a retirement stamp survives and every ordinary event at that key is
+--     refused as retired from this migration's commit onward.
+--
+-- So the audit now asks all three questions a total audit has to ask — are there EXTRA keys, do
+-- the shared keys AGREE, and is anything already RETIRED — over every generation this migration
+-- seeds, reading the expectation from `_t4d_catalog_seed` rather than from one literal. The
+-- retirement arm is marker-aware: before 4d-iii a stamp is always wrong, and on a replay after it
+-- a legitimate stamp must survive.
 DO $catalog_audit$
-DECLARE v_bad BIGINT; v_sample TEXT;
+DECLARE
+  v_extra BIGINT; v_extra_s TEXT;
+  v_bad   BIGINT; v_bad_s   TEXT;
+  v_ret   BIGINT; v_ret_s   TEXT;
 BEGIN
-  SELECT count(*), string_agg(format('(%s, %s)', c."coverageVersion", c."effectKey"), ', ' ORDER BY c."effectKey")
-    INTO v_bad, v_sample
+  -- (1) EXTRAS — a key present in a seeded generation that this release did not compile.
+  SELECT count(*), COALESCE(left(string_agg(format('(%s, %s)', x."coverageVersion", x."effectKey"), ', ' ORDER BY x."effectKey"), 200), '')
+    INTO v_extra, v_extra_s
+    FROM "ExternalEffectCatalog" x
+   WHERE x."coverageVersion" IN (SELECT DISTINCT t."coverageVersion" FROM "_t4d_catalog_seed" t)
+     AND NOT EXISTS (
+       SELECT 1 FROM "_t4d_catalog_seed" t
+        WHERE t."coverageVersion" = x."coverageVersion" AND t."effectKey" = x."effectKey");
+  IF v_extra > 0 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i ABORT: % "ExternalEffectCatalog" row(s) sit in a coverage generation this migration seeds under a key this release never compiled — %. The envelope seal resolves an event by (coverageVersion, effectKey) alone, so an uncompiled row is a working event type with a dispatch policy nobody wrote. A generation holds exactly the keys its release compiled: remove these rows before this migration adopts the catalog.',
+      v_extra, v_extra_s;
+  END IF;
+
+  -- (2) DISAGREEMENT — a shared key whose definition is not the compiled one.
+  SELECT count(*), COALESCE(left(string_agg(format('(%s, %s)', c."coverageVersion", c."effectKey"), ', ' ORDER BY c."effectKey"), 200), '')
+    INTO v_bad, v_bad_s
     FROM "_t4d_catalog_seed" t
     JOIN "ExternalEffectCatalog" c
       ON c."coverageVersion" = t."coverageVersion" AND c."effectKey" = t."effectKey"
@@ -3458,10 +3536,26 @@ BEGIN
   IF v_bad > 0 THEN
     RAISE EXCEPTION
       'phase6 4d-i ABORT: % "ExternalEffectCatalog" row(s) already exist at a key this migration seeds and DISAGREE with the compiled catalog — %. The seals about to be installed read these rows to decide what an event may invalidate, push and claim, so adopting a definition this release did not compute would refuse valid events or admit silent ones. A definition changes by a NEW coverage version, never in place: reconcile or remove the conflicting rows before this migration adopts the catalog.',
-      v_bad, v_sample;
+      v_bad, v_bad_s;
+  END IF;
+
+  -- (3) PRE-RETIRED — a stamp on a generation this migration is still seeding.
+  IF NOT phase6_t4d_retired_at_start() THEN
+    SELECT count(*), COALESCE(left(string_agg(format('(%s, %s)', c."coverageVersion", c."effectKey"), ', ' ORDER BY c."effectKey"), 200), '')
+      INTO v_ret, v_ret_s
+      FROM "_t4d_catalog_seed" t
+      JOIN "ExternalEffectCatalog" c
+        ON c."coverageVersion" = t."coverageVersion" AND c."effectKey" = t."effectKey"
+     WHERE c."retiredAt" IS NOT NULL;
+    IF v_ret > 0 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i ABORT: % "ExternalEffectCatalog" row(s) in a generation this migration seeds are already stamped retired — %. Retirement is 4d-iii''s act and `RolloutRetirement` does not carry this unit, so these stamps pre-date the retirement that licenses them: the envelope seal refuses every ordinary event at a retired key, so adopting them would close keys this release still serves. Clear the stamps before this migration adopts the catalog.',
+        v_ret, v_ret_s;
+    END IF;
   END IF;
 END $catalog_audit$;
 
+-- ONE insert, every seeded generation — the seed table is now the whole expectation.
 INSERT INTO "ExternalEffectCatalog" ("coverageVersion", "effectKey", "eventType", "invalidate", "pushRoles", "pushFamily", "frozenAudience", "requiresPush", "audience", "pushBody", "pairingRequired")
 SELECT "coverageVersion", "effectKey", "eventType", "invalidate", "pushRoles", "pushFamily",
        "frozenAudience", "requiresPush", "audience", "pushBody", "pairingRequired"
@@ -3505,38 +3599,7 @@ ON CONFLICT ("coverageVersion", "effectKey") DO NOTHING;
 -- Same rule, same shape, the other generation: compare before adopting, and REFUSE rather than
 -- keep. The sweep is the point — round 9 wrote "a definition changes by a new coverage version,
 -- never in place, so adoption was never the right verb" and then left adoption in place here.
-DO $outgoing_audit$
-DECLARE v_bad BIGINT; v_sample TEXT;
-BEGIN
-  SELECT count(*), COALESCE(left(string_agg(x."effectKey", ', ' ORDER BY x."effectKey"), 160), '')
-    INTO v_bad, v_sample
-    FROM "ExternalEffectCatalog" x
-    JOIN "_t4d_catalog_seed" c ON c."effectKey" = x."effectKey"
-   WHERE x."coverageVersion" = '6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7'
-     AND c."coverageVersion" = 'b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61'
-     AND (x."eventType" IS DISTINCT FROM c."eventType"
-          OR x."invalidate" IS DISTINCT FROM c."invalidate"
-          OR x."pushRoles" IS DISTINCT FROM c."pushRoles"
-          OR x."pushFamily" IS DISTINCT FROM c."pushFamily"
-          OR x."frozenAudience" IS DISTINCT FROM c."frozenAudience"
-          OR x."requiresPush" IS DISTINCT FROM c."requiresPush"
-          OR x."audience" IS DISTINCT FROM c."audience"
-          OR x."pushBody" IS DISTINCT FROM c."pushBody"
-          OR x."pairingRequired" IS DISTINCT FROM c."pairingRequired");
-  IF v_bad > 0 THEN
-    RAISE EXCEPTION
-      'phase6 4d-i ABORT: % row(s) already exist at an OUTGOING coverage key this migration seeds and DISAGREE with the compiled catalog — %. The outgoing generation is what keeps a still-serving previous release resolvable through the drain, so adopting a row that already contradicts the definition would refuse that release''s ordinary events (or admit a forged intent that matches the bad row). Remove the disagreeing rows before this migration seeds the generation.',
-      v_bad, v_sample;
-  END IF;
-END $outgoing_audit$;
-
-INSERT INTO "ExternalEffectCatalog" ("coverageVersion", "effectKey", "eventType", "invalidate", "pushRoles", "pushFamily", "frozenAudience", "requiresPush", "audience", "pushBody", "pairingRequired")
-SELECT '6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7',
-       c."effectKey", c."eventType", c."invalidate", c."pushRoles", c."pushFamily",
-       c."frozenAudience", c."requiresPush", c."audience", c."pushBody", c."pairingRequired"
-  FROM "_t4d_catalog_seed" c
- WHERE c."coverageVersion" = 'b731a407835f7a9ff0cbc1d375a31930a55c9ef5c83c356b528fa0e1afec0f61'
-ON CONFLICT ("coverageVersion", "effectKey") DO NOTHING;
+-- (the outgoing audit and its separate insert are folded into the total audit above.)
 
 SELECT set_config('vitan.phase6_4d_catalog', 'off', true);
 
@@ -4378,9 +4441,26 @@ END $$;
 -- delivered body has changed since would silently revert that change, so the migration asserts
 -- the body it is about to overwrite is the one it was written against and ABORTS otherwise --
 -- the same claim the repository's `t3c seals` preflight makes about function-BODY identity.
+--
+-- BOTH THE PIN AND THE REPLACEMENT ARE MARKER-AWARE (#582 round 13, finding 2). Round 2's finding
+-- 10 established this rule for the correspondence trigger and I applied it there and nowhere else
+-- — the same one-site habit round 12 named. On the supported P3005 replay of a MATURE database,
+-- `RolloutRetirement` already carries phase6-4d and 4d-iii has already replaced this seal with its
+-- post-retirement body; an unconditional `CREATE OR REPLACE` here overwrites that body with the
+-- window body, whose requester check calls `phase6_user_decision_authority` — a predicate that
+-- refuses an explicit `architect` membership, while the post-retirement service admits architects
+-- through the platform standing register. Every architect consultation request would fail from
+-- this migration's commit until 4d-iii is replayed, and indefinitely if that replay fails.
+--
+-- The pin moves with the replacement: its fragment describes the WINDOW body, so asserting it
+-- against a retired database would abort a replay that is behaving correctly.
 DO $pin$
 DECLARE v_body TEXT; v_name TEXT;
 BEGIN
+  IF phase6_t4d_retired_at_start() THEN
+    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the 4c consultation seals keep their POST-RETIREMENT bodies (this is a replay over a retired database)';
+    RETURN;
+  END IF;
   FOREACH v_name IN ARRAY ARRAY[
     'phase6_t4c_consultation_request_seal', 'phase6_t4c_consultation_response_seal'
   ] LOOP
@@ -4398,6 +4478,10 @@ BEGIN
   END LOOP;
 END $pin$;
 
+-- MARKER-AWARE (#582 round 13, finding 2): on a replay over a database 4d-iii has already
+-- retired, these two seals already carry their POST-retirement bodies and must keep them.
+DO $t4c_widen$ BEGIN
+IF phase6_t4d_retired_at_start() THEN RETURN; END IF;
 CREATE OR REPLACE FUNCTION phase6_t4c_consultation_request_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE v_user TEXT; d RECORD; v_cycle INT;
 BEGIN
@@ -4493,6 +4577,7 @@ BEGIN
   PERFORM phase6_t4c_provenance_reserved(NEW."projectId", NEW."sourceCommandId", 'consultations.respond', NEW."respondedById", NEW."id");
   RETURN NEW;
 END $$;
+END $t4c_widen$;
 
 -- ── the architect arms: SEPARATE triggers, the delivered arms untouched ──────────────────────
 -- §D asks for "SEPARATE architect arms over `platform_role_standing`, the delivered `client`/`pmc`
@@ -4699,12 +4784,40 @@ CREATE TRIGGER "DecisionApprovalRevision_t4d_one_flip"
 -- chain is a final approval no architect ever countersigned, and one inserted `false` with no
 -- chain can never be finalized, because neither finalizer exists.
 CREATE OR REPLACE FUNCTION phase6_t4d_revision_birth() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_chain BOOLEAN;
+DECLARE v_chain BOOLEAN; v_prev INT;
 BEGIN
   IF NOT phase6_try_readiness(NEW."projectId") THEN
     RAISE EXCEPTION 'phase6 4d-i: the project readiness key is held elsewhere — this direct approval-revision write is refused rather than waiting inside a trigger (revision %)', NEW."id";
   END IF;
   v_chain := platform_role_standing(NEW."projectId", 'architect') > 0;
+
+  -- A BIRTH IS THE NEXT HEAD, and nothing here had ever said so (#582 round 13, finding 5).
+  -- Rounds 10 to 12 bound the birth's VALUE, its PAIRING and its COUNT, and left its POSITION
+  -- free. `phase6_t4d_provisional_head` resolves the head by version, so a revision inserted at
+  -- version 0 under an existing finalized version 1 satisfies every one of those seals — it is
+  -- the only unfinalized row, born under a chain, correctly paired — while the head the
+  -- finalizers resolve stays the finalized version 1. The decision parks in
+  -- `awaiting_countersign` and neither countersign nor stranded resolution can ever reach it.
+  --
+  -- STRICTLY ABOVE the maximum, and NOT `previous + 1`. The first version of this arm demanded
+  -- the successor and argued that "a gap is the same defect one step further out". That reasoning
+  -- was wrong and the integration suite proved it within the hour: `phase6_t4d_provisional_head`
+  -- resolves the head by ORDER BY version DESC, so a gap hides nothing — only a version at or
+  -- below the maximum does. Meanwhile gaps are LEGITIMATE and shipped: a legacy decision whose
+  -- earlier approvals were never written as revisions reapproves as version 2 with no version 1
+  -- present (`phase3-requirements`, "with or without a backfilled register row"), and the
+  -- successor rule refused that correct write.
+  --
+  -- The invariant the finding actually names is "is it the head", and that is what is asserted.
+  SELECT COALESCE(max(r."version"), 0) INTO v_prev
+    FROM "DecisionApprovalRevision" r
+   WHERE r."projectId" = NEW."projectId" AND r."decisionId" = NEW."decisionId"
+     AND r."id" IS DISTINCT FROM NEW."id";
+  IF NEW."version" <= v_prev THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: revision % is born at version % on a decision whose highest existing version is % — a birth becomes the HEAD or it is not a birth at all, and a revision at or below the maximum is invisible to `phase6_t4d_provisional_head`, so the approval it represents can never be finalized by either finalizer',
+      NEW."id", NEW."version", v_prev;
+  END IF;
 
   IF NEW."finalized" <> (NOT v_chain) THEN
     RAISE EXCEPTION

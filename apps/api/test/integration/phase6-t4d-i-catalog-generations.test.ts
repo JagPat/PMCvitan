@@ -41,9 +41,28 @@ const CURRENT = effectCoverageVersion();
  */
 const OUTGOING = '6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7';
 
-/** `canonicalCatalog()`, with the `pushOptional` element optionally withheld. */
-function canonical(withPushOptional: boolean): string {
-  const keys = Object.keys(EXTERNAL_EFFECTS).sort();
+/**
+ * THE DECLARED DIVERGENCE between the two generations (#582 review round 13, finding 3).
+ *
+ * Until this round the releases declared an IDENTICAL catalog and this file's licence was simply
+ * "the same rows, a different preimage". Splitting `activity.created` ended that: the previous
+ * release has one key there carrying the push exemption, this release has two — `activity.created`
+ * which now OWES its announcement and `activity.created.init` which may not push at all.
+ *
+ * The divergence is declared in ONE place, here and in the migration's seed, so the licence stays
+ * a DERIVATION rather than becoming a pinned constant nobody can check. Note what is and is not
+ * hash-affecting: the previous release's preimage does not contain the `pushOptional` element at
+ * all, so restoring that flag changes no hash — only the ADDED KEY does. That is why removing it
+ * alone reproduces the outgoing version exactly, and why an undeclared divergence still goes red.
+ */
+const ADDED_THIS_RELEASE = ['activity.created.init'];
+
+/** Keys whose `requiresPush` the previous release computed differently (it carried `pushOptional`). */
+const REQUIRES_PUSH_DIVERGENCE = new Map<string, boolean>([['activity.created', false]]);
+
+/** `canonicalCatalog()`, with the `pushOptional` element optionally withheld and keys optionally skipped. */
+function canonical(withPushOptional: boolean, skip: readonly string[] = []): string {
+  const keys = Object.keys(EXTERNAL_EFFECTS).filter((k) => !skip.includes(k)).sort();
   return JSON.stringify(
     keys.map((k) => {
       const d = (EXTERNAL_EFFECTS as Record<string, {
@@ -83,10 +102,12 @@ describe('phase 6 4d-i — the catalog carries every generation still being emit
     `SELECT * FROM "ExternalEffectCatalog" WHERE "coverageVersion" = $1 ORDER BY "effectKey"`, v,
   );
 
-  it('licences the row copy — the outgoing generation differs in the PREIMAGE, not the policy', () => {
-    // The migration's copy says "the outgoing generation's rows ARE these rows". That is only
-    // true while the two releases declare the same policy, and this is the derivation of that.
-    expect(sha(canonical(false))).toBe(OUTGOING);
+  it('licences the seed — the outgoing generation is THIS catalog minus the declared divergence', () => {
+    // The migration seeds the outgoing generation from the same compiled source with two declared
+    // bends. This is the derivation of that claim: remove the key this release added and the
+    // previous release's own `canonicalCatalog()` output falls out exactly. Anything that
+    // diverges WITHOUT being declared above changes this hash and fails here.
+    expect(sha(canonical(false, ADDED_THIS_RELEASE))).toBe(OUTGOING);
     expect(sha(canonical(true))).toBe(CURRENT);
     expect(CURRENT).not.toBe(OUTGOING);
   });
@@ -98,8 +119,12 @@ describe('phase 6 4d-i — the catalog carries every generation still being emit
     expect(current.length, `no rows at the current generation ${CURRENT}`).toBeGreaterThan(0);
     expect(current.length).toBe(Object.keys(EXTERNAL_EFFECTS).length);
     // A generation seeded PARTIALLY is worse than one not seeded at all: the drain would then
-    // reject exactly the keys nobody thought to copy, and only for the events that use them.
-    expect(outgoing.map((r) => r.effectKey)).toEqual(current.map((r) => r.effectKey));
+    // reject exactly the keys nobody thought to copy, and only for the events that use them. The
+    // outgoing set is the current set minus the key this release added — asserted as that
+    // subtraction, so a key going missing for any OTHER reason still fails.
+    expect(outgoing.map((r) => r.effectKey)).toEqual(
+      current.map((r) => r.effectKey).filter((k) => !ADDED_THIS_RELEASE.includes(k)),
+    );
   });
 
   it('the outgoing rows say what the outgoing release means, column for column', async () => {
@@ -111,7 +136,21 @@ describe('phase 6 4d-i — the catalog carries every generation still being emit
       requiresPush: r.requiresPush, audience: r.audience, pushBody: r.pushBody,
       pairingRequired: r.pairingRequired,
     });
-    expect(outgoing.map(policy)).toEqual(current.map(policy));
+    // Every column still agrees except the one the divergence declares, and that one is asserted
+    // to hold the PREVIOUS release's value rather than merely being excluded from the comparison.
+    const expected = current
+      .filter((r) => !ADDED_THIS_RELEASE.includes(r.effectKey))
+      .map((r) => {
+        const p = policy(r);
+        const bend = REQUIRES_PUSH_DIVERGENCE.get(r.effectKey);
+        return bend === undefined ? p : { ...p, requiresPush: bend };
+      });
+    expect(outgoing.map(policy)).toEqual(expected);
+    for (const [key, value] of REQUIRES_PUSH_DIVERGENCE) {
+      const row = outgoing.find((r) => r.effectKey === key);
+      expect(row, `the outgoing generation must carry ${key}`).toBeTruthy();
+      expect(row!.requiresPush, `${key} must carry the PREVIOUS release's obligation`).toBe(value);
+    }
   });
 
   it('neither generation is born retired — a retired row may not back a new event', async () => {
