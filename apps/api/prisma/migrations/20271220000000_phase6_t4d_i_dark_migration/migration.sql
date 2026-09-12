@@ -2131,6 +2131,26 @@ CREATE TRIGGER "Membership_t4d_fact_first"
 -- trigger already freezes, and NOTHING writes them until 4d-ii hands `emitEvent` the actor. A
 -- NULL pair is admitted through the drain on every sealed event type, because the previous
 -- release writes events and knows nothing about these columns.
+-- THE ALLOCATOR IS LOCKED BEFORE THE LEDGER (#582's review round 27, finding 3).
+--
+-- `emitEvent` takes its locks in ONE order and this file used to take them in the other. A
+-- previous-release writer still serving through the drain does: UPDATE "ProjectEventStream"
+-- (allocator, ROW EXCLUSIVE) and then INSERT INTO "DomainEvent" (ledger). This file's first
+-- ledger DDL below takes ACCESS EXCLUSIVE on "DomainEvent" and holds it to COMMIT, and the
+-- allocator is not touched until the trigger DDL far below. So: the writer holds the allocator
+-- and waits for the ledger; the migration holds the ledger and waits for the allocator. That is
+-- a deadlock, and PostgreSQL breaks it by aborting one of them — either the deploy, or a user's
+-- decision command, at random, on a live system mid-drain.
+--
+-- Taking the allocator FIRST removes the cycle rather than narrowing the window. SHARE ROW
+-- EXCLUSIVE conflicts with the writer's ROW EXCLUSIVE, so once this file holds it no new
+-- `emitEvent` can enter; and an emission already in flight is not yet blocked on anything this
+-- file holds, so it completes and releases. Only then does any "DomainEvent" DDL run. The later
+-- upgrade to ACCESS EXCLUSIVE for the allocator's own triggers is safe for the same reason: this
+-- transaction is the sole holder of a self-exclusive mode, so there is no second upgrader to
+-- deadlock against.
+LOCK TABLE "ProjectEventStream" IN SHARE ROW EXCLUSIVE MODE;
+
 ALTER TABLE "DomainEvent" ADD COLUMN IF NOT EXISTS "actorRole" TEXT;
 ALTER TABLE "DomainEvent" ADD COLUMN IF NOT EXISTS "actorName" TEXT;
 
@@ -3081,9 +3101,27 @@ END $$;
 DO $ledger_prereq$
 DECLARE spec RECORD; tg pg_trigger;
 BEGIN
-  IF phase6_t4d_retired_at_start() THEN
-    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the ledger-prerequisite check is SKIPPED (this is a replay over a retired database)';
-  ELSE
+  -- RETIREMENT DOES NOT MAKE A PREREQUISITE OPTIONAL (#582's review round 27, finding 2).
+  --
+  -- This block used to skip ENTIRELY on a retired replay, with a notice. Every other
+  -- retirement skip in this file is over a RESERVATION-ERA audit — a door that 4d-iii has since
+  -- opened, a state that only exists during the drain — and skipping those is right, because the
+  -- property they check has been deliberately retired. Nothing in THIS block is of that kind. The
+  -- attribution CHECK and the two raw triggers below are PERMANENT properties of the ledger that
+  -- every 4d fact rests on for as long as the facts exist, and they belong to a DIFFERENT
+  -- migration (`20261015000000_phase2_event_envelope`) that retirement has no bearing on.
+  --
+  -- What the skip cost: a mature, retired database that loses `DomainEvent_append_only` or
+  -- `DomainEvent_attribution_truth_table` to a restore, a `prisma db push`, or a hand repair is
+  -- ACCEPTED by the `ALWAYS_EXECUTE` replay, because the retirement marker is still there. The
+  -- generic enforcement preflight carries no expected-object list, so it cannot see the absence
+  -- either. The database then runs with immutable 4d facts sitting on a ledger whose rows can be
+  -- deleted and whose human attribution can be malformed — the exact state this block exists to
+  -- refuse, reachable precisely on the databases that have been alive longest.
+  --
+  -- So the prerequisites are checked on EVERY apply. A later unit that legitimately replaces one
+  -- of these objects updates this list, the way any other named dependency is updated.
+  BEGIN
     -- THE CHECK FIRST, because a missing truth table is the one this file's own envelope seal
     -- silently relies on rather than re-states.
     IF NOT EXISTS (
@@ -3114,7 +3152,7 @@ BEGIN
           spec.tgname, spec.tbl, tg.tgenabled, spec.harm;
       END IF;
     END LOOP;
-  END IF;
+  END;
 END $ledger_prereq$;
 
 DROP TRIGGER IF EXISTS "DomainEvent_t4d_envelope" ON "DomainEvent";

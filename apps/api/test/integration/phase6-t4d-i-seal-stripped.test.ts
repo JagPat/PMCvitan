@@ -4341,7 +4341,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
    * be the very habit this arm exists to break, so they are READ OUT of `pg_get_constraintdef` —
    * a unit that adds a value, or narrows one, moves the probe with it and nothing goes stale.
    */
-  function admittedLiterals(table: string): Record<string, string> {
+  function admittedLiterals(table: string, mode: 'full' | 'minimal'): Record<string, string> {
     // The columns come from `conkey`, not from reading the printed definition. The first version
     // of this matched `"col"` in the text and found nothing on `CHECK ((origin = ANY (...)))` —
     // PostgreSQL prints a lower-case identifier unquoted, so five tables stayed unmeasurable while
@@ -4354,6 +4354,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
          FROM pg_constraint c
         WHERE c.contype = 'c' AND c.conrelid = '"${table}"'::regclass`]);
     const out: Record<string, string> = {};
+    const allowed: Record<string, string[]> = {};
     if (!q.ok) return out;
     for (const row of q.output.split('\n')) {
       const [def, key] = row.split('~');
@@ -4369,6 +4370,49 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     }
 
     // SECOND PASS — the CONDITIONAL PRESENCE shape, which overrides the plain pick above.
+    //
+    // ONLY for a fully populated row. In `minimal` mode the companion column is NULLABLE and is
+    // deliberately left empty, so taking the literal that REQUIRES it would make the row
+    // unplantable; the plain pick above is the one that wants the companion absent.
+    // In `minimal` mode the companion is deliberately left NULL, so the discriminator takes a
+    // literal that does NOT require it — any admitted value other than the biconditional's own.
+    // (Skipping this pass entirely was not enough: a discriminator named ONLY by a two-column
+    // check gets no literal from the single-column pass either, falls back to the generic string,
+    // and fails the membership test — which is why `DecisionForward` stayed unmeasurable.)
+    if (mode === 'minimal') {
+      for (const row of q.output.split('\n')) {
+        const [def, key] = row.split('~');
+        if (def === undefined || key === undefined) continue;
+        const named = key.split(',').map((c) => c.trim()).filter(Boolean);
+        if (named.length !== 2 || !def.includes('IS NOT NULL')) continue;
+        const m = def.match(/"?([A-Za-z0-9_]+)"?\s*=\s*'([^']+)'/);
+        if (!m || !named.includes(m[1]!)) continue;
+        const others = [...def.matchAll(/'([^']+)'/g)].map((x) => x[1]!).filter((l) => l !== m[2]!);
+        if (others.length > 0) {
+          out[m[1]!] = others[0]!;
+          allowed[m[1]!] = others;
+        }
+      }
+      // AND A PAIR THE SCHEMA REQUIRES TO DIFFER MUST BE GIVEN DIFFERENT VALUES. Two
+      // discriminators drawn from the same admitted list both take its first entry, and a
+      // `a IS DISTINCT FROM b` check then rejects the row — `DecisionForward` again, one
+      // constraint further on. The second column takes the next value its OWN list allows.
+      for (const row of q.output.split('\n')) {
+        const [def, key] = row.split('~');
+        if (def === undefined || key === undefined || !def.includes('IS DISTINCT FROM')) continue;
+        // the PAIRS come from the constraint's own text, not from catalog order: `conkey` lists
+        // all four columns of `designation_moves_check` by attnum, so walking it adjacently
+        // compares `fromKind` with `fromMembershipId` and never with `toKind` — the two the
+        // constraint actually requires to differ.
+        for (const m2 of def.matchAll(/"([A-Za-z0-9_]+)"\s+IS DISTINCT FROM\s+"([A-Za-z0-9_]+)"/g)) {
+          const a = m2[1]!; const b = m2[2]!;
+          if (out[a] === undefined || out[a] !== out[b]) continue;
+          const alt = (allowed[b] ?? []).find((l) => l !== out[a]);
+          if (alt !== undefined) out[b] = alt;
+        }
+      }
+      return out;
+    }
     //
     // `CHECK ((origin = 'countersign_rejection') = ("revisionId" IS NOT NULL))` and
     // `CHECK (... AND (("fromDesignationKind" = 'member') = ("fromDesignationMembershipId" IS NOT
@@ -4422,8 +4466,8 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     }
   }
 
-  function probeRowWhere(table: string, cols: [string, string, string][]):
-  { where: string } | { failed: string } {
+  function probeRowWhere(table: string, cols: [string, string, string][],
+                         mode: 'full' | 'minimal' = 'full'): { where: string } | { failed: string } {
     const existing = psql(RUN_DB, ['-At', '-c', `SELECT ctid FROM "${table}" LIMIT 1`]);
     if (existing.ok && existing.output.trim() !== '') {
       return { where: `ctid = '${existing.output.trim()}'` };
@@ -4446,12 +4490,13 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       `SELECT column_name FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = '${table}'
           AND is_identity = 'NO' AND is_generated = 'NEVER'
+          ${mode === 'minimal' ? "AND is_nullable = 'NO' AND column_default IS NULL" : ''}
         ORDER BY ordinal_position`]);
     if (!plantableQ.ok) return { failed: `the column list could not be read:\n  ${firstLine(plantableQ.output)}` };
     const plantable = new Set(plantableQ.output.split('\n').map((s) => s.trim()).filter(Boolean));
     const planted = cols.filter(([c]) => plantable.has(c));
     if (planted.length === 0) return { failed: 'the table has no plantable column' };
-    const admitted = admittedLiterals(table);
+    const admitted = admittedLiterals(table, mode);
 
     const plant = psql(RUN_DB, ['-c',
       `BEGIN;
@@ -4573,6 +4618,36 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       .toBe(false);
     expect(reclosed.output).toMatch(/already records \w+ as provenance/);
 
+    // ── round 27 F1: the resolver set may not be FILLED except by the closure ──────────────
+    // Codex's finding, and the reproduce-first evidence for it. `resolvedById` is given a value
+    // on an OPEN request — no status moves, nothing closes. Stripped, it commits and the one-way
+    // arm then makes it permanent, which is what leaves the request unclosable by its real
+    // resolver. Whole, the closure-only predicate refuses it.
+    buildRun(['ChangeRequest_t4d_evidence_frozen']);
+    { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
+    const fillStripped = psql(RUN_DB, ['-c',
+      `UPDATE "ChangeRequest" SET "resolvedById" = 'ss-client' WHERE "id" = 'ss-cr-r26'`]);
+    expect(fillStripped.ok,
+      'with the freeze stripped, stamping a resolver onto an OPEN request must COMMIT').toBe(true);
+
+    buildRun([]);
+    { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
+    const fillWhole = psql(RUN_DB, ['-c',
+      `UPDATE "ChangeRequest" SET "resolvedById" = 'ss-client' WHERE "id" = 'ss-cr-r26'`]);
+    expect(fillWhole.ok,
+      'a resolver may not be stamped onto a request that is not being closed — the one-way arm '
+      + 'would then make it permanent and refuse the genuine closure').toBe(false);
+    expect(fillWhole.output).toMatch(/gains resolver provenance on an update that does not CLOSE it/);
+
+    // and the two columns round 26 added to the one-way set have the same rule, which is the
+    // half that round missed: they were frozen against REWRITE and open to being FILLED.
+    const fillAt = psql(RUN_DB, ['-c',
+      `UPDATE "ChangeRequest" SET "resolvedAt" = now() WHERE "id" = 'ss-cr-r26'`]);
+    expect(fillAt.ok, 'a closing MOMENT may not be stamped onto a request that is not closing').toBe(false);
+    const fillRes = psql(RUN_DB, ['-c',
+      `UPDATE "ChangeRequest" SET "resolution" = 'withdrawn' WHERE "id" = 'ss-cr-r26'`]);
+    expect(fillRes.ok, 'an OUTCOME may not be stamped onto a request that is not closing').toBe(false);
+
     // ── F2: WHEN a kinded notice announced is part of the cache round 6 froze ───────────────
     buildRun(['Notification_t4d_binding']);
     const notePlant = psql(RUN_DB, ['-c', KINDED_NOTICE]);
@@ -4591,5 +4666,327 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       'moving a kinded notice re-places it among the acts either side of it with every word of it still true')
       .toBe(false);
     expect(whenWhole.output).toMatch(/WHEN it announced is a cache of its event/);
+  }, 600_000);
+
+  /**
+   * #582's review round 27, finding 4 (SELF-FOUND) — THE OTHER HALF OF THE QUESTION.
+   *
+   * The arm above asks ONE thing: can a column that ALREADY HOLDS A VALUE be rewritten? It plants
+   * a fully populated row and attempts an update. Round 26 shipped it as the closer for the
+   * frozen-column class, and round 27's finding 1 landed one commit later on a column it had
+   * measured and passed — because the attack was never a rewrite. It was a FILL: `resolvedById`
+   * empty on an open request, given a value by a direct writer at a moment when nothing closed,
+   * made permanent by the very one-way rule that protects it from being rewritten afterwards.
+   *
+   * A one-way rule is TWO rules, and they fail independently:
+   *
+   *   · "it may not be REWRITTEN once set"  — the arm above measures this.
+   *   · "it may not be SET except by the act it describes" — nothing measured this.
+   *
+   * That second rule is where this unit has been caught three separate times: round 8's finding 5
+   * (the birth set admitted NULL -> value on all six columns), round 16's finding 4 (the resolver
+   * set was fillable on an open request, one column at a time), and now round 27's finding 1. An
+   * instrument built after the third recurrence that still cannot see the axis is not an
+   * instrument, and round 26's claim that no column could go unexamined was true only of the
+   * question it happened to ask.
+   *
+   * So this arm plants the row EMPTY — only the columns the schema forces — and drives every
+   * nullable column NULL -> value on an update that performs NO transition of any kind. Each
+   * outcome is registered: REFUSED means the fill is bound to an act, and the fragment records
+   * which seal said so; FILLABLE means a writer may supply it at any moment, and owes a reason
+   * why doing so claims nothing about an act that did not happen.
+   */
+  type FillEntry = { refused: Record<string, string>; fillable: Record<string, string> };
+
+  const FILL: Record<string, FillEntry> = {
+    ChangeRequest: {
+      refused: {
+        requestedById: "phase6 4d-i: change request changerequest-probe records requestedById",
+        requestedByName: "phase6 4d-i: change request changerequest-probe records requestedByNam",
+        requestedByRole: "phase6 4d-i: change request changerequest-probe records requestedByRol",
+        resolution: "phase6 4d-i: change request changerequest-probe gains resolver provena",
+        resolvedAt: "phase6 4d-i: change request changerequest-probe gains resolver provena",
+        resolvedByCommandId: "phase6 4d-i: change request changerequest-probe gains resolver provena",
+        resolvedById: "phase6 4d-i: change request changerequest-probe gains resolver provena",
+        resolvedByName: "phase6 4d-i: change request changerequest-probe gains resolver provena",
+        resolvedByRole: "phase6 4d-i: change request changerequest-probe gains resolver provena",
+        revisionId: "phase6 4d-i: change request changerequest-probe is evidence",
+        sourceCommandId: "phase6 4d-i: change request changerequest-probe records sourceCommandI",
+      },
+      fillable: {
+      },
+    },
+    Decision: {
+      refused: {
+        approvedDeciderKind: "phase6-4b: approval attribution may first be written only by an approv",
+        approvedDeciderLabel: "violates check constraint",
+        approvedDeciderMembershipId: "violates check constraint",
+        authorId: "phase6-4b: decision authorship is frozen from birth",
+        deciderMembershipId: "phase6-4b: a published or attributed decision keeps its holder",
+        nodeId: "violates foreign key constraint",
+        withdrawReason: "phase6-t4a: withdrawal evidence may exist only on a withdrawn decision",
+        withdrawnAt: "phase6-t4a: withdrawal evidence may exist only on a withdrawn decision",
+        withdrawnById: "phase6-t4a: withdrawal evidence may exist only on a withdrawn decision",
+        withdrawnByName: "phase6-t4a: withdrawal evidence may exist only on a withdrawn decision",
+      },
+      fillable: {
+        ageDays:
+          "a derived display counter computed from `date`; supplying it asserts nothing about any act",
+        approvedById:
+          "a delivered denormalisation the approval transition writes; the attributable record is `DecisionApprovalRevision`, whose birth this unit binds to the act",
+        approvedOption:
+          "a delivered denormalisation of the head revision's `optionKey`, written by the approval transition 4b judges",
+        approver:
+          "the delivered display label for the approval; the attributable record is the immutable revision register, which this unit freezes in full and whose own fill is bound to the approval",
+        cost:
+          "the decision's own content, supplied while it is a draft; 4b owns the draft/publish boundary",
+        date:
+          "the decision's own content, supplied while it is a draft; 4b owns the draft/publish boundary",
+        material:
+          "the decision's own content, supplied while it is a draft; 4b owns the draft/publish boundary and this unit states no rule about what a decision SAYS",
+        onBehalfOf:
+          "a delivered denormalisation of the head revision's `onBehalfOf`, written by the approval transition 4b judges",
+        photoSwatch:
+          "presentation of the decision's own content, supplied while it is a draft",
+        publishedAt:
+          "PUBLICATION is an act, and it is 4b's act \u2014 `Decision_t4d_entry_seal` and the delivered 4b seals judge the publish transition at the moment it happens. 4d-i adds no rule about it, so it must not refuse the write that performs it",
+      },
+    },
+    DecisionApprovalRevision: {
+      refused: {
+        approvedById: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+        approvedByName: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+        approvedByRole: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+        approvedFrom: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+        onBehalfOf: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+        sourceCommandId: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+      },
+      fillable: {
+      },
+    },
+    DecisionConsultation: {
+      refused: {
+        requestedByName: "phase6-4c: DecisionConsultation is append-only evidence",
+        requestedByRole: "phase6-4c: DecisionConsultation is append-only evidence",
+      },
+      fillable: {
+      },
+    },
+    DecisionConsultationResponse: {
+      refused: {
+        recommendedOptionId: "phase6-4c: DecisionConsultationResponse is append-only evidence",
+        respondedByName: "phase6-4c: DecisionConsultationResponse is append-only evidence",
+        respondedByRole: "phase6-4c: DecisionConsultationResponse is append-only evidence",
+      },
+      fillable: {
+      },
+    },
+    DecisionEvent: {
+      refused: {
+        actorId: "phase6 4d-i: DecisionEvent is the attributable audit register and is a",
+        actorName: "phase6 4d-i: DecisionEvent is the attributable audit register and is a",
+        actorRole: "phase6 4d-i: DecisionEvent is the attributable audit register and is a",
+        payload: "phase6 4d-i: DecisionEvent is the attributable audit register and is a",
+      },
+      fillable: {
+      },
+    },
+    DecisionForward: {
+      refused: {
+        fromDesignationMembershipId: "phase6 4d-i: DecisionForward is an append-only register and its rows a",
+        toDesignationMembershipId: "phase6 4d-i: DecisionForward is an append-only register and its rows a",
+      },
+      fillable: {
+      },
+    },
+    DomainEvent: {
+      refused: {
+        actorId: "DomainEvent is append-only: UPDATE is not permitted",
+        actorName: "DomainEvent is append-only: UPDATE is not permitted",
+        actorRole: "DomainEvent is append-only: UPDATE is not permitted",
+        causedByEventId: "DomainEvent is append-only: UPDATE is not permitted",
+        correlationId: "DomainEvent is append-only: UPDATE is not permitted",
+        dispatchIntent: "DomainEvent is append-only: UPDATE is not permitted",
+        payload: "DomainEvent is append-only: UPDATE is not permitted",
+        siteId: "DomainEvent is append-only: UPDATE is not permitted",
+        systemActor: "DomainEvent is append-only: UPDATE is not permitted",
+      },
+      fillable: {
+      },
+    },
+    ExternalEffectCatalog: {
+      refused: {
+        audience: "phase6 4d-i: catalog entry `activity.completion_requested` at coverage",
+        pushBody: "phase6 4d-i: catalog entry `activity.completion_requested` at coverage",
+        pushFamily: "phase6 4d-i: catalog entry `activity.completion_requested` at coverage",
+        pushRoles: "phase6 4d-i: catalog entry `activity.completion_requested` at coverage",
+        retiredAt: "phase6 4d-i: catalog entry `activity.completion_requested` is retired",
+      },
+      fillable: {
+      },
+    },
+    Membership: {
+      refused: {
+      },
+      fillable: {
+        approvalLimit:
+          "an authority ceiling set when the member is given one; each approval is judged against the limit standing AT THE TIME and the revision register records that judgement immutably",
+        discipline:
+          "a member's trade, recorded when it becomes known; it attributes no act and no fact cites it",
+      },
+    },
+    MembershipTransition: {
+      refused: {
+        fromRole: "phase6 4d-i: MembershipTransition membershiptransition-probe is immuta",
+        fromStatus: "phase6 4d-i: MembershipTransition membershiptransition-probe is immuta",
+      },
+      fillable: {
+      },
+    },
+    Notification: {
+      refused: {
+        eventId: "phase6 4d-i: notice notification-probe is bound to event <null> and ma",
+        kind: "phase6 4d-i: notice notification-probe's kind",
+      },
+      fillable: {
+        decisionId:
+          "a LEGACY KINDLESS notice carries no event and records no act, so naming the decision it concerns claims nothing. It cannot become evidence afterwards either: `kind` is refused on the fill axis by the same seal, so a kindless row stays kindless, and a KINDED notice's `decisionId` is frozen from birth",
+      },
+    },
+    ProjectUserStanding: {
+      refused: {
+        membershipId: "phase6 4d-i: ProjectUserStanding is a platform REGISTER projected from",
+      },
+      fillable: {
+      },
+    },
+    User: {
+      refused: {
+      },
+      fillable: {
+        email:
+          "account contact detail, supplied by the account's owner; it attributes no act",
+        emailVerifiedAt:
+          "set when verification completes \u2014 the act it records IS this write, and it is the auth unit's act, not one this unit attributes",
+        passwordHash:
+          "a credential, set when the account gains one; freezing its first write would make password setup impossible",
+        phone:
+          "account contact detail, supplied by the account's owner; it attributes no act",
+      },
+    },
+    // every column of DecisionCountersign is NOT NULL — there is nothing to fill later.
+    DecisionCountersign: { refused: {}, fillable: {} },
+    // every column of DecisionStrandedResolution is NOT NULL — there is nothing to fill later.
+    DecisionStrandedResolution: { refused: {}, fillable: {} },
+    // every column of DomainEventPairingClaim is NOT NULL — there is nothing to fill later.
+    DomainEventPairingClaim: { refused: {}, fillable: {} },
+    // every column of OrgMembership is NOT NULL — there is nothing to fill later.
+    OrgMembership: { refused: {}, fillable: {} },
+    // every column of OrgUserAuthority is NOT NULL — there is nothing to fill later.
+    OrgUserAuthority: { refused: {}, fillable: {} },
+    // every column of ProjectEventStream is NOT NULL — there is nothing to fill later.
+    ProjectEventStream: { refused: {}, fillable: {} },
+    // every column of ProjectOrg is NOT NULL — there is nothing to fill later.
+    ProjectOrg: { refused: {}, fillable: {} },
+    // every column of ProjectRoleStanding is NOT NULL — there is nothing to fill later.
+    ProjectRoleStanding: { refused: {}, fillable: {} },
+    // every column of ReleaseLease is NOT NULL — there is nothing to fill later.
+    ReleaseLease: { refused: {}, fillable: {} },
+    // every column of RolloutRetirement is NOT NULL — there is nothing to fill later.
+    RolloutRetirement: { refused: {}, fillable: {} },
+    // every column of UserIdentity is NOT NULL — there is nothing to fill later.
+    UserIdentity: { refused: {}, fillable: {} },
+  };
+
+  it('round 27: every NULLABLE column is driven NULL to value at a moment that performs no act', () => {
+    buildRun([]);
+
+    const tablesQ = psql(RUN_DB, ['-At', '-c',
+      `SELECT DISTINCT c.relname
+         FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+        WHERE NOT t.tgisinternal AND t.tgname LIKE '%\\_t4d\\_%'
+          AND (t.tgtype & 16) <> 0
+        ORDER BY 1`]);
+    expect(tablesQ.ok, `discovering the sealed tables failed:\n${tablesQ.output}`).toBe(true);
+    const tables = tablesQ.output.split('\n').map((x) => x.trim()).filter(Boolean);
+    expect(tables.slice().sort(),
+      'a table gained (or lost) an UPDATE-firing t4d seal and the fill register did not move with it')
+      .toEqual(Object.keys(FILL).sort());
+
+    const unclassified: string[] = [];
+    const wrong: string[] = [];
+
+    for (const table of tables) {
+      const entry = FILL[table]!;
+
+      // TWO lists, and they are not the same list. The PLANTER needs every column of the table —
+      // it decides for itself which ones the schema forces — while the PROBE walks only the
+      // nullable ones. Handing the planter the nullable subset made it find nothing it was
+      // allowed to plant and report six tables unmeasurable, `ChangeRequest` among them.
+      const allQ = psql(RUN_DB, ['-At', '-F', '~', '-c',
+        `SELECT column_name, data_type, udt_name, is_nullable
+           FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = '${table}'
+          ORDER BY ordinal_position`]);
+      expect(allQ.ok, `reading the columns of ${table} failed:\n${allQ.output}`).toBe(true);
+      const rows = allQ.output.split('\n').map((l) => l.trim()).filter(Boolean)
+        .map((l) => l.split('~') as [string, string, string, string]);
+      const allCols = rows.map(([c, d, u]) => [c, d, u] as [string, string, string]);
+      const cols = rows.filter((r) => r[3] === 'YES').map(([c, d, u]) => [c, d, u] as [string, string, string]);
+      if (cols.length === 0) continue;   // every column forced: nothing can be filled later
+
+      const probe = probeRowWhere(table, allCols, 'minimal');
+      if ('failed' in probe) {
+        unclassified.push(`${table}: NOT MEASURED — ${probe.failed}`);
+        continue;
+      }
+      const { where } = probe;
+
+      for (const [col, dataType, udt] of cols) {
+        const value = otherValue(col, dataType, udt);
+        if (value === null) {
+          unclassified.push(`${table}.${col}: no probe value exists for type ${dataType} (${udt})`);
+          continue;
+        }
+        // the update touches ONE column and nothing else — no status moves, no act occurs. A
+        // column the unit lets through here is one a writer may fill whenever it likes.
+        const r = psql(RUN_DB, ['-c',
+          `BEGIN; UPDATE "${table}" SET "${col}" = ${value} WHERE ${where}; ROLLBACK;`]);
+
+        const declaredRefusal = entry.refused[col];
+        const declaredFillable = entry.fillable[col];
+        if (declaredRefusal === undefined && declaredFillable === undefined) {
+          unclassified.push(`${table}.${col}: ${r.ok ? 'FILLABLE' : `REFUSED — ${unquoted(firstLine(r.output))}`}`);
+          continue;
+        }
+        if (declaredRefusal !== undefined && declaredFillable !== undefined) {
+          wrong.push(`${table}.${col} is declared BOTH refused and fillable`);
+          continue;
+        }
+        if (declaredFillable !== undefined) {
+          if (declaredFillable.trim().length < 20) {
+            wrong.push(`${table}.${col} is declared fillable with no real reason — the reason has to `
+              + 'say why supplying it later claims nothing about an act that did not happen');
+          } else if (!r.ok) {
+            wrong.push(`${table}.${col} is declared FILLABLE and was refused:\n  ${firstLine(r.output)}`);
+          }
+          continue;
+        }
+        if (r.ok) {
+          wrong.push(`${table}.${col} is declared REFUSED and the fill was ACCEPTED — the column can `
+            + 'be given a value at a moment that performs no act, and the one-way rule then makes it permanent');
+        } else if (!unquoted(r.output).includes(unquoted(declaredRefusal))) {
+          wrong.push(`${table}.${col} was refused, but not for the reason the register records. `
+            + `Expected the message to carry ${JSON.stringify(declaredRefusal)}; got:\n  ${firstLine(r.output)}`);
+        }
+      }
+    }
+
+    expect(unclassified,
+      'these NULLABLE columns are in no class. Each is either bound to the act that fills it, or a '
+      + 'deliberate exception that owes a reason. This is the axis rounds 8, 16 and 27 were each '
+      + 'caught on, and the axis the frozen-column arm above cannot see.')
+      .toEqual([]);
+    expect(wrong, 'the fill register disagrees with what the database actually did').toEqual([]);
   }, 600_000);
 });

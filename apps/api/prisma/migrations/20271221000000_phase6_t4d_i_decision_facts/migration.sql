@@ -1379,9 +1379,32 @@ BEGIN
   -- `open`, in the same statement, with the pair TRUE of the resolver. The drain shape is
   -- untouched — a previous-release closure writes `resolvedById` and leaves these three NULL,
   -- which stays admitted; 4d-iii is what makes them required.
-  IF (OLD."resolvedByRole" IS NULL AND NEW."resolvedByRole" IS NOT NULL)
+  -- ONE SET, TWO QUESTIONS (#582's review round 27, finding 1). The block above asks "may this
+  -- column be REWRITTEN?" and this one asks "may it be FILLED, here, now?", and until this round
+  -- they were asked over DIFFERENT column lists: the rewrite question covered six columns and the
+  -- fill question covered three. `resolvedById` was in the first and not the second from round 24;
+  -- `resolvedAt` and `resolution` joined the first in round 26 and were not added here either —
+  -- three lines apart, in the same function, in the very fold that exists to stop a rule being
+  -- implemented over a subset of its own inventory.
+  --
+  -- What the gap costs: a direct writer puts any valid user id on an OPEN request. Nothing here
+  -- sees it, because the fill question never asked about `resolvedById`. The rewrite arm above
+  -- then makes it PERMANENT. When the genuine closure arrives — a still-serving previous-release
+  -- `withdrawChange` run by somebody else — it is refused for trying to replace the id, and the
+  -- request can never be closed by anyone. The same shape prefills a closing MOMENT or an OUTCOME
+  -- onto an open request and freezes that.
+  --
+  -- The two lists are now identical and written in the same order, so the next column added to
+  -- one is visibly owed to the other. The drain is untouched: the deployed release writes
+  -- `resolvedById`, `resolvedAt`, `resolution` and `status` in ONE statement whose WHERE is
+  -- `status = 'open'` (decisions.service.ts, both `changeRequest.updateMany` sites), so the
+  -- transition below holds for every real closure it performs.
+  IF (OLD."resolvedByCommandId" IS NULL AND NEW."resolvedByCommandId" IS NOT NULL)
+     OR (OLD."resolvedById" IS NULL AND NEW."resolvedById" IS NOT NULL)
+     OR (OLD."resolvedByRole" IS NULL AND NEW."resolvedByRole" IS NOT NULL)
      OR (OLD."resolvedByName" IS NULL AND NEW."resolvedByName" IS NOT NULL)
-     OR (OLD."resolvedByCommandId" IS NULL AND NEW."resolvedByCommandId" IS NOT NULL) THEN
+     OR (OLD."resolvedAt" IS NULL AND NEW."resolvedAt" IS NOT NULL)
+     OR (OLD."resolution" IS NULL AND NEW."resolution" IS NOT NULL) THEN
     IF NOT (OLD."status" = 'open' AND NEW."status" <> 'open') THEN
       RAISE EXCEPTION
         'phase6 4d-i: change request % gains resolver provenance on an update that does not CLOSE it (`%` -> `%`) — the receipt and the frozen pair describe the act of closing, and a value written at any other moment is a claim about an act this update did not perform.',
