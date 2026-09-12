@@ -697,6 +697,23 @@ const REGISTER: Record<string, SealContract> = {
     on: { 'Notification.Notification_t4d_no_truncate': S('T') },
     must: ['TRUNCATE'],
   },
+  phase6_t4d_decision_event_no_truncate: {
+    rule: 'the attributable audit register is never truncated, whatever it holds — the delivered '
+      + 'seal beside it refuses only while an approval row is present, and 4d fills the register '
+      + 'with change, forward, countersign and stranded kinds that are evidence just as much',
+    plan: '§A.2 TRUNCATE_SEALS; §A.3 obligation 1; #582 round 24, finding 2',
+    on: { 'DecisionEvent.DecisionEvent_t4d_no_truncate': S('T') },
+    // the token is the phrase that distinguishes it from the DELIVERED t4a seal's conditional
+    // message, which also contains 'TRUNCATE' and also names this table.
+    must: ['attributable audit register and is never truncated'],
+  },
+  platform_t4d_domain_event_no_truncate: {
+    rule: 'the delivery stream is never truncated — every 4d correspondence, claim and actor '
+      + 'binding is judged against a row in it once, at write time, and never again',
+    plan: '§A.2 TRUNCATE_SEALS; #582 round 24, the sweep behind finding 2',
+    on: { 'DomainEvent.DomainEvent_t4d_no_truncate': S('T') },
+    must: ['delivery stream every 4d correspondence'],
+  },
   platform_t4d_effect_catalog_sealed: {
     rule: 'a catalog definition changes by a NEW coverage version, never in place: INSERT, UPDATE '
       + 'and DELETE all pass the migration gate, and retirement is a ONE-WAY stamp',

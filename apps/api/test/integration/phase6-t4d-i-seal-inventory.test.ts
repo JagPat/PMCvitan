@@ -56,7 +56,10 @@ const INVENTORY: Record<string, string[]> = {
     'DecisionCountersign_t4d_seal',
   ],
   DecisionEvent: ['DecisionEvent_t4d_append_only', 'DecisionEvent_t4d_correspondence',
-    'DecisionEvent_t4d_kind_reserved', 'DecisionEvent_t4d_renotified_claim'],
+    'DecisionEvent_t4d_kind_reserved',
+    // #582's review round 24, finding 2 — the UNCONDITIONAL arm beside the delivered
+    // `DecisionEvent_t4a_no_truncate`, which refuses only while an approval row is present.
+    'DecisionEvent_t4d_no_truncate', 'DecisionEvent_t4d_renotified_claim'],
   DecisionForward: [
     'DecisionForward_t4d_append_only',
     'DecisionForward_t4d_no_truncate',
@@ -72,7 +75,10 @@ const INVENTORY: Record<string, string[]> = {
     'DecisionStrandedResolution_t4d_provenance_bound',
     'DecisionStrandedResolution_t4d_seal',
   ],
-  DomainEvent: ['DomainEvent_t4d_envelope', 'DomainEvent_t4d_pairing_claimed'],
+  DomainEvent: ['DomainEvent_t4d_envelope',
+    // #582's review round 24, the sweep behind finding 2 — the stream carried four ROW triggers
+    // and no statement-level arm, while every register derived from it was already sealed.
+    'DomainEvent_t4d_no_truncate', 'DomainEvent_t4d_pairing_claimed'],
   DomainEventPairingClaim: [
     'DomainEventPairingClaim_t4d_no_truncate',
     'DomainEventPairingClaim_t4d_writer',

@@ -380,11 +380,18 @@ const ARMS: Arm[] = [
     what: 'the audit register\'s 4d-only KINDS are reserved, like the states they record',
     // #582 round 15, finding 2. `countersigned` records an act whose command lands in 4d-ii, so
     // in the dark window nothing can legitimately write this row — and, before this door, nothing
-    // refused it either. The WEAK correspondence's table has no entry for (`countersigned`,
-    // `pending`), so it returns NULL and judges nothing at all; on an `approved` decision it has
-    // one, and the approval's own `decision.approved` event answers it. Either way the row
-    // commits, `DecisionEvent_t4d_append_only` freezes it, and 4d-iii's stronger INSERT trigger
-    // judges only NEW rows — so it is permanent evidence of a countersign nobody performed.
+    // refused it either: on an `approved` decision the weak correspondence's table pairs the kind
+    // with the approval's own `decision.approved` event and is answered, the row commits,
+    // `DecisionEvent_t4d_append_only` freezes it, and 4d-iii's stronger INSERT trigger judges only
+    // NEW rows — permanent evidence of a countersign nobody performed.
+    //
+    // THE (`countersigned`, `pending`) PAIR IS NOW THE CORRESPONDENCE'S OWN REFUSAL (#582's review
+    // round 24, finding 1). This comment used to say that pair "returns NULL and judges nothing at
+    // all", which was true and was the hole that finding closes. The arm therefore omits the
+    // correspondence alongside the door: both are this unit's, and with the door stripped the
+    // write must reach the table at all for the arm to measure the DOOR rather than the seal that
+    // now stands behind it.
+    alsoStrip: ['DecisionEvent_t4d_correspondence'],
     hostile: `INSERT INTO "DecisionEvent" ("id","decisionId","type","actor","actorId","actorName","actorRole","payload")
               VALUES ('ss-de-cs','ss-dec','countersigned','SS User','ss-user','SS User','pmc','{}'::jsonb)`,
     refusal: /DecisionEvent\.type = a 4d-only kind is not writable yet/,
@@ -956,12 +963,28 @@ const ARMS: Arm[] = [
   },
   {
     // #582 round 7, finding 5 — a KINDED notice is RENDERED from its kind, so a kind that
-    // disagrees with its own event announces something that did not happen. The event here is the
-    // fixture's real `decision.published`; the notice claims it is an approval.
+    // disagrees with its own event announces something that did not happen. The event is a real
+    // `decision.published`; the notice claims it is an approval.
+    //
+    // EMITTED IN THE SAME TRANSACTION (#582's review round 24, finding 3). This arm used to cite
+    // the fixture's committed `ss-ev1`, which the new same-transaction demand now refuses first —
+    // so the arm would have measured that rule instead of this one. The bundle is minted here
+    // instead: a real allocation, a real event, and the wrong kind on the notice, which leaves the
+    // kind rule as the only thing standing between the write and commit.
     seal: 'Notification_t4d_binding_bound',
     what: 'a kinded notice may not name an event of a different type',
-    hostile: `INSERT INTO "Notification" ("id","projectId","text","color","time","kind","eventId","decisionId")
-              VALUES ('ss-note-k','ss-proj','Decision approved','green','just now','decision.approved','ss-ev1','ss-dec')`,
+    hostile: `BEGIN;
+              UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+              INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+                SELECT 'ss-ev-kind','decision.published',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec',
+                       jsonb_build_object('effectKey','decision.published','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
+                                          'push', jsonb_build_object('body','ss','roles', jsonb_build_array('client')))
+                  FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+                 WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.published'
+                   AND c."coverageVersion" = '${COVERAGE}';
+              INSERT INTO "Notification" ("id","projectId","text","color","time","kind","eventId","decisionId")
+                VALUES ('ss-note-k','ss-proj','Decision approved','green','just now','decision.approved','ss-ev-kind','ss-dec');
+              COMMIT;`,
     refusal: /declares kind `decision.approved` but names event/,
   },
   {
@@ -975,6 +998,38 @@ const ARMS: Arm[] = [
     what: 'the notice register is never truncated',
     hostile: `TRUNCATE "Notification"`,
     refusal: /never truncated|truncate/i,
+  },
+  {
+    // #582's review round 24, finding 2 — the register is immutable ROW BY ROW and TRUNCATE fires
+    // no row trigger. The fixture plants no approval row, which is exactly the state the DELIVERED
+    // `DecisionEvent_t4a_no_truncate` permits the wipe in — so with this seal omitted the truncate
+    // succeeds, and the arm measures this seal rather than the delivered one beside it.
+    seal: 'DecisionEvent_t4d_no_truncate',
+    what: 'the audit register is never truncated, approval rows present or not',
+    hostile: `TRUNCATE "DecisionEvent"`,
+    refusal: /attributable audit register and is never truncated/,
+  },
+  {
+    seal: 'DomainEventPairingClaim_t4d_no_truncate',
+    what: 'the pairing-claim register is never truncated',
+    hostile: `TRUNCATE "DomainEventPairingClaim"`,
+    refusal: /append-only register|never truncated/i,
+  },
+  {
+    // #582's review round 24, the sweep behind finding 2 — the STREAM every 4d correspondence,
+    // claim and actor binding is written against, which carried four row triggers and no
+    // statement-level arm while every register derived from it was already sealed.
+    seal: 'DomainEvent_t4d_no_truncate',
+    what: 'the delivery stream is never truncated',
+    // The stream cannot be truncated alone — `Notification`, `OutboxDelivery` and
+    // `DomainEventPairingClaim` all hold a foreign key into it, so PostgreSQL pulls them into the
+    // CASCADE and fires THEIR seals first. Two of those three are this unit's, and they are
+    // omitted alongside so the stripped run reaches the stream at all; `OutboxDelivery` carries no
+    // seal. This is the same cascade reality `sanctioned-reset.ts` documents for its own registry:
+    // a truncate seal is fired by tables the caller never names.
+    alsoStrip: ['Notification_t4d_no_truncate', 'DomainEventPairingClaim_t4d_no_truncate'],
+    hostile: `TRUNCATE "DomainEvent" CASCADE`,
+    refusal: /delivery stream every 4d correspondence/,
   },
 ];
 
@@ -1026,7 +1081,11 @@ const COVERED_BY_CLASS: Record<string, string> = {
   DecisionCountersign_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
   DecisionForward_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
   DecisionStrandedResolution_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
-  DomainEventPairingClaim_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
+  // #582's review round 24 — `DomainEventPairingClaim_t4d_no_truncate` LEFT this list and became
+  // an ARM. The stream's own truncate arm cascades into this table and must omit its seal to reach
+  // the stream at all, and a seal this suite strips cannot also claim class coverage. Rather than
+  // drop the declaration and leave the seal proved by nothing, it gets the two-sided proof the
+  // class declaration was standing in for.
   MembershipTransition_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
   OrgUserAuthority_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
   ProjectOrg_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
@@ -1087,7 +1146,13 @@ const COVERED_BY_CLASS: Record<string, string> = {
   MembershipTransition_t4d_seal: 'DecisionForward_t4d_reserved',
   DecisionApprovalRevision_t4d_one_flip: 'Decision_t4d_awaiting_reserved',
   DecisionApprovalRevision_t4d_flip_paired: 'Decision_t4d_awaiting_reserved',
-  DecisionEvent_t4d_correspondence: 'DecisionEvent_t4d_append_only',
+  // #582's review round 24, finding 1 — `DecisionEvent_t4d_correspondence` LEFT this list. It is
+  // now omitted by the `DecisionEvent_t4d_kind_reserved` arm's `alsoStrip`, because that finding
+  // put a refusal where the correspondence used to return NULL, so the door's arm no longer
+  // reaches its write without it. A seal this suite actually strips must not also be declared
+  // covered by a class — the oracle says so, and it is right: the two claims would disagree about
+  // which proof stands behind it. Its own rule is driven two-sidedly by the round-23 and round-24
+  // probes below.
 };
 
 describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () => {
