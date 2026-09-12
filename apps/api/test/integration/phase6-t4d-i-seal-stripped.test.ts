@@ -5474,17 +5474,19 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       ['an append-only trigger over a function that permits the write', `
         CREATE OR REPLACE FUNCTION "domainEvent_append_only"() RETURNS trigger
           LANGUAGE plpgsql AS $body$ BEGIN RETURN NEW; END; $body$;`,
-        /the function it calls is not .*'s/],
+        /the function it calls is not .*'s|its definition is not the one this unit installs/],
       ['a stream trigger moved to BEFORE INSERT', `
         DROP TRIGGER "Project_ensure_event_stream" ON "Project";
         CREATE TRIGGER "Project_ensure_event_stream" BEFORE INSERT ON "Project"
           FOR EACH ROW EXECUTE FUNCTION "project_ensure_event_stream"();`,
-        /does not fire where the property needs it/],
+        /its definition is not the one this unit installs/],
       ['a stream trigger narrowed by a WHEN clause', `
         DROP TRIGGER "Project_ensure_event_stream" ON "Project";
         CREATE TRIGGER "Project_ensure_event_stream" AFTER INSERT ON "Project"
           FOR EACH ROW WHEN (NEW."stage" = 'Finishing') EXECUTE FUNCTION "project_ensure_event_stream"();`,
-        /carries a WHEN clause the original has not/],
+        // round 34 routed every adoption site through one verifier, so the refusal now names
+        // the whole definition rather than the single attribute round 32 happened to check.
+        /its definition is not the one this unit installs/],
       ['an attribution CHECK that constrains nothing', `
         ALTER TABLE "DomainEvent" DROP CONSTRAINT "DomainEvent_attribution_truth_table";
         ALTER TABLE "DomainEvent" ADD CONSTRAINT "DomainEvent_attribution_truth_table" CHECK (true);`,
@@ -5708,4 +5710,124 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     expect(seeded.output.trim().split('\n').filter(Boolean),
       'and the only role this unit counts is the one it seeds').toEqual(['architect=0']);
   }, 300_000);
+
+  /**
+   * #582's review round 34 — A TRIGGER THIS FILE ADOPTS MUST BE THE ONE IT WOULD HAVE INSTALLED.
+   *
+   * Nine sites in this unit find a trigger already present — on the `ALWAYS_EXECUTE` replay, on a
+   * restored database, on a hand repair — and adopt it instead of creating it. Every one of them
+   * asked the same three questions: enabled, right function, right `tgtype`. `tgtype` carries
+   * timing and operations and says NOTHING about the two attributes that decide whether a row
+   * trigger fires on the write it exists to refuse:
+   *
+   *   · `tgqual`, the WHEN clause — `WHEN (false)` is the same tgtype and never fires;
+   *   · `tgattr`, the `UPDATE OF <column>` restriction — `BEFORE INSERT OR UPDATE OF "status"` is
+   *     ALSO tgtype 23, and `UPDATE "Membership" SET "role" = 'architect'` then never reaches the
+   *     reservation at all.
+   *
+   * Round 32's finding 3 fixed exactly this for the two LEDGER PREREQUISITES and stopped there;
+   * these are the siblings it left, and the reservation doors are where it costs the most — the
+   * architect chain armed during the dark window, which is the one thing the doors exist to
+   * prevent. So the question is asked once, by `phase6_t4d_trigger_mismatch`, against
+   * `pg_get_triggerdef` — the rendering PostgreSQL itself produces, which carries every attribute
+   * at once and keeps carrying the ones nobody here has thought of yet.
+   *
+   * The arm DISCOVERS the sites from the migration source, so a tenth adoption cannot be added
+   * without either an attack here or a written reason none exists.
+   */
+  it('round 34: every adopted trigger is pinned to its whole definition, and a weakened one aborts', () => {
+    const sources = UNIT_FILES.map((f) => readFileSync(f, 'utf8')).join('\n');
+    const sites = [...sources.matchAll(
+      /phase6_t4d_trigger_mismatch\(\s*'([A-Za-z0-9_]+)'\s*,\s*'([A-Za-z0-9_]+)'\s*,\s*\$def\$([\s\S]*?)\$def\$/g)]
+      .map((m) => ({ name: m[1]!, table: m[2]!, def: m[3]! }));
+    // the two ledger prerequisites pass their definition through a VALUES row, not a literal call
+    const viaSpec = [...sources.matchAll(
+      /\('([A-Za-z0-9_]+)', '([A-Za-z0-9_]+)',\s*\n\s*'(CREATE TRIGGER [^\n]*?)',\s*\n/g)]
+      .map((m) => ({ name: m[1]!, table: m[2]!, def: m[3]! }));
+    const adopted = [...sites, ...viaSpec];
+    expect(adopted.length,
+      'the adoption sites must be discoverable from the migration source; a regex that matches '
+      + 'nothing would make every assertion below vacuous').toBeGreaterThanOrEqual(9);
+
+    /**
+     * What a weakening looks like for each site, and — where none exists — why. A site with
+     * neither fails the arm, so the tenth adoption cannot be silent.
+     *
+     * `null` means: no weakening that the PRE-round-34 checks would have admitted. Those checks
+     * pinned `tgtype` and the function, and (for the two prerequisites) the absence of a WHEN
+     * clause, so a statement-level TRUNCATE seal and an AFTER INSERT trigger with no UPDATE
+     * event had nothing left to narrow. They are still routed through the shared verifier —
+     * uniformity is the point — but this arm cannot produce a RED for them.
+     */
+    const ATTACK: Record<string, string | null> = {
+      Membership_t4d_architect_reserved:
+        `CREATE TRIGGER "Membership_t4d_architect_reserved" BEFORE INSERT OR UPDATE OF "status" ON "Membership"
+           FOR EACH ROW WHEN (NEW."role" = 'architect') EXECUTE FUNCTION phase6_t4d_reserved('Membership.role = architect')`,
+      User_t4d_architect_reserved:
+        `CREATE TRIGGER "User_t4d_architect_reserved" BEFORE INSERT OR UPDATE ON "User"
+           FOR EACH ROW WHEN (NEW."role" = 'architect' AND false) EXECUTE FUNCTION phase6_t4d_reserved('User.role = architect')`,
+      Decision_t4d_architect_reserved:
+        `CREATE TRIGGER "Decision_t4d_architect_reserved" BEFORE INSERT OR UPDATE OF "room" ON "Decision"
+           FOR EACH ROW WHEN (NEW."deciderKind"::text = 'architect') EXECUTE FUNCTION phase6_t4d_reserved('Decision.deciderKind = architect')`,
+      Decision_t4d_awaiting_reserved:
+        `CREATE TRIGGER "Decision_t4d_awaiting_reserved" BEFORE INSERT OR UPDATE ON "Decision"
+           FOR EACH ROW WHEN (NEW."status"::text = 'awaiting_countersign' AND false) EXECUTE FUNCTION phase6_t4d_reserved('Decision.status = awaiting_countersign')`,
+      RolloutRetirement_t4d_gate:
+        `CREATE TRIGGER "RolloutRetirement_t4d_gate" BEFORE INSERT ON "RolloutRetirement"
+           FOR EACH ROW WHEN (false) EXECUTE FUNCTION phase6_t4d_rollout_retirement_gate()`,
+      RolloutRetirement_t4d_frozen:
+        `CREATE TRIGGER "RolloutRetirement_t4d_frozen" BEFORE UPDATE OF "retiredBy" OR DELETE ON "RolloutRetirement"
+           FOR EACH ROW EXECUTE FUNCTION phase6_t4d_rollout_retirement_frozen()`,
+      DomainEvent_append_only:
+        `CREATE TRIGGER "DomainEvent_append_only" BEFORE UPDATE OF "eventId" OR DELETE ON "DomainEvent"
+           FOR EACH ROW EXECUTE FUNCTION "domainEvent_append_only"()`,
+      // statement-level TRUNCATE: no WHEN is permitted and there is no UPDATE to restrict, so
+      // tgtype and the function already covered it.
+      RolloutRetirement_t4d_no_truncate: null,
+      // AFTER INSERT with no UPDATE event, and round 32 already refused a WHEN clause on it.
+      Project_ensure_event_stream: null,
+    };
+    expect(Object.keys(ATTACK).sort(),
+      'every adoption site discovered in the migration owes either a weakening this arm drives or '
+      + 'a written reason none exists').toEqual([...new Set(adopted.map((a) => a.name))].sort());
+
+    // ── the declared definitions are the ones the database actually renders ──────────────────
+    buildRun([]);
+    for (const { name, table, def } of adopted) {
+      const live = psql(RUN_DB, ['-At', '-c',
+        `SELECT pg_get_triggerdef(t.oid) FROM pg_trigger t
+          WHERE t.tgname = '${name}' AND t.tgrelid = '"${table}"'::regclass AND NOT t.tgisinternal`]);
+      expect(live.ok, live.output).toBe(true);
+      const norm = (x: string) => x.replace(/\s+/g, ' ').trim();
+      expect(norm(live.output),
+        `the definition this unit pins for ${name} is not what PostgreSQL renders. A pin that `
+        + 'cannot match makes the adoption path abort on a healthy database; one that matches the '
+        + 'wrong thing adopts a weakened trigger.').toBe(norm(def));
+    }
+
+    // ── and a weakened trigger, present and enabled under the right name, ABORTS the apply ───
+    for (const [name, weakened] of Object.entries(ATTACK)) {
+      if (weakened === null) continue;
+      const site = adopted.find((a) => a.name === name)!;
+      const half = UNIT_FILES.find((f) => readFileSync(f, 'utf8').includes(`'${name}'`))!;
+
+      psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+      expect(psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]).ok).toBe(true);
+      // bring the unit up normally, then REPLACE the one trigger with its weakened twin and
+      // replay — the ALWAYS_EXECUTE path, which is where adoption happens.
+      expect(applyWhole().ok, `${name}: the unit must apply before it can be attacked`).toBe(true);
+      const planted = psql(RUN_DB, ['-c',
+        `DROP TRIGGER "${name}" ON "${site.table}"; ${weakened};`]);
+      expect(planted.ok, `planting the weakened ${name} failed:\n${planted.output}`).toBe(true);
+
+      const replay = psql(RUN_DB, ['-f', half]);
+      expect(
+        replay.ok,
+        `${name} is present, enabled, calls the right function and carries the same tgtype — and `
+        + 'it does not fire where the property needs it. The replay must refuse to adopt it',
+      ).toBe(false);
+      expect(replay.output).toMatch(new RegExp(name));
+      expect(replay.output).toMatch(/its definition is not the one this unit installs/);
+    }
+  }, 900_000);
 });

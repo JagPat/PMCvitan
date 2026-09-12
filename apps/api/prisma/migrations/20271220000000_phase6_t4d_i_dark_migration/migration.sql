@@ -131,52 +131,86 @@ END;
 $fn$ LANGUAGE plpgsql;
 
 -- The idempotent install shape this corpus uses everywhere: create when absent, and when present
--- VERIFY the binding rather than assume it. tgtype bits: 1 = ROW, 2 = BEFORE, 4 = INSERT,
--- 8 = DELETE, 16 = UPDATE, 32 = TRUNCATE.
-DO $$
-DECLARE tg pg_trigger;
+-- ── "IS THIS THE TRIGGER I WOULD HAVE INSTALLED?", ASKED ONCE ───────────────────────────────
+-- #582's review round 34. Every site below adopts a trigger it finds already present, on the
+-- `ALWAYS_EXECUTE` replay and the restored-database path. Each asked the same three questions —
+-- enabled, right function, right `tgtype` — and each was wrong in the same way: `tgtype` carries
+-- timing and operations and NOTHING about the two things that decide whether a row trigger
+-- actually fires on the write it exists to refuse.
+--
+--   · `tgqual`, the WHEN clause. `WHEN (NEW."role" = 'architect' AND false)` is tgtype 23.
+--   · `tgattr`, the `UPDATE OF <column>` restriction. `BEFORE INSERT OR UPDATE OF "status"` is
+--     ALSO tgtype 23 — and a direct `UPDATE "Membership" SET "role" = 'architect'` then never
+--     reaches the door at all, which is the reservation open for the whole dark window.
+--
+-- Round 32's finding 3 fixed exactly this shape for the LEDGER PREREQUISITES and stopped at the
+-- sites it was reported on; these are its siblings, and the reservation doors are the ones where
+-- it costs the most. So the question is asked ONCE here, and asked the way PostgreSQL itself
+-- answers it: `pg_get_triggerdef` renders timing, operations, `UPDATE OF` columns, FOR EACH,
+-- the WHEN clause, the function and its arguments in one string. Comparing that string covers
+-- every column of `pg_trigger` that matters and keeps covering them — a future PostgreSQL
+-- attribute nobody here thought of is in the rendering the day it exists, where a checklist of
+-- named columns would need another round to learn it.
+--
+-- Whitespace is normalised so a server that renders the definition differently is not a false
+-- alarm; everything else is byte-exact. Returns NULL when the trigger is the one this unit
+-- installs, 'ABSENT' when there is none, and a description otherwise.
+CREATE OR REPLACE FUNCTION phase6_t4d_trigger_mismatch(p_name TEXT, p_table TEXT, p_expected TEXT)
+RETURNS TEXT LANGUAGE plpgsql STABLE AS $fn$
+DECLARE v_def TEXT; v_enabled "char";
 BEGIN
-  SELECT * INTO tg FROM pg_trigger
-   WHERE tgname = 'RolloutRetirement_t4d_gate'
-     AND tgrelid = '"RolloutRetirement"'::regclass AND NOT tgisinternal;
-  IF NOT FOUND THEN
+  SELECT pg_get_triggerdef(t.oid), t.tgenabled INTO v_def, v_enabled
+    FROM pg_trigger t
+   WHERE t.tgname = p_name AND t.tgrelid = format('%I', p_table)::regclass
+     AND NOT t.tgisinternal;
+  IF NOT FOUND THEN RETURN 'ABSENT'; END IF;
+  IF v_enabled <> 'O' THEN
+    RETURN format('it is DISABLED (tgenabled=%s). A sanctioned reset disables a seal for exactly '
+                  || 'one wipe and re-enables it in the same transaction; one left off is the '
+                  || 'property gone', v_enabled);
+  END IF;
+  IF btrim(regexp_replace(v_def, '\s+', ' ', 'g')) <> btrim(regexp_replace(p_expected, '\s+', ' ', 'g')) THEN
+    RETURN format('its definition is not the one this unit installs — a trigger narrowed by a '
+                  || 'WHEN clause, restricted to other columns with UPDATE OF, moved to another '
+                  || 'timing or pointed at another function is present under the right name and '
+                  || 'does not fire where the property needs it.%s      found: %s%s   expected: %s',
+                  E'\n', v_def, E'\n', p_expected);
+  END IF;
+  RETURN NULL;
+END $fn$;
+
+-- Each adoption below asks that one question.
+DO $$
+DECLARE v_bad TEXT;
+BEGIN
+  v_bad := phase6_t4d_trigger_mismatch('RolloutRetirement_t4d_gate', 'RolloutRetirement',
+    $def$CREATE TRIGGER "RolloutRetirement_t4d_gate" BEFORE INSERT ON public."RolloutRetirement" FOR EACH ROW EXECUTE FUNCTION phase6_t4d_rollout_retirement_gate()$def$);
+  IF v_bad = 'ABSENT' THEN
     CREATE TRIGGER "RolloutRetirement_t4d_gate" BEFORE INSERT ON "RolloutRetirement"
       FOR EACH ROW EXECUTE FUNCTION phase6_t4d_rollout_retirement_gate();
-  ELSIF tg.tgenabled <> 'O'
-     OR tg.tgfoid::regproc::text <> 'phase6_t4d_rollout_retirement_gate'
-     OR tg.tgtype <> 7 THEN            -- EXACTLY ROW(1) + BEFORE(2) + INSERT(4)
+  ELSIF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
-      'phase6 4d-i: RolloutRetirement_t4d_gate exists but does not gate INSERT (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P6T4D.',
-      tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
+      'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.', 'RolloutRetirement_t4d_gate does not gate INSERT:', v_bad;
   END IF;
 
-  SELECT * INTO tg FROM pg_trigger
-   WHERE tgname = 'RolloutRetirement_t4d_frozen'
-     AND tgrelid = '"RolloutRetirement"'::regclass AND NOT tgisinternal;
-  IF NOT FOUND THEN
+  v_bad := phase6_t4d_trigger_mismatch('RolloutRetirement_t4d_frozen', 'RolloutRetirement',
+    $def$CREATE TRIGGER "RolloutRetirement_t4d_frozen" BEFORE DELETE OR UPDATE ON public."RolloutRetirement" FOR EACH ROW EXECUTE FUNCTION phase6_t4d_rollout_retirement_frozen()$def$);
+  IF v_bad = 'ABSENT' THEN
     CREATE TRIGGER "RolloutRetirement_t4d_frozen" BEFORE UPDATE OR DELETE ON "RolloutRetirement"
       FOR EACH ROW EXECUTE FUNCTION phase6_t4d_rollout_retirement_frozen();
-  ELSIF tg.tgenabled <> 'O'
-     OR tg.tgfoid::regproc::text <> 'phase6_t4d_rollout_retirement_frozen'
-     OR tg.tgtype <> 27 THEN           -- EXACTLY ROW(1) + BEFORE(2) + DELETE(8) + UPDATE(16):
-                                       -- an INSERT bit here would refuse the retirement itself
+  ELSIF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
-      'phase6 4d-i: RolloutRetirement_t4d_frozen exists but does not freeze both UPDATE and DELETE (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P6T4D.',
-      tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
+      'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.', 'RolloutRetirement_t4d_frozen does not freeze both UPDATE and DELETE:', v_bad;
   END IF;
 
-  SELECT * INTO tg FROM pg_trigger
-   WHERE tgname = 'RolloutRetirement_t4d_no_truncate'
-     AND tgrelid = '"RolloutRetirement"'::regclass AND NOT tgisinternal;
-  IF NOT FOUND THEN
+  v_bad := phase6_t4d_trigger_mismatch('RolloutRetirement_t4d_no_truncate', 'RolloutRetirement',
+    $def$CREATE TRIGGER "RolloutRetirement_t4d_no_truncate" BEFORE TRUNCATE ON public."RolloutRetirement" FOR EACH STATEMENT EXECUTE FUNCTION phase6_t4d_rollout_retirement_no_truncate()$def$);
+  IF v_bad = 'ABSENT' THEN
     CREATE TRIGGER "RolloutRetirement_t4d_no_truncate" BEFORE TRUNCATE ON "RolloutRetirement"
       FOR EACH STATEMENT EXECUTE FUNCTION phase6_t4d_rollout_retirement_no_truncate();
-  ELSIF tg.tgenabled <> 'O'
-     OR tg.tgfoid::regproc::text <> 'phase6_t4d_rollout_retirement_no_truncate'
-     OR tg.tgtype <> 34 THEN           -- EXACTLY BEFORE(2) + TRUNCATE(32), statement-level
+  ELSIF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
-      'phase6 4d-i: RolloutRetirement_t4d_no_truncate exists but does not enforce the statement-level truncate seal (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P6T4D.',
-      tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
+      'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.', 'RolloutRetirement_t4d_no_truncate does not enforce the statement-level truncate seal:', v_bad;
   END IF;
 END $$;
 
@@ -436,40 +470,32 @@ END $$;
 -- itself, which is what the audit needs, and the `CREATE TRIGGER` that follows escalates to
 -- ACCESS EXCLUSIVE anyway.
 DO $$
-DECLARE tg pg_trigger;
+DECLARE v_bad TEXT;
 BEGIN
   IF phase6_t4d_retired_at_start() THEN RETURN; END IF;
 
-  SELECT * INTO tg FROM pg_trigger
-   WHERE tgname = 'Membership_t4d_architect_reserved'
-     AND tgrelid = '"Membership"'::regclass AND NOT tgisinternal;
-  IF NOT FOUND THEN
+  v_bad := phase6_t4d_trigger_mismatch('Membership_t4d_architect_reserved', 'Membership',
+    $def$CREATE TRIGGER "Membership_t4d_architect_reserved" BEFORE INSERT OR UPDATE ON public."Membership" FOR EACH ROW WHEN ((new.role = 'architect'::text)) EXECUTE FUNCTION phase6_t4d_reserved('Membership.role = architect')$def$);
+  IF v_bad = 'ABSENT' THEN
     CREATE TRIGGER "Membership_t4d_architect_reserved" BEFORE INSERT OR UPDATE ON "Membership"
       FOR EACH ROW WHEN (NEW."role" = 'architect')
       EXECUTE FUNCTION phase6_t4d_reserved('Membership.role = architect');
-  ELSIF tg.tgenabled <> 'O'
-     OR tg.tgfoid::regproc::text <> 'phase6_t4d_reserved'
-     OR tg.tgtype <> 23 THEN           -- EXACTLY ROW(1) + BEFORE(2) + INSERT(4) + UPDATE(16)
+  ELSIF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
-      'phase6 4d-i: Membership_t4d_architect_reserved exists but does not reserve the role (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P6T4D.',
-      tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
+      'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.', 'Membership_t4d_architect_reserved does not reserve the role:', v_bad;
   END IF;
 
   LOCK TABLE "User" IN SHARE ROW EXCLUSIVE MODE;
 
-  SELECT * INTO tg FROM pg_trigger
-   WHERE tgname = 'User_t4d_architect_reserved'
-     AND tgrelid = '"User"'::regclass AND NOT tgisinternal;
-  IF NOT FOUND THEN
+  v_bad := phase6_t4d_trigger_mismatch('User_t4d_architect_reserved', 'User',
+    $def$CREATE TRIGGER "User_t4d_architect_reserved" BEFORE INSERT OR UPDATE ON public."User" FOR EACH ROW WHEN ((new.role = 'architect'::text)) EXECUTE FUNCTION phase6_t4d_reserved('User.role = architect')$def$);
+  IF v_bad = 'ABSENT' THEN
     CREATE TRIGGER "User_t4d_architect_reserved" BEFORE INSERT OR UPDATE ON "User"
       FOR EACH ROW WHEN (NEW."role" = 'architect')
       EXECUTE FUNCTION phase6_t4d_reserved('User.role = architect');
-  ELSIF tg.tgenabled <> 'O'
-     OR tg.tgfoid::regproc::text <> 'phase6_t4d_reserved'
-     OR tg.tgtype <> 23 THEN
+  ELSIF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
-      'phase6 4d-i: User_t4d_architect_reserved exists but does not reserve the role (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P6T4D.',
-      tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
+      'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.', 'User_t4d_architect_reserved does not reserve the role:', v_bad;
   END IF;
 END $$;
 
@@ -3353,7 +3379,7 @@ END $$;
 -- rules are another unit's to state. It VERIFIES the prerequisites and refuses to seal without
 -- them, which is the same answer this file gives everywhere a precondition is not its own.
 DO $ledger_prereq$
-DECLARE spec RECORD; tg pg_trigger;
+DECLARE spec RECORD; tg pg_trigger; v_bad TEXT;
 BEGIN
   -- RETIREMENT DOES NOT MAKE A PREREQUISITE OPTIONAL (#582's review round 27, finding 2).
   --
@@ -3419,37 +3445,41 @@ BEGIN
     -- as the inventory paragraph above already requires of any named dependency. A pinned body is
     -- the only form of this check that a plausible stand-in cannot satisfy.
     FOR spec IN SELECT * FROM (VALUES
-      ('DomainEvent_append_only', 'DomainEvent', 27::smallint, 'domainEvent_append_only',
+      ('DomainEvent_append_only', 'DomainEvent',
+       'CREATE TRIGGER "DomainEvent_append_only" BEFORE DELETE OR UPDATE ON public."DomainEvent" FOR EACH ROW EXECUTE FUNCTION "domainEvent_append_only"()',
+       'domainEvent_append_only',
        'BEGIN RAISE EXCEPTION ''DomainEvent is append-only: % is not permitted (eventId=%)'', TG_OP, OLD."eventId"; END;',
        'BEFORE UPDATE OR DELETE ON "DomainEvent" FOR EACH ROW',
        'a `DomainEvent` row can be rewritten or deleted under the facts that cite it. 4d-i seals a FACT system on top of that ledger: its facts cite events, its pairing claims cite events, and obligation 7 compares a fact''s frozen pair against its event''s envelope. None of that is evidence while the event beneath it can move'),
-      ('Project_ensure_event_stream', 'Project', 5::smallint, 'project_ensure_event_stream',
+      ('Project_ensure_event_stream', 'Project',
+       'CREATE TRIGGER "Project_ensure_event_stream" AFTER INSERT ON public."Project" FOR EACH ROW EXECUTE FUNCTION project_ensure_event_stream()',
+       'project_ensure_event_stream',
        'BEGIN INSERT INTO "ProjectEventStream" ("projectId", "nextPosition") VALUES (NEW."id", 0) ON CONFLICT ("projectId") DO NOTHING; RETURN NEW; END;',
        'AFTER INSERT ON "Project" FOR EACH ROW',
        'a project can be created with no `ProjectEventStream` row. `platform_t4d_stream_init`, installed by this file, admits a new stream only at position 0 and only for a project holding no events — so the first such project to emit is permanently without an allocator, and every `emitEvent` on it fails')
-    ) AS v(tgname, tbl, tgtype, proname, body, shape, harm) LOOP
-      SELECT * INTO tg FROM pg_trigger
-       WHERE tgname = spec.tgname
-         AND tgrelid = format('%I', spec.tbl)::regclass AND NOT tgisinternal;
-      IF NOT FOUND THEN
+    ) AS v(tgname, tbl, def, proname, body, shape, harm) LOOP
+      -- ONE QUESTION, THE SAME ONE THE RESERVATION DOORS ASK (#582's review round 34). Round 32
+      -- pinned `tgtype` and `tgqual` here and left `tgattr` — an `UPDATE OF "eventId"` restriction
+      -- carries the same tgtype, no WHEN clause at all, and never fires on the rewrite the
+      -- append-only rule exists to refuse. `pg_get_triggerdef` renders that restriction, so the
+      -- shared verifier covers it and every other attribute a checklist would have to learn one
+      -- round at a time. The BODY pin below stays: a definition names the function, and the
+      -- function is where a stand-in hides.
+      v_bad := phase6_t4d_trigger_mismatch(spec.tgname, spec.tbl, spec.def);
+      IF v_bad = 'ABSENT' THEN
         RAISE EXCEPTION
           'phase6 4d-i ABORT: `%` is not installed on "%". It is `20261015000000_phase2_event_envelope`''s RAW trigger, and `prisma db push` does not reproduce raw triggers — so on the P3005 adoption path that migration can read as applied while the property it exists for is absent. Without it, %. Re-apply `20261015000000_phase2_event_envelope`''s raw statements (or restore them from that migration file) before this one. See docs/RUNBOOK.md §P6T4D.',
           spec.tgname, spec.tbl, spec.harm;
       END IF;
-      IF tg.tgenabled <> 'O' THEN
+      IF v_bad IS NOT NULL THEN
         RAISE EXCEPTION
-          'phase6 4d-i ABORT: `%` is installed on "%" but DISABLED (tgenabled=%). A sanctioned reset disables a seal for exactly one wipe and re-enables it in the same transaction; one left off is the property gone. Without it, %. Re-enable it before this migration seals on top of it.',
-          spec.tgname, spec.tbl, tg.tgenabled, spec.harm;
+          'phase6 4d-i ABORT: `%` on "%" — %. Without it, %. Restore `20261015000000_phase2_event_envelope`''s raw statement before this migration seals on top of it.',
+          spec.tgname, spec.tbl, v_bad, spec.harm;
       END IF;
-      IF tg.tgtype <> spec.tgtype OR tg.tgqual IS NOT NULL THEN
-        RAISE EXCEPTION
-          'phase6 4d-i ABORT: `%` is installed on "%" but does not fire where the property needs it (tgtype=%, expected % for `%`%). A trigger moved to another timing, narrowed to fewer operations, or given a WHEN clause is present under the right name and partial in fact. Without it, %. Restore `20261015000000_phase2_event_envelope`''s raw statement before this migration seals on top of it.',
-          spec.tgname, spec.tbl, tg.tgtype, spec.tgtype, spec.shape,
-          CASE WHEN tg.tgqual IS NOT NULL THEN ', and it carries a WHEN clause the original has not' ELSE '' END,
-          spec.harm;
-      END IF;
-      IF tg.tgfoid::regproc::text <> format('%I', spec.proname)
-         OR btrim(regexp_replace(COALESCE((SELECT prosrc FROM pg_proc WHERE oid = tg.tgfoid), ''), '\s+', ' ', 'g'))
+      SELECT * INTO tg FROM pg_trigger
+       WHERE tgname = spec.tgname
+         AND tgrelid = format('%I', spec.tbl)::regclass AND NOT tgisinternal;
+      IF btrim(regexp_replace(COALESCE((SELECT prosrc FROM pg_proc WHERE oid = tg.tgfoid), ''), '\s+', ' ', 'g'))
             <> spec.body THEN
         RAISE EXCEPTION
           'phase6 4d-i ABORT: `%` is installed on "%" and enabled, but the function it calls is not `20261015000000_phase2_event_envelope`''s (it calls `%`, whose body is %). A same-named trigger over a stand-in function — a no-op that returns NEW, a partial repair, a hand-written approximation — satisfies every existence and enablement check and enforces nothing. Without the real one, %. Restore that migration''s raw statements before this one. See docs/RUNBOOK.md §P6T4D.',

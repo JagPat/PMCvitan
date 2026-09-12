@@ -92,7 +92,7 @@ END $snapshot$;
 
 
 DO $$
-DECLARE tg pg_trigger;
+DECLARE v_bad TEXT;
 BEGIN
   IF phase6_t4d_retired_at_start() THEN
     RETURN;
@@ -100,35 +100,32 @@ BEGIN
 
   -- `deciderKind = 'architect'` is unreachable until the designation's seals exist. Judged on
   -- ::text because Part 2 has not committed the enum value yet.
-  SELECT * INTO tg FROM pg_trigger
-   WHERE tgname = 'Decision_t4d_architect_reserved'
-     AND tgrelid = '"Decision"'::regclass AND NOT tgisinternal;
-  IF NOT FOUND THEN
+  -- Adopted through the one question `phase6_t4d_trigger_mismatch` asks (#582's review round 34):
+  -- `tgtype` says nothing about the WHEN clause or an `UPDATE OF` column restriction, and a door
+  -- narrowed either way is tgtype 23 and open.
+  v_bad := phase6_t4d_trigger_mismatch('Decision_t4d_architect_reserved', 'Decision',
+    $def$CREATE TRIGGER "Decision_t4d_architect_reserved" BEFORE INSERT OR UPDATE ON public."Decision" FOR EACH ROW WHEN (((new."deciderKind")::text = 'architect'::text)) EXECUTE FUNCTION phase6_t4d_reserved('Decision.deciderKind = architect')$def$);
+  IF v_bad = 'ABSENT' THEN
     CREATE TRIGGER "Decision_t4d_architect_reserved" BEFORE INSERT OR UPDATE ON "Decision"
       FOR EACH ROW WHEN (NEW."deciderKind"::text = 'architect')
       EXECUTE FUNCTION phase6_t4d_reserved('Decision.deciderKind = architect');
-  ELSIF tg.tgenabled <> 'O'
-     OR tg.tgfoid::regproc::text <> 'phase6_t4d_reserved'
-     OR tg.tgtype <> 23 THEN           -- EXACTLY ROW(1) + BEFORE(2) + INSERT(4) + UPDATE(16)
+  ELSIF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
-      'phase6 4d-i: Decision_t4d_architect_reserved exists but does not reserve the designation (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P6T4D.',
-      tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
+      'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.',
+      'Decision_t4d_architect_reserved does not reserve the designation:', v_bad;
   END IF;
 
   -- `status = 'awaiting_countersign'` is unreachable until the chain's seals exist.
-  SELECT * INTO tg FROM pg_trigger
-   WHERE tgname = 'Decision_t4d_awaiting_reserved'
-     AND tgrelid = '"Decision"'::regclass AND NOT tgisinternal;
-  IF NOT FOUND THEN
+  v_bad := phase6_t4d_trigger_mismatch('Decision_t4d_awaiting_reserved', 'Decision',
+    $def$CREATE TRIGGER "Decision_t4d_awaiting_reserved" BEFORE INSERT OR UPDATE ON public."Decision" FOR EACH ROW WHEN (((new.status)::text = 'awaiting_countersign'::text)) EXECUTE FUNCTION phase6_t4d_reserved('Decision.status = awaiting_countersign')$def$);
+  IF v_bad = 'ABSENT' THEN
     CREATE TRIGGER "Decision_t4d_awaiting_reserved" BEFORE INSERT OR UPDATE ON "Decision"
       FOR EACH ROW WHEN (NEW."status"::text = 'awaiting_countersign')
       EXECUTE FUNCTION phase6_t4d_reserved('Decision.status = awaiting_countersign');
-  ELSIF tg.tgenabled <> 'O'
-     OR tg.tgfoid::regproc::text <> 'phase6_t4d_reserved'
-     OR tg.tgtype <> 23 THEN
+  ELSIF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
-      'phase6 4d-i: Decision_t4d_awaiting_reserved exists but does not reserve the chain state (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P6T4D.',
-      tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
+      'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.',
+      'Decision_t4d_awaiting_reserved does not reserve the chain state:', v_bad;
   END IF;
 END $$;
 

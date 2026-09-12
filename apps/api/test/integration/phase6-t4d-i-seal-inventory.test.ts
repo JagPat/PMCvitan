@@ -156,6 +156,9 @@ const FUNCTIONS = [
   // applies it. A seal calling a function that is not there fails at the first write, not at
   // install, which is the whole reason this list exists.
   'platform_t4d_gated_direct_write',
+  // #582's review round 34 — the one question every adoption site asks of a trigger it finds
+  // already present. A migration calling a verifier that is not there fails at apply time.
+  'phase6_t4d_trigger_mismatch',
   'phase6_orgs_t4d_register_backed',
   'phase6_orgs_t4d_register_backed_seal',
   'platform_t4d_register_no_truncate',
