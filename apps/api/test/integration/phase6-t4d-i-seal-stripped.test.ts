@@ -2855,6 +2855,113 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
   }, 180_000);
 
   /**
+   * #582's review round 25, finding 1 — ONE ACT HAS ONE APPROVAL FAMILY, and every count in this
+   * seal asked only about the type in front of it.
+   *
+   * Round 7 made the event count EXACT, round 9 made the audit count exact in the converse
+   * direction, and round 24 refused the (kind, status) pairs the table does not list. All three
+   * are per-TYPE: each trigger invocation counts events matching ITS row's required types, and
+   * audit rows of ITS row's own type. Nothing counted ACROSS the two types that describe the same
+   * act. So a no-chain `pending` -> `approved` bundle carrying ONE valid revision can append an
+   * `approved`/`decision.approved` pair AND a `reapproved`/`decision.reapproved` pair: each
+   * invocation sees exactly one event and one audit row of its own type, and round 23's actor
+   * binding resolves both to the same revision, so the whole thing commits. The register then
+   * holds two immutable approval rows for one approval — `priorApprovals` counts both and the
+   * next revision is stamped a version too high — and the stream carries a second announcement
+   * the consumer will dispatch.
+   *
+   * Two-sided, because the single-family bundle is the shipped approval path and must commit.
+   */
+  it('one approval act announces ONE family — the second is refused across the types, not within them', () => {
+    buildRun([]);
+
+    expect(psql(RUN_DB, ['-c', `
+      BEGIN;
+      INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt")
+        VALUES ('ss-dec-fam','ss-proj','SS Family','Hall','pending','sw',NULL);
+      INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch","order")
+        VALUES ('ss-optf-a','ss-dec-fam','Option A','a','Granite',0,'sw1',0),
+               ('ss-optf-b','ss-dec-fam','Option B','b','Quartz',100,'sw2',1);
+      UPDATE "Decision" SET "publishedAt" = now() WHERE "id" = 'ss-dec-fam';
+      COMMIT;
+    `]).ok).toBe(true);
+
+    // ONE revision, ONE transition — and TWO families announced around it.
+    const doubled = psql(RUN_DB, ['-c', `
+      BEGIN;
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('ss-cmd-fam','project','ss-org','ss-proj','ss-user','decisions.approve','ss-key-fam','ss-hash-fam','reserved');
+      UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec-fam' WHERE "id" = 'ss-cmd-fam';
+      UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'ss-dec-fam';
+      INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
+        VALUES ('ss-rev-fam','ss-proj','ss-dec-fam',1,'a',now(),'ss-user','ss-cmd-fam');
+      UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+      INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+        SELECT 'ss-ev-fam1','decision.approved',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec-fam',
+               jsonb_build_object('effectKey','decision.approved','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
+                                  'push', jsonb_build_object('body','ss approval','roles', c."pushRoles"))
+          FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+         WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.approved'
+           AND c."coverageVersion" = '${COVERAGE}';
+      INSERT INTO "DecisionEvent" ("id","decisionId","type","actor","actorId")
+        VALUES ('ss-de-fam1','ss-dec-fam','approved','SS User','ss-user');
+      UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+      INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+        SELECT 'ss-ev-fam2','decision.reapproved',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec-fam',
+               jsonb_build_object('effectKey','decision.reapproved','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
+                                  'push', jsonb_build_object('body','ss approval','roles', c."pushRoles"))
+          FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+         WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.reapproved'
+           AND c."coverageVersion" = '${COVERAGE}';
+      INSERT INTO "DecisionEvent" ("id","decisionId","type","actor","actorId")
+        VALUES ('ss-de-fam2','ss-dec-fam','reapproved','SS User','ss-user');
+      COMMIT;
+    `]);
+    expect(
+      doubled.ok,
+      'an approval bundle announcing BOTH families around one revision must be REFUSED — each '
+      + 'per-type count passes, and the register is left with two immutable approval rows for one '
+      + `act while the stream carries two announcements:\n${doubled.output}`,
+    ).toBe(false);
+    expect(doubled.output).toMatch(/approval-family audit rows|approval-family events/);
+
+    // AND THE SHIPPED PATH COMMITS: one revision, one family, one announcement.
+    buildRun([]);
+    expect(psql(RUN_DB, ['-c', `
+      BEGIN;
+      INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt")
+        VALUES ('ss-dec-fam','ss-proj','SS Family','Hall','pending','sw',NULL);
+      INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch","order")
+        VALUES ('ss-optf-a','ss-dec-fam','Option A','a','Granite',0,'sw1',0),
+               ('ss-optf-b','ss-dec-fam','Option B','b','Quartz',100,'sw2',1);
+      UPDATE "Decision" SET "publishedAt" = now() WHERE "id" = 'ss-dec-fam';
+      COMMIT;
+    `]).ok).toBe(true);
+
+    const single = psql(RUN_DB, ['-c', `
+      BEGIN;
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('ss-cmd-fam','project','ss-org','ss-proj','ss-user','decisions.approve','ss-key-fam','ss-hash-fam','reserved');
+      UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec-fam' WHERE "id" = 'ss-cmd-fam';
+      UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'ss-dec-fam';
+      INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
+        VALUES ('ss-rev-fam','ss-proj','ss-dec-fam',1,'a',now(),'ss-user','ss-cmd-fam');
+      UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+      INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+        SELECT 'ss-ev-fam1','decision.approved',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec-fam',
+               jsonb_build_object('effectKey','decision.approved','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
+                                  'push', jsonb_build_object('body','ss approval','roles', c."pushRoles"))
+          FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+         WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.approved'
+           AND c."coverageVersion" = '${COVERAGE}';
+      INSERT INTO "DecisionEvent" ("id","decisionId","type","actor","actorId")
+        VALUES ('ss-de-fam1','ss-dec-fam','approved','SS User','ss-user');
+      COMMIT;
+    `]);
+    expect(single.ok, `the shipped single-family approval must COMMIT:\n${single.output}`).toBe(true);
+  }, 180_000);
+
+  /**
    * #582's review round 9, finding 2 — A PRE-BASELINE CATALOG ROW THAT DISAGREES WITH THE LITERAL.
    *
    * Round 8 made this WORSE before round 9 fixed it: the outgoing-generation copy read the REAL

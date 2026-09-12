@@ -2739,6 +2739,8 @@ DECLARE
   v_approver TEXT;                       -- #582 round 19, finding 4 — the act's own actor
   v_actor_hi TEXT;                       -- #582 round 23, finding 3 — and it is ONE actor, not any
   v_row      TEXT;
+  v_from     TEXT; v_from_hi TEXT;       -- #582 round 25, finding 1 — the approval FAMILY
+  v_fam      BIGINT;
   v_status   TEXT;
   v_project  TEXT;
   v_required TEXT[];
@@ -2875,6 +2877,82 @@ BEGIN
   -- previous-release audit row may carry no `actorId` at all, and no released code writes the
   -- event envelope until 4d-ii. So each side is compared only when it names somebody. 4d-iii is
   -- where both become required and this becomes total.
+  -- AND ONE ACT HAS ONE APPROVAL FAMILY (#582's review round 25, finding 1).
+  --
+  -- Every count above is PER TYPE. Round 7 made the event count exact for the types THIS row
+  -- requires; round 9 made the audit count exact for THIS row's own type; round 24 refused the
+  -- (kind, status) pairs the table does not list. Not one of them looks ACROSS the two types that
+  -- describe a single approval. So a no-chain `pending` -> `approved` bundle carrying ONE valid
+  -- revision could append an `approved`/`decision.approved` pair AND a
+  -- `reapproved`/`decision.reapproved` pair: each trigger invocation counts one event and one
+  -- audit row of its own type, round 23's actor binding resolves both to the same revision, and
+  -- the whole thing commits. The register then holds two immutable approval rows for one act —
+  -- `priorApprovals` in `decisions.service.ts` counts both and stamps the next revision a version
+  -- too high — and the stream carries a second announcement the consumer will dispatch.
+  --
+  -- TWO RULES, because the bundle breaks two things. (1) At most ONE approval-family audit row and
+  -- ONE approval-family event per decision per transaction — unconditional, and the half that
+  -- refuses the attack whatever else is true. (2) WHICH family is the revision's to say: §A.3 and
+  -- P31 both put the finalizing event under the revision's recorded `approvedFrom`, so when that
+  -- discriminator is present the family is determined and the other one is a misannouncement, not
+  -- a choice. It is NULL through the drain (the column is dark until 4d-ii), so rule 2 is
+  -- conditional on it exactly as the drain's other discriminators are — and rule 1 is not.
+  --
+  -- This also retires an abdication of the same shape as rounds 23 and 24: the table above gives
+  -- `countersigned` and `stranded_resolved` a DISJUNCTION of the two families, with a comment
+  -- saying which one applies is "the finalizer's business, not this seal's". `approvedFrom` is
+  -- exactly where the finalizer's business is recorded, so when it is present this seal can and
+  -- does read it rather than admitting either.
+  IF NEW."type" IN ('approved', 'reapproved')
+     OR 'decision.approved' = ANY (v_required) OR 'decision.reapproved' = ANY (v_required) THEN
+    SELECT count(*) INTO v_fam FROM "DecisionEvent" d
+     WHERE d."decisionId" = NEW."decisionId"
+       AND d."type" IN ('approved', 'reapproved')
+       AND d."xmin" = txid_current()::text::xid;
+    IF v_fam > 1 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: decision % gains % approval-family audit rows in this transaction (`approved` and `reapproved` together) — an approval is ONE act announced ONE way, and a second family is an immutable duplicate the approval COUNT reads as another cycle',
+        NEW."decisionId", v_fam;
+    END IF;
+    SELECT count(*) INTO v_fam FROM "DomainEvent" e
+     WHERE e."projectId" = v_project AND e."entityType" = 'Decision'
+       AND e."entityId" = NEW."decisionId"
+       AND e."eventType" IN ('decision.approved', 'decision.reapproved')
+       AND e."xmin" = txid_current()::text::xid;
+    IF v_fam > 1 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: decision % emits % approval-family events in this transaction — one act announces once, and the consumer dispatches every one of them, so a second is a delivery of an approval that did not happen',
+        NEW."decisionId", v_fam;
+    END IF;
+
+    -- AND THE REVISION SAYS WHICH FAMILY. min/max for round 23's reason: two revisions disagreeing
+    -- about their source is an ambiguity to refuse, not one to resolve by picking a row.
+    SELECT min(r."approvedFrom"), max(r."approvedFrom") INTO v_from, v_from_hi
+      FROM "DecisionApprovalRevision" r
+     WHERE r."projectId" = v_project AND r."decisionId" = NEW."decisionId"
+       AND r."xmin" = txid_current()::text::xid;
+    IF v_from IS NOT NULL AND v_from IS NOT DISTINCT FROM v_from_hi THEN
+      IF (v_from = 'pending' AND NEW."type" = 'reapproved')
+         OR (v_from = 'change' AND NEW."type" = 'approved') THEN
+        RAISE EXCEPTION
+          'phase6 4d-i: the `%` audit row for decision % sits beside a revision recording `approvedFrom = %` — a decision approved from `%` is announced as %, and the other family names an act with a different history',
+          NEW."type", NEW."decisionId", v_from, v_from,
+          CASE v_from WHEN 'pending' THEN '`approved`' ELSE '`reapproved`' END;
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM "DomainEvent" e
+         WHERE e."projectId" = v_project AND e."entityType" = 'Decision'
+           AND e."entityId" = NEW."decisionId"
+           AND e."eventType" = CASE v_from WHEN 'pending' THEN 'decision.reapproved' ELSE 'decision.approved' END
+           AND e."xmin" = txid_current()::text::xid) THEN
+        RAISE EXCEPTION
+          'phase6 4d-i: decision % emits the % event beside a revision recording `approvedFrom = %` — the delivery stream is what the push renders, and announcing the wrong family tells every recipient this decision has a history it does not have',
+          CASE v_from WHEN 'pending' THEN '`decision.reapproved`' ELSE '`decision.approved`' END,
+          NEW."decisionId", v_from;
+      END IF;
+    END IF;
+  END IF;
+
   -- AND THE BINDING IS PER-BRANCH, BECAUSE THE ACT'S ROW IS (#582's review round 23, finding 3).
   --
   -- Round 19 wrote the rule correctly — "the act's records are bound to the act's ROW" — and then

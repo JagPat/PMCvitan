@@ -4942,6 +4942,20 @@ if [ "$t4d_r21_ready" = "1" ]; then
   $PSQL3 -c 'CREATE TRIGGER "Project_ensure_event_stream" AFTER INSERT ON "Project" FOR EACH ROW EXECUTE FUNCTION "project_ensure_event_stream"();' >/dev/null \
     || { echo "FAILED  4d-i R21: could not restore the prerequisite trigger"; FAIL=1; }
 
+  # ── (a1) THE SAME PREREQUISITE, THE OTHER KIND OF RAW OBJECT (#582 round 25, finding 2). Round
+  # 21 enumerated that migration's TRIGGERS and called the inventory complete; the question is not
+  # what is a trigger but what `prisma db push` cannot reproduce, and it also owns the raw CHECK
+  # `DomainEvent_attribution_truth_table` — Prisma cannot express a CHECK at all. Without it an
+  # event may claim `actorKind = 'human'` with no `actorId`: this unit's envelope seal judges the
+  # actor pair only where a role is present, and the append-only trigger then makes the
+  # unattributable event permanent under every fact that cites it.
+  $PSQL3 -c 'ALTER TABLE "DomainEvent" DROP CONSTRAINT "DomainEvent_attribution_truth_table";' >/dev/null \
+    || { echo "FAILED  4d-i R21: could not stage the missing-CHECK shape"; FAIL=1; }
+  t4d_r21_must_abort "a database whose event attribution truth table is missing is refused by name" \
+    'DomainEvent_attribution_truth_table` is not installed'
+  $PSQL3 -c 'ALTER TABLE "DomainEvent" ADD CONSTRAINT "DomainEvent_attribution_truth_table" CHECK ("actorKind" IN (E'"'"'human'"'"', E'"'"'system'"'"') AND ("actorKind" <> E'"'"'human'"'"' OR "actorId" IS NOT NULL) AND ("actorKind" <> E'"'"'system'"'"' OR "systemActor" IS NOT NULL));' >/dev/null \
+    || { echo "FAILED  4d-i R21: could not restore the prerequisite CHECK"; FAIL=1; }
+
   # ── (a2) THE CATALOG'S OWN POPULATION. Round 21's class, at the other end of the file: the
   # catalog audit's three arms all scope to `coverageVersion IN (the generations this migration
   # seeds)`, while `DomainEvent_t4d_envelope` resolves an event by whatever exact

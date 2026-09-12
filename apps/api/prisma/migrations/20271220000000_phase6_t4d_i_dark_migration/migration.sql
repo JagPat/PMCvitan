@@ -3002,9 +3002,37 @@ END $$;
 --   down refuses the already-broken projects; this refuses the database that keeps producing
 --   them.
 --
--- THE INVENTORY, so the sweep is checkable rather than asserted: `20261015000000_phase2_event_envelope`
--- installs exactly two triggers — `DomainEvent_append_only` (line 115) and
--- `Project_ensure_event_stream` (line 135). Both are verified here; that migration has no third.
+-- THE INVENTORY, so the sweep is checkable rather than asserted — AND IT IS THE INVENTORY OF RAW
+-- OBJECTS, NOT OF TRIGGERS (#582's review round 25, finding 2).
+--
+-- The first form of this comment said "`20261015000000_phase2_event_envelope` installs exactly two
+-- triggers … that migration has no third", which was true and answered the wrong question. What
+-- makes an object a prerequisite here is not that it is a TRIGGER — it is that `prisma db push`
+-- cannot reproduce it, so the P3005 adoption path can leave it behind while the migration reads as
+-- applied. That migration holds THREE such objects, and the third is a CHECK constraint:
+--
+--   `DomainEvent_append_only`                (trigger, line 115)
+--   `Project_ensure_event_stream`            (trigger, line 135)
+--   `DomainEvent_attribution_truth_table`    (CHECK,   line 97)
+--
+-- Its indexes and foreign keys are NOT in this class: Prisma derives those from the model and
+-- `db push` reproduces them. A CHECK it cannot express at all, which is exactly why that one is
+-- raw and exactly why it goes missing on the same path the two triggers do.
+--
+-- AND THE BOUNDARY OF THIS BLOCK, stated rather than left to be inferred: it verifies ONE
+-- migration, the one whose ledger 4d-i seals a fact system on top of. The other units this file
+-- touches — 4a, 4b, 4c — it does not rest on unverified: it `CREATE OR REPLACE`s the functions it
+-- needs to widen, and where it REPLACES a delivered seal it asserts both the old name's absence
+-- and the new one's presence in the same transaction (`DecisionApprovalRevision_append_only`
+-- against `DecisionApprovalRevision_t4d_one_flip`, further down in the decisions half). A
+-- prerequisite is something this file assumes and does not install; those are things it installs.
+--
+-- What the omission admits: `platform_t4d_event_envelope` judges `actorKind` only where
+-- `actorRole` is present, because the truth table beneath it was assumed to hold. Without the
+-- CHECK, a direct insert carrying a valid catalog intent, a null actor pair and
+-- `actorKind = 'human'` with no `actorId` commits — and `DomainEvent_append_only` then makes an
+-- event with no attributable actor permanent, underneath every 4d fact that cites it. Following
+-- §P6T4D's documented trigger repair alone would have sealed exactly that database.
 --
 -- 4d-i does not install a second copy of either: two definitions of one rule drift, and these
 -- rules are another unit's to state. It VERIFIES the prerequisites and refuses to seal without
@@ -3015,6 +3043,16 @@ BEGIN
   IF phase6_t4d_retired_at_start() THEN
     RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the ledger-prerequisite check is SKIPPED (this is a replay over a retired database)';
   ELSE
+    -- THE CHECK FIRST, because a missing truth table is the one this file's own envelope seal
+    -- silently relies on rather than re-states.
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint
+       WHERE conname = 'DomainEvent_attribution_truth_table'
+         AND conrelid = '"DomainEvent"'::regclass AND contype = 'c') THEN
+      RAISE EXCEPTION
+        'phase6 4d-i ABORT: `DomainEvent_attribution_truth_table` is not installed on "DomainEvent". It is `20261015000000_phase2_event_envelope`''s RAW CHECK — Prisma cannot express a CHECK, so `prisma db push` does not reproduce it, and on the P3005 adoption path that migration can read as applied while the property it exists for is absent. Without it an event may claim `actorKind = ''human''` with no `actorId` (or any actorKind at all): this file''s envelope seal judges the actor pair only where a role is present, and `DomainEvent_append_only` then makes an unattributable event permanent underneath every 4d fact that cites it. Re-apply `20261015000000_phase2_event_envelope`''s raw statements (or restore them from that migration file) before this one. See docs/RUNBOOK.md §P6T4D.';
+    END IF;
+
     FOR spec IN SELECT * FROM (VALUES
       ('DomainEvent_append_only', 'DomainEvent',
        'a `DomainEvent` row can be rewritten or deleted under the facts that cite it. 4d-i seals a FACT system on top of that ledger: its facts cite events, its pairing claims cite events, and obligation 7 compares a fact''s frozen pair against its event''s envelope. None of that is evidence while the event beneath it can move'),
