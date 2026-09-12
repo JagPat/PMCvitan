@@ -27,7 +27,11 @@ import { PrismaClient } from '@prisma/client';
 /** table → the `_t4d_` triggers 4d-i installs on it. */
 const INVENTORY: Record<string, string[]> = {
   ChangeRequest: ['ChangeRequest_t4d_birth_pair', 'ChangeRequest_t4d_closure_bound',
-    'ChangeRequest_t4d_evidence_frozen', 'ChangeRequest_t4d_no_truncate', 'ChangeRequest_t4d_project',
+    'ChangeRequest_t4d_evidence_frozen',
+    // #582's review round 26, finding 3 — identity frozen from birth, the rule `Decision` already
+    // carried and three of its four siblings did not.
+    'ChangeRequest_t4d_identity',
+    'ChangeRequest_t4d_no_truncate', 'ChangeRequest_t4d_project',
     'ChangeRequest_t4d_source_bound'],
   Decision: [
     'Decision_t4d_approval_transition',
@@ -92,6 +96,7 @@ const INVENTORY: Record<string, string[]> = {
     'Membership_t4d_architect_reserved',
     'Membership_t4d_fact_first',
     'Membership_t4d_holder_guard',
+    'Membership_t4d_identity',
     'Membership_t4d_no_truncate',
     'Membership_t4d_role_standing',
   ],
@@ -104,9 +109,11 @@ const INVENTORY: Record<string, string[]> = {
   Notification: [
     'Notification_t4d_binding',
     'Notification_t4d_binding_bound',
+    'Notification_t4d_identity',
     'Notification_t4d_no_truncate',
   ],
-  OrgMembership: ['OrgMembership_t4d_org_authority', 'OrgMembership_t4d_user_standing'],
+  OrgMembership: ['OrgMembership_t4d_identity', 'OrgMembership_t4d_org_authority',
+    'OrgMembership_t4d_user_standing'],
   OrgUserAuthority: ['OrgUserAuthority_t4d_no_truncate', 'OrgUserAuthority_t4d_writer'],
   Project: ['Project_t4d_deleting', 'Project_t4d_project_org', 'Project_t4d_user_standing'],
   ProjectEventStream: [
@@ -140,6 +147,7 @@ const FUNCTIONS = [
   'phase6_t4d_retired',
   'phase6_t4d_reserved',
   'phase6_t4d_actor_bound',
+  'phase6_t4d_identity_frozen',
   'phase6_t4d_provenance_bound',
   'phase6_t4d_membership_transition_bound',
   'platform_t4d_register_writer',

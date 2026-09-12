@@ -1051,6 +1051,14 @@ const ARMS: Arm[] = [
  * This is NOT `COVERED_BY_CLASS`: these seals have their own bodies and their own hostile writes.
  */
 const STRIPPED_BY_PROBE: Record<string, string> = {
+  // #582 round 26, finding 3 — stripped by the hand-written round-26 arm rather than by a table
+  // entry, because the identity class needs a row PLANTED before the rewrite can be attempted and
+  // the declarative arms carry a single hostile statement.
+  ChangeRequest_t4d_identity:
+    // the title carries no apostrophe on purpose: the declaration is matched against this file's
+    // SOURCE TEXT, and an escaped quote in the literal never equals the resolved string.
+    'round 26: SUBSTANCE, MOMENT and IDENTITY are evidence too',
+
   // #582 round 10, finding 2 — `awaiting_countersign` is reserved until 4d-iii, so the transition
   // this door judges does not exist on a database where the doors still stand.
   Decision_t4d_disagreement_paired: 'the awaiting_countersign to change transition owes its rejection request',
@@ -1076,6 +1084,14 @@ const COVERED_BY_CLASS: Record<string, string> = {
   // the recorder stays silent on a no-op and the birth is refused; and the fixture's own real
   // `pending` -> `approved` transition is admitted, which is the recorder firing.
   Decision_t4d_approval_transition: 'DecisionApprovalRevision_t4d_birth_paired',
+  // #582 round 26, finding 3 — `phase6_t4d_identity_frozen` is ONE function over four tables.
+  // The arm below drives it on `ChangeRequest`, stripped and whole; these three are the same
+  // function on the same operation, and each is additionally DRIVEN, per column, by the
+  // frozen-column coverage oracle — which is what keeps "covered by class" from meaning
+  // "assumed".
+  Membership_t4d_identity: 'ChangeRequest_t4d_identity',
+  Notification_t4d_identity: 'ChangeRequest_t4d_identity',
+  OrgMembership_t4d_identity: 'ChangeRequest_t4d_identity',
   // platform_t4d_register_no_truncate — one function, many registers
   ChangeRequest_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
   DecisionCountersign_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
@@ -3656,4 +3672,924 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     ).toBe(false);
     expect(bare.output).toMatch(/entered `awaiting_countersign` in this transaction with 0 PROVISIONAL revisions/);
   }, 300_000);
+
+  /**
+   * #582's review round 26 — THE FROZEN-COLUMN COVERAGE ORACLE, AND WHY IT DRIVES.
+   *
+   * Rounds 18, 23, 24 and 25 were one defect wearing four faces: a rule stated over an inventory
+   * and implemented over a subset. Round 24's is the clearest — the change request's evidence
+   * freeze covered the frozen actor PAIR and not `requestedById`, the column naming the person
+   * the pair is about, so a row could permanently name one person and vouch for another. Round 17
+   * closed ONE instance of this class structurally, by discovering the inventory from the database
+   * instead of keeping it by hand, and that class has not recurred since. This does the same for
+   * the columns.
+   *
+   * THE QUESTION, asked of every table this unit installs an UPDATE-firing seal on: which of its
+   * columns can still be rewritten after the fact, and is each of those deliberate? The table set
+   * is DISCOVERED (`pg_trigger`, `_t4d_`, fires on UPDATE) and the column set is DISCOVERED
+   * (`information_schema`), so a column added by a later unit — or a table that gains its first
+   * seal — cannot be silent: it fails here the day it lands.
+   *
+   * AND IT DRIVES EACH COLUMN RATHER THAN READING THE SEAL. The first shape of this arm was going
+   * to be structural, like round 17's: read the installed bodies out of `pg_proc` and treat "the
+   * body mentions the column" as "the seal freezes it". Run against the real database that proxy
+   * reports `Membership` completely covered — because a before-update body READS `NEW."userId"`
+   * to look a standing row up. A read is not a freeze. That is round 2's finding word for word
+   * ("my own oracle inherited the gap"), and an oracle built on a proxy for the property rather
+   * than the property reproduces the very class it exists to close. So every column is DRIVEN:
+   * the row is planted, the update is attempted with every seal ON, and the outcome is measured.
+   *
+   * A REFUSAL MUST NAME ITS REASON. For every column the register declares refused it also
+   * records a fragment of the refusing message. Without that, a row whose referents happen to be
+   * incoherent would be refused by a foreign key and score as "frozen by the seal" — the arm
+   * would read green while the seal did nothing. The fragment is what makes the measurement about
+   * the seal a reviewer is reading.
+   *
+   * THREE PROOF SHAPES, because three different mechanisms make a column unwritable:
+   *
+   *   · `columns` — this unit's seal names the column. The per-column drive is the proof.
+   *   · `blanket` — a seal on the table refuses EVERY update, so no column is writable and there
+   *     is nothing to enumerate. Proven by driving every column against it.
+   *   · `gate`    — a seal admits only a SANCTIONED writer (`platform_t4d_register_writer` raises
+   *     unconditionally at trigger depth 1), so a direct write of any column is refused whatever
+   *     the column is. This shape is why the five adopted registers carry no per-column rules and
+   *     are nonetheless closed.
+   *
+   * `writable` is the deliberate half, and every entry owes a reason that says why rewriting that
+   * column does not change what the record says happened. "It is the closure" is a reason.
+   * Silence is not one, and a blank string fails.
+   */
+  type FreezeEntry =
+    | { proof: 'gate' | 'blanket'; by: string; refusal: string }
+    | { proof: 'columns'; refused: Record<string, string>; writable: Record<string, string> };
+
+  /**
+   * THE REGISTER. Filled from this arm's own report, which prints a paste-ready block for
+   * anything unclassified — so it can never drift silently behind the schema.
+   */
+  const FREEZE: Record<string, FreezeEntry> = {
+    ChangeRequest: {
+      proof: 'columns',
+      refused: {
+        costImpact: "phase6 4d-i: change request changerequest-probe records costImpact at",
+        createdAt: "phase6 4d-i: change request changerequest-probe records createdAt at i",
+        decisionId: "phase6-4b: a change request stays with the decision it was raised agai",
+        id: "phase6 4d-i: ChangeRequest.changerequest-probe is the identity of a re",
+        origin: "phase6 4d-i: change request changerequest-probe is evidence",
+        projectId: "phase6 4d-i: change request changerequest-probe is evidence",
+        reason: "phase6 4d-i: change request changerequest-probe records reason at its",
+        requestedById: "phase6 4d-i: change request changerequest-probe records requestedById",
+        requestedByName: "phase6 4d-i: change request changerequest-probe records requestedByNam",
+        requestedByRole: "phase6 4d-i: change request changerequest-probe records requestedByRol",
+        resolution: "phase6 4d-i: change request changerequest-probe already records resolu",
+        resolvedAt: "phase6 4d-i: change request changerequest-probe already records resolv",
+        resolvedByCommandId: "phase6 4d-i: change request changerequest-probe already records resolv",
+        resolvedById: "phase6 4d-i: change request changerequest-probe already records resolv",
+        resolvedByName: "phase6 4d-i: change request changerequest-probe already records resolv",
+        resolvedByRole: "phase6 4d-i: change request changerequest-probe already records resolv",
+        revisionId: "phase6 4d-i: change request changerequest-probe is evidence",
+        sourceCommandId: "phase6 4d-i: change request changerequest-probe records sourceCommandI",
+        timeImpactDays: "phase6 4d-i: change request changerequest-probe records timeImpactDays",
+      },
+      writable: {
+        status:
+          "the closure IS a status transition \u2014 open -> resolved/withdrawn is the act every other column on this row records, and freezing it would refuse the closure itself",
+      },
+    },
+    Decision: {
+      proof: 'columns',
+      refused: {
+        approvedDeciderKind: "phase6-4b: approval attribution may first be written only by an approv",
+        approvedDeciderLabel: "violates check constraint",
+        approvedDeciderMembershipId: "violates check constraint",
+        authorId: "phase6-4b: decision authorship is frozen from birth",
+        deciderKind: "phase6-4b: a published or attributed decision keeps its holder",
+        deciderMembershipId: "phase6-4b: a published or attributed decision keeps its holder",
+        id: "phase6-4b: decision register identity is frozen from birth",
+        nodeId: "violates foreign key constraint",
+        projectId: "phase6-4b: decision register identity is frozen from birth",
+        withdrawReason: "phase6-t4a: withdrawal evidence may exist only on a withdrawn decision",
+        withdrawnAt: "phase6-t4a: withdrawal evidence may exist only on a withdrawn decision",
+        withdrawnById: "phase6-t4a: withdrawal evidence may exist only on a withdrawn decision",
+        withdrawnByName: "phase6-t4a: withdrawal evidence may exist only on a withdrawn decision",
+      },
+      writable: {
+        ageDays:
+          "a derived display counter recomputed from `date`; it records no act and vouches for nobody",
+        approvedById:
+          "a delivered denormalisation of the head revision's approver; the authoritative, immutable record is `DecisionApprovalRevision`, which this unit freezes in full",
+        approvedOption:
+          "a delivered denormalisation of the head revision's `optionKey`, which this unit freezes on the revision itself",
+        approver:
+          "the DELIVERED display label; the attributable record of who approved is the immutable revision register, and 4b's attribution seal owns this column's correctness",
+        cost:
+          "the decision's own editable content, owned by 4b's draft rules, not by this unit",
+        createdAt:
+          "the draft's own birth, before any act this unit records exists to be evidence about",
+        date:
+          "the decision's own editable content, owned by 4b's draft rules, not by this unit",
+        material:
+          "the decision's own editable content, owned by 4b's draft rules, not by this unit",
+        onBehalfOf:
+          "a delivered denormalisation of the head revision's `onBehalfOf`, which this unit freezes on the revision itself",
+        photoSwatch:
+          "presentation of the decision's own content, owned by 4b's draft rules",
+        publishedAt:
+          "set when the draft is published and read by 4b's entry seals; the publication act is what 4b judges, and 4d-i adds no rule about it",
+        room:
+          "the decision's own editable content, owned by 4b's draft rules, not by this unit",
+        status:
+          "the decision's LIFECYCLE \u2014 every transition this unit judges is a status move, and the transition recorder reads it rather than freezing it",
+        title:
+          "the decision's own editable content; 4d-i is DARK and does not own what a decision SAYS \u2014 4b owns the draft/publish boundary and refuses edits to a published head",
+      },
+    },
+    DecisionApprovalRevision: {
+      proof: 'columns',
+      refused: {
+        approvedAt: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+        approvedById: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+        approvedByName: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+        approvedByRole: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+        approvedFrom: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+        decisionId: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+        id: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+        onBehalfOf: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+        optionKey: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+        projectId: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+        sourceCommandId: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+        version: "DecisionApprovalRevision is append-only apart from ONE transition: rev",
+      },
+      writable: {
+        finalized:
+          "the ONE admitted flip \u2014 false -> true is the finalisation this register exists to record, and `_t4d_one_flip` is the seal that allows it exactly once",
+      },
+    },
+    DecisionConsultation: {
+      proof: 'columns',
+      refused: {
+        consulteeMembershipId: "phase6-4c: DecisionConsultation is append-only evidence",
+        consulteeUserId: "phase6-4c: DecisionConsultation is append-only evidence",
+        decisionId: "phase6-4c: DecisionConsultation is append-only evidence",
+        id: "phase6-4c: DecisionConsultation is append-only evidence",
+        openCycle: "phase6-4c: DecisionConsultation is append-only evidence",
+        projectId: "phase6-4c: DecisionConsultation is append-only evidence",
+        question: "phase6-4c: DecisionConsultation is append-only evidence",
+        requestedAt: "phase6-4c: DecisionConsultation is append-only evidence",
+        requestedById: "phase6-4c: DecisionConsultation is append-only evidence",
+        requestedByName: "phase6-4c: DecisionConsultation is append-only evidence",
+        requestedByRole: "phase6-4c: DecisionConsultation is append-only evidence",
+        sourceCommandId: "phase6-4c: DecisionConsultation is append-only evidence",
+      },
+      writable: {
+      },
+    },
+    DecisionConsultationResponse: {
+      proof: 'columns',
+      refused: {
+        consultationId: "phase6-4c: DecisionConsultationResponse is append-only evidence",
+        decisionId: "phase6-4c: DecisionConsultationResponse is append-only evidence",
+        id: "phase6-4c: DecisionConsultationResponse is append-only evidence",
+        projectId: "phase6-4c: DecisionConsultationResponse is append-only evidence",
+        recommendedOptionId: "phase6-4c: DecisionConsultationResponse is append-only evidence",
+        respondedAt: "phase6-4c: DecisionConsultationResponse is append-only evidence",
+        respondedById: "phase6-4c: DecisionConsultationResponse is append-only evidence",
+        respondedByName: "phase6-4c: DecisionConsultationResponse is append-only evidence",
+        respondedByRole: "phase6-4c: DecisionConsultationResponse is append-only evidence",
+        response: "phase6-4c: DecisionConsultationResponse is append-only evidence",
+        sourceCommandId: "phase6-4c: DecisionConsultationResponse is append-only evidence",
+      },
+      writable: {
+      },
+    },
+    DecisionCountersign: {
+      proof: 'columns',
+      refused: {
+        at: "phase6 4d-i: DecisionCountersign is an append-only register and its ro",
+        countersignedById: "phase6 4d-i: DecisionCountersign is an append-only register and its ro",
+        countersignedByName: "phase6 4d-i: DecisionCountersign is an append-only register and its ro",
+        countersignedByRole: "phase6 4d-i: DecisionCountersign is an append-only register and its ro",
+        decisionId: "phase6 4d-i: DecisionCountersign is an append-only register and its ro",
+        id: "phase6 4d-i: DecisionCountersign is an append-only register and its ro",
+        projectId: "phase6 4d-i: DecisionCountersign is an append-only register and its ro",
+        revisionId: "phase6 4d-i: DecisionCountersign is an append-only register and its ro",
+        sourceCommandId: "phase6 4d-i: DecisionCountersign is an append-only register and its ro",
+      },
+      writable: {
+      },
+    },
+    DecisionEvent: {
+      proof: 'columns',
+      refused: {
+        actor: "phase6 4d-i: DecisionEvent is the attributable audit register and is a",
+        actorId: "phase6 4d-i: DecisionEvent is the attributable audit register and is a",
+        actorName: "phase6 4d-i: DecisionEvent is the attributable audit register and is a",
+        actorRole: "phase6 4d-i: DecisionEvent is the attributable audit register and is a",
+        at: "phase6 4d-i: DecisionEvent is the attributable audit register and is a",
+        decisionId: "phase6 4d-i: DecisionEvent is the attributable audit register and is a",
+        id: "phase6 4d-i: DecisionEvent is the attributable audit register and is a",
+        payload: "phase6 4d-i: DecisionEvent is the attributable audit register and is a",
+        type: "phase6 4d-i: DecisionEvent is the attributable audit register and is a",
+      },
+      writable: {
+      },
+    },
+    DecisionForward: {
+      proof: 'columns',
+      refused: {
+        at: "phase6 4d-i: DecisionForward is an append-only register and its rows a",
+        decisionId: "phase6 4d-i: DecisionForward is an append-only register and its rows a",
+        forwardedById: "phase6 4d-i: DecisionForward is an append-only register and its rows a",
+        forwardedByName: "phase6 4d-i: DecisionForward is an append-only register and its rows a",
+        forwardedByRole: "phase6 4d-i: DecisionForward is an append-only register and its rows a",
+        fromDesignationKind: "phase6 4d-i: DecisionForward is an append-only register and its rows a",
+        fromDesignationMembershipId: "phase6 4d-i: DecisionForward is an append-only register and its rows a",
+        id: "phase6 4d-i: DecisionForward is an append-only register and its rows a",
+        projectId: "phase6 4d-i: DecisionForward is an append-only register and its rows a",
+        reason: "phase6 4d-i: DecisionForward is an append-only register and its rows a",
+        sourceCommandId: "phase6 4d-i: DecisionForward is an append-only register and its rows a",
+        toDesignationKind: "phase6 4d-i: DecisionForward is an append-only register and its rows a",
+        toDesignationMembershipId: "phase6 4d-i: DecisionForward is an append-only register and its rows a",
+      },
+      writable: {
+      },
+    },
+    DecisionStrandedResolution: {
+      proof: 'columns',
+      refused: {
+        at: "phase6 4d-i: DecisionStrandedResolution is an append-only register and",
+        decisionId: "phase6 4d-i: DecisionStrandedResolution is an append-only register and",
+        id: "phase6 4d-i: DecisionStrandedResolution is an append-only register and",
+        outcome: "phase6 4d-i: DecisionStrandedResolution is an append-only register and",
+        projectId: "phase6 4d-i: DecisionStrandedResolution is an append-only register and",
+        reason: "phase6 4d-i: DecisionStrandedResolution is an append-only register and",
+        resolvedById: "phase6 4d-i: DecisionStrandedResolution is an append-only register and",
+        resolvedByName: "phase6 4d-i: DecisionStrandedResolution is an append-only register and",
+        resolvedByRole: "phase6 4d-i: DecisionStrandedResolution is an append-only register and",
+        revisionId: "phase6 4d-i: DecisionStrandedResolution is an append-only register and",
+        sourceCommandId: "phase6 4d-i: DecisionStrandedResolution is an append-only register and",
+      },
+      writable: {
+      },
+    },
+    DomainEvent: {
+      proof: 'columns',
+      refused: {
+        actorId: "DomainEvent is append-only: UPDATE is not permitted",
+        actorKind: "DomainEvent is append-only: UPDATE is not permitted",
+        actorName: "DomainEvent is append-only: UPDATE is not permitted",
+        actorRole: "DomainEvent is append-only: UPDATE is not permitted",
+        causedByEventId: "DomainEvent is append-only: UPDATE is not permitted",
+        correlationId: "DomainEvent is append-only: UPDATE is not permitted",
+        dispatchIntent: "DomainEvent is append-only: UPDATE is not permitted",
+        entityId: "DomainEvent is append-only: UPDATE is not permitted",
+        entityType: "DomainEvent is append-only: UPDATE is not permitted",
+        eventId: "DomainEvent is append-only: UPDATE is not permitted",
+        eventType: "DomainEvent is append-only: UPDATE is not permitted",
+        occurredAt: "DomainEvent is append-only: UPDATE is not permitted",
+        organizationId: "DomainEvent is append-only: UPDATE is not permitted",
+        payload: "DomainEvent is append-only: UPDATE is not permitted",
+        payloadVersion: "DomainEvent is append-only: UPDATE is not permitted",
+        projectId: "DomainEvent is append-only: UPDATE is not permitted",
+        siteId: "DomainEvent is append-only: UPDATE is not permitted",
+        streamPosition: "DomainEvent is append-only: UPDATE is not permitted",
+        systemActor: "DomainEvent is append-only: UPDATE is not permitted",
+      },
+      writable: {
+      },
+    },
+    DomainEventPairingClaim: {
+      proof: 'columns',
+      refused: {
+        claimedAt: "phase6 4d-i: DomainEventPairingClaim is a platform REGISTER projected",
+        claimedBy: "phase6 4d-i: DomainEventPairingClaim is a platform REGISTER projected",
+        claimedById: "phase6 4d-i: DomainEventPairingClaim is a platform REGISTER projected",
+        eventId: "phase6 4d-i: DomainEventPairingClaim is a platform REGISTER projected",
+        projectId: "phase6 4d-i: DomainEventPairingClaim is a platform REGISTER projected",
+      },
+      writable: {
+      },
+    },
+    ExternalEffectCatalog: {
+      proof: 'columns',
+      refused: {
+        audience: "phase6 4d-i: catalog entry `activity.completion_requested` at coverage",
+        coverageVersion: "phase6 4d-i: catalog entry `activity.completion_requested` at coverage",
+        effectKey: "phase6 4d-i: catalog entry `activity.completion_requested` at coverage",
+        eventType: "phase6 4d-i: catalog entry `activity.completion_requested` at coverage",
+        frozenAudience: "phase6 4d-i: catalog entry `activity.completion_requested` at coverage",
+        invalidate: "phase6 4d-i: catalog entry `activity.completion_requested` at coverage",
+        pairingRequired: "phase6 4d-i: catalog entry `activity.completion_requested` at coverage",
+        pushBody: "phase6 4d-i: catalog entry `activity.completion_requested` at coverage",
+        pushFamily: "phase6 4d-i: catalog entry `activity.completion_requested` at coverage",
+        pushRoles: "phase6 4d-i: catalog entry `activity.completion_requested` at coverage",
+        requiresPush: "phase6 4d-i: catalog entry `activity.completion_requested` at coverage",
+        retiredAt: "phase6 4d-i: catalog entry `activity.completion_requested` is retired",
+      },
+      writable: {
+      },
+    },
+    Membership: {
+      proof: 'columns',
+      refused: {
+        id: "phase6 4d-i: Membership.ss-mem is the identity of a recorded row and i",
+        projectId: "phase6-4b: membership user/project identity is frozen",
+        userId: "phase6-4b: membership user/project identity is frozen",
+      },
+      writable: {
+        approvalLimit:
+          "an authority ceiling that is deliberately adjustable; each approval is judged against the limit standing AT THE TIME, and the revision register records that judgement immutably",
+        createdAt:
+          "when the membership row was provisioned; the attributable record of joining is the transition register, which is append-only",
+        discipline:
+          "a member's trade, corrected as people's details are corrected; it attributes no act",
+        role:
+          "a standing CHANGE is the act, not a rewrite of evidence \u2014 the transition register records each move and this unit's fact-first seal requires the fact BEFORE the write",
+        status:
+          "a standing change, recorded by `MembershipTransition` rather than prevented; the same rule as `role`",
+      },
+    },
+    MembershipTransition: {
+      proof: 'columns',
+      refused: {
+        actorId: "phase6 4d-i: MembershipTransition membershiptransition-probe is immuta",
+        actorName: "phase6 4d-i: MembershipTransition membershiptransition-probe is immuta",
+        actorRole: "phase6 4d-i: MembershipTransition membershiptransition-probe is immuta",
+        at: "phase6 4d-i: MembershipTransition membershiptransition-probe is immuta",
+        fromRole: "phase6 4d-i: MembershipTransition membershiptransition-probe is immuta",
+        fromStatus: "phase6 4d-i: MembershipTransition membershiptransition-probe is immuta",
+        id: "phase6 4d-i: MembershipTransition membershiptransition-probe is immuta",
+        membershipId: "phase6 4d-i: MembershipTransition membershiptransition-probe is immuta",
+        projectId: "phase6 4d-i: MembershipTransition membershiptransition-probe is immuta",
+        sourceCommandId: "phase6 4d-i: MembershipTransition membershiptransition-probe is immuta",
+        toRole: "phase6 4d-i: MembershipTransition membershiptransition-probe is immuta",
+        toStatus: "phase6 4d-i: MembershipTransition membershiptransition-probe is immuta",
+        userId: "phase6 4d-i: MembershipTransition membershiptransition-probe is immuta",
+      },
+      writable: {
+      },
+    },
+    Notification: {
+      proof: 'columns',
+      refused: {
+        at: "phase6 4d-i: notice notification-probe is KINDED",
+        color: "phase6 4d-i: notice notification-probe is KINDED",
+        decisionId: "phase6 4d-i: notice notification-probe announces event ss-ev1 about de",
+        eventId: "phase6 4d-i: notice notification-probe is bound to event ss-ev1 and ma",
+        id: "phase6 4d-i: Notification.notification-probe is the identity of a reco",
+        kind: "phase6 4d-i: notice notification-probe's kind",
+        projectId: "phase6 4d-i: notice notification-probe may not change project",
+        text: "phase6 4d-i: notice notification-probe is KINDED",
+        time: "phase6 4d-i: notice notification-probe is KINDED",
+      },
+      writable: {
+      },
+    },
+    OrgMembership: {
+      proof: 'columns',
+      refused: {
+        id: "phase6 4d-i: OrgMembership.orgmembership-probe is the identity of a re",
+        orgId: "phase6-4b: org-membership identity is frozen",
+        userId: "phase6-4b: org-membership identity is frozen",
+      },
+      writable: {
+        createdAt:
+          "when the org membership row was provisioned; it records no act this unit attributes",
+        role:
+          "an org standing change \u2014 the same act-not-evidence rule as `Membership.role`, projected into `OrgUserAuthority` by this unit's own trigger",
+      },
+    },
+    OrgUserAuthority: {
+      proof: 'columns',
+      refused: {
+        orgId: "phase6 4d-i: OrgUserAuthority is a platform REGISTER projected from th",
+        role: "phase6 4d-i: OrgUserAuthority is a platform REGISTER projected from th",
+        userId: "phase6 4d-i: OrgUserAuthority is a platform REGISTER projected from th",
+      },
+      writable: {
+      },
+    },
+    ProjectEventStream: {
+      proof: 'columns',
+      refused: {
+        nextPosition: "phase6 4d-i: the event-stream allocator for project ss-proj moves by e",
+        projectId: "phase6 4d-i: the event-stream allocator for project ss-proj moves by e",
+      },
+      writable: {
+      },
+    },
+    ProjectOrg: {
+      proof: 'columns',
+      refused: {
+        orgId: "phase6 4d-i: project ss-proj is registered to org ss-org and may not b",
+        projectId: "phase6 4d-i: ProjectOrg is a platform REGISTER projected from the orgs",
+      },
+      writable: {
+      },
+    },
+    ProjectRoleStanding: {
+      proof: 'columns',
+      refused: {
+        activeCount: "phase6 4d-i: ProjectRoleStanding is a platform REGISTER projected from",
+        changedAt: "phase6 4d-i: ProjectRoleStanding is a platform REGISTER projected from",
+        projectId: "phase6 4d-i: ProjectRoleStanding is a platform REGISTER projected from",
+        role: "phase6 4d-i: ProjectRoleStanding is a platform REGISTER projected from",
+      },
+      writable: {
+      },
+    },
+    ProjectUserStanding: {
+      proof: 'columns',
+      refused: {
+        membershipId: "phase6 4d-i: ProjectUserStanding is a platform REGISTER projected from",
+        projectId: "phase6 4d-i: ProjectUserStanding is a platform REGISTER projected from",
+        role: "phase6 4d-i: ProjectUserStanding is a platform REGISTER projected from",
+        userId: "phase6 4d-i: ProjectUserStanding is a platform REGISTER projected from",
+      },
+      writable: {
+      },
+    },
+    ReleaseLease: {
+      proof: 'columns',
+      refused: {
+        catalogVersion: "phase6 4d-i: release lease ss-instance's identity",
+        instanceId: "phase6 4d-i: release lease ss-instance's identity",
+        release: "phase6 4d-i: release lease ss-instance's identity",
+        startedAt: "phase6 4d-i: release lease ss-instance's identity",
+      },
+      writable: {
+        leaseUntil:
+          "the HEARTBEAT \u2014 a serving process extends its own lease, which is the entire purpose of the column; everything identifying WHICH process holds it is frozen",
+      },
+    },
+    RolloutRetirement: {
+      proof: 'columns',
+      refused: {
+        retiredAt: "RolloutRetirement is append-only",
+        retiredBy: "RolloutRetirement is append-only",
+        unit: "RolloutRetirement is append-only",
+      },
+      writable: {
+      },
+    },
+    User: {
+      proof: 'columns',
+      refused: {
+        id: "phase6-4b: membership user/project identity is frozen",
+        projectId: "violates foreign key constraint",
+      },
+      writable: {
+        createdAt:
+          "when the account row was provisioned; it records no act this unit attributes",
+        credentialVersion:
+          "the rotation counter that INVALIDATES old sessions; it must move for revocation to work",
+        email:
+          "account contact detail, changed by the account's owner; it attributes no act",
+        emailVerifiedAt:
+          "set when verification completes and cleared when the address changes; part of the credential lifecycle",
+        name:
+          "a person's name changes, and the register mirrors it; every act already recorded carries its own frozen name pair, so renaming does not rewrite any attribution",
+        passwordHash:
+          "a credential, rotated by design; freezing it would make password change impossible",
+        phone:
+          "account contact detail, changed by the account's owner; it attributes no act",
+        role:
+          "the account's coarse role, changed as people's jobs change; the RESERVED values this unit protects are refused by the reservation door, and every project act is judged against membership standing rather than this column",
+      },
+    },
+    UserIdentity: {
+      proof: 'columns',
+      refused: {
+        displayName: "phase6 4d-i: UserIdentity is a platform REGISTER projected from the or",
+        userId: "phase6 4d-i: UserIdentity is a platform REGISTER projected from the or",
+      },
+      writable: {
+      },
+    },
+  };
+
+  /** A value guaranteed DIFFERENT from whatever the column holds, derived from its type. */
+  function otherValue(col: string, dataType: string, udt: string): string | null {
+    switch (dataType) {
+      case 'text': case 'character varying': case 'character':
+        return `'t4d-probe-' || coalesce("${col}", '')`;
+      case 'boolean':
+        return `NOT coalesce("${col}", false)`;
+      case 'integer': case 'bigint': case 'smallint':
+      case 'numeric': case 'double precision': case 'real':
+        return `coalesce("${col}", 0) + 37`;
+      case 'timestamp without time zone': case 'timestamp with time zone':
+        return `coalesce("${col}", now()) + interval '37 days'`;
+      case 'date':
+        return `coalesce("${col}", now()::date) + 37`;
+      case 'jsonb':
+        return `jsonb_build_object('t4dProbe', true)`;
+      case 'json':
+        return `json_build_object('t4dProbe', true)`;
+      case 'ARRAY':
+        return `ARRAY['t4d-probe']::${udt.replace(/^_/, '')}[]`;
+      case 'USER-DEFINED':
+        // an enum: any label that is not the one the row carries
+        return `(SELECT e.enumlabel FROM pg_enum e JOIN pg_type ty ON ty.oid = e.enumtypid`
+          + ` WHERE ty.typname = '${udt}' AND e.enumlabel IS DISTINCT FROM "${col}"::text`
+          + ` ORDER BY e.enumsortorder LIMIT 1)::"${udt}"`;
+      default:
+        return null;   // reported by name, never skipped in silence
+    }
+  }
+
+  /** Quoting is normalised away before a refusal is compared with the fragment the register
+   *  records. PostgreSQL quotes identifiers in its own messages, so a fragment carrying a quote
+   *  is brittle for no gain — the fragment's job is to say WHICH refusal happened, not to
+   *  reproduce its punctuation. */
+  const unquoted = (t: string): string => t.replace(/"/g, '');
+
+  /** the first line of a psql error, for a report that stays readable at 300 columns */
+  function firstLine(output: string): string {
+    return output.split('\n').map((l) => l.trim()).filter(Boolean)[0] ?? '(no output)';
+  }
+
+  it('every column of every table this unit seals on UPDATE is DISCOVERED, DRIVEN and classified', () => {
+    buildRun([]);
+
+    // ── the table set, discovered rather than listed ────────────────────────────────────────
+    const tablesQ = psql(RUN_DB, ['-At', '-c',
+      `SELECT DISTINCT c.relname
+         FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+        WHERE NOT t.tgisinternal AND t.tgname LIKE '%\\_t4d\\_%'
+          AND (t.tgtype & 16) <> 0
+        ORDER BY 1`]);
+    expect(tablesQ.ok, `discovering the sealed tables failed:\n${tablesQ.output}`).toBe(true);
+    const tables = tablesQ.output.split('\n').map((s) => s.trim()).filter(Boolean);
+    expect(tables.length,
+      'the discovery found no UPDATE-sealed tables at all — the query is broken, not the migration')
+      .toBeGreaterThan(0);
+    expect(tables.slice().sort(),
+      'a table gained (or lost) an UPDATE-firing t4d seal and the register did not move with it')
+      .toEqual(Object.keys(FREEZE).sort());
+
+    const unclassified: string[] = [];
+    const wrong: string[] = [];
+
+    for (const table of tables) {
+      const entry = FREEZE[table]!;
+
+      const colsQ = psql(RUN_DB, ['-At', '-F', '~', '-c',
+        `SELECT column_name, data_type, udt_name
+           FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = '${table}'
+          ORDER BY ordinal_position`]);
+      expect(colsQ.ok, `reading the columns of ${table} failed:\n${colsQ.output}`).toBe(true);
+      const cols = colsQ.output.split('\n').map((l) => l.trim()).filter(Boolean)
+        .map((l) => l.split('~') as [string, string, string]);
+
+      // A table the arm cannot measure is REPORTED, never skipped. The first two runs of this
+      // oracle returned a bare null here and six tables — `ChangeRequest` among them, where the
+      // candidates are — vanished from the report with no reason given. An oracle that goes quiet
+      // about what it could not measure is the same defect as a rule with a sibling left standing.
+      const probe = probeRowWhere(table, cols);
+      if ('failed' in probe) {
+        unclassified.push(`${table}: NOT MEASURED — ${probe.failed}`);
+        continue;
+      }
+      const { where } = probe;
+
+      for (const [col, dataType, udt] of cols) {
+        const value = otherValue(col, dataType, udt);
+        if (value === null) {
+          unclassified.push(`${table}.${col}: no probe value exists for type ${dataType} (${udt})`);
+          continue;
+        }
+        const r = psql(RUN_DB, ['-c',
+          `BEGIN; UPDATE "${table}" SET "${col}" = ${value} WHERE ${where}; ROLLBACK;`]);
+
+        if (entry.proof !== 'columns') {
+          // a blanket or a gate refuses whatever the column is, so every column proves it
+          if (r.ok) {
+            wrong.push(`${table}.${col} was ACCEPTED, but the register calls the table ${entry.proof}d by ${entry.by}`);
+          } else if (!unquoted(r.output).includes(unquoted(entry.refusal))) {
+            wrong.push(`${table}.${col} was refused, but not by ${entry.by} — the refusal does not `
+              + `carry ${JSON.stringify(entry.refusal)}:\n  ${firstLine(r.output)}`);
+          }
+          continue;
+        }
+
+        const declaredRefusal = entry.refused[col];
+        const declaredWritable = entry.writable[col];
+        if (declaredRefusal === undefined && declaredWritable === undefined) {
+          unclassified.push(`${table}.${col}: ${r.ok ? 'ACCEPTED' : `REFUSED — ${unquoted(firstLine(r.output))}`}`);
+          continue;
+        }
+        if (declaredRefusal !== undefined && declaredWritable !== undefined) {
+          wrong.push(`${table}.${col} is declared BOTH refused and writable`);
+          continue;
+        }
+        if (declaredWritable !== undefined) {
+          if (declaredWritable.trim().length < 20) {
+            wrong.push(`${table}.${col} is declared writable with no real reason — the reason has `
+              + 'to say why rewriting it does not change what the record says happened');
+          } else if (!r.ok) {
+            wrong.push(`${table}.${col} is declared WRITABLE and was refused:\n  ${firstLine(r.output)}`);
+          }
+          continue;
+        }
+        if (r.ok) {
+          wrong.push(`${table}.${col} is declared REFUSED and the update was ACCEPTED — the seal does not cover it`);
+        } else if (!unquoted(r.output).includes(unquoted(declaredRefusal))) {
+          wrong.push(`${table}.${col} was refused, but not for the reason the register records. `
+            + `Expected the message to carry ${JSON.stringify(declaredRefusal)}; got:\n  ${firstLine(r.output)}`);
+        }
+      }
+    }
+
+    expect(unclassified,
+      'these columns of tables this unit seals on UPDATE are in no class. Each is either evidence '
+      + 'the seal has to freeze, or a deliberate exception that owes a reason. Silence is how '
+      + 'rounds 18, 23, 24 and 25 each shipped a rule with a sibling left standing.')
+      .toEqual([]);
+    expect(wrong, 'the register disagrees with what the database actually did').toEqual([]);
+  }, 600_000);
+
+  /**
+   * A row of `table` to drive the per-column updates against, returned as a WHERE clause.
+   *
+   * `ctid` rather than a primary key, because the point is to address ONE row of ANY table —
+   * including the ones whose key this unit freezes, where naming the key in the WHERE would make
+   * the probe of that very key untestable. An UPDATE evaluates its WHERE before its SET, so a
+   * probe that rewrites the key still finds its row.
+   *
+   * Where the fixture already planted a row it is used as-is. Where it did not, one is planted
+   * under `session_replication_role = 'replica'` — every trigger off, foreign keys included. That
+   * is deliberate and it is the honest shape: the claim under test is about the UPDATE path, and
+   * the INSERT seals are a different unit of work with their own arms above. Referent-shaped
+   * columns still take the fixture's ids so the planted row is COHERENT — a row with dangling
+   * referents would be refused at UPDATE by a foreign key, and the arm would score that as the
+   * seal doing its job.
+   */
+  const FIXTURE_IDS: Record<string, string> = {
+    projectId: 'ss-proj', orgId: 'ss-org', userId: 'ss-user', decisionId: 'ss-dec',
+    eventId: 'ss-ev1', membershipId: 'ss-mem', actorId: 'ss-user', approvedById: 'ss-user',
+    requestedById: 'ss-user', resolvedById: 'ss-user', sourceCommandId: 'ss-cmd',
+  };
+
+  /**
+   * The literals a CHECK constraint ADMITS for a column, read from the constraint itself.
+   *
+   * The first fully-populated plant failed on six tables with `violates check constraint
+   * "ChangeRequest_origin_check"` and five like it: the generic `'t4d-probe'` string is not one of
+   * the values those columns are allowed to hold. Retyping the admitted values here by hand would
+   * be the very habit this arm exists to break, so they are READ OUT of `pg_get_constraintdef` —
+   * a unit that adds a value, or narrows one, moves the probe with it and nothing goes stale.
+   */
+  function admittedLiterals(table: string): Record<string, string> {
+    // The columns come from `conkey`, not from reading the printed definition. The first version
+    // of this matched `"col"` in the text and found nothing on `CHECK ((origin = ANY (...)))` —
+    // PostgreSQL prints a lower-case identifier unquoted, so five tables stayed unmeasurable while
+    // the constraint that named their admitted values sat right there. The catalog is the
+    // authority on which columns a constraint covers; the text is only where the literals are.
+    const q = psql(RUN_DB, ['-At', '-F', '~', '-c',
+      `SELECT pg_get_constraintdef(c.oid),
+              (SELECT string_agg(a.attname, ',') FROM unnest(c.conkey) k
+                 JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k)
+         FROM pg_constraint c
+        WHERE c.contype = 'c' AND c.conrelid = '"${table}"'::regclass`]);
+    const out: Record<string, string> = {};
+    if (!q.ok) return out;
+    for (const row of q.output.split('\n')) {
+      const [def, key] = row.split('~');
+      if (def === undefined || key === undefined) continue;
+      const named = key.split(',').map((c) => c.trim()).filter(Boolean);
+      const literals = [...def.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+      // only a SINGLE-column membership test tells us what that column may hold; a cross-column
+      // constraint ("these two must differ") names no admitted value, and is satisfied instead by
+      // the per-column default below never repeating itself.
+      if (named.length === 1 && literals.length > 0 && out[named[0]!] === undefined) {
+        out[named[0]!] = literals[0]!;
+      }
+    }
+
+    // SECOND PASS — the CONDITIONAL PRESENCE shape, which overrides the plain pick above.
+    //
+    // `CHECK ((origin = 'countersign_rejection') = ("revisionId" IS NOT NULL))` and
+    // `CHECK (... AND (("fromDesignationKind" = 'member') = ("fromDesignationMembershipId" IS NOT
+    // NULL)))` say the same thing in two tables: ONE value of a discriminator column REQUIRES its
+    // companion to be filled, and every other value requires it to be empty. The first pass picks
+    // the first literal it sees, which is the wrong half of the biconditional, and the fully
+    // populated row is then rejected — which is how `ChangeRequest`, the table this round most
+    // needs measured, stayed unmeasurable for four runs.
+    //
+    // Taking the literal that makes the companion REQUIRED is the right resolution rather than a
+    // convenient one: the alternative is to null the companion, and a probe row with empty
+    // columns is exactly the under-reporting shape this arm already had to correct once.
+    for (const row of q.output.split('\n')) {
+      const [def, key] = row.split('~');
+      if (def === undefined || key === undefined) continue;
+      const named = key.split(',').map((c) => c.trim()).filter(Boolean);
+      if (named.length !== 2 || !def.includes('IS NOT NULL')) continue;
+      const m = def.match(/"?([A-Za-z0-9_]+)"?\s*=\s*'([^']+)'/);
+      if (m && named.includes(m[1]!)) out[m[1]!] = m[2]!;
+    }
+    return out;
+  }
+
+  function seedValue(table: string, col: string, dataType: string, udt: string,
+                     admitted: Record<string, string>): string {
+    if (col === 'id') return `'${table.toLowerCase()}-probe'`;
+    const allowed = admitted[col];
+    if (allowed !== undefined) return `'${allowed.replace(/'/g, "''")}'`;
+    const fixture = FIXTURE_IDS[col];
+    if (fixture !== undefined && (dataType === 'text' || dataType === 'character varying')) {
+      return `'${fixture}'`;
+    }
+    switch (dataType) {
+      // VARIES BY COLUMN. `MembershipTransition_moves_check` and
+      // `DecisionForward_designation_moves_check` require two columns to DIFFER, and a constant
+      // seed gives them the same value — the row is rejected and the table goes unmeasured. A
+      // per-column string satisfies every such pair without naming any of them.
+      case 'text': case 'character varying': case 'character': return `'t4d-${col}'`;
+      case 'boolean': return 'false';
+      case 'integer': case 'bigint': case 'smallint':
+      case 'numeric': case 'double precision': case 'real': return '1';
+      case 'timestamp without time zone': case 'timestamp with time zone': return 'now()';
+      case 'date': return `now()::date`;
+      case 'jsonb': return `'{}'::jsonb`;
+      case 'json': return `'{}'::json`;
+      case 'ARRAY': return `'{}'::${udt.replace(/^_/, '')}[]`;
+      case 'USER-DEFINED':
+        return `(SELECT e.enumlabel FROM pg_enum e JOIN pg_type ty ON ty.oid = e.enumtypid`
+          + ` WHERE ty.typname = '${udt}' ORDER BY e.enumsortorder LIMIT 1)::"${udt}"`;
+      default: return 'NULL';
+    }
+  }
+
+  function probeRowWhere(table: string, cols: [string, string, string][]):
+  { where: string } | { failed: string } {
+    const existing = psql(RUN_DB, ['-At', '-c', `SELECT ctid FROM "${table}" LIMIT 1`]);
+    if (existing.ok && existing.output.trim() !== '') {
+      return { where: `ctid = '${existing.output.trim()}'` };
+    }
+
+    // EVERY column, not only the required ones. The first run of this arm planted only the NOT
+    // NULL columns and reported `Notification.text`/`color`/`decisionId` rewritable — seals round
+    // 6 installed and proved. They were not rewritable; the PLANTED ROW was the wrong shape. Those
+    // freezes govern a KINDED notice, `kind` is nullable, so a row with `kind` NULL exercises the
+    // unconditional arms and nothing else. The same blank-row artefact made
+    // `ChangeRequest.resolvedById` look open, when NULL -> value is the closure the one-way rule
+    // deliberately admits.
+    //
+    // A freeze is a rule about a record that ALREADY CARRIES THE EVIDENCE, so that is the state
+    // the probe has to be in: every column populated, and the rewrite attempted against a row
+    // that has already recorded its act. A half-empty row does not exercise a conditional rule —
+    // it silently skips it, and an oracle that under-reports is the same failure as a rule
+    // implemented over a subset, committed one level up.
+    const plantableQ = psql(RUN_DB, ['-At', '-c',
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = '${table}'
+          AND is_identity = 'NO' AND is_generated = 'NEVER'
+        ORDER BY ordinal_position`]);
+    if (!plantableQ.ok) return { failed: `the column list could not be read:\n  ${firstLine(plantableQ.output)}` };
+    const plantable = new Set(plantableQ.output.split('\n').map((s) => s.trim()).filter(Boolean));
+    const planted = cols.filter(([c]) => plantable.has(c));
+    if (planted.length === 0) return { failed: 'the table has no plantable column' };
+    const admitted = admittedLiterals(table);
+
+    const plant = psql(RUN_DB, ['-c',
+      `BEGIN;
+       SET LOCAL session_replication_role = 'replica';
+       INSERT INTO "${table}" (${planted.map(([c]) => `"${c}"`).join(', ')})
+         VALUES (${planted.map(([c, d, u]) => seedValue(table, c, d, u, admitted)).join(', ')});
+       COMMIT;`]);
+    if (!plant.ok) return { failed: `the probe row would not plant:\n  ${firstLine(plant.output)}` };
+
+    const after = psql(RUN_DB, ['-At', '-c', `SELECT ctid FROM "${table}" LIMIT 1`]);
+    if (!after.ok || after.output.trim() === '') {
+      return { failed: 'the probe row planted and then could not be found' };
+    }
+    return { where: `ctid = '${after.output.trim()}'` };
+  }
+
+  /** An OPEN standard change request, legal in every respect the unit's INSERT seals judge:
+   *  `origin = 'standard'` so `revision_by_origin` wants no revision, a real birth receipt, and a
+   *  requester pair TRUE of `ss-user` so the birth-pair correspondence admits it. */
+  const CR_OPEN = `
+    INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+      VALUES ('ss-cmd-r26','project','ss-org','ss-proj','ss-user','decisions.requestChange','ss-key-r26','ss-hash-r26','reserved');
+    -- the BIRTH receipt's result is the REQUEST itself, not the decision (#582 round 20,
+    -- finding 1 bound this): a receipt naming another result cannot be borrowed.
+    UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-cr-r26' WHERE "id" = 'ss-cmd-r26';
+    INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","sourceCommandId","requestedById","requestedByRole","requestedByName")
+      VALUES ('ss-cr-r26','ss-proj','ss-dec','the original ask',0,2,'open','standard','ss-cmd-r26','ss-user','pmc','SS User');
+  `;
+
+  /** A KINDED notice, minted the way a real one is: its event allocated and inserted in the SAME
+   *  transaction, and its `kind` equal to that event's `eventType`. Both are seals this unit
+   *  already installs, so a notice planted any other way is refused before the arm under test
+   *  ever runs. */
+  const KINDED_NOTICE = `
+    BEGIN;
+    UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+    INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+      SELECT 'ss-ev-r26','decision.published',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec',
+             jsonb_build_object('effectKey','decision.published','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
+                                'push', jsonb_build_object('body','r26','roles', jsonb_build_array('client')))
+        FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+       WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.published'
+         AND c."coverageVersion" = '${COVERAGE}';
+    INSERT INTO "Notification" ("id","projectId","text","color","time","kind","eventId","decisionId")
+      VALUES ('ss-note-r26','ss-proj','published','#000','just now','decision.published','ss-ev-r26','ss-dec');
+    COMMIT;
+  `;
+
+  /**
+   * #582's review round 26 — THE THREE FINDINGS THE COVERAGE ORACLE FOUND, DRIVEN BY NAME.
+   *
+   * The oracle arm above proves a column is REFUSED. It does not prove WHICH seal refused it, and
+   * on this PR that distinction has mattered twice (the `deciderKind = 'architect'` arm was
+   * refused by a DELIVERED seal while the door under test never fired). So each finding is also
+   * driven here in the strip-vs-whole shape: the named seal omitted, the hostile write ACCEPTED;
+   * the whole unit, REFUSED by that seal's own message.
+   */
+  it('round 26: SUBSTANCE, MOMENT and IDENTITY are evidence too', () => {
+    // ── F3: identity is frozen from birth, on every table that has one ──────────────────────
+    // `Decision` already refused this through the delivered 4b seal; `ChangeRequest`,
+    // `Notification`, `Membership` and `OrgMembership` did not refuse it at all. One shared
+    // function over the inventory, so this arm drives the FUNCTION and the coverage declaration
+    // carries its three siblings — each of which the oracle arm above drives independently.
+    buildRun(['ChangeRequest_t4d_identity']);
+    const crPlant = psql(RUN_DB, ['-c', CR_OPEN]);
+    expect(crPlant.ok, `the request must plant for the identity arm:\n${crPlant.output}`).toBe(true);
+    const idStripped = psql(RUN_DB, ['-c',
+      `UPDATE "ChangeRequest" SET "id" = 'ss-cr-reparented' WHERE "id" = 'ss-cr-r26'`]);
+    expect(idStripped.ok,
+      'with the identity seal stripped the id rewrite must COMMIT — otherwise this arm proves nothing')
+      .toBe(true);
+
+    buildRun([]);
+    { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
+    const idWhole = psql(RUN_DB, ['-c',
+      `UPDATE "ChangeRequest" SET "id" = 'ss-cr-reparented' WHERE "id" = 'ss-cr-r26'`]);
+    expect(idWhole.ok, 'a recorded row may not be re-pointed to a different identity').toBe(false);
+    expect(idWhole.output).toMatch(/is the identity of a recorded row and is frozen from birth/);
+
+    // ── F1: what the request SAID is evidence, exactly as its `origin` already was ──────────
+    buildRun(['ChangeRequest_t4d_evidence_frozen']);
+    { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
+    const saidStripped = psql(RUN_DB, ['-c',
+      `UPDATE "ChangeRequest" SET "reason" = 'a completely different ask',
+                                  "costImpact" = 900000, "timeImpactDays" = 40
+        WHERE "id" = 'ss-cr-r26'`]);
+    expect(saidStripped.ok, 'with the freeze stripped the substance rewrite must COMMIT').toBe(true);
+
+    buildRun([]);
+    { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
+    const saidWhole = psql(RUN_DB, ['-c',
+      `UPDATE "ChangeRequest" SET "reason" = 'a completely different ask',
+                                  "costImpact" = 900000, "timeImpactDays" = 40
+        WHERE "id" = 'ss-cr-r26'`]);
+    expect(saidWhole.ok,
+      'the ask, the money it claimed and the days it claimed are what the record SAYS happened')
+      .toBe(false);
+    expect(saidWhole.output).toMatch(/records \w+ at its BIRTH/);
+
+    // and the CLOSURE's moment and outcome, which round 24 left beside the actor it froze.
+    // One-way: the closure itself must still be admitted, so this drives the REWRITE of a
+    // resolver set that is already filled.
+    buildRun([]);
+    { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
+    const closed = psql(RUN_DB, ['-c',
+      `UPDATE "ChangeRequest"
+          SET "status" = 'withdrawn', "resolution" = 'withdrawn', "resolvedById" = 'ss-user',
+              "resolvedAt" = now()
+        WHERE "id" = 'ss-cr-r26'`]);
+    expect(closed.ok,
+      `the real closure must stay admitted — the serving release writes exactly this:\n${closed.output}`)
+      .toBe(true);
+    const reclosed = psql(RUN_DB, ['-c',
+      `UPDATE "ChangeRequest" SET "resolvedAt" = now() + interval '7 days',
+                                  "resolution" = 'reapproved'
+        WHERE "id" = 'ss-cr-r26'`]);
+    expect(reclosed.ok,
+      'a closed request may not be moved to a different moment, or relabelled as a different outcome')
+      .toBe(false);
+    expect(reclosed.output).toMatch(/already records \w+ as provenance/);
+
+    // ── F2: WHEN a kinded notice announced is part of the cache round 6 froze ───────────────
+    buildRun(['Notification_t4d_binding']);
+    const notePlant = psql(RUN_DB, ['-c', KINDED_NOTICE]);
+    expect(notePlant.ok, `the kinded notice must plant:\n${notePlant.output}`).toBe(true);
+    const whenStripped = psql(RUN_DB, ['-c',
+      `UPDATE "Notification" SET "at" = now() + interval '9 days', "time" = '11:11'
+        WHERE "id" = 'ss-note-r26'`]);
+    expect(whenStripped.ok, 'with the binding stripped the time rewrite must COMMIT').toBe(true);
+
+    buildRun([]);
+    { const r = psql(RUN_DB, ['-c', KINDED_NOTICE]); expect(r.ok, r.output).toBe(true); }
+    const whenWhole = psql(RUN_DB, ['-c',
+      `UPDATE "Notification" SET "at" = now() + interval '9 days', "time" = '11:11'
+        WHERE "id" = 'ss-note-r26'`]);
+    expect(whenWhole.ok,
+      'moving a kinded notice re-places it among the acts either side of it with every word of it still true')
+      .toBe(false);
+    expect(whenWhole.output).toMatch(/WHEN it announced is a cache of its event/);
+  }, 600_000);
 });

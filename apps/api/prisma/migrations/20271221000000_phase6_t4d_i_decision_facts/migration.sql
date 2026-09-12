@@ -1300,10 +1300,27 @@ BEGIN
   -- requester, and the row then permanently names one person and vouches for another. The
   -- delivered `ChangeRequest_t4b2_seal` freezes `decisionId` alone, so nothing else was holding
   -- it. (A legacy row's NULL stays NULL by the same rule that governs the rest of this set.)
+  --
+  -- AND THE SET INCLUDES WHAT THE REQUEST ACTUALLY SAID (#582's review round 26, finding 1).
+  -- The freeze above is stated over `origin` with the reason "re-labelling a request's origin
+  -- changes what the record says happened". `reason`, `costImpact` and `timeImpactDays` ARE what
+  -- the record says happened — the ask itself, the money and the time it claimed — and all three
+  -- were writable for the life of the row. A PMC closes a request for a 2-day, no-cost change;
+  -- afterwards any direct writer rewrites it to a 40-day, 900k change, and the frozen requester
+  -- pair above now vouches for an ask that was never made. `createdAt` is the same: when the
+  -- request was raised is not a detail of presentation, it is what puts the ask before or after
+  -- the approval it contests. Not one writer in the service updates any of the four — the only
+  -- two `changeRequest.update*` sites are both CLOSURES — so freezing them against every update
+  -- refuses nothing the serving release does, which is what makes it drain-safe rather than
+  -- merely correct.
   IF NEW."sourceCommandId" IS DISTINCT FROM OLD."sourceCommandId" THEN v_col := 'sourceCommandId';
   ELSIF NEW."requestedById" IS DISTINCT FROM OLD."requestedById" THEN v_col := 'requestedById';
   ELSIF NEW."requestedByRole" IS DISTINCT FROM OLD."requestedByRole" THEN v_col := 'requestedByRole';
   ELSIF NEW."requestedByName" IS DISTINCT FROM OLD."requestedByName" THEN v_col := 'requestedByName';
+  ELSIF NEW."reason" IS DISTINCT FROM OLD."reason" THEN v_col := 'reason';
+  ELSIF NEW."costImpact" IS DISTINCT FROM OLD."costImpact" THEN v_col := 'costImpact';
+  ELSIF NEW."timeImpactDays" IS DISTINCT FROM OLD."timeImpactDays" THEN v_col := 'timeImpactDays';
+  ELSIF NEW."createdAt" IS DISTINCT FROM OLD."createdAt" THEN v_col := 'createdAt';
   END IF;
   IF v_col IS NOT NULL THEN
     RAISE EXCEPTION
@@ -1324,10 +1341,23 @@ BEGIN
   -- The row commits permanently self-contradicting, and no later seal re-examines a closed request.
   -- One-way, exactly like the rest of the set, so the drain shape — a previous-release closure
   -- writing `resolvedById` alone onto an open request — stays admitted.
+  --
+  -- AND WHEN IT CLOSED, AND WHAT IT CLOSED AS (#582's review round 26, finding 1). Round 24 put
+  -- `resolvedById` in this set beside the pair that describes them. `resolvedAt` and `resolution`
+  -- were left out, and they are the other two things a closure records: the moment of the act and
+  -- its outcome. After a valid withdrawal attributed to A at 09:00, a direct update moved
+  -- `resolvedAt` to a week later and `resolution` from `withdrawn` to `reapproved`; every actor
+  -- column stayed put and agreed with itself, and the row committed saying a different thing
+  -- happened at a different time, by the person who did the original act. The deployed release
+  -- writes both in the SAME statement that sets `resolvedById`, NULL -> value, so the one-way
+  -- shape the rest of this set already uses admits the real closure untouched and refuses only
+  -- the rewrite afterwards.
   IF OLD."resolvedByCommandId" IS NOT NULL AND NEW."resolvedByCommandId" IS DISTINCT FROM OLD."resolvedByCommandId" THEN v_col := 'resolvedByCommandId';
   ELSIF OLD."resolvedById" IS NOT NULL AND NEW."resolvedById" IS DISTINCT FROM OLD."resolvedById" THEN v_col := 'resolvedById';
   ELSIF OLD."resolvedByRole" IS NOT NULL AND NEW."resolvedByRole" IS DISTINCT FROM OLD."resolvedByRole" THEN v_col := 'resolvedByRole';
   ELSIF OLD."resolvedByName" IS NOT NULL AND NEW."resolvedByName" IS DISTINCT FROM OLD."resolvedByName" THEN v_col := 'resolvedByName';
+  ELSIF OLD."resolvedAt" IS NOT NULL AND NEW."resolvedAt" IS DISTINCT FROM OLD."resolvedAt" THEN v_col := 'resolvedAt';
+  ELSIF OLD."resolution" IS NOT NULL AND NEW."resolution" IS DISTINCT FROM OLD."resolution" THEN v_col := 'resolution';
   END IF;
   IF v_col IS NOT NULL THEN
     RAISE EXCEPTION
@@ -1375,6 +1405,13 @@ END $$;
 DROP TRIGGER IF EXISTS "ChangeRequest_t4d_evidence_frozen" ON "ChangeRequest";
 CREATE TRIGGER "ChangeRequest_t4d_evidence_frozen" BEFORE UPDATE ON "ChangeRequest"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_change_request_evidence_frozen();
+
+-- #582's review round 26, finding 3 — the fourth member of the identity inventory. The seal is
+-- the shared `phase6_t4d_identity_frozen` installed by the registers half; the trigger lives here
+-- because this is where `ChangeRequest`'s other seals are created.
+DROP TRIGGER IF EXISTS "ChangeRequest_t4d_identity" ON "ChangeRequest";
+CREATE TRIGGER "ChangeRequest_t4d_identity" BEFORE UPDATE ON "ChangeRequest"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_identity_frozen();
 -- ── and the CLOSURE receipt is judged too (#582's review round 22, finding 2) ────────────────
 -- THE SIBLING ROUND 20's FINDING 1 LEFT STANDING. That round found `ChangeRequest.sourceCommandId`
 -- frozen and never judged, and bound it: round 8 had made it immutable on landing and round 17 had

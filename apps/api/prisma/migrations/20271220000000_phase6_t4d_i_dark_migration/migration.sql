@@ -725,6 +725,47 @@ DROP TRIGGER IF EXISTS "ProjectOrg_t4d_frozen" ON "ProjectOrg";
 CREATE TRIGGER "ProjectOrg_t4d_frozen" BEFORE UPDATE ON "ProjectOrg"
   FOR EACH ROW EXECUTE FUNCTION platform_t4d_project_org_frozen();
 
+-- ── IDENTITY IS FROZEN FROM BIRTH, ON EVERY TABLE THAT HAS ONE ──────────────────────────────
+-- #582's review round 26, finding 3. The rule already exists and already has a message:
+-- `Decision` refuses an identity rewrite with "phase6-4b: decision register identity is frozen
+-- from birth". It was applied to ONE member of its own inventory. `ChangeRequest`, `Notification`,
+-- `Membership` and `OrgMembership` all accepted an `id` rewrite on a committed row.
+--
+-- What that costs is not abstract. Every reference to a row is by id: a change request's closure
+-- receipt names it, a notice is retired by identity rather than by matching its text (the phase-6
+-- 4a comment in `decisions.service.ts` says exactly that), `MembershipTransition` cites the
+-- membership whose standing moved, and this unit's own registers are keyed on the membership id.
+-- Re-pointing an id silently re-parents all of it: the evidence stays word for word intact and
+-- comes to be about a different row. Freezing the CONTENT of a record while leaving WHICH record
+-- it is open is not a freeze.
+--
+-- ONE function over the discovered inventory rather than four copies of the same clause, because
+-- four copies is precisely how a rule ends up applied to three of its members. `TG_TABLE_NAME`
+-- carries the table into the message, so the seal reads the same on every one of them.
+CREATE OR REPLACE FUNCTION phase6_t4d_identity_frozen() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW."id" IS DISTINCT FROM OLD."id" THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: %.% is the identity of a recorded row and is frozen from birth — every receipt, notice, transition and register that cites this row cites it BY ID, so re-pointing the id leaves all of that evidence intact and about something else. A row that must become a different row is a new row.',
+      TG_TABLE_NAME, OLD."id";
+  END IF;
+  RETURN NEW;
+END $$;
+
+DO $$
+DECLARE t TEXT;
+BEGIN
+  -- `Decision` is absent because the DELIVERED 4b seal already freezes it by name, and this unit
+  -- does not stack a second refusal under one that already holds. `ChangeRequest` takes its
+  -- trigger in the decisions half, where that table's other seals live.
+  FOREACH t IN ARRAY ARRAY['Notification', 'Membership', 'OrgMembership'] LOOP
+    EXECUTE format('DROP TRIGGER IF EXISTS %I ON %I', t || '_t4d_identity', t);
+    EXECUTE format(
+      'CREATE TRIGGER %I BEFORE UPDATE ON %I FOR EACH ROW EXECUTE FUNCTION phase6_t4d_identity_frozen()',
+      t || '_t4d_identity', t);
+  END LOOP;
+END $$;
+
 -- ── the statement-level no-TRUNCATE seals ────────────────────────────────────────────────────
 -- A row trigger never fires for TRUNCATE, so every register that carries a row seal carries a
 -- statement seal too, and each is disabled BY NAME by the sanctioned reset
@@ -3344,6 +3385,22 @@ BEGIN
     IF NEW."text" IS DISTINCT FROM OLD."text" OR NEW."color" IS DISTINCT FROM OLD."color" THEN
       RAISE EXCEPTION
         'phase6 4d-i: notice % is KINDED (`%`), so its rendered text and colour are a cache of what its event already says and may not be edited — a previous-release replica still renders these columns, and rewriting them makes two releases announce different things about one act',
+        OLD."id", OLD."kind";
+    END IF;
+    -- AND WHEN IT WAS ANNOUNCED IS PART OF THE CACHE (#582's review round 26, finding 2). Round 6
+    -- froze the rendered STRINGS and stopped at the strings. `at` and `time` are the other two
+    -- derived columns on the same row — the machine timestamp the client sorts and groups by, and
+    -- the rendered clock the user reads — and both stayed writable for the life of the notice.
+    -- The consequence is the same one this seal was installed for, in the axis it did not cover:
+    -- a direct update moves a kinded notice to a different moment, the new replica derives the
+    -- time from the immutable event and the previous-release replica renders the stored columns,
+    -- and the two announce one act as having happened at two different times. It is also how a
+    -- notice is reordered around the acts either side of it without a single word of it changing.
+    -- No writer anywhere in the service updates a Notification — there is not one
+    -- `notification.update` site — so this refuses nothing the serving release does.
+    IF NEW."at" IS DISTINCT FROM OLD."at" OR NEW."time" IS DISTINCT FROM OLD."time" THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: notice % is KINDED (`%`), so WHEN it announced is a cache of its event''s own moment and may not be edited — the stored `at`/`time` are what a previous-release replica renders and what every client sorts by, and moving them re-places the notice among the acts either side of it while every word of it still reads true',
         OLD."id", OLD."kind";
     END IF;
   END IF;

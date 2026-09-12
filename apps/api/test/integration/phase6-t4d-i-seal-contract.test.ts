@@ -618,8 +618,9 @@ const REGISTER: Record<string, SealContract> = {
     ],
   },
   phase6_t4d_change_request_evidence_frozen: {
-    rule: 'the change request\'s identity and discriminator are frozen, and its two receipts and '
-      + 'two frozen actor pairs are written ONCE — never replaced, never cleared',
+    rule: 'the change request\'s identity, discriminator and SUBSTANCE are frozen, and its two '
+      + 'receipts, two frozen actor pairs, closing moment and outcome are written ONCE — never '
+      + 'replaced, never cleared',
     plan: '§A.3 obligation 1 (the fact class evidence freeze); P33; #582 round 3, finding 4',
     on: { 'ChangeRequest.ChangeRequest_t4d_evidence_frozen': B('U') },
     // The delivered `ChangeRequest_t4b2_seal` freezes `decisionId` alone and is a MERGED
@@ -629,14 +630,39 @@ const REGISTER: Record<string, SealContract> = {
     // register now says so. `OLD."resolvedByCommandId" IS NOT NULL` witnesses the resolver's
     // close-once shape; the birth columns must NOT carry that guard, which `forbid` pins, because
     // an `OLD ... IS NOT NULL` guard on them is exactly the NULL -> value hole the finding names.
+    // #582 round 26, finding 1 — the rule was stated over "the receipts and the actor pairs" and
+    // implemented over exactly those. What the request SAID (`reason`, `costImpact`,
+    // `timeImpactDays`), WHEN it was raised (`createdAt`), and WHEN and AS WHAT it closed
+    // (`resolvedAt`, `resolution`) are the same evidence and were all rewritable. The birth four
+    // are frozen against ANY update; the closure two take the one-way guard the rest of the
+    // resolver set already carries, which is also what keeps the serving release's closure —
+    // which writes them NULL -> value in the same statement as `resolvedById` — admitted.
     must: [
       'projectId', 'origin', 'revisionId',
       'sourceCommandId', 'requestedByRole', 'requestedByName',
       'resolvedByCommandId', 'resolvedByRole', 'resolvedByName',
       'OLD."resolvedByCommandId" IS NOT NULL',
+      'reason', 'costImpact', 'timeImpactDays', 'createdAt',
+      'OLD."resolvedAt" IS NOT NULL', 'OLD."resolution" IS NOT NULL',
     ],
     forbid: ['OLD."sourceCommandId" IS NOT NULL', 'OLD."requestedByRole" IS NOT NULL',
       'OLD."requestedByName" IS NOT NULL'],
+  },
+  phase6_t4d_identity_frozen: {
+    rule: 'a recorded row\'s IDENTITY is frozen from birth — on every table that has one, not on '
+      + 'the one table the rule was first written for',
+    plan: '§A.3 obligation 1 (the fact class evidence freeze); #582 round 26, finding 3',
+    on: {
+      'ChangeRequest.ChangeRequest_t4d_identity': B('U'),
+      'Membership.Membership_t4d_identity': B('U'),
+      'Notification.Notification_t4d_identity': B('U'),
+      'OrgMembership.OrgMembership_t4d_identity': B('U'),
+    },
+    // ONE function across the whole inventory, so the rule cannot be applied to three of its four
+    // members the way it already was: `Decision` refuses this by name through the DELIVERED 4b
+    // seal and these three did not refuse it at all. `TG_TABLE_NAME` is the token that witnesses
+    // the seal is generic rather than four copies drifting apart.
+    must: ['TG_TABLE_NAME', 'NEW."id" IS DISTINCT FROM OLD."id"'],
   },
   platform_t4d_event_pairing_claimed: {
     rule: 'an event of a pairing-required family is CLAIMED by exactly one fact',
@@ -674,10 +700,17 @@ const REGISTER: Record<string, SealContract> = {
   },
   platform_t4d_notification_binding: {
     rule: 'a notice bound to an event freezes `eventId`, `kind`, `decisionId` and `projectId`, and '
-      + 'refuses its DELETE — a notice about a withdrawn decision is HIDDEN, never erased',
-    plan: '§A.2; #556 round 2, finding 5; #582 round 1, finding 6',
+      + 'refuses its DELETE — a notice about a withdrawn decision is HIDDEN, never erased; and a '
+      + 'KINDED notice\'s derived cache is frozen in BOTH axes, what it says and WHEN it said it',
+    plan: '§A.2; #556 round 2, finding 5; #582 round 1, finding 6; round 6, finding 6; '
+      + 'round 26, finding 2',
     on: { 'Notification.Notification_t4d_binding': B('D U') },
-    must: ["TG_OP = 'DELETE'", 'eventId', 'kind', 'decisionId', 'projectId'],
+    // #582 round 26, finding 2 — round 6 froze the rendered STRINGS (`text`, `color`) and stopped
+    // at the strings. `at` and `time` are the same derived cache in the other axis: the moment
+    // every client sorts and groups by, and the clock the user reads. Moving them re-places a
+    // notice among the acts either side of it while every word of it still reads true.
+    must: ["TG_OP = 'DELETE'", 'eventId', 'kind', 'decisionId', 'projectId',
+      'text', 'color', 'at', 'time'],
   },
   platform_t4d_notification_binding_bound: {
     rule: 'the INSERT arm is DEFERRED, because a notice may be written before its event — and it '
