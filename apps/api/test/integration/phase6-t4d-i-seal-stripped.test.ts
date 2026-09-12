@@ -4,6 +4,8 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync, readdirSync } from 'n
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { effectCoverageVersion } from '../../src/platform/external-effects';
+import { Prisma } from '@prisma/client';
+import { orgsManifest } from '../../src/orgs/orgs.manifest';
 
 /**
  * THIS release's coverage generation. From round 8's finding 3 the migration seeds TWO — this one
@@ -407,6 +409,20 @@ const ARMS: Arm[] = [
     what: 'a catalog entry leaves service by being RETIRED, never by being deleted',
     hostile: `DELETE FROM "ExternalEffectCatalog" WHERE "effectKey" = 'decision.approved'`,
     refusal: /may not be DELETED/,
+  },
+  {
+    // #582's review round 33, finding 1 — the ORGS-owned half of the register gate. Stripped, the
+    // kernel's writer seal still admits this write (an INSERT, under the backfill gate, to a
+    // fenced register): everything it is entitled to judge is satisfied. What refuses it is the
+    // module that can read `Membership` and see that ss-client holds no architect standing.
+    seal: 'ProjectUserStanding_t4d_backed',
+    what: 'a gated write must be TRUE of the orgs row it mirrors, and orgs is what says so',
+    hostile: `BEGIN;
+              SELECT set_config('vitan.phase6_4d_standing_backfill', 'on', true);
+              INSERT INTO "ProjectUserStanding" ("projectId","userId","role","membershipId")
+                VALUES ('ss-proj','ss-client','architect','ss-mem-c');
+              COMMIT;`,
+    refusal: /writes a row the orgs tables do not support/,
   },
   {
     seal: 'RolloutRetirement_t4d_gate',
@@ -1121,6 +1137,14 @@ const COVERED_BY_CLASS: Record<string, string> = {
   ProjectOrg_t4d_frozen: 'ProjectOrg_t4d_writer',
   // platform_t4d_register_writer — one depth rule, many registers
   // (the five register writers ARE stripped above; nothing else uses it)
+  // phase6_orgs_t4d_register_backed_seal — one backing rule, the same five registers. The arm
+  // above strips it on `ProjectUserStanding` and proves the kernel admits what orgs refuses;
+  // the round-32/33 register oracle then drives a forged row through EVERY one of them, so
+  // these four are measured as a population rather than trusted as a copy.
+  ProjectOrg_t4d_backed: 'ProjectUserStanding_t4d_backed',
+  ProjectRoleStanding_t4d_backed: 'ProjectUserStanding_t4d_backed',
+  UserIdentity_t4d_backed: 'ProjectUserStanding_t4d_backed',
+  OrgUserAuthority_t4d_backed: 'ProjectUserStanding_t4d_backed',
   // the fact tables' seven obligations: one function each, three tables
   DecisionCountersign_t4d_append_only: 'DecisionForward_t4d_reserved',
   DecisionStrandedResolution_t4d_append_only: 'DecisionForward_t4d_reserved',
@@ -5162,11 +5186,15 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       expect(r.ok, `\`${guc}\` must not admit a standing row no Membership supports`).toBe(false);
       expect(r.output).toMatch(/writes a row the orgs tables do not support|is fenced to/);
     }
-    // and the backfill gate is INSERT-only: a correction is not a backfill
+    // And the backfill gate is INSERT-only: a correction is not a backfill. The value written is
+    // the TRUE one (#582's review round 33 split WHO/WHAT into two seals, and `_t4d_backed` fires
+    // one trigger before `_t4d_writer`): a forged value would be refused for being false and this
+    // arm would stop measuring the operation rule it was written for. Writing the account's real
+    // name isolates it — the row is backed, and the UPDATE is still not a backfill.
     const correct = psql(RUN_DB, ['-c', `
       BEGIN;
       SELECT set_config('vitan.phase6_4d_standing_backfill', 'on', true);
-      UPDATE "UserIdentity" SET "displayName" = 'Forged' WHERE "userId" = 'ss-user';
+      UPDATE "UserIdentity" SET "displayName" = 'SS User' WHERE "userId" = 'ss-user';
       COMMIT;`]);
     expect(correct.ok, 'the backfill gate admits INSERT only').toBe(false);
     expect(correct.output).toMatch(/admits INSERT only/);
@@ -5278,14 +5306,30 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     expect(registers.length, 'the writer-depth gate must be installed on the registers').toBeGreaterThan(0);
 
     const bodyQ = psql(RUN_DB, ['-At', '-c',
-      `SELECT prosrc FROM pg_proc WHERE proname = 'phase6_t4d_register_backed'`]);
+      `SELECT prosrc FROM pg_proc WHERE proname = 'phase6_orgs_t4d_register_backed'`]);
     expect(bodyQ.ok && bodyQ.output.trim().length > 0,
-      '`phase6_t4d_register_backed` must exist — it is the one spelling both readers call').toBe(true);
+      '`phase6_orgs_t4d_register_backed` must exist — it is the one spelling of "backed", and '
+      + 'round 33 moved it to the module that owns the tables it reads').toBe(true);
     const spelled = [...bodyQ.output.matchAll(/WHEN '([A-Za-z]+)' THEN/g)].map((m) => m[1]!);
+
+    // Which gated tables are PROJECTED from an orgs source, discovered from the catalog: a
+    // projected register is exactly one carrying the orgs-owned `_t4d_backed` seal.
+    const backedQ = psql(RUN_DB, ['-At', '-c',
+      `SELECT DISTINCT c.relname
+         FROM pg_trigger tg JOIN pg_class c ON c.oid = tg.tgrelid
+         JOIN pg_proc p ON p.oid = tg.tgfoid
+        WHERE NOT tg.tgisinternal AND p.proname = 'phase6_orgs_t4d_register_backed_seal'
+        ORDER BY 1`]);
+    expect(backedQ.ok, backedQ.output).toBe(true);
+    const projectedRegisters = backedQ.output.split('\n').map((x) => x.trim()).filter(Boolean);
+
     expect(spelled.slice().sort(),
-      'every register the gate covers must be named by the shared backing predicate, and the '
-      + 'predicate must name no table that is not a register')
-      .toEqual(registers.slice().sort());
+      'the backing verifier must name exactly the registers that carry the orgs-owned backing '
+      + 'seal — an arm with no seal is a rule nothing applies, and a seal with no arm is a table '
+      + 'the verifier refuses by silence')
+      .toEqual(projectedRegisters.slice().sort());
+    expect(projectedRegisters.every((x) => registers.includes(x)),
+      'every projected register must also carry the kernel writer gate').toBe(true);
 
     // What the predicate MEANS for each gated table, declared and held to the discovered set —
     // because "answers FALSE" carries two opposite meanings here and a table in neither class is
@@ -5304,14 +5348,17 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       DomainEventPairingClaim: 'no-gated-write',
     };
     expect(Object.keys(KIND).sort(),
-      'every table behind the writer-depth gate owes a declared reading of the shared predicate')
+      'every table behind the writer-depth gate owes a declared reading')
       .toEqual(registers.slice().sort());
+    expect(Object.entries(KIND).filter(([, k]) => k === 'projection').map(([n]) => n).sort(),
+      'and the declaration must match the catalog: a `projection` is a table the orgs-owned '
+      + 'backing seal is installed on').toEqual(projectedRegisters.slice().sort());
 
     // every row the live projections hold agrees with its source — the audits' own question,
     // asked of the database the whole unit just built
     for (const table of registers) {
       const notBacked = psql(RUN_DB, ['-At', '-c',
-        `SELECT count(*) FROM "${table}" r WHERE NOT phase6_t4d_register_backed('${table}', to_jsonb(r))`]);
+        `SELECT count(*) FROM "${table}" r WHERE NOT phase6_orgs_t4d_register_backed('${table}', to_jsonb(r))`]);
       const all = psql(RUN_DB, ['-At', '-c', `SELECT count(*) FROM "${table}"`]);
       expect(notBacked.ok && all.ok, notBacked.output + all.output).toBe(true);
       if (KIND[table] === 'projection') {
@@ -5348,7 +5395,13 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
         ${FORGED[table]};
         COMMIT;`]);
       expect(r.ok, `the gate must refuse a forged "${table}" row even under the backfill flag`).toBe(false);
-      expect(r.output).toMatch(/writes a row the orgs tables do not support/);
+      // the two refusals are different on purpose, and each must come from its own owner: a
+      // PROJECTED register is refused by the orgs-owned seal that can read the source, and a
+      // table the standing gates were never opened for is refused by the kernel's own fence,
+      // which needs to know nothing about orgs to say so.
+      expect(r.output).toMatch(KIND[table] === 'projection'
+        ? /writes a row the orgs tables do not support/
+        : /fenced to the five projected registers/);
     }
   }, 900_000);
 
@@ -5504,5 +5557,155 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       + 'statement runs it is over a minute stale, and the seal must refuse it',
     ).toBe(false);
     expect(stale.output).toMatch(/but this closing statement is running at/);
+  }, 300_000);
+
+  /**
+   * #582's review round 33, finding 1 — THE KERNEL MAY NOT LEARN WHAT AN ORG ROLE IS.
+   *
+   * `platform.manifest.ts` states one thing about these five registers, and it is the reason they
+   * are platform-owned at all: "no decisions- or platform-owned trigger reads an orgs table …
+   * ORGS-owned triggers PROJECT these rows from their own tables through generic platform
+   * primitives, and every seal then reads kernel-owned rows."
+   *
+   * Round 31 put the agreement check inside `platform_t4d_register_writer`, which made the kernel
+   * read `Project`, `User`, `OrgMembership` and `Membership` on every gated write. Round 32
+   * extracted it into a helper — the same edge, one hop further out, and now with a name. Neither
+   * round noticed, because nothing here was ASKING the question the manifest answers.
+   *
+   * So the rule is measured the way it is stated, and TRANSITIVELY, because one hop is exactly
+   * how round 32 kept it: from every `platform_*` function, follow every function it calls, and
+   * require that no path reaches a table the ORGS manifest owns. The orgs table set is derived
+   * from `orgsManifest.ownsModels` through the Prisma DMMF, so a model orgs gains later is in
+   * this check the day it is registered — not the day someone remembers to add it here.
+   */
+  it('round 33: no platform-owned function reaches an orgs-owned table, at any call depth', () => {
+    buildRun([]);
+
+    const tableOf = new Map(Prisma.dmmf.datamodel.models.map(
+      (m) => [m.name.charAt(0).toLowerCase() + m.name.slice(1), m.dbName ?? m.name] as const));
+    const orgsTables = orgsManifest.ownsModels.map((m) => {
+      const table = tableOf.get(m);
+      expect(table, `the orgs manifest names model \`${m}\`, which is not in the Prisma DMMF`).toBeDefined();
+      return table!;
+    });
+    expect(orgsTables.length,
+      'the orgs module owns tables; an empty set would make this arm a tautology').toBeGreaterThan(5);
+
+    const bodies = psql(RUN_DB, ['-At', '-F', '~', '-c',
+      `SELECT p.proname, regexp_replace(p.prosrc, E'[\\n\\r]+', ' ', 'g')
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.prolang <> (SELECT oid FROM pg_language WHERE lanname = 'internal')
+        ORDER BY 1`]);
+    expect(bodies.ok, bodies.output).toBe(true);
+
+    const src = new Map<string, string>();
+    for (const line of bodies.output.split('\n')) {
+      const cut = line.indexOf('~');
+      if (cut < 0) continue;
+      const name = line.slice(0, cut).trim();
+      src.set(name, (src.get(name) ?? '') + ' ' + line.slice(cut + 1));
+    }
+    expect(src.size, 'reading the installed function bodies returned nothing').toBeGreaterThan(100);
+
+    const names = [...src.keys()];
+    const calls = new Map(names.map((n) => [n, names.filter(
+      (m) => m !== n && new RegExp(`\\b${m}\\s*\\(`).test(src.get(n)!))]));
+    const readsOrgs = new Map(names.map((n) => [n, orgsTables.filter((tb) => src.get(n)!.includes(`"${tb}"`))]));
+
+    const crossings: string[] = [];
+    for (const start of names.filter((n) => n.startsWith('platform_'))) {
+      const seen = new Set<string>();
+      const stack = [[start, start] as [string, string]];
+      while (stack.length > 0) {
+        const [cur, path] = stack.pop()!;
+        if (seen.has(cur)) continue;
+        seen.add(cur);
+        const hit = readsOrgs.get(cur)!;
+        if (hit.length > 0) crossings.push(`${path} reads ${hit.join(', ')}`);
+        for (const next of calls.get(cur)!) stack.push([next, `${path} -> ${next}`]);
+      }
+    }
+    expect(
+      crossings,
+      'a platform-owned function reaches an orgs-owned table. The kernel carries the registers so '
+      + 'that every seal reads KERNEL rows: a kernel function that resolves an org role, a '
+      + 'membership status or a project\'s tenancy for itself has taken the dependency the '
+      + 'registers exist to remove, and it does not matter whether it does so directly or through '
+      + 'a helper it calls. Move the question to the module that owns the table and let the kernel '
+      + 'ask a generic primitive.',
+    ).toEqual([]);
+
+    // and the arm is not vacuous: the edge round 33 removed is reconstructible, and this finds it.
+    const planted = psql(RUN_DB, ['-c',
+      `CREATE OR REPLACE FUNCTION platform_t4d_r33_probe() RETURNS BOOLEAN LANGUAGE sql STABLE AS $fn$
+         SELECT EXISTS (SELECT 1 FROM "Membership" WHERE "status" = 'active');
+       $fn$;`]);
+    expect(planted.ok, planted.output).toBe(true);
+    const after = psql(RUN_DB, ['-At', '-c',
+      `SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.proname = 'platform_t4d_r33_probe'
+          AND p.prosrc LIKE '%"Membership"%'`]);
+    expect(after.output.trim(),
+      'the negative control must be present — if this plant did not land, the sweep above proved '
+      + 'nothing about its ability to see a crossing').toBe('1');
+  }, 300_000);
+
+  /**
+   * #582's review round 33, finding 2 — A COUNT NOBODY MAINTAINS IS NOT BACKED.
+   *
+   * Round 32 gave `ProjectRoleStanding` the adoption audit the other four registers got in round
+   * 8, and asked the obvious question: does the number equal the memberships it counts? It does,
+   * for a row that happens to match on the day of the apply. But `phase6_t4d_membership_role_standing`
+   * moves the `architect` row and no other, and the backfill seeds `architect` and no other — so a
+   * P3005 baseline row for any other role is adopted, sealed, and then never updated again. The
+   * first membership change after the apply makes it a lie, permanently, with
+   * `platform_role_standing` answering from it.
+   *
+   * The arm plants exactly that: an `engineer` count that is CORRECT at adoption time.
+   */
+  it('round 33: a register row for a role the count writer never maintains ABORTS the apply', () => {
+    psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+    expect(psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]).ok).toBe(true);
+
+    const planted = psql(RUN_DB, ['-c', `
+      INSERT INTO "Org" ("id","name","slug") VALUES ('r33-org','R33 Org','r33-org');
+      INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+        VALUES ('r33-proj','r33-org','R33 Site','R33','','Finishing','R33-01','01 Jan 2026','31 Dec 2026',0,0,0);
+      INSERT INTO "User" ("id","projectId","role","name","phone")
+        VALUES ('r33-eng','r33-proj','engineer','R33 Engineer','+910000000033');
+      INSERT INTO "Membership" ("id","projectId","userId","role","status")
+        VALUES ('r33-mem','r33-proj','r33-eng','engineer','active');
+      -- the register as \`prisma db push\` creates it: no writer gate, no freeze
+      CREATE TABLE "ProjectRoleStanding" (
+        "projectId" TEXT NOT NULL, "role" TEXT NOT NULL,
+        "activeCount" INTEGER NOT NULL DEFAULT 0,
+        "changedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "ProjectRoleStanding_pkey" PRIMARY KEY ("projectId","role"));
+      -- and the row is RIGHT today: one active engineer, count 1. Round 32 adopted it.
+      INSERT INTO "ProjectRoleStanding" ("projectId","role","activeCount")
+        VALUES ('r33-proj','engineer',1);
+    `]);
+    expect(planted.ok, planted.output).toBe(true);
+
+    const refused = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(
+      refused.ok,
+      'a correct-today count for a role nothing maintains must REFUSE the apply: this file is '
+      + 'about to freeze the row, and the writer moves `architect` only, so the next membership '
+      + 'change leaves it stale forever with `platform_role_standing` answering from it',
+    ).toBe(false);
+    expect(refused.output).toMatch(/"ProjectRoleStanding" row\(s\) hold a count the active "Membership" rows do not support/);
+    expect(refused.output, 'the abort must name the row so the operator can remove it')
+      .toMatch(/engineer on r33-proj says 1/);
+
+    // remove the unmaintained row and the whole unit applies — and seeds the architect row it does keep
+    expect(psql(RUN_DB, ['-c', `DELETE FROM "ProjectRoleStanding" WHERE "role" = 'engineer'`]).ok).toBe(true);
+    const clean = applyWhole();
+    expect(clean.ok, `with the unmaintained row gone the unit must apply:\n${clean.output}`).toBe(true);
+    const seeded = psql(RUN_DB, ['-At', '-c',
+      `SELECT "role" || '=' || "activeCount" FROM "ProjectRoleStanding" WHERE "projectId" = 'r33-proj'`]);
+    expect(seeded.output.trim().split('\n').filter(Boolean),
+      'and the only role this unit counts is the one it seeds').toEqual(['architect=0']);
   }, 300_000);
 });

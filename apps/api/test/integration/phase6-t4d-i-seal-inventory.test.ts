@@ -114,7 +114,7 @@ const INVENTORY: Record<string, string[]> = {
   ],
   OrgMembership: ['OrgMembership_t4d_identity', 'OrgMembership_t4d_org_authority',
     'OrgMembership_t4d_user_standing'],
-  OrgUserAuthority: ['OrgUserAuthority_t4d_no_truncate', 'OrgUserAuthority_t4d_writer'],
+  OrgUserAuthority: ['OrgUserAuthority_t4d_backed', 'OrgUserAuthority_t4d_no_truncate', 'OrgUserAuthority_t4d_writer'],
   Project: ['Project_t4d_deleting', 'Project_t4d_project_org', 'Project_t4d_user_standing'],
   ProjectEventStream: [
     // §A.2 names FIVE objects here and the first version of this unit installed two, with the
@@ -127,9 +127,9 @@ const INVENTORY: Record<string, string[]> = {
     'ProjectEventStream_t4d_no_delete',
     'ProjectEventStream_t4d_no_truncate',
   ],
-  ProjectOrg: ['ProjectOrg_t4d_frozen', 'ProjectOrg_t4d_no_truncate', 'ProjectOrg_t4d_writer'],
-  ProjectRoleStanding: ['ProjectRoleStanding_t4d_no_truncate', 'ProjectRoleStanding_t4d_writer'],
-  ProjectUserStanding: ['ProjectUserStanding_t4d_no_truncate', 'ProjectUserStanding_t4d_writer'],
+  ProjectOrg: ['ProjectOrg_t4d_backed', 'ProjectOrg_t4d_frozen', 'ProjectOrg_t4d_no_truncate', 'ProjectOrg_t4d_writer'],
+  ProjectRoleStanding: ['ProjectRoleStanding_t4d_backed', 'ProjectRoleStanding_t4d_no_truncate', 'ProjectRoleStanding_t4d_writer'],
+  ProjectUserStanding: ['ProjectUserStanding_t4d_backed', 'ProjectUserStanding_t4d_no_truncate', 'ProjectUserStanding_t4d_writer'],
   ReleaseLease: ['ReleaseLease_t4d_frozen', 'ReleaseLease_t4d_no_truncate'],
   RolloutRetirement: [
     'RolloutRetirement_t4d_frozen',
@@ -137,7 +137,7 @@ const INVENTORY: Record<string, string[]> = {
     'RolloutRetirement_t4d_no_truncate',
   ],
   User: ['User_t4d_architect_reserved', 'User_t4d_identity'],
-  UserIdentity: ['UserIdentity_t4d_no_truncate', 'UserIdentity_t4d_writer'],
+  UserIdentity: ['UserIdentity_t4d_backed', 'UserIdentity_t4d_no_truncate', 'UserIdentity_t4d_writer'],
 };
 
 /** The kernel primitives and kernel reads every seal above calls. A seal whose primitive is
@@ -151,6 +151,13 @@ const FUNCTIONS = [
   'phase6_t4d_provenance_bound',
   'phase6_t4d_membership_transition_bound',
   'platform_t4d_register_writer',
+  // #582's review round 33, finding 1 — the split that keeps the kernel out of orgs' tables. The
+  // generic primitive both halves ask, the ORGS-owned verifier, and the ORGS-owned seal that
+  // applies it. A seal calling a function that is not there fails at the first write, not at
+  // install, which is the whole reason this list exists.
+  'platform_t4d_gated_direct_write',
+  'phase6_orgs_t4d_register_backed',
+  'phase6_orgs_t4d_register_backed_seal',
   'platform_t4d_register_no_truncate',
   'platform_project_org_apply',
   'platform_role_standing_apply',

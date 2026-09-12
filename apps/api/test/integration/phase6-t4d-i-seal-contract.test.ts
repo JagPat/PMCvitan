@@ -767,6 +767,19 @@ const REGISTER: Record<string, SealContract> = {
     on: { 'ProjectOrg.ProjectOrg_t4d_frozen': B('U') },
     must: ['orgId'],
   },
+  phase6_orgs_t4d_register_backed_seal: {
+    rule: 'a gated direct write to a projected register must be TRUE of the orgs row it mirrors — '
+      + 'and the module that owns that row is what says so, because the kernel may not read it',
+    plan: '§A.2 the registers; #582 round 31 finding 4 (the rule), round 33 finding 1 (whose rule)',
+    on: {
+      'OrgUserAuthority.OrgUserAuthority_t4d_backed': B('I D U'),
+      'ProjectOrg.ProjectOrg_t4d_backed': B('I D U'),
+      'ProjectRoleStanding.ProjectRoleStanding_t4d_backed': B('I D U'),
+      'ProjectUserStanding.ProjectUserStanding_t4d_backed': B('I D U'),
+      'UserIdentity.UserIdentity_t4d_backed': B('I D U'),
+    },
+    must: ['platform_t4d_gated_direct_write', 'phase6_orgs_t4d_register_backed'],
+  },
   platform_t4d_register_writer: {
     rule: 'a projected register is written only by a trigger calling the platform primitive — a '
       + 'statement someone typed sits at depth 1 and is refused',

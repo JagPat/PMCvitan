@@ -687,7 +687,30 @@ CREATE TRIGGER "Project_t4d_deleting"
   BEFORE DELETE ON "Project"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_project_deleting();
 
--- ── the one spelling of "this register row is BACKED" ────────────────────────────────────────
+-- ── the one spelling of "this register row is BACKED" — AND IT IS ORGS-OWNED ─────────────────
+--
+-- #582's review round 33, finding 1. Round 32 put this predicate where its two READERS were —
+-- and one of them is the platform kernel. `platform_t4d_register_writer` then reached `Project`,
+-- `User`, `OrgMembership` and `Membership` on every gated write, which inverts the one dependency
+-- `platform.manifest.ts` states about these very tables: "no decisions- or platform-owned trigger
+-- reads an orgs table … ORGS-owned triggers PROJECT these rows from their own tables through
+-- generic platform primitives, and every seal then reads kernel-owned rows."
+--
+-- The violation is older than round 32 — round 31 spelled the same reads INLINE in the kernel
+-- trigger, and extracting them into a helper only gave the edge a name. What round 32 got right
+-- is that the rule has one spelling; what it got wrong is WHOSE spelling it is.
+--
+-- So ownership is split along the line the manifest draws, and nothing is weakened:
+--
+--   · this predicate and the trigger that applies it are ORGS-OWNED (`phase6_orgs_t4d_*`). They
+--     read orgs tables because they ARE orgs: the module that owns `Membership` is the module
+--     entitled to say what an active membership makes true.
+--   · the kernel keeps `platform_t4d_register_writer`, which says WHO may write and nothing
+--     else, and `platform_t4d_gated_direct_write()`, a generic primitive over trigger depth and
+--     this unit's own gates. Neither names an orgs table, and neither calls anything that does.
+--
+-- Round 31's finding 4 is untouched: a gated write is still judged for TRUTH at the moment it is
+-- written. It is judged by the module that can tell.
 -- A register row is backed when the orgs row it mirrors says the same thing. TWO validators ask
 -- that question of the same row: `platform_t4d_register_writer` asks it of every gated write as
 -- it happens, and the adoption audits below ask it of every row this migration is about to
@@ -708,7 +731,7 @@ CREATE TRIGGER "Project_t4d_deleting"
 --
 -- An UNKNOWN table answers FALSE. A register added later that nobody teaches this function is
 -- refused by the gate rather than admitted by it, so silence fails closed.
-CREATE OR REPLACE FUNCTION phase6_t4d_register_backed(p_table TEXT, p_row JSONB)
+CREATE OR REPLACE FUNCTION phase6_orgs_t4d_register_backed(p_table TEXT, p_row JSONB)
 RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
   SELECT CASE p_table
     -- the tenancy mapping: the project's own org, and no other
@@ -727,11 +750,21 @@ RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
        WHERE om."orgId" = p_row->>'orgId' AND om."userId" = p_row->>'userId'
          AND om."role" = p_row->>'role' AND om."role" IN ('owner', 'admin'))
 
-    -- the counted register: the count IS the claim, so it must equal the memberships it counts
+    -- The counted register: the count IS the claim, so it must equal the memberships it counts —
+    -- AND THE ROLE MUST BE ONE THE COUNT WRITER MAINTAINS (#582's review round 33, finding 2).
+    -- Round 32 asked only whether the number is right TODAY. `phase6_t4d_membership_role_standing`
+    -- increments and decrements the `architect` row and no other, and the backfill seeds
+    -- `architect` and no other, so a P3005 baseline row for any other role is adopted the moment
+    -- its count happens to match and then goes stale on the next membership change — sealed,
+    -- frozen, and wrong, with `platform_role_standing` answering from it. A register row nobody
+    -- maintains is not backed however right it looks at adoption time, so the role is bound to
+    -- the one this unit actually keeps. A later unit that starts counting another role widens
+    -- this arm and its writer together.
     WHEN 'ProjectRoleStanding' THEN
-      (p_row->>'activeCount')::int = (
+      p_row->>'role' = 'architect'
+      AND (p_row->>'activeCount')::int = (
         SELECT count(*) FROM "Membership" m
-         WHERE m."projectId" = p_row->>'projectId' AND m."role" = p_row->>'role'
+         WHERE m."projectId" = p_row->>'projectId' AND m."role" = 'architect'
            AND m."status" = 'active')
 
     -- per-user standing has exactly TWO legitimate shapes, which are the two arms the backfill
@@ -766,16 +799,11 @@ RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
                            WHERE m3."projectId" = p_row->>'projectId'
                              AND m3."userId" = p_row->>'userId' AND m3."status" = 'active'))
 
-    -- THE SIXTH TABLE BEHIND THIS GATE, and it is not a projection at all. A pairing claim is
-    -- minted by the fact seal that claims the event, at nested depth, and the writer-depth rule''s
-    -- early return is what admits it — so NO gated depth-1 write of it is legitimate: the standing
-    -- backfill writes no claims, and 4d-iii''s re-projection is fenced to the two per-user
-    -- registers. The honest answer is FALSE, and it is said HERE rather than reached through the
-    -- `ELSE` below, because those two silences mean opposite things: this one is "no gated write of
-    -- this table is legitimate", and `ELSE` is "a register nobody taught this function". The round
-    -- 32 oracle discovers the population from the catalog and refuses the second.
-    WHEN 'DomainEventPairingClaim' THEN FALSE
-
+    -- `DomainEventPairingClaim` is deliberately absent: it is not projected from an orgs table at
+    -- all — a claim is minted by the fact seal that claims the event, at nested depth — so it is
+    -- not a question this verifier can answer. Round 32 answered it FALSE here; round 33 moves
+    -- that refusal to where it belongs, the KERNEL''s own backfill fence, which knows which of its
+    -- registers the standing gates were opened for without asking anybody about orgs.
     ELSE FALSE
   END;
 $$;
@@ -806,11 +834,23 @@ $$;
 -- Neither gate is a general escape hatch: outside them a depth-1 write is refused whatever it
 -- carries, which is what P42's negative arm proves by issuing the same repair statements with
 -- no gate and with the gate but no fence.
+-- THE GENERIC PRIMITIVE BOTH SIDES ASK (#582's review round 33, finding 1). "Is this write a
+-- DIRECT one that a 4d standing gate is holding open?" is a question about trigger depth and this
+-- unit's own flags — kernel knowledge, with no orgs table and no org role in it. The kernel's
+-- writer trigger asks it to decide whether to judge, and the ORGS-owned backing seal asks the
+-- same one to decide whether the row is its business. One spelling, so the two triggers on each
+-- register cannot disagree about which writes they are talking about — which is round 32's
+-- lesson applied to the split round 33 asks for.
+CREATE OR REPLACE FUNCTION platform_t4d_gated_direct_write() RETURNS BOOLEAN
+LANGUAGE sql STABLE AS $$
+  SELECT pg_trigger_depth() = 1
+     AND (coalesce(current_setting('vitan.phase6_4d_standing_backfill', true), '') = 'on'
+       OR coalesce(current_setting('vitan.phase6_4d_standing_reprojection', true), '') = 'on');
+$$;
+
 CREATE OR REPLACE FUNCTION platform_t4d_register_writer() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   v_row     RECORD;
-  v_json    JSONB;
-  v_agrees  BOOLEAN;
   v_backfill BOOLEAN := coalesce(current_setting('vitan.phase6_4d_standing_backfill', true), '') = 'on';
   v_reproject BOOLEAN := coalesce(current_setting('vitan.phase6_4d_standing_reprojection', true), '') = 'on';
 BEGIN
@@ -819,45 +859,43 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  -- ── A GATE SAYS WHO MAY WRITE. IT NEVER SAID WHAT (#582's review round 31, finding 4) ──────
+  -- ── A GATE SAYS WHO MAY WRITE (#582's review round 31, finding 4; round 33, finding 1) ─────
   --
   -- Both arms below used to return the row unchanged the moment their flag was set. The flag is
   -- authorisation and nothing else: it was never a claim that the row being written is TRUE of the
-  -- orgs table this register mirrors. So a mistaken or re-used gated statement could insert a
+  -- source this register mirrors. So a mistaken or re-used gated statement could insert a
   -- `ProjectUserStanding` naming any role, or rewrite `OrgUserAuthority`, and every seal
   -- downstream — `platform_user_holds_role`, the membership authority arms, the frozen-pair
   -- correspondence — would then trust the forged row as the register's truth.
   --
-  -- It is the same shape this unit has now been caught by at every level: a rule that governs
-  -- WHO or WHEN standing in for a rule about WHAT. So each gate is narrowed to the operation it
-  -- was opened for, and then the row is checked against the source it claims to mirror.
+  -- That question is STILL asked of every gated write, and it is asked by the module that can
+  -- answer it: the orgs-owned `<register>_t4d_backed` seal installed alongside this one. Round 31
+  -- asked it here, which made the kernel read four orgs tables to decide whether an org role was
+  -- real — the one dependency `platform.manifest.ts` forbids about exactly these registers. What
+  -- is left here is the part that IS the kernel's: who may write, with which operation, to which
+  -- of its own tables.
   IF v_backfill OR v_reproject THEN
     IF v_backfill AND TG_OP <> 'INSERT' THEN
       RAISE EXCEPTION
         'phase6 4d-i: the standing BACKFILL gate admits INSERT only, and this is a % on "%" — correcting an existing register row is not a backfill, and a gate that admits any operation is not a gate.',
         TG_OP, TG_TABLE_NAME;
     END IF;
+    -- AND THE BACKFILL GATE IS FENCED TOO. Round 32 refused a gated write of
+    -- `DomainEventPairingClaim` by answering FALSE inside the backing verifier — which made the
+    -- orgs-owned predicate carry a rule about a table orgs projects nothing into. The fence says
+    -- it where it is true: these five registers are what the STANDING gates were opened for, and a
+    -- claim is minted by the fact seal that claims its event, at nested depth, never by a gated
+    -- statement. Both fences are the kernel talking about its own tables.
+    IF TG_TABLE_NAME NOT IN ('ProjectOrg', 'ProjectRoleStanding', 'ProjectUserStanding',
+                             'UserIdentity', 'OrgUserAuthority') THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: the 4d STANDING gates are fenced to the five projected registers, and this is a % on "%" — that table is not projected from a source these gates were opened for, so no gated direct write of it is legitimate.',
+        TG_OP, TG_TABLE_NAME;
+    END IF;
     IF v_reproject AND NOT v_backfill AND TG_TABLE_NAME NOT IN ('ProjectUserStanding', 'OrgUserAuthority') THEN
       RAISE EXCEPTION
         'phase6 4d-i: the 4d-iii RE-PROJECTION gate is fenced to "ProjectUserStanding" and "OrgUserAuthority", and this is a % on "%" — the fence is the whole reason the gate is admissible.',
         TG_OP, TG_TABLE_NAME;
-    END IF;
-
-    -- the row must AGREE with the orgs row it mirrors, and the question is asked where it is
-    -- SPELLED — `phase6_t4d_register_backed`, the same call the adoption audits below make of
-    -- every row this migration freezes. Restating it here is what round 32's finding 2 was
-    -- (#582's review round 32). A DELETE is the mirror claim: it is admitted only where the
-    -- source no longer justifies the row.
-    v_json := to_jsonb(CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END);
-    v_agrees := phase6_t4d_register_backed(TG_TABLE_NAME, v_json);
-
-    -- a DELETE inverts the question, and an unknown table is refused rather than admitted.
-    IF TG_OP = 'DELETE' THEN v_agrees := NOT v_agrees; END IF;
-
-    IF NOT v_agrees THEN
-      RAISE EXCEPTION
-        'phase6 4d-i: the gated % on "%" writes a row the orgs tables do not support — a register mirrors its source, and a gate authorises WHO may project it, never WHAT they may claim. Row: %',
-        TG_OP, TG_TABLE_NAME, v_json;
     END IF;
 
     IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
@@ -892,6 +930,54 @@ BEGIN
       'CREATE TRIGGER %I BEFORE INSERT OR UPDATE OR DELETE ON %I'
       || ' FOR EACH ROW EXECUTE FUNCTION platform_t4d_register_writer()',
       t || '_t4d_writer', t);
+  END LOOP;
+END $$;
+
+-- ── the ORGS-owned half: WHAT a gated write may claim ────────────────────────────────────────
+-- The companion to the seal above, and the reason the kernel no longer reads a single orgs table.
+-- `platform_t4d_register_writer` admits a gated direct write; this refuses one that is not TRUE
+-- of the orgs row it claims to mirror. Orgs-owned because the question is entirely about orgs
+-- data: whether a membership is active, whether an org role is authoritative, whether a user is
+-- membership-less on a project. The module that owns those tables answers it.
+--
+-- It judges only GATED DIRECT writes, asked through the generic kernel primitive. A nested write
+-- is the projection writer doing its job and is trusted exactly as before; an UNGATED direct
+-- write is refused by the writer seal with its own message, and this one must not get there
+-- first and rename the refusal — trigger names fire in alphabetical order and `_t4d_backed`
+-- sorts before `_t4d_writer`.
+CREATE OR REPLACE FUNCTION phase6_orgs_t4d_register_backed_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_json JSONB; v_agrees BOOLEAN;
+BEGIN
+  IF NOT platform_t4d_gated_direct_write() THEN
+    IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+    RETURN NEW;
+  END IF;
+
+  -- A DELETE is the mirror claim: it is admitted only where the source no longer justifies the row.
+  v_json := to_jsonb(CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END);
+  v_agrees := phase6_orgs_t4d_register_backed(TG_TABLE_NAME, v_json);
+  IF TG_OP = 'DELETE' THEN v_agrees := NOT v_agrees; END IF;
+
+  IF NOT v_agrees THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: the gated % on "%" writes a row the orgs tables do not support — a register mirrors its source, and a gate authorises WHO may project it, never WHAT they may claim. Row: %',
+      TG_OP, TG_TABLE_NAME, v_json;
+  END IF;
+
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END $$;
+
+DO $$
+DECLARE t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['ProjectOrg', 'ProjectRoleStanding', 'ProjectUserStanding',
+                           'UserIdentity', 'OrgUserAuthority'] LOOP
+    EXECUTE format('DROP TRIGGER IF EXISTS %I ON %I', t || '_t4d_backed', t);
+    EXECUTE format(
+      'CREATE TRIGGER %I BEFORE INSERT OR UPDATE OR DELETE ON %I'
+      || ' FOR EACH ROW EXECUTE FUNCTION phase6_orgs_t4d_register_backed_seal()',
+      t || '_t4d_backed', t);
   END LOOP;
 END $$;
 
@@ -1446,12 +1532,12 @@ BEGIN
   -- migration that silently re-points a project to a different org is doing the thing the seal
   -- forbids every other writer from doing. The operator is told which projects disagree.
   SELECT count(*) INTO v_backfilled FROM "ProjectOrg" r
-   WHERE NOT phase6_t4d_register_backed('ProjectOrg', to_jsonb(r));
+   WHERE NOT phase6_orgs_t4d_register_backed('ProjectOrg', to_jsonb(r));
   IF v_backfilled > 0 THEN
     SELECT string_agg(format('%s→%s (Project says %s)', r."projectId", r."orgId", p."orgId"), ', ')
       INTO v_sample_org
       FROM "ProjectOrg" r LEFT JOIN "Project" p ON p."id" = r."projectId"
-     WHERE NOT phase6_t4d_register_backed('ProjectOrg', to_jsonb(r));
+     WHERE NOT phase6_orgs_t4d_register_backed('ProjectOrg', to_jsonb(r));
     RAISE EXCEPTION
       'phase6 4d-i ABORT: % "ProjectOrg" row(s) name an org their "Project" does not — %. The register is about to be FROZEN, and a mismatched mapping grants that org''s owners and admins team-management authority over a project that is not theirs. Correct the register (or the Project) before this migration adopts it; this file will not re-point a tenancy mapping on its own.',
       v_backfilled, v_sample_org;
@@ -1478,7 +1564,7 @@ BEGIN
   SELECT count(*), string_agg(format('%s (register says %L, User says %L)', u."id", i."displayName", u."name"), ', ' ORDER BY u."id")
     INTO v_backfilled, v_sample
     FROM "UserIdentity" i LEFT JOIN "User" u ON u."id" = i."userId"
-   WHERE NOT phase6_t4d_register_backed('UserIdentity', to_jsonb(i));
+   WHERE NOT phase6_orgs_t4d_register_backed('UserIdentity', to_jsonb(i));
   IF v_backfilled > 0 THEN
     RAISE EXCEPTION
       'phase6 4d-i ABORT: % "UserIdentity" row(s) disagree with the "User" they project — %. The register is about to become the canonical source of every frozen actor name, so adopting a row that already contradicts its account would attribute 4d facts to a name that account does not carry. Reconcile each row with its "User" (or correct the "User") before this migration adopts the register.',
@@ -1493,7 +1579,7 @@ BEGIN
   SELECT count(*), string_agg(format('%s@%s as %L', a."userId", a."orgId", a."role"), ', ' ORDER BY a."orgId", a."userId")
     INTO v_backfilled, v_sample
     FROM "OrgUserAuthority" a
-   WHERE NOT phase6_t4d_register_backed('OrgUserAuthority', to_jsonb(a));
+   WHERE NOT phase6_orgs_t4d_register_backed('OrgUserAuthority', to_jsonb(a));
   IF v_backfilled > 0 THEN
     RAISE EXCEPTION
       'phase6 4d-i ABORT: % "OrgUserAuthority" row(s) are backed by no owner/admin "OrgMembership" — %. The register is about to be adopted as the answer to "may this actor manage the team?", and a row without its source grants that authority to someone the orgs tables never made an owner or admin. Remove the unbacked rows (or grant the membership they claim) before this migration adopts the register.',
@@ -1524,7 +1610,7 @@ BEGIN
   SELECT count(*), string_agg(format('%s on %s as %L (membershipId %L)', s2."userId", s2."projectId", s2."role", s2."membershipId"), ', ' ORDER BY s2."projectId", s2."userId")
     INTO v_backfilled, v_sample
     FROM "ProjectUserStanding" s2
-   WHERE NOT phase6_t4d_register_backed('ProjectUserStanding', to_jsonb(s2));
+   WHERE NOT phase6_orgs_t4d_register_backed('ProjectUserStanding', to_jsonb(s2));
   IF v_backfilled > 0 THEN
     RAISE EXCEPTION
       'phase6 4d-i ABORT: % "ProjectUserStanding" row(s) are backed by neither an active "Membership" of that exact user, role AND id, nor an org owner/admin''s membership-less `pmc` claim — %. The register is about to be adopted as the answer to "does this user hold this role here?" AND as the answer to "who holds this membership?" — `platform_membership_active_user` resolves the holder by `membershipId` alone — so an unbacked row is standing nobody granted and a mispointed one hands a forward to the wrong person. Remove or repoint the rows (or grant the membership they claim) before this migration adopts the register.',
@@ -1604,7 +1690,7 @@ BEGIN
   SELECT count(*), string_agg(format('%s on %s says %s', r3."role", r3."projectId", r3."activeCount"), ', ' ORDER BY r3."projectId", r3."role")
     INTO v_backfilled, v_sample
     FROM "ProjectRoleStanding" r3
-   WHERE NOT phase6_t4d_register_backed('ProjectRoleStanding', to_jsonb(r3));
+   WHERE NOT phase6_orgs_t4d_register_backed('ProjectRoleStanding', to_jsonb(r3));
   IF v_backfilled > 0 THEN
     RAISE EXCEPTION
       'phase6 4d-i ABORT: % "ProjectRoleStanding" row(s) hold a count the active "Membership" rows do not support — %. The register is about to be adopted as the answer to "how many hold this role here?", and every architect-chain seal of 4d-i reads it: a wrong count silently changes which decisions require a chain and which may skip one. Correct the register (or the memberships it counts) before this migration adopts it.',
