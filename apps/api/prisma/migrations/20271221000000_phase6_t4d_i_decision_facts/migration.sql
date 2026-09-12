@@ -35,6 +35,40 @@
 
 BEGIN;
 
+-- ── THE LOCK ORDER IS THE SERVING WRITER'S (#582's review round 35, finding 2) ───
+-- This half replaces triggers on TWELVE tables. `Decision` came first, because that is where the
+-- reservation doors are, and `Membership` came seventh — and `CREATE TRIGGER` takes ACCESS
+-- EXCLUSIVE and holds it to COMMIT. The serving approval flow takes its locks the other way
+-- round: `decisions.service.ts` calls `hasProjectRoleStanding(..., { forUpdate: true })`, which
+-- locks the `Membership` rows, and only then issues `decision.updateMany`. An approval that
+-- reaches its membership lock after this migration has locked `Decision` waits for `Decision`
+-- while the migration waits for `Membership`, and PostgreSQL resolves it by killing one of them:
+-- either the deploy fails halfway, or a user's approval is aborted by a deployment they cannot
+-- see. Neither is a failure the operator can act on from the message they get.
+--
+-- So every lock this half needs is taken HERE, before any DDL, in ONE statement, with
+-- `Membership` first — the order the serving writer uses. Acquiring them together also removes
+-- the window between them: there is no point at which this transaction holds one of these tables
+-- and is waiting for another.
+--
+-- Only the tables that ALREADY EXIST are listed. `DecisionForward`, `DecisionCountersign` and
+-- `DecisionStrandedResolution` are created by this transaction, so no other session can hold or
+-- want them and they cannot take part in a deadlock. The mode is the one the DDL below takes
+-- anyway; taking it early changes WHEN, which is the whole point.
+--
+-- This is round 7's finding 4 and round 8's finding 1 — "the lock is acquired BEFORE any table
+-- ALTER" — applied to the half that was split out after those rounds were written.
+LOCK TABLE "Membership",
+           "Decision",
+           "ChangeRequest",
+           "DecisionApprovalRevision",
+           "DecisionEvent",
+           "DecisionConsultation",
+           "DecisionConsultationResponse",
+           "MaterialRequirementSpec",
+           "LabourRequirementSpec"
+  IN ACCESS EXCLUSIVE MODE;
+
 -- ── THE RETIREMENT SNAPSHOT, TAKEN AGAIN ─────────────────────────────────────────────────────
 -- #582's review round 16, finding 2 — A REGRESSION THE SPLIT INTRODUCED, and the one gate every
 -- proof of the split missed.
@@ -1267,6 +1301,51 @@ CREATE TRIGGER "ChangeRequest_t4d_no_truncate" BEFORE TRUNCATE ON "ChangeRequest
 CREATE OR REPLACE FUNCTION phase6_t4d_change_request_evidence_frozen() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE v_col TEXT;
 BEGIN
+  -- ── A REQUEST IS BORN OPEN (#582's review round 35, finding 1) ─────────────────────────────
+  --
+  -- Everything below this branch governs a TRANSITION, and until round 35 the trigger fired on
+  -- UPDATE only. So did `ChangeRequest_t4d_closure_bound`. A row INSERTED already carrying
+  -- `status = 'withdrawn'`, a `resolution`, a `resolvedAt` of any date, any `resolvedById`, and a
+  -- `resolvedByCommandId` borrowed from any historical same-project receipt met the foreign key
+  -- and the pair CHECK and was never judged by either: no closure transition ever occurred, so no
+  -- closure rule ran. Rounds 26, 27, 30 and 31 between them decided what a closure may say, when
+  -- it may say it, and whose receipt may vouch for it — and all four were bypassed by being born
+  -- closed instead of closing.
+  --
+  -- THE FIX IS NOT A SECOND COPY OF THOSE RULES ON INSERT. That is the two-spellings defect round
+  -- 32 was caught by and round 33 had to unpick, and it would need re-proving every time the
+  -- lifecycle changes. It is the other half of the plan's own sentence: a change request is OPENED
+  -- by a requester and CLOSED by a later act, so a request that is born closed is not a request
+  -- with a history — it is a record of an act nobody performed. Birth is therefore narrowed to the
+  -- one state a request can legitimately start in, and every closure must then travel through the
+  -- UPDATE branch below, where the single spelling of the lifecycle governs it.
+  --
+  -- This is what both serving writers already do: `decisions.service.ts` opens every change
+  -- request with `status: 'open'` and no resolver column, and closes it later through
+  -- `decisions.reapprove` or `decisions.withdrawChange`. The seal refuses nothing the product does.
+  IF TG_OP = 'INSERT' THEN
+    IF NEW."status" IS DISTINCT FROM 'open' THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: change request % is born as `%` — a request is OPENED by a requester and closed only by a later act, so a row inserted already closed is a record of a closure nobody performed. Insert it `open` and close it with the command that closes it.',
+        NEW."id", COALESCE(NEW."status", '<null>');
+    END IF;
+    IF NEW."resolution" IS NOT NULL OR NEW."resolvedAt" IS NOT NULL
+       OR NEW."resolvedById" IS NOT NULL OR NEW."resolvedByCommandId" IS NOT NULL
+       OR NEW."resolvedByRole" IS NOT NULL OR NEW."resolvedByName" IS NOT NULL THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: change request % is born carrying resolver evidence (%) while still open — the resolver set records WHO closed the request, WHEN, with which outcome and on whose receipt, and none of that has happened yet. A birth that pre-fills it would freeze evidence of an act that never occurred, and the one-way arms below would make it unrepairable.',
+        NEW."id",
+        concat_ws(', ',
+          CASE WHEN NEW."resolution" IS NOT NULL THEN 'resolution' END,
+          CASE WHEN NEW."resolvedAt" IS NOT NULL THEN 'resolvedAt' END,
+          CASE WHEN NEW."resolvedById" IS NOT NULL THEN 'resolvedById' END,
+          CASE WHEN NEW."resolvedByCommandId" IS NOT NULL THEN 'resolvedByCommandId' END,
+          CASE WHEN NEW."resolvedByRole" IS NOT NULL THEN 'resolvedByRole' END,
+          CASE WHEN NEW."resolvedByName" IS NOT NULL THEN 'resolvedByName' END);
+    END IF;
+    RETURN NEW;
+  END IF;
+
   IF NEW."projectId" IS DISTINCT FROM OLD."projectId" THEN v_col := 'projectId';
   ELSIF NEW."origin" IS DISTINCT FROM OLD."origin" THEN v_col := 'origin';
   ELSIF NEW."revisionId" IS DISTINCT FROM OLD."revisionId" THEN v_col := 'revisionId';
@@ -1520,7 +1599,9 @@ BEGIN
 END $$;
 
 DROP TRIGGER IF EXISTS "ChangeRequest_t4d_evidence_frozen" ON "ChangeRequest";
-CREATE TRIGGER "ChangeRequest_t4d_evidence_frozen" BEFORE UPDATE ON "ChangeRequest"
+-- BEFORE INSERT OR UPDATE from round 35: one seal over a request's whole life, rather than a
+-- lifecycle stated over transitions with the birth left unjudged.
+CREATE TRIGGER "ChangeRequest_t4d_evidence_frozen" BEFORE INSERT OR UPDATE ON "ChangeRequest"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_change_request_evidence_frozen();
 
 -- #582's review round 26, finding 3 — the fourth member of the identity inventory. The seal is
@@ -3526,10 +3607,37 @@ BEGIN
     RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the legacy-shape audit is SKIPPED (4d-ii has legitimately written these columns; this is a replay over a retired database)';
   ELSE
     FOR spec IN SELECT * FROM (VALUES
+      -- AND THE COLUMNS THIS FILE FREEZES, NOT THE ONES IT ADDED (#582's review round 35,
+      -- finding 3). The predicate below listed the 4d columns, because those are the ones this
+      -- unit created — and from this migration the PRE-EXISTING `status`, `resolvedById`,
+      -- `resolvedAt` and `resolution` are lifecycle evidence too: frozen one-way, and read by the
+      -- closure seal as the record of an act. A db-push/P3005 baseline can hold shapes no serving
+      -- writer produces, and adopting them is not cosmetic:
+      --
+      --   · an OPEN request with a pre-filled `resolvedById` or `resolvedAt` is frozen with a
+      --     resolver for a closure that never happened — and worse, its next LEGITIMATE closure is
+      --     then refused, because the fill arms admit `NULL -> value` only. The request becomes
+      --     permanently uncloseable.
+      --   · a CLOSED request whose `status` contradicts its `resolution` is frozen as a permanent
+      --     record saying both that the change was accepted and that it was abandoned.
+      --
+      -- What it refuses is exactly those two harms: resolver evidence on a row that is not closed,
+      -- and a `resolution` that contradicts the `status` beside it. It asserts nothing about the
+      -- status vocabulary and does not require a legacy closure to carry a resolver at all.
       ('ChangeRequest', 'id',
        '"origin" <> ''standard'' OR "revisionId" IS NOT NULL OR "sourceCommandId" IS NOT NULL'
        || ' OR "requestedByRole" IS NOT NULL OR "requestedByName" IS NOT NULL'
-       || ' OR "resolvedByCommandId" IS NOT NULL OR "resolvedByRole" IS NOT NULL OR "resolvedByName" IS NOT NULL'),
+       || ' OR "resolvedByCommandId" IS NOT NULL OR "resolvedByRole" IS NOT NULL OR "resolvedByName" IS NOT NULL'       -- The two shapes that are INCOHERENT AS EVIDENCE, and only those. A legacy database
+       -- legitimately holds statuses this unit does not write (`pending` predates `open`) and
+       -- closed rows whose `resolution` is NULL — `schema.prisma` says so in as many words:
+       -- "null on backfilled legacy rows". Demanding the CURRENT lifecycle's full shape of a
+       -- legacy row would abort the apply on databases that are simply old, which is not a
+       -- defect this audit exists to find.
+       || ' OR (("resolvedAt" IS NOT NULL OR "resolvedById" IS NOT NULL)'
+       || '     AND "status" NOT IN (''resolved'', ''withdrawn''))'
+       || ' OR ("resolution" = ''reapproved'' AND "status" <> ''resolved'')'
+       || ' OR ("resolution" = ''withdrawn''  AND "status" <> ''withdrawn'')'
+       || ' OR ("resolution" IS NOT NULL AND "resolution" NOT IN (''reapproved'', ''withdrawn''))'),
       ('DecisionApprovalRevision', 'id',
        '"finalized" = FALSE OR "approvedFrom" IS NOT NULL OR "approvedByName" IS NOT NULL OR "approvedByRole" IS NOT NULL'),
       ('DecisionConsultation', 'id', '"requestedByRole" IS NOT NULL OR "requestedByName" IS NOT NULL'),

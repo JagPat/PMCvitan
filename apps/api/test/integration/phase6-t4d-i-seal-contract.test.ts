@@ -622,7 +622,7 @@ const REGISTER: Record<string, SealContract> = {
       + 'receipts, two frozen actor pairs, closing moment and outcome are written ONCE — never '
       + 'replaced, never cleared',
     plan: '§A.3 obligation 1 (the fact class evidence freeze); P33; #582 round 3, finding 4',
-    on: { 'ChangeRequest.ChangeRequest_t4d_evidence_frozen': B('U') },
+    on: { 'ChangeRequest.ChangeRequest_t4d_evidence_frozen': B('I U') },
     // The delivered `ChangeRequest_t4b2_seal` freezes `decisionId` alone and is a MERGED
     // migration, so every column this unit adds arrived unfrozen. `decisionId` is deliberately
     // absent from this list for that reason — it is the delivered seal's, not this one's.

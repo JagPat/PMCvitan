@@ -701,8 +701,11 @@ const ARMS: Arm[] = [
     // alone, and it is a MERGED migration, so every evidence column this unit adds arrived with
     // no freeze. The NULLing is the shape P33 names: the row keeps saying a request was raised
     // and stops saying which command raised it, and 4d-iii then seals that.
+    // Born OPEN from round 35: a request born closed is refused by the birth rule one trigger
+    // earlier, and this arm's subject is the FREEZE on the birth receipt, not the lifecycle. The
+    // status was never material to it — the plant was simply less faithful than the product.
     hostile: `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","sourceCommandId")
-              VALUES ('ss-cr-ev','ss-dec','x',0,0,'withdrawn','ss-cmd');
+              VALUES ('ss-cr-ev','ss-dec','x',0,0,'open','ss-cmd');
               UPDATE "ChangeRequest" SET "sourceCommandId" = NULL WHERE "id" = 'ss-cr-ev'`,
     // #582 round 20, finding 1 put a DEFERRED binding in front of this write: the planted receipt
     // is a `decisions.forward` completed in the fixture's own transaction, which the new seal
@@ -2156,12 +2159,29 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     expect(blankRequester.ok, 'a whitespace-only name must be REFUSED').toBe(false);
     expect(blankRequester.output).toMatch(/ChangeRequest_requested_pair_check/);
 
-    // (3) the resolver pair, same rule at the other end
+    // (3) THE RESOLVER PAIR, AND THE CHECK IS NOW SHADOWED (#582's review round 35, finding 1).
+    //
+    // Round 35 narrowed BIRTH to an open request with an empty resolver set, so a half resolver
+    // pair can no longer arrive by INSERT — and round 27's fill axis already refuses it arriving
+    // by UPDATE. `ChangeRequest_resolved_pair_check` is therefore unreachable through any
+    // ordinary write, exactly as `phase6_t4d_consultation_attribution_frozen` became unreachable
+    // behind the delivered 4c seal (the arm below this one).
+    //
+    // An unreachable rule is not a dead one: the CHECK is the guarantee that survives if the
+    // trigger is ever dropped, which is precisely what this harness exists to measure. So the
+    // seal in front of it is STRIPPED and the CHECK must refuse on its own. Asserting it through
+    // the trigger would have quietly stopped measuring the CHECK the day round 35 shipped.
+    buildRun(['ChangeRequest_t4d_evidence_frozen']);
     const halfResolver = psql(RUN_DB, ['-c',
       `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","resolvedByName")
        VALUES ('ss-cr-halfres','ss-dec','x',0,0,'withdrawn','Someone')`]);
-    expect(halfResolver.ok, 'a resolver name without a role must be REFUSED').toBe(false);
+    expect(halfResolver.ok,
+      'with the birth rule stripped, the CHECK alone must still refuse a resolver name with no '
+      + 'role — a constraint that only holds because a trigger stands in front of it is not a '
+      + 'constraint anyone can rely on').toBe(false);
     expect(halfResolver.output).toMatch(/ChangeRequest_resolved_pair_check/);
+
+    buildRun([]);
 
     // the all-null legacy shape survives, which is what makes the CHECK safe to add
     const legacyCr = psql(RUN_DB, ['-c',
@@ -5830,4 +5850,221 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       expect(replay.output).toMatch(/its definition is not the one this unit installs/);
     }
   }, 900_000);
+
+  /**
+   * #582's review round 35, finding 1 — A REQUEST IS BORN OPEN.
+   *
+   * Rounds 26, 27, 30 and 31 between them settled what a closure may say, when it may say it, and
+   * whose receipt may vouch for it. Every one of those rules went into
+   * `phase6_t4d_change_request_evidence_frozen` or `ChangeRequest_t4d_closure_bound`, and BOTH
+   * fired on UPDATE only. A row INSERTED already closed performs no transition, so none of them
+   * ran: measured on 3bb2c5e1, a request born `withdrawn`, stamped 2020, citing a receipt from an
+   * entirely different earlier act COMMITS.
+   *
+   * The fix is not a second copy of those rules on INSERT — that is the two-spellings defect round
+   * 32 was caught by and round 33 had to unpick. It is the plan's own sentence: a request is
+   * OPENED by a requester and CLOSED by a later act. Birth is narrowed to the one state a request
+   * can start in, so every closure must travel through the UPDATE branch where the single spelling
+   * of the lifecycle governs it.
+   */
+  it('round 35: a change request is born OPEN with an empty resolver set', () => {
+    buildRun([]);
+
+    // the attack, in the shape the OTHER seals leave open: the birth receipt is reserved and
+    // completed in the SAME transaction as the insert (which `phase6_t4d_provenance_bound`
+    // requires), and the CLOSURE receipt is `ss-cmd` — a real, succeeded, historical receipt
+    // whose result is this decision, from an act that had nothing to do with this request.
+    const bornClosed = (status: string, extra: string) => `
+      BEGIN;
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('r35-birth','project','ss-org','ss-proj','ss-user','decisions.requestChange','r35-k','r35-h','reserved');
+      UPDATE "CommandExecution" SET "status"='succeeded', "completedAt"=now(), "resultRef"='r35-cr' WHERE "id"='r35-birth';
+      INSERT INTO "ChangeRequest"
+        ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin",
+         "sourceCommandId","requestedById","requestedByRole","requestedByName"${extra === '' ? '' : `,${extra.split('=')[0]}`})
+        VALUES ('r35-cr','ss-proj','ss-dec','born closed',0,1,'${status}','standard',
+                'r35-birth','ss-user','pmc','SS User'${extra === '' ? '' : `,${extra.split('=')[1]}`});
+      COMMIT;`;
+
+    // (a) born CLOSED — the whole closure lifecycle bypassed
+    const closed = psql(RUN_DB, ['-c', `
+      BEGIN;
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('r35-birth','project','ss-org','ss-proj','ss-user','decisions.requestChange','r35-k','r35-h','reserved');
+      UPDATE "CommandExecution" SET "status"='succeeded', "completedAt"=now(), "resultRef"='r35-cr' WHERE "id"='r35-birth';
+      INSERT INTO "ChangeRequest"
+        ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin",
+         "sourceCommandId","requestedById","requestedByRole","requestedByName",
+         "resolution","resolvedAt","resolvedById","resolvedByCommandId","resolvedByRole","resolvedByName")
+        VALUES ('r35-cr','ss-proj','ss-dec','born closed',0,1,'withdrawn','standard',
+                'r35-birth','ss-user','pmc','SS User',
+                'withdrawn','2020-01-01 00:00:00','ss-user','ss-cmd','pmc','SS User');
+      COMMIT;`]);
+    expect(
+      closed.ok,
+      'a request born `withdrawn` with a 2020 timestamp and a borrowed receipt performs no '
+      + 'closure transition, so every rule rounds 26/27/30/31 wrote never runs. It must be '
+      + 'refused at birth',
+    ).toBe(false);
+    expect(closed.output).toMatch(/is born as `withdrawn`/);
+
+    // (b) born OPEN but carrying resolver evidence — the same hole, one column at a time. This is
+    // the shape that is WORSE than a lie: the fill arms admit NULL -> value only, so a pre-filled
+    // `resolvedAt` on an open request makes its next legitimate closure impossible.
+    buildRun([]);
+    const prefilled = psql(RUN_DB, ['-c', `
+      BEGIN;
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('r35-birth','project','ss-org','ss-proj','ss-user','decisions.requestChange','r35-k','r35-h','reserved');
+      UPDATE "CommandExecution" SET "status"='succeeded', "completedAt"=now(), "resultRef"='r35-cr' WHERE "id"='r35-birth';
+      INSERT INTO "ChangeRequest"
+        ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin",
+         "sourceCommandId","requestedById","requestedByRole","requestedByName","resolvedAt")
+        VALUES ('r35-cr','ss-proj','ss-dec','open but stamped',0,1,'open','standard',
+                'r35-birth','ss-user','pmc','SS User','2020-01-01 00:00:00');
+      COMMIT;`]);
+    expect(prefilled.ok,
+      'an OPEN request born with a resolver stamp is evidence of a closure that never happened, '
+      + 'and the one-way fill arms then make its real closure impossible').toBe(false);
+    expect(prefilled.output).toMatch(/is born carrying resolver evidence/);
+    expect(prefilled.output, 'the refusal must name the column so the writer can find it')
+      .toMatch(/resolvedAt/);
+
+    // (c) AND THE PRODUCT IS UNTOUCHED: the shape `decisions.service.ts` actually inserts — open,
+    // no resolver column — is still admitted, and still closes through the UPDATE branch.
+    buildRun([]);
+    { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, `the serving birth shape must still be admitted:\n${r.output}`).toBe(true); }
+    const closes = psql(RUN_DB, ['-c', `
+      UPDATE "ChangeRequest"
+         SET "status" = 'withdrawn', "resolution" = 'withdrawn',
+             "resolvedAt" = now(), "resolvedById" = 'ss-user'
+       WHERE "id" = 'ss-cr-r26'`]);
+    expect(closes.ok, `and a request opened this way must still close:\n${closes.output}`).toBe(true);
+  }, 600_000);
+
+  /**
+   * #582's review round 35, finding 3 — THE ADOPTION AUDIT COVERS WHAT THIS FILE FREEZES.
+   *
+   * The legacy-shape audit listed the columns 4d ADDED. From this migration the pre-existing
+   * `status`, `resolvedById`, `resolvedAt` and `resolution` are lifecycle evidence too — frozen
+   * one-way and read by the closure seal as the record of an act — and a db-push/P3005 baseline
+   * can hold shapes no serving writer produces. Adopting an open request with a pre-filled
+   * resolver does not merely record a falsehood: the one-way fill arms then refuse that request's
+   * next legitimate closure, permanently.
+   */
+  it('round 35: an incoherent legacy closure shape ABORTS the apply', () => {
+    // Only PRE-4D columns are planted: `projectId`, `origin` and the provenance columns are ones
+    // this unit ADDS, so a baseline database does not have them. The shapes are the two harms the
+    // audit exists to find, expressed in the columns a legacy writer actually wrote.
+    const SHAPES: [string, string, RegExp][] = [
+      ['an OPEN request carrying a resolver stamp',
+       `'open',NULL,'2020-01-01 00:00:00',NULL`, /ChangeRequest/],
+      ['an OPEN request carrying a resolver identity',
+       `'open',NULL,NULL,'lg-user'`, /ChangeRequest/],
+      ['a CLOSED request whose status contradicts its outcome',
+       `'resolved','withdrawn',now(),'lg-user'`, /ChangeRequest/],
+    ];
+
+    for (const [what, cols, message] of SHAPES) {
+      psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+      expect(psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]).ok).toBe(true);
+
+      const planted = psql(RUN_DB, ['-c', `
+        INSERT INTO "Org" ("id","name","slug") VALUES ('lg-org','LG','lg-org');
+        INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+          VALUES ('lg-proj','lg-org','LG','LG','','Finishing','LG-01','01 Jan 2026','31 Dec 2026',0,0,0);
+        INSERT INTO "User" ("id","projectId","role","name","phone") VALUES ('lg-user','lg-proj','pmc','LG User','+910000000135');
+        INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch")
+          VALUES ('lg-dec','lg-proj','LG Decision','Hall','pending','sw');
+        INSERT INTO "ChangeRequest"
+          ("id","decisionId","reason","costImpact","timeImpactDays","status","resolution","resolvedAt","resolvedById")
+          VALUES ('lg-cr','lg-dec','legacy',0,1,${cols});`]);
+      expect(planted.ok, `planting ${what} failed:\n${planted.output}`).toBe(true);
+
+      const refused = applyWhole();
+      expect(
+        refused.ok,
+        `${what} is a shape no serving writer produces, and this file is about to FREEZE it. `
+        + 'The apply must refuse it while the operator can still repair the row',
+      ).toBe(false);
+      expect(refused.output).toMatch(message);
+      expect(refused.output).toMatch(/lg-cr/);
+    }
+
+    // ── AND A GENUINELY OLD DATABASE STILL APPLIES ─────────────────────────────────────────
+    // The first draft of this audit demanded the CURRENT lifecycle's full shape — `status` one of
+    // three values, a resolver on every closed row. Both are false of real legacy data:
+    // `upgrade-proof.sh`'s own fixture inserts change requests with `status = 'pending'`, and
+    // `schema.prisma` says `resolution` is "null on backfilled legacy rows". That draft would have
+    // aborted the apply on databases whose only fault is being old. This arm is the control that
+    // refuses to let it happen again.
+    psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+    expect(psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]).ok).toBe(true);
+    expect(psql(RUN_DB, ['-c', `
+      INSERT INTO "Org" ("id","name","slug") VALUES ('lg-org','LG','lg-org');
+      INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+        VALUES ('lg-proj','lg-org','LG','LG','','Finishing','LG-01','01 Jan 2026','31 Dec 2026',0,0,0);
+      INSERT INTO "User" ("id","projectId","role","name","phone") VALUES ('lg-user','lg-proj','pmc','LG User','+910000000135');
+      INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch")
+        VALUES ('lg-dec','lg-proj','LG Decision','Hall','pending','sw');
+      INSERT INTO "ChangeRequest"
+        ("id","decisionId","reason","costImpact","timeImpactDays","status","resolution","resolvedAt","resolvedById")
+      VALUES
+        -- the status this unit never writes, from a release that predates \`open\`
+        ('lg-pending','lg-dec','legacy pending',0,1,'pending',NULL,NULL,NULL),
+        -- a closed request BACKFILLED with no outcome, exactly as schema.prisma describes
+        ('lg-backfilled','lg-dec','legacy closed',0,1,'withdrawn',NULL,now(),'lg-user');`]).ok).toBe(true);
+    const clean = applyWhole();
+    expect(clean.ok, `a coherent legacy request must still be adopted:\n${clean.output}`).toBe(true);
+  }, 600_000);
+
+  /**
+   * #582's review round 35, finding 2 — THE LOCK ORDER IS THE SERVING WRITER'S.
+   *
+   * The decisions half replaces triggers on twelve tables; `CREATE TRIGGER` takes ACCESS EXCLUSIVE
+   * and holds it to COMMIT. `Decision` came first and `Membership` seventh, while the serving
+   * approval flow locks `Membership` (`hasProjectRoleStanding(..., { forUpdate: true })`) before
+   * it touches `Decision` — opposite orders, so a live apply and a user's approval can each hold
+   * what the other needs and PostgreSQL kills one of them.
+   *
+   * A deadlock is a race, and a race is not something a migration probe can stage honestly. What
+   * CAN be asserted is the property that removes it: every lock this half needs is taken before
+   * any DDL, in one statement, in the serving order. So the arm reads the migration and checks the
+   * order of the text itself — and checks it against the DDL targets it discovers in the same
+   * file, so a table added later is covered the day it appears.
+   */
+  it('round 35: the decisions half takes every lock it needs, before any DDL, in the serving order', () => {
+    const sql = readFileSync(FACTS, 'utf8');
+
+    const lockAt = sql.indexOf('LOCK TABLE');
+    expect(lockAt, 'the decisions half must take its locks explicitly').toBeGreaterThan(0);
+    const lockStmt = sql.slice(lockAt, sql.indexOf(';', lockAt));
+    const locked = [...lockStmt.matchAll(/"([A-Za-z]+)"/g)].map((m) => m[1]!);
+
+    expect(lockStmt, 'the mode must be the one the DDL takes anyway, or the DDL upgrades a lock it '
+      + 'already holds — which is a deadlock source of its own').toMatch(/ACCESS EXCLUSIVE MODE/);
+    expect(locked.indexOf('Membership'),
+      '`Membership` must be locked FIRST: the serving approval flow locks it before it touches '
+      + '`Decision`, and a migration that reverses that order deadlocks against it').toBe(0);
+    expect(locked.indexOf('Decision'),
+      'and `Decision` after it').toBeGreaterThan(0);
+
+    // every DDL target that ALREADY EXISTS must be in the lock list, and the lock must precede
+    // the first DDL in the file. Tables this transaction CREATES cannot be locked before they
+    // exist and cannot contend with anyone, so they are excluded by construction.
+    const created = new Set([...sql.matchAll(/CREATE TABLE IF NOT EXISTS "([A-Za-z]+)"/g)].map((m) => m[1]!));
+    const ddl = [...sql.matchAll(/(?:DROP TRIGGER IF EXISTS "[^"]+" ON|ALTER TABLE) "([A-Za-z]+)"/g)];
+    const firstDdlAt = ddl.length > 0 ? sql.indexOf(ddl[0]![0]) : -1;
+    expect(firstDdlAt, 'the file must contain DDL for this arm to mean anything').toBeGreaterThan(0);
+    expect(lockAt, 'the locks must be taken BEFORE the first DDL statement').toBeLessThan(firstDdlAt);
+
+    const missing = [...new Set(ddl.map((m) => m[1]!))]
+      .filter((tb) => !created.has(tb) && !locked.includes(tb));
+    expect(
+      missing,
+      'these pre-existing tables take DDL in this half and are not in the up-front lock list. A '
+      + 'lock acquired mid-transaction is a lock acquired in whatever order the file happens to '
+      + 'be written in, which is how the Decision/Membership inversion arose.',
+    ).toEqual([]);
+  }, 60_000);
 });
