@@ -3721,7 +3721,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
    */
   type FreezeEntry =
     | { proof: 'gate' | 'blanket'; by: string; refusal: string }
-    | { proof: 'columns'; refused: Record<string, string>; writable: Record<string, string> };
+    | { proof: 'columns'; refused: Record<string, string | string[]>; writable: Record<string, string> };
 
   /**
    * THE REGISTER. Filled from this arm's own report, which prints a paste-ready block for
@@ -4135,7 +4135,12 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     User: {
       proof: 'columns',
       refused: {
-        id: "phase6-4b: membership user/project identity is frozen",
+        // refused twice over: the identity register's foreign key, and the membership identity
+        // seal through the cascade. Both are this unit's; which reports first is PostgreSQL's.
+        id: [
+          "phase6-4b: membership user/project identity is frozen",
+          "violates foreign key constraint",
+        ],
         projectId: "violates foreign key constraint",
       },
       writable: {
@@ -4293,11 +4298,23 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
           }
           continue;
         }
+        // A refusal may name ALTERNATIVES, and `User.id` is why. That rewrite is refused twice
+        // over — the identity register holds a foreign key to it, AND the membership identity seal
+        // is reached through the cascade — and WHICH ONE REPORTS is not something this unit
+        // decides. PostgreSQL picks among eligible constraint triggers; this machine and CI picked
+        // differently on identical code. Round 28's first attempt blamed the probe row and ordered
+        // the selection; the next CI run failed identically, which is the evidence that the row
+        // was never the variable and that a single expected message was the wrong shape of claim.
+        //
+        // This does not let the register go quiet. Every alternative must still be a refusal this
+        // unit can name, so an unrelated rejection fails the arm exactly as before; what it
+        // records is the true state — the column is closed by more than one rule at once.
+        const accepted = Array.isArray(declaredRefusal) ? declaredRefusal : [declaredRefusal];
         if (r.ok) {
           wrong.push(`${table}.${col} is declared REFUSED and the update was ACCEPTED — the seal does not cover it`);
-        } else if (!unquoted(r.output).includes(unquoted(declaredRefusal))) {
-          wrong.push(`${table}.${col} was refused, but not for the reason the register records. `
-            + `Expected the message to carry ${JSON.stringify(declaredRefusal)}; got:\n  ${firstLine(r.output)}`);
+        } else if (!accepted.some((f) => unquoted(r.output).includes(unquoted(f)))) {
+          wrong.push(`${table}.${col} was refused, but not for any reason the register records. `
+            + `Expected the message to carry one of ${JSON.stringify(accepted)}; got:\n  ${firstLine(r.output)}`);
         }
       }
     }
@@ -4468,11 +4485,16 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
 
   function probeRowWhere(table: string, cols: [string, string, string][],
                          mode: 'full' | 'minimal' = 'full'): { where: string } | { failed: string } {
-    // ORDER BY, because `LIMIT 1` alone is not a choice — it is whatever the plan returns, and
-    // that differed between this machine and CI. The oracle then recorded WHICH rule refused
-    // `User.id` from a row it had not deliberately chosen: here a project-membership seal
-    // answered first, in CI a foreign key from the identity register did. Both are refusals and
-    // the migration is right either way; the arm was reading a stable fact off an unstable row.
+    // ORDER BY, because `LIMIT 1` alone is not a choice — it is whatever the plan returns, and a
+    // probe should say which row it means.
+    //
+    // THIS WAS NOT THE CI DIVERGENCE, and the correction is left here rather than quietly
+    // dropped. Round 28 first read `User.id` reporting a different refusal on CI than here,
+    // concluded the unordered pick was the cause, ordered it, gated the whole battery green and
+    // pushed — and the next CI run failed identically. The row was never the variable; two
+    // constraint triggers are both eligible and PostgreSQL chooses. The real fix is the
+    // alternatives the register now records below. Ordering stays because it is right on its own
+    // terms, not because it fixed anything.
     const existing = psql(RUN_DB, ['-At', '-c', `SELECT ctid FROM "${table}" ORDER BY ctid LIMIT 1`]);
     if (existing.ok && existing.output.trim() !== '') {
       return { where: `ctid = '${existing.output.trim()}'` };
