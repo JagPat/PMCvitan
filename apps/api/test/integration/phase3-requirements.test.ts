@@ -491,7 +491,12 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     // (b) an UNPROVABLE legacy history (two recorded approvals, NO register rows — the
     // migration's ambiguous-skip case): the next approval must version PAST that history,
     // never collide into a false "version 1"
-    await t.prisma.decision.create({
+    // Through the NAMED bypass, like `makeApprovedDecision` above and for the same reason one
+    // step further along (#582's review round 24, finding 1): these two audit rows land on a
+    // decision this transaction commits as `change`, and the correspondence now refuses a
+    // governed kind in a state its table does not pair it with. That refusal is what the finding
+    // asks for; this plant is the unprovable PAST it must not be read as, so it says so by name.
+    await plantLegacyDecisionAudit(t.prisma, (tx) => tx.decision.create({
       data: {
         id: 'IT-P3-LEG2', projectId, title: 'x', room: 'x', photoSwatch: 'sw', status: 'change',
         authorId: f.memberUser.id, approvedOption: 'Option A',
@@ -501,7 +506,7 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
         ] },
         events: { create: [{ type: 'approved', actor: 'm' }, { type: 'reapproved', actor: 'm' }] },
       },
-    });
+    }));
     await publishRow('IT-P3-LEG2');
     await t.prisma.changeRequest.create({ data: { projectId, decisionId: 'IT-P3-LEG2', reason: 'again', costImpact: 0, timeImpactDays: 0, status: 'open' } });
     await decisions.approve(projectId, 'IT-P3-LEG2', { optionIndex: 0 }, pmc(projectId));

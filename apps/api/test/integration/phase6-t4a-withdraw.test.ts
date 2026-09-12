@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import request from 'supertest';
 import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, wipeDecisionEvents, type TwoProjectFixture, plantLegacyApprovalRevision } from './fixtures';
+import { createTwoProjectFixture, wipeDecisionEvents, type TwoProjectFixture, plantLegacyApprovalRevision, plantLegacyDecisionAudit } from './fixtures';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { ActivitiesService } from '../../src/activities/activities.service';
@@ -1215,7 +1215,13 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
 
     it('R9-F4a: a published pending decision carrying a LEGACY approval EVENT (empty register) cannot be withdrawn — the service belt AND the entry seal', async () => {
       const id = await seed({ title: 'Legacy approved' });
-      await t.prisma.decisionEvent.create({ data: { decisionId: id, type: 'approved', actor: 'Legacy Client' } });
+      // #582's review round 24, finding 1 — the correspondence now REFUSES a governed audit kind
+      // in a state its table does not pair it with, and (`approved`, `pending`) is exactly that.
+      // This plant stands in for an approval made before this database existed, which is what
+      // `plantLegacyDecisionAudit` is for: a historical import declares itself by name, and the
+      // seal keeps refusing the same shape from anyone who does not.
+      await plantLegacyDecisionAudit(t.prisma, (tx) =>
+        tx.decisionEvent.create({ data: { decisionId: id, type: 'approved', actor: 'Legacy Client' } }));
       await expect(svc.withdraw(f.projectA.id, id, { reason: 'over legacy approval' }, pmc())).rejects.toMatchObject({
         status: 409,
         message: expect.stringContaining('approval evidence'),
@@ -1663,7 +1669,8 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     // as the register: erasing or downgrading one would launder a legacy approval away.
     it('R12-F5: an approval event cannot be deleted or type-downgraded — the laundered withdrawal stays refused; non-approval events remain deletable', async () => {
       const id = await seed({ title: 'Laundering target' });
-      await t.prisma.decisionEvent.create({ data: { id: 'r12-appr', decisionId: id, type: 'approved', actor: 'Legacy Client' } });
+      await plantLegacyDecisionAudit(t.prisma, (tx) =>
+        tx.decisionEvent.create({ data: { id: 'r12-appr', decisionId: id, type: 'approved', actor: 'Legacy Client' } }));
       await expect(
         t.prisma.$executeRaw`DELETE FROM "DecisionEvent" WHERE "id"='r12-appr'`,
       ).rejects.toThrow(/approval evidence/);
@@ -1779,7 +1786,8 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     it('R13-F3: an approval event cannot be re-pointed AWAY from its decision — the laundered withdrawal stays refused', async () => {
       const id = await seed({ title: 'Re-point-away target' });
       const other = await seed({ title: 'Innocent recipient' });
-      await t.prisma.decisionEvent.create({ data: { id: 'r13-appr', decisionId: id, type: 'approved', actor: 'Legacy Client' } });
+      await plantLegacyDecisionAudit(t.prisma, (tx) =>
+        tx.decisionEvent.create({ data: { id: 'r13-appr', decisionId: id, type: 'approved', actor: 'Legacy Client' } }));
       await expect(
         t.prisma.$executeRaw`UPDATE "DecisionEvent" SET "decisionId"=${other} WHERE "id"='r13-appr'`,
       ).rejects.toThrow(/re-pointed/);
@@ -2094,15 +2102,31 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     // truncates.
     it('R15-F3: TRUNCATE of DecisionEvent refuses while approval evidence exists — and passes once none does', async () => {
       const id = await seed({ title: 'Truncate laundering' });
-      await t.prisma.decisionEvent.create({ data: { id: 'r15-lev', decisionId: id, type: 'approved', actor: 'Legacy Client' } });
+      await plantLegacyDecisionAudit(t.prisma, (tx) =>
+        tx.decisionEvent.create({ data: { id: 'r15-lev', decisionId: id, type: 'approved', actor: 'Legacy Client' } }));
       await expect(t.prisma.$executeRawUnsafe('TRUNCATE "DecisionEvent"')).rejects.toThrow(/approval evidence/);
       // the evidence stands, so the laundered withdrawal stays refused
       await expect(
         t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='laundered by truncate' WHERE "id"=${id}`,
       ).rejects.toThrow(/legacy approval event/);
-      // precision: with the approval evidence gone through the SANCTIONED reset, truncate passes
+      // precision, AND THE RULE MOVED UNDER IT (#582's review round 24, finding 2). With the
+      // evidence gone through the SANCTIONED reset this truncate used to pass, because the
+      // DELIVERED seal asks whether an approval row exists and there was none. 4d-i adds the
+      // unconditional arm that finding installs — a register made immutable row by row is not
+      // immutable if a whole-table statement walks past every row trigger — so the wipe is now
+      // refused whatever the register holds, and by the NEW seal's own message.
       await wipeDecisionEvents(t.prisma, { id: 'r15-lev' });
-      expect(await t.prisma.$executeRawUnsafe('TRUNCATE "DecisionEvent"')).toBeDefined();
+      await expect(t.prisma.$executeRawUnsafe('TRUNCATE "DecisionEvent"'))
+        .rejects.toThrow(/attributable audit register and is never truncated/);
+      // and the sanctioned path still reaches the table: BOTH seals off, which is what
+      // `TRUNCATE_SEALS` now carries for it.
+      await t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4a_no_truncate"');
+        await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_no_truncate"');
+        await tx.$executeRawUnsafe('TRUNCATE "DecisionEvent"');
+        await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_no_truncate"');
+        await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4a_no_truncate"');
+      }, { timeout: 60_000, maxWait: 30_000 });
     });
 
     // R15-F4 — the touch-note guard was row-level only: one transaction could edit a published

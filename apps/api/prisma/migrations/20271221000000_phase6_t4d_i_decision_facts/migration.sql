@@ -2802,7 +2802,7 @@ BEGIN
                       'change_requested', 'change_withdrawn', 'forwarded',
                       'countersign_renotified') THEN
       RAISE EXCEPTION
-        'phase6 4d-i: the `%` audit row for decision % commits with the decision `%`, and this unit states no correspondence rule for that pair — a governed audit kind in a state its own table does not admit records an act that cannot have happened, and the append-only seal is about to make it permanent',
+        'phase6 4d-i: the `%` audit row for decision % commits with the decision `%`, and this unit states no correspondence rule for that pair — a governed audit kind in a state its own table does not admit records an act that cannot have happened, and the append-only seal is about to make it permanent. A HISTORICAL import declares itself by name, the way `plantLegacyDecisionAudit` already declares itself for the correspondence: pre-4b history really does hold `approved` rows on decisions since reopened, and this trigger judges only rows written NOW, which no delivered writer produces in a state this table does not list.',
         NEW."type", NEW."decisionId", v_status;
     END IF;
     RETURN NULL;

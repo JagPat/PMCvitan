@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, wipeDecisions, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, wipeDecisions, type TwoProjectFixture, plantLegacyDecisionAudit } from './fixtures';
 
 /**
  * Issue generalization unit A1-i — AN OPTION DECLARES WHAT KIND OF CHOICE IT IS.
@@ -716,9 +716,13 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
       .toMatch(/legacy approval stamp/u);
 
     const evented = await mk('pending');
-    await t.prisma.$executeRawUnsafe(
+    // Through the NAMED bypass (#582's review round 24, finding 1). The point of this arm is a
+    // decision that is `pending` and carries a recorded approval EVENT — the legacy shape whose
+    // options the freeze must cover — and the correspondence now refuses that pair from an
+    // ordinary writer, which is the finding. A historical plant declares itself instead.
+    await plantLegacyDecisionAudit(t.prisma, (tx) => tx.$executeRawUnsafe(
       `INSERT INTO "DecisionEvent"("id","decisionId","type","actor","at")
-       VALUES ('ev-a1-${run}-${seq++}','${evented.d}','approved','pmc', now())`);
+       VALUES ('ev-a1-${run}-${seq++}','${evented.d}','approved','pmc', now())`));
     expect(await refusal(`UPDATE "DecisionOption" SET "description"='changed' WHERE "id"='${evented.id}'`))
       .toMatch(/recorded approval event/u);
 
