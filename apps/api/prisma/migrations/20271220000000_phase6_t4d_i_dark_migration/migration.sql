@@ -234,6 +234,46 @@ CREATE OR REPLACE FUNCTION phase6_t4d_retired_at_start() RETURNS boolean AS $fn$
   SELECT current_setting('vitan.phase6_4d_retired_at_start', true) = 'on';
 $fn$ LANGUAGE sql STABLE;
 
+-- AND A SNAPSHOT CORRECTS THIS TRANSACTION'S READING, NOT THE ROW IT READ (#582's review
+-- round 32, finding 1). Round 7 fixed the self-fulfilling predicate by freezing the verdict
+-- before this file creates the evidence it names — and then RETAINED the marker it had just
+-- judged forged, on its way to making that row permanent. The lie outlives the correction:
+--
+--   · this apply installs `RolloutRetirement_t4d_frozen`, so from commit the row can never be
+--     updated or deleted by anyone;
+--   · both halves of 4d-i install `phase6_t4d_membership_transition_seal`, so the evidence
+--     conjunct the marker failed is SATISFIED the moment this transaction commits;
+--   · every later reading — the next `ALWAYS_EXECUTE` replay of this same file, and the
+--     retirement migration itself — calls `phase6_t4d_retired()` on that settled database,
+--     gets TRUE, and treats the forged marker as a genuine retirement.
+--
+-- So the replay skips the five reservation doors and the legacy-role audit, and 4d-iii finds a
+-- unit already marked retired and does nothing: the forwarding and correspondence doors are left
+-- INSTALLED on a database that now claims to be past them, or never installed on one that is
+-- not — and no message anywhere names the cause, because every component is reading a marker
+-- that says exactly what it was written to say. Round 7 made this transaction honest and left
+-- the next one to be deceived by the same row.
+--
+-- A marker with no history is therefore not something to work around; it is something to REFUSE,
+-- and this is the last moment it can be refused. Before this file commits, the row is still
+-- deletable — the freeze above is created in this same transaction and rolls back with the
+-- abort — and after it, nothing can touch it again. The operator is told the one thing that
+-- resolves it. This costs a legitimate retirement nothing: 4d-iii retires a unit 4d-i installed,
+-- so a genuine marker always has this file's raw functions standing beside it.
+DO $unsealed_marker$
+DECLARE v_when TIMESTAMP(3); v_by TEXT;
+BEGIN
+  IF phase6_t4d_retired_at_start() THEN RETURN; END IF;
+
+  SELECT "retiredAt", "retiredBy" INTO v_when, v_by
+    FROM "RolloutRetirement" WHERE "unit" = 'phase6-4d';
+  IF NOT FOUND THEN RETURN; END IF;
+
+  RAISE EXCEPTION
+    'phase6 4d-i ABORT: "RolloutRetirement" carries `phase6-4d` (retiredAt %, retiredBy %) on a database that holds none of the raw seal functions 4d-i installs — the marker was written in the `prisma db push` / P3005 window before its own gate existed, and nothing retired anything. This apply will not adopt it: committing would freeze the row permanently AND create the very seal function its evidence conjunct is missing, so every later replay and the 4d-iii retirement migration would read it as a genuine retirement and skip the reservation doors, the legacy-role audit and the retirement work itself. Delete the row and re-run — it is removable now and never again: DELETE FROM "RolloutRetirement" WHERE "unit" = ''phase6-4d''; If this database really did complete 4d-iii, it did so against seals that are gone, and the rollout state must be reconstructed before any replay. See docs/RUNBOOK.md §P6T4D.',
+    v_when, v_by;
+END $unsealed_marker$;
+
 
 -- ── the shared refusal function all architect-standing doors use ───────────────────────────
 -- single object for 4d-iii to drop.
@@ -647,6 +687,99 @@ CREATE TRIGGER "Project_t4d_deleting"
   BEFORE DELETE ON "Project"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_project_deleting();
 
+-- ── the one spelling of "this register row is BACKED" ────────────────────────────────────────
+-- A register row is backed when the orgs row it mirrors says the same thing. TWO validators ask
+-- that question of the same row: `platform_t4d_register_writer` asks it of every gated write as
+-- it happens, and the adoption audits below ask it of every row this migration is about to
+-- freeze. Round 31 answered it in the gate by RESTATING the rule the audits already spelled, and
+-- the restatement was wrong in both directions on `ProjectUserStanding` (#582's review round 32,
+-- finding 2): it omitted `membershipId`, so a gated insert could bind user A's standing to user
+-- B's membership and `platform_membership_active_user` would then resolve B's forward to A; and
+-- it did not admit the membership-less `pmc` arm at all, so this file's OWN second standing
+-- backfill was refused by this file's own gate the moment a database held an org owner or admin
+-- with no active membership on a project — an abort on a legitimate deploy, which the local
+-- apply missed only because no fixture carried that shape.
+--
+-- The defect is not the wrong predicate. It is that a rule with one meaning had two spellings,
+-- which is the shape this unit has been caught by at every level, and the correction is the one
+-- `phase6_t4d_project_is_deleting` already models above: the question is asked HERE and nowhere
+-- else, so the gate and the audits cannot drift apart, and a change to a register's backing rule
+-- lands on both readers or on neither.
+--
+-- An UNKNOWN table answers FALSE. A register added later that nobody teaches this function is
+-- refused by the gate rather than admitted by it, so silence fails closed.
+CREATE OR REPLACE FUNCTION phase6_t4d_register_backed(p_table TEXT, p_row JSONB)
+RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
+  SELECT CASE p_table
+    -- the tenancy mapping: the project's own org, and no other
+    WHEN 'ProjectOrg' THEN EXISTS (
+      SELECT 1 FROM "Project" p
+       WHERE p."id" = p_row->>'projectId' AND p."orgId" = p_row->>'orgId')
+
+    -- the frozen actor name: the account's own display name
+    WHEN 'UserIdentity' THEN EXISTS (
+      SELECT 1 FROM "User" u
+       WHERE u."id" = p_row->>'userId' AND u."name" = p_row->>'displayName')
+
+    -- team-management authority: an owner/admin membership of that exact org, user AND role
+    WHEN 'OrgUserAuthority' THEN EXISTS (
+      SELECT 1 FROM "OrgMembership" om
+       WHERE om."orgId" = p_row->>'orgId' AND om."userId" = p_row->>'userId'
+         AND om."role" = p_row->>'role' AND om."role" IN ('owner', 'admin'))
+
+    -- the counted register: the count IS the claim, so it must equal the memberships it counts
+    WHEN 'ProjectRoleStanding' THEN
+      (p_row->>'activeCount')::int = (
+        SELECT count(*) FROM "Membership" m
+         WHERE m."projectId" = p_row->>'projectId' AND m."role" = p_row->>'role'
+           AND m."status" = 'active')
+
+    -- per-user standing has exactly TWO legitimate shapes, which are the two arms the backfill
+    -- below writes and the two the membership projection writer produces:
+    --
+    --   (a) an ACTIVE membership of that exact user, role AND id. The pointer is part of the
+    --       row, not bookkeeping: `platform_membership_active_user` resolves the HOLDER by
+    --       `membershipId` alone (#582 round 9, finding 3).
+    --   (b) the membership-less `pmc` of an org owner/admin.
+    --
+    -- MEMBERSHIP-LESS MEANS WHAT IT SAYS (#582 round 10, finding 3). Round 9 bound the pointer and
+    -- left the word unbound: arm (b) asked for an owner/admin and never that the claim be
+    -- membership-less, so an owner carrying an ACTIVE `engineer` membership was adopted as a `pmc`
+    -- too. Both the projection writer (arm (3) of `phase6_t4d_membership_role_standing`,
+    -- `NOT (v_after AND ...)` recomputed only while the user has no active presence) and the
+    -- backfill spell the condition this way, and a validator that admits what its own writer would
+    -- never produce is not validating the writer's rule. The cost is not tidiness: through the
+    -- 4d-i → 4d-iii window `platform_user_holds_role` answers from this register, so the fact
+    -- seals accept `actorRole = 'pmc'` from that engineer and FREEZE it — permanent authority
+    -- evidence for standing the orgs tables never granted.
+    WHEN 'ProjectUserStanding' THEN
+      EXISTS (SELECT 1 FROM "Membership" m
+               WHERE m."projectId" = p_row->>'projectId' AND m."userId" = p_row->>'userId'
+                 AND m."role" = p_row->>'role' AND m."status" = 'active'
+                 AND m."id" = p_row->>'membershipId')
+      OR (p_row->>'role' = 'pmc' AND p_row->>'membershipId' IS NULL
+          AND EXISTS (SELECT 1 FROM "Project" p2
+                        JOIN "OrgMembership" om ON om."orgId" = p2."orgId"
+                       WHERE p2."id" = p_row->>'projectId' AND om."userId" = p_row->>'userId'
+                         AND om."role" IN ('owner', 'admin'))
+          AND NOT EXISTS (SELECT 1 FROM "Membership" m3
+                           WHERE m3."projectId" = p_row->>'projectId'
+                             AND m3."userId" = p_row->>'userId' AND m3."status" = 'active'))
+
+    -- THE SIXTH TABLE BEHIND THIS GATE, and it is not a projection at all. A pairing claim is
+    -- minted by the fact seal that claims the event, at nested depth, and the writer-depth rule''s
+    -- early return is what admits it — so NO gated depth-1 write of it is legitimate: the standing
+    -- backfill writes no claims, and 4d-iii''s re-projection is fenced to the two per-user
+    -- registers. The honest answer is FALSE, and it is said HERE rather than reached through the
+    -- `ELSE` below, because those two silences mean opposite things: this one is "no gated write of
+    -- this table is legitimate", and `ELSE` is "a register nobody taught this function". The round
+    -- 32 oracle discovers the population from the catalog and refuses the second.
+    WHEN 'DomainEventPairingClaim' THEN FALSE
+
+    ELSE FALSE
+  END;
+$$;
+
 -- ── the shared writer-depth seal ─────────────────────────────────────────────────────────────
 -- Every register above is a PROJECTION. Its truth is the orgs table it is projected from, so
 -- the only legal writer is the trigger that watches that table, and a register written by
@@ -710,31 +843,13 @@ BEGIN
         TG_OP, TG_TABLE_NAME;
     END IF;
 
-    -- the row must AGREE with the orgs row it mirrors. A DELETE is the mirror claim: it is
-    -- admitted only where the source no longer justifies the row.
+    -- the row must AGREE with the orgs row it mirrors, and the question is asked where it is
+    -- SPELLED — `phase6_t4d_register_backed`, the same call the adoption audits below make of
+    -- every row this migration freezes. Restating it here is what round 32's finding 2 was
+    -- (#582's review round 32). A DELETE is the mirror claim: it is admitted only where the
+    -- source no longer justifies the row.
     v_json := to_jsonb(CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END);
-    v_agrees := CASE TG_TABLE_NAME
-      WHEN 'ProjectOrg' THEN EXISTS (
-        SELECT 1 FROM "Project" p
-         WHERE p."id" = v_json->>'projectId' AND p."orgId" = v_json->>'orgId')
-      WHEN 'UserIdentity' THEN EXISTS (
-        SELECT 1 FROM "User" u
-         WHERE u."id" = v_json->>'userId' AND u."name" = v_json->>'displayName')
-      WHEN 'OrgUserAuthority' THEN EXISTS (
-        SELECT 1 FROM "OrgMembership" m
-         WHERE m."orgId" = v_json->>'orgId' AND m."userId" = v_json->>'userId'
-           AND m."role" = v_json->>'role')
-      WHEN 'ProjectUserStanding' THEN EXISTS (
-        SELECT 1 FROM "Membership" m
-         WHERE m."projectId" = v_json->>'projectId' AND m."userId" = v_json->>'userId'
-           AND m."role" = v_json->>'role' AND m."status" = 'active')
-      WHEN 'ProjectRoleStanding' THEN
-        (v_json->>'activeCount')::int = (
-          SELECT count(*) FROM "Membership" m
-           WHERE m."projectId" = v_json->>'projectId' AND m."role" = v_json->>'role'
-             AND m."status" = 'active')
-      ELSE FALSE
-    END;
+    v_agrees := phase6_t4d_register_backed(TG_TABLE_NAME, v_json);
 
     -- a DELETE inverts the question, and an unknown table is refused rather than admitted.
     IF TG_OP = 'DELETE' THEN v_agrees := NOT v_agrees; END IF;
@@ -1330,14 +1445,13 @@ BEGIN
   -- Repairing it here would be worse than aborting: the mapping is the tenancy fact, and a
   -- migration that silently re-points a project to a different org is doing the thing the seal
   -- forbids every other writer from doing. The operator is told which projects disagree.
-  SELECT count(*) INTO v_backfilled FROM "Project" p
-    JOIN "ProjectOrg" r ON r."projectId" = p."id"
-   WHERE r."orgId" IS DISTINCT FROM p."orgId";
+  SELECT count(*) INTO v_backfilled FROM "ProjectOrg" r
+   WHERE NOT phase6_t4d_register_backed('ProjectOrg', to_jsonb(r));
   IF v_backfilled > 0 THEN
     SELECT string_agg(format('%s→%s (Project says %s)', r."projectId", r."orgId", p."orgId"), ', ')
       INTO v_sample_org
-      FROM "Project" p JOIN "ProjectOrg" r ON r."projectId" = p."id"
-     WHERE r."orgId" IS DISTINCT FROM p."orgId";
+      FROM "ProjectOrg" r LEFT JOIN "Project" p ON p."id" = r."projectId"
+     WHERE NOT phase6_t4d_register_backed('ProjectOrg', to_jsonb(r));
     RAISE EXCEPTION
       'phase6 4d-i ABORT: % "ProjectOrg" row(s) name an org their "Project" does not — %. The register is about to be FROZEN, and a mismatched mapping grants that org''s owners and admins team-management authority over a project that is not theirs. Correct the register (or the Project) before this migration adopts it; this file will not re-point a tenancy mapping on its own.',
       v_backfilled, v_sample_org;
@@ -1363,8 +1477,8 @@ BEGIN
   -- until that user happens to be renamed.
   SELECT count(*), string_agg(format('%s (register says %L, User says %L)', u."id", i."displayName", u."name"), ', ' ORDER BY u."id")
     INTO v_backfilled, v_sample
-    FROM "User" u JOIN "UserIdentity" i ON i."userId" = u."id"
-   WHERE i."displayName" IS DISTINCT FROM u."name";
+    FROM "UserIdentity" i LEFT JOIN "User" u ON u."id" = i."userId"
+   WHERE NOT phase6_t4d_register_backed('UserIdentity', to_jsonb(i));
   IF v_backfilled > 0 THEN
     RAISE EXCEPTION
       'phase6 4d-i ABORT: % "UserIdentity" row(s) disagree with the "User" they project — %. The register is about to become the canonical source of every frozen actor name, so adopting a row that already contradicts its account would attribute 4d facts to a name that account does not carry. Reconcile each row with its "User" (or correct the "User") before this migration adopts the register.',
@@ -1379,9 +1493,7 @@ BEGIN
   SELECT count(*), string_agg(format('%s@%s as %L', a."userId", a."orgId", a."role"), ', ' ORDER BY a."orgId", a."userId")
     INTO v_backfilled, v_sample
     FROM "OrgUserAuthority" a
-   WHERE NOT EXISTS (SELECT 1 FROM "OrgMembership" om
-                      WHERE om."orgId" = a."orgId" AND om."userId" = a."userId"
-                        AND om."role" = a."role" AND om."role" IN ('owner', 'admin'));
+   WHERE NOT phase6_t4d_register_backed('OrgUserAuthority', to_jsonb(a));
   IF v_backfilled > 0 THEN
     RAISE EXCEPTION
       'phase6 4d-i ABORT: % "OrgUserAuthority" row(s) are backed by no owner/admin "OrgMembership" — %. The register is about to be adopted as the answer to "may this actor manage the team?", and a row without its source grants that authority to someone the orgs tables never made an owner or admin. Remove the unbacked rows (or grant the membership they claim) before this migration adopts the register.',
@@ -1412,29 +1524,7 @@ BEGIN
   SELECT count(*), string_agg(format('%s on %s as %L (membershipId %L)', s2."userId", s2."projectId", s2."role", s2."membershipId"), ', ' ORDER BY s2."projectId", s2."userId")
     INTO v_backfilled, v_sample
     FROM "ProjectUserStanding" s2
-   WHERE NOT EXISTS (SELECT 1 FROM "Membership" m
-                      WHERE m."projectId" = s2."projectId" AND m."userId" = s2."userId"
-                        AND m."role" = s2."role" AND m."status" = 'active'
-                        AND m."id" = s2."membershipId")
-     AND NOT (s2."role" = 'pmc' AND s2."membershipId" IS NULL
-              AND EXISTS (SELECT 1 FROM "Project" p2
-                            JOIN "OrgMembership" om ON om."orgId" = p2."orgId"
-                           WHERE p2."id" = s2."projectId" AND om."userId" = s2."userId"
-                             AND om."role" IN ('owner', 'admin'))
-              -- MEMBERSHIP-LESS MEANS WHAT IT SAYS (#582 round 10, finding 3). Round 9 bound the
-              -- pointer and left the word unbound: the arm asked for an owner/admin and never
-              -- that the claim be membership-less, so an owner carrying an ACTIVE `engineer`
-              -- membership was adopted as a `pmc` too. Both the projection writer (arm (3) above,
-              -- `NOT (v_after AND ...)` recomputed only while the user has no active presence)
-              -- and the backfill (the arm immediately above it) spell the condition this way,
-              -- and an audit that admits what its own writer would never produce is not auditing
-              -- the writer's rule. The cost is not tidiness: through the 4d-i → 4d-iii window
-              -- `platform_user_holds_role` answers from this register, so the fact seals accept
-              -- `actorRole = 'pmc'` from that engineer and FREEZE it — permanent authority
-              -- evidence for standing the orgs tables never granted.
-              AND NOT EXISTS (SELECT 1 FROM "Membership" m3
-                               WHERE m3."projectId" = s2."projectId" AND m3."userId" = s2."userId"
-                                 AND m3."status" = 'active'));
+   WHERE NOT phase6_t4d_register_backed('ProjectUserStanding', to_jsonb(s2));
   IF v_backfilled > 0 THEN
     RAISE EXCEPTION
       'phase6 4d-i ABORT: % "ProjectUserStanding" row(s) are backed by neither an active "Membership" of that exact user, role AND id, nor an org owner/admin''s membership-less `pmc` claim — %. The register is about to be adopted as the answer to "does this user hold this role here?" AND as the answer to "who holds this membership?" — `platform_membership_active_user` resolves the holder by `membershipId` alone — so an unbacked row is standing nobody granted and a mispointed one hands a forward to the wrong person. Remove or repoint the rows (or grant the membership they claim) before this migration adopts the register.',
@@ -1499,6 +1589,25 @@ BEGIN
   IF v_backfilled > 0 THEN
     RAISE EXCEPTION
       'phase6 4d-i ABORT: % adopted register row(s) are MISSING for a source row that requires one, after the backfill above ran — %. These registers are what the 4d seals answer from: `UserIdentity` supplies every frozen actor name, `OrgUserAuthority` answers "may this actor manage the team?", and `ProjectUserStanding` answers "does this user hold this role here?". A source row with no register row is therefore a user, an org manager or a role-holder whose commands are refused from 4d-ii for a reason no message names. 4d-i adopts or refuses and does not rewrite a register (`platform_t4d_register_writer` admits only the fenced INSERT above; correcting rows is 4d-iii''s fenced re-projection), so the missing rows are DIAGNOSED: give each named source row its register row, or remove the source, before this migration adopts the registers.',
+      v_backfilled, v_sample;
+  END IF;
+
+  -- (iv) THE COUNTED REGISTER, which round 8 did not audit and round 31 gave a gate arm
+  -- (#582's review round 32, finding 2 — the sibling). `ProjectRoleStanding` is the fifth
+  -- register behind `platform_t4d_register_writer`, and its whole content is a NUMBER:
+  -- `platform_role_standing(project, 'architect')` is read at five sites in the decisions-fact
+  -- half — the architect-chain seals, the consultation arms, the re-homing rule — so a
+  -- pre-baseline row holding the wrong count does not distort a report, it changes which
+  -- decisions the seals require and which they refuse, permanently, from the moment this file
+  -- freezes the register. The other four registers each got this audit in round 8; this one is
+  -- reachable by exactly the same P3005 path and was never asked.
+  SELECT count(*), string_agg(format('%s on %s says %s', r3."role", r3."projectId", r3."activeCount"), ', ' ORDER BY r3."projectId", r3."role")
+    INTO v_backfilled, v_sample
+    FROM "ProjectRoleStanding" r3
+   WHERE NOT phase6_t4d_register_backed('ProjectRoleStanding', to_jsonb(r3));
+  IF v_backfilled > 0 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i ABORT: % "ProjectRoleStanding" row(s) hold a count the active "Membership" rows do not support — %. The register is about to be adopted as the answer to "how many hold this role here?", and every architect-chain seal of 4d-i reads it: a wrong count silently changes which decisions require a chain and which may skip one. Correct the register (or the memberships it counts) before this migration adopts it.',
       v_backfilled, v_sample;
   END IF;
 
@@ -3186,17 +3295,53 @@ BEGIN
     IF NOT EXISTS (
       SELECT 1 FROM pg_constraint
        WHERE conname = 'DomainEvent_attribution_truth_table'
-         AND conrelid = '"DomainEvent"'::regclass AND contype = 'c') THEN
+         AND conrelid = '"DomainEvent"'::regclass AND contype = 'c'
+         -- AND IT SAYS WHAT IT IS NAMED FOR (#582's review round 32, finding 3). A name is not a
+         -- rule. `CHECK (true)` under this name satisfies existence and constrains nothing, and
+         -- the repair paths this block exists for are exactly the ones that produce a hand-written
+         -- stand-in: an operator following §P6T4D restores what they can express, a `db push`
+         -- baseline drops the expression entirely. The definition is compared as PostgreSQL
+         -- renders it — normalised for whitespace, so a reformatting of the source migration is
+         -- not a false alarm, and byte-exact otherwise, so a weakened clause is not a pass.
+         AND btrim(regexp_replace(pg_get_constraintdef(oid), '\s+', ' ', 'g')) =
+             'CHECK ((("actorKind" = ANY (ARRAY[''human''::text, ''system''::text])) AND (("actorKind" <> ''human''::text) OR ("actorId" IS NOT NULL)) AND (("actorKind" <> ''system''::text) OR ("systemActor" IS NOT NULL))))') THEN
       RAISE EXCEPTION
-        'phase6 4d-i ABORT: `DomainEvent_attribution_truth_table` is not installed on "DomainEvent". It is `20261015000000_phase2_event_envelope`''s RAW CHECK — Prisma cannot express a CHECK, so `prisma db push` does not reproduce it, and on the P3005 adoption path that migration can read as applied while the property it exists for is absent. Without it an event may claim `actorKind = ''human''` with no `actorId` (or any actorKind at all): this file''s envelope seal judges the actor pair only where a role is present, and `DomainEvent_append_only` then makes an unattributable event permanent underneath every 4d fact that cites it. Re-apply `20261015000000_phase2_event_envelope`''s raw statements (or restore them from that migration file) before this one. See docs/RUNBOOK.md §P6T4D.';
+        'phase6 4d-i ABORT: `DomainEvent_attribution_truth_table` is absent from "DomainEvent", or is installed under that name with a definition that is not the truth table. It is `20261015000000_phase2_event_envelope`''s RAW CHECK — Prisma cannot express a CHECK, so `prisma db push` does not reproduce it, and on the P3005 adoption path that migration can read as applied while the property it exists for is absent. Without it an event may claim `actorKind = ''human''` with no `actorId` (or any actorKind at all): this file''s envelope seal judges the actor pair only where a role is present, and `DomainEvent_append_only` then makes an unattributable event permanent underneath every 4d fact that cites it. Re-apply `20261015000000_phase2_event_envelope`''s raw statements (or restore them from that migration file) before this one. See docs/RUNBOOK.md §P6T4D.';
     END IF;
 
+    -- AND A TRIGGER IS ITS DEFINITION, NOT ITS NAME (#582's review round 32, finding 3). Round 20
+    -- asked whether the object EXISTS and round 25 widened the inventory; both left the question
+    -- one step short, because everything this block refuses is reached by a REPAIR. An operator
+    -- following §P6T4D, a restore script, a `db push` baseline followed by a hand patch — each
+    -- produces something under the right name, and nothing here asked what it does. An enabled
+    -- `DomainEvent_append_only` whose function returns NEW passes existence and enablement and
+    -- permits every rewrite and delete the real one refuses; a `Project_ensure_event_stream`
+    -- moved to BEFORE INSERT, or given a `WHEN` clause, is present, enabled, correctly named and
+    -- silently partial. This file then seals a fact system on top of a ledger it has certified and
+    -- never examined — which is worse than not checking, because the abort message that would have
+    -- named the real state never fires.
+    --
+    -- So each prerequisite is pinned on all four axes a trigger has: the TABLE it watches, the
+    -- timing and operations (`tgtype`), the absence of a `WHEN` clause narrowing it (`tgqual`),
+    -- the function it calls (`tgfoid`), and that function''s BODY, normalised for whitespace so
+    -- reformatting the source migration is not a false alarm. `tgtype` is a bit mask:
+    -- ROW=1, BEFORE=2, INSERT=4, DELETE=8, UPDATE=16 — so 27 is BEFORE UPDATE OR DELETE FOR EACH
+    -- ROW, and 5 is AFTER INSERT FOR EACH ROW.
+    --
+    -- The body is pinned to the text `20261015000000_phase2_event_envelope` ships. That migration
+    -- owns these objects; when it legitimately changes one, this list is updated with it, exactly
+    -- as the inventory paragraph above already requires of any named dependency. A pinned body is
+    -- the only form of this check that a plausible stand-in cannot satisfy.
     FOR spec IN SELECT * FROM (VALUES
-      ('DomainEvent_append_only', 'DomainEvent',
+      ('DomainEvent_append_only', 'DomainEvent', 27::smallint, 'domainEvent_append_only',
+       'BEGIN RAISE EXCEPTION ''DomainEvent is append-only: % is not permitted (eventId=%)'', TG_OP, OLD."eventId"; END;',
+       'BEFORE UPDATE OR DELETE ON "DomainEvent" FOR EACH ROW',
        'a `DomainEvent` row can be rewritten or deleted under the facts that cite it. 4d-i seals a FACT system on top of that ledger: its facts cite events, its pairing claims cite events, and obligation 7 compares a fact''s frozen pair against its event''s envelope. None of that is evidence while the event beneath it can move'),
-      ('Project_ensure_event_stream', 'Project',
+      ('Project_ensure_event_stream', 'Project', 5::smallint, 'project_ensure_event_stream',
+       'BEGIN INSERT INTO "ProjectEventStream" ("projectId", "nextPosition") VALUES (NEW."id", 0) ON CONFLICT ("projectId") DO NOTHING; RETURN NEW; END;',
+       'AFTER INSERT ON "Project" FOR EACH ROW',
        'a project can be created with no `ProjectEventStream` row. `platform_t4d_stream_init`, installed by this file, admits a new stream only at position 0 and only for a project holding no events — so the first such project to emit is permanently without an allocator, and every `emitEvent` on it fails')
-    ) AS v(tgname, tbl, harm) LOOP
+    ) AS v(tgname, tbl, tgtype, proname, body, shape, harm) LOOP
       SELECT * INTO tg FROM pg_trigger
        WHERE tgname = spec.tgname
          AND tgrelid = format('%I', spec.tbl)::regclass AND NOT tgisinternal;
@@ -3209,6 +3354,22 @@ BEGIN
         RAISE EXCEPTION
           'phase6 4d-i ABORT: `%` is installed on "%" but DISABLED (tgenabled=%). A sanctioned reset disables a seal for exactly one wipe and re-enables it in the same transaction; one left off is the property gone. Without it, %. Re-enable it before this migration seals on top of it.',
           spec.tgname, spec.tbl, tg.tgenabled, spec.harm;
+      END IF;
+      IF tg.tgtype <> spec.tgtype OR tg.tgqual IS NOT NULL THEN
+        RAISE EXCEPTION
+          'phase6 4d-i ABORT: `%` is installed on "%" but does not fire where the property needs it (tgtype=%, expected % for `%`%). A trigger moved to another timing, narrowed to fewer operations, or given a WHEN clause is present under the right name and partial in fact. Without it, %. Restore `20261015000000_phase2_event_envelope`''s raw statement before this migration seals on top of it.',
+          spec.tgname, spec.tbl, tg.tgtype, spec.tgtype, spec.shape,
+          CASE WHEN tg.tgqual IS NOT NULL THEN ', and it carries a WHEN clause the original has not' ELSE '' END,
+          spec.harm;
+      END IF;
+      IF tg.tgfoid::regproc::text <> format('%I', spec.proname)
+         OR btrim(regexp_replace(COALESCE((SELECT prosrc FROM pg_proc WHERE oid = tg.tgfoid), ''), '\s+', ' ', 'g'))
+            <> spec.body THEN
+        RAISE EXCEPTION
+          'phase6 4d-i ABORT: `%` is installed on "%" and enabled, but the function it calls is not `20261015000000_phase2_event_envelope`''s (it calls `%`, whose body is %). A same-named trigger over a stand-in function — a no-op that returns NEW, a partial repair, a hand-written approximation — satisfies every existence and enablement check and enforces nothing. Without the real one, %. Restore that migration''s raw statements before this one. See docs/RUNBOOK.md §P6T4D.',
+          spec.tgname, spec.tbl, tg.tgfoid::regproc::text,
+          COALESCE(left(btrim(regexp_replace((SELECT prosrc FROM pg_proc WHERE oid = tg.tgfoid), '\s+', ' ', 'g')), 200), '<no function>'),
+          spec.harm;
       END IF;
     END LOOP;
   END;

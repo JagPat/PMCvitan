@@ -1460,6 +1460,16 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
    * The probe builds exactly that database: the modelled `RolloutRetirement` table (what
    * `prisma db push` reproduces — columns and key, no triggers) carrying the marker, and nothing
    * else of 4d-i. Then it applies the whole migration and asks what was installed.
+   *
+   * AND ROUND 32'S FINDING 1 MOVED THE ANSWER. Round 7's fix made this apply honest and left the
+   * forged row in place, on its way to being frozen by this file's own seal — and by then the
+   * file has also created `phase6_t4d_membership_transition_seal`, so the evidence conjunct the
+   * marker failed is satisfied and the NEXT reading believes it. This arm therefore now measures
+   * the refusal: the marker is not adopted, the apply aborts while the row can still be removed,
+   * and the operator's one repair is what installs the doors. The property round 7 stated is
+   * unchanged and is still asserted below — a database whose marker is not backed by 4d-i's own
+   * artifacts retired NOTHING, and every door is owed. What changed is that the file no longer
+   * commits alongside the lie.
    */
   it('a forged retirement marker does not disarm the doors it cannot have earned', () => {
     psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
@@ -1476,8 +1486,20 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
        INSERT INTO "RolloutRetirement" ("unit","retiredBy") VALUES ('phase6-4d','someone')`]);
     expect(baseline.ok, baseline.output).toBe(true);
 
+    const refused = applyWhole();
+    expect(
+      refused.ok,
+      'the unit must REFUSE a marker it can prove nothing earned (#582 round 32, finding 1): '
+      + 'adopting it freezes the row forever AND supplies the evidence its own conjunct was '
+      + 'missing, so the replay and 4d-iii both read the forgery as a genuine retirement',
+    ).toBe(false);
+    expect(refused.output).toMatch(/carries `phase6-4d` .* on a database that holds none of the raw seal functions/);
+
+    // the row is still removable, because the freeze this file installs rolled back with the
+    // abort — and after that one repair the whole unit applies
+    expect(psql(RUN_DB, ['-c', `DELETE FROM "RolloutRetirement" WHERE "unit" = 'phase6-4d'`]).ok).toBe(true);
     const applied = applyWhole();
-    expect(applied.ok, `the unit must apply over a marker-bearing baseline:\n${applied.output}`).toBe(true);
+    expect(applied.ok, `after the named repair the unit must apply:\n${applied.output}`).toBe(true);
 
     const installed = psql(RUN_DB, ['-t', '-A', '-c',
       `SELECT tgname FROM pg_trigger
@@ -5115,7 +5137,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     for (const at of [`now() - interval '2 hours'`, `now() + interval '30 days'`]) {
       const r = psql(RUN_DB, ['-c', CLOSE('withdrawn', 'withdrawn', at)]);
       expect(r.ok, `a closure stamped ${at} is not this transaction's closure`).toBe(false);
-      expect(r.output).toMatch(/but this closing transaction is running at/);
+      expect(r.output).toMatch(/but this closing statement is running at/);
     }
     // and the skew a real writer has is still admitted, in both directions
     for (const at of [`now() - interval '5 seconds'`, `now() + interval '5 seconds'`]) {
@@ -5149,4 +5171,338 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     expect(correct.ok, 'the backfill gate admits INSERT only').toBe(false);
     expect(correct.output).toMatch(/admits INSERT only/);
   }, 600_000);
+
+  /**
+   * #582's review round 32 — A RULE WITH ONE MEANING HAD TWO SPELLINGS.
+   *
+   * Round 31 taught `platform_t4d_register_writer` to ask whether a gated row AGREES with the
+   * orgs row it mirrors, and answered the question by RESTATING the rule the adoption audits had
+   * already spelled a thousand lines below. The restatement was wrong in both directions on the
+   * register that matters most:
+   *
+   *   · it omitted `membershipId`, so a gated insert could bind user A's standing to user B's
+   *     membership — and `platform_membership_active_user` resolves the HOLDER by that column
+   *     alone, so B's forward would answer A. The audit has refused exactly this since round 9.
+   *   · it did not admit the membership-less `pmc` arm at all, so the migration's OWN second
+   *     standing backfill was refused by the migration's own gate the moment a database held an
+   *     org owner or admin with no active membership on a project. That is an ABORTED DEPLOY on
+   *     a legitimate database, and every local apply missed it because no fixture carried the
+   *     shape — which is what this arm's first half now plants.
+   *
+   * The fix is not a better predicate. It is ONE predicate: `phase6_t4d_register_backed`, called
+   * by the gate and by every adoption audit, so the two readings cannot drift. The third arm
+   * holds that shape to the catalog — the registers are DISCOVERED from the trigger that gates
+   * them, and a register the shared predicate does not name fails the suite rather than being
+   * silently refused by its `ELSE FALSE`.
+   */
+  it('round 32: the gate and the audits ask ONE question of a register row, over every register', () => {
+    // ── (a) THE SHAPE THAT ABORTS A REAL DEPLOY ─────────────────────────────────────────────
+    // An org OWNER with no active membership on the project. The migration's own backfill writes
+    // `(project, user, 'pmc', NULL)` for exactly this person, at depth 1, under its own gate.
+    psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+    expect(psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]).ok).toBe(true);
+    const owner = psql(RUN_DB, ['-c', `
+      INSERT INTO "Org" ("id","name","slug") VALUES ('r32-org','R32 Org','r32-org');
+      INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+        VALUES ('r32-proj','r32-org','R32 Site','R32','','Finishing','R32-01','01 Jan 2026','31 Dec 2026',0,0,0);
+      INSERT INTO "User" ("id","projectId","role","name","phone")
+        VALUES ('r32-owner','r32-proj','pmc','R32 Owner','+910000000031');
+      -- an org owner, and NO "Membership" row anywhere: the membership-less pmc the backfill projects
+      INSERT INTO "OrgMembership" ("id","orgId","userId","role") VALUES ('r32-om','r32-org','r32-owner','owner');
+    `]);
+    expect(owner.ok, owner.output).toBe(true);
+
+    const deploy = applyWhole();
+    expect(
+      deploy.ok,
+      'a database holding an org owner with no active membership is the shape this file\'s own '
+      + 'standing backfill projects a membership-less `pmc` for. The unit must APPLY on it — a '
+      + 'gate that refuses its own migration\'s write aborts a legitimate deploy:\n' + deploy.output,
+    ).toBe(true);
+    const projected = psql(RUN_DB, ['-At', '-c',
+      `SELECT count(*) FROM "ProjectUserStanding"
+        WHERE "projectId" = 'r32-proj' AND "userId" = 'r32-owner'
+          AND "role" = 'pmc' AND "membershipId" IS NULL`]);
+    expect(projected.output.trim(),
+      'and the row the backfill exists to write must be THERE, not merely un-refused').toBe('1');
+
+    // ── (b) THE POINTER IS PART OF THE ROW ──────────────────────────────────────────────────
+    // A standing row whose JUSTIFICATION is real and whose pointer names somebody else's
+    // membership. Round 31's gate asked only for the justification and admitted it.
+    buildRun([]);
+    // The backfill has already written ss-client's standing, correctly pointed, and `Membership`
+    // is unique on (projectId, userId) — so the row is REMOVED with every trigger off, and the
+    // gated INSERT below is then the only write of it. The justification is untouched: ss-client
+    // still holds the active `client` membership the row claims.
+    const cleared = psql(RUN_DB, ['-c', `
+      SET session_replication_role = 'replica';
+      DELETE FROM "ProjectUserStanding"
+       WHERE "projectId" = 'ss-proj' AND "userId" = 'ss-client' AND "role" = 'client';
+      RESET session_replication_role;`]);
+    expect(cleared.ok, cleared.output).toBe(true);
+
+    const gatedStanding = (membershipId: string) => `
+      BEGIN;
+      SELECT set_config('vitan.phase6_4d_standing_backfill', 'on', true);
+      INSERT INTO "ProjectUserStanding" ("projectId","userId","role","membershipId")
+        VALUES ('ss-proj','ss-client','client','${membershipId}');
+      COMMIT;`;
+
+    const mispointed = psql(RUN_DB, ['-c', gatedStanding('ss-mem')]);
+    expect(
+      mispointed.ok,
+      'a gated standing row for ss-client carrying ss-user\'s membership id must be REFUSED: '
+      + '`platform_membership_active_user` resolves the holder by that column alone, so the row '
+      + 'hands ss-user\'s forward to ss-client',
+    ).toBe(false);
+    expect(mispointed.output).toMatch(/writes a row the orgs tables do not support/);
+
+    // and the same statement with the RIGHT pointer is still admitted — a seal that refuses the
+    // legitimate projection is not a fix
+    const pointed = psql(RUN_DB, ['-c', gatedStanding('ss-mem-c')]);
+    expect(pointed.ok, `the correctly pointed row must still be admitted:\n${pointed.output}`).toBe(true);
+
+    // ── (c) THE REGISTERS ARE DISCOVERED, AND EVERY ONE IS SPELLED ONCE ─────────────────────
+    // The population is read from the catalog: whatever `platform_t4d_register_writer` gates IS
+    // a register, and each must be named by the shared predicate. A sixth register added later
+    // and not taught to it would be refused by its `ELSE FALSE` on every gated write — silently,
+    // at deploy time, exactly the way (a) failed.
+    const registersQ = psql(RUN_DB, ['-At', '-c',
+      `SELECT DISTINCT c.relname
+         FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+         JOIN pg_proc p ON p.oid = t.tgfoid
+        WHERE NOT t.tgisinternal AND p.proname = 'platform_t4d_register_writer'
+        ORDER BY 1`]);
+    expect(registersQ.ok, registersQ.output).toBe(true);
+    const registers = registersQ.output.split('\n').map((x) => x.trim()).filter(Boolean);
+    expect(registers.length, 'the writer-depth gate must be installed on the registers').toBeGreaterThan(0);
+
+    const bodyQ = psql(RUN_DB, ['-At', '-c',
+      `SELECT prosrc FROM pg_proc WHERE proname = 'phase6_t4d_register_backed'`]);
+    expect(bodyQ.ok && bodyQ.output.trim().length > 0,
+      '`phase6_t4d_register_backed` must exist — it is the one spelling both readers call').toBe(true);
+    const spelled = [...bodyQ.output.matchAll(/WHEN '([A-Za-z]+)' THEN/g)].map((m) => m[1]!);
+    expect(spelled.slice().sort(),
+      'every register the gate covers must be named by the shared backing predicate, and the '
+      + 'predicate must name no table that is not a register')
+      .toEqual(registers.slice().sort());
+
+    // What the predicate MEANS for each gated table, declared and held to the discovered set —
+    // because "answers FALSE" carries two opposite meanings here and a table in neither class is
+    // the silence this arm exists to refuse:
+    //
+    //   `projection`     — the table mirrors an orgs row, so every row it holds must be backed.
+    //   `no-gated-write` — nothing may write it at depth 1 under any gate, so the predicate is
+    //                      FALSE of every row, including the perfectly legitimate ones its own
+    //                      fact seals minted at nested depth.
+    const KIND: Record<string, 'projection' | 'no-gated-write'> = {
+      ProjectOrg: 'projection',
+      UserIdentity: 'projection',
+      OrgUserAuthority: 'projection',
+      ProjectRoleStanding: 'projection',
+      ProjectUserStanding: 'projection',
+      DomainEventPairingClaim: 'no-gated-write',
+    };
+    expect(Object.keys(KIND).sort(),
+      'every table behind the writer-depth gate owes a declared reading of the shared predicate')
+      .toEqual(registers.slice().sort());
+
+    // every row the live projections hold agrees with its source — the audits' own question,
+    // asked of the database the whole unit just built
+    for (const table of registers) {
+      const notBacked = psql(RUN_DB, ['-At', '-c',
+        `SELECT count(*) FROM "${table}" r WHERE NOT phase6_t4d_register_backed('${table}', to_jsonb(r))`]);
+      const all = psql(RUN_DB, ['-At', '-c', `SELECT count(*) FROM "${table}"`]);
+      expect(notBacked.ok && all.ok, notBacked.output + all.output).toBe(true);
+      if (KIND[table] === 'projection') {
+        expect(notBacked.output.trim(),
+          `"${table}" holds a row its source does not support, after this unit's own backfill and `
+          + 'audits ran — the register and the orgs tables disagree').toBe('0');
+      } else {
+        expect(notBacked.output.trim(),
+          `"${table}" is written only from inside a fact's own seal, so no row of it is a gated `
+          + 'write the predicate may admit').toBe(all.output.trim());
+      }
+    }
+
+    // and the gate REFUSES a forged row of every register, driven one table at a time. The
+    // register of hostile rows is held to the discovered population, so a new register cannot be
+    // added without an arm that attacks it.
+    const FORGED: Record<string, string> = {
+      ProjectOrg: `INSERT INTO "ProjectOrg" ("projectId","orgId") VALUES ('ss-proj','r32-nonesuch')`,
+      UserIdentity: `INSERT INTO "UserIdentity" ("userId","displayName") VALUES ('ss-client','NOT THE ACCOUNT NAME')`,
+      OrgUserAuthority: `INSERT INTO "OrgUserAuthority" ("orgId","userId","role") VALUES ('ss-org','ss-client','admin')`,
+      ProjectRoleStanding: `INSERT INTO "ProjectRoleStanding" ("projectId","role","activeCount") VALUES ('ss-proj','architect',7)`,
+      ProjectUserStanding: `INSERT INTO "ProjectUserStanding" ("projectId","userId","role","membershipId") VALUES ('ss-proj','ss-client','architect','ss-mem-c')`,
+      // not a projection of any orgs row: a claim is minted by the fact seal that claims the
+      // event, at nested depth. No gated depth-1 write of it is legitimate, so every row is forged.
+      DomainEventPairingClaim: `INSERT INTO "DomainEventPairingClaim" ("projectId","eventId","claimedBy","claimedById") VALUES ('ss-proj','ss-ev1','DecisionFact','ss-forged')`,
+    };
+    expect(Object.keys(FORGED).sort(),
+      'each discovered register owes a forged row this arm drives through the gate').toEqual(registers.slice().sort());
+    for (const table of registers) {
+      buildRun([]);
+      const r = psql(RUN_DB, ['-c', `
+        BEGIN;
+        SELECT set_config('vitan.phase6_4d_standing_backfill', 'on', true);
+        ${FORGED[table]};
+        COMMIT;`]);
+      expect(r.ok, `the gate must refuse a forged "${table}" row even under the backfill flag`).toBe(false);
+      expect(r.output).toMatch(/writes a row the orgs tables do not support/);
+    }
+  }, 900_000);
+
+  /**
+   * #582's review round 32, finding 1 — A SNAPSHOT CORRECTS THIS TRANSACTION, NOT THE ROW.
+   *
+   * Round 7 caught `phase6_t4d_retired()` being self-fulfilling and froze the verdict before this
+   * file creates the evidence the predicate names. That made THIS apply honest and left the row
+   * that lied. The apply then installs `RolloutRetirement_t4d_frozen` (the row can never be
+   * removed again) and installs `phase6_t4d_membership_transition_seal` (the evidence conjunct
+   * the marker failed is now satisfied) — so the very next reading of `phase6_t4d_retired()`,
+   * on the replay or in 4d-iii, returns TRUE for a database that retired nothing.
+   *
+   * The arm measures the round-7 state and the round-32 state on the same planted database: the
+   * marker must ABORT the apply while it is still deletable, and the whole unit must apply the
+   * moment it is gone.
+   */
+  it('round 32: a `phase6-4d` marker with no 4d seals behind it REFUSES the apply', () => {
+    psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+    expect(psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]).ok).toBe(true);
+
+    // `RolloutRetirement` as `prisma db push` creates it from the model: the TABLE, and none of
+    // the raw seals that live in this file — which is the window the forged row is written in.
+    const planted = psql(RUN_DB, ['-c', `
+      CREATE TABLE "RolloutRetirement" (
+        "unit" TEXT NOT NULL,
+        "retiredAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "retiredBy" TEXT NOT NULL,
+        CONSTRAINT "RolloutRetirement_pkey" PRIMARY KEY ("unit"));
+      INSERT INTO "RolloutRetirement" ("unit","retiredBy") VALUES ('phase6-4d','r32-operator');
+    `]);
+    expect(planted.ok, planted.output).toBe(true);
+
+    // the verdict this file takes of the PRE-migration database is correctly `not retired` — the
+    // seal functions do not exist. Round 7 stopped there and adopted the row anyway.
+    const refused = psql(RUN_DB, ['-f', MIGRATION]);
+    expect(
+      refused.ok,
+      'a marker with no 4d seal functions behind it was written in the unsealed db-push window. '
+      + 'Adopting it freezes the row AND creates the evidence its own conjunct is missing, so '
+      + 'every later replay and 4d-iii read it as a genuine retirement',
+    ).toBe(false);
+    expect(refused.output).toMatch(/carries `phase6-4d` .* on a database that holds none of the raw seal functions/);
+    expect(refused.output, 'the abort must name the one statement that resolves it, while it still can')
+      .toMatch(/DELETE FROM "RolloutRetirement" WHERE "unit" = 'phase6-4d'/);
+
+    // and the row is still deletable, because the freeze rolled back with the abort
+    expect(psql(RUN_DB, ['-c', `DELETE FROM "RolloutRetirement" WHERE "unit" = 'phase6-4d'`]).ok,
+      'the abort must leave the row removable — this is the last moment it can be').toBe(true);
+
+    const clean = applyWhole();
+    expect(clean.ok, `with the forged marker gone the whole unit must apply:\n${clean.output}`).toBe(true);
+    // what it then installed is asserted in full by the round-7 arm above, which carries the
+    // whole door inventory; this arm's subject is the refusal and the repair it names.
+  }, 300_000);
+
+  /**
+   * #582's review round 32, finding 3 — A PREREQUISITE IS ITS DEFINITION, NOT ITS NAME.
+   *
+   * `$ledger_prereq$` refuses to seal a fact system onto a ledger missing the append-only
+   * trigger, the stream-creating trigger or the attribution CHECK. Round 20 asked whether they
+   * EXIST and round 25 widened the inventory to three; neither asked what they DO. Every path
+   * this block exists for is a repair — an operator following §P6T4D, a restore, a db-push
+   * baseline plus a hand patch — and a repair is precisely what produces a correctly named
+   * stand-in that enforces nothing. Each arm below installs one such stand-in and requires the
+   * apply to refuse it.
+   */
+  it('round 32: a same-named prerequisite that does not do the job REFUSES the apply', () => {
+    const STANDINS: [string, string, RegExp][] = [
+      ['an append-only trigger over a function that permits the write', `
+        CREATE OR REPLACE FUNCTION "domainEvent_append_only"() RETURNS trigger
+          LANGUAGE plpgsql AS $body$ BEGIN RETURN NEW; END; $body$;`,
+        /the function it calls is not .*'s/],
+      ['a stream trigger moved to BEFORE INSERT', `
+        DROP TRIGGER "Project_ensure_event_stream" ON "Project";
+        CREATE TRIGGER "Project_ensure_event_stream" BEFORE INSERT ON "Project"
+          FOR EACH ROW EXECUTE FUNCTION "project_ensure_event_stream"();`,
+        /does not fire where the property needs it/],
+      ['a stream trigger narrowed by a WHEN clause', `
+        DROP TRIGGER "Project_ensure_event_stream" ON "Project";
+        CREATE TRIGGER "Project_ensure_event_stream" AFTER INSERT ON "Project"
+          FOR EACH ROW WHEN (NEW."stage" = 'Finishing') EXECUTE FUNCTION "project_ensure_event_stream"();`,
+        /carries a WHEN clause the original has not/],
+      ['an attribution CHECK that constrains nothing', `
+        ALTER TABLE "DomainEvent" DROP CONSTRAINT "DomainEvent_attribution_truth_table";
+        ALTER TABLE "DomainEvent" ADD CONSTRAINT "DomainEvent_attribution_truth_table" CHECK (true);`,
+        /is absent from "DomainEvent", or is installed under that name with a definition that is not the truth table/],
+    ];
+
+    for (const [what, standin, message] of STANDINS) {
+      psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+      expect(psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]).ok).toBe(true);
+      const installed = psql(RUN_DB, ['-c', standin]);
+      expect(installed.ok, `planting ${what} failed:\n${installed.output}`).toBe(true);
+
+      const r = psql(RUN_DB, ['-f', MIGRATION]);
+      expect(r.ok, `${what} is present, enabled and correctly named — and the property is gone. `
+        + 'The apply must refuse to seal a fact system on top of it').toBe(false);
+      expect(r.output).toMatch(message);
+    }
+
+    // and the untouched ledger still applies, so the pins are not simply refusing everything
+    psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+    expect(psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]).ok).toBe(true);
+    const clean = applyWhole();
+    expect(clean.ok, `the real prerequisites must satisfy their own pins:\n${clean.output}`).toBe(true);
+  }, 600_000);
+
+  /**
+   * #582's review round 32, finding 4 — `now()` IS NOT WHEN THIS STATEMENT IS RUNNING.
+   *
+   * Round 30 bounded the recorded closure moment to "this closing transaction", and spelled it
+   * with `now()`, which is fixed at the transaction's FIRST statement and never advances. In any
+   * transaction longer than one statement the seal is judging a moment that has already passed,
+   * and it is wrong in both directions: an honest `new Date()` taken at the real write is refused
+   * as minutes in the future, and the stale transaction-start moment — a time at which nothing
+   * happened — is accepted as current.
+   *
+   * The arm holds the transaction open past the tolerance with `pg_sleep`, which is the only way
+   * to measure a clock that does not move. One sleep, both directions.
+   */
+  it('round 32: the closure moment is judged against the STATEMENT clock, not the transaction\'s', () => {
+    buildRun([]);
+    { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
+
+    const CLOSE_AT = (at: string) => `
+      UPDATE "ChangeRequest"
+         SET "status" = 'withdrawn', "resolution" = 'withdrawn'
+           , "resolvedAt" = ${at}, "resolvedById" = 'ss-user'
+       WHERE "id" = 'ss-cr-r26'`;
+
+    // ONE STATEMENT PER `-c`, which is the whole point of the measurement. PostgreSQL advances
+    // `statement_timestamp()` per protocol message, not per semicolon: a multi-statement simple
+    // query is ONE message, so every statement inside it shares one statement clock and the arm
+    // would measure nothing. A serving process sends its UPDATE as its own message, so the probe
+    // does too — psql keeps the session, and therefore the open transaction, across `-c`.
+    const honest = psql(RUN_DB, [
+      '-c', 'BEGIN', '-c', 'SELECT 1', '-c', 'SELECT pg_sleep(65)',
+      '-c', CLOSE_AT('clock_timestamp()'), '-c', 'ROLLBACK']);
+    expect(
+      honest.ok,
+      'a writer that stamps the closure at the moment it actually writes must be ADMITTED, '
+      + 'however long the transaction has been open. Judged against `now()` this is refused as '
+      + 'over a minute in the future:\n' + honest.output,
+    ).toBe(true);
+
+    const stale = psql(RUN_DB, [
+      '-c', 'BEGIN', '-c', 'SELECT 1', '-c', 'SELECT pg_sleep(65)',
+      '-c', CLOSE_AT('now()'), '-c', 'ROLLBACK']);
+    expect(
+      stale.ok,
+      'and the transaction\'s start time is a moment at which nothing closed — by the time this '
+      + 'statement runs it is over a minute stale, and the seal must refuse it',
+    ).toBe(false);
+    expect(stale.output).toMatch(/but this closing statement is running at/);
+  }, 300_000);
 });

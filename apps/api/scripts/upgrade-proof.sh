@@ -4952,7 +4952,7 @@ if [ "$t4d_r21_ready" = "1" ]; then
   $PSQL3 -c 'ALTER TABLE "DomainEvent" DROP CONSTRAINT "DomainEvent_attribution_truth_table";' >/dev/null \
     || { echo "FAILED  4d-i R21: could not stage the missing-CHECK shape"; FAIL=1; }
   t4d_r21_must_abort "a database whose event attribution truth table is missing is refused by name" \
-    'DomainEvent_attribution_truth_table` is not installed'
+    'DomainEvent_attribution_truth_table` is absent from "DomainEvent"'
   $PSQL3 -c 'ALTER TABLE "DomainEvent" ADD CONSTRAINT "DomainEvent_attribution_truth_table" CHECK ("actorKind" IN (E'"'"'human'"'"', E'"'"'system'"'"') AND ("actorKind" <> E'"'"'human'"'"' OR "actorId" IS NOT NULL) AND ("actorKind" <> E'"'"'system'"'"' OR "systemActor" IS NOT NULL));' >/dev/null \
     || { echo "FAILED  4d-i R21: could not restore the prerequisite CHECK"; FAIL=1; }
 

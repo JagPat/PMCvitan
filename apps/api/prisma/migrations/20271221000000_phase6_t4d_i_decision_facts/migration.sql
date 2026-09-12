@@ -1478,16 +1478,35 @@ BEGIN
         NEW."status";
     END IF;
 
-    -- (c) THE MOMENT IS THIS TRANSACTION'S. Round 30 bounded it below by `createdAt`, which admits
+    -- (c) THE MOMENT IS THIS STATEMENT'S. Round 30 bounded it below by `createdAt`, which admits
     -- any fabricated point in a request's whole open life — a September closure stamped August is
     -- neither before creation nor in the future, and the freeze then makes it evidence. The bound
-    -- is the closing transaction in BOTH directions, widened only by the skew a real writer has:
-    -- the serving release computes `new Date()` in the API process and commits milliseconds later.
-    IF NEW."resolvedAt" < now() - interval '1 minute'
-       OR NEW."resolvedAt" > now() + interval '1 minute' THEN
+    -- is the closing WRITE in both directions, widened only by the skew a real writer has: the
+    -- serving release computes `new Date()` in the API process and commits milliseconds later.
+    --
+    -- AND THE CLOCK IS `statement_timestamp()`, NOT `now()` (#582's review round 32, finding 4).
+    -- `now()` / `CURRENT_TIMESTAMP` is fixed at the FIRST statement of the transaction and never
+    -- moves again, so round 30's bound was never "this closing write" — it was "whenever this
+    -- transaction began". In anything but a single-statement transaction the two are different
+    -- times, and the error runs both ways: a maintenance or batch transaction open for ten minutes
+    -- freezes its start as the only admissible closure moment, so an honest `new Date()` taken at
+    -- the real write is REFUSED as nine minutes in the future; and a closure stamped with that
+    -- stale start time — a moment that has already passed — is ACCEPTED as current. A seal that
+    -- judges when an act happened has to read a clock that advances with the act.
+    -- `statement_timestamp()` is that clock: it is the moment this UPDATE began, whatever came
+    -- before it in the transaction.
+    --
+    -- And the product is not outside this. Both serving closures run inside `executeCommand`,
+    -- which reserves its receipt, writes the fact and then closes the request — several statements,
+    -- so `now()` was already the wrong clock for them and they passed only because those
+    -- transactions are short. The seal was measuring how long the enclosing command had been
+    -- running, in a rule about when a person closed a request. Under `statement_timestamp()` the
+    -- short transaction behaves exactly as before and the long one is judged correctly.
+    IF NEW."resolvedAt" < statement_timestamp() - interval '1 minute'
+       OR NEW."resolvedAt" > statement_timestamp() + interval '1 minute' THEN
       RAISE EXCEPTION
-        'phase6 4d-i: change request % records its closure at %, but this closing transaction is running at % — a closure happens when it happens, and a moment outside the writer''s own clock skew is evidence of an act that did not occur then.',
-        OLD."id", NEW."resolvedAt", now();
+        'phase6 4d-i: change request % records its closure at %, but this closing statement is running at % — a closure happens when it happens, and a moment outside the writer''s own clock skew is evidence of an act that did not occur then.',
+        OLD."id", NEW."resolvedAt", statement_timestamp();
     END IF;
 
   ELSIF OLD."status" <> 'open' AND NEW."status" IS DISTINCT FROM OLD."status" THEN
