@@ -4468,7 +4468,12 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
 
   function probeRowWhere(table: string, cols: [string, string, string][],
                          mode: 'full' | 'minimal' = 'full'): { where: string } | { failed: string } {
-    const existing = psql(RUN_DB, ['-At', '-c', `SELECT ctid FROM "${table}" LIMIT 1`]);
+    // ORDER BY, because `LIMIT 1` alone is not a choice — it is whatever the plan returns, and
+    // that differed between this machine and CI. The oracle then recorded WHICH rule refused
+    // `User.id` from a row it had not deliberately chosen: here a project-membership seal
+    // answered first, in CI a foreign key from the identity register did. Both are refusals and
+    // the migration is right either way; the arm was reading a stable fact off an unstable row.
+    const existing = psql(RUN_DB, ['-At', '-c', `SELECT ctid FROM "${table}" ORDER BY ctid LIMIT 1`]);
     if (existing.ok && existing.output.trim() !== '') {
       return { where: `ctid = '${existing.output.trim()}'` };
     }
@@ -4506,7 +4511,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
        COMMIT;`]);
     if (!plant.ok) return { failed: `the probe row would not plant:\n  ${firstLine(plant.output)}` };
 
-    const after = psql(RUN_DB, ['-At', '-c', `SELECT ctid FROM "${table}" LIMIT 1`]);
+    const after = psql(RUN_DB, ['-At', '-c', `SELECT ctid FROM "${table}" ORDER BY ctid LIMIT 1`]);
     if (!after.ok || after.output.trim() === '') {
       return { failed: 'the probe row planted and then could not be found' };
     }
