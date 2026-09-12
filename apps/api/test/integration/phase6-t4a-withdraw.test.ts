@@ -2118,15 +2118,11 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       await wipeDecisionEvents(t.prisma, { id: 'r15-lev' });
       await expect(t.prisma.$executeRawUnsafe('TRUNCATE "DecisionEvent"'))
         .rejects.toThrow(/attributable audit register and is never truncated/);
-      // and the sanctioned path still reaches the table: BOTH seals off, which is what
-      // `TRUNCATE_SEALS` now carries for it.
-      await t.prisma.$transaction(async (tx) => {
-        await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4a_no_truncate"');
-        await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_no_truncate"');
-        await tx.$executeRawUnsafe('TRUNCATE "DecisionEvent"');
-        await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_no_truncate"');
-        await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4a_no_truncate"');
-      }, { timeout: 60_000, maxWait: 30_000 });
+      // and the sanctioned path still reaches the table — THROUGH THE SHARED HELPER, which is the
+      // whole reason `TRUNCATE_SEALS` exists: adding this round's seal is one registry entry, not
+      // a hand-rolled disable in every suite that truncates. `sanctioned-reset-coverage` refuses
+      // the hand-rolled form, and it is right to.
+      await sanctionedReset(t.prisma, ['DecisionEvent']);
     });
 
     // R15-F4 — the touch-note guard was row-level only: one transaction could edit a published

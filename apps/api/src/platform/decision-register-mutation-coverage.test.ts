@@ -78,6 +78,11 @@ const COVERAGE: Record<string, Class> = {
   'test/integration/phase6-t4a-withdraw.test.ts': 'the withdrawal suite: its audit deletes go through wipeDecisionEvents; the notice deletes are scoped teardown',
   'test/integration/phase6-t4b-approval-attribution.test.ts': 'audit deletes through wipeDecisionEvents',
   'test/integration/phase6-t4b-decider.test.ts': 'audit deletes through wipeDecisionEvents; notice deletes scoped teardown',
+  // #582's review round 24. The seal-stripped harness disables `DecisionEvent` seals BY NAME
+  // inside one psql transaction, on a SCRATCH database it builds and drops itself — never the
+  // shared one. It is here because the claim this tripwire makes is the ENUMERATION: a file
+  // that hand-disables must be visible, whichever database it points at.
+  'test/integration/phase6-t4d-i-seal-stripped.test.ts': 'scratch-database probe: disables a no-truncate seal by name, in one transaction, to prove the sanctioned bypass still reaches the register',
   'test/integration/phase6-t4c-ii-consultation.test.ts': 'audit deletes through wipeDecisionEvents; notice deletes scoped teardown',
   'test/integration/platform-command-receipt.test.ts': 'scoped notice teardown; no DELETE seal on Notification',
   'test/integration/start-readiness-race.test.ts': 'scoped notice teardown; no DELETE seal on Notification',
@@ -120,9 +125,17 @@ describe('phase 6 unit 4d-i — every mutation of a sealed decision register is 
     // The converse arm, and it is not symmetry for its own sake: a classification left behind
     // after its statement was removed makes the list look complete while covering nothing, and
     // the next reader trusts it.
-    const stale = Object.keys(COVERAGE).filter(
-      (f) => !MUTATIONS.test(readFileSync(join(API, f), 'utf8')),
-    );
+    // EITHER of the two things this list covers (#582's review round 24). The arm below classifies
+    // hand-DISABLES as well as mutations, and the two sets are not the same: the seal-stripped
+    // harness disables a no-truncate seal by name on its own scratch database and mutates nothing.
+    // Asking only about mutations called its classification stale while the disable it describes
+    // was still there — which would have pushed the next reader to delete the entry and leave that
+    // disable unclassified, the exact silence the arm below exists to refuse. A classification is
+    // stale when the file does NEITHER.
+    const stale = Object.keys(COVERAGE).filter((f) => {
+      const src = readFileSync(join(API, f), 'utf8');
+      return !MUTATIONS.test(src) && !HAND_DISABLE.test(src);
+    });
     expect(stale, 'these classifications no longer describe any statement — remove them').toEqual([]);
   });
 
