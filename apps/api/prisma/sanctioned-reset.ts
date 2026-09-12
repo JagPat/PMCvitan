@@ -58,6 +58,13 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   { table: 'DecisionProjection', trigger: 'DecisionProjection_4c_iiir_writer_fence_truncate' },
   { table: 'Decision', trigger: 'Decision_t4b_no_truncate' },
   { table: 'DecisionEvent', trigger: 'DecisionEvent_t4a_no_truncate' },
+  // Phase 6 unit 4d-i (#582's review round 24, finding 2) — the UNCONDITIONAL arm beside the
+  // delivered one. `DecisionEvent_t4a_no_truncate` refuses only while an `approved`/`reapproved`
+  // row exists, which was a rule about approval evidence written before this register carried the
+  // change, forward, countersign and stranded kinds 4d fills it with. Both must be disabled for a
+  // reset to reach the table: the delivered seal for a register that holds approvals, this one for
+  // a register that holds anything.
+  { table: 'DecisionEvent', trigger: 'DecisionEvent_t4d_no_truncate' },
   { table: 'DecisionLegacyApproval', trigger: 'DecisionLegacyApproval_no_truncate' },
   { table: 'DecisionOption', trigger: 'DecisionOption_t4b2_no_truncate' },
   { table: 'DecisionOptionKind', trigger: 'DecisionOptionKind_no_truncate' },
@@ -99,6 +106,11 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   // truncated together with `DomainEvent` — a claim outliving its event would refuse the next
   // fact that legitimately claims a reused id.
   { table: 'DomainEventPairingClaim', trigger: 'DomainEventPairingClaim_t4d_no_truncate' },
+  // Phase 6 unit 4d-i (#582's review round 24, the sweep behind finding 2) — the STREAM. Every
+  // 4d correspondence, claim and actor binding is a statement about a row in it, judged once at
+  // write time, and the derived registers around it (`Notification`, the claim table,
+  // `ProjectEventStream`) were all sealed against a wipe while the stream itself was not.
+  { table: 'DomainEvent', trigger: 'DomainEvent_t4d_no_truncate' },
   { table: 'ExternalEffectCatalog', trigger: 'ExternalEffectCatalog_t4d_no_truncate' },
   { table: 'Notification', trigger: 'Notification_t4d_no_truncate' },
   { table: 'ReleaseLease', trigger: 'ReleaseLease_t4d_no_truncate' },

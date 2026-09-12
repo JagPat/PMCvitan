@@ -1291,7 +1291,17 @@ BEGIN
   -- value permanent. So the birth set is frozen against ANY update — value, NULL, or blank alike:
   -- a legacy row keeps its NULLs, and a row that owes provenance supplies it at INSERT where the
   -- seals can judge it.
+  --
+  -- AND THE SET INCLUDES THE PERSON IT IS ABOUT (#582's review round 24, finding 4). The three
+  -- columns below are the ones this unit ADDED, and `requestedById` — the DELIVERED column naming
+  -- the requester the frozen pair describes — was in neither this set nor the resolver set below.
+  -- A freeze over the evidence and not over its subject is not a freeze: a direct update swaps
+  -- `requestedById` to somebody else while the immutable role and name still describe the original
+  -- requester, and the row then permanently names one person and vouches for another. The
+  -- delivered `ChangeRequest_t4b2_seal` freezes `decisionId` alone, so nothing else was holding
+  -- it. (A legacy row's NULL stays NULL by the same rule that governs the rest of this set.)
   IF NEW."sourceCommandId" IS DISTINCT FROM OLD."sourceCommandId" THEN v_col := 'sourceCommandId';
+  ELSIF NEW."requestedById" IS DISTINCT FROM OLD."requestedById" THEN v_col := 'requestedById';
   ELSIF NEW."requestedByRole" IS DISTINCT FROM OLD."requestedByRole" THEN v_col := 'requestedByRole';
   ELSIF NEW."requestedByName" IS DISTINCT FROM OLD."requestedByName" THEN v_col := 'requestedByName';
   END IF;
@@ -1303,7 +1313,19 @@ BEGIN
 
   -- The resolver set closes ONCE: NULL -> value is the closure, and value -> anything else
   -- (value -> NULL included) is a rewrite of who closed it.
+  --
+  -- `resolvedById` IS IN THE SET (#582's review round 24, finding 4) — the same omission as the
+  -- birth side, one act later, and the one Codex named. Everything a closure freezes is evidence
+  -- ABOUT the resolver: the receipt that was run by them, the role they held, the name they went
+  -- by. The column saying WHO is the delivered one, and it was the only part still writable. So
+  -- after a valid closure attributing the act to A, a direct update set `resolvedById` to B and
+  -- touched nothing else: the three clauses here saw no change, the closure binding fires only on
+  -- `resolvedByCommandId` going NULL -> value, and the delivered t4b seal freezes `decisionId`.
+  -- The row commits permanently self-contradicting, and no later seal re-examines a closed request.
+  -- One-way, exactly like the rest of the set, so the drain shape — a previous-release closure
+  -- writing `resolvedById` alone onto an open request — stays admitted.
   IF OLD."resolvedByCommandId" IS NOT NULL AND NEW."resolvedByCommandId" IS DISTINCT FROM OLD."resolvedByCommandId" THEN v_col := 'resolvedByCommandId';
+  ELSIF OLD."resolvedById" IS NOT NULL AND NEW."resolvedById" IS DISTINCT FROM OLD."resolvedById" THEN v_col := 'resolvedById';
   ELSIF OLD."resolvedByRole" IS NOT NULL AND NEW."resolvedByRole" IS DISTINCT FROM OLD."resolvedByRole" THEN v_col := 'resolvedByRole';
   ELSIF OLD."resolvedByName" IS NOT NULL AND NEW."resolvedByName" IS DISTINCT FROM OLD."resolvedByName" THEN v_col := 'resolvedByName';
   END IF;
@@ -2623,6 +2645,38 @@ CREATE TRIGGER "DecisionEvent_t4d_append_only"
   BEFORE UPDATE OR DELETE ON "DecisionEvent"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_decision_event_append_only();
 
+-- AND ROW-LEVEL IMMUTABILITY THAT A WHOLE-TABLE STATEMENT WALKS PAST IS NOT IMMUTABILITY
+-- (#582's review round 24, finding 2).
+--
+-- The trigger above is a ROW trigger, and TRUNCATE fires no row triggers. The only truncate seal
+-- this table carried was the DELIVERED `DecisionEvent_t4a_no_truncate`, which refuses while an
+-- `approved` or `reapproved` row exists and permits the wipe otherwise — a rule about APPROVAL
+-- evidence, written before this register carried any other kind. 4d-i fills it with kinds that
+-- are evidence in exactly the same sense: `change_requested`, `change_withdrawn`, `forwarded`,
+-- `countersigned`, `stranded_resolved`, `countersign_renotified`. A database holding those and no
+-- approval could be erased whole, taking with it the correspondence, claim and actor bindings
+-- this unit spends its length installing.
+--
+-- UNCONDITIONAL, because the condition is what failed: a seal that asks what the table contains
+-- before refusing is a seal whose coverage depends on the attack's timing. `ProjectEventStream`,
+-- `ChangeRequest`, `Notification` and the three decision facts all carry the unconditional shape
+-- already; this is the register they all point at, and it was the one left conditional.
+--
+-- Its own message rather than `phase6_t4d_fact_no_truncate`'s, because this table is not one of
+-- the unit's fact tables — it is the DELIVERED audit register, with a delivered seal beside it
+-- and a sanctioned reset that has always truncated it. That reset keeps working the way §A.3 says
+-- it must: by name, through `TRUNCATE_SEALS` in `prisma/sanctioned-reset.ts`, alongside the
+-- delivered t4a seal it must already disable.
+CREATE OR REPLACE FUNCTION phase6_t4d_decision_event_no_truncate() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION
+    'phase6 4d-i: "DecisionEvent" is the attributable audit register and is never truncated — the append-only seal is a ROW trigger and does not fire for TRUNCATE, so a wipe would erase exactly the evidence it protects, whether or not an approval row is present. The sanctioned reset (prisma/sanctioned-reset.ts TRUNCATE_SEALS) disables this trigger BY NAME.';
+END $$;
+
+DROP TRIGGER IF EXISTS "DecisionEvent_t4d_no_truncate" ON "DecisionEvent";
+CREATE TRIGGER "DecisionEvent_t4d_no_truncate" BEFORE TRUNCATE ON "DecisionEvent"
+  FOR EACH STATEMENT EXECUTE FUNCTION phase6_t4d_decision_event_no_truncate();
+
 -- ── the re-notification's CLAIM ──────────────────────────────────────────────────────────────
 -- §A.3 obligation 7 needs exactly ONE claimant per pairing-required event, and the plan names
 -- this branch's claimant as the `countersign_renotified` AUDIT ROW itself (#572's review round
@@ -2712,7 +2766,47 @@ BEGIN
     WHEN NEW."type" = 'countersign_renotified'                             THEN ARRAY['decision.awaiting_countersign']
     ELSE NULL
   END;
-  IF v_required IS NULL THEN RETURN NULL; END IF;
+
+  -- AN UNLISTED PAIR IS NOT AN UNGOVERNED ONE (#582's review round 24, finding 1).
+  --
+  -- `ELSE NULL` followed by `RETURN NULL` read as "this pair is outside the correspondence", and
+  -- for the previous-release kinds that is true — `issued`, `withdrawn`, `recorded` and
+  -- `draft_updated` record acts 4d states no obligation for, and a seal that refused them would
+  -- refuse the shipped writers. For the kinds this unit DOES govern it was a hole with the table's
+  -- own shape: every pair the table lists is checked, and every pair it does not list is waved
+  -- through. Round 15 reserved the four 4d-ONLY kinds, which closed it for those and left the
+  -- ordinary ones — `approved`, `reapproved`, `change_requested`, `change_withdrawn` — reachable
+  -- in any status the table happens not to pair them with.
+  --
+  -- What that admits: a standalone `approved` audit row beside a `pending` decision. No
+  -- transition, no event, no revision; every count above is skipped because `v_required` is NULL;
+  -- `DecisionEvent_t4d_append_only` then makes the row permanent, and the next REAL approval
+  -- counts it in `priorApprovals` and stamps the immutable revision with an inflated version.
+  --
+  -- So the governed kinds are named, and an unlisted pair among them is REFUSED rather than
+  -- skipped. This is the shape `phase6_t4d_provenance_bound` already uses for its own undeclared
+  -- table — "a fact whose expected provenance nobody stated is a fact nothing is checking" — said
+  -- here about a pair rather than a table.
+  --
+  -- THE WHOLE ESCAPE INVENTORY, since the defect is "a branch that RETURNS where it should
+  -- REFUSE". Five other early exits exist in this unit and each was read: the two `ELSE NULL`
+  -- arms in `phase6_t4d_provenance_bound` (both already followed by an explicit RAISE — the
+  -- pattern this one was missing); the re-notification claim's two (`v_project`, `v_event`), which
+  -- DELEGATE in writing to `DecisionEvent_t4d_correspondence` and the seal that owes the message;
+  -- and the consultation pair's `v_role IS NULL`, which is the legacy all-null shape its CHECK
+  -- admits. The `v_status IS NULL` guard above is unreachable rather than permissive — a
+  -- `DecisionEvent` row cannot name a decision that does not exist, its foreign key says so — and
+  -- is kept as a defensive read, not as a rule.
+  IF v_required IS NULL THEN
+    IF NEW."type" IN ('approved', 'reapproved', 'countersigned', 'stranded_resolved',
+                      'change_requested', 'change_withdrawn', 'forwarded',
+                      'countersign_renotified') THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: the `%` audit row for decision % commits with the decision `%`, and this unit states no correspondence rule for that pair — a governed audit kind in a state its own table does not admit records an act that cannot have happened, and the append-only seal is about to make it permanent',
+        NEW."type", NEW."decisionId", v_status;
+    END IF;
+    RETURN NULL;
+  END IF;
 
   -- Through the KERNEL PRIMITIVE, which is what makes "in this transaction" true of the query and
   -- not only of the message (Codex round 1, finding 2). An unscoped existence check let an

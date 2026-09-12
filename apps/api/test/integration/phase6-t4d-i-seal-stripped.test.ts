@@ -2583,6 +2583,213 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
   }, 180_000);
 
   /**
+   * #582's review round 24, finding 1 — AN UNLISTED PAIR IS NOT AN UNGOVERNED ONE.
+   *
+   * The correspondence table is keyed by (audit kind, the status the decision committed in), and
+   * its `ELSE NULL` returned unchecked. Round 15 reserved the four 4d-ONLY kinds, which closed the
+   * hole for those; every ORDINARY kind still fell through whenever its decision ended in a status
+   * the table does not list. A standalone `approved` audit row beside a `pending` decision — no
+   * transition, no event, no revision — therefore committed, `DecisionEvent_t4d_append_only` froze
+   * it, and the next real approval counts it in `priorApprovals` and hands the immutable revision
+   * an inflated version.
+   *
+   * Two-sided, because the ungoverned kinds are real: `issued`, `withdrawn`, `recorded`,
+   * `draft_updated` are previous-release audit kinds with no 4d correspondence obligation, and a
+   * seal that refused them would refuse the shipped writers.
+   */
+  it('an audit kind this unit governs is refused in a state its table does not admit', () => {
+    buildRun([]);
+
+    // ss-dec is `pending`: no arm of the table pairs `approved` with `pending`
+    const stray = psql(RUN_DB, ['-c',
+      `INSERT INTO "DecisionEvent" ("id","decisionId","type","actor")
+         VALUES ('ss-de-stray','ss-dec','approved','X')`]);
+    expect(
+      stray.ok,
+      'a standalone `approved` audit row beside a `pending` decision must be REFUSED — nothing '
+      + 'approved anything, the append-only seal is about to make the row permanent, and the next '
+      + `real approval counts it:\n${stray.output}`,
+    ).toBe(false);
+    expect(stray.output).toMatch(/no correspondence rule/);
+
+    // AND THE UNGOVERNED KINDS STILL COMMIT. `issued` is a previous-release audit kind this unit
+    // states no obligation for, and a seal that refused it would refuse the shipped writer.
+    const ordinary = psql(RUN_DB, ['-c',
+      `INSERT INTO "DecisionEvent" ("id","decisionId","type","actor")
+         VALUES ('ss-de-ord','ss-dec','issued','X')`]);
+    expect(
+      ordinary.ok,
+      `a previous-release audit kind must still COMMIT:\n${ordinary.output}`,
+    ).toBe(true);
+  }, 180_000);
+
+  /**
+   * #582's review round 24, finding 2 — THE REGISTER IS APPEND-ONLY ROW BY ROW AND TRUNCATABLE
+   * WHOLE.
+   *
+   * This unit makes every `DecisionEvent` row immutable through row-level UPDATE/DELETE triggers.
+   * TRUNCATE fires neither. The only truncate seal on the table is the DELIVERED
+   * `DecisionEvent_t4a_no_truncate`, which refuses only while an `approved` or `reapproved` row
+   * exists — so a register holding `change_requested`, `change_withdrawn`, `forwarded` or
+   * `countersign_renotified` rows and no approval could be erased whole, taking with it exactly
+   * the evidence this unit's correspondence seals spent four rounds binding.
+   *
+   * Two-sided against the SANCTIONED RESET, which is the reason this seal must be nameable: the
+   * harness and the seed truncate this table by contract, and they do it by disabling the seal by
+   * name.
+   */
+  it('the audit register cannot be truncated whole, approval rows present or not', () => {
+    buildRun([]);
+
+    // a register with NO approval row — exactly the shape the delivered t4a seal permits
+    expect(psql(RUN_DB, ['-c',
+      `INSERT INTO "DecisionEvent" ("id","decisionId","type","actor")
+         VALUES ('ss-de-tr','ss-dec','issued','X')`]).ok).toBe(true);
+
+    const wiped = psql(RUN_DB, ['-c', `TRUNCATE "DecisionEvent"`]);
+    expect(
+      wiped.ok,
+      'TRUNCATE of the audit register must be REFUSED even with no approval row present — row-level '
+      + `immutability that a whole-table statement walks past is not immutability:\n${wiped.output}`,
+    ).toBe(false);
+    expect(wiped.output).toMatch(/attributable audit register/);
+
+    // AND THE SANCTIONED RESET STILL WORKS, by name. Forty-odd shared-database resets truncate
+    // this table by contract; a seal with no nameable bypass would break every one of them.
+    const sanctioned = psql(RUN_DB, ['-c', `
+      BEGIN;
+      ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_no_truncate";
+      ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4a_no_truncate";
+      TRUNCATE "DecisionEvent";
+      ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4a_no_truncate";
+      ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_no_truncate";
+      COMMIT;
+    `]);
+    expect(
+      sanctioned.ok,
+      `the sanctioned reset must still truncate the register:\n${sanctioned.output}`,
+    ).toBe(true);
+
+    // AND THE STREAM, which is where the sweep behind this finding landed. `DomainEvent` carries
+    // four row triggers — two delivered, two this unit's — and carried no statement-level arm,
+    // while every register derived from it (`Notification`, `DomainEventPairingClaim`,
+    // `ProjectEventStream`) was already sealed against a wipe.
+    const stream = psql(RUN_DB, ['-c', `TRUNCATE "DomainEvent" CASCADE`]);
+    expect(
+      stream.ok,
+      'TRUNCATE of the delivery stream must be REFUSED — every 4d correspondence, claim and actor '
+      + 'binding is a statement about a row in it, judged once at write time and never again:\n'
+      + `${stream.output}`,
+    ).toBe(false);
+    expect(stream.output).toMatch(/delivery stream/);
+  }, 180_000);
+
+  /**
+   * #582's review round 24, finding 3 — THE NOTICE'S EVENT IS THIS TRANSACTION'S TOO.
+   *
+   * "The receipt is THIS transaction's" is a rule this PR has now applied four times — to the
+   * kernel's event lookup (round 1, finding 2), to the decision facts' receipts (round 4, finding
+   * 3), to the change request's birth receipt (round 20) and to its closure receipt (round 22).
+   * The notice's EVENT was never brought into it: the binding resolved the referenced
+   * `DomainEvent` by identity alone, so a direct writer could bind a kinded notice to an event
+   * from any past transaction, satisfy the kind and entity clauses, and leave a fabricated
+   * duplicate feed item that `Notification_t4d_binding` immediately makes undeletable — and the
+   * notification converse, which runs from the EVENT side, never revisits a row already there.
+   *
+   * Two-sided: the bundle 4d-ii actually writes — event and notice in one transaction — commits.
+   * No shipped writer sets `eventId` at all (the column is dark until 4d-ii), so nothing in this
+   * release can be refused by the new demand.
+   */
+  it('a kinded notice names an event THIS transaction emitted, not one lying in the stream', () => {
+    buildRun([]);
+
+    // `ss-ev1` is the fixture's own committed `decision.published` event — real, same project,
+    // and from an earlier transaction, which is the whole point.
+    const borrowed = psql(RUN_DB, ['-c',
+      `INSERT INTO "Notification" ("id","projectId","text","color","time","kind","eventId","decisionId")
+         VALUES ('ss-note-old','ss-proj','borrowed','#000','just now','decision.published','ss-ev1','ss-dec')`]);
+    expect(
+      borrowed.ok,
+      'a kinded notice bound to an event from an EARLIER transaction must be REFUSED — the notice '
+      + 'is part of the act\'s bundle, and one minted against old history is a feed item for an '
+      + `announcement that already happened:\n${borrowed.output}`,
+    ).toBe(false);
+    expect(borrowed.output).toMatch(/EARLIER transaction/);
+
+    // AND THE BUNDLE COMMITS: allocate, emit, bind — one transaction, which is what 4d-ii writes.
+    const bundle = psql(RUN_DB, ['-c', `
+      BEGIN;
+      UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+      INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+        SELECT 'ss-ev-note','decision.published',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec',
+               jsonb_build_object('effectKey','decision.published','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
+                                  'push', jsonb_build_object('body','ss','roles', jsonb_build_array('client')))
+          FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+         WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.published'
+           AND c."coverageVersion" = '${COVERAGE}';
+      INSERT INTO "Notification" ("id","projectId","text","color","time","kind","eventId","decisionId")
+        VALUES ('ss-note-new','ss-proj','bundled','#000','just now','decision.published','ss-ev-note','ss-dec');
+      COMMIT;
+    `]);
+    expect(bundle.ok, `the same-transaction bundle must COMMIT:\n${bundle.output}`).toBe(true);
+  }, 180_000);
+
+  /**
+   * #582's review round 24, finding 4 — THE FREEZE COVERED THE COLUMNS THIS UNIT ADDED AND NOT THE
+   * ONE THEY ARE ABOUT.
+   *
+   * `ChangeRequest`'s evidence freeze guards `sourceCommandId` and the requester pair at birth,
+   * and the receipt and resolver pair at closure. `requestedById` and `resolvedById` — the two
+   * DELIVERED columns naming the people the frozen evidence describes — were in neither set. So
+   * after a valid closure attributing the act to A, a direct update swaps `resolvedById` to B
+   * while the immutable receipt, role and name still describe A: the delivered t4b seal freezes
+   * `decisionId` alone, and the closure binding fires only on `resolvedByCommandId` going
+   * NULL -> value, which this update does not touch. The row then permanently contradicts itself.
+   *
+   * BOTH SIDES, because it is one class and the birth side is the same shape: Codex named the
+   * closure, and the requester is the identical omission one act earlier.
+   */
+  it('the requester and resolver a change request NAMES are frozen with the evidence about them', () => {
+    buildRun([]);
+
+    // a legitimate birth, pair and all
+    expect(psql(RUN_DB, ['-c',
+      `INSERT INTO "ChangeRequest" ("id","decisionId","projectId","reason","costImpact","timeImpactDays","status","requestedById","requestedByRole","requestedByName")
+         VALUES ('ss-cr-id','ss-dec','ss-proj','who asked',0,0,'open','ss-user','pmc','SS User')`]).ok).toBe(true);
+
+    const reQuester = psql(RUN_DB, ['-c',
+      `UPDATE "ChangeRequest" SET "requestedById" = 'ss-client' WHERE "id" = 'ss-cr-id'`]);
+    expect(
+      reQuester.ok,
+      'swapping `requestedById` under a frozen requester pair must be REFUSED — the pair is '
+      + `immutable evidence ABOUT that person, and the row would name someone else:\n${reQuester.output}`,
+    ).toBe(false);
+    expect(reQuester.output).toMatch(/at its BIRTH and it may not be written, replaced or cleared/);
+
+    // a legitimate closure, receipt and pair and all
+    expect(psql(RUN_DB, ['-c', `
+      BEGIN;
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('ss-cmd-id','project','ss-org','ss-proj','ss-user','decisions.withdrawChange','ss-key-id','ss-hash-id','reserved');
+      UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec' WHERE "id" = 'ss-cmd-id';
+      UPDATE "ChangeRequest" SET "resolvedByCommandId" = 'ss-cmd-id', "resolvedById" = 'ss-user',
+             "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn'
+       WHERE "id" = 'ss-cr-id';
+      COMMIT;
+    `]).ok).toBe(true);
+
+    const reSolver = psql(RUN_DB, ['-c',
+      `UPDATE "ChangeRequest" SET "resolvedById" = 'ss-client' WHERE "id" = 'ss-cr-id'`]);
+    expect(
+      reSolver.ok,
+      'swapping `resolvedById` under a frozen receipt and resolver pair must be REFUSED — the '
+      + 'receipt was run by one person and the row would name another, permanently and with '
+      + `nothing left that can re-examine it:\n${reSolver.output}`,
+    ).toBe(false);
+    expect(reSolver.output).toMatch(/already records .* as provenance|the person the frozen/);
+  }, 180_000);
+
+  /**
    * #582's review round 9, finding 2 — A PRE-BASELINE CATALOG ROW THAT DISAGREES WITH THE LITERAL.
    *
    * Round 8 made this WORSE before round 9 fixed it: the outgoing-generation copy read the REAL

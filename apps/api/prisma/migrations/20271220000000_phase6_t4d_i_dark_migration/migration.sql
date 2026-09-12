@@ -3330,12 +3330,52 @@ BEGIN
     RETURN NULL;
   END IF;
 
-  SELECT "projectId", "entityType", "entityId", "eventType" INTO e FROM "DomainEvent"
+  SELECT "projectId", "entityType", "entityId", "eventType",
+         "xmin" = txid_current()::text::xid AS "eventThisTx" INTO e FROM "DomainEvent"
    WHERE "projectId" = NEW."projectId" AND "eventId" = NEW."eventId";
   IF NOT FOUND THEN
     RAISE EXCEPTION
       'phase6 4d-i: notice % names event %, which does not exist in project % at commit',
       NEW."id", NEW."eventId", NEW."projectId";
+  END IF;
+
+  -- AND THE EVENT IS THIS TRANSACTION'S (#582's review round 24, finding 3).
+  --
+  -- "The thing you cite was written by the act you are claiming" is a rule this PR has applied
+  -- four times — to the kernel's event lookup (round 1, finding 2), to the decision facts'
+  -- receipts (round 4, finding 3), to the change request's birth receipt (round 20, finding 1)
+  -- and to its closure receipt (round 22, finding 2). Every one of those was a lookup by identity
+  -- that a committed row from any past transaction satisfied. This binding was the same shape and
+  -- was not swept with them: it resolved the referenced `DomainEvent` by project and id alone.
+  --
+  -- What that admits, from 4d-ii: a direct writer picks any past `decision.approved` event, mints
+  -- a second kinded notice for it, and the kind, entity and project clauses all pass because they
+  -- are true — the event really is that type, about that decision, in that project. The one-notice
+  -- unique key does not save it either, since the genuine notice for an old event may have been
+  -- retired. `Notification_t4d_binding` then makes the fabricated feed item undeletable and
+  -- immutable, and the notification converse runs from the EVENT side — it asks whether each new
+  -- event has its notice, never whether an existing notice earned its event.
+  --
+  -- A notice is part of its act's BUNDLE (§A.3 obligation 7), so the event it names is the one the
+  -- bundle emitted. No shipped writer is touched: `eventId` and `kind` are dark until 4d-ii — the
+  -- delivered services create kindless, eventless notices inside their command transaction — and
+  -- the bundle 4d-ii writes emits the event and binds the notice in one transaction by
+  -- construction. A path that legitimately needs to mint a notice for older history declares
+  -- itself the way every other import in this unit does, by disabling this trigger by name.
+  --
+  -- AND THE CITATION INVENTORY IS NOW WHOLE. A seal in this unit resolves another row for one of
+  -- two reasons, and only one of them takes this rule. PROVENANCE CITATIONS — "the act I am
+  -- judging produced that row" — are four: the membership transition's receipt, the decision
+  -- facts' receipt, the change request's birth receipt and its closure receipt, all of which
+  -- already demand `xmin = txid_current()`, and this event, which is the fourth kind of citation
+  -- and the one that was left out. STATE READS — "what does this row currently say" — are the
+  -- rest (a decision's status and publication, a revision's finality, a consultation's cycle), and
+  -- a same-transaction demand would be WRONG for every one of them: the state a seal judges
+  -- against is precisely the state earlier transactions left behind.
+  IF NOT COALESCE(e."eventThisTx", FALSE) THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: notice % names event %, which was emitted by an EARLIER transaction — a kinded notice is part of the bundle that announced its act, and one minted against history announces an act that was already announced, permanently and past the reach of the converse seal',
+      NEW."id", NEW."eventId";
   END IF;
 
   -- THE KIND IS THE EVENT'S TYPE (#582's review round 7, finding 5). §A.3 obligation 7 states it
@@ -3399,6 +3439,38 @@ END $$;
 DROP TRIGGER IF EXISTS "Notification_t4d_no_truncate" ON "Notification";
 CREATE TRIGGER "Notification_t4d_no_truncate" BEFORE TRUNCATE ON "Notification"
   FOR EACH STATEMENT EXECUTE FUNCTION platform_t4d_notification_no_truncate();
+
+-- AND THE STREAM ITSELF (#582's review round 24, the class sweep behind finding 2).
+--
+-- That finding is about `DecisionEvent`: a register made immutable row by row, with TRUNCATE
+-- walking past every row trigger. The sweep asked the same question of every table this unit seals
+-- row-wise, and `DomainEvent` was the one other answer — the DELIVERY STREAM, carrying
+-- `DomainEvent_append_only`, `DomainEvent_seal_requires_intent` and this unit's own
+-- `DomainEvent_t4d_envelope` and `DomainEvent_t4d_pairing_claimed`, and not one statement-level
+-- arm among them. It is also the table with the most to lose: every correspondence, claim and
+-- actor binding 4d-i installs is a statement about an event in this stream, checked once when the
+-- row is written and never again. A wipe leaves each of those bindings pointing at nothing, with
+-- the audit rows they bound still immutable and still claiming an announcement was made.
+--
+-- Its neighbours were already sealed — `Notification` above, `DomainEventPairingClaim`,
+-- `ProjectEventStream` — which is what makes the omission visible: the derived registers are all
+-- protected from a wipe and the thing they derive from was not. `User` is the remaining table this
+-- unit touches with a row trigger and no truncate arm, and it is deliberately left alone: that
+-- trigger is a RESERVATION DOOR on `role`, not an evidence seal, and a wipe of the user table
+-- erases no claim this unit makes.
+--
+-- The sanctioned reset truncates this stream by contract — `fixtures.ts` names it with
+-- `OutboxDelivery`, `ProcessedEvent` and `ProjectionCursor` — so the seal joins `TRUNCATE_SEALS`
+-- in the same change, which is the whole reason that registry exists.
+CREATE OR REPLACE FUNCTION platform_t4d_domain_event_no_truncate() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION
+    'phase6 4d-i: "DomainEvent" is the delivery stream every 4d correspondence, claim and actor binding is written against, and it is never truncated — those seals judge a row once, at write time, so a wipe leaves each of them pointing at nothing while the immutable audit rows they bound still claim the announcement was made. The sanctioned reset (prisma/sanctioned-reset.ts TRUNCATE_SEALS) disables this trigger BY NAME.';
+END $$;
+
+DROP TRIGGER IF EXISTS "DomainEvent_t4d_no_truncate" ON "DomainEvent";
+CREATE TRIGGER "DomainEvent_t4d_no_truncate" BEFORE TRUNCATE ON "DomainEvent"
+  FOR EACH STATEMENT EXECUTE FUNCTION platform_t4d_domain_event_no_truncate();
 
 -- ── the catalog's own seals ──────────────────────────────────────────────────────────────────
 -- The catalog is what the pairing, envelope and transition seals READ, so whoever can change a
