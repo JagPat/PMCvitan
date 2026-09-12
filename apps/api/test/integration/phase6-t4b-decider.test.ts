@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { wipeDecisionEvents } from './fixtures';
+import { wipeDecisionEvents, plantLegacyDecisionAudit } from './fixtures';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
@@ -200,8 +200,14 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     });
     expect(draftRes.status).toBe(201);
     const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId, title: 'Plant-then-convert' } });
-    // plant an approval-shaped DecisionEvent while the head is still 'pending' (no reverse seal fires)
-    await t.prisma.decisionEvent.create({ data: { decisionId: d.id, type: 'approved', actor: 'X', actorName: 'X', actorRole: 'pmc' } });
+    // plant an approval-shaped DecisionEvent while the head is still 'pending' (no reverse seal
+    // fires) — through the NAMED bypass since #582's review round 24, finding 1: the
+    // correspondence refuses a governed audit kind in a state its table does not pair it with, and
+    // (`approved`, `pending`) is exactly the plant this arm needs. The refusal is the finding; the
+    // arm is about what the RECORDED-entry seal does with such evidence once it exists, so the
+    // plant declares itself rather than the arm losing its subject.
+    await plantLegacyDecisionAudit(t.prisma, (tx) =>
+      tx.decisionEvent.create({ data: { decisionId: d.id, type: 'approved', actor: 'X', actorName: 'X', actorRole: 'pmc' } }));
     // the ENTRY into `recorded` verifies zero approval children — the conversion is refused
     await expect(
       t.prisma.$executeRawUnsafe(`UPDATE "Decision" SET "deciderKind" = 'none', "status" = 'recorded', "photoSwatch" = NULL WHERE "id" = '${d.id}'`),
