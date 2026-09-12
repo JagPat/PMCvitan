@@ -1422,55 +1422,84 @@ BEGIN
                                      NEW."resolvedByName", 'ChangeRequest ' || NEW."id");
     END IF;
 
-    -- ── WHEN IS NOT WHAT (#582's review round 30) ─────────────────────────────────────────────
-    --
-    -- Everything above this point governs the MOMENT a closure's values may be written: round 27
-    -- made the fill question cover the whole resolver set, and round 26 froze the set afterwards.
-    -- Not one clause asks whether the values WRITTEN AT THAT MOMENT AGREE WITH EACH OTHER, and the
-    -- freeze then makes whatever landed permanent. That is a rule about timing standing in for a
-    -- rule about truth, and it is the same shape as every round from 18 on: the inventory of
-    -- questions a closure owes was implemented over a subset of itself.
-    --
-    -- THE INVENTORY, so the next value added here is visibly owed an answer. A closure writes six
-    -- things, and each is either bound to something outside itself or named below as unbound:
-    --
-    --   · `resolvedById` + `resolvedByRole`/`Name` — bound, by `phase6_t4d_actor_bound` above.
-    --   · `resolvedByCommandId`                    — bound, by the closure-receipt seal that
-    --                                                follows this function.
-    --   · `status` + `resolution`                  — UNBOUND until now. Codex's finding.
-    --   · `resolvedAt`                             — UNBOUND until now. Its SIBLING, found by
-    --                                                asking the same question of the other value
-    --                                                the closure stamps.
-    --
-    -- (1) STATUS AND OUTCOME ARE ONE FACT IN TWO COLUMNS. The deployed release closes a request in
-    -- exactly two shapes — `decisions.service.ts` line 496 writes `resolved`/`reapproved`, and line
-    -- 930 writes `withdrawn`/`withdrawn` — so any other combination describes a closure no command
-    -- performs. A direct writer that closes with `resolved`/`withdrawn` leaves a row whose status
-    -- says the change was accepted and whose outcome says it was abandoned, permanently, with a
-    -- genuine actor pair vouching for it; the update-time seal never revisits a closed row.
-    IF NEW."resolution" IS NOT NULL
-       AND NOT ((NEW."status" = 'resolved'  AND NEW."resolution" = 'reapproved')
-             OR (NEW."status" = 'withdrawn' AND NEW."resolution" = 'withdrawn')) THEN
+  END IF;
+
+  -- ── THE REQUEST'S LIFECYCLE, GOVERNED ONCE (#582's review round 31) ───────────────────────
+  --
+  -- Round 30 put two rules about WHAT a closure says INSIDE the branch that governs WHEN its
+  -- values may be written, and Codex found three holes in that placement within one round:
+  --
+  --   · a later status-only update touches no resolver column, so the outer branch is false and
+  --     neither rule ran — `resolved`/`reapproved` could become `withdrawn`, or `open`, with the
+  --     outcome frozen and now contradicting it, and a reopened request STRANDED because its
+  --     frozen resolver fields can never take part in another closure;
+  --   · the agreement rule was guarded by `NEW."resolution" IS NOT NULL`, so a closure that simply
+  --     OMITS the outcome skipped it — and that row cannot be repaired afterwards, because filling
+  --     the outcome later is refused once the row has left `open`;
+  --   · the moment was bounded below by the request's own birth rather than by this transaction,
+  --     so a request opened in January and closed in September could be stamped August.
+  --
+  -- Three holes, one cause: a rule about WHAT, written inside a branch scoped to WHEN. That is
+  -- round 27's defect exactly, committed inside the fix for it. So this is no longer a clause
+  -- bolted to the freeze — the request has three states and two legal moves, and this section
+  -- states the whole machine at function level where every UPDATE reaches it.
+  --
+  --   open → resolved   (outcome `reapproved`)   `decisions.service.ts:496`
+  --   open → withdrawn  (outcome `withdrawn`)    `decisions.service.ts:930`
+  --   anything else                              refused
+  --
+  -- A LEGACY row already closed with NULLs keeps them: the completeness demand is made of the
+  -- CLOSURE, not of the row, so a historical row that never had an outcome is untouched unless
+  -- something tries to move it.
+  IF OLD."status" = 'open' AND NEW."status" IS DISTINCT FROM OLD."status" THEN
+    -- (a) THE MOVE ITSELF must be one the system performs, outcome and status together.
+    -- `IS NOT DISTINCT FROM`, not `=`: a NULL outcome makes `= 'reapproved'` evaluate to NULL,
+    -- the disjunction NULL, and `NOT NULL` NULL — so the plain comparison SILENTLY ADMITS the
+    -- closure that names no outcome at all, which is the very row finding 3 is about. Three-valued
+    -- logic turns a refusal into a pass wherever the value under test may be absent.
+    IF NOT ((NEW."status" = 'resolved'  AND NEW."resolution" IS NOT DISTINCT FROM 'reapproved')
+         OR (NEW."status" = 'withdrawn' AND NEW."resolution" IS NOT DISTINCT FROM 'withdrawn')) THEN
       RAISE EXCEPTION
-        'phase6 4d-i: change request % closes as `%` with outcome `%`, which is not a closure this system performs — a request is either RESOLVED by a reapproval or WITHDRAWN, and a status that disagrees with its own recorded outcome is a permanent record of an act nobody carried out.',
-        OLD."id", NEW."status", NEW."resolution";
+        'phase6 4d-i: change request % closes as `%` with outcome `%`, which is not a closure this system performs — a request is either RESOLVED by a reapproval or WITHDRAWN, and a status that disagrees with its own recorded outcome (or names none at all) is a permanent record of an act nobody carried out.',
+        OLD."id", NEW."status", COALESCE(NEW."resolution", '<none>');
     END IF;
 
-    -- (2) THE CLOSING MOMENT IS THE MOMENT IT CLOSED. `resolvedAt` was frozen by round 26 and
-    -- bound by round 27 to the closure transition, and its VALUE stayed free: a closure could stamp
-    -- a request closed a year before it was opened, or next March, and the freeze made that
-    -- permanent. The bound is deliberately loose rather than exact — the serving release computes
-    -- `new Date()` in the API process and commits some milliseconds later, so demanding
-    -- transaction time would refuse honest closures over clock skew. What it refuses is a moment
-    -- that cannot be this closure at all: before the request existed, or beyond a minute's skew
-    -- into the future.
-    IF NEW."resolvedAt" IS NOT NULL
-       AND (NEW."resolvedAt" < OLD."createdAt" OR NEW."resolvedAt" > now() + interval '1 minute') THEN
+    -- (b) THE CORE SET IS COMPLETE. Both serving writers supply the outcome, the moment and the
+    -- resolver in the same statement, so requiring them refuses nothing the product does — and a
+    -- closure missing one is UNREPAIRABLE, because the one-way arms above refuse to fill it once
+    -- the row has left `open`. The frozen role/name PAIR is deliberately not required here: it
+    -- stays optional through the drain and 4d-iii is what makes it owed.
+    IF NEW."resolvedAt" IS NULL OR NEW."resolvedById" IS NULL THEN
       RAISE EXCEPTION
-        'phase6 4d-i: change request % records its closure at %, which is not when it closed — the request was opened at % and this transaction is running at %. A closing moment outside that span is evidence of an act that did not happen then.',
-        OLD."id", NEW."resolvedAt", OLD."createdAt", now();
+        'phase6 4d-i: change request % closes without recording % — a closure that does not say WHEN it happened or WHO performed it cannot be completed later, because this row may never leave `%` again.',
+        OLD."id",
+        CASE WHEN NEW."resolvedAt" IS NULL AND NEW."resolvedById" IS NULL THEN 'when it closed or who closed it'
+             WHEN NEW."resolvedAt" IS NULL THEN 'when it closed' ELSE 'who closed it' END,
+        NEW."status";
     END IF;
+
+    -- (c) THE MOMENT IS THIS TRANSACTION'S. Round 30 bounded it below by `createdAt`, which admits
+    -- any fabricated point in a request's whole open life — a September closure stamped August is
+    -- neither before creation nor in the future, and the freeze then makes it evidence. The bound
+    -- is the closing transaction in BOTH directions, widened only by the skew a real writer has:
+    -- the serving release computes `new Date()` in the API process and commits milliseconds later.
+    IF NEW."resolvedAt" < now() - interval '1 minute'
+       OR NEW."resolvedAt" > now() + interval '1 minute' THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: change request % records its closure at %, but this closing transaction is running at % — a closure happens when it happens, and a moment outside the writer''s own clock skew is evidence of an act that did not occur then.',
+        OLD."id", NEW."resolvedAt", now();
+    END IF;
+
+  ELSIF OLD."status" <> 'open' AND NEW."status" IS DISTINCT FROM OLD."status" THEN
+    -- (d) CLOSED IS TERMINAL. Nothing in this unit froze `status` itself, so a closed request could
+    -- be moved again — to the other outcome, contradicting the frozen `resolution`, or back to
+    -- `open`, which strands it permanently: its resolver columns are one-way and can never take
+    -- part in another closure.
+    RAISE EXCEPTION
+      'phase6 4d-i: change request % is already closed as `%` and may not become `%` — a closure is the end of a request''s life, and its recorded outcome, moment and resolver are immutable evidence of that one act.',
+      OLD."id", OLD."status", NEW."status";
   END IF;
+
   RETURN NEW;
 END $$;
 

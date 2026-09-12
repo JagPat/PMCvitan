@@ -676,6 +676,8 @@ CREATE TRIGGER "Project_t4d_deleting"
 CREATE OR REPLACE FUNCTION platform_t4d_register_writer() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   v_row     RECORD;
+  v_json    JSONB;
+  v_agrees  BOOLEAN;
   v_backfill BOOLEAN := coalesce(current_setting('vitan.phase6_4d_standing_backfill', true), '') = 'on';
   v_reproject BOOLEAN := coalesce(current_setting('vitan.phase6_4d_standing_reprojection', true), '') = 'on';
 BEGIN
@@ -684,8 +686,65 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  IF TG_OP = 'INSERT' AND v_backfill THEN RETURN NEW; END IF;
-  IF v_reproject AND TG_TABLE_NAME IN ('ProjectUserStanding', 'OrgUserAuthority') THEN
+  -- ── A GATE SAYS WHO MAY WRITE. IT NEVER SAID WHAT (#582's review round 31, finding 4) ──────
+  --
+  -- Both arms below used to return the row unchanged the moment their flag was set. The flag is
+  -- authorisation and nothing else: it was never a claim that the row being written is TRUE of the
+  -- orgs table this register mirrors. So a mistaken or re-used gated statement could insert a
+  -- `ProjectUserStanding` naming any role, or rewrite `OrgUserAuthority`, and every seal
+  -- downstream — `platform_user_holds_role`, the membership authority arms, the frozen-pair
+  -- correspondence — would then trust the forged row as the register's truth.
+  --
+  -- It is the same shape this unit has now been caught by at every level: a rule that governs
+  -- WHO or WHEN standing in for a rule about WHAT. So each gate is narrowed to the operation it
+  -- was opened for, and then the row is checked against the source it claims to mirror.
+  IF v_backfill OR v_reproject THEN
+    IF v_backfill AND TG_OP <> 'INSERT' THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: the standing BACKFILL gate admits INSERT only, and this is a % on "%" — correcting an existing register row is not a backfill, and a gate that admits any operation is not a gate.',
+        TG_OP, TG_TABLE_NAME;
+    END IF;
+    IF v_reproject AND NOT v_backfill AND TG_TABLE_NAME NOT IN ('ProjectUserStanding', 'OrgUserAuthority') THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: the 4d-iii RE-PROJECTION gate is fenced to "ProjectUserStanding" and "OrgUserAuthority", and this is a % on "%" — the fence is the whole reason the gate is admissible.',
+        TG_OP, TG_TABLE_NAME;
+    END IF;
+
+    -- the row must AGREE with the orgs row it mirrors. A DELETE is the mirror claim: it is
+    -- admitted only where the source no longer justifies the row.
+    v_json := to_jsonb(CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END);
+    v_agrees := CASE TG_TABLE_NAME
+      WHEN 'ProjectOrg' THEN EXISTS (
+        SELECT 1 FROM "Project" p
+         WHERE p."id" = v_json->>'projectId' AND p."orgId" = v_json->>'orgId')
+      WHEN 'UserIdentity' THEN EXISTS (
+        SELECT 1 FROM "User" u
+         WHERE u."id" = v_json->>'userId' AND u."name" = v_json->>'displayName')
+      WHEN 'OrgUserAuthority' THEN EXISTS (
+        SELECT 1 FROM "OrgMembership" m
+         WHERE m."orgId" = v_json->>'orgId' AND m."userId" = v_json->>'userId'
+           AND m."role" = v_json->>'role')
+      WHEN 'ProjectUserStanding' THEN EXISTS (
+        SELECT 1 FROM "Membership" m
+         WHERE m."projectId" = v_json->>'projectId' AND m."userId" = v_json->>'userId'
+           AND m."role" = v_json->>'role' AND m."status" = 'active')
+      WHEN 'ProjectRoleStanding' THEN
+        (v_json->>'activeCount')::int = (
+          SELECT count(*) FROM "Membership" m
+           WHERE m."projectId" = v_json->>'projectId' AND m."role" = v_json->>'role'
+             AND m."status" = 'active')
+      ELSE FALSE
+    END;
+
+    -- a DELETE inverts the question, and an unknown table is refused rather than admitted.
+    IF TG_OP = 'DELETE' THEN v_agrees := NOT v_agrees; END IF;
+
+    IF NOT v_agrees THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: the gated % on "%" writes a row the orgs tables do not support — a register mirrors its source, and a gate authorises WHO may project it, never WHAT they may claim. Row: %',
+        TG_OP, TG_TABLE_NAME, v_json;
+    END IF;
+
     IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
     RETURN NEW;
   END IF;

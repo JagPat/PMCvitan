@@ -257,7 +257,15 @@ describe('decision change-control (integration)', () => {
 
     // the legacy inconsistency the deployed backfill permits: the open request was
     // resolved out-of-band while the decision stayed 'change' (zero open requests)
-    await t.prisma.changeRequest.updateMany({ where: { decisionId: id, status: 'open' }, data: { status: 'resolved', resolution: null } });
+    // #582 round 31 — this reached "no open request" by closing one with `resolution: null`, a
+    // shape NEITHER service writer produces: both write status, outcome, moment and resolver in
+    // one statement. The 4d-i lifecycle now refuses an incomplete closure (it would be frozen
+    // unrepairable), so the fixture closes the way the product does. The state under test — a
+    // `change` decision with no open request — is identical.
+    await t.prisma.changeRequest.updateMany({
+      where: { decisionId: id, status: 'open' },
+      data: { status: 'resolved', resolution: 'reapproved', resolvedById: f.memberUser.id, resolvedAt: new Date() },
+    });
 
     // re-approval must REFUSE — there is nothing to resolve, so 'reapproved' would lie
     const res = await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 });

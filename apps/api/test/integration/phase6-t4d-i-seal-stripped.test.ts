@@ -653,7 +653,8 @@ const ARMS: Arm[] = [
     hostile: `INSERT INTO "ChangeRequest" ("id","decisionId","projectId","reason","costImpact","timeImpactDays","status")
               VALUES ('ss-cr-cl','ss-dec','ss-proj','borrowed closure',0,0,'open');
               UPDATE "ChangeRequest" SET "resolvedByCommandId" = 'ss-cmd-hist', "resolvedById" = 'ss-user',
-                     "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn'
+                     "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn',
+             "resolution" = 'withdrawn', "resolvedAt" = now()
                WHERE "id" = 'ss-cr-cl'`,
     // the phrase is the CLOSURE message's own — the birth binding's earlier-transaction refusal
     // shares the first half of that sentence, and an arm that either message could satisfy
@@ -2569,7 +2570,8 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
         VALUES ('ss-cmd-wd','project','ss-org','ss-proj','ss-user','decisions.withdrawChange','ss-key-wd','ss-hash-wd','reserved');
       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec' WHERE "id" = 'ss-cmd-wd';
       UPDATE "ChangeRequest" SET "resolvedByCommandId" = 'ss-cmd-wd', "resolvedById" = 'ss-user',
-             "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn'
+             "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn',
+             "resolution" = 'withdrawn', "resolvedAt" = now()
        WHERE "id" = 'ss-cr-wd';
       COMMIT;
     `]);
@@ -2590,7 +2592,8 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
         VALUES ('ss-cmd-wd2','project','ss-org','ss-proj','ss-user','decisions.withdrawChange','ss-key-wd2','ss-hash-wd2','reserved');
       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec2' WHERE "id" = 'ss-cmd-wd2';
       UPDATE "ChangeRequest" SET "resolvedByCommandId" = 'ss-cmd-wd2', "resolvedById" = 'ss-user',
-             "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn'
+             "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn',
+             "resolution" = 'withdrawn', "resolvedAt" = now()
        WHERE "id" = 'ss-cr-wd2';
       COMMIT;
     `]);
@@ -2854,7 +2857,8 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
         VALUES ('ss-cmd-id','project','ss-org','ss-proj','ss-user','decisions.withdrawChange','ss-key-id','ss-hash-id','reserved');
       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec' WHERE "id" = 'ss-cmd-id';
       UPDATE "ChangeRequest" SET "resolvedByCommandId" = 'ss-cmd-id', "resolvedById" = 'ss-user',
-             "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn'
+             "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn',
+             "resolution" = 'withdrawn', "resolvedAt" = now()
        WHERE "id" = 'ss-cr-id';
       COMMIT;
     `]).ok).toBe(true);
@@ -3443,7 +3447,8 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
          VALUES ('ss-cmd-wd','project','ss-org','ss-proj','ss-user','decisions.withdrawChange','ss-key-wd','ss-hash-wd','reserved');
        UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dec' WHERE "id" = 'ss-cmd-wd';
        UPDATE "ChangeRequest" SET "resolvedByCommandId" = 'ss-cmd-wd', "resolvedById" = 'ss-user',
-              "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn'
+              "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User', "status" = 'withdrawn',
+             "resolution" = 'withdrawn', "resolvedAt" = now()
         WHERE "id" = 'ss-cr-b'`]);
     expect(closed.ok, `the resolver set must still be fillable at closure:\n${closed.output}`).toBe(true);
   }, 180_000);
@@ -3731,6 +3736,18 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     ChangeRequest: {
       proof: 'columns',
       refused: {
+        // #582 round 31 — `status` STOPPED being writable. Round 30 classified it as the closure's
+        // own act and therefore free; the lifecycle installed this round makes a bare status move
+        // a closure with no outcome, no moment and no resolver, which is exactly what it refuses.
+        // two of this unit's own rules can answer, depending on the state the probe row is in:
+        // a planted row whose status is neither `open` nor a real closure is ALREADY CLOSED to the
+        // lifecycle, so the terminal arm speaks; an `open` row gets the closure arm. Both are
+        // refusals this unit owns, and round 29 is why the register names both instead of
+        // pinning whichever the fixture happens to produce.
+        status: [
+          "is not a closure this system performs",
+          "is already closed as",
+        ],
         costImpact: "phase6 4d-i: change request changerequest-probe records costImpact at",
         createdAt: "phase6 4d-i: change request changerequest-probe records createdAt at i",
         decisionId: "phase6-4b: a change request stays with the decision it was raised agai",
@@ -3752,8 +3769,6 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
         timeImpactDays: "phase6 4d-i: change request changerequest-probe records timeImpactDays",
       },
       writable: {
-        status:
-          "the closure IS a status transition \u2014 open -> resolved/withdrawn is the act every other column on this row records, and freezing it would refuse the closure itself",
       },
     },
     Decision: {
@@ -5018,73 +5033,120 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
   }, 600_000);
 
   /**
-   * #582's review round 30 — WHEN IS NOT WHAT.
+   * #582's review round 31 — THE LIFECYCLE, AND A GATE THAT CHECKS WHAT.
    *
-   * Rounds 26 and 27 between them settled WHEN a closure's values may be written: frozen
-   * afterwards, and admitted only on the update that actually closes the request. Neither asked
-   * whether the values written at that moment AGREE, and the freeze then makes whatever landed
-   * permanent. Codex found it at `status`/`resolution`; the same question asked of the other value
-   * a closure stamps found `resolvedAt` unbound as well.
-   *
-   * Both are driven here two-sided, and each hostile closure is otherwise PERFECT — a real open
-   * request, a genuine resolver, a valid actor pair — so what the whole migration refuses is the
-   * disagreement itself and nothing else.
+   * Round 30 put two rules about WHAT a closure says inside the branch governing WHEN its values
+   * may be written, and Codex found three holes in that one placement. The rules now sit at
+   * function level as a state machine, and this arm drives every edge of it — including the ones
+   * that must still be ADMITTED, because a seal that refuses the product is not a fix.
    */
-  it('round 30: a closure may not record a status its outcome denies, nor a moment it did not happen at', () => {
-    const CLOSE = (status: string, resolution: string, at: string) => `
+  it('round 31: a request has three states and two legal moves, and a gated write must be true', () => {
+    const CLOSE = (status: string, resolution: string | null, at: string | null, by = `'ss-user'`) => `
       UPDATE "ChangeRequest"
-         SET "status" = '${status}', "resolution" = '${resolution}', "resolvedAt" = ${at},
-             "resolvedById" = 'ss-user', "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User'
+         SET "status" = '${status}'
+           , "resolution" = ${resolution === null ? 'NULL' : `'${resolution}'`}
+           , "resolvedAt" = ${at ?? 'NULL'}
+           , "resolvedById" = ${by}
        WHERE "id" = 'ss-cr-r26'`;
 
-    // ── (1) the contradictory pair ──────────────────────────────────────────────────────────
-    buildRun(['ChangeRequest_t4d_evidence_frozen']);
-    { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
-    const pairStripped = psql(RUN_DB, ['-c', CLOSE('resolved', 'withdrawn', 'now()')]);
-    expect(
-      pairStripped.ok,
-      'with the evidence freeze stripped, a request must close as `resolved` with outcome '
-      + `\`withdrawn\` — otherwise the arm proves nothing about THIS seal:\n${pairStripped.output}`,
-    ).toBe(true);
-
-    buildRun([]);
-    { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
-    const pairWhole = psql(RUN_DB, ['-c', CLOSE('resolved', 'withdrawn', 'now()')]);
-    expect(pairWhole.ok, 'the whole unit must refuse a status its own outcome denies').toBe(false);
-    expect(pairWhole.output).toMatch(/is not a closure this system performs/);
-
-    // and the two shipped shapes still close, because refusing them would refuse the product
+    // ── the two legal moves still close, first ──────────────────────────────────────────────
     for (const [status, resolution] of [['resolved', 'reapproved'], ['withdrawn', 'withdrawn']]) {
       buildRun([]);
       { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
       const ok = psql(RUN_DB, ['-c', CLOSE(status!, resolution!, 'now()')]);
-      expect(ok.ok, `the deployed release closes as \`${status}\`/\`${resolution}\` and must `
-        + `still be admitted:\n${ok.output}`).toBe(true);
+      expect(ok.ok, `the deployed release closes as \`${status}\`/\`${resolution}\` and must still `
+        + `be admitted:\n${ok.output}`).toBe(true);
     }
 
-    // ── (2) the closing moment ──────────────────────────────────────────────────────────────
+    // ── (F1) CLOSED IS TERMINAL — the hole round 30's placement left ─────────────────────────
+    // A status-only update touches no resolver column, so round 30's clauses never ran.
     buildRun(['ChangeRequest_t4d_evidence_frozen']);
     { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
-    const whenStripped = psql(RUN_DB, ['-c',
-      CLOSE('withdrawn', 'withdrawn', `now() - interval '400 days'`)]);
-    expect(
-      whenStripped.ok,
-      `with the freeze stripped, a closure may be stamped 400 days ago:\n${whenStripped.output}`,
-    ).toBe(true);
+    expect(psql(RUN_DB, ['-c', CLOSE('resolved', 'reapproved', 'now()')]).ok).toBe(true);
+    const reopenStripped = psql(RUN_DB, ['-c',
+      `UPDATE "ChangeRequest" SET "status" = 'open' WHERE "id" = 'ss-cr-r26'`]);
+    expect(reopenStripped.ok,
+      `with the freeze stripped a closed request must be reopenable:\n${reopenStripped.output}`).toBe(true);
 
     buildRun([]);
     { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
-    const past = psql(RUN_DB, ['-c', CLOSE('withdrawn', 'withdrawn', `now() - interval '400 days'`)]);
-    expect(past.ok, 'a request cannot have closed before it was opened').toBe(false);
-    expect(past.output).toMatch(/which is not when it closed/);
+    expect(psql(RUN_DB, ['-c', CLOSE('resolved', 'reapproved', 'now()')]).ok).toBe(true);
+    for (const to of ['open', 'withdrawn']) {
+      const moved = psql(RUN_DB, ['-c',
+        `UPDATE "ChangeRequest" SET "status" = '${to}' WHERE "id" = 'ss-cr-r26'`]);
+      expect(moved.ok, `a closed request may not become \`${to}\``).toBe(false);
+      expect(moved.output).toMatch(/is already closed as/);
+    }
 
-    { const r = psql(RUN_DB, ['-c', CLOSE('withdrawn', 'withdrawn', `now() + interval '30 days'`)]);
-      expect(r.ok, 'a request cannot have closed next month').toBe(false);
-      expect(r.output).toMatch(/which is not when it closed/); }
+    // ── (F3) THE CORE SET IS COMPLETE ───────────────────────────────────────────────────────
+    // Each of these was admitted by round 30 and is UNREPAIRABLE once it lands, because the
+    // one-way arms refuse to fill the missing column after the row leaves `open`.
+    const INCOMPLETE: [string, string, RegExp][] = [
+      ['no outcome', CLOSE('resolved', null, 'now()'), /is not a closure this system performs/],
+      ['no moment', CLOSE('resolved', 'reapproved', null), /does not say WHEN it happened/],
+      // refused by the pre-existing provenance clause rather than the completeness one, because
+      // the fill branch reaches it first. The PROPERTY is what this arm asserts — an incomplete
+      // closure does not commit — and which of this unit's own clauses says so is not something
+      // the arm should pin, exactly as round 29 had to learn for `User.id`.
+      ['no resolver', CLOSE('resolved', 'reapproved', 'now()', 'NULL'),
+        /who closed it|resolver provenance with no/],
+    ];
+    for (const [what, sql, message] of INCOMPLETE) {
+      buildRun([]);
+      { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
+      const r = psql(RUN_DB, ['-c', sql]);
+      expect(r.ok, `a closure with ${what} must be refused, not frozen incomplete`).toBe(false);
+      expect(r.output).toMatch(message);
+    }
 
-    // the skew tolerance is deliberate and must hold: a closure stamped a few seconds ahead by an
-    // API process whose clock runs fast is HONEST, and refusing it would refuse real closures.
-    { const r = psql(RUN_DB, ['-c', CLOSE('withdrawn', 'withdrawn', `now() + interval '5 seconds'`)]);
-      expect(r.ok, `a closure within the skew tolerance must be admitted:\n${r.output}`).toBe(true); }
-  }, 300_000);
+    // the contradictory pair, still
+    buildRun([]);
+    { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
+    const contradiction = psql(RUN_DB, ['-c', CLOSE('resolved', 'withdrawn', 'now()')]);
+    expect(contradiction.ok, 'a status its own outcome denies must be refused').toBe(false);
+    expect(contradiction.output).toMatch(/is not a closure this system performs/);
+
+    // ── (F2) THE MOMENT IS THIS TRANSACTION'S ───────────────────────────────────────────────
+    // Round 30 bounded this below by `createdAt`, so a long-open request could be closed with any
+    // fabricated point in its own open life. `ss-cr-r26` is opened in the same test, so the
+    // fabricated August is modelled by a moment well inside the request's life but not now.
+    buildRun([]);
+    { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
+    for (const at of [`now() - interval '2 hours'`, `now() + interval '30 days'`]) {
+      const r = psql(RUN_DB, ['-c', CLOSE('withdrawn', 'withdrawn', at)]);
+      expect(r.ok, `a closure stamped ${at} is not this transaction's closure`).toBe(false);
+      expect(r.output).toMatch(/but this closing transaction is running at/);
+    }
+    // and the skew a real writer has is still admitted, in both directions
+    for (const at of [`now() - interval '5 seconds'`, `now() + interval '5 seconds'`]) {
+      buildRun([]);
+      { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
+      const r = psql(RUN_DB, ['-c', CLOSE('withdrawn', 'withdrawn', at)]);
+      expect(r.ok, `an honest writer's clock skew (${at}) must be admitted:\n${r.output}`).toBe(true);
+    }
+
+    // ── (F4) A GATED WRITE MUST BE TRUE OF ITS SOURCE ───────────────────────────────────────
+    // The flag authorises the writer. It never said the row is true of the orgs table the
+    // register mirrors, so a re-used gated statement could forge standing the seals then trust.
+    buildRun([]);
+    const forge = (guc: string) => `
+      BEGIN;
+      SELECT set_config('${guc}', 'on', true);
+      INSERT INTO "ProjectUserStanding" ("projectId","userId","role","membershipId")
+        VALUES ('ss-proj','ss-client','architect','ss-mem-c');
+      COMMIT;`;
+    for (const guc of ['vitan.phase6_4d_standing_backfill', 'vitan.phase6_4d_standing_reprojection']) {
+      const r = psql(RUN_DB, ['-c', forge(guc)]);
+      expect(r.ok, `\`${guc}\` must not admit a standing row no Membership supports`).toBe(false);
+      expect(r.output).toMatch(/writes a row the orgs tables do not support|is fenced to/);
+    }
+    // and the backfill gate is INSERT-only: a correction is not a backfill
+    const correct = psql(RUN_DB, ['-c', `
+      BEGIN;
+      SELECT set_config('vitan.phase6_4d_standing_backfill', 'on', true);
+      UPDATE "UserIdentity" SET "displayName" = 'Forged' WHERE "userId" = 'ss-user';
+      COMMIT;`]);
+    expect(correct.ok, 'the backfill gate admits INSERT only').toBe(false);
+    expect(correct.output).toMatch(/admits INSERT only/);
+  }, 600_000);
 });
