@@ -5016,4 +5016,75 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       .toEqual([]);
     expect(wrong, 'the fill register disagrees with what the database actually did').toEqual([]);
   }, 600_000);
+
+  /**
+   * #582's review round 30 — WHEN IS NOT WHAT.
+   *
+   * Rounds 26 and 27 between them settled WHEN a closure's values may be written: frozen
+   * afterwards, and admitted only on the update that actually closes the request. Neither asked
+   * whether the values written at that moment AGREE, and the freeze then makes whatever landed
+   * permanent. Codex found it at `status`/`resolution`; the same question asked of the other value
+   * a closure stamps found `resolvedAt` unbound as well.
+   *
+   * Both are driven here two-sided, and each hostile closure is otherwise PERFECT — a real open
+   * request, a genuine resolver, a valid actor pair — so what the whole migration refuses is the
+   * disagreement itself and nothing else.
+   */
+  it('round 30: a closure may not record a status its outcome denies, nor a moment it did not happen at', () => {
+    const CLOSE = (status: string, resolution: string, at: string) => `
+      UPDATE "ChangeRequest"
+         SET "status" = '${status}', "resolution" = '${resolution}', "resolvedAt" = ${at},
+             "resolvedById" = 'ss-user', "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User'
+       WHERE "id" = 'ss-cr-r26'`;
+
+    // ── (1) the contradictory pair ──────────────────────────────────────────────────────────
+    buildRun(['ChangeRequest_t4d_evidence_frozen']);
+    { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
+    const pairStripped = psql(RUN_DB, ['-c', CLOSE('resolved', 'withdrawn', 'now()')]);
+    expect(
+      pairStripped.ok,
+      'with the evidence freeze stripped, a request must close as `resolved` with outcome '
+      + `\`withdrawn\` — otherwise the arm proves nothing about THIS seal:\n${pairStripped.output}`,
+    ).toBe(true);
+
+    buildRun([]);
+    { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
+    const pairWhole = psql(RUN_DB, ['-c', CLOSE('resolved', 'withdrawn', 'now()')]);
+    expect(pairWhole.ok, 'the whole unit must refuse a status its own outcome denies').toBe(false);
+    expect(pairWhole.output).toMatch(/is not a closure this system performs/);
+
+    // and the two shipped shapes still close, because refusing them would refuse the product
+    for (const [status, resolution] of [['resolved', 'reapproved'], ['withdrawn', 'withdrawn']]) {
+      buildRun([]);
+      { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
+      const ok = psql(RUN_DB, ['-c', CLOSE(status!, resolution!, 'now()')]);
+      expect(ok.ok, `the deployed release closes as \`${status}\`/\`${resolution}\` and must `
+        + `still be admitted:\n${ok.output}`).toBe(true);
+    }
+
+    // ── (2) the closing moment ──────────────────────────────────────────────────────────────
+    buildRun(['ChangeRequest_t4d_evidence_frozen']);
+    { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
+    const whenStripped = psql(RUN_DB, ['-c',
+      CLOSE('withdrawn', 'withdrawn', `now() - interval '400 days'`)]);
+    expect(
+      whenStripped.ok,
+      `with the freeze stripped, a closure may be stamped 400 days ago:\n${whenStripped.output}`,
+    ).toBe(true);
+
+    buildRun([]);
+    { const r = psql(RUN_DB, ['-c', CR_OPEN]); expect(r.ok, r.output).toBe(true); }
+    const past = psql(RUN_DB, ['-c', CLOSE('withdrawn', 'withdrawn', `now() - interval '400 days'`)]);
+    expect(past.ok, 'a request cannot have closed before it was opened').toBe(false);
+    expect(past.output).toMatch(/which is not when it closed/);
+
+    { const r = psql(RUN_DB, ['-c', CLOSE('withdrawn', 'withdrawn', `now() + interval '30 days'`)]);
+      expect(r.ok, 'a request cannot have closed next month').toBe(false);
+      expect(r.output).toMatch(/which is not when it closed/); }
+
+    // the skew tolerance is deliberate and must hold: a closure stamped a few seconds ahead by an
+    // API process whose clock runs fast is HONEST, and refusing it would refuse real closures.
+    { const r = psql(RUN_DB, ['-c', CLOSE('withdrawn', 'withdrawn', `now() + interval '5 seconds'`)]);
+      expect(r.ok, `a closure within the skew tolerance must be admitted:\n${r.output}`).toBe(true); }
+  }, 300_000);
 });

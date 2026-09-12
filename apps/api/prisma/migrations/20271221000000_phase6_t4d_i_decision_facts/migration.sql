@@ -1421,6 +1421,55 @@ BEGIN
       PERFORM phase6_t4d_actor_bound(NEW."projectId", NEW."resolvedById", NEW."resolvedByRole",
                                      NEW."resolvedByName", 'ChangeRequest ' || NEW."id");
     END IF;
+
+    -- ── WHEN IS NOT WHAT (#582's review round 30) ─────────────────────────────────────────────
+    --
+    -- Everything above this point governs the MOMENT a closure's values may be written: round 27
+    -- made the fill question cover the whole resolver set, and round 26 froze the set afterwards.
+    -- Not one clause asks whether the values WRITTEN AT THAT MOMENT AGREE WITH EACH OTHER, and the
+    -- freeze then makes whatever landed permanent. That is a rule about timing standing in for a
+    -- rule about truth, and it is the same shape as every round from 18 on: the inventory of
+    -- questions a closure owes was implemented over a subset of itself.
+    --
+    -- THE INVENTORY, so the next value added here is visibly owed an answer. A closure writes six
+    -- things, and each is either bound to something outside itself or named below as unbound:
+    --
+    --   · `resolvedById` + `resolvedByRole`/`Name` — bound, by `phase6_t4d_actor_bound` above.
+    --   · `resolvedByCommandId`                    — bound, by the closure-receipt seal that
+    --                                                follows this function.
+    --   · `status` + `resolution`                  — UNBOUND until now. Codex's finding.
+    --   · `resolvedAt`                             — UNBOUND until now. Its SIBLING, found by
+    --                                                asking the same question of the other value
+    --                                                the closure stamps.
+    --
+    -- (1) STATUS AND OUTCOME ARE ONE FACT IN TWO COLUMNS. The deployed release closes a request in
+    -- exactly two shapes — `decisions.service.ts` line 496 writes `resolved`/`reapproved`, and line
+    -- 930 writes `withdrawn`/`withdrawn` — so any other combination describes a closure no command
+    -- performs. A direct writer that closes with `resolved`/`withdrawn` leaves a row whose status
+    -- says the change was accepted and whose outcome says it was abandoned, permanently, with a
+    -- genuine actor pair vouching for it; the update-time seal never revisits a closed row.
+    IF NEW."resolution" IS NOT NULL
+       AND NOT ((NEW."status" = 'resolved'  AND NEW."resolution" = 'reapproved')
+             OR (NEW."status" = 'withdrawn' AND NEW."resolution" = 'withdrawn')) THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: change request % closes as `%` with outcome `%`, which is not a closure this system performs — a request is either RESOLVED by a reapproval or WITHDRAWN, and a status that disagrees with its own recorded outcome is a permanent record of an act nobody carried out.',
+        OLD."id", NEW."status", NEW."resolution";
+    END IF;
+
+    -- (2) THE CLOSING MOMENT IS THE MOMENT IT CLOSED. `resolvedAt` was frozen by round 26 and
+    -- bound by round 27 to the closure transition, and its VALUE stayed free: a closure could stamp
+    -- a request closed a year before it was opened, or next March, and the freeze made that
+    -- permanent. The bound is deliberately loose rather than exact — the serving release computes
+    -- `new Date()` in the API process and commits some milliseconds later, so demanding
+    -- transaction time would refuse honest closures over clock skew. What it refuses is a moment
+    -- that cannot be this closure at all: before the request existed, or beyond a minute's skew
+    -- into the future.
+    IF NEW."resolvedAt" IS NOT NULL
+       AND (NEW."resolvedAt" < OLD."createdAt" OR NEW."resolvedAt" > now() + interval '1 minute') THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: change request % records its closure at %, which is not when it closed — the request was opened at % and this transaction is running at %. A closing moment outside that span is evidence of an act that did not happen then.',
+        OLD."id", NEW."resolvedAt", OLD."createdAt", now();
+    END IF;
   END IF;
   RETURN NEW;
 END $$;
