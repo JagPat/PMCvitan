@@ -47,7 +47,20 @@ async function main(): Promise<void> {
     'BillDeductionRelease', 'BillDeduction', 'SodException', 'SodGrant',
     'CertifiedMeasurementConsumption', 'CertifiedAcceptanceConsumption', 'BillCertificate',
     'BillVerification', 'VendorBillLine', 'VendorBillVersion', 'VendorBillRevision',
-    'VendorBill', 'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
+    'VendorBill',
+    // Phase 6 unit 4d-i — TWO new tables REFERENCE `DomainEvent` and must truncate in the SAME
+    // statement, because PostgreSQL refuses to truncate a referenced table unless every
+    // referencing table is named with it (the rule the Phase 3 chain above is grouped for):
+    // `Notification.eventId` binds a notice to the act it announces, and
+    // `DomainEventPairingClaim` is the register that says which fact claimed each event.
+    // `ON DELETE CASCADE` does not exempt the claim register — TRUNCATE is a statement, not a
+    // row delete, and the reference is what the rule looks at. Both carry no-TRUNCATE seals that
+    // `sanctionedReset` disables BY NAME, which is why they belong here and not in a bare
+    // TRUNCATE. Found by CI: the integration suites reach this reset through
+    // `sanctionedReset(..., { cascade: true })`, which papered over the omission, while the SEED
+    // — the path `pnpm test:e2e:api` takes — does not pass `cascade` and aborted.
+    'Notification', 'DomainEventPairingClaim',
+    'DomainEvent', 'OutboxDelivery', 'ProcessedEvent', 'ProjectionCursor',
     'ProjectionGeneration', 'DecisionProjection', 'DailyLogProjection', 'DrawingsProjection',
     'InspectionsProjection', 'MaterialReadinessProjection', 'CashForecastProjection',
     'LabourReadinessProjection'
@@ -84,7 +97,35 @@ async function main(): Promise<void> {
     'RequisitionLine', 'Requisition', 'ProjectPartyVendorSource', 'ProjectPartyCompanySource',
     'ProjectParty', 'ProjectVendor', 'Vendor', 'ApprovedSubstitution', 'LabourDemandSlice',
     'LabourRequirementSpec', 'MaterialRequirementSpec', 'ActivityRequirement',
-    'ActivityRequirementRoot', 'DecisionApprovalRevision', 'ActivityDependency',
+    'ActivityRequirementRoot',
+    // Phase 6 unit 4d-i — THREE tables now REFERENCE `DecisionApprovalRevision` and must truncate
+    // in the SAME statement (the rule this whole list is grouped for): `ChangeRequest.revisionId`
+    // names the revision a countersign rejection contests, and the two chain facts each cite the
+    // revision their act produced. All three carry no-TRUNCATE seals that `sanctionedReset`
+    // disables BY NAME. Found the same way as the `DomainEvent` pair above — by CI, because the
+    // integration suites reach their resets with `{ cascade: true }` and the seed does not.
+    // `apps/api/src/platform/module-registry/reset-list-closure.test.ts` now computes this
+    // closure from the Prisma schema, so the NEXT table to reference a reset table fails there
+    // instead of in a CI seed run.
+    'ChangeRequest', 'DecisionCountersign', 'DecisionStrandedResolution',
+    'DecisionApprovalRevision', 'ActivityDependency',
+    // Phase 6 unit 4d-i, round 1 (Codex finding 7, and `DecisionForward` beside it — the same
+    // omission on a second table). These two clear here, in the TRUNCATE that runs BEFORE the
+    // `deleteMany` phase, because that phase cannot reach them:
+    //
+    //   · `MembershipTransition.membershipId` FKs `Membership` ON DELETE CASCADE, so
+    //     `membership.deleteMany()` CASCADES into it — and the cascade is a row DELETE, which
+    //     fires `MembershipTransition_t4d_append_only`. That seal admits a delete only under the
+    //     project-deletion flag, which a membership wipe does not set, so the seed aborts on any
+    //     database that has ever recorded a transition. Its `actorId` FK onto `User` is NO ACTION
+    //     besides, so `user.deleteMany()` would refuse it a few lines later even without the seal.
+    //   · `DecisionForward` FKs `Decision`, `Membership` and `User`, all NO ACTION, so a database
+    //     holding one forward refuses the decision wipe outright.
+    //
+    // Neither is caught by the closure arm over these lists — that arm asks whether the TRUNCATE
+    // is internally closed, and `Membership`, `Decision` and `User` are cleared by `deleteMany`,
+    // not truncated. `reset-list-closure.test.ts` gains the DELETE-phase arm that does ask.
+    'MembershipTransition', 'DecisionForward',
     // Phase 6 unit 4c-iii moved this wipe from `deleteMany()` to the sanctioned reset because the
     // consultation preservation seal refused a direct DELETE; unit 4c-v retired that seal. The
     // table stays in the reset list — one wipe path for every table, seal or no seal.
@@ -130,8 +171,19 @@ async function main(): Promise<void> {
     prisma.$executeRawUnsafe(
       `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionOption_t4a_frozen') THEN EXECUTE 'ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'; END IF; END $$;`,
     ),
+    // ONE STATEMENT PER CALL. `$executeRawUnsafe(sql, ...values)` takes QUERY PARAMETERS after the
+    // first argument, not further statements — passing the 4d disables as extra arguments left
+    // them silently unexecuted (a `DO` block binds no placeholders, so nothing complained) and the
+    // seal was never off for the wipe below. Found by CI on the SECOND seed of a database: the
+    // first seed of an empty one deletes no rows, so the trigger never fires and the bug hides.
     prisma.$executeRawUnsafe(
       `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN EXECUTE 'ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'; END IF; END $$;`,
+    ),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_t4d_append_only') THEN EXECUTE 'ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_append_only"'; END IF; END $$;`,
+    ),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_t4d_correspondence') THEN EXECUTE 'ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_correspondence"'; END IF; END $$;`,
     ),
     // Phase 6 unit 4b — the approval-evidence delete seal (`Decision_t4b_evidence_no_delete`) is
     // a complete, independent twin of the consolidated 4a arm, so a 4a repair replay cannot
@@ -146,6 +198,12 @@ async function main(): Promise<void> {
     prisma.decision.deleteMany(),
     prisma.$executeRawUnsafe(
       `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4b_evidence_no_delete') THEN EXECUTE 'ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_evidence_no_delete"'; END IF; END $$;`,
+    ),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_t4d_correspondence') THEN EXECUTE 'ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_correspondence"'; END IF; END $$;`,
+    ),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_t4d_append_only') THEN EXECUTE 'ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_append_only"'; END IF; END $$;`,
     ),
     prisma.$executeRawUnsafe(
       `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN EXECUTE 'ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'; END IF; END $$;`,
@@ -325,6 +383,10 @@ async function main(): Promise<void> {
   // change-control diagnostic aborts on and re-approval now refuses (gate finding 1).
   await prisma.changeRequest.create({
     data: {
+      // Phase 6 unit 4d-i — `ChangeRequest.projectId` joined the uniform seal contract
+      // (§A.3 obligation 5). The migration's trigger fills it for the previous release; a
+      // writer compiled against the new client names it.
+      projectId: PROJECT_ID,
       decisionId: 'DL-003',
       reason: 'Quartz slab size unavailable — vendor proposes 2-piece joint',
       costImpact: 0,

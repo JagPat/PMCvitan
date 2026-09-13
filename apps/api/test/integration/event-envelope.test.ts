@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { insertRawEvent, createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { emitEvent, type EmitInput } from '../../src/platform/events';
+import { effectCoverageVersion } from '../../src/platform/external-effects';
 import type { Actor } from '../../src/common/actor';
 
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
@@ -32,7 +33,7 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
   /** emit one event inside a real interactive transaction, like a command would. */
   const emit = (over: Partial<EmitInput> = {}) =>
     t.prisma.$transaction((tx) =>
-      emitEvent(tx, { projectId: f.projectA.id, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-1', effectKey: 'decision.approved', dispatch: {}, ...over }),
+      emitEvent(tx, { projectId: f.projectA.id, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-1', effectKey: 'decision.approved', dispatch: { push: { body: 'approved' } }, ...over }),
     );
 
   const streamOf = (projectId: string) => t.prisma.projectEventStream.findUnique({ where: { projectId } });
@@ -67,7 +68,7 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
     const before = (await streamOf(f.projectA.id))!.nextPosition;
     await expect(
       t.prisma.$transaction(async (tx) => {
-        await emitEvent(tx, { projectId: f.projectA.id, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-rollback', effectKey: 'decision.approved', dispatch: {} });
+        await emitEvent(tx, { projectId: f.projectA.id, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-rollback', effectKey: 'decision.approved', dispatch: { push: { body: 'approved' } } });
         throw new Error('boom'); // the command failed after emitting — everything rolls back
       }),
     ).rejects.toThrow('boom');
@@ -91,39 +92,73 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
   it('two events at the SAME (projectId, streamPosition) are rejected — position is the identity, not occurredAt', async () => {
     // identical occurredAt, distinct positions coexist and order deterministically by position…
     const at = '2026-07-15 09:00:00';
-    const max = Number((await streamOf(f.projectA.id))!.nextPosition) + 500;
-    await t.prisma.$executeRawUnsafe(
-      `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","occurredAt") VALUES ('ev-tie-a','x',1,'${f.orgA.id}','${f.projectA.id}',${max},'system','system:seed','Decision','a','${at}'),('ev-tie-b','x',1,'${f.orgA.id}','${f.projectA.id}',${max + 1},'system','system:seed','Decision','b','${at}')`,
-    );
+    // Phase 6 unit 4d-i — each plant ALLOCATES AND INSERTS IN ONE TRANSACTION, the way
+    // `emitEvent` does. `DomainEvent_t4d_envelope` requires an event to sit at
+    // `nextPosition - 1` of a stream row this transaction moved, so a self-chosen position — or
+    // an allocation made in an earlier statement — is refused at the plant itself.
+    const max = await insertRawEvent(t.prisma, {
+      projectId: f.projectA.id, organizationId: f.orgA.id, eventId: 'ev-tie-a',
+      entityId: 'a', columns: ['"occurredAt"'], values: [`'${at}'`],
+    });
+    await insertRawEvent(t.prisma, {
+      projectId: f.projectA.id, organizationId: f.orgA.id, eventId: 'ev-tie-b',
+      entityId: 'b', columns: ['"occurredAt"'], values: [`'${at}'`],
+    });
     const ordered = await t.prisma.domainEvent.findMany({ where: { eventId: { in: ['ev-tie-a', 'ev-tie-b'] } }, orderBy: { streamPosition: 'asc' } });
     expect(ordered.map((e) => e.eventId)).toEqual(['ev-tie-a', 'ev-tie-b']);
-    // …but two events cannot share a position.
+    // …but two events cannot share a position. Written raw and deliberately NOT through the
+    // helper: the point is a COLLISION at an already-used position, which the allocator can no
+    // longer hand out. The envelope seal refuses it first, which is the stronger statement — the
+    // position is unreachable, not merely unique.
     await expect(
       t.prisma.$executeRawUnsafe(
         `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId") VALUES ('ev-dup','x',1,'${f.orgA.id}','${f.projectA.id}',${max},'system','system:seed','Decision','d')`,
       ),
-    ).rejects.toThrow(/unique|duplicate|already exists/i);
+    ).rejects.toThrow(/unique|duplicate|already exists|did not allocate it/i);
   });
 
   it('a forged tenant (organizationId that is not the project’s org) is rejected by the composite FK', async () => {
-    // projectA belongs to orgA; claiming orgB is rejected.
+    // Phase 6 unit 4d-i — allocate-and-insert in one transaction (see the tie arm above). The
+    // forged tenant rolls the whole transaction back, allocation included, so the control plant
+    // that follows takes its own slot.
     await expect(
-      t.prisma.$executeRawUnsafe(
-        `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId") VALUES ('ev-forge','x',1,'${f.orgB.id}','${f.projectA.id}',90001,'system','system:seed','Decision','x')`,
-      ),
+      insertRawEvent(t.prisma, {
+        projectId: f.projectA.id, organizationId: f.orgB.id, eventId: 'ev-forge',
+      }),
     ).rejects.toThrow(/foreign key|constraint/i);
-    // control: the project's REAL org is accepted at the same position slot.
-    await t.prisma.$executeRawUnsafe(
-      `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId") VALUES ('ev-real','x',1,'${f.orgA.id}','${f.projectA.id}',90001,'system','system:seed','Decision','x')`,
-    );
+    // control: the project's REAL org is accepted.
+    await insertRawEvent(t.prisma, {
+      projectId: f.projectA.id, organizationId: f.orgA.id, eventId: 'ev-real',
+    });
     expect((await t.prisma.domainEvent.findUnique({ where: { eventId: 'ev-real' } }))?.organizationId).toBe(f.orgA.id);
   });
 
   it('the attribution truth table is a CHECK — invalid kind / human-without-actorId / system-without-systemActor all reject', async () => {
+    // Phase 6 unit 4d-i — allocate-and-insert in one transaction (see the tie arm above). Every
+    // arm here REJECTS, and the rollback returns the allocation with it, so no arm consumes a
+    // position: `_t4d_allocation_bound` would refuse an increment whose position no event took.
     const ins = (id: string, cols: string) =>
-      t.prisma.$executeRawUnsafe(
-        `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","entityType","entityId",${cols.split('=')[0]}) VALUES ('${id}','x',1,'${f.orgA.id}','${f.projectA.id}',${90100 + id.length},'Decision','x',${cols.split('=')[1]})`,
-      );
+      t.prisma.$transaction(async (tx) => {
+        const rows = await tx.$queryRawUnsafe<Array<{ at: bigint }>>(
+          `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1
+            WHERE "projectId" = $1 RETURNING "nextPosition" - 1 AS "at"`,
+          f.projectA.id,
+        );
+        // Phase 6 unit 4d-i — the plant carries the catalog's own intent for a non-pushing,
+        // non-pairing key. `DomainEvent_t4d_envelope`'s intent arm runs BEFORE the attribution
+        // CHECK (a BEFORE ROW trigger precedes constraint evaluation), so an intent-less plant
+        // would be refused by the wrong thing and this arm would stop measuring what it names.
+        return tx.$executeRawUnsafe(
+          `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","entityType","entityId","dispatchIntent",${cols.split('=')[0]})`
+          + ` SELECT '${id}','decision.drafted',1,'${f.orgA.id}','${f.projectA.id}',${Number(rows[0]!.at)},'Decision','x',`
+          + ` jsonb_build_object('effectKey','decision.drafted','coverageVersion',c."coverageVersion",'invalidate',c."invalidate"),${cols.split('=')[1]}`
+          // Pinned to THIS release's generation: 4d-i seeds the outgoing one alongside (#582 round
+          // 8, finding 3), so the key alone matches two rows and would plant two events at one
+          // position.
+          + ` FROM "ExternalEffectCatalog" c WHERE c."effectKey" = 'decision.drafted'`
+          + ` AND c."coverageVersion" = '${effectCoverageVersion()}'`,
+        );
+      });
     // invalid actorKind
     await expect(ins('ev-badkind', `"actorKind"='robot'`)).rejects.toThrow(/constraint|check/i);
     // human with null actorId (actorId omitted → NULL)
@@ -149,7 +184,23 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
       data: { id: `it-ev-nostream-${Date.now() % 1e6}`, orgId: tmpOrg.id, name: 'Tmp', short: 'T', descriptor: '', stage: 'x', siteCode: 'T', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
     });
     expect(await streamOf(tmp.id), 'the trigger auto-created its counter on insert').not.toBeNull();
+    // Phase 6 unit 4d-i — the SETUP takes a NAMED BYPASS, the sentence does not move.
+    // `ProjectEventStream_t4d_no_delete` now refuses this delete, because dropping and
+    // recreating the counter row is how the `+1` allocation rule gets bypassed (§A.2). What this
+    // arm PROVES is unchanged and still worth proving — a project without a counter cannot emit —
+    // so only the way it manufactures that state is declared, by name, for exactly this statement.
+    await t.prisma.$executeRawUnsafe(
+      `DO $do$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'ProjectEventStream_t4d_no_delete') THEN `
+      + `EXECUTE 'ALTER TABLE "ProjectEventStream" DISABLE TRIGGER "ProjectEventStream_t4d_no_delete"'; END IF; END $do$`,
+    );
+    try {
     await t.prisma.projectEventStream.delete({ where: { projectId: tmp.id } });
+    } finally {
+      await t.prisma.$executeRawUnsafe(
+        `DO $do$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'ProjectEventStream_t4d_no_delete') THEN `
+        + `EXECUTE 'ALTER TABLE "ProjectEventStream" ENABLE TRIGGER "ProjectEventStream_t4d_no_delete"'; END IF; END $do$`,
+      );
+    }
     await expect(
       t.prisma.$transaction((tx) => emitEvent(tx, { projectId: tmp.id, actor: human, eventType: 'project.created', entityType: 'Project', entityId: tmp.id, effectKey: 'project.created', dispatch: {} })),
     ).rejects.toThrow();

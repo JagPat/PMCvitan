@@ -3570,35 +3570,71 @@ assert_rejects "4a seal 3 (round 15): one transaction editing an option, TRUNCAT
 # planting the legacy shape and RE-RUNNING the migration file, which is rerunnable BY DESIGN
 # (this re-run also proves the diagnostics accept a database whose withdrawn rows are coherent).
 $PSQL -q >/dev/null <<'SQL'
+-- Phase 6 unit 4d-i — a NAMED BYPASS for a LEGACY-SHAPE plant. These six events are pre-4d rows
+-- by construction: a bare `human` attribution with NO frozen actor envelope, no pairing fact, and
+-- hand-chosen positions that state the "already queued when the deploy landed" ordering this
+-- proof is about. The 4d seals are right to refuse them, and cannot tell a simulated import from
+-- a forgery, so the fixture declares itself BY NAME for exactly the plant rather than leaving an
+-- implicit hole. Guarded on existence, because this proof replays the ledger from the
+-- pre-Phase-1 point and reaches here before 4d-i has run on some paths.
+--
+-- THE POSITIONS RUN FROM 0, and round 21 is why. They were in the 900000s, which made p1's
+-- stream six events with a 0-wide hole in front of them — a shape no real database can
+-- reach, because positions are issued one per event from 0 (§A.2) and `DomainEvent` is
+-- append-only, so nothing can remove the ones in between. The round-20 audit accepted it because
+-- it compared only the HEAD against the last event; the round-21 audit proves CONTIGUITY, and
+-- refuses it. The fixture was the unrealistic party: the ordering this block is about is the
+-- ORDER of the six among themselves and their being the last thing queued, which 0..5 states
+-- exactly as well. `OutboxDelivery` copies `(projectId, streamPosition)` through a composite FK,
+-- so the four delivery rows move with their events.
+DO $do$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DomainEvent_t4d_envelope') THEN
+    EXECUTE 'ALTER TABLE "DomainEvent" DISABLE TRIGGER "DomainEvent_t4d_envelope"';
+    EXECUTE 'ALTER TABLE "DomainEvent" DISABLE TRIGGER "DomainEvent_t4d_pairing_claimed"';
+  END IF;
+END $do$;
 INSERT INTO "OutboxConsumerCatalog"("consumer","consumerKind","consumerEffect","catalogVersion","active","updatedAt")
 VALUES ('webpush.notify','unordered','external',1,true,now()) ON CONFLICT DO NOTHING;
 INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
-SELECT 'UP4A-EV1','decision.published',p."orgId",p."id",900001,'USER-1','human','Decision','UP4A-D2' FROM "Project" p WHERE p."id"='p1';
+SELECT 'UP4A-EV1','decision.published',p."orgId",p."id",0,'USER-1','human','Decision','UP4A-D2' FROM "Project" p WHERE p."id"='p1';
 INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
-SELECT 'UP4A-EV2','decision.published',p."orgId",p."id",900002,'USER-1','human','Decision','UP4A-D2' FROM "Project" p WHERE p."id"='p1';
+SELECT 'UP4A-EV2','decision.published',p."orgId",p."id",1,'USER-1','human','Decision','UP4A-D2' FROM "Project" p WHERE p."id"='p1';
 INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
-SELECT 'UP4A-EV3','decision.published',p."orgId",p."id",900003,'USER-1','human','Decision','UP4A-D1' FROM "Project" p WHERE p."id"='p1';
+SELECT 'UP4A-EV3','decision.published',p."orgId",p."id",2,'USER-1','human','Decision','UP4A-D1' FROM "Project" p WHERE p."id"='p1';
 INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
-SELECT 'UP4A-EV4','decision.published',p."orgId",p."id",900004,'USER-1','human','Decision','UP4A-D1' FROM "Project" p WHERE p."id"='p1';
+SELECT 'UP4A-EV4','decision.published',p."orgId",p."id",3,'USER-1','human','Decision','UP4A-D1' FROM "Project" p WHERE p."id"='p1';
 -- round 5 (Codex): recovery-gap events with NO delivery row at all — one about the withdrawn
 -- UP4A-D1 (the migration must write the same cancelled tombstone the runtime cancellation
 -- writes, or the next recovery pass materializes it PENDING and nothing ever cancels it) and
 -- one about the LIVE UP4A-D2 (which must get NO tombstone — recovery legitimately owes it a
 -- pending delivery).
 INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
-SELECT 'UP4A-EV5','decision.published',p."orgId",p."id",900005,'USER-1','human','Decision','UP4A-D1' FROM "Project" p WHERE p."id"='p1';
+SELECT 'UP4A-EV5','decision.published',p."orgId",p."id",4,'USER-1','human','Decision','UP4A-D1' FROM "Project" p WHERE p."id"='p1';
 INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
-SELECT 'UP4A-EV6','decision.published',p."orgId",p."id",900006,'USER-1','human','Decision','UP4A-D2' FROM "Project" p WHERE p."id"='p1';
+SELECT 'UP4A-EV6','decision.published',p."orgId",p."id",5,'USER-1','human','Decision','UP4A-D2' FROM "Project" p WHERE p."id"='p1';
 INSERT INTO "OutboxDelivery"("id","eventId","projectId","consumer","consumerKind","streamPosition","deliveryAction","status","payload","updatedAt")
-VALUES ('UP4A-DEL1','UP4A-EV1','p1','webpush.notify','unordered',900001,'dispatch','pending','{"body":"stale announcement"}',now()),
+VALUES ('UP4A-DEL1','UP4A-EV1','p1','webpush.notify','unordered',0,'dispatch','pending','{"body":"stale announcement"}',now()),
        -- round 2 (Codex F4): a push that EXHAUSTED its retries before the deploy — the subject
        -- must reach it too, or an operator redrive would slip past the cancellation mark
-       ('UP4A-DEL2','UP4A-EV2','p1','webpush.notify','unordered',900002,'dispatch','dead','{"body":"stale announcement (dead)"}',now()),
+       ('UP4A-DEL2','UP4A-EV2','p1','webpush.notify','unordered',1,'dispatch','dead','{"body":"stale announcement (dead)"}',now()),
        -- round 4 (Codex): queued pushes about UP4A-D1 — a decision ALREADY withdrawn when the
        -- migration runs (the accepted partial/manual-apply shape). No future decisions.withdraw
        -- command will ever run for it, so the MIGRATION must perform the cancellation itself.
-       ('UP4A-DEL3','UP4A-EV3','p1','webpush.notify','unordered',900003,'dispatch','pending','{"body":"stale announcement (pre-withdrawn)"}',now()),
-       ('UP4A-DEL4','UP4A-EV4','p1','webpush.notify','unordered',900004,'dispatch','dead','{"body":"stale announcement (pre-withdrawn, dead)"}',now());
+       ('UP4A-DEL3','UP4A-EV3','p1','webpush.notify','unordered',2,'dispatch','pending','{"body":"stale announcement (pre-withdrawn)"}',now()),
+       ('UP4A-DEL4','UP4A-EV4','p1','webpush.notify','unordered',3,'dispatch','dead','{"body":"stale announcement (pre-withdrawn, dead)"}',now());
+-- Phase 6 unit 4d-i — the allocator is advanced PAST the hand-chosen positions, so the counter is
+-- never left behind its own stream (`ProjectEventStream_t4d_allocation_bound` states, at COMMIT,
+-- that it is ahead of every position the stream uses). Conditional, because
+-- `ProjectEventStream_t4d_allocation` refuses a non-increasing update. Then the seals go back on.
+INSERT INTO "ProjectEventStream" ("projectId","nextPosition") VALUES ('p1', 6)
+  ON CONFLICT ("projectId") DO UPDATE SET "nextPosition" = 6
+   WHERE "ProjectEventStream"."nextPosition" < 6;
+DO $do$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DomainEvent_t4d_envelope') THEN
+    EXECUTE 'ALTER TABLE "DomainEvent" ENABLE TRIGGER "DomainEvent_t4d_pairing_claimed"';
+    EXECUTE 'ALTER TABLE "DomainEvent" ENABLE TRIGGER "DomainEvent_t4d_envelope"';
+  END IF;
+END $do$;
 -- round 8 (Codex): the pre-withdrawn decision's OTHER stale surfaces. A second withdrawn
 -- decision with a UNIQUE title (UP4A-D4) carries an unambiguous legacy notice the migration
 -- must retire; UP4A-D3 stays PENDING sharing UP4A-D1's title, so D1's legacy notice is
@@ -4476,6 +4512,13 @@ VALUES ('UP4CII-CMD','project','org-legacy','p1','USER-1','decisions.approve','k
 INSERT INTO "DecisionApprovalRevision"("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
 VALUES ('UP4CI-REV','p1','UP4A-D2',99,'a',now(),'USER-1','UP4CII-CMD');
 UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='UP4A-D2', "completedAt"=now() WHERE "id"='UP4CII-CMD';
+-- #582's review round 19, finding 2 — AND THE APPROVAL MOVES ITS DECISION. This block asserts
+-- "the shape the REAL writer produces is accepted", and the real writer's shape gained a clause:
+-- a revision born FINALIZED must leave its decision `approved` in the same transaction, because
+-- `xmin` alone is satisfied by a no-op write and an approval that moves nothing is an approval
+-- nobody performed. Adding it here keeps this assertion about the real shape rather than about a
+-- shape the database no longer admits — which is the whole point of the pair above and below it.
+UPDATE "Decision" SET "status"='approved' WHERE "id"='UP4A-D2' AND "projectId"='p1';
 COMMIT;
 SQL
 assert "4c-ii: the accepted revision names the approval command it is the product of" \
@@ -4489,11 +4532,18 @@ assert "4c-ii: the accepted revision names the approval command it is the produc
 # the COUNT every open consultation is frozen against — the same denial the bare-revision arm
 # refuses, reached with a real receipt.
 assert_rejects "4c-ii F1: a SPENT approval receipt replayed onto a second revision" \
-  "INSERT INTO \"DecisionApprovalRevision\"(\"id\",\"projectId\",\"decisionId\",\"version\",\"optionKey\",\"approvedAt\",\"approvedById\",\"sourceCommandId\") VALUES ('UP4CII-REPLAY','p1','UP4A-D2',98,'a',now(),'USER-1','UP4CII-CMD')" \
+  "INSERT INTO \"DecisionApprovalRevision\"(\"id\",\"projectId\",\"decisionId\",\"version\",\"optionKey\",\"approvedAt\",\"approvedById\",\"sourceCommandId\") VALUES ('UP4CII-REPLAY','p1','UP4A-D2',100,'a',now(),'USER-1','UP4CII-CMD')" \
   "DecisionApprovalRevision_source_command_key"
 assert "4c-ii F1: the register still records exactly ONE revision for that receipt" \
   "SELECT COUNT(*)::text FROM \"DecisionApprovalRevision\" WHERE \"sourceCommandId\"='UP4CII-CMD';" \
   "1"
+# The replay is planted at version 100 — the HEAD — and not at 98, which is what it used to be.
+# #582 round 13, finding 5 installs a birth seal refusing any revision at or below the decision's
+# highest existing version (99 here), and a BEFORE trigger fires before the unique index is ever
+# consulted. At 98 the row was still refused, but by the wrong rule, and this assertion would have
+# passed for a reason that has nothing to do with a spent receipt. Planting it at the head isolates
+# the rule under test: the row is valid in every way EXCEPT that its receipt is already spent.
+
 # …and the index is PARTIAL, so the legacy rows this fixture's own pre-4c approvals left behind —
 # the ones 4c-i staged the column nullable for — still coexist. A non-partial unique would have
 # made every existing database unmigratable, which is the opposite of an additive migration.
@@ -4816,6 +4866,288 @@ if [ -e "$CNF_SENTINEL" ]; then
   echo "FAILED  upgrade-proof: these commands do not exist here, so whatever they were asserting did nothing:"
   sort -u "$CNF_SENTINEL" | sed 's/^/          /'
 fi
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# Phase 6 unit 4d-i — the BACKFILL and the KEPT DEFAULTS, over the legacy fixture (§C P42, §D)
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+#
+# 4d-i is additive and DARK: no contract, no command, no route, no reader. What it must prove on
+# an UPGRADE is therefore not that a new path works — there is none — but that the OLD paths are
+# untouched, which is exactly what the drain window rests on:
+#
+#   · the backfills gave every LEGACY row the value the new columns are supposed to mean;
+#   · the DEFAULTS hold, so a PREVIOUS-RELEASE writer that names none of the new columns still
+#     commits and lands the right value;
+#   · the projected registers EQUAL the tables they mirror over real legacy data, which is the
+#     claim every standing read in 4d-ii will rest on.
+#
+# These run over the SAME legacy fixture the rest of this proof built, after 4d-i landed in the
+# deferred ledger loop above.
+
+# ---- Phase 6 unit 4d-i round 21 (Codex F1 and F2): THE STREAM ADOPTION AUDIT -----------------
+# Round 20 added an audit over `ProjectEventStream` because the allocation seals presume each head
+# is already its stream's true next position. Round 21 found that the audit asked its question of
+# a SUBSET of what the seals govern, in two directions at once — it read FROM the register, so a
+# project with events and NO counter row was never visited, and it compared the HEAD where the
+# guarantee is CONTIGUITY, so a stream with an interior hole passed.
+#
+# Both are P1 because the seals make the state PERMANENT. `platform_t4d_stream_init` admits a new
+# stream only at 0 and only for a project with no events, so a counter-less project with events
+# can never be given an allocator once this migration commits; the allocation seal admits only
+# `OLD + 1`, so a wrong head can never be corrected; and neither seal can see a hole that is
+# already committed. The audit is the only moment the repair exists, which is why it is PROVEN
+# here rather than reasoned about.
+#
+# On its OWN database, pre-4d, because that is the only place the three shapes can be planted:
+# after 4d-i lands, every one of them is refused by a seal rather than by the audit.
+echo ""
+echo "=== Phase 6 4d-i (R21): the stream adoption audit, on a pre-4d ledger ==="
+DB3="${DB}_streams"
+PSQL3="psql -X -q -v ON_ERROR_STOP=1 -d $DB3"
+T4D_A="$MIG_DIR/20271220000000_phase6_t4d_i_dark_migration/migration.sql"
+$PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB3;" >/dev/null || exit 1
+$PSQL_ADMIN -c "CREATE DATABASE $DB3;" >/dev/null || exit 1
+t4d_r21_ready=1
+for d in $(ls -d "$MIG_DIR"/*/ | sort); do
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*) continue ;; esac
+  psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
+    || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
+done
+
+# the audit must ABORT, and BY ITS OWN DIAGNOSTIC — an abort from any other statement would pass
+# a `! psql` test while proving nothing, which is the abbreviation this PR's round 1 wrote an
+# oracle for.
+t4d_r21_must_abort() {
+  local label="$1" needle="$2" out
+  if out=$(psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$T4D_A" 2>&1); then
+    echo "FAILED  4d-i R21: $label — the migration APPLIED and the seals are now installed over it"
+    FAIL=1
+  elif ! printf '%s' "$out" | grep -q "$needle"; then
+    echo "FAILED  4d-i R21: $label — aborted, but not by the named diagnostic; got: $(printf '%s' "$out" | tail -2)"
+    FAIL=1
+  else
+    echo "ok      4d-i R21: $label"
+  fi
+}
+
+if [ "$t4d_r21_ready" = "1" ]; then
+  # ── (a) THE PREREQUISITE. `Project_ensure_event_stream` is the second of the two RAW triggers
+  # `20261015000000_phase2_event_envelope` installs, and `prisma db push` reproduces neither.
+  # Round 20 verified `DomainEvent_append_only` alone; without this one the database keeps
+  # PRODUCING counter-less projects, so refusing the already-broken ones is not enough.
+  $PSQL3 -c 'DROP TRIGGER "Project_ensure_event_stream" ON "Project";' >/dev/null \
+    || { echo "FAILED  4d-i R21: could not stage the missing-prerequisite shape"; FAIL=1; }
+  t4d_r21_must_abort "a database that still creates projects without a counter is refused by name" \
+    'Project_ensure_event_stream` is not installed'
+  $PSQL3 -c 'CREATE TRIGGER "Project_ensure_event_stream" AFTER INSERT ON "Project" FOR EACH ROW EXECUTE FUNCTION "project_ensure_event_stream"();' >/dev/null \
+    || { echo "FAILED  4d-i R21: could not restore the prerequisite trigger"; FAIL=1; }
+
+  # ── (a1) THE SAME PREREQUISITE, THE OTHER KIND OF RAW OBJECT (#582 round 25, finding 2). Round
+  # 21 enumerated that migration's TRIGGERS and called the inventory complete; the question is not
+  # what is a trigger but what `prisma db push` cannot reproduce, and it also owns the raw CHECK
+  # `DomainEvent_attribution_truth_table` — Prisma cannot express a CHECK at all. Without it an
+  # event may claim `actorKind = 'human'` with no `actorId`: this unit's envelope seal judges the
+  # actor pair only where a role is present, and the append-only trigger then makes the
+  # unattributable event permanent under every fact that cites it.
+  $PSQL3 -c 'ALTER TABLE "DomainEvent" DROP CONSTRAINT "DomainEvent_attribution_truth_table";' >/dev/null \
+    || { echo "FAILED  4d-i R21: could not stage the missing-CHECK shape"; FAIL=1; }
+  t4d_r21_must_abort "a database whose event attribution truth table is missing is refused by name" \
+    'DomainEvent_attribution_truth_table` is absent from "DomainEvent"'
+  $PSQL3 -c 'ALTER TABLE "DomainEvent" ADD CONSTRAINT "DomainEvent_attribution_truth_table" CHECK ("actorKind" IN (E'"'"'human'"'"', E'"'"'system'"'"') AND ("actorKind" <> E'"'"'human'"'"' OR "actorId" IS NOT NULL) AND ("actorKind" <> E'"'"'system'"'"' OR "systemActor" IS NOT NULL));' >/dev/null \
+    || { echo "FAILED  4d-i R21: could not restore the prerequisite CHECK"; FAIL=1; }
+
+  # ── (a2) THE CATALOG'S OWN POPULATION. Round 21's class, at the other end of the file: the
+  # catalog audit's three arms all scope to `coverageVersion IN (the generations this migration
+  # seeds)`, while `DomainEvent_t4d_envelope` resolves an event by whatever exact
+  # `(coverageVersion, effectKey)` it carries. A row in a third generation was therefore a
+  # dispatch policy no release compiled and no audit ever read. Planted in the `db push` shape —
+  # the table created from the model before any 4d guard exists, which is the only path that
+  # reaches it, since the write seal refuses the insert once 4d-i has run.
+  $PSQL3 >/dev/null <<'SQL' || { echo "FAILED  4d-i R21: the foreign-generation fixture was refused"; FAIL=1; }
+CREATE TABLE "ExternalEffectCatalog" (
+  "coverageVersion" TEXT NOT NULL, "effectKey" TEXT NOT NULL, "eventType" TEXT NOT NULL,
+  "invalidate" BOOLEAN NOT NULL, "pushRoles" JSONB, "pushFamily" TEXT,
+  "frozenAudience" BOOLEAN NOT NULL, "requiresPush" BOOLEAN NOT NULL,
+  "audience" TEXT, "pushBody" TEXT, "pairingRequired" BOOLEAN NOT NULL DEFAULT FALSE,
+  "retiredAt" TIMESTAMP(3),
+  CONSTRAINT "ExternalEffectCatalog_pkey" PRIMARY KEY ("coverageVersion","effectKey"));
+INSERT INTO "ExternalEffectCatalog"("coverageVersion","effectKey","eventType","invalidate","frozenAudience","requiresPush","pairingRequired")
+VALUES ('up4d-r21-a-generation-nobody-compiled','forged.key','forged.event',false,false,false,false);
+SQL
+  t4d_r21_must_abort "a catalog row in a generation this migration does not seed is refused" \
+    'up4d-r21-a-generation-nobody-compiled'
+  $PSQL3 -c 'DROP TABLE "ExternalEffectCatalog";' >/dev/null \
+    || { echo "FAILED  4d-i R21: could not clear the foreign-generation fixture"; FAIL=1; }
+
+  # ── (b) THE THREE SHAPES. UP4D-S1 holds a hole (events at 0 and 2, head 3) — the shape the
+  # round-20 audit accepted. UP4D-S2 has events and no counter, UP4D-S3 has neither; both are
+  # invisible to an audit that reads FROM `ProjectEventStream`, which the foreign keys make a
+  # SUBSET of `Project`.
+  $PSQL3 >/dev/null <<'SQL' || { echo "FAILED  4d-i R21: the three-shape fixture was refused"; FAIL=1; }
+INSERT INTO "Org"("id","name","slug") VALUES ('org-s21','Stream Org','stream-org-21');
+INSERT INTO "Project"("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+VALUES ('UP4D-S1','org-s21','Holed','S1','','Finishing','S1-01','01 Jan 2026','31 Dec 2026',0,0,0),
+       ('UP4D-S2','org-s21','Counterless','S2','','Finishing','S2-01','01 Jan 2026','31 Dec 2026',0,0,0),
+       ('UP4D-S3','org-s21','Bare','S3','','Finishing','S3-01','01 Jan 2026','31 Dec 2026',0,0,0);
+INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId")
+VALUES ('UP4D-S1-E0','test.up4d.r21','org-s21','UP4D-S1',0,'system','upgrade-proof','Project','UP4D-S1'),
+       ('UP4D-S1-E2','test.up4d.r21','org-s21','UP4D-S1',2,'system','upgrade-proof','Project','UP4D-S1'),
+       ('UP4D-S2-E0','test.up4d.r21','org-s21','UP4D-S2',0,'system','upgrade-proof','Project','UP4D-S2'),
+       ('UP4D-S2-E1','test.up4d.r21','org-s21','UP4D-S2',1,'system','upgrade-proof','Project','UP4D-S2');
+UPDATE "ProjectEventStream" SET "nextPosition"=3 WHERE "projectId"='UP4D-S1';
+DELETE FROM "ProjectEventStream" WHERE "projectId" IN ('UP4D-S2','UP4D-S3');
+SQL
+  t4d_r21_must_abort "a stream with an interior HOLE is refused (head 3 over events 0 and 2)" 'the stream has a HOLE'
+  t4d_r21_must_abort "a project with events and NO counter row is refused" 'UP4D-S2 (NO counter row, events through 1'
+  t4d_r21_must_abort "a project with no counter and no events is refused" 'UP4D-S3 (NO counter row, no events'
+
+  # ── (c) THE REPAIR THE MESSAGE NAMES MUST BE PERFORMABLE. The hole is closed by an INSERT at
+  # the missing position: the delivered `DomainEvent_append_only` refuses UPDATE and DELETE and
+  # admits INSERT, so re-numbering — the other repair — needs §P6T4D's bypass and moves positions
+  # ordered consumers have checkpointed on. An abort naming a repair the operator cannot perform
+  # is the round-19 finding-1 defect, so the proof performs exactly what the message says.
+  $PSQL3 >/dev/null <<'SQL' || { echo "FAILED  4d-i R21: the repair the abort NAMES could not be performed"; FAIL=1; }
+INSERT INTO "ProjectEventStream"("projectId","nextPosition") VALUES ('UP4D-S2',2),('UP4D-S3',0);
+INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId")
+VALUES ('UP4D-S1-E1','test.up4d.r21.gap','org-s21','UP4D-S1',1,'system','upgrade-proof','Project','UP4D-S1');
+SQL
+  if psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$T4D_A" >/dev/null 2>&1; then
+    echo "ok      4d-i R21: after the repair the abort NAMES, the migration applies"
+  else
+    echo "FAILED  4d-i R21: the named repair did not clear the audit"
+    FAIL=1
+  fi
+fi
+
+assert "4d-i: the migration is applied over the legacy fixture (its inventory is installed)" \
+  "SELECT (COUNT(*) > 60)::text FROM pg_trigger WHERE tgname LIKE '%\_t4d\_%' AND NOT tgisinternal;" \
+  "true"
+
+# ── P42, the BACKFILL half ─────────────────────────────────────────────────────────────────────
+assert "4d-i P42: every LEGACY approval revision was backfilled finalized = true (a past approval is final)" \
+  "SELECT COUNT(*)::text FROM \"DecisionApprovalRevision\" WHERE \"finalized\" IS NOT TRUE;" \
+  "0"
+assert "4d-i P42: every LEGACY spec row, material AND labour, was backfilled revisionFinalized = true" \
+  "SELECT (SELECT COUNT(*) FROM \"MaterialRequirementSpec\" WHERE \"revisionFinalized\" IS NOT TRUE)::text || '|' || (SELECT COUNT(*) FROM \"LabourRequirementSpec\" WHERE \"revisionFinalized\" IS NOT TRUE)::text;" \
+  "0|0"
+assert "4d-i P42: every LEGACY ChangeRequest carries the project of its own decision (no NULL, no drift)" \
+  "SELECT COUNT(*)::text FROM \"ChangeRequest\" cr LEFT JOIN \"Decision\" d ON d.\"id\" = cr.\"decisionId\" WHERE cr.\"projectId\" IS NULL OR cr.\"projectId\" IS DISTINCT FROM d.\"projectId\";" \
+  "0"
+
+# ── P42, the KEPT-DEFAULTS half: the PREVIOUS RELEASE still writes ─────────────────────────────
+# Each insert names NONE of 4d-i's new columns — it is the shape the currently-deployed build
+# emits — and each must COMMIT and land the value the drain depends on. RED against a migration
+# that added the columns NOT NULL without a default or a shim.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P42: a previous-release ChangeRequest insert (no projectId) was REFUSED"; FAIL=1; }
+INSERT INTO "ChangeRequest"("id","decisionId","reason","costImpact","timeImpactDays","status")
+VALUES ('UP4D-CR1','UP4A-D2','old writer names no project',0,0,'open');
+SQL
+assert "4d-i P42: the old-shape ChangeRequest COMMITTED and the shim filled its project from the decision" \
+  "SELECT (cr.\"projectId\" = d.\"projectId\")::text FROM \"ChangeRequest\" cr JOIN \"Decision\" d ON d.\"id\" = cr.\"decisionId\" WHERE cr.\"id\" = 'UP4D-CR1';" \
+  "true"
+
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P42: a previous-release Notification insert (no eventId, no kind) was REFUSED"; FAIL=1; }
+INSERT INTO "Notification"("id","projectId","text","color","time")
+VALUES ('UP4D-N1','p1','old writer names no event','blue','just now');
+SQL
+assert "4d-i P42: the old-shape notice COMMITTED with a NULL event binding, which the seal admits until 4d-iii" \
+  "SELECT (\"eventId\" IS NULL)::text FROM \"Notification\" WHERE \"id\" = 'UP4D-N1';" \
+  "true"
+
+# ── the REGISTERS equal the tables they mirror, over real legacy data ──────────────────────────
+assert "4d-i: ProjectOrg equals the Project tenancy it mirrors (row for row, org for org)" \
+  "SELECT COUNT(*)::text FROM \"Project\" p FULL JOIN \"ProjectOrg\" r ON r.\"projectId\" = p.\"id\" WHERE p.\"id\" IS NULL OR r.\"projectId\" IS NULL OR r.\"orgId\" IS DISTINCT FROM p.\"orgId\";" \
+  "0"
+assert "4d-i: ProjectUserStanding equals the ACTIVE memberships it mirrors" \
+  "SELECT COUNT(*)::text FROM (SELECT \"projectId\",\"userId\",\"role\" FROM \"Membership\" WHERE \"status\"='active' EXCEPT SELECT \"projectId\",\"userId\",\"role\" FROM \"ProjectUserStanding\") x;" \
+  "0"
+assert "4d-i: ProjectRoleStanding's architect count equals the COUNT it projects (zero, before the door retires)" \
+  "SELECT COALESCE(SUM(\"activeCount\"),0)::text FROM \"ProjectRoleStanding\" WHERE \"role\" = 'architect';" \
+  "0"
+assert "4d-i: UserIdentity equals the User display names it mirrors" \
+  "SELECT COUNT(*)::text FROM \"User\" u FULL JOIN \"UserIdentity\" i ON i.\"userId\" = u.\"id\" WHERE u.\"id\" IS NULL OR i.\"userId\" IS NULL OR i.\"displayName\" IS DISTINCT FROM u.\"name\";" \
+  "0"
+
+# ── the DOORS stand on the upgraded database, and say so by name ───────────────────────────────
+assert_rejects "4d-i: the architect DESIGNATION is reserved on the upgraded database" \
+  "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"ageDays\",\"authorId\",\"deciderKind\") VALUES ('UP4D-H1','p1','Reserved','Hall','pending',0,'USER-1','architect')" \
+  "Decision.deciderKind = architect is not writable yet"
+# The row moved out from under this assertion in round 19 (finding 2): the 4c-ii "real writer
+# shape" block above now leaves `UP4A-D2` APPROVED, because a revision born finalized must move its
+# decision. Driving an approved row to `awaiting_countersign` is refused by a t4a/t4b TRANSITION
+# seal, which sorts before `Decision_t4d_awaiting_reserved` and answers first — so this assertion
+# stopped measuring the door it names. It takes a decision the fixture leaves PENDING instead, and
+# the expectation stays strict rather than being widened to accept whichever seal replies: the
+# point is that the RESERVATION is what refuses, on a database where the transition itself is legal.
+assert_rejects "4d-i: the chain STATE is reserved on the upgraded database" \
+  "UPDATE \"Decision\" SET \"status\"='awaiting_countersign' WHERE \"id\"='UP4A-D5'" \
+  "awaiting_countersign is not writable yet|architect"
+assert_rejects "4d-i: an architect MEMBERSHIP is reserved on the upgraded database" \
+  "INSERT INTO \"Membership\"(\"id\",\"projectId\",\"userId\",\"role\",\"status\") VALUES ('UP4D-M1','p1','USER-1','architect','active')" \
+  "Membership.role = architect is not writable yet|frozen|duplicate"
+assert_rejects "4d-i: the audit register is append-only on the upgraded database" \
+  "DELETE FROM \"DecisionEvent\" WHERE \"decisionId\"='UP4A-D2'" \
+  "append-only|approval evidence"
+assert_rejects "4d-i: a projected register refuses a statement someone typed" \
+  "UPDATE \"ProjectOrg\" SET \"orgId\" = \"orgId\" WHERE \"projectId\" = 'p1'" \
+  "trigger depth|projected"
+assert_rejects "4d-i: the retirement marker is written only by the retiring migration" \
+  "INSERT INTO \"RolloutRetirement\"(\"unit\",\"retiredBy\") VALUES ('phase6-4d','an operator')" \
+  "written only by the retiring migration"
+
+# ── the RELEASE LEASE, the drain attestation's trusted autonomous evidence (P38, §D) ───────────
+# The register is DARK — 4d-ii writes it — so this proves the SHAPE and the SEAL an upgraded
+# database carries, in exactly P38's four clauses: identity UPDATE refused, a `leaseUntil`
+# decrease refused, DELETE and TRUNCATE refused, THE RENEWAL ADMITTED. The last clause is the one
+# a strictness-only seal passes and a shippable one must not: a freeze that refused its own
+# writer's renewal is a freeze 4d-ii could not start a process against.
+# THE DARK WINDOW FIRST (#582's review round 36, finding 3). Until 4d-ii installs the sanctioned
+# startup writer there is NO writer for this table, and an INSERT admitted in that window is
+# PERMANENT — the seals below refuse DELETE and refuse any `leaseUntil` decrease, so 4d-iii's
+# drain preflight would read a planted row as a still-serving previous release forever. This
+# script itself was registering a lease through that open door, which is how the hole stayed
+# invisible: the proof depended on it.
+assert_rejects "4d-i P38: the dark window admits NO lease — there is no sanctioned writer yet" \
+  "INSERT INTO \"ReleaseLease\" (\"instanceId\",\"catalogVersion\",\"release\",\"startedAt\",\"leaseUntil\") VALUES ('UP4D-DARK', 1, 'r-ghost', now(), now() + interval '10 years')" \
+  "takes no INSERT yet"
+
+# WRITER ACTIVATION. 4d-ii installs `platform_t4d_ii_writers_installed()` beside its startup
+# writer and its validation; 4d-i's reservation stands down the moment that function exists, and
+# a 4d-i replay over such a database drops the door rather than re-installing it. Everything
+# below is therefore the WRITER-ERA world, which is the world P38's four clauses are about.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P38: 4d-ii's writer witness could not be installed"; FAIL=1; }
+CREATE OR REPLACE FUNCTION platform_t4d_ii_writers_installed() RETURNS BOOLEAN LANGUAGE sql AS $$ SELECT true $$;
+SQL
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P38: the replay did not stand the reservation down at writer activation"; FAIL=1; }
+DROP TRIGGER IF EXISTS "ReleaseLease_t4d_insert_reserved" ON "ReleaseLease";
+SQL
+
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P38: a serving process could not register its lease"; FAIL=1; }
+INSERT INTO "ReleaseLease" ("instanceId","catalogVersion","release","startedAt","leaseUntil")
+  VALUES ('UP4D-INST', 2, 'r-2026.09.01', now(), now() + interval '30 minutes');
+SQL
+# the renewal runs in its own statement — `assert` compares the WHOLE `-tA` output, and an
+# UPDATE folded into the same `-c` prints its `UPDATE 1` command tag above the SELECT's row.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P38: the RENEWAL was REFUSED — a freeze that refuses its own writer is a freeze 4d-ii cannot ship against"; FAIL=1; }
+UPDATE "ReleaseLease" SET "leaseUntil" = "leaseUntil" + interval '30 minutes'
+ WHERE "instanceId" = 'UP4D-INST';
+SQL
+assert "4d-i P38: the RENEWAL is admitted — leaseUntil moves forward while the process serves" \
+  "SELECT (\"leaseUntil\" > now() + interval '45 minutes')::text FROM \"ReleaseLease\" WHERE \"instanceId\"='UP4D-INST';" \
+  "true"
+assert_rejects "4d-i P38: a LIVE lease may not be re-versioned into the minimum" \
+  "UPDATE \"ReleaseLease\" SET \"catalogVersion\" = 1 WHERE \"instanceId\"='UP4D-INST'" \
+  "identity .* is FROZEN"
+assert_rejects "4d-i P38: a live lease may not be SHORTENED into looking expired" \
+  "UPDATE \"ReleaseLease\" SET \"leaseUntil\" = \"startedAt\" WHERE \"instanceId\"='UP4D-INST'" \
+  "may not move BACKWARD"
+assert_rejects "4d-i P38: a lease expires and stays as history — it is never deleted" \
+  "DELETE FROM \"ReleaseLease\" WHERE \"instanceId\"='UP4D-INST'" \
+  "may not be DELETED"
+assert_rejects "4d-i P38: the lease register cannot be truncated away" \
+  "TRUNCATE \"ReleaseLease\"" \
+  "never truncated|truncate"
+
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."
 else

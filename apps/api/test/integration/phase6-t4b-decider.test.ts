@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { wipeDecisionEvents, plantLegacyDecisionAudit } from './fixtures';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
@@ -199,8 +200,14 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     });
     expect(draftRes.status).toBe(201);
     const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId, title: 'Plant-then-convert' } });
-    // plant an approval-shaped DecisionEvent while the head is still 'pending' (no reverse seal fires)
-    await t.prisma.decisionEvent.create({ data: { decisionId: d.id, type: 'approved', actor: 'X', actorName: 'X', actorRole: 'pmc' } });
+    // plant an approval-shaped DecisionEvent while the head is still 'pending' (no reverse seal
+    // fires) — through the NAMED bypass since #582's review round 24, finding 1: the
+    // correspondence refuses a governed audit kind in a state its table does not pair it with, and
+    // (`approved`, `pending`) is exactly the plant this arm needs. The refusal is the finding; the
+    // arm is about what the RECORDED-entry seal does with such evidence once it exists, so the
+    // plant declares itself rather than the arm losing its subject.
+    await plantLegacyDecisionAudit(t.prisma, (tx) =>
+      tx.decisionEvent.create({ data: { decisionId: d.id, type: 'approved', actor: 'X', actorName: 'X', actorRole: 'pmc' } }));
     // the ENTRY into `recorded` verifies zero approval children — the conversion is refused
     await expect(
       t.prisma.$executeRawUnsafe(`UPDATE "Decision" SET "deciderKind" = 'none', "status" = 'recorded', "photoSwatch" = NULL WHERE "id" = '${d.id}'`),
@@ -536,7 +543,7 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } })).status).toBe('recorded');
     // cleanup: the unpublished record draft is discardable (its drafted/draft_updated events
     // are not approval evidence); the temp identity leaves
-    await t.prisma.decisionEvent.deleteMany({ where: { decisionId: d.id } });
+    await wipeDecisionEvents(t.prisma, { decisionId: d.id });
     await t.prisma.decision.delete({ where: { id: d.id } });
     await t.prisma.membership.delete({ where: { projectId_userId: { projectId, userId: tempId } } });
     await t.prisma.user.delete({ where: { id: tempId } });
@@ -692,7 +699,7 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     expect(after.deciderKind).toBe('none');
     expect(after.photoSwatch).toBeNull();
     // cleanup: the unpublished record draft is discardable (no approval evidence)
-    await t.prisma.decisionEvent.deleteMany({ where: { decisionId: d.id } });
+    await wipeDecisionEvents(t.prisma, { decisionId: d.id });
     await t.prisma.decision.delete({ where: { id: d.id } });
   });
 
@@ -852,7 +859,7 @@ describe('Phase 6 task 4b — decider model + record-only + audience (live PG)',
     const other = await patch(engBToken)(`/projects/${projectId}/decisions/${d.id}/draft`, { title: 'not yours' });
     expect(other.status).toBe(403);
     // cleanup (an unpublished draft is discardable)
-    await t.prisma.decisionEvent.deleteMany({ where: { decisionId: d.id } });
+    await wipeDecisionEvents(t.prisma, { decisionId: d.id });
     await t.prisma.decisionOption.deleteMany({ where: { decisionId: d.id } });
     await t.prisma.decision.delete({ where: { id: d.id } });
     await t.prisma.membership.delete({ where: { projectId_userId: { projectId, userId: tempId } } });

@@ -34,7 +34,11 @@ describe('phase 1 baseline characterization (integration)', () => {
     await t.prisma.$transaction([
       t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } }),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_append_only"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_correspondence"'),
       t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId } } }),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_correspondence"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_append_only"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
       // Phase 6 unit 4b: a PUBLISHED parent's options are frozen in ANY transaction — the
       // destructive reset disables the freeze by name, exactly like the seals below.
@@ -158,9 +162,9 @@ describe('phase 1 baseline characterization (integration)', () => {
     // scheduling or service code — the index is the backstop even for raw writes
     expect((await post(`/projects/${f.projectA.id}/decisions`, decisionInput('Veneer finish'))).status).toBe(201);
     const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId: f.projectA.id, title: 'Veneer finish' } });
-    await t.prisma.changeRequest.create({ data: { decisionId: d.id, reason: 'first open', costImpact: 0, timeImpactDays: 0 } });
+    await t.prisma.changeRequest.create({ data: { projectId: f.projectA.id, decisionId: d.id, reason: 'first open', costImpact: 0, timeImpactDays: 0 } });
     await expect(
-      t.prisma.changeRequest.create({ data: { decisionId: d.id, reason: 'second open', costImpact: 0, timeImpactDays: 0 } }),
+      t.prisma.changeRequest.create({ data: { projectId: f.projectA.id, decisionId: d.id, reason: 'second open', costImpact: 0, timeImpactDays: 0 } }),
     ).rejects.toMatchObject({ code: 'P2002' });
     const rows = await t.prisma.changeRequest.findMany({ where: { decisionId: d.id } });
     expect(rows).toHaveLength(1);

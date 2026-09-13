@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { plantLegacyEvent, createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { emitEvent } from '../../src/platform/events';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { OutboxOperationsService } from '../../src/platform/outbox/outbox-operations.service';
@@ -83,7 +83,7 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
   };
 
   const emit = (projectId: string, entityId: string, over: Record<string, unknown> = {}) =>
-    t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId, effectKey: 'decision.approved', dispatch: {}, ...over }));
+    t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId, effectKey: 'decision.published.record', dispatch: {}, ...over }));
 
   const deliveryFor = (consumer: string, eventId: string) =>
     t.prisma.outboxDelivery.findFirstOrThrow({ where: { consumer, eventId } });
@@ -107,7 +107,7 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
 
     // a rolled-back mutation writes NO event AND NO deliveries — they share the transaction
     await expect(t.prisma.$transaction(async (tx) => {
-      await emitEvent(tx, { projectId: p, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-rb', effectKey: 'decision.approved', dispatch: {} });
+      await emitEvent(tx, { projectId: p, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: 'D-rb', effectKey: 'decision.published.record', dispatch: {} });
       throw new Error('boom');
     })).rejects.toThrow('boom');
     expect(await t.prisma.outboxDelivery.count({ where: { projectId: p, eventId: { not: eventId } } })).toBe(0);
@@ -394,22 +394,29 @@ describe('PR C Task 3 — external-effect cutover seal (live PG)', () => {
     coverage: string | null, status: 'pending' | 'leased' = 'pending', payload = '{"legacy":"body"}',
   ): Promise<void> => {
     const intent = coverage === null ? 'NULL' : `'${JSON.stringify({ effectKey: 'compat.task6', coverageVersion: coverage, invalidate: true })}'::jsonb`;
-    await t.prisma.$executeRawUnsafe(
+    // Phase 6 unit 4d-i — a LEGACY-SHAPE plant under the NAMED BYPASS. These are pre-cutover rows
+    // whose POSITION is part of the sentence (the seal's targets sit at chosen coordinates), and
+    // a pre-4d shape cannot satisfy the 4d envelope seal by construction. The bypass names the
+    // four triggers it turns off and sets the allocator past the plant before turning them back
+    // on — never an implicit hole.
+    await plantLegacyEvent(t.prisma, projectId, pos, async (tx) => {
+    await tx.$executeRawUnsafe(
       `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent") ` +
       `VALUES ('${evId}','decision.approved',1,'${f.orgA.id}','${projectId}',${pos},'system','system:seed','Decision','D',${intent})`,
     );
     const leaseCols = status === 'leased' ? ',"leaseOwner","leaseExpiresAt"' : '';
     const leaseVals = status === 'leased' ? ", 'sender-x', now() + interval '30 seconds'" : '';
-    await t.prisma.$executeRawUnsafe(
+    await tx.$executeRawUnsafe(
       `INSERT INTO "OutboxDelivery" ("id","eventId","projectId","consumer","consumerKind","deliveryAction","streamPosition","status","payload","updatedAt"${leaseCols}) ` +
       `VALUES ('${delId}','${evId}','${projectId}','socket.invalidation','unordered','dispatch',${pos},'${status}','${payload}'::jsonb, now()${leaseVals})`,
     );
     // the push delivery is a recorded no-op (a compat/legacy event carries no push) — present so the
     // seal's gap check sees every active external consumer covered for this event.
-    await t.prisma.$executeRawUnsafe(
+    await tx.$executeRawUnsafe(
       `INSERT INTO "OutboxDelivery" ("id","eventId","projectId","consumer","consumerKind","deliveryAction","streamPosition","status","updatedAt") ` +
       `VALUES ('${delId}-push','${evId}','${projectId}','webpush.notify','unordered','noop',${pos},'succeeded', now())`,
     );
+    });
   };
 
   const seal = () => ops.sealExternal({ operatorIdentity: 'ops@vitan.in', reason: 'cutover' });
@@ -474,18 +481,40 @@ describe('PR C Task 3 — external-effect cutover seal (live PG)', () => {
     const p = await freshProject();
     await seal();
     const intent = JSON.stringify({ effectKey: 'decision.approved', coverageVersion: effectCoverageVersion(), invalidate: true });
-    // null intent → refused by the seal trigger
+    // Phase 6 unit 4d-i — both arms are LEGACY-SHAPE plants at chosen positions, so both run under
+    // the NAMED BYPASS. The subject here is the CUTOVER seal's intent rule; the 4d envelope seal
+    // would otherwise answer first and the arm would stop measuring what it names.
+    // TWO SCOPED PLANTS, not one (#582's review round 22, finding 1). The bypass is now one
+    // interactive transaction, and a refused statement ABORTS a PostgreSQL transaction — so the
+    // "refused, then a valid one commits" pair cannot share a plant: every statement after the
+    // refusal would fail with `current transaction is aborted` and the arm would pass for the
+    // wrong reason. Each probe therefore gets its own bypass, which is also the truer shape: they
+    // are two independent writes against the sealed cutover, not one compound act.
+    //
+    // The refusal is asserted on the WHOLE call, because that is where it now surfaces: the
+    // rejection rolls the transaction back, which restores the four seals — the property this
+    // finding is about — and re-raises.
     await expect(
-      t.prisma.$executeRawUnsafe(
-        `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId") ` +
-        `VALUES ('seal-null-after','decision.approved',1,'${f.orgA.id}','${p}',300,'system','system:seed','Decision','D')`,
-      ),
+      plantLegacyEvent(t.prisma, p, 300, async (tx) => {
+        // null intent → refused by the seal trigger
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId") ` +
+          `VALUES ('seal-null-after','decision.approved',1,'${f.orgA.id}','${p}',300,'system','system:seed','Decision','D')`,
+        );
+      }),
     ).rejects.toThrow(/cutover is sealed/);
+    // and the bypass left the ledger SEALED behind it — the rollback is the point, so it is
+    // asserted rather than assumed.
+    expect(await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT count(*) AS n FROM pg_trigger WHERE tgname IN ('DomainEvent_t4d_envelope','DomainEvent_t4d_pairing_claimed') AND tgenabled <> 'O' AND NOT tgisinternal`,
+    )).toEqual([{ n: 0n }]);
     // a valid current-intent event still commits
-    await t.prisma.$executeRawUnsafe(
-      `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent") ` +
-      `VALUES ('seal-ok-after','decision.approved',1,'${f.orgA.id}','${p}',301,'system','system:seed','Decision','D','${intent}'::jsonb)`,
-    );
+    await plantLegacyEvent(t.prisma, p, 301, async (tx) => {
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent") ` +
+        `VALUES ('seal-ok-after','decision.approved',1,'${f.orgA.id}','${p}',301,'system','system:seed','Decision','D','${intent}'::jsonb)`,
+      );
+    });
     expect(await t.prisma.domainEvent.findUnique({ where: { eventId: 'seal-ok-after' } })).not.toBeNull();
   });
 

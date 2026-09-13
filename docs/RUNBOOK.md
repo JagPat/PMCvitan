@@ -1175,6 +1175,406 @@ pre-4c approval and a lie for a post-4c one, and the provenance trigger judges o
 nulled row would keep its place in the count while becoming unprovable, which is the precise
 condition this seal exists to prevent.
 
+## §P6T4D. Phase 6 unit 4d-i — the deploy aborts on a reserved `architect` role
+
+`prisma migrate deploy` stops with a message beginning `phase6 4d-i ABORT:` and naming a count of
+`Membership` and `User` rows that already spell the role `architect`, with up to ten of each.
+
+### 4d-i is TWO migrations, and the recovery names the one that failed
+
+The unit ships as two files applied in order:
+
+| order | migration | what it carries |
+|---|---|---|
+| 1 | `20271220000000_phase6_t4d_i_dark_migration` | Part 0's retirement marker and its seals, the shared refusal function and the two orgs-owned architect-STANDING doors with their diagnostic-first audits, the four adopted platform registers (`ProjectOrg`, `ProjectRoleStanding`, `ProjectUserStanding`, `UserIdentity`) with their writers, backfills and baseline audits, `OrgUserAuthority`, the orgs-owned `MembershipTransition` fact and the membership seals around it, `ExternalEffectCatalog` with both seeded coverage generations, `ReleaseLease`, the generic pairing mechanism (`DomainEventPairingClaim`, `platform_claim_event_pairing`, `DomainEvent_t4d_pairing_claimed`), and the WHOLE KERNEL — the envelope columns and `DomainEvent_t4d_envelope`, the five `ProjectEventStream_t4d_*` allocation seals (preceded by the stream ADOPTION audit: every project has a counter, at its stream's true next position, over positions contiguous from 0), the notice binding, and the `platform_tx_*` / `platform_role_*` reads. It also VERIFIES, rather than installing, the two RAW triggers of `20261015000000_phase2_event_envelope` that `prisma db push` does not reproduce and that 4d-i seals on top of — `DomainEvent_append_only` and `Project_ensure_event_stream` — and refuses to commit without either |
+| 2 | `20271221000000_phase6_t4d_i_decision_facts` | the two Decision CHAIN doors, Part 2's enum values, the three decisions-owned fact tables with their seven obligations (`DecisionForward_t4d_reserved` among them), the 4d-only columns added to `ChangeRequest`, `DecisionApprovalRevision`, the two consultation tables and the two requirement-spec tables with their legacy-shape audit, the `DecisionEvent` audit register's append-only and correspondence seals, the delivered 4b/4c seals widened with their architect arms, and the approval finality key |
+
+They are separate because the dependency runs one way only: the fact seals read the registers, and
+no register reads a fact table. The first half therefore applies and stands alone; the second
+applies on top of it.
+
+### The deploy stops with `could not obtain the deployment window`
+
+Each half opens by taking, in one all-or-nothing `NOWAIT` acquisition, every pre-existing table it
+will lock — seven in the registers half, nine in the decisions half. The acquisition never WAITS,
+so this migration can never be the blocked party in a deadlock with a serving command; instead it
+retries every 0.2s and, after 600 attempts (about two minutes), **fails closed**:
+
+```
+phase6 4d-i (registers half): could not obtain the deployment window on the seven pre-existing
+tables after 600 attempts — retry the deploy when writer traffic quiets.
+```
+
+**Nothing has been changed** — the whole transaction rolled back and the migration is unrecorded.
+The repair is to re-run the deploy at a quieter moment. There is no database state to inspect or
+undo. This message replaces the older failure mode, in which the deploy and a user's command could
+each hold what the other needed and PostgreSQL aborted one of them (usually the user's) with a bare
+`deadlock detected`.
+
+### The deploy stops on a `"ReleaseLease" takes no INSERT yet` refusal
+
+`ReleaseLease` is written by the startup writer that phase 6 unit **4d-ii** installs. Until that
+unit ships there is no sanctioned writer, and 4d-i reserves the table's INSERT for the whole dark
+window — because `ReleaseLease_t4d_frozen` refuses DELETE and refuses any `leaseUntil` decrease, so
+a row planted in that window is permanent, and 4d-iii's drain preflight would read it as a
+still-serving previous release forever.
+
+If a deploy or a script hits this refusal, the row it was trying to write is not one anything
+should be writing yet — do not disable the door to get past it. The door stands down on its own the
+moment `platform_release_lease_writer_installed()` exists, which 4d-ii creates alongside the writer
+and its validation; a 4d-i replay over such a database drops the reservation rather than
+re-installing it.
+
+**This matters for recovery.** Prisma records each migration separately, so a
+`migrate resolve --rolled-back` must name THE HALF THAT FAILED. Resolving the other one leaves the
+real failure recorded and the next deploy stops at P3009 again — on a migration the operator
+believes they already cleared. `scripts/migrate.sh` reads the failed name out of Prisma's own
+output and prints it back; the steps below spell out which half each abort comes from.
+
+Every abort described in this section EXCEPT the two named under "the decisions half" below comes
+from the FIRST migration.
+
+### What happened, and what did NOT happen
+
+4d-i RESERVES the architect chain: between this migration and 4d-iii no row may carry
+`Membership.role = 'architect'`, `User.role = 'architect'`, `Decision.deciderKind = 'architect'` or
+`Decision.status = 'awaiting_countersign'`, and no `DecisionForward` row may be written. The
+reservation exists because the chain's seals are installed here while the SERVICE that understands
+them lands in 4d-ii; a row that entered the state in between would sit in a state nothing could
+resolve.
+
+`Membership.role` and `User.role` are unconstrained text columns. Nothing ever validated the value
+`architect`, because no vocabulary admitted it — so a row could already spell it, and the
+reservation, which judges only NEW rows, would leave it in place and arm the chain the instant the
+role is understood. The migration therefore installs the reservation doors FIRST (taking the locks
+that stop every concurrent writer), then counts, then aborts if the count is not zero.
+
+**Nothing was installed.** The abort rolls the whole migration back: no doors, no
+`RolloutRetirement` table, no new enum values, no registers. What DOES survive is Prisma's record
+of a FAILED attempt, which is why a plain redeploy stops at P3009.
+
+That guarantee rests on the migration's OWN `BEGIN`/`COMMIT`, not on the runner (#582's review
+round 3, finding 1). This paragraph previously said "PostgreSQL DDL is transactional", which is
+true of a statement and says nothing about a FILE: Prisma documents that it does not wrap
+migrations in a transaction, so under an autocommitting runner the doors and trigger replacements
+created before the abort would have stayed committed while the deploy reported failure — and this
+sentence would have been telling you something untrue at the exact moment you were relying on it.
+The file now opens its own transaction, and the seal-stripped suite proves it both ways: the
+migration applies wrapped, and a raise injected after its last statement leaves no trigger, no
+table and no function behind.
+
+**The audit counts rows in ANY status.** The ordinary team removal is soft — it sets
+`status = 'removed'` and leaves `role` in place — so a departed architect aborts identically to an
+active one. That is deliberate: a soft-removed row can be restored, and a restore past the
+reservation is exactly what it must not be able to do.
+
+### A DIFFERENT abort: an account whose identity cannot be projected
+
+`prisma migrate deploy` may instead stop with `phase6 4d-i ABORT:` naming a count of accounts whose
+`User.name` is blank or whitespace-only, and listing their ids.
+
+`UserIdentity` is the register every 4d fact resolves its frozen actor NAME through, and its
+`displayName` is non-blank by CHECK. An account whose name cannot be projected has no row there,
+and from 4d-ii `phase6_t4d_actor_bound` would refuse that user's otherwise-authorized forward,
+countersign or membership command for a reason no message names. The first version of this
+migration FILTERED those accounts out and reported success (#582's review round 3, finding 2),
+which moved the failure months later and into a different subsystem.
+
+**Repair:** give each named account a real display name and redeploy —
+`UPDATE "User" SET "name" = '<real name>' WHERE "id" = '<id>';` — then resolve the failed migration
+as below. `User.name` has no non-blank constraint today and `ensure-accounts.ts` does not validate
+`ACCOUNTS_JSON` names, so a blank can arrive from provisioning as well as from history.
+
+### Repair — a RE-ROLE, never a removal
+
+The abort names TWO tables and they take TWO DIFFERENT repairs. Saying "the team role command"
+for both was a recovery that could not be followed (#582's review round 1, finding 17): an
+operator who re-roled the membership, resolved the failed migration and redeployed would abort on
+the same `User` row, forever.
+
+1a. **`Membership` rows — the ordinary team role command.** Move each named `Membership` to the
+   role the member actually holds. A row that never legitimately existed may instead be deleted,
+   subject to the delivered 4b holder guards, which refuse deleting the named holder of an open
+   decision — re-role that one.
+
+   Do NOT soft-remove instead: the audit counts removed rows too, and the next deploy would abort
+   on exactly the same row.
+
+1b. **`User` rows — a direct, audited statement.** `User.role` has NO writer. It is set once, when
+   the member is created (`apps/api/src/orgs/members.service.ts`), and no command, route or CLI
+   updates it afterwards — `MembersService.updateRole` writes `Membership.role` alone. So there is
+   no operation to point at, and this half is performed as SQL, one statement per row from the
+   abort sample:
+
+   ```sql
+   UPDATE "User" SET "role" = '<the role that member actually holds>'
+    WHERE "id" = '<the id from the abort sample>' AND "role" = 'architect';
+   ```
+
+   Per row and keyed by id, never a blanket `UPDATE … WHERE role = 'architect'`: the column
+   records what each individual person is, and one sweep would flatten several different answers
+   into whichever role was typed. The `AND "role" = 'architect'` guard makes the statement a no-op
+   if someone else already repaired that row.
+
+   The doors rolled back with the aborted transaction (see above), so this UPDATE meets no seal.
+   After 4d-i has SUCCEEDED, `User_t4d_architect_reserved` stands and the same statement in the
+   other direction — a row moved INTO `architect` — is refused until 4d-iii retires it.
+
+2. **Clear the failed attempt.**
+
+   ```
+   prisma migrate resolve --rolled-back 20271220000000_phase6_t4d_i_dark_migration
+   ```
+
+   Without this the next deploy stops at P3009: the schema rolled back, but the failed attempt is
+   still recorded. This abort comes from the FIRST half, so that is the name to resolve — see
+   "4d-i is TWO migrations" above.
+
+3. **Redeploy.** The audit now sees zero and the reservation installs.
+
+### Deploying 4d-i RESEALS the external-effect cutover
+
+4d-i changes the compiled `effectCoverageVersion()`, and `OutboxBootstrap`
+refuses to start when `OUTBOX_SENDER_MODE=outbox` and the persisted
+`OutboxCutoverState` seal names a different coverage:
+
+```
+OUTBOX_SENDER_MODE=outbox seal coverage <old> != compiled catalog <new>
+  — reseal (in legacy/shadow) after the external-effect catalog changed
+```
+
+That is the gate working, not a fault. 4d-i takes the same sequence 4d-ii takes:
+
+1. deploy the 4d-i build with `OUTBOX_SENDER_MODE=legacy` (or `shadow`);
+2. `outbox:status` clean, then `outbox:seal-external` — this records the NEW
+   coverage in the singleton seal;
+3. restart with `OUTBOX_SENDER_MODE=outbox`; startup verifies the seal.
+
+The seeded `ExternalEffectCatalog` rows are a DIFFERENT mechanism and do not
+substitute for this: two coverage generations keep a still-serving previous
+release's events resolvable through the drain, while the cutover seal is what
+lets the relay be the sole sender.
+
+Since #582's review round 18 the two generations no longer say the same thing.
+Four keys — `activity.created`, `decision.published`, `inspection.created` and
+`inspection.approved` — were single keys covering a silent branch AND an
+announcing one; this release splits each in two, so the announcing half now OWES
+its push. The OUTGOING generation is therefore seeded with `requiresPush = false`
+at those four and without the four added `.init`/`.record`/`.closing` keys, which
+is what keeps a previous-release record publication, participant checklist
+initialisation and closing approval committing for the whole drain. If you see an
+envelope refusal naming one of those four during a drain, the outgoing generation
+is missing or mis-seeded — check `ExternalEffectCatalog` for BOTH versions before
+anything else. The migration cannot write the seal — the
+seal is a statement about the PROCESS's compiled catalog, and only the process
+can make it.
+
+### A catalog row in a generation this migration does not seed
+
+The abort begins `phase6 4d-i ABORT: N "ExternalEffectCatalog" row(s) sit in a coverage
+generation this migration does not seed` and names each foreign `coverageVersion` with its row
+count. 4d-i seeds exactly two generations — the one this release compiles and the outgoing one —
+and until 4d-iii retires the unit those are the only generations anything has written. A row
+anywhere else is a dispatch policy no release computed, and `DomainEvent_t4d_envelope` will
+resolve an event against it by the exact `(coverageVersion, effectKey)` the event carries.
+
+**Repair — remove the rows.** The catalog's write seal admits writes only under
+`vitan.phase6_4d_catalog`, so this runs in one transaction that says so:
+
+```sql
+BEGIN;
+SET LOCAL vitan.phase6_4d_catalog = 'on';
+DELETE FROM "ExternalEffectCatalog" WHERE "coverageVersion" = '<the named version>';
+COMMIT;
+```
+
+(Before 4d-i has ever applied, the seal does not exist yet and the bare `DELETE` is enough.) If
+the named version is one a release of yours genuinely serves, do not delete it — that is a
+deploy ordering problem, not a repair: the release that computes it must seed it through its own
+migration. On a database that has genuinely run 4d-iii, restore its `RolloutRetirement` marker
+instead; this audit is marker-gated because after retirement a third generation is 4d-ii's own
+and entirely legitimate.
+
+### The decisions half: two more aborts, and they resolve the OTHER name
+
+`20271221000000_phase6_t4d_i_decision_facts` carries two audits of its own, both against the
+`prisma db push` / P3005 baseline where its tables and columns can exist before any 4d trigger
+does:
+
+- `dark fact table(s) already hold rows before this unit seals them` — `DecisionForward`,
+  `DecisionCountersign` or `DecisionStrandedResolution` is non-empty. These tables have no
+  sanctioned writer until 4d-ii, so a row present now was validated by none of the eligibility,
+  pairing or provenance triggers the file installs, and the append-only seal would make it
+  permanent evidence of an act nobody performed. **Remove the named rows.**
+
+  The REGISTERS half carries the same audit over the dark tables IT creates —
+  `MembershipTransition`, `DomainEventPairingClaim` and `ReleaseLease` — and aborts with
+  `dark table(s) already hold rows before this unit seals them`. Same repair, and the same
+  `migrate resolve --rolled-back` on the FIRST name. `ReleaseLease` is the one to read carefully:
+  its seals refuse DELETE and refuse any `leaseUntil` decrease, so a row adopted here can never be
+  removed or shortened afterwards and 4d-iii's drain preflight would read it as a previous-release
+  process that is still serving, forever. Clear it before the migration adopts it, not after.
+- `row(s) already carry this unit's 4d-only columns before it seals them` — a `ChangeRequest`,
+  `DecisionApprovalRevision`, `DomainEvent`, `Notification` or consultation row is already in a
+  4d shape. **Reset each named row to its legacy shape**, using the script below.
+
+#### The legacy-shape repair, executable as written
+
+**Why it is a script and not a sentence** (#582's review round 19, finding 1). The earlier text
+here said "reset each named row" and named ONE blocking trigger. Several tables are append-only at
+the DELIVERED layer, so the reset an operator typed was refused and the next deploy failed on the
+same rows. Two things changed: the `DomainEvent` and `Notification` arms MOVED to the registers
+half, so their abort rolls that file back and its seals are never committed; and what remains is
+given here as one transaction that disables each blocking trigger by name and re-enables it.
+
+Run it against the deploy database, adjusting the `WHERE` clauses to the ids the abort named — it
+resets nothing it is not pointed at:
+
+```sql
+BEGIN;
+  ALTER TABLE "DecisionConsultation"         DISABLE TRIGGER "DecisionConsultation_t4c_append_only";
+  ALTER TABLE "DecisionConsultationResponse" DISABLE TRIGGER "DecisionConsultationResponse_t4c_append_only";
+
+  UPDATE "ChangeRequest" SET "origin" = 'standard', "revisionId" = NULL,
+         "sourceCommandId" = NULL, "requestedByRole" = NULL, "requestedByName" = NULL,
+         "resolvedByCommandId" = NULL, "resolvedByRole" = NULL, "resolvedByName" = NULL
+   WHERE "id" IN (:ids);
+  UPDATE "DecisionApprovalRevision" SET "finalized" = TRUE, "approvedFrom" = NULL,
+         "approvedByName" = NULL, "approvedByRole" = NULL
+   WHERE "id" IN (:ids);
+  UPDATE "DecisionConsultation"
+     SET "requestedByRole" = NULL, "requestedByName" = NULL WHERE "id" IN (:ids);
+  UPDATE "DecisionConsultationResponse"
+     SET "respondedByRole" = NULL, "respondedByName" = NULL WHERE "id" IN (:ids);
+
+  ALTER TABLE "DecisionConsultationResponse" ENABLE TRIGGER "DecisionConsultationResponse_t4c_append_only";
+  ALTER TABLE "DecisionConsultation"         ENABLE TRIGGER "DecisionConsultation_t4c_append_only";
+COMMIT;
+```
+
+ONE TRANSACTION, for the reason every sanctioned bypass in this repository is one: `ALTER TABLE`
+commits its ACCESS EXCLUSIVE away at the end of each statement, so separate statements leave a
+window where another session can write through the open seal, and a termination between them
+leaves the seal off for good.
+
+`ChangeRequest` and `DecisionApprovalRevision` need no bypass **when the decisions half aborted** —
+its own freezes rolled back with it, and the delivered `ChangeRequest_t4b2_seal` guards `decisionId`
+alone. If you are repairing a database where the decisions half COMMITTED, you are past the audit
+and this is not the procedure you want.
+
+**The registers half's abort** (`4d-only KERNEL columns`) is repaired the same way, over its own
+two tables, and `DomainEvent` is append-only at the delivered layer:
+
+```sql
+BEGIN;
+  ALTER TABLE "DomainEvent" DISABLE TRIGGER "DomainEvent_append_only";
+  UPDATE "DomainEvent" SET "actorRole" = NULL, "actorName" = NULL WHERE "eventId" IN (:ids);
+  UPDATE "Notification" SET "kind" = NULL, "eventId" = NULL WHERE "id" IN (:ids);
+  ALTER TABLE "DomainEvent" ENABLE TRIGGER "DomainEvent_append_only";
+COMMIT;
+```
+
+Both scripts are DRIVEN by `phase6-t4d-i-seal-stripped.test.ts` — a baseline is built carrying a
+row in every shape the audits name, the scripts above are run verbatim, and the migration pair is
+then required to apply. A documented repair nobody has executed is not a repair.
+
+Both messages name the tables AND the rows, so the repair is the one they name. Then:
+
+```
+prisma migrate resolve --rolled-back 20271221000000_phase6_t4d_i_decision_facts
+```
+
+and redeploy. The registers half committed and STAYS committed — it is a separate migration, it
+is not implicated by either audit, and it must not be resolved or re-run by hand.
+
+`scripts/migrate.sh` prints these steps itself (`report_4d_i_migration_failure`), the `User`
+statement included, because the migration's own message is swallowed by the aborted transaction.
+
+### The registers half: the two RAW ledger prerequisites
+
+The abort begins `phase6 4d-i ABORT:` and names a trigger — `DomainEvent_append_only` or
+`Project_ensure_event_stream` — as **not installed** or **DISABLED**. Both belong to
+`20261015000000_phase2_event_envelope`, both are RAW triggers, and `prisma db push` reproduces
+neither: on the P3005 baseline path that migration can read as applied while the property it
+exists for is absent. 4d-i seals a fact system on top of both, so it verifies them and refuses
+rather than installing a second copy of another unit's rule.
+
+**Repair — restore the missing trigger from the migration that owns it.** The functions survive a
+`db push` (they are not triggers); only the bindings are lost, so in the ordinary case re-creating
+the trigger is enough:
+
+```sql
+BEGIN;
+-- append-only: a DomainEvent row is never rewritten or erased
+CREATE TRIGGER "DomainEvent_append_only"
+  BEFORE UPDATE OR DELETE ON "DomainEvent"
+  FOR EACH ROW EXECUTE FUNCTION "domainEvent_append_only"();
+-- every project commits WITH its stream counter
+CREATE TRIGGER "Project_ensure_event_stream"
+  AFTER INSERT ON "Project"
+  FOR EACH ROW EXECUTE FUNCTION "project_ensure_event_stream"();
+COMMIT;
+```
+
+If either FUNCTION is also missing, re-apply the raw statements from
+`apps/api/prisma/migrations/20261015000000_phase2_event_envelope/migration.sql` (they are the two
+`CREATE OR REPLACE FUNCTION` / `CREATE TRIGGER` pairs at the foot of that file). If the abort says
+DISABLED rather than missing, a sanctioned reset was interrupted between its `DISABLE` and its
+`ENABLE`: `ALTER TABLE "<table>" ENABLE TRIGGER "<name>";`.
+
+### The registers half: an event stream that is not in the shape the seals adopt
+
+The abort begins `phase6 4d-i ABORT: N project event stream(s) are not in the shape the seals
+below adopt` and names each project with one of three shapes. **Repair every one of them before
+the next deploy attempt**, because each of the three is refused after 4d-i commits — the audit is
+the only moment the repair exists:
+
+| the abort says | what is wrong | repair |
+|---|---|---|
+| `(NO counter row, no events — create it at 0)` | the project never got its `ProjectEventStream` row | `INSERT INTO "ProjectEventStream"("projectId","nextPosition") VALUES ('<project>', 0);` |
+| `(NO counter row, events through N — create it at N+1)` | same, and the project has already emitted | `INSERT INTO "ProjectEventStream"("projectId","nextPosition") VALUES ('<project>', <N+1>);` — **only before 4d-i**: afterwards `platform_t4d_stream_init` admits a new stream at 0 alone, and refuses 0 for a project holding events, so the project can never be given an allocator again |
+| `(head H, events through N)` with `H <> N+1` | the counter is ahead of or behind its own stream | `UPDATE "ProjectEventStream" SET "nextPosition" = <N+1> WHERE "projectId" = '<project>';` — **only before 4d-i**: the allocation seal then admits only `OLD + 1` |
+| `... but only K of the N+1 positions from 0 are present — the stream has a HOLE` | a position between 0 and N was never written, or was removed | fill it, below |
+
+**The hole.** Find the missing positions:
+
+```sql
+SELECT g.pos
+  FROM generate_series(0, (SELECT max("streamPosition") FROM "DomainEvent" WHERE "projectId" = '<project>')) AS g(pos)
+ WHERE NOT EXISTS (SELECT 1 FROM "DomainEvent" e
+                    WHERE e."projectId" = '<project>' AND e."streamPosition" = g.pos);
+```
+
+Close each one with an INSERT at that position. `DomainEvent_append_only` refuses UPDATE and
+DELETE and **admits INSERT**, so this needs no bypass, touches no committed position, and
+invalidates no ordered consumer's checkpoint:
+
+```sql
+INSERT INTO "DomainEvent"
+  ("eventId","eventType","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId")
+VALUES (gen_random_uuid()::text, 'ops.stream.gapFilled',
+        (SELECT "orgId" FROM "Project" WHERE "id" = '<project>'), '<project>', <pos>,
+        'system', 'operator-repair', 'Project', '<project>');
+```
+
+Re-numbering the events above the hole is the other repair and is worse on both counts: it is an
+UPDATE of `streamPosition`, which the delivered append-only trigger refuses (so it needs the
+transactional bypass pattern shown under *The legacy-shape repair* above), and it moves every
+position an ordered consumer has already checkpointed on. Prefer the fill.
+
+### The baseline path runs the audit too
+
+BOTH halves of 4d-i are in `ALWAYS_EXECUTE`, so a P3005 `db push` baseline replays them rather
+than marking them applied. That is required for correctness — the reservation and the audit are the whole point of
+the unit — and it means the same abort and the same repair apply on a baselined database.
+
+### The reservation is retired by 4d-iii, not by hand
+
+Do not drop the doors manually. 4d-iii drops all five in one statement after the previous release
+is attested drained, and writes the durable `RolloutRetirement` marker that makes every later
+replay of 4d-i skip the transient block. A hand-dropped door leaves no marker, so the next replay
+re-creates it — and on a mature database, aborts on the legitimate architect it finds.
+
 ## §P64CIIIR. Phase 6 unit 4c-iii-r — the deploy-time `decisions.inbox` repair
 
 `scripts/migrate.sh` runs `dist/platform/projections/inbox-repair.cli.js` after `prisma migrate

@@ -42,7 +42,11 @@ describe('decision change-control (integration)', () => {
     await t.prisma.$transaction([
       t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } }),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_append_only"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_correspondence"'),
       t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId } } }),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_correspondence"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_append_only"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
       // Phase 6 task 4b — the option freeze now covers EVERY published parent (not only
       // withdrawn ones), so the reset disables it by name for the same sanctioned bypass.
@@ -253,7 +257,15 @@ describe('decision change-control (integration)', () => {
 
     // the legacy inconsistency the deployed backfill permits: the open request was
     // resolved out-of-band while the decision stayed 'change' (zero open requests)
-    await t.prisma.changeRequest.updateMany({ where: { decisionId: id, status: 'open' }, data: { status: 'resolved', resolution: null } });
+    // #582 round 31 — this reached "no open request" by closing one with `resolution: null`, a
+    // shape NEITHER service writer produces: both write status, outcome, moment and resolver in
+    // one statement. The 4d-i lifecycle now refuses an incomplete closure (it would be frozen
+    // unrepairable), so the fixture closes the way the product does. The state under test — a
+    // `change` decision with no open request — is identical.
+    await t.prisma.changeRequest.updateMany({
+      where: { decisionId: id, status: 'open' },
+      data: { status: 'resolved', resolution: 'reapproved', resolvedById: f.memberUser.id, resolvedAt: new Date() },
+    });
 
     // re-approval must REFUSE — there is nothing to resolve, so 'reapproved' would lie
     const res = await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 });
@@ -306,7 +318,7 @@ describe('decision change-control (integration)', () => {
     expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 })).status).toBe(201);
     expect((await as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'r', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
     await expect(
-      t.prisma.changeRequest.create({ data: { decisionId: id, reason: 'forged duplicate', costImpact: 0, timeImpactDays: 0 } }),
+      t.prisma.changeRequest.create({ data: { projectId: f.projectA.id, decisionId: id, reason: 'forged duplicate', costImpact: 0, timeImpactDays: 0 } }),
     ).rejects.toMatchObject({ code: 'P2002' });
   });
 });

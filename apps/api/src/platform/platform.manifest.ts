@@ -31,6 +31,31 @@ export const platformManifest: ModuleManifest = {
     'outboxConsumerCatalog',
     'outboxOperatorAction',
     'outboxCutoverState',
+    // Phase 6 task 4d unit 4d-i (§D Part 0) — the durable retirement marker. One row per retired
+    // rollout unit, written only by the retiring migration under its `SET LOCAL` gate, and read
+    // by every marker-aware statement in the 4d-i migration to decide whether it is installing a
+    // fresh reservation or replaying over a database that has already retired it. Platform-owned
+    // because it is rollout evidence about the deployment, not about any module's domain.
+    'rolloutRetirement',
+    // Phase 6 task 4d unit 4d-i (§A.2) — the five REGISTERS every 4d seal asks its standing,
+    // identity, team-management-authority and project→org tenancy questions through. They are
+    // platform-owned because the whole point is that no decisions- or platform-owned trigger
+    // reads an orgs table (#561's review round 1, finding 1): ORGS-owned triggers PROJECT these
+    // rows from their own tables through generic platform primitives, and every seal then reads
+    // kernel-owned rows. Registering them here is not bookkeeping — the boundary suite requires
+    // this set to EQUAL the DMMF, so a table added without its registration cannot merge.
+    'projectOrg',
+    'projectRoleStanding',
+    'projectUserStanding',
+    'userIdentity',
+    'orgUserAuthority',
+    // Phase 6 task 4d unit 4d-i — the external-effect catalog as DATA (what a seal reads when it
+    // needs to know whether an event owed a claim), the drain attestation's release lease, and
+    // the generic per-event pairing register. All three are kernel infrastructure and all three
+    // are DARK: nothing reads or writes them until 4d-ii.
+    'externalEffectCatalog',
+    'releaseLease',
+    'domainEventPairingClaim',
   ],
   dependsOn: [],
   // Phase 6 unit 4b, round-6 Codex F6 — the push spine asks TWO orgs-owned questions through

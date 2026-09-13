@@ -34,7 +34,17 @@ export interface TruncateCapableClient {
  * list: `TRUNCATE "Decision" CASCADE` fires the seal on every table PostgreSQL pulls into the
  * cascade, which the caller never names and cannot be expected to enumerate.
  *
- * DELIBERATELY ABSENT: `T3CRepairAction_no_truncate`. Do not add it — it breaks every reset in
+ * DELIBERATELY ABSENT, and these two are the whole list — every other `BEFORE TRUNCATE` trigger
+ * installed by any migration appears below:
+ *
+ * `RolloutRetirement_t4d_no_truncate`. The rollout register is keyed by `unit` and holds no
+ * foreign key at all, so no CASCADE can reach it and no sanctioned reset names it; the only
+ * TRUNCATE aimed at it in the repository is the seal-stripped harness's HOSTILE arm, which must
+ * meet the seal rather than a bypass. It is recorded here because a sweep of the migrations
+ * against this list surfaces it (#582 round 4, alongside finding 5) and the next reader deserves
+ * the answer rather than the question.
+ *
+ * `T3CRepairAction_no_truncate`. Do not add it — it breaks every reset in
  * the repository, which is how it was found. That table additionally carries a DDL guard that
  * refuses ALTER TABLE outright ("is the durable repair-evidence register and is never altered"),
  * and disabling a trigger IS an ALTER TABLE, so listing it here makes the very first statement of
@@ -48,6 +58,13 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   { table: 'DecisionProjection', trigger: 'DecisionProjection_4c_iiir_writer_fence_truncate' },
   { table: 'Decision', trigger: 'Decision_t4b_no_truncate' },
   { table: 'DecisionEvent', trigger: 'DecisionEvent_t4a_no_truncate' },
+  // Phase 6 unit 4d-i (#582's review round 24, finding 2) — the UNCONDITIONAL arm beside the
+  // delivered one. `DecisionEvent_t4a_no_truncate` refuses only while an `approved`/`reapproved`
+  // row exists, which was a rule about approval evidence written before this register carried the
+  // change, forward, countersign and stranded kinds 4d fills it with. Both must be disabled for a
+  // reset to reach the table: the delivered seal for a register that holds approvals, this one for
+  // a register that holds anything.
+  { table: 'DecisionEvent', trigger: 'DecisionEvent_t4d_no_truncate' },
   { table: 'DecisionLegacyApproval', trigger: 'DecisionLegacyApproval_no_truncate' },
   { table: 'DecisionOption', trigger: 'DecisionOption_t4b2_no_truncate' },
   { table: 'DecisionOptionKind', trigger: 'DecisionOptionKind_no_truncate' },
@@ -72,6 +89,50 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   // sanctioned reset genuinely needs to bypass it: `outbox-operations.test.ts` truncates
   // `OutboxOperatorAction` directly, and this suite's own per-probe reset does too.
   { table: 'OutboxOperatorAction', trigger: 'OutboxOperatorAction_4c_iiir_no_truncate' },
+  // Phase 6 unit 4d-i — the five platform REGISTERS the chain's standing, identity, authority and
+  // tenancy questions are answered from, plus `Membership`, the orgs table the counted register
+  // mirrors. Each carries a row-level writer-depth seal, and a row trigger never fires for
+  // TRUNCATE, so each carries a statement seal too.
+  //
+  // `Membership` is the one that would fail loudest if it were left out: many suites reset it
+  // directly and `TRUNCATE "Project" CASCADE` reaches it, so the seal would abort the SETUP of
+  // every one of them. The registers are here for the same reason one step removed — a reset
+  // that wipes `Project` or `User` cascades into all five.
+  { table: 'ChangeRequest', trigger: 'ChangeRequest_t4d_no_truncate' },
+  // Phase 6 unit 4d-i — the kernel side. `Notification` is NOT append-only (the withdraw path
+  // deletes a now-false pending notice by identity) but it may not be TRUNCATED, because the row
+  // seal that protects its event binding is a ROW trigger and does not fire for TRUNCATE. The
+  // catalog, the lease and the pairing claims are sealed for the same reason, and the claims are
+  // truncated together with `DomainEvent` — a claim outliving its event would refuse the next
+  // fact that legitimately claims a reused id.
+  { table: 'DomainEventPairingClaim', trigger: 'DomainEventPairingClaim_t4d_no_truncate' },
+  // Phase 6 unit 4d-i (#582's review round 24, the sweep behind finding 2) — the STREAM. Every
+  // 4d correspondence, claim and actor binding is a statement about a row in it, judged once at
+  // write time, and the derived registers around it (`Notification`, the claim table,
+  // `ProjectEventStream`) were all sealed against a wipe while the stream itself was not.
+  { table: 'DomainEvent', trigger: 'DomainEvent_t4d_no_truncate' },
+  { table: 'ExternalEffectCatalog', trigger: 'ExternalEffectCatalog_t4d_no_truncate' },
+  { table: 'Notification', trigger: 'Notification_t4d_no_truncate' },
+  { table: 'ReleaseLease', trigger: 'ReleaseLease_t4d_no_truncate' },
+  // Phase 6 unit 4d-i — the three append-only FACTS of the architect chain. A
+  // `TRUNCATE "Decision" … CASCADE` reaches all three, and a statement trigger fires even on an
+  // empty table, so a suite that never created a forward would still meet the seal in setup.
+  { table: 'DecisionCountersign', trigger: 'DecisionCountersign_t4d_no_truncate' },
+  { table: 'DecisionForward', trigger: 'DecisionForward_t4d_no_truncate' },
+  { table: 'DecisionStrandedResolution', trigger: 'DecisionStrandedResolution_t4d_no_truncate' },
+  { table: 'Membership', trigger: 'Membership_t4d_no_truncate' },
+  { table: 'MembershipTransition', trigger: 'MembershipTransition_t4d_no_truncate' },
+  { table: 'OrgUserAuthority', trigger: 'OrgUserAuthority_t4d_no_truncate' },
+  { table: 'ProjectOrg', trigger: 'ProjectOrg_t4d_no_truncate' },
+  { table: 'ProjectRoleStanding', trigger: 'ProjectRoleStanding_t4d_no_truncate' },
+  { table: 'ProjectUserStanding', trigger: 'ProjectUserStanding_t4d_no_truncate' },
+  // Phase 6 unit 4d-i — the per-project event stream's allocation head. Sealed by the same
+  // `platform_t4d_register_no_truncate` function as the registers above and MISSED here when they
+  // were added (#582 round 4, finding 5). It is reached the same way they are: it holds a
+  // `projectId` FK, so `TRUNCATE "Project" CASCADE` pulls it in, and a statement trigger fires on
+  // an empty table too — so a suite that never allocated an event still meets the seal in setup.
+  { table: 'ProjectEventStream', trigger: 'ProjectEventStream_t4d_no_truncate' },
+  { table: 'UserIdentity', trigger: 'UserIdentity_t4d_no_truncate' },
 ];
 
 /**
