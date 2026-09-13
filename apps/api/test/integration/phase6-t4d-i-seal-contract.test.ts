@@ -761,6 +761,13 @@ const REGISTER: Record<string, SealContract> = {
     on: { 'ReleaseLease.ReleaseLease_t4d_frozen': B('D U') },
     must: ['instanceId', 'catalogVersion', 'startedAt', '"leaseUntil" < OLD."leaseUntil"'],
   },
+  platform_t4d_release_lease_insert_reserved: {
+    rule: 'the dark window admits NO lease INSERT — there is no sanctioned writer until 4d-ii '
+      + 'installs one, and the freeze above would make a planted row permanent',
+    plan: '§D dark tables; #582 round 36, finding 3',
+    on: { 'ReleaseLease.ReleaseLease_t4d_insert_reserved': B('I') },
+    must: ['takes no INSERT yet', '4d-ii'],
+  },
   platform_t4d_project_org_frozen: {
     rule: 'a project\'s tenancy never moves once registered',
     plan: '§A.2 the ProjectOrg register',

@@ -130,7 +130,7 @@ const INVENTORY: Record<string, string[]> = {
   ProjectOrg: ['ProjectOrg_t4d_backed', 'ProjectOrg_t4d_frozen', 'ProjectOrg_t4d_no_truncate', 'ProjectOrg_t4d_writer'],
   ProjectRoleStanding: ['ProjectRoleStanding_t4d_backed', 'ProjectRoleStanding_t4d_no_truncate', 'ProjectRoleStanding_t4d_writer'],
   ProjectUserStanding: ['ProjectUserStanding_t4d_backed', 'ProjectUserStanding_t4d_no_truncate', 'ProjectUserStanding_t4d_writer'],
-  ReleaseLease: ['ReleaseLease_t4d_frozen', 'ReleaseLease_t4d_no_truncate'],
+  ReleaseLease: ['ReleaseLease_t4d_frozen', 'ReleaseLease_t4d_insert_reserved', 'ReleaseLease_t4d_no_truncate'],
   RolloutRetirement: [
     'RolloutRetirement_t4d_frozen',
     'RolloutRetirement_t4d_gate',
@@ -162,6 +162,11 @@ const FUNCTIONS = [
   'phase6_orgs_t4d_register_backed',
   'phase6_orgs_t4d_register_backed_seal',
   'platform_t4d_register_no_truncate',
+  // #582 round 36, finding 3 — the dark window's INSERT reservation, retired by 4d-ii's writer
+  'platform_t4d_release_lease_insert_reserved',
+  // #582 round 36 — the ONE witness for "4d-ii has shipped", read by the emptiness audit and the
+  // ReleaseLease reservation alike
+  'phase6_t4d_ii_installed',
   'platform_project_org_apply',
   'platform_role_standing_apply',
   'platform_user_standing_apply',

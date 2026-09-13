@@ -35,39 +35,58 @@
 
 BEGIN;
 
--- ── THE LOCK ORDER IS THE SERVING WRITER'S (#582's review round 35, finding 2) ───
--- This half replaces triggers on TWELVE tables. `Decision` came first, because that is where the
--- reservation doors are, and `Membership` came seventh — and `CREATE TRIGGER` takes ACCESS
--- EXCLUSIVE and holds it to COMMIT. The serving approval flow takes its locks the other way
--- round: `decisions.service.ts` calls `hasProjectRoleStanding(..., { forUpdate: true })`, which
--- locks the `Membership` rows, and only then issues `decision.updateMany`. An approval that
--- reaches its membership lock after this migration has locked `Decision` waits for `Decision`
--- while the migration waits for `Membership`, and PostgreSQL resolves it by killing one of them:
--- either the deploy fails halfway, or a user's approval is aborted by a deployment they cannot
--- see. Neither is a failure the operator can act on from the message they get.
+-- ── THE ACQUISITION IS ALL-OR-NOTHING, NOT ORDERED (#582's review rounds 35/36) ──────────────
+-- Round 35 read this as a question of ORDER and got the order wrong, in a way worth stating
+-- plainly because the correction is the rule: it put `Membership` first, having found
+-- `hasProjectRoleStanding(..., { forUpdate: true })` by name and inferred a serving order from
+-- that ONE call. The serving paths actually lock the other way — `decisions.publish` and
+-- `decisions.updateDraft` both take the readiness key, then `"Decision" … FOR UPDATE`
+-- (decisions.service.ts), and only afterwards a `Membership` row — so round 35's list was the
+-- inversion it was written to remove, and PostgreSQL's deadlock detector kills the USER's
+-- command, not the deploy.
 --
--- So every lock this half needs is taken HERE, before any DDL, in ONE statement, with
--- `Membership` first — the order the serving writer uses. Acquiring them together also removes
--- the window between them: there is no point at which this transaction holds one of these tables
--- and is waiting for another.
+-- AND ORDERING IS THE WRONG INSTRUMENT ANYWAY. An ordered list is a standing claim about every
+-- serving path in the codebase, now and in future; it is re-falsified by the next command that
+-- locks these two tables the other way, and nothing in the file would notice. Round 35 also
+-- asserted that one comma-separated statement "removes the window between them". It does not:
+-- `LOCK TABLE a, b` acquires the relations ONE AT A TIME, which is #582's own round-8 finding 1
+-- — the finding round 35 cited by number in this very comment while implementing the weaker
+-- thing it was written to replace.
 --
--- Only the tables that ALREADY EXIST are listed. `DecisionForward`, `DecisionCountersign` and
--- `DecisionStrandedResolution` are created by this transaction, so no other session can hold or
--- want them and they cannot take part in a deadlock. The mode is the one the DDL below takes
--- anyway; taking it early changes WHEN, which is the whole point.
+-- So the acquisition is the shape that finding established, and 20271015's four-table window
+-- already uses: `NOWAIT` inside a subtransaction, so a partial set is RELEASED by the exception
+-- rollback, retried with a short sleep, and after the cap the migration FAILS CLOSED — clean and
+-- re-runnable. This transaction is then NEVER A WAITING PARTY on these tables, and a deadlock
+-- cycle needs one; no claim about anyone else's lock order is required, so none is made.
 --
--- This is round 7's finding 4 and round 8's finding 1 — "the lock is acquired BEFORE any table
--- ALTER" — applied to the half that was split out after those rounds were written.
-LOCK TABLE "Membership",
-           "Decision",
-           "ChangeRequest",
-           "DecisionApprovalRevision",
-           "DecisionEvent",
-           "DecisionConsultation",
-           "DecisionConsultationResponse",
-           "MaterialRequirementSpec",
-           "LabourRequirementSpec"
-  IN ACCESS EXCLUSIVE MODE;
+-- The list is every PRE-EXISTING table this half takes a lock on. Tables this transaction
+-- CREATES cannot be locked before they exist and cannot contend with anyone. The mode is the one
+-- the DDL below takes anyway, so this changes WHEN, never WHAT.
+DO $t4d_window$
+DECLARE attempts INT := 0;
+BEGIN
+  LOOP
+    BEGIN
+      LOCK TABLE "Membership",
+                 "Decision",
+                 "ChangeRequest",
+                 "DecisionApprovalRevision",
+                 "DecisionEvent",
+                 "DecisionConsultation",
+                 "DecisionConsultationResponse",
+                 "MaterialRequirementSpec",
+                 "LabourRequirementSpec"
+        IN ACCESS EXCLUSIVE MODE NOWAIT;
+      EXIT;
+    EXCEPTION WHEN lock_not_available THEN
+      attempts := attempts + 1;
+      IF attempts >= 600 THEN
+        RAISE EXCEPTION 'phase6 4d-i (decisions half): could not obtain the deployment window on the nine pre-existing tables after % attempts — retry the deploy when writer traffic quiets. Nothing has been changed. See docs/RUNBOOK.md §P6T4D.', attempts;
+      END IF;
+      PERFORM pg_sleep(0.2);
+    END;
+  END LOOP;
+END $t4d_window$;
 
 -- ── THE RETIREMENT SNAPSHOT, TAKEN AGAIN ─────────────────────────────────────────────────────
 -- #582's review round 16, finding 2 — A REGRESSION THE SPLIT INTRODUCED, and the one gate every

@@ -49,6 +49,57 @@
 
 BEGIN;
 
+-- ── THE DEPLOYMENT WINDOW, ALL-OR-NOTHING, BEFORE ANYTHING ELSE (#582's review round 36) ─────
+-- Round 36's finding 1 was reported against the decisions half's lock statement. These are its
+-- siblings in THIS half, and they are the same defect in its original form: a lock taken while
+-- this transaction ALREADY HOLDS another.
+--
+--   · `LOCK TABLE "User" IN SHARE ROW EXCLUSIVE MODE` was taken in Part 3, AFTER
+--     `CREATE TRIGGER` on `"Membership"` had already taken ACCESS EXCLUSIVE there. A serving
+--     `ensure-accounts` inserts a `User` and then a `Membership` — it holds `User`, wants
+--     `Membership`; this file held `Membership`, wanted `User`. That is a cycle, and the
+--     comment beside that lock names `ensure-accounts` as the very writer it is guarding against.
+--   · `LOCK TABLE "ProjectEventStream" IN SHARE ROW EXCLUSIVE MODE` was taken mid-file for the
+--     same reason, by which point this transaction held ACCESS EXCLUSIVE on several tables
+--     `emitEvent` writes after it locks `ProjectEventStream … FOR UPDATE`.
+--
+-- The fix is not an ordering — an ordering is a standing claim about every serving path in the
+-- codebase, and round 35 made exactly such a claim, from one grep hit, and had it falsified in
+-- one round. It is #582's round-8 finding 1 shape, which 20271015 already uses: `NOWAIT` in a
+-- subtransaction, partial sets released by the exception rollback, retried, and FAILING CLOSED
+-- after the cap — clean, re-runnable, and never a deadlock abort mid-DDL. A transaction that
+-- never WAITS for one of these tables cannot be a party to a cycle over them, whatever order
+-- anyone else takes.
+--
+-- The list is every PRE-EXISTING table this half takes a lock on, derived from its own DDL and
+-- enforced by the round-36 acquisition oracle; the ten tables this file CREATES cannot contend.
+-- The mode is ACCESS EXCLUSIVE because that is what the DDL below takes anyway: this moves WHEN,
+-- never WHAT. Taking the window here — before Part 0 — also strictly WIDENS the reservation
+-- ordering Part 3 depends on (locks, then audit, then doors), so that argument still holds.
+DO $t4d_window$
+DECLARE attempts INT := 0;
+BEGIN
+  LOOP
+    BEGIN
+      LOCK TABLE "DomainEvent",
+                 "Membership",
+                 "Notification",
+                 "OrgMembership",
+                 "Project",
+                 "ProjectEventStream",
+                 "User"
+        IN ACCESS EXCLUSIVE MODE NOWAIT;
+      EXIT;
+    EXCEPTION WHEN lock_not_available THEN
+      attempts := attempts + 1;
+      IF attempts >= 600 THEN
+        RAISE EXCEPTION 'phase6 4d-i (registers half): could not obtain the deployment window on the seven pre-existing tables after % attempts — retry the deploy when writer traffic quiets. Nothing has been changed. See docs/RUNBOOK.md §P6T4D.', attempts;
+      END IF;
+      PERFORM pg_sleep(0.2);
+    END;
+  END LOOP;
+END $t4d_window$;
+
 -- ════════════════════════════════════════════════════════════════════════════════════════════
 -- PART 0 — THE RETIREMENT MARKER
 -- ════════════════════════════════════════════════════════════════════════════════════════════
@@ -213,6 +264,25 @@ BEGIN
       'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.', 'RolloutRetirement_t4d_no_truncate does not enforce the statement-level truncate seal:', v_bad;
   END IF;
 END $$;
+
+-- ── AND THE SECOND MOMENT ON THE ROLLOUT'S TIMELINE (#582's review round 36) ─────────────────
+-- The marker above answers "has 4d-iii retired this unit?". Several statements in this file
+-- actually need a DIFFERENT question — "does the sanctioned writer exist yet?" — and were asking
+-- the retirement one because, when they were written, the rollout was being read as two states.
+-- It is not. 4d-ii installs the writers; 4d-iii retires the unit; between them is a window in
+-- which the dark tables legitimately hold rows and this file must abort nothing.
+--
+-- So 4d-i DECLARES the witness 4d-ii must install, rather than trusting a marker row: a function
+-- whose mere existence is the fact, checkable here with `to_regprocedure`. It is a function and
+-- not a `RolloutRetirement` row because that table's INSERT gate admits a row only inside a
+-- retirement transaction, and widening that gate would let a writer flip this file between its
+-- pre- and post-retirement bodies — the hazard the marker exists to close.
+--
+--   4d-ii installs `platform_t4d_ii_writers_installed()` alongside its startup writers and their
+--   validation. Until it exists, this unit's dark window is open.
+CREATE OR REPLACE FUNCTION phase6_t4d_ii_installed() RETURNS boolean AS $fn$
+  SELECT to_regprocedure('platform_t4d_ii_writers_installed()') IS NOT NULL;
+$fn$ LANGUAGE sql STABLE;
 
 -- The ONE reader every conditional statement below shares. Kept as a function rather than an
 -- inline EXISTS so the marker-aware set is greppable and so a later unit changing the predicate
@@ -445,11 +515,15 @@ END $$;
 --
 --   * `CREATE TRIGGER` on "Membership" takes ACCESS EXCLUSIVE on that table, so every concurrent
 --     membership writer blocks until this transaction ends.
---   * That lock cannot block a concurrent `User(role = 'architect')` creation, so the transaction
---     ALSO takes `LOCK TABLE "User" IN SHARE ROW EXCLUSIVE MODE` and installs the FIFTH door
---     (#558's review round 1, finding 5). Without it a still-serving `ensure-accounts` could
---     commit its user AFTER the audit counted zero, be refused only at its membership upsert,
---     and leave a residual identity behind a migration that recorded success.
+--   * That lock cannot block a concurrent `User(role = 'architect')` creation, so `"User"` is
+--     held too and the FIFTH door is installed (#558's review round 1, finding 5). Without it a
+--     still-serving `ensure-accounts` could commit its user AFTER the audit counted zero, be
+--     refused only at its membership upsert, and leave a residual identity behind a migration
+--     that recorded success. That `"User"` lock is no longer taken HERE: round 36 found that
+--     taking it while `"Membership"` was already held is an AB-BA cycle against the very
+--     `ensure-accounts` writer this paragraph names. It is acquired in the all-or-nothing
+--     window at the top of this file, before anything is held — strictly earlier, so every
+--     ordering argument below is unchanged and the audit's guarantee is if anything wider.
 --   * Only after BOTH locks are held does the audit count. Auditing FIRST would leave the
 --     classic gap: a row inserted after the count observed zero and before `CREATE TRIGGER`
 --     took its lock would be grandfathered past the reservation.
@@ -485,7 +559,7 @@ BEGIN
       'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.', 'Membership_t4d_architect_reserved does not reserve the role:', v_bad;
   END IF;
 
-  LOCK TABLE "User" IN SHARE ROW EXCLUSIVE MODE;
+  -- (the `"User"` lock moved to the all-or-nothing window at the top of this file — round 36)
 
   v_bad := phase6_t4d_trigger_mismatch('User_t4d_architect_reserved', 'User',
     $def$CREATE TRIGGER "User_t4d_architect_reserved" BEFORE INSERT OR UPDATE ON public."User" FOR EACH ROW WHEN ((new.role = 'architect'::text)) EXECUTE FUNCTION phase6_t4d_reserved('User.role = architect')$def$);
@@ -2429,7 +2503,7 @@ CREATE TRIGGER "Membership_t4d_fact_first"
 -- upgrade to ACCESS EXCLUSIVE for the allocator's own triggers is safe for the same reason: this
 -- transaction is the sole holder of a self-exclusive mode, so there is no second upgrader to
 -- deadlock against.
-LOCK TABLE "ProjectEventStream" IN SHARE ROW EXCLUSIVE MODE;
+-- (the `"ProjectEventStream"` lock moved to the all-or-nothing window at the top of this file — round 36)
 
 ALTER TABLE "DomainEvent" ADD COLUMN IF NOT EXISTS "actorRole" TEXT;
 ALTER TABLE "DomainEvent" ADD COLUMN IF NOT EXISTS "actorName" TEXT;
@@ -2868,11 +2942,37 @@ BEGIN
   -- `schema.prisma` before any 4d guard, and whatever is in it survives.
   --
   -- MARKER-GATED, and that is the whole reason this is a separate arm rather than a widening of
-  -- (1). Before retirement the two generations this file seeds are the only ones anything has
-  -- written — 4d-i introduces the table's contents and 4d-ii is the next writer — so a third is
-  -- evidence of a hand. AFTER 4d-iii, a third generation is the ordinary healthy state (4d-ii
+  -- (1). Before retirement the generations anything has written are the two seeded here and the
+  -- ONE 4d-i-b is specified to write (the round-36 paragraph below states its shape and checks
+  -- it), so a generation that is neither is evidence of a hand. AFTER 4d-iii, a third generation
+  -- is the ordinary healthy state (4d-ii
   -- computes its own, and retirement stamps rather than deletes), and an ungated arm would abort
   -- an `ALWAYS_EXECUTE` replay on exactly that, which is #582 round 6, finding 1's mistake.
+  -- ADMITTING THE ONE PLANNED SUCCESSOR (#582's review round 36, finding 2). The paragraph above
+  -- reasons over TWO states — before retirement, and after it — and the rollout passes through a
+  -- THIRD that this unit's own split created: 4d-i-b applied, 4d-iii not yet run. The plan is
+  -- explicit that 4d-i-b "insert[s] a fresh generation beside the old one" for the six
+  -- `pairingRequired` flips (§D), and `migrate.sh` deliberately leaves THIS file pending on the
+  -- P3005/db-push recovery path — so its replay lands in that window, reads 4d-i-b's generation
+  -- as a hand's work, and aborts telling the operator to delete valid dispatch policy. The
+  -- sentence "the only generations anything has written are the two seeded here" stopped being
+  -- true the moment the switch-on became its own unit, and nothing updated it.
+  --
+  -- NOT A MARKER. `RolloutRetirement` cannot carry one — its INSERT gate admits a row only
+  -- inside a retirement transaction, and widening that gate would hand a writer the ability to
+  -- flip this file between its pre- and post-retirement bodies, which is the hazard the marker
+  -- exists to close. And this file's own doctrine is that A MARKER ALONE IS NOT EVIDENCE
+  -- (#582 round 5, finding 2). So the successor is admitted by its SHAPE, which 4d-i can state
+  -- exactly and check here, with nothing trusted:
+  --
+  --   a generation is the planned 4d-i-b successor iff it carries the SAME effect keys as a
+  --   generation seeded here, every column equal to that generation's row except
+  --   `pairingRequired`, and the keys where `pairingRequired` differs are EXACTLY the six the
+  --   plan names, each false in the seed and true in the successor.
+  --
+  -- Any other third generation is still a hand: a different key set, a changed `pushRoles` or
+  -- `audience`, a seventh flip, a flip in the wrong direction. This admits ONE generation, the
+  -- one the next unit is specified to write, and nothing else.
   IF NOT phase6_t4d_retired_at_start() THEN
     SELECT count(*), COALESCE(left(string_agg(q.txt, ', ' ORDER BY q.txt), 200), '')
       INTO v_alien, v_alien_s
@@ -2880,10 +2980,58 @@ BEGIN
               FROM "ExternalEffectCatalog" x
              WHERE NOT EXISTS (SELECT 1 FROM "_t4d_catalog_seed" t
                                 WHERE t."coverageVersion" = x."coverageVersion")
+               -- … and is not the ONE successor generation 4d-i-b is specified to write.
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM (SELECT DISTINCT t2."coverageVersion" AS v FROM "_t4d_catalog_seed" t2) seeded
+                  WHERE
+                    -- same key set, in both directions
+                    NOT EXISTS (SELECT 1 FROM "ExternalEffectCatalog" a
+                                 WHERE a."coverageVersion" = x."coverageVersion"
+                                   AND NOT EXISTS (SELECT 1 FROM "_t4d_catalog_seed" b
+                                                    WHERE b."coverageVersion" = seeded.v
+                                                      AND b."effectKey" = a."effectKey"))
+                AND NOT EXISTS (SELECT 1 FROM "_t4d_catalog_seed" b
+                                 WHERE b."coverageVersion" = seeded.v
+                                   AND NOT EXISTS (SELECT 1 FROM "ExternalEffectCatalog" a
+                                                    WHERE a."coverageVersion" = x."coverageVersion"
+                                                      AND a."effectKey" = b."effectKey"))
+                    -- every column but `pairingRequired` identical, key by key
+                AND NOT EXISTS (
+                      SELECT 1 FROM "ExternalEffectCatalog" a
+                        JOIN "_t4d_catalog_seed" b
+                          ON b."coverageVersion" = seeded.v AND b."effectKey" = a."effectKey"
+                       WHERE a."coverageVersion" = x."coverageVersion"
+                         AND (a."eventType"      IS DISTINCT FROM b."eventType"
+                           OR a."invalidate"     IS DISTINCT FROM b."invalidate"
+                           OR a."pushRoles"      IS DISTINCT FROM b."pushRoles"
+                           OR a."pushFamily"     IS DISTINCT FROM b."pushFamily"
+                           OR a."frozenAudience" IS DISTINCT FROM b."frozenAudience"
+                           OR a."requiresPush"   IS DISTINCT FROM b."requiresPush"
+                           OR a."audience"       IS DISTINCT FROM b."audience"
+                           OR a."pushBody"       IS DISTINCT FROM b."pushBody"))
+                    -- and the `pairingRequired` flips are EXACTLY the plan's six, false → true
+                AND NOT EXISTS (
+                      SELECT 1 FROM "ExternalEffectCatalog" a
+                        JOIN "_t4d_catalog_seed" b
+                          ON b."coverageVersion" = seeded.v AND b."effectKey" = a."effectKey"
+                       WHERE a."coverageVersion" = x."coverageVersion"
+                         AND a."pairingRequired" IS DISTINCT FROM (
+                               b."pairingRequired"
+                               OR a."effectKey" IN ('decision.approved', 'decision.reapproved',
+                                                    'decision.change_requested', 'decision.change_withdrawn',
+                                                    'decision.consultation_requested',
+                                                    'decision.consultation_responded')))
+                AND EXISTS (
+                      SELECT 1 FROM "ExternalEffectCatalog" a
+                        JOIN "_t4d_catalog_seed" b
+                          ON b."coverageVersion" = seeded.v AND b."effectKey" = a."effectKey"
+                       WHERE a."coverageVersion" = x."coverageVersion"
+                         AND a."pairingRequired" AND NOT b."pairingRequired"))
              GROUP BY x."coverageVersion") q;
     IF v_alien > 0 THEN
       RAISE EXCEPTION
-        'phase6 4d-i ABORT: % "ExternalEffectCatalog" row(s) sit in a coverage generation this migration does not seed — %. The envelope seal resolves an event by the exact (coverageVersion, effectKey) it carries, whatever generation that is, so these rows are a dispatch policy no release compiled and none of the audits below would ever have read. Until 4d-iii retires this unit, the only generations anything has written are the two seeded here. Remove the rows (or, on a database that has genuinely run 4d-iii, restore its RolloutRetirement marker) before this migration adopts the catalog.',
+        'phase6 4d-i ABORT: % "ExternalEffectCatalog" row(s) sit in a coverage generation this migration neither seeds nor recognises as 4d-i-b''s pairing switch-on — %. The envelope seal resolves an event by the exact (coverageVersion, effectKey) it carries, whatever generation that is, so these rows are a dispatch policy no release compiled and none of the audits below would ever have read. Before retirement the admitted generations are the two seeded here plus 4d-i-b''s, which carries the SAME keys and columns with `pairingRequired` true on exactly the six decision types the plan names. Remove the rows (or, on a database that has genuinely run 4d-iii, restore its RolloutRetirement marker) before this migration adopts the catalog.',
         v_alien, v_alien_s;
     END IF;
   ELSE
@@ -4033,14 +4181,19 @@ CREATE TRIGGER "ExternalEffectCatalog_t4d_no_truncate" BEFORE TRUNCATE ON "Exter
 -- `MembershipTransition` and `DomainEventPairingClaim` are here for the ordinary reason: 4d-ii is
 -- their first writer too, and their append-only seals would make an adopted row permanent.
 --
--- GATED ON THE RETIREMENT SNAPSHOT, because after 4d-iii these tables legitimately hold what
--- 4d-ii wrote and an `ALWAYS_EXECUTE` replay over such a database must abort nothing (round 6's
--- finding 1, the same gate the zero-count audit takes).
+-- GATED ON THE WINDOW, NOT ON RETIREMENT (#582's review round 36). This audit used to skip only
+-- when 4d-iii had retired the unit, and its own rule above says why that is the wrong test: the
+-- correct population is none while the table's FIRST SANCTIONED WRITER does not exist — and that
+-- writer arrives with 4d-ii, one unit BEFORE retirement. In between, all three of these tables
+-- legitimately hold what 4d-ii wrote, and an `ALWAYS_EXECUTE` replay (or the P3005 path, where
+-- `migrate.sh` deliberately leaves this file pending) would read that as adoption of unvalidated
+-- rows and abort a deploy it should wave through. Either witness therefore stands the audit down:
+-- retirement (round 6's finding 1, the gate the zero-count audit takes) or the writers' arrival.
 DO $dark_registers$
 DECLARE v_table TEXT; v_rows BIGINT; v_found TEXT := '';
 BEGIN
-  IF phase6_t4d_retired_at_start() THEN
-    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the dark-table emptiness audit is SKIPPED (4d-ii has legitimately written these tables; this is a replay over a retired database)';
+  IF phase6_t4d_retired_at_start() OR phase6_t4d_ii_installed() THEN
+    RAISE NOTICE 'phase6 4d-i: the dark window is CLOSED (retirement marker or 4d-ii writers present) — the dark-table emptiness audit is SKIPPED; these tables legitimately hold what 4d-ii wrote';
   ELSE
     FOREACH v_table IN ARRAY ARRAY['MembershipTransition', 'DomainEventPairingClaim',
                                    'ReleaseLease'] LOOP
@@ -4139,6 +4292,69 @@ END $$;
 DROP TRIGGER IF EXISTS "ReleaseLease_t4d_frozen" ON "ReleaseLease";
 CREATE TRIGGER "ReleaseLease_t4d_frozen" BEFORE UPDATE OR DELETE ON "ReleaseLease"
   FOR EACH ROW EXECUTE FUNCTION platform_t4d_release_lease_frozen();
+
+-- ── AND THE DARK WINDOW'S INSERT IS RESERVED (#582's review round 36, finding 3) ─────────────
+-- The comment above ends "INSERT is unsealed because 4d-ii's startup writer is the one that
+-- establishes the identity this seal then holds still". That reasons over TWO states — before
+-- this unit, and after 4d-ii's writer ships — and the deploy passes through a THIRD between
+-- them: 4d-i applied, no sanctioned writer in existence, and INSERT wide open while UPDATE and
+-- DELETE are sealed shut. In that window a single direct row — a unique `instanceId`, any
+-- `catalogVersion`, a far-future `leaseUntil` — satisfies every CHECK, and from the next
+-- statement onwards the seals above make it PERMANENT: it cannot be deleted, and its expiry
+-- cannot be moved back. 4d-iii's drain preflight then reads a previous release as serving
+-- indefinitely, forever, and the unit can never retire.
+--
+-- This is the failure the plan names by name ("`ReleaseLease` … the one with the worst failure
+-- … the drain never attests and the reservation never retires", §D dark tables) and the
+-- instrument it named is an APPLY-TIME emptiness audit — a count taken once, at apply. The
+-- audit is not wrong; it is simply a different question. It proves the table was empty when the
+-- migration ran, and says nothing about the window that opens the moment it commits.
+--
+-- THE SIBLING SWEEP, because one open door is evidence about a population. The plan lists SIX
+-- dark tables. Five carry a standing INSERT door already: `DecisionForward` a content seal AND
+-- `DecisionForward_t4d_reserved`; `DecisionCountersign` and `DecisionStrandedResolution` their
+-- content seals; `MembershipTransition` its transition seal; `DomainEventPairingClaim` the
+-- kernel writer gate. `ReleaseLease` was the only one of the six with NO INSERT trigger at all.
+--
+-- RETIRED BY 4d-ii, NOT 4d-iii, which is why this is its own refusal and not a seventh
+-- `phase6_t4d_reserved` door: the other reservations hold the architect chain shut until the
+-- unit retires, while this one must open the moment the sanctioned writer EXISTS — a serving
+-- process cannot claim its own lease through a door that waits for 4d-iii. So the condition is
+-- the writer's own presence, and 4d-i DECLARES the name 4d-ii must install, so that the
+-- condition is checkable here rather than trusted:
+--
+--   the witness is `phase6_t4d_ii_installed()` — the ONE predicate this file uses for "4d-ii has
+--   shipped", declared beside the retirement reader — and this door stands down the moment it
+--   answers true.
+--
+-- A replay over a 4d-ii database therefore does not re-install the reservation, and a replay
+-- over a pre-4d-ii database re-installs it, which is the correct answer in both directions.
+CREATE OR REPLACE FUNCTION platform_t4d_release_lease_insert_reserved() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION
+    'phase6 4d-i: "ReleaseLease" takes no INSERT yet — the lease is written by the startup writer phase 6 unit 4d-ii installs, and until it exists there is no sanctioned writer for this table. The row would be permanent: `ReleaseLease_t4d_frozen` refuses DELETE and refuses any `leaseUntil` decrease, so 4d-iii''s drain preflight would read release % (catalog version %, lease until %) as still serving and the unit could never retire. See docs/RUNBOOK.md §P6T4D.',
+    NEW."release", NEW."catalogVersion", NEW."leaseUntil";
+END $$;
+
+DO $release_lease_reservation$
+DECLARE v_bad TEXT;
+BEGIN
+  IF phase6_t4d_retired_at_start() OR phase6_t4d_ii_installed() THEN
+    -- the sanctioned writer is installed (or the whole unit is retired): the door stands down,
+    -- and a replay must not put it back under a process that legitimately claims leases.
+    DROP TRIGGER IF EXISTS "ReleaseLease_t4d_insert_reserved" ON "ReleaseLease";
+  ELSE
+    v_bad := phase6_t4d_trigger_mismatch('ReleaseLease_t4d_insert_reserved', 'ReleaseLease',
+      $def$CREATE TRIGGER "ReleaseLease_t4d_insert_reserved" BEFORE INSERT ON public."ReleaseLease" FOR EACH ROW EXECUTE FUNCTION platform_t4d_release_lease_insert_reserved()$def$);
+    IF v_bad = 'ABSENT' THEN
+      CREATE TRIGGER "ReleaseLease_t4d_insert_reserved" BEFORE INSERT ON "ReleaseLease"
+        FOR EACH ROW EXECUTE FUNCTION platform_t4d_release_lease_insert_reserved();
+    ELSIF v_bad IS NOT NULL THEN
+      RAISE EXCEPTION
+        'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.', 'ReleaseLease_t4d_insert_reserved does not reserve the dark window:', v_bad;
+    END IF;
+  END IF;
+END $release_lease_reservation$;
 
 DROP TRIGGER IF EXISTS "ReleaseLease_t4d_no_truncate" ON "ReleaseLease";
 CREATE TRIGGER "ReleaseLease_t4d_no_truncate" BEFORE TRUNCATE ON "ReleaseLease"

@@ -1193,6 +1193,38 @@ They are separate because the dependency runs one way only: the fact seals read 
 no register reads a fact table. The first half therefore applies and stands alone; the second
 applies on top of it.
 
+### The deploy stops with `could not obtain the deployment window`
+
+Each half opens by taking, in one all-or-nothing `NOWAIT` acquisition, every pre-existing table it
+will lock — seven in the registers half, nine in the decisions half. The acquisition never WAITS,
+so this migration can never be the blocked party in a deadlock with a serving command; instead it
+retries every 0.2s and, after 600 attempts (about two minutes), **fails closed**:
+
+```
+phase6 4d-i (registers half): could not obtain the deployment window on the seven pre-existing
+tables after 600 attempts — retry the deploy when writer traffic quiets.
+```
+
+**Nothing has been changed** — the whole transaction rolled back and the migration is unrecorded.
+The repair is to re-run the deploy at a quieter moment. There is no database state to inspect or
+undo. This message replaces the older failure mode, in which the deploy and a user's command could
+each hold what the other needed and PostgreSQL aborted one of them (usually the user's) with a bare
+`deadlock detected`.
+
+### The deploy stops on a `"ReleaseLease" takes no INSERT yet` refusal
+
+`ReleaseLease` is written by the startup writer that phase 6 unit **4d-ii** installs. Until that
+unit ships there is no sanctioned writer, and 4d-i reserves the table's INSERT for the whole dark
+window — because `ReleaseLease_t4d_frozen` refuses DELETE and refuses any `leaseUntil` decrease, so
+a row planted in that window is permanent, and 4d-iii's drain preflight would read it as a
+still-serving previous release forever.
+
+If a deploy or a script hits this refusal, the row it was trying to write is not one anything
+should be writing yet — do not disable the door to get past it. The door stands down on its own the
+moment `platform_release_lease_writer_installed()` exists, which 4d-ii creates alongside the writer
+and its validation; a 4d-i replay over such a database drops the reservation rather than
+re-installing it.
+
 **This matters for recovery.** Prisma records each migration separately, so a
 `migrate resolve --rolled-back` must name THE HALF THAT FAILED. Resolving the other one leaves the
 real failure recorded and the next deploy stops at P3009 again — on a migration the operator

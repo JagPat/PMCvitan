@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -292,8 +292,19 @@ INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationI
 COMMIT;
 -- ONE LIVE LEASE for the drain-attestation arms: a serving process at catalog version 2 whose
 -- lease runs an hour out. The table is DARK, so nothing else in this fixture reads or writes it.
+--
+-- PLANTED AS THE SANCTIONED WRITER WOULD, not through the front door (#582's review round 36,
+-- finding 3). The three ReleaseLease_t4d_frozen arms are about what may happen to a lease that
+-- ALREADY EXISTS — the world from 4d-ii on, where a startup writer claims one. The dark window
+-- this unit opens has no such writer, and now has ReleaseLease_t4d_insert_reserved to say so,
+-- which refused this very statement when the door went in. Standing the writer in with
+-- session_replication_role = replica is the harness's existing device for a door that is not the
+-- subject under test; writing the row through the open INSERT was the fixture quietly depending
+-- on the hole the finding names.
+SET session_replication_role = 'replica';
 INSERT INTO "ReleaseLease" ("instanceId","catalogVersion","release","startedAt","leaseUntil")
   VALUES ('ss-instance', 2, 'ss-release', now(), now() + interval '1 hour');
+SET session_replication_role = 'origin';
 -- the receipt is RESERVED on insert and COMPLETES by update, because the delivered ledger
 -- protocol refuses a receipt born terminal ("a command that never ran").
 INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
@@ -1071,6 +1082,11 @@ const ARMS: Arm[] = [
  * This is NOT `COVERED_BY_CLASS`: these seals have their own bodies and their own hostile writes.
  */
 const STRIPPED_BY_PROBE: Record<string, string> = {
+  // #582 round 36, finding 3 — stripped by the hand-written round-36 arm, which needs the
+  // planted row to exist before it can show the trap closing behind it.
+  ReleaseLease_t4d_insert_reserved:
+    'round 36: the dark window admits no ReleaseLease INSERT, and every dark table has a door',
+
   // #582 round 26, finding 3 — stripped by the hand-written round-26 arm rather than by a table
   // entry, because the identity class needs a row PLANTED before the rewrite can be attempted and
   // the declarative arms carry a single hostile statement.
@@ -5801,6 +5817,12 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       DomainEvent_append_only:
         `CREATE TRIGGER "DomainEvent_append_only" BEFORE UPDATE OF "eventId" OR DELETE ON "DomainEvent"
            FOR EACH ROW EXECUTE FUNCTION "domainEvent_append_only"()`,
+      // #582 round 36, finding 3 — the dark window's INSERT reservation. Weakened the way a
+      // reservation is always weakened: a WHEN that can never be true, so the trigger is present,
+      // enabled, on the right table, running the right function, and fires on nothing.
+      ReleaseLease_t4d_insert_reserved:
+        `CREATE TRIGGER "ReleaseLease_t4d_insert_reserved" BEFORE INSERT ON "ReleaseLease"
+           FOR EACH ROW WHEN (false) EXECUTE FUNCTION platform_t4d_release_lease_insert_reserved()`,
       // statement-level TRUNCATE: no WHEN is permitted and there is no UPDATE to restrict, so
       // tgtype and the function already covered it.
       RolloutRetirement_t4d_no_truncate: null,
@@ -6019,52 +6041,259 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
   }, 600_000);
 
   /**
-   * #582's review round 35, finding 2 — THE LOCK ORDER IS THE SERVING WRITER'S.
+   * #582's review round 36, finding 1 — THE ACQUISITION, NOT THE ORDER.
    *
-   * The decisions half replaces triggers on twelve tables; `CREATE TRIGGER` takes ACCESS EXCLUSIVE
-   * and holds it to COMMIT. `Decision` came first and `Membership` seventh, while the serving
-   * approval flow locks `Membership` (`hasProjectRoleStanding(..., { forUpdate: true })`) before
-   * it touches `Decision` — opposite orders, so a live apply and a user's approval can each hold
-   * what the other needs and PostgreSQL kills one of them.
+   * Round 35 wrote an arm here that pinned `Membership` FIRST, on the strength of one grep hit
+   * (`hasProjectRoleStanding(..., { forUpdate: true })`). The serving paths lock the other way:
+   * `decisions.publish` and `decisions.updateDraft` both take `"Decision" … FOR UPDATE` and only
+   * then a `Membership` row. So the arm did not merely miss the defect — it CERTIFIED the
+   * inversion, which is worse than having no arm, and is why this one asserts a property of the
+   * migration alone instead of a claim about somebody else's code.
    *
-   * A deadlock is a race, and a race is not something a migration probe can stage honestly. What
-   * CAN be asserted is the property that removes it: every lock this half needs is taken before
-   * any DDL, in one statement, in the serving order. So the arm reads the migration and checks the
-   * order of the text itself — and checks it against the DDL targets it discovers in the same
-   * file, so a table added later is covered the day it appears.
+   * The property: every lock each half needs is taken in ONE all-or-nothing `NOWAIT` acquisition,
+   * before any DDL, retried and failing closed. A transaction that never WAITS for these tables
+   * cannot be a party to a cycle over them, whatever order any present or future command uses.
+   * `LOCK TABLE a, b` acquires the relations one at a time (#582's round-8 finding 1), so the
+   * `NOWAIT` and the enclosing subtransaction are what make the set atomic, not the comma.
    */
-  it('round 35: the decisions half takes every lock it needs, before any DDL, in the serving order', () => {
-    const sql = readFileSync(FACTS, 'utf8');
+  it('round 36: each half takes its whole lock set all-or-nothing, NOWAIT, before any DDL', () => {
+    for (const file of UNIT_FILES) {
+      // COMMENTS STRIPPED FIRST. The first draft of this arm scanned the raw file and matched the
+      // phrase `LOCK TABLE a, b` inside the prose ABOVE the statement, so every assertion below
+      // was made about a comment. That is round 34's vacuous-regex defect in a new costume, and
+      // the lesson it carries is the same: a pattern that discovers its own subject must be shown
+      // to have found the subject, never merely to have found something.
+      const sql = readFileSync(file, 'utf8').replace(/^[ \t]*--.*$/gm, '');
+      const half = file === MIGRATION ? 'registers' : 'decisions';
 
-    const lockAt = sql.indexOf('LOCK TABLE');
-    expect(lockAt, 'the decisions half must take its locks explicitly').toBeGreaterThan(0);
-    const lockStmt = sql.slice(lockAt, sql.indexOf(';', lockAt));
-    const locked = [...lockStmt.matchAll(/"([A-Za-z]+)"/g)].map((m) => m[1]!);
+      const locks = [...sql.matchAll(/LOCK TABLE[\s\S]*?MODE(?: NOWAIT)?;/g)];
+      expect(locks.length, `the ${half} half must take its locks in exactly ONE statement — a `
+        + 'second acquisition is a lock taken while this transaction already holds another, '
+        + 'which is the AB-BA shape round 36 found in both halves').toBe(1);
 
-    expect(lockStmt, 'the mode must be the one the DDL takes anyway, or the DDL upgrades a lock it '
-      + 'already holds — which is a deadlock source of its own').toMatch(/ACCESS EXCLUSIVE MODE/);
-    expect(locked.indexOf('Membership'),
-      '`Membership` must be locked FIRST: the serving approval flow locks it before it touches '
-      + '`Decision`, and a migration that reverses that order deadlocks against it').toBe(0);
-    expect(locked.indexOf('Decision'),
-      'and `Decision` after it').toBeGreaterThan(0);
+      const stmt = locks[0]![0];
+      expect(stmt, `the ${half} half's acquisition must be NOWAIT: a waiting acquisition is the `
+        + 'only way this transaction can be the blocked party in a deadlock cycle').toMatch(/NOWAIT;$/);
+      expect(sql.slice(0, sql.indexOf(stmt)),
+        `the ${half} half's acquisition must sit inside a retry loop with a subtransaction, so a `
+        + 'partial set is released by the exception rollback').toMatch(/DO \$t4d_window\$[\s\S]*LOOP\s*\n\s*BEGIN\s*$/);
+      expect(sql.slice(sql.indexOf(stmt)),
+        `the ${half} half must FAIL CLOSED after its retry cap, never loop forever`)
+        .toMatch(/WHEN lock_not_available THEN[\s\S]*?RAISE EXCEPTION[\s\S]*?retry the deploy/);
 
-    // every DDL target that ALREADY EXISTS must be in the lock list, and the lock must precede
-    // the first DDL in the file. Tables this transaction CREATES cannot be locked before they
-    // exist and cannot contend with anyone, so they are excluded by construction.
-    const created = new Set([...sql.matchAll(/CREATE TABLE IF NOT EXISTS "([A-Za-z]+)"/g)].map((m) => m[1]!));
-    const ddl = [...sql.matchAll(/(?:DROP TRIGGER IF EXISTS "[^"]+" ON|ALTER TABLE) "([A-Za-z]+)"/g)];
-    const firstDdlAt = ddl.length > 0 ? sql.indexOf(ddl[0]![0]) : -1;
-    expect(firstDdlAt, 'the file must contain DDL for this arm to mean anything').toBeGreaterThan(0);
-    expect(lockAt, 'the locks must be taken BEFORE the first DDL statement').toBeLessThan(firstDdlAt);
+      // COMPLETENESS, computed from the file's own DDL rather than listed by hand.
+      const locked = [...stmt.matchAll(/"([A-Za-z0-9_]+)"/g)].map((m) => m[1]!);
+      const created = new Set([...sql.matchAll(/CREATE TABLE(?: IF NOT EXISTS)? "([A-Za-z0-9_]+)"/g)].map((m) => m[1]!));
+      const ddl = [
+        ...sql.matchAll(/(?:DROP TRIGGER IF EXISTS "[^"]+" ON|ALTER TABLE(?: IF EXISTS)?) "([A-Za-z0-9_]+)"/g),
+        ...sql.matchAll(/CREATE TRIGGER "[A-Za-z0-9_]+"[\s\S]{0,140}?\bON "([A-Za-z0-9_]+)"/g),
+      ];
+      expect(ddl.length, `the ${half} half must contain DDL for this arm to mean anything`).toBeGreaterThan(0);
 
-    const missing = [...new Set(ddl.map((m) => m[1]!))]
-      .filter((tb) => !created.has(tb) && !locked.includes(tb));
-    expect(
-      missing,
-      'these pre-existing tables take DDL in this half and are not in the up-front lock list. A '
-      + 'lock acquired mid-transaction is a lock acquired in whatever order the file happens to '
-      + 'be written in, which is how the Decision/Membership inversion arose.',
-    ).toEqual([]);
+      const firstDdlAt = Math.min(...ddl.map((m) => sql.indexOf(m[0])));
+      expect(sql.indexOf(stmt), `the ${half} half must acquire before its first DDL statement`)
+        .toBeLessThan(firstDdlAt);
+
+      const missing = [...new Set(ddl.map((m) => m[1]!))]
+        .filter((tb) => !created.has(tb) && !locked.includes(tb)).sort();
+      expect(missing, `these PRE-EXISTING tables take DDL in the ${half} half and are not in its `
+        + 'up-front acquisition. A lock taken later is taken in whatever order the file happens '
+        + 'to be written in, while this transaction already holds the tables above it.').toEqual([]);
+    }
   }, 60_000);
+
+  /**
+   * …AND THE ACQUISITION IS MEASURED, not only read. The deadlock round 36's finding 1 reported
+   * is real and reproducible: with round 35's waiting statement, a session in the serving order
+   * (`Decision` then `Membership`) and the migration in the reverse order reach a cycle and
+   * PostgreSQL kills one — in the measured run, the USER's command, not the deploy.
+   *
+   * The arm here is the fixed behaviour and is deterministic because `NOWAIT` never blocks: with
+   * a serving-order session holding `Decision`, the acquisition fails IMMEDIATELY with
+   * `lock_not_available` (55P03) and the retry loop sleeps. It is never `deadlock_detected`
+   * (40P01), and — the part that matters — the serving command is never the one aborted.
+   */
+  it('round 36: the acquisition yields to a serving-order holder instead of deadlocking with it', () => {
+    buildRun([]);
+    const holder = spawn('psql', ['-X', '-q', '-v', 'ON_ERROR_STOP=0', adminUrl(RUN_DB),
+      '-c', 'BEGIN',
+      '-c', 'SELECT 1 FROM "Decision" WHERE false FOR UPDATE',   // the serving order: Decision…
+      '-c', 'SELECT pg_sleep(6)',
+      '-c', 'SELECT 1 FROM "Membership" WHERE false FOR UPDATE', // …then Membership
+      '-c', 'COMMIT'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    try {
+      const started = Date.now();
+      let out = '';
+      // give the holder its Decision lock before the acquisition runs
+      execFileSync('psql', ['-X', '-q', adminUrl(RUN_DB), '-c', 'SELECT pg_sleep(1)'], { encoding: 'utf8' });
+
+      const stmt = readFileSync(FACTS, 'utf8')
+        .replace(/^[ \t]*--.*$/gm, '')                 // the prose names the statement too
+        .match(/LOCK TABLE[\s\S]*?MODE NOWAIT;/)![0];
+      expect(stmt, 'the extracted text must be the STATEMENT, not the paragraph describing it')
+        .toMatch(/^LOCK TABLE\s+"/);
+      const attempt = psql(RUN_DB, ['-c', 'BEGIN', '-c', stmt, '-c', 'COMMIT']);
+      out = attempt.output;
+      expect(attempt.ok, 'the NOWAIT acquisition must REFUSE while a serving command holds '
+        + `"Decision", not wait for it:\n${out}`).toBe(false);
+      expect(out, 'and it must refuse with lock_not_available — a deadlock here would mean the '
+        + `acquisition waited, which is the defect:\n${out}`).toMatch(/could not obtain lock on relation/);
+      expect(out, 'never a deadlock').not.toMatch(/deadlock detected/);
+      expect(Date.now() - started, 'NOWAIT must fail immediately, not block on the holder')
+        .toBeLessThan(6_000);
+
+      // and the SERVING command is untouched: it still holds "Decision", because nothing ever
+      // waited on it. (With round 35's waiting statement this is the session PostgreSQL killed.)
+      expect(psql(RUN_DB, ['-t', '-A', '-c',
+        `SELECT count(*) FROM pg_stat_activity WHERE datname = '${RUN_DB}' AND state <> 'idle in transaction (aborted)'
+           AND pid <> pg_backend_pid()`]).output.trim(),
+        'the serving session must still be alive and unaborted').not.toBe('0');
+    } finally {
+      holder.kill('SIGKILL');
+    }
+  }, 300_000);
+
+  /**
+   * #582's review round 36, finding 2 — THE ONE PLANNED SUCCESSOR GENERATION.
+   *
+   * The foreign-generation audit was gated on retirement alone, which reasons over two states.
+   * The rollout has a third that THIS unit's own split created (round 6's finding 3 moved the
+   * `pairingRequired` switch-on into 4d-i-b): 4d-i-b applied, 4d-iii not yet run. `migrate.sh`
+   * leaves this file pending on the P3005/db-push path, so its replay lands there, reads
+   * 4d-i-b's generation as a hand's work, and aborts telling the operator to DELETE VALID
+   * DISPATCH POLICY.
+   *
+   * The admission is by SHAPE, not by a marker — `RolloutRetirement`'s INSERT gate admits a row
+   * only inside a retirement transaction, and this file's own doctrine is that a marker alone is
+   * not evidence. So the arm drives both directions: the generation 4d-i-b is specified to write
+   * must be adopted, and four hands that are NOT it must still abort.
+   */
+  it('round 36: the replay adopts 4d-i-b\'s pairing generation and still refuses every hand', () => {
+    buildRun([]);
+    // The window under test is 4d-i-b's: 4d-i applied, the pairing switch-on run, 4d-ii's writers
+    // NOT yet shipped. The standard fixture keeps one live lease for the drain-attestation arms,
+    // which in this window would not exist — and leaving it makes every replay below abort on the
+    // dark-table emptiness audit instead of reaching the catalog audit this arm is about. So the
+    // arm puts the database into the state it claims to be measuring.
+    expect(psql(RUN_DB, ['-c',
+      `SET session_replication_role='replica'; DELETE FROM "ReleaseLease"; SET session_replication_role='origin';`]).ok).toBe(true);
+    const seeded = psql(RUN_DB, ['-t', '-A', '-c',
+      `SELECT DISTINCT "coverageVersion" FROM "ExternalEffectCatalog" WHERE "coverageVersion" = '${COVERAGE}'`]);
+    expect(seeded.output.trim(), 'this release\'s generation must be seeded').toBe(COVERAGE);
+
+    const SIX = `'decision.approved','decision.reapproved','decision.change_requested',`
+      + `'decision.change_withdrawn','decision.consultation_requested','decision.consultation_responded'`;
+    /** 4d-i-b: the same keys and columns, `pairingRequired` true on exactly the plan's six. */
+    const successor = (v: string, flips = SIX) => `SET session_replication_role = 'replica';
+      INSERT INTO "ExternalEffectCatalog"
+        ("coverageVersion","effectKey","eventType","invalidate","pushRoles","pushFamily",
+         "frozenAudience","requiresPush","audience","pushBody","pairingRequired")
+      SELECT '${v}', "effectKey","eventType","invalidate","pushRoles","pushFamily",
+             "frozenAudience","requiresPush","audience","pushBody",
+             "effectKey" IN (${flips})
+        FROM "ExternalEffectCatalog" WHERE "coverageVersion" = '${COVERAGE}';
+      SET session_replication_role = 'origin';`;
+    const drop = (v: string) => psql(RUN_DB, ['-c',
+      `SET session_replication_role='replica'; DELETE FROM "ExternalEffectCatalog" WHERE "coverageVersion"='${v}'; SET session_replication_role='origin';`]);
+
+    // ── the planned successor is ADOPTED ──────────────────────────────────────────────────────
+    expect(psql(RUN_DB, ['-c', successor('b4dib')]).ok).toBe(true);
+    const adopted = applyWhole();
+    expect(adopted.ok, '4d-i-b writes a fresh generation beside the old one BEFORE 4d-iii '
+      + 'retires the unit, and the plan says so in §D. A replay that aborts on it tells the '
+      + `operator to delete dispatch policy the next unit is specified to write:\n${adopted.output}`).toBe(true);
+
+    // ── and four hands are REFUSED ────────────────────────────────────────────────────────────
+    const hands: Array<[string, string]> = [
+      ['a SEVENTH flip', `${successor('hand1')} SET session_replication_role='replica';
+         UPDATE "ExternalEffectCatalog" SET "pairingRequired"=true
+          WHERE "coverageVersion"='hand1' AND "effectKey"='activity.created';
+         SET session_replication_role='origin';`],
+      ['an EXTRA key this release never compiled', `${successor('hand2')} SET session_replication_role='replica';
+         INSERT INTO "ExternalEffectCatalog" ("coverageVersion","effectKey","eventType","invalidate","frozenAudience","requiresPush","pairingRequired")
+         VALUES ('hand2','decision.smuggled','decision.smuggled',true,false,false,true);
+         SET session_replication_role='origin';`],
+      ['a changed `audience` on one row', `${successor('hand3')} SET session_replication_role='replica';
+         UPDATE "ExternalEffectCatalog" SET "audience"='targeted'
+          WHERE "coverageVersion"='hand3' AND "effectKey"='activity.created';
+         SET session_replication_role='origin';`],
+      // a straight duplicate is not 4d-i-b either: it flips nothing, so it compiles no new policy
+      ['an identical copy that flips NOTHING', successor('hand4', `''`)],
+    ];
+    for (const [what, plant] of hands) {
+      expect(psql(RUN_DB, ['-c', plant]).ok, `${what} must plant`).toBe(true);
+      const r = applyWhole();
+      expect(r.ok, `${what} is a dispatch policy no release compiled — the audit must still `
+        + `abort on it, or the round-36 narrowing has opened the door it was closing`).toBe(false);
+      expect(r.output).toMatch(/phase6 4d-i ABORT/);
+      for (const v of ['hand1', 'hand2', 'hand3', 'hand4']) drop(v);
+    }
+    expect(applyWhole().ok, 'and the database must be adoptable again once the hands are gone').toBe(true);
+  }, 900_000);
+
+  /**
+   * #582's review round 36, finding 3 — THE DARK WINDOW'S OWN INSERT.
+   *
+   * `ReleaseLease_t4d_frozen` refuses DELETE and refuses any `leaseUntil` decrease, and INSERT
+   * was left open "because 4d-ii's startup writer is the one that establishes the identity" —
+   * two states again, with the window between them unguarded. One direct row in that window is
+   * permanent by the seals' own hand, and 4d-iii's drain preflight then reads a previous release
+   * as serving indefinitely: the unit can never retire.
+   *
+   * THE SIBLING SWEEP IS THE POINT. The plan names SIX dark tables. Five carry a standing INSERT
+   * door already — `DecisionForward` a content seal AND `DecisionForward_t4d_reserved`,
+   * `DecisionCountersign` and `DecisionStrandedResolution` their content seals,
+   * `MembershipTransition` its transition seal, `DomainEventPairingClaim` the kernel writer
+   * gate. `ReleaseLease` was the only one of the six with no INSERT trigger at all, and the arm
+   * asserts that inventory so a seventh dark table cannot arrive unguarded.
+   */
+  it('round 36: the dark window admits no ReleaseLease INSERT, and every dark table has a door', () => {
+    const GHOST = `INSERT INTO "ReleaseLease" ("instanceId","release","catalogVersion","startedAt","leaseUntil")
+                   VALUES ('ghost','r-old',1,now(),now() + interval '10 years')`;
+
+    buildRun([]);
+    const sealed = psql(RUN_DB, ['-c', GHOST]);
+    expect(sealed.ok, 'a dark-window lease must be REFUSED — the seals above make it permanent '
+      + `the moment it commits:\n${sealed.output}`).toBe(false);
+    expect(sealed.output).toMatch(/"ReleaseLease" takes no INSERT yet/);
+
+    // …and it is THIS door that refuses it, not the pile around it.
+    buildRun(['ReleaseLease_t4d_insert_reserved']);
+    const open = psql(RUN_DB, ['-c', GHOST]);
+    expect(open.ok, `with the reservation stripped the same row commits — which is the window `
+      + `round 36 found, and what makes the arm above evidence about this door:\n${open.output}`).toBe(true);
+    // and the trap closes behind it: neither removable nor shortenable
+    expect(psql(RUN_DB, ['-c', `DELETE FROM "ReleaseLease" WHERE "instanceId"='ghost'`]).ok,
+      'the planted row cannot be deleted').toBe(false);
+    expect(psql(RUN_DB, ['-c', `UPDATE "ReleaseLease" SET "leaseUntil" = now() WHERE "instanceId"='ghost'`]).ok,
+      'nor its expiry brought forward — 4d-iii reads it as serving forever').toBe(false);
+
+    // THE DOOR STANDS DOWN once 4d-ii's writers exist — and so does the dark-table emptiness
+    // audit, which is a FOURTH instance of this round's class that this arm found: the audit
+    // skipped only at RETIREMENT, while its own rule is about whether the sanctioned WRITER
+    // exists. Between 4d-ii and 4d-iii all three dark tables legitimately hold rows, and a
+    // replay aborted on them. Both now read the one `phase6_t4d_ii_installed()` witness, so the
+    // fixture's live lease below is adopted rather than treated as an unvalidated row.
+    buildRun([]);
+    expect(psql(RUN_DB, ['-c',
+      `CREATE FUNCTION platform_t4d_ii_writers_installed() RETURNS BOOLEAN LANGUAGE sql AS $$ SELECT true $$`]).ok).toBe(true);
+    const replay = applyWhole();
+    expect(replay.ok, 'a replay over a 4d-ii database — dark tables populated by its writers — '
+      + `must re-apply cleanly, not abort on the rows that unit legitimately wrote:\n${replay.output}`).toBe(true);
+    expect(psql(RUN_DB, ['-t', '-A', '-c',
+      `SELECT count(*) FROM pg_trigger WHERE tgname = 'ReleaseLease_t4d_insert_reserved' AND NOT tgisinternal`]).output.trim(),
+      'and must NOT re-install the reservation over a process that legitimately claims leases').toBe('0');
+    expect(psql(RUN_DB, ['-c', GHOST]).ok, 'the sanctioned writer\'s lease is admitted').toBe(true);
+
+    // THE INVENTORY: every dark table the plan names carries a standing INSERT door.
+    buildRun([]);
+    const DARK = ['DecisionForward', 'DecisionCountersign', 'DecisionStrandedResolution',
+      'MembershipTransition', 'DomainEventPairingClaim', 'ReleaseLease'];
+    const doorless = DARK.filter((t) => psql(RUN_DB, ['-t', '-A', '-c',
+      `SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+        WHERE c.relname = '${t}' AND NOT t.tgisinternal AND (t.tgtype & 4) <> 0`]).output.trim() === '0');
+    expect(doorless, 'these dark tables have no INSERT trigger at all. An apply-time emptiness '
+      + 'audit is a count taken once; it says nothing about the window that opens the moment '
+      + 'the migration commits.').toEqual([]);
+  }, 900_000);
 });
