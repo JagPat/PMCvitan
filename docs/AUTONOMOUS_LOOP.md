@@ -268,10 +268,10 @@ owner's. The resulting exact settings are:
 Do not add `codex-current-head` before the workflow is present on the default
 branch; doing so would intentionally block every PR, including the bootstrap PR.
 
-Every automated merge is additionally held until a configured Board authority posts
-the exact immutable authorization record described in `docs/POLICY.md`. Empty
-`BOARD_MERGE_AUTHORIZERS` means no merge. Authorization is repeated for every head
-and base SHA and may be revoked; it never comes from the PR body or labels.
+The system merges automatically after required CI and independent exact-head
+review pass. No human authorization comment or Board approver configuration is
+required. The controller revalidates the current head, base and readiness before
+completion; GitHub branch protection still governs direct and queued merges.
 
 ## External Dependencies
 

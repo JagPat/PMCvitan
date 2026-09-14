@@ -1,28 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assessBoardMergeAuthorization } from './board-merge-authorization.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import { parseCorrectionOwner, correctionRouting } from './correction-owner.mjs';
 import { authorizeExactHeadMerge, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
-const body = (decision = 'authorize') => `<!-- pmcvitan-board-merge-authorization -->\nPR: #600\nHead: ${head}\nBase: ${base}\nDecision: ${decision}`;
-const comment = (overrides = {}) => ({ id: 1, body: body(), user: { login: 'board-chair' }, created_at: '2026-09-14T12:00:00Z', updated_at: '2026-09-14T12:00:00Z', ...overrides });
-
-test('Board authorization is exact-head/base, trusted, unedited and revocable', () => {
-  const input = { comments: [comment()], pullRequestNumber: 600, expectedHead: head, expectedBase: base, trustedActors: ['board-chair'] };
-  assert.equal(assessBoardMergeAuthorization(input).allowed, true);
-  for (const changed of [
-    { expectedHead: 'c'.repeat(40) },
-    { expectedBase: 'd'.repeat(40) },
-    { trustedActors: ['implementer'] },
-    { comments: [comment({ updated_at: '2026-09-14T12:01:00Z' })] },
-  ]) assert.equal(assessBoardMergeAuthorization({ ...input, ...changed }).allowed, false);
-  const revoked = comment({ id: 2, body: body('revoke'), created_at: '2026-09-14T12:01:00Z', updated_at: '2026-09-14T12:01:00Z' });
-  assert.deepEqual(assessBoardMergeAuthorization({ ...input, comments: [comment(), revoked] }), { allowed: false, state: 'revoked' });
-});
-
 function cleanRun(overrides = {}) {
   return { id: 7, name: 'claude-independent-review', head_sha: head, app: { slug: 'claude-review-service' }, external_id: `pmcvitan:claude-review:v1:pr-600:sha-${head}:nonce`, status: 'completed', conclusion: 'success', completed_at: '2026-09-14T12:00:00Z', output: { summary: JSON.stringify({ schema: 1, pullRequest: 600, headSha: head, outcome: 'clear', openFindings: 0, complete: true }) }, ...overrides };
 }
@@ -65,28 +48,26 @@ test('a newer pending Claude rerun supersedes an older clear completion', () => 
   }
 });
 
-test('merge guard rejects drafts, new heads/base changes, revoked holds and non-green gates', async () => {
-  const prior = process.env.BOARD_MERGE_AUTHORIZERS;
-  process.env.BOARD_MERGE_AUTHORIZERS = 'board-chair';
+test('automatic merge needs CI and exact-head review, with no human authorization', async () => {
   const pull = { number: 600, state: 'open', draft: false, head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } }, base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } } };
   const checks = REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
-  const makeClient = ({ pulls = [pull, pull], statuses = [{ context: 'codex-current-head', state: 'success' }], comments = [[comment()], [comment()]] } = {}) => ({
+  const makeClient = ({ pulls = [pull, pull], statuses = [{ context: 'codex-current-head', state: 'success' }], runs = checks } = {}) => ({
     repository: 'JagPat/PMCvitan',
     async pullRequest() { return pulls.shift() ?? pull; },
     async statuses() { return statuses; },
-    async checkRuns() { return checks; },
-    async paginated() { return comments.shift() ?? []; },
+    async checkRuns() { return runs; },
+    async paginated() { throw new Error('Merge must not fetch human authorization comments'); },
   });
-  try {
-    assert.equal((await authorizeExactHeadMerge(makeClient(), pull, head)).allowed, true);
-    assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [{ ...pull, draft: true }] }), pull, head)).state, 'draft');
-    assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [pull, { ...pull, head: { ...pull.head, sha: 'c'.repeat(40) } }] }), pull, head)).state, 'changed_during_validation');
-    assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [pull, { ...pull, base: { ...pull.base, sha: 'd'.repeat(40) } }] }), pull, head)).state, 'changed_during_validation');
-    const revoked = comment({ id: 2, body: body('revoke'), created_at: '2026-09-14T12:01:00Z', updated_at: '2026-09-14T12:01:00Z' });
-    assert.equal((await authorizeExactHeadMerge(makeClient({ comments: [[comment()], [comment(), revoked]] }), pull, head)).state, 'revoked');
-    assert.equal((await authorizeExactHeadMerge(makeClient({ statuses: [{ context: 'codex-current-head', state: 'failure' }] }), pull, head)).state, 'gates_not_green');
-  } finally {
-    if (prior === undefined) delete process.env.BOARD_MERGE_AUTHORIZERS;
-    else process.env.BOARD_MERGE_AUTHORIZERS = prior;
+  assert.equal((await authorizeExactHeadMerge(makeClient(), pull, head)).allowed, true);
+  assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [{ ...pull, draft: true }] }), pull, head)).state, 'draft');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [pull, { ...pull, head: { ...pull.head, sha: 'c'.repeat(40) } }] }), pull, head)).state, 'changed_during_validation');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [pull, { ...pull, base: { ...pull.base, sha: 'd'.repeat(40) } }] }), pull, head)).state, 'changed_during_validation');
+  for (const state of ['failure', 'pending']) {
+    assert.equal((await authorizeExactHeadMerge(makeClient({ statuses: [{ context: 'codex-current-head', state }] }), pull, head)).state, 'gates_not_green');
+  }
+  assert.equal((await authorizeExactHeadMerge(makeClient({ statuses: [] }), pull, head)).state, 'gates_not_green');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ runs: [] }), pull, head)).state, 'gates_not_green');
+  for (const name of REQUIRED_CHECKS) {
+    assert.equal((await authorizeExactHeadMerge(makeClient({ runs: checks.map(run => run.name === name ? { ...run, conclusion: 'failure' } : run) }), pull, head)).state, 'gates_not_green');
   }
 });

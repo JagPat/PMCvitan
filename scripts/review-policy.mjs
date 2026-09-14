@@ -46,7 +46,6 @@ export const CODEX_GRAPHQL_LOGIN = 'chatgpt-codex-connector';
 export const REQUIRED_CHECKS = [...GATE_CHECKS, ...PRODUCT_CHECKS];
 export const STATUS_CONTEXT = 'codex-current-head';
 export const CLAUDE_SHADOW_CONTEXT = 'claude-independent-review';
-export const BOARD_AUTHORIZATION_MARKER = 'pmcvitan-board-merge-authorization';
 export const ROOT_CAUSE_ADVISORY_AFTER_FINDING_HEADS = 2;
 
 export function requiredChecksForPullRequest(pullRequestNumber) {

@@ -31,10 +31,6 @@ import {
   correctionOwnerDeclaration,
   correctionRouting,
 } from './correction-owner.mjs';
-import {
-  assessBoardMergeAuthorization,
-  configuredBoardActors,
-} from './board-merge-authorization.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import {
   assessReviewScope,
@@ -976,7 +972,7 @@ export async function completeReviewedPullRequest(
 ) {
   const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead);
   if (!authorization.allowed) {
-    return 'held_for_board';
+    return 'held_for_gates';
   }
   pullRequest = authorization.pullRequest;
   const direct = await client.mergeExactHead(
@@ -1020,44 +1016,22 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead)
   if (!live || live.draft || !live.base?.sha) {
     return { allowed: false, state: live?.draft ? 'draft' : 'superseded' };
   }
-  const [statuses, checks, comments] = await Promise.all([
+  const [statuses, checks] = await Promise.all([
     client.statuses(expectedHead),
     client.checkRuns(expectedHead),
-    client.paginated(`/repos/${client.repository}/issues/${live.number}/comments`),
   ]);
   const latestReview = statuses.find((status) => status.context === STATUS_CONTEXT);
   const required = summarizeRequiredChecks(checks, requiredChecksForPullRequest(live.number));
   if (latestReview?.state !== 'success' || required.state !== 'success') {
     return { allowed: false, state: 'gates_not_green' };
   }
-  const board = assessBoardMergeAuthorization({
-    comments,
-    pullRequestNumber: live.number,
-    expectedHead,
-    expectedBase: live.base.sha,
-    trustedActors: configuredBoardActors(),
-  });
-  if (!board.allowed) return board;
-
-  // Re-read after all remote evidence. A push, base update, retarget, draft
-  // transition, or authorization revocation during validation fails closed.
+  // Re-read after remote evidence. A push, base update, retarget or draft
+  // transition during validation fails closed.
   const finalLive = await refreshCurrentHead(client, live.number, expectedHead);
   if (!finalLive || finalLive.draft || finalLive.base?.sha !== live.base.sha) {
     return { allowed: false, state: 'changed_during_validation' };
   }
-  const finalComments = await client.paginated(
-    `/repos/${client.repository}/issues/${live.number}/comments`,
-  );
-  const finalBoard = assessBoardMergeAuthorization({
-    comments: finalComments,
-    pullRequestNumber: live.number,
-    expectedHead,
-    expectedBase: live.base.sha,
-    trustedActors: configuredBoardActors(),
-  });
-  return finalBoard.allowed
-    ? { allowed: true, state: 'authorized', pullRequest: finalLive, evidence: finalBoard.evidence }
-    : finalBoard;
+  return { allowed: true, state: 'authorized', pullRequest: finalLive };
 }
 
 export async function ensureTerminalReviewState(
@@ -1935,7 +1909,7 @@ export async function run() {
             ? 'GitHub squash-merged this exact reviewed head.'
             : completion === 'queued'
               ? 'GitHub auto-merge is queued behind branch protection.'
-              : 'Merge is held until a configured Board authority authorizes this exact head and base.',
+              : 'Merge is held because the current head, base, readiness or required gates changed during validation.',
         }),
       );
       return;

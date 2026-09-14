@@ -83,18 +83,14 @@ retargets and cancelled attempts, and revalidates before merge. Product coverage
 be reused for metadata edits only when the common CI-evidence rules permit it.
 
 The two invocation attempts and timeout budgets bound a workflow run; they do not
-limit correction heads or require a replacement. A current-head clean result allows
-the existing exact-SHA squash-merge path within the user's authorization. Explicit
-merge/deploy holds must be respected. The current merge helper does not parse a
-prose hold; instead, the durable machine-readable Board authorization below is
-the merge boundary, so prose cannot accidentally be interpreted as authority.
-
-Every merge entrypoint also requires an unedited exact-format authorization comment
-from a login in the trusted default-branch controller's `BOARD_MERGE_AUTHORIZERS`
-repository variable. The comment binds the PR number, current head SHA and current
-base SHA. A later matching trusted revocation, a new head/base, draft state, failed
-gate, edited comment, or empty authority configuration holds the merge. PR bodies,
-labels and implementer-authored metadata are never Board authorization.
+limit correction heads or require a replacement. After required CI and independent
+review pass on the exact current head, the system completes the exact-SHA squash
+merge automatically, or queues GitHub auto-merge behind branch protection.
+No per-commit human or Board authorization, authorization comment, or approver
+allow-list is required. This user decision of 2026-09-14 supersedes the proposed
+Board-held merge rule. Drafts, changed heads/bases and failed or missing required
+gates still prevent completion. The implementer cannot supply independent review
+clearance; it must come from the configured review integration.
 
 No routine human technical approval substitutes for CI or independent review.
 The retained production-drain exception is different: clearing
@@ -252,9 +248,8 @@ an external id binding PR and SHA and the v1 structured summary validated by the
 adapter. Until a real current-head shadow run proves that contract, the adapter
 does not affect `codex-current-head`, merge eligibility or branch protection.
 
-Rollout is additive: merge this controller under existing Codex review and Board
-authorization; configure the trusted Board actor variable; verify real Claude
-shadow evidence on a current SHA; then install a new required gate before retiring
+Rollout is additive: merge this controller after required CI and independent
+Codex review; verify real Claude shadow evidence on a current SHA; then install a new required gate before retiring
 `codex-current-head`. Roll back by leaving or removing the future Claude required
 gate while retaining `codex-current-head`; never create an interval with neither
 gate. No workflow here changes branch protection, credentials, deployment, or drain state.
@@ -262,8 +257,7 @@ gate. No workflow here changes branch protection, credentials, deployment, or dr
 `assessConvergence` and `assessRestructure` are legacy test/metrics models, not live
 closure authority. A test for a legacy model does not make it active policy. A
 synthetic APPROVED Codex review currently classifies as a finding; validate the
-adapter's actual contract before changing that behavior. Neither that classifier
-nor the durable hold gap is silently changed by this refactor.
+adapter's actual contract before changing that behavior. That classifier is not changed by this refactor.
 
 For every new blocking rule, document the concrete defect it prevents, enforcement
 location, failing counterexample, legitimate recovery path and operating cost.

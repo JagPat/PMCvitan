@@ -81,8 +81,5 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ inputs.pr_number }}
           STATUS_CONTEXT: codex-current-head
-          # Comma-separated GitHub logins configured by repository administration.
-          # Empty is intentionally a universal merge hold.
-          BOARD_MERGE_AUTHORIZERS: ${{ vars.BOARD_MERGE_AUTHORIZERS }}
           CLAUDE_REVIEW_APP_SLUG: ${{ vars.CLAUDE_REVIEW_APP_SLUG }}
         run: node scripts/autonomous-review-gate.mjs
