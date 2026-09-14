@@ -716,7 +716,7 @@ test('fractional mobile widths retain the font floor up to the desktop boundary'
   for (const width of [639.25, 639.75]) {
     await page.locator('iframe').evaluate((el, value) => { el.style.width = `${value}px`; }, width);
     const inGap = await page.locator('iframe').evaluate((el) =>
-      el.contentWindow!.matchMedia('(width > 639px) and (width < 640px)').matches);
+      (el as HTMLIFrameElement).contentWindow!.matchMedia('(width > 639px) and (width < 640px)').matches);
     expect(inGap, 'the browser must evaluate a genuinely fractional mobile viewport').toBe(true);
     await expect(selector).toBeVisible();
     await expect(selector).toHaveCSS('font-size', '16px');
