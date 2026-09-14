@@ -156,21 +156,22 @@ Anything that changes what a user must **do** goes to ≥13px with real weight. 
 `DailyLogScreen:249` — the mismatch control — becomes a **44×44** button: full-width, bordered, thumb-reachable. It currently has a hit area of roughly 84 × 12 px, and it is the control that blocks wrong material reaching the wall.
 Audit every action target against the 44×44 floor in the same pass.
 
-**Done when:** every `input`, `textarea`, and `select` is ≥16px on the mobile shell (`@media (width < 640px)`, verified by computed style, including a fractional width such as 639.99px); no safety- or evidence-critical text below 13px; every action target ≥44×44; iOS Safari focuses every field without zooming. Desktop density is unchanged.
+**Done when:** every `input`, `textarea`, and `select` is ≥16px on the mobile shell (`@media (width < 640px)`, verified by computed style, including a fractional width such as 639.99px); no safety- or evidence-critical text below 13px; every action target ≥44×44; iOS Safari focuses every field without zooming. Desktop font sizes and read-only ledger density are unchanged; interactive controls take the target floor.
 
-> **F-1b IS NOT CLEARED** (2026-09-11, PR #584 review round 15). The criterion
-> above is unchanged and it is not met: the round-14 source count found **86**
-> shipped action targets below the floor. Round 14 retracted the CLAIM and left
-> this sentence standing, which made the unit's own completion criterion
-> knowingly false — the correction is stated here, at the criterion, and not
-> only in the amendment that found the number.
+> **Completion correction (2026-09-14, PR #584).** The round-14 inventory found
+> 86 undersized native controls, including capability-gated ledger fields and conditional
+> retry buttons. The shared native-control rule now gives buttons and fields a 44×44px
+> minimum; the Commercial and Labour field families also declare that minimum explicitly.
+> No ledger exception is taken. Read-only figures, badges and table cells retain their
+> typography; desktop field font sizes remain authored, and mobile fields retain the 16px floor.
 >
-> **F-1b clears when EITHER** every one of the 86 meets the floor, **OR** the
-> Board records an exception naming the exact surfaces it covers. Until one of
-> those, F-1b is open and **F-1c must not start** — its own preamble makes
-> clearing F-1b a precondition and forbids new design decisions, so beginning it
-> on an unmet prerequisite would push this question into a unit that has no
-> licence to answer it.
+> Capability-enabled Chromium probes exercise Commercial budget/cost-head and claim forms,
+> claim tabs and three stale retry states, plus Labour allocation/work entry, manual muster
+> and stale retry, at 390px and 1280px. The old Commercial fields measured 33px on mobile;
+> removing the native floor makes the raw controls fail at both widths. Source inspection
+> also confirms that smaller CSS-module minimums belong to badges, not action controls.
+> F-1b still requires the complete current-head CI battery and independent review before
+> merge; F-1c remains its subsequent validation unit.
 
 > **Amendment (2026-09-10, PR #584 review round 1 — four accepted findings):**
 >
@@ -349,22 +350,11 @@ Audit every action target against the 44×44 floor in the same pass.
 > here: what this unit can honestly claim is that every target the persona walk reaches, plus the
 > states the jsdom companion renders, meets the floor.
 >
-> **The remaining 86 are F-1b's OWN remaining work, not a new unit** (corrected at round 15: round
-> 14 called them "its own unit", which is how a criterion gets left behind — the work moves, the
-> Done-when stays, and the unit reads as clear while its own sentence is false). They fall into two
-> groups, and only one of them is a question:
->
-> · **~50 are dense ledger FORM CONTROLS** — `CommercialScreen`'s shared `input`/`select` style at
->   12.5px with 7px of padding (≈29px), and `LabourScreen`'s five of the same shape. Raising these
->   to 44 changes how much of a claim or a muster roll fits on one screen. **Whether the field floor
->   governs a desktop-first ledger, or that surface gets a stated exception, is the Board's call.**
-> · **~36 are standalone ACTION BUTTONS** — the bordered amber `Retry` at 18–24px on Commercial,
->   Drawings, Labour, Materials and the Engineer checklist; the Places controls at 17–39px; single
->   buttons on Drafts, Team, Inspection Review, MobileSheet and NotificationPanel. These carry no
->   density question: they are the exact subject F-1b names, and they are mechanical.
->
-> Neither group is deferred out of the unit. F-1b stays OPEN until the buttons are raised and the
-> Board answers the ledger question, per the clearance condition recorded at the criterion above.
+> **Resolution (2026-09-14).** These 86 were F-1b work and are addressed here,
+> through native-control minimums and the two ledger field families, rather than deferred
+> to F-1c. The capability/conditional-state browser probes and the completion correction
+> beside the criterion above replace the former request for a ledger exception. The
+> historical count describes the unfixed head, not an outstanding approved exception.
 
 ---
 

@@ -234,7 +234,7 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
                           <input type="number" min={1} max={20} value={sel.count} onChange={(e) => setPick(m.id, { count: Math.max(1, Math.min(20, Number(e.target.value) || 1)) })} style={{ width: 52, height: 44, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 13 }} />
                         </label>
                         {m.anchorKind === 'zone' && (
-                          <input value={sel.underZone} onChange={(e) => setPick(m.id, { underZone: e.target.value })} placeholder="Under zone (Ground Floor)" style={{ flex: 1, minWidth: 0, height: 44, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12.5 }} />
+                          <input value={sel.underZone} onChange={(e) => setPick(m.id, { underZone: e.target.value })} placeholder="Under zone (Ground Floor)" style={{ flex: 1, minWidth: 44, height: 44, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12.5 }} />
                         )}
                         {m.anchorKind === 'room' && (
                           <>
@@ -243,9 +243,9 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
                               <option value="zone">Under zone…</option>
                             </select>
                             {sel.roomTargetKind === 'room' ? (
-                              <input value={sel.underRoom} onChange={(e) => setPick(m.id, { underRoom: e.target.value })} placeholder="Room name (Master Bedroom)" data-testid={`np-under-room-${m.id}`} style={{ flex: 1, minWidth: 0, height: 44, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12.5 }} />
+                              <input value={sel.underRoom} onChange={(e) => setPick(m.id, { underRoom: e.target.value })} placeholder="Room name (Master Bedroom)" data-testid={`np-under-room-${m.id}`} style={{ flex: 1, minWidth: 44, height: 44, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12.5 }} />
                             ) : (
-                              <input value={sel.underZone} onChange={(e) => setPick(m.id, { underZone: e.target.value })} placeholder="Zone name (Entrance)" data-testid={`np-under-zone-${m.id}`} style={{ flex: 1, minWidth: 0, height: 44, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12.5 }} />
+                              <input value={sel.underZone} onChange={(e) => setPick(m.id, { underZone: e.target.value })} placeholder="Zone name (Entrance)" data-testid={`np-under-zone-${m.id}`} style={{ flex: 1, minWidth: 44, height: 44, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12.5 }} />
                             )}
                           </>
                         )}

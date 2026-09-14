@@ -395,7 +395,7 @@ function IntentReality({
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 12, alignItems: 'stretch' }}>
         {/* Intent — the drawing */}
-        <button onClick={onOpenDrawing} data-testid="ir-drawing" style={{ ...irCard, textAlign: 'left' }}>
+        <button onClick={onOpenDrawing} data-testid="ir-drawing" style={{ ...irCard, minWidth: 44, textAlign: 'left' }}>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.14em', color: 'var(--faint)', marginBottom: 6 }}>INTENT · DRAWN</div>
           <div style={{ width: '100%', aspectRatio: '3 / 4', maxHeight: 210, borderRadius: 8, border: '1px solid var(--hairline)', background: cur ? `center/cover no-repeat url("${resolveDrawingUrl(cur.url)}"), var(--panel)` : 'var(--panel)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {!cur && <FileText size={22} color="#b8b2a6" />}

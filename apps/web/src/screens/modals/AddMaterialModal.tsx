@@ -80,7 +80,7 @@ export function AddMaterialModal({ context, onClose }: { context?: CaptureContex
 
           <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
             <Swatch swatch={swatch} size={40} radius={9} />
-            <select value={swatch} onChange={(e) => setSwatch(e.target.value as SwatchKey)} style={{ ...fldM, flex: 1, minWidth: 0 }} aria-label="Material swatch">
+            <select value={swatch} onChange={(e) => setSwatch(e.target.value as SwatchKey)} style={{ ...fldM, flex: 1, minWidth: 44 }} aria-label="Material swatch">
               {swatchKeys.map((k) => (
                 <option key={k} value={k}>{k}</option>
               ))}

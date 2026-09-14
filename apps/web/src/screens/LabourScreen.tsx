@@ -47,7 +47,7 @@ const chip = (m: { label: string; bg: string; fg: string; border: string }): CSS
 const rowCard: CSSProperties = { border: '1px solid var(--hairline)', borderRadius: 11, padding: '11px 13px', marginTop: 10, background: 'var(--panel)' };
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--faint)' };
 const muted: CSSProperties = { fontSize: 12.5, color: 'var(--muted)' };
-const selectStyle: CSSProperties = { border: '1px solid var(--hairline)', borderRadius: 7, padding: '6px 8px', fontSize: 12, background: 'var(--canvas)', color: 'var(--ink)' };
+const selectStyle: CSSProperties = { minWidth: 44, minHeight: 44, border: '1px solid var(--hairline)', borderRadius: 7, padding: '6px 8px', fontSize: 12, background: 'var(--canvas)', color: 'var(--ink)' };
 
 // The raise action's lines are the UNREQUISITIONED residual per demand slice (Codex round 3) —
 // see `unrequisitionedLines`; a fully-requisitioned requirement yields [] and shows no button.

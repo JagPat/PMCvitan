@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 // the product's own role list, so this file cannot drift from it (#584 review round 11)
 import { ROLES } from '../../src/lib/screens';
+import { pilotTargetState } from './fixtures/pilot-targets';
 
 /**
  * Wave 0 / unit F-1b — NO TEXT-ENTRY CONTROL FALLS BELOW 16px ON MOBILE.
@@ -704,6 +705,65 @@ test('the checklist modal holds the floor once a second item exists', async ({ p
 
   await sweepActionTargets(page, 'checklist modal — two items');
 });
+
+for (const width of [390, 1280]) {
+  test(`capability-enabled ledger fields and conditional retry controls meet the target floor at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await page.clock.setFixedTime(new Date('2026-08-01T10:00:00Z'));
+    await page.goto('/');
+    await expect(page.getByTestId('mobile-role-switcher')).toBeAttached();
+    await page.evaluate((state) => {
+      const seed = (window as unknown as { __vitanDevSeed: (patch: Record<string, unknown>) => void }).__vitanDevSeed;
+      seed({ ...state, loadCommercial: async () => {}, loadCommercialBills: async () => {},
+        loadCommercialClaim: async () => {}, loadCommercialAdvances: async () => {}, loadLabour: async () => {} });
+    }, pilotTargetState());
+    const openPilot = async (key: string, label: string) => {
+      if (width < 640) {
+        await page.getByTestId('tab-more').click();
+        await page.getByTestId(`more-item-${key}`).click();
+      } else {
+        await page.getByRole('button', { name: label, exact: true }).click();
+      }
+    };
+    await openPilot('commercial', 'Commercial');
+    await expect(page.getByTestId('budget-amount')).toBeVisible();
+    if (width < 640) await sweep(page, 'Commercial budget and cost-head forms', 5);
+    else await expect(page.getByTestId('budget-amount')).toHaveCSS('font-size', '12.5px');
+    await sweepActionTargets(page, 'Commercial budget and cost-head forms');
+    await page.getByTestId('commercial-tab-forecast').click();
+    await expect(page.getByTestId('forecast-budget')).toHaveCSS('font-size', '12px');
+    await page.getByTestId('commercial-tab-claims').click();
+    await expect(page.getByTestId('lodge-vendor')).toBeVisible();
+    if (width < 640) await sweep(page, 'Commercial claim lodging', 8);
+    await sweepActionTargets(page, 'Commercial claim lodging');
+    await page.getByTestId('commercial-claim-row-bill-1').click();
+    for (const tab of ['certification', 'payments', 'measurements']) {
+      await page.getByTestId(`commercial-tab-${tab}`).click();
+      await sweepActionTargets(page, `Commercial ${tab}`);
+    }
+    await page.evaluate(() => (window as unknown as { __vitanDevSeed: (p: Record<string, unknown>) => void })
+      .__vitanDevSeed({ commercialLoad: 'error', commercialBillsLoad: 'error', commercialClaimLoad: { 'bill-1': 'error' } }));
+    for (const [tab, target] of [['position', 'commercial-retry'], ['claims', 'commercial-claims-stale-retry'], ['certification', 'commercial-claim-stale-retry']]) {
+      await page.getByTestId(`commercial-tab-${tab}`).click();
+      await expect(page.getByTestId(target)).toBeVisible();
+      await sweepActionTargets(page, `Commercial ${tab} stale state`);
+    }
+    await openPilot('labour', 'Labour');
+    await page.getByTestId('labour-tab-attendance').click();
+    await expect(page.getByTestId('labour-muster-worker-select')).toBeVisible();
+    if (width < 640) await sweep(page, 'Labour manual muster', 3);
+    else await expect(page.getByTestId('labour-muster-worker-select')).toHaveCSS('font-size', '12px');
+    await sweepActionTargets(page, 'Labour manual muster');
+    await page.getByTestId('labour-tab-allocation').click();
+    await expect(page.getByTestId('labour-work-minutes-AL-1')).toBeVisible();
+    await sweepActionTargets(page, 'Labour allocation and work');
+    await page.evaluate(() => (window as unknown as { __vitanDevSeed: (p: Record<string, unknown>) => void })
+      .__vitanDevSeed({ labourLoad: 'error' }));
+    await expect(page.getByTestId('labour-retry')).toBeVisible();
+    await sweepActionTargets(page, 'Labour stale state');
+  });
+
+}
 
 test('fractional mobile widths retain the font floor up to the desktop boundary', async ({ page }) => {
   await page.goto('/');

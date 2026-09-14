@@ -33,6 +33,18 @@ a {
   text-decoration: none;
 }
 
+/* Native controls also appear in capability-gated ledgers and conditional recovery states.
+   Size their hit areas without enlarging read-only text, badges or table cells. Authored
+   larger minimums remain valid; checkbox/radio targets are their enclosing labels. */
+button,
+[role='button'],
+input:not([type='checkbox']):not([type='radio']):not([type='hidden']),
+textarea,
+select {
+  min-width: 44px;
+  min-height: 44px;
+}
+
 /* Focus visibility (Wave 0 / F-1a). Keyboard focus shows a ring on every
    interactive element; a call site may keep outline:none for pointer visuals
    ONLY because this replacement exists. The ring FOLLOWS THE SURFACE through

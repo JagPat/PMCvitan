@@ -118,7 +118,7 @@ export function DecisionLogScreen() {
             );
           })}
         </div>
-        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search decisions…" data-testid="decision-search" style={{ ...fldD, flex: '1 1 160px', minWidth: 0 }} />
+        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search decisions…" data-testid="decision-search" style={{ ...fldD, flex: '1 1 160px', minWidth: 44 }} />
       </div>
       <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', margin: '8px 0 20px' }}>
         {STATUS_FILTERS.map((s) => {
@@ -341,7 +341,7 @@ export function ManageLocationsModal({ onClose }: { onClose: () => void }) {
         </div>
 
         <div style={{ display: 'flex', gap: 8, margin: '14px 0 6px' }}>
-          <input value={newZone} onChange={(e) => setNewZone(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addZone(); }} placeholder="Add a zone (e.g. Ground Floor)" style={{ ...fldD, flex: 1, minWidth: 0 }} data-testid="manage-new-zone" />
+          <input value={newZone} onChange={(e) => setNewZone(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addZone(); }} placeholder="Add a zone (e.g. Ground Floor)" style={{ ...fldD, flex: 1, minWidth: 44 }} data-testid="manage-new-zone" />
           <Button variant="ink" onClick={addZone} style={{ padding: '0 14px', fontSize: 12.5 }}>Add</Button>
         </div>
         {/* Wave 0 / F-1b round 8 — the checkbox itself is a native 13px box; the LABEL is what a
@@ -381,7 +381,7 @@ export function ManageLocationsModal({ onClose }: { onClose: () => void }) {
         <div style={{ borderTop: '1px dashed rgba(35,33,28,.15)', marginTop: 16, paddingTop: 12 }}>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.14em', color: 'var(--muted)', marginBottom: 6 }}>SAVE AS TEMPLATE</div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <input value={tplName} onChange={(e) => setTplName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') saveTemplate(); }} placeholder="Template name (e.g. G+2 Residence)" style={{ ...fldD, flex: 1, minWidth: 0 }} data-testid="save-template-name" />
+            <input value={tplName} onChange={(e) => setTplName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') saveTemplate(); }} placeholder="Template name (e.g. G+2 Residence)" style={{ ...fldD, flex: 1, minWidth: 44 }} data-testid="save-template-name" />
             <Button variant="outline" onClick={saveTemplate} data-testid="save-template" style={{ padding: '0 14px', fontSize: 12.5 }}>Save</Button>
           </div>
           <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 5, lineHeight: 1.5 }}>
@@ -411,7 +411,7 @@ function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDele
   if (addingKind) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: (depth + 1) * 18, minHeight: 34 }} data-testid={`loc-row-${id}`}>
-        <input autoFocus value={childName} onChange={(e) => setChildName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commitChild(); }} placeholder={`New ${addingKind === 'room' ? 'room' : 'object'} in ${name}`} style={{ ...fldD, flex: 1, minWidth: 0 }} data-testid={`loc-add-input-${id}`} />
+        <input autoFocus value={childName} onChange={(e) => setChildName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commitChild(); }} placeholder={`New ${addingKind === 'room' ? 'room' : 'object'} in ${name}`} style={{ ...fldD, flex: 1, minWidth: 44 }} data-testid={`loc-add-input-${id}`} />
         <button onClick={commitChild} style={iconBtn} aria-label={`Add inside ${name}`}>✓</button>
         <button onClick={() => { setAddingKind(null); setChildName(''); }} style={iconBtn} aria-label="Cancel">✕</button>
       </div>
@@ -427,7 +427,7 @@ function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDele
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', paddingLeft: depth * 18, minHeight: 34 }} data-testid={`loc-row-${id}`}>
       {editing ? (
         <>
-          <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commit(); }} style={{ ...fldD, flex: 1, minWidth: 0 }} />
+          <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commit(); }} style={{ ...fldD, flex: 1, minWidth: 44 }} />
           <button onClick={commit} style={iconBtn} aria-label="Save">✓</button>
         </>
       ) : (

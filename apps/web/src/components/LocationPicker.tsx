@@ -140,7 +140,7 @@ function Level({
     <div>
       {creating ? (
         <div style={{ display: 'flex', gap: 8 }}>
-          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void add(); }} placeholder={`New ${KIND_LABEL[creating].toLowerCase()} name`} style={{ ...fld, flex: 1, minWidth: 0 }} data-testid={inputId(creating)} />
+          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void add(); }} placeholder={`New ${KIND_LABEL[creating].toLowerCase()} name`} style={{ ...fld, flex: 1, minWidth: 44 }} data-testid={inputId(creating)} />
           <Button variant="ink" onClick={() => void add()} style={{ padding: '0 14px', fontSize: 12.5 }}>Add</Button>
           <Button variant="outline" onClick={() => { setCreating(null); setName(''); }} style={{ padding: '0 12px', fontSize: 12.5 }}>Cancel</Button>
         </div>
