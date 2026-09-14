@@ -2309,7 +2309,10 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
        -- exists: see the two User cases below. (No backticks in this block: it lives inside a
        -- TypeScript template literal.)
        INSERT INTO "User" ("id","projectId","role","name","phone")
-         VALUES ('ss-loner','ss-proj','engineer','SS Loner','+910000000009')`]);
+         VALUES ('ss-loner','ss-proj','engineer','SS Loner','+910000000009'),
+                ('ss-member-only','ss-proj','engineer','SS Member Only','+910000000008');
+       INSERT INTO "Membership" ("id","projectId","userId","role","status")
+         VALUES ('ss-mem-only','ss-proj','ss-member-only','engineer','active')`]);
     expect(setup.ok, `the second org/project fixture must build:\n${setup.output}`).toBe(true);
 
     const cases: ReadonlyArray<{ what: string; sql: string; by: RegExp }> = [
@@ -2336,16 +2339,18 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
         sql: `UPDATE "OrgMembership" SET "userId" = 'ss-client' WHERE "id" = 'ss-om'`,
         by: /org_membership_guard|org-membership identity is frozen/,
       },
-      // A USER RE-KEY IS REFUSED TWICE OVER, and which answer arrives depends on the account —
-      // measured, not assumed, because the first form of this arm expected the FK for both and
-      // the membership case answered first. `Membership.userId` cascades on update, so an account
-      // WITH a membership meets the cascade's own identity freeze before the FK is ever reached;
-      // an account WITHOUT one meets this unit's `UserIdentity` FK, which is `NO ACTION`. Both
-      // paths are driven, because "no path re-keys a user silently" is the claim.
+      // Both protections reject a member's re-key, but RI trigger order decides which answers
+      // first. CI answered with UserIdentity's FK while a fresh local ledger answered with the
+      // membership freeze. Isolate the cascade using an account with no other referencing facts
+      // and omit only the competing FK inside a rolled-back scratch transaction. The next case
+      // independently exercises that FK, with its original definition restored by rollback.
       {
         what: 'a user account WITH a membership may not be re-keyed — the update cascades into ' +
               'Membership.userId, which is itself frozen',
-        sql: `UPDATE "User" SET "id" = 'ss-user-x' WHERE "id" = 'ss-user'`,
+        sql: `BEGIN;
+              ALTER TABLE "UserIdentity" DROP CONSTRAINT "UserIdentity_userId_fkey";
+              UPDATE "User" SET "id" = 'ss-member-only-x' WHERE "id" = 'ss-member-only';
+              ROLLBACK`,
         by: /membership_t4b_identity_frozen|user\/project identity is frozen/,
       },
       {
@@ -2356,14 +2361,36 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       },
     ];
 
-    for (const c of cases) {
-      const r = psql(RUN_DB, ['-c', c.sql]);
-      expect(r.ok, `${c.what} — this write must be REFUSED, and it COMMITTED`).toBe(false);
-      expect(r.output,
-        `${c.what} — refused, but not by the object this unit depends on. The registers' ` +
-        'correctness rests on that specific protection, so a different answer here means the ' +
-        'dependency moved and nothing said so')
-        .toMatch(c.by);
+    for (const recreateMembershipForeignKey of [false, true]) {
+      if (recreateMembershipForeignKey) {
+        // Same constraint, different internal trigger identities: the failure in CI
+        // must not depend on the order in which competing RI triggers happen to run.
+        const recreated = psql(RUN_DB, ['-c', `DO $$ DECLARE definition text; BEGIN
+          SELECT pg_get_constraintdef(oid) INTO STRICT definition FROM pg_constraint
+            WHERE conrelid = '"Membership"'::regclass AND conname = 'Membership_userId_fkey';
+          ALTER TABLE "Membership" DROP CONSTRAINT "Membership_userId_fkey";
+          EXECUTE 'ALTER TABLE "Membership" ADD CONSTRAINT "Membership_userId_fkey" ' || definition;
+        END $$`]);
+        expect(recreated.ok, recreated.output).toBe(true);
+      }
+      for (const c of cases) {
+        const r = psql(RUN_DB, ['-c', c.sql]);
+        expect(r.ok, `${c.what} — this write must be REFUSED, and it COMMITTED`).toBe(false);
+        expect(r.output,
+          `${c.what} — refused, but not by the object this unit depends on. The registers' ` +
+          'correctness rests on that specific protection, so a different answer here means the ' +
+          'dependency moved and nothing said so')
+          .toMatch(c.by);
+      }
+      const withoutFreeze = psql(RUN_DB, ['-At', '-c', `BEGIN;
+        ALTER TABLE "UserIdentity" DROP CONSTRAINT "UserIdentity_userId_fkey";
+        DROP TRIGGER "Membership_t4b_identity_frozen" ON "Membership";
+        UPDATE "User" SET "id" = 'ss-member-only-x' WHERE "id" = 'ss-member-only';
+        SELECT "userId" FROM "Membership" WHERE "id" = 'ss-mem-only';
+        ROLLBACK`]);
+      expect(withoutFreeze.ok, withoutFreeze.output).toBe(true);
+      expect(withoutFreeze.output.trim(), 'omitting the named freeze must expose the cascade')
+        .toBe('ss-member-only-x');
     }
   }, 180_000);
 
