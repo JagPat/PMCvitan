@@ -164,7 +164,7 @@ BEGIN
       EXECUTE FUNCTION phase6_t4d_reserved('Decision.deciderKind = architect');
   ELSIF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
-      'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.',
+      'phase6 4d-i: % % See docs/RUNBOOK.md §P6T4D.',
       'Decision_t4d_architect_reserved does not reserve the designation:', v_bad;
   END IF;
 
@@ -177,7 +177,7 @@ BEGIN
       EXECUTE FUNCTION phase6_t4d_reserved('Decision.status = awaiting_countersign');
   ELSIF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
-      'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.',
+      'phase6 4d-i: % % See docs/RUNBOOK.md §P6T4D.',
       'Decision_t4d_awaiting_reserved does not reserve the chain state:', v_bad;
   END IF;
 END $$;
@@ -529,6 +529,10 @@ END $$;
 -- action item — and admitted by the DOOR only when the transaction also carries the
 -- `countersign_rejection` request, which is the disagreement's forward-on. That arm is judged
 -- at COMMIT by the pairing seal below, because the request may be written after the forward.
+-- The status is listed among the forwardable three HERE so the bundle can be written in either
+-- order; `phase6_t4d_forward_paired` is where it is answered, by refusing a forward whose
+-- decision is still `awaiting_countersign` when the transaction ends (#582 round 37, finding 4 —
+-- this paragraph described the rule from the first draft and no seal carried it).
 CREATE OR REPLACE FUNCTION phase6_t4d_forward_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   d RECORD;
@@ -909,7 +913,7 @@ END $$;
 CREATE OR REPLACE FUNCTION phase6_t4d_forward_paired() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE d RECORD; v_facts BIGINT;
 BEGIN
-  SELECT "deciderKind"::text AS kind, "deciderMembershipId"
+  SELECT "deciderKind"::text AS kind, "deciderMembershipId", "status"::text AS status
     INTO d FROM "Decision" WHERE "projectId" = NEW."projectId" AND "id" = NEW."decisionId";
 
   IF d.kind IS DISTINCT FROM NEW."toDesignationKind"
@@ -943,6 +947,32 @@ BEGIN
     RAISE EXCEPTION
       'phase6 4d-i: decision % carries % DecisionForward rows written by THIS transaction for one hand-off — a holder mutation is ONE act with ONE attributable record, and duplicate facts citing different receipts are two immutable actors claiming a single mutation (row %)',
       NEW."decisionId", v_facts, NEW."id";
+  END IF;
+
+  -- AND `awaiting_countersign` IS ADMITTED ONLY AS PART OF THE BUNDLE (#582 round 37, finding 4).
+  -- The door's own comment above `phase6_t4d_forward_seal` has said since this file was written
+  -- that the status is "admitted by the DOOR only when the transaction also carries the
+  -- `countersign_rejection` request … judged at COMMIT by the pairing seal below" — and no seal
+  -- below judged it. The door lists the status among the forwardable three and returns; the arms
+  -- above compare only the final HOLDER and count the facts; `phase6_t4d_disagreement_paired`
+  -- judges the TRANSITION `awaiting_countersign → change` and returns early when the decision
+  -- never leaves `awaiting_countersign`. Between them a receipt-backed direct `decisions.forward`
+  -- re-homes a provisional approval, emits its event, audit row and notice, opens no request and
+  -- moves the decision nowhere — the architect's action item silently handed to someone else with
+  -- the countersign still pending and nothing recording why.
+  --
+  -- The status cannot be judged at INSERT: the request may be written after the forward, which is
+  -- exactly why the door defers it. It is judged HERE, and the question is the one the bundles
+  -- answer rather than a search for the request. EVERY sanctioned way out of `awaiting_countersign`
+  -- LEAVES it: the reject-back and the forward-on land `change` (and owe their open
+  -- `countersign_rejection` to `phase6_t4d_disagreement_paired`), the `returned` stranded
+  -- resolution lands `change` under the same demand, and the `completed` one lands `approved`
+  -- through the finalizer. A forward whose decision is STILL `awaiting_countersign` at commit is
+  -- therefore in no bundle at all, and that is the whole hole.
+  IF d.status = 'awaiting_countersign' THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: DecisionForward % re-homes decision %, which is STILL `awaiting_countersign` at commit — that status is the ARCHITECT''s action item and a forward out of it is admitted only as part of the disagreement bundle, which opens a `countersign_rejection` request and lands the decision in `change` (or, for a `returned` stranded resolution, does the same). A hand-off that leaves the decision awaiting a countersignature moves a provisional approval to a new holder with nothing recording why and nothing able to close it',
+      NEW."id", NEW."decisionId";
   END IF;
   RETURN NULL;
 END $$;
@@ -2014,23 +2044,28 @@ CREATE TRIGGER "Decision_t4d_entry_seal" BEFORE INSERT OR UPDATE ON "Decision"
 -- ALREADY-RUNNING previous-release push worker — fenced by the consumer version bump only when
 -- it RESTARTS — could still claim that delivery, know no `forward` family, and take the
 -- unguarded send path. Dropped by the same single 4d-iii statement as the other four.
+-- Adopted through `phase6_t4d_trigger_mismatch`, like every other door (#582 round 37,
+-- finding 2). The enabled/function/tgtype triple this block used to ask was the pre-round-34
+-- question, and round 34 established why it is not enough: `tgtype` carries timing, operations
+-- and FOR EACH and says NOTHING about a WHEN clause. An enabled `BEFORE INSERT WHEN (false)`
+-- trigger on this table, calling this very function, is tgtype 7 and passes the old triple
+-- unremarked — and forwarding is writable for the whole dark window behind a door that reports
+-- itself sound. Centralizing the verifier and then leaving two doors on the old question is the
+-- one-site habit round 12 named; these are the last two.
 DO $$
-DECLARE tg pg_trigger;
+DECLARE v_bad TEXT;
 BEGIN
   IF phase6_t4d_retired_at_start() THEN RETURN; END IF;
 
-  SELECT * INTO tg FROM pg_trigger
-   WHERE tgname = 'DecisionForward_t4d_reserved'
-     AND tgrelid = '"DecisionForward"'::regclass AND NOT tgisinternal;
-  IF NOT FOUND THEN
+  v_bad := phase6_t4d_trigger_mismatch('DecisionForward_t4d_reserved', 'DecisionForward',
+    $def$CREATE TRIGGER "DecisionForward_t4d_reserved" BEFORE INSERT ON public."DecisionForward" FOR EACH ROW EXECUTE FUNCTION phase6_t4d_reserved('DecisionForward')$def$);
+  IF v_bad = 'ABSENT' THEN
     CREATE TRIGGER "DecisionForward_t4d_reserved" BEFORE INSERT ON "DecisionForward"
       FOR EACH ROW EXECUTE FUNCTION phase6_t4d_reserved('DecisionForward');
-  ELSIF tg.tgenabled <> 'O'
-     OR tg.tgfoid::regproc::text <> 'phase6_t4d_reserved'
-     OR tg.tgtype <> 7 THEN               -- EXACTLY ROW(1) + BEFORE(2) + INSERT(4)
+  ELSIF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
-      'phase6 4d-i: DecisionForward_t4d_reserved exists but does not reserve the table (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P6T4D.',
-      tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
+      'phase6 4d-i: % % See docs/RUNBOOK.md §P6T4D.',
+      'DecisionForward_t4d_reserved does not reserve the table:', v_bad;
   END IF;
 END $$;
 
@@ -2860,24 +2895,26 @@ END $$;
 --
 -- Through the SAME `phase6_t4d_reserved` function and the same WHEN-clause shape as the other
 -- five doors, so 4d-iii drops SIX doors in one statement rather than five and a special case.
+-- Adopted through `phase6_t4d_trigger_mismatch` (#582 round 37, finding 2), and this door needs
+-- the full rendering more than most: its whole reservation LIVES in the WHEN clause. A door
+-- narrowed to `WHEN (new.type = 'forwarded')` reserves one kind and leaves the other three
+-- writable, and is tgtype 7 with the right function — indistinguishable under the old triple,
+-- and the four reserved audit kinds are exactly what a weak correspondence would then admit.
 DO $$
-DECLARE tg pg_trigger;
+DECLARE v_bad TEXT;
 BEGIN
   IF phase6_t4d_retired_at_start() THEN RETURN; END IF;
 
-  SELECT * INTO tg FROM pg_trigger
-   WHERE tgname = 'DecisionEvent_t4d_kind_reserved'
-     AND tgrelid = '"DecisionEvent"'::regclass AND NOT tgisinternal;
-  IF NOT FOUND THEN
+  v_bad := phase6_t4d_trigger_mismatch('DecisionEvent_t4d_kind_reserved', 'DecisionEvent',
+    $def$CREATE TRIGGER "DecisionEvent_t4d_kind_reserved" BEFORE INSERT ON public."DecisionEvent" FOR EACH ROW WHEN ((new.type = ANY (ARRAY['countersigned'::text, 'stranded_resolved'::text, 'forwarded'::text, 'countersign_renotified'::text]))) EXECUTE FUNCTION phase6_t4d_reserved('DecisionEvent.type = a 4d-only kind')$def$);
+  IF v_bad = 'ABSENT' THEN
     CREATE TRIGGER "DecisionEvent_t4d_kind_reserved" BEFORE INSERT ON "DecisionEvent"
       FOR EACH ROW WHEN (NEW."type" IN ('countersigned', 'stranded_resolved', 'forwarded', 'countersign_renotified'))
       EXECUTE FUNCTION phase6_t4d_reserved('DecisionEvent.type = a 4d-only kind');
-  ELSIF tg.tgenabled <> 'O'
-     OR tg.tgfoid::regproc::text <> 'phase6_t4d_reserved'
-     OR tg.tgtype <> 7 THEN            -- EXACTLY ROW(1) + BEFORE(2) + INSERT(4)
+  ELSIF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
-      'phase6 4d-i: DecisionEvent_t4d_kind_reserved exists but does not reserve the 4d-only audit kinds (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P6T4D.',
-      tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
+      'phase6 4d-i: % % See docs/RUNBOOK.md §P6T4D.',
+      'DecisionEvent_t4d_kind_reserved does not reserve the 4d-only audit kinds:', v_bad;
   END IF;
 END $$;
 

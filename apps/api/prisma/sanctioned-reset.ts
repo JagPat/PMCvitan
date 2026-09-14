@@ -90,9 +90,11 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   // `OutboxOperatorAction` directly, and this suite's own per-probe reset does too.
   { table: 'OutboxOperatorAction', trigger: 'OutboxOperatorAction_4c_iiir_no_truncate' },
   // Phase 6 unit 4d-i — the five platform REGISTERS the chain's standing, identity, authority and
-  // tenancy questions are answered from, plus `Membership`, the orgs table the counted register
-  // mirrors. Each carries a row-level writer-depth seal, and a row trigger never fires for
-  // TRUNCATE, so each carries a statement seal too.
+  // tenancy questions are answered from, plus the two orgs tables they are projected from:
+  // `Membership`, which the counted register mirrors, and `OrgMembership`, which
+  // `OrgUserAuthority` and the membership-less `pmc` standings are derived from. Each carries a
+  // row-level writer-depth seal, and a row trigger never fires for TRUNCATE, so each carries a
+  // statement seal too.
   //
   // `Membership` is the one that would fail loudest if it were left out: many suites reset it
   // directly and `TRUNCATE "Project" CASCADE` reaches it, so the seal would abort the SETUP of
@@ -123,6 +125,14 @@ export const TRUNCATE_SEALS: readonly { readonly table: string; readonly trigger
   { table: 'Membership', trigger: 'Membership_t4d_no_truncate' },
   { table: 'MembershipTransition', trigger: 'MembershipTransition_t4d_no_truncate' },
   { table: 'OrgUserAuthority', trigger: 'OrgUserAuthority_t4d_no_truncate' },
+  // Phase 6 unit 4d-i (#582's review round 37, finding 1) — the UNCONDITIONAL arm beside the
+  // delivered `OrgMembership_t4b2_no_truncate` above, which refuses only while a published open
+  // PMC-held decision depends on org standing. `OrgMembership` is the source `OrgUserAuthority`
+  // and the membership-less `pmc` rows of `ProjectUserStanding` are projected from, so in the
+  // window the conditional seal permits, a truncate would leave both projections standing over
+  // nothing. Both entries are needed: a reset that reaches this table must disable the delivered
+  // seal for the decisions it guards and this one for the projections.
+  { table: 'OrgMembership', trigger: 'OrgMembership_t4d_no_truncate' },
   { table: 'ProjectOrg', trigger: 'ProjectOrg_t4d_no_truncate' },
   { table: 'ProjectRoleStanding', trigger: 'ProjectRoleStanding_t4d_no_truncate' },
   { table: 'ProjectUserStanding', trigger: 'ProjectUserStanding_t4d_no_truncate' },

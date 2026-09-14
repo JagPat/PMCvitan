@@ -241,7 +241,7 @@ BEGIN
       FOR EACH ROW EXECUTE FUNCTION phase6_t4d_rollout_retirement_gate();
   ELSIF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
-      'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.', 'RolloutRetirement_t4d_gate does not gate INSERT:', v_bad;
+      'phase6 4d-i: % % See docs/RUNBOOK.md §P6T4D.', 'RolloutRetirement_t4d_gate does not gate INSERT:', v_bad;
   END IF;
 
   v_bad := phase6_t4d_trigger_mismatch('RolloutRetirement_t4d_frozen', 'RolloutRetirement',
@@ -251,7 +251,7 @@ BEGIN
       FOR EACH ROW EXECUTE FUNCTION phase6_t4d_rollout_retirement_frozen();
   ELSIF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
-      'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.', 'RolloutRetirement_t4d_frozen does not freeze both UPDATE and DELETE:', v_bad;
+      'phase6 4d-i: % % See docs/RUNBOOK.md §P6T4D.', 'RolloutRetirement_t4d_frozen does not freeze both UPDATE and DELETE:', v_bad;
   END IF;
 
   v_bad := phase6_t4d_trigger_mismatch('RolloutRetirement_t4d_no_truncate', 'RolloutRetirement',
@@ -261,7 +261,7 @@ BEGIN
       FOR EACH STATEMENT EXECUTE FUNCTION phase6_t4d_rollout_retirement_no_truncate();
   ELSIF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
-      'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.', 'RolloutRetirement_t4d_no_truncate does not enforce the statement-level truncate seal:', v_bad;
+      'phase6 4d-i: % % See docs/RUNBOOK.md §P6T4D.', 'RolloutRetirement_t4d_no_truncate does not enforce the statement-level truncate seal:', v_bad;
   END IF;
 END $$;
 
@@ -556,7 +556,7 @@ BEGIN
       EXECUTE FUNCTION phase6_t4d_reserved('Membership.role = architect');
   ELSIF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
-      'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.', 'Membership_t4d_architect_reserved does not reserve the role:', v_bad;
+      'phase6 4d-i: % % See docs/RUNBOOK.md §P6T4D.', 'Membership_t4d_architect_reserved does not reserve the role:', v_bad;
   END IF;
 
   -- (the `"User"` lock moved to the all-or-nothing window at the top of this file — round 36)
@@ -569,7 +569,7 @@ BEGIN
       EXECUTE FUNCTION phase6_t4d_reserved('User.role = architect');
   ELSIF v_bad IS NOT NULL THEN
     RAISE EXCEPTION
-      'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.', 'User_t4d_architect_reserved does not reserve the role:', v_bad;
+      'phase6 4d-i: % % See docs/RUNBOOK.md §P6T4D.', 'User_t4d_architect_reserved does not reserve the role:', v_bad;
   END IF;
 END $$;
 
@@ -1132,10 +1132,21 @@ END $$;
 -- (prisma/sanctioned-reset.ts `TRUNCATE_SEALS`). `Membership` joins them because it is the
 -- source the counted register mirrors: truncating it would leave the counts standing over
 -- nothing.
+--
+-- `OrgMembership` joins them for the same reason and was missed when it was not (#582 round 37,
+-- finding 1). It is the OTHER source: `OrgUserAuthority` is projected from it row by row, and the
+-- `pmc` rows of `ProjectUserStanding` that carry NO `Membership` are derived from it too. The
+-- delivered `OrgMembership_t4b2_no_truncate` does not cover this, because it is CONDITIONAL — it
+-- refuses only while a published open PMC-held decision currently depends on org standing, and
+-- permits the statement otherwise. Truncate it in that permitted window and the projections
+-- survive their source: `OrgUserAuthority` rows keep granting orchestration authority to former
+-- owners and admins, and membership-less `ProjectUserStanding` rows keep granting `pmc` standing,
+-- with nothing left to project from. A projection outliving its source is exactly what these
+-- statement seals exist to refuse, so the 4d arm is UNCONDITIONAL like every other one here.
 CREATE OR REPLACE FUNCTION platform_t4d_register_no_truncate() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION
-    'phase6 4d-i: "%" is a projected register (or the orgs table one mirrors) and is never truncated — a row trigger does not fire for TRUNCATE, so the statement is sealed too. The sanctioned reset (prisma/sanctioned-reset.ts) disables this trigger BY NAME.',
+    'phase6 4d-i: "%" is a projected register (or a source table one is projected from) and is never truncated — a row trigger does not fire for TRUNCATE, so the statement is sealed too. Truncating a source leaves its projections standing over nothing. The sanctioned reset (prisma/sanctioned-reset.ts) disables this trigger BY NAME.',
     TG_TABLE_NAME;
 END $$;
 
@@ -1143,7 +1154,8 @@ DO $$
 DECLARE t TEXT;
 BEGIN
   FOREACH t IN ARRAY ARRAY['ProjectOrg', 'ProjectRoleStanding', 'ProjectUserStanding',
-                           'UserIdentity', 'OrgUserAuthority', 'Membership'] LOOP
+                           'UserIdentity', 'OrgUserAuthority', 'Membership',
+                           'OrgMembership'] LOOP
     EXECUTE format('DROP TRIGGER IF EXISTS %I ON %I', t || '_t4d_no_truncate', t);
     EXECUTE format(
       'CREATE TRIGGER %I BEFORE TRUNCATE ON %I'
@@ -1249,11 +1261,40 @@ $$;
 -- `pmc` role designation emptied the same way. Reading the count would answer "no holder" for
 -- every role but `architect`. It also agrees with `platform_role_holder_user_ids` by
 -- construction, both being EXISTS/SELECT over the same rows.
+-- TAKES THE HOLDERS' LOCKS, for the reason its named-membership twin below does (#582 round 37,
+-- finding 5). This was an unlocked `STABLE` EXISTS, and the asymmetry was the defect: a forward
+-- to a NAMED membership serialized against that membership's departure through
+-- `platform_membership_active_user`'s `FOR UPDATE`, while a forward to a ROLE asked the same
+-- question and locked nothing.
+--
+-- What that left open is not closed by the readiness key, and it is worth being exact about why,
+-- because the key is the obvious answer and it is the wrong one. The forward seal DOES hold
+-- readiness — `phase6_t4d_actor_bound` takes it in the seal's first statement, before this read
+-- and before the actor checks. But readiness only excludes writers who also take it, and a
+-- DIRECT membership write is not one of them: `phase6_t4d_membership_fact_first` demands a fact
+-- only of a write made by a member COMMAND ("a plain membership write commits untouched, which
+-- keeps the unit dark"), and the projection trigger that maintains this register takes no key at
+-- all. So a direct `UPDATE "Membership" SET "status" = 'removed'` on the last holder runs
+-- uncontended beside a forward that has already read this EXISTS as true, deletes the holder's
+-- register row through `platform_user_standing_apply`, and commits — and the forward commits
+-- after it, assigning the decision to a role with zero holders and freezing an audience that no
+-- longer exists. Adding another `phase6_try_readiness` call here would be a no-op twice over:
+-- the seal already holds that key, and the writer it needs to serialize against never asks for
+-- it.
+--
+-- The lock is what that writer DOES meet. `FOR UPDATE` over the role's rows makes the removal's
+-- `DELETE` of any of them wait for this transaction, so the two orders that remain are the two
+-- honest ones: the removal commits first and this read sees the empty role and refuses, or the
+-- forward commits first and the removal proceeds against a decision whose designation is now
+-- recorded — which is the stranded-decision path, and has its own machinery. The interleaving
+-- where both commit believing the other did not is the one that is gone.
 CREATE OR REPLACE FUNCTION platform_role_has_holder(p_project TEXT, p_role TEXT)
-RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
-  SELECT EXISTS (SELECT 1 FROM "ProjectUserStanding"
-                  WHERE "projectId" = p_project AND "role" = p_role);
-$$;
+RETURNS BOOLEAN LANGUAGE plpgsql VOLATILE AS $$
+BEGIN
+  PERFORM 1 FROM "ProjectUserStanding"
+   WHERE "projectId" = p_project AND "role" = p_role FOR UPDATE;
+  RETURN FOUND;
+END $$;
 
 -- The CURRENT holders, resolved at the moment of the call — never a set frozen earlier. A
 -- role-held designation names a role, not a person, so every question about "who holds this"
@@ -2203,10 +2244,27 @@ BEGIN
   -- bundle citing a valid `members.add` receipt could re-role a live engineer to `architect`,
   -- pass `toStatus = 'active'` and the exact OLD/NEW pairing, and arm the chain with permanent
   -- evidence naming an addition that never happened.
-  IF c."commandType" = 'members.remove' AND NEW."toStatus" IS DISTINCT FROM 'removed' THEN
+  -- BOTH ENDS for the removal too (#582 round 37, finding 3). Round 12's finding 1 gave `add`
+  -- and `updateRole` their source constraint and left this arm on the destination alone, which
+  -- is the same one-site correction one round later: the SOURCE of a removal was never asked
+  -- about, so `(NULL, NULL) → (engineer, removed)` satisfies it. That is a removal of a
+  -- membership that did not exist. Every other guard passes on it — the receipt is a real
+  -- `members.remove` completed in this transaction by the attributed actor and naming this
+  -- membership id, the membership row is written in the same transaction with the matching
+  -- `xmin`, the post-state comparison holds because the row really does end `(engineer,
+  -- removed)`, and the membership-side exact-pair check compares the same four values this fact
+  -- carries. The bundle inserts an already-removed membership and a fact that says it was
+  -- removed, and the append-only seal makes that permanent.
+  --
+  -- The table's own `CHECK (("fromRole" IS NULL) = ("fromStatus" IS NULL))` is why asking about
+  -- `fromStatus` is enough: a non-null source status carries a non-null source role with it. A
+  -- NULL source is the ADD's shape and only the add's — the arm below admits it there, because a
+  -- membership that did not exist is exactly what an addition begins from.
+  IF c."commandType" = 'members.remove'
+     AND (NEW."toStatus" IS DISTINCT FROM 'removed' OR NEW."fromStatus" IS NULL) THEN
     RAISE EXCEPTION
-      'phase6 4d-i: MembershipTransition % records membership % ending at `%`, but cites a `members.remove` receipt — a removal ENDS a standing and lands `removed`; a fact that ends anywhere else was produced by a different command and would stand forever as that command''s act authorised by a removal',
-      NEW."id", NEW."membershipId", NEW."toStatus";
+      'phase6 4d-i: MembershipTransition % records membership % moving % → `%`, but cites a `members.remove` receipt — a removal ENDS a standing that EXISTED: it begins from a real membership and lands `removed`. A fact that ends anywhere else was produced by a different command, and one that begins from nothing at all records the removal of a membership there was never anything to remove — either would stand forever as that act authorised by a removal',
+      NEW."id", NEW."membershipId", COALESCE(NEW."fromStatus", '<none>'), NEW."toStatus";
   END IF;
   IF c."commandType" = 'members.add'
      AND (NEW."toStatus" <> 'active'
@@ -4351,7 +4409,7 @@ BEGIN
         FOR EACH ROW EXECUTE FUNCTION platform_t4d_release_lease_insert_reserved();
     ELSIF v_bad IS NOT NULL THEN
       RAISE EXCEPTION
-        'phase6 4d-i: %s %s See docs/RUNBOOK.md §P6T4D.', 'ReleaseLease_t4d_insert_reserved does not reserve the dark window:', v_bad;
+        'phase6 4d-i: % % See docs/RUNBOOK.md §P6T4D.', 'ReleaseLease_t4d_insert_reserved does not reserve the dark window:', v_bad;
     END IF;
   END IF;
 END $release_lease_reservation$;
