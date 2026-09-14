@@ -705,6 +705,26 @@ test('the checklist modal holds the floor once a second item exists', async ({ p
   await sweepActionTargets(page, 'checklist modal — two items');
 });
 
+test('fractional mobile widths retain the font floor up to the desktop boundary', async ({ page }) => {
+  await page.goto('/');
+  // Zoom preserves fractional CSS viewport widths through Chromium viewport rounding.
+  // Verify the browser is actually between the old and new boundaries before measuring.
+  await expect(page.getByTestId('mobile-role-switcher')).toBeVisible();
+  await page.setContent('<iframe title="fractional viewport" src="/" style="zoom:4;width:639.25px;height:211px;border:0"></iframe>');
+  const frame = page.frameLocator('iframe');
+  const selector = frame.getByTestId('mobile-role-switcher').getByRole('combobox');
+  for (const width of [639.25, 639.75]) {
+    await page.locator('iframe').evaluate((el, value) => { el.style.width = `${value}px`; }, width);
+    const inGap = await page.locator('iframe').evaluate((el) =>
+      el.contentWindow!.matchMedia('(width > 639px) and (width < 640px)').matches);
+    expect(inGap, 'the browser must evaluate a genuinely fractional mobile viewport').toBe(true);
+    await expect(selector).toBeVisible();
+    await expect(selector).toHaveCSS('font-size', '16px');
+  }
+  await page.locator('iframe').evaluate((el) => { el.style.width = '640px'; });
+  await expect(selector).toBeHidden();
+});
+
 test('the demo role selector meets the mobile field and target floors', async ({ page }) => {
   for (const width of [320, 390, 430]) {
     await page.setViewportSize({ width, height: 844 });

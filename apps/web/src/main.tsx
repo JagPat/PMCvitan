@@ -22,8 +22,8 @@ useStore.getState().hydrateOutbox();
  * findings have now been of that shape, and each round I made one more state reachable and left
  * the category — which is why this is a mechanism rather than another one-off.
  *
- * It is a DEV affordance and cannot exist in a real deployment: `DEV_AUTH` is false whenever an
- * API base is configured without `VITE_ALLOW_DEV_AUTH`, which is every deployed build. It writes
+ * It is available when demo authentication is enabled, including API-less demo deployments.
+ * `DEV_AUTH` is false when an API is configured without `VITE_ALLOW_DEV_AUTH`. It writes
  * store state only — it cannot mint a session, reach the gateway, or bypass any server check —
  * so the worst a hostile caller could do in a dev build is render their own browser a lie.
  *

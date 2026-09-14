@@ -81,15 +81,14 @@ a {
    CommercialScreen that Wave 3 has to split before anyone may touch it. A primitive
    guarantees only the call sites that adopt it, and nothing stops the 135th. This rule
    guarantees every control that exists and every control anyone adds later, which is the
-   property that was actually wanted. `components/Field.tsx` still carries the shared style
-   so new code has one thing to reach for.
+   property that was actually wanted.
 
    WHY !important. The screens write their sizes as INLINE style attributes, and only an
    important author declaration outranks an inline one in the cascade — the same fact the
    forced-colors rule above already depends on. Verified in Chromium, not assumed: inline
    13.5px / 12.5px / 14px controls all compute to 16px under this rule at 390px wide.
 
-   MOBILE ONLY. Above 640px the rule is out of range and each surface keeps the density it
+   MOBILE ONLY. At and above 640px the width rule is out of range and each surface keeps the density it
    was designed with; the brief permits scaling down at desktop and forbids it on mobile.
 
    AND PHONE LANDSCAPE, which a width-only rule misses (#584 review round 1, finding 1). A
@@ -104,7 +103,7 @@ a {
 
    Checkbox, radio, file, range and the button-like input types are excluded: iOS does not
    zoom for them, and forcing 16px would change their box for nothing. */
-@media (max-width: 639px), (max-height: 549px) and (orientation: landscape) and (pointer: coarse) {
+@media (width < 640px), (max-height: 549px) and (orientation: landscape) and (pointer: coarse) {
   input:not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']):not([type='color']):not([type='submit']):not([type='button']):not([type='reset']):not([type='image']),
   textarea,
   select {
