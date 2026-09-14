@@ -2974,6 +2974,94 @@ SELECT '6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7',
    AND c."effectKey" NOT IN ('activity.created.init', 'decision.published.record',
                              'inspection.created.init', 'inspection.approved.closing');
 
+-- ── THE ONE ADMITTED SUCCESSOR, DERIVED ONCE ────────────────────────────────────────────────
+-- #582's review round 38, findings 2 and 3, and the round-37d witness that shared their shape.
+--
+-- Round 36 admitted 4d-i-b's generation by SHAPE, and wrote that shape inline in the catalog
+-- audit. Round 37d then needed the same question answered in the dark-register audit and wrote a
+-- SECOND, weaker spelling of it — the six flips alone, no key set, no columns. Two spellings of
+-- one rule is the defect round 13 already named here about the outgoing-generation copy ("a
+-- second block is a second chance to diverge, and it diverged immediately"), and it diverged
+-- immediately again. Both readings were also wrong in the same two ways:
+--
+--   · MATCHED AGAINST EITHER SEEDED GENERATION. 4d-i-b extends the generation THIS release
+--     compiles; a generation cloned from the OUTGOING one with the six flips also passed. That
+--     clone carries the previous release's deliberately weaker policy — `decision.published`
+--     with `requiresPush = false`, no split record key — so an event naming it would suppress an
+--     approval-demand push and still satisfy the envelope. The successor is now matched against
+--     the incoming generation ONLY.
+--   · RETIREMENT NOT COMPARED. The pre-retired arm below is scoped to the SEEDED generations, so
+--     a successor-shaped generation already stamped `retiredAt` was admitted and then frozen by
+--     the catalog seal — after which `DomainEvent_t4d_envelope` refuses every event carrying
+--     4d-i-b's coverage as retired. That is the nine-columns-of-ten defect this file records at
+--     the head of the catalog audit, left standing in the successor added two rounds later.
+--
+-- Derived here, once, and READ by both audits. A third reader gets the same answer or none.
+CREATE TEMP TABLE "_t4d_catalog_incoming" ("v" TEXT PRIMARY KEY) ON COMMIT DROP;
+INSERT INTO "_t4d_catalog_incoming" ("v") VALUES ('842cc9fcbbd7920b169ef79266680d38f9cd48cc1acf9ea5d02c2f8b242f22a9');
+DO $incoming_guard$
+BEGIN
+  -- the name is a literal, so it is checked against the seed rather than trusted.
+  IF NOT EXISTS (SELECT 1 FROM "_t4d_catalog_seed" t JOIN "_t4d_catalog_incoming" i
+                   ON i."v" = t."coverageVersion") THEN
+    RAISE EXCEPTION 'phase6 4d-i: the incoming coverage generation named for the successor test is not among the generations this migration seeds — the seed literal moved and this name did not';
+  END IF;
+END $incoming_guard$;
+
+CREATE TEMP TABLE "_t4d_catalog_successor" ("v" TEXT PRIMARY KEY) ON COMMIT DROP;
+INSERT INTO "_t4d_catalog_successor" ("v")
+SELECT DISTINCT x."coverageVersion"
+  FROM "ExternalEffectCatalog" x
+       CROSS JOIN "_t4d_catalog_incoming" inc
+ WHERE NOT EXISTS (SELECT 1 FROM "_t4d_catalog_seed" t
+                    WHERE t."coverageVersion" = x."coverageVersion")
+   -- nothing already retired is the planned successor
+   AND NOT EXISTS (SELECT 1 FROM "ExternalEffectCatalog" r
+                    WHERE r."coverageVersion" = x."coverageVersion" AND r."retiredAt" IS NOT NULL)
+   -- same key set as the INCOMING generation, in both directions
+   AND NOT EXISTS (SELECT 1 FROM "ExternalEffectCatalog" a
+                    WHERE a."coverageVersion" = x."coverageVersion"
+                      AND NOT EXISTS (SELECT 1 FROM "_t4d_catalog_seed" b
+                                       WHERE b."coverageVersion" = inc."v"
+                                         AND b."effectKey" = a."effectKey"))
+   AND NOT EXISTS (SELECT 1 FROM "_t4d_catalog_seed" b
+                    WHERE b."coverageVersion" = inc."v"
+                      AND NOT EXISTS (SELECT 1 FROM "ExternalEffectCatalog" a
+                                       WHERE a."coverageVersion" = x."coverageVersion"
+                                         AND a."effectKey" = b."effectKey"))
+   -- every column but `pairingRequired` identical, key by key
+   AND NOT EXISTS (
+         SELECT 1 FROM "ExternalEffectCatalog" a
+           JOIN "_t4d_catalog_seed" b
+             ON b."coverageVersion" = inc."v" AND b."effectKey" = a."effectKey"
+          WHERE a."coverageVersion" = x."coverageVersion"
+            AND (a."eventType"      IS DISTINCT FROM b."eventType"
+              OR a."invalidate"     IS DISTINCT FROM b."invalidate"
+              OR a."pushRoles"      IS DISTINCT FROM b."pushRoles"
+              OR a."pushFamily"     IS DISTINCT FROM b."pushFamily"
+              OR a."frozenAudience" IS DISTINCT FROM b."frozenAudience"
+              OR a."requiresPush"   IS DISTINCT FROM b."requiresPush"
+              OR a."audience"       IS DISTINCT FROM b."audience"
+              OR a."pushBody"       IS DISTINCT FROM b."pushBody"))
+   -- and the `pairingRequired` flips are EXACTLY the plan's six, false → true
+   AND NOT EXISTS (
+         SELECT 1 FROM "ExternalEffectCatalog" a
+           JOIN "_t4d_catalog_seed" b
+             ON b."coverageVersion" = inc."v" AND b."effectKey" = a."effectKey"
+          WHERE a."coverageVersion" = x."coverageVersion"
+            AND a."pairingRequired" IS DISTINCT FROM (
+                  b."pairingRequired"
+                  OR a."effectKey" IN ('decision.approved', 'decision.reapproved',
+                                                    'decision.change_requested', 'decision.change_withdrawn',
+                                                    'decision.consultation_requested',
+                                                    'decision.consultation_responded')))
+   AND EXISTS (
+         SELECT 1 FROM "ExternalEffectCatalog" a
+           JOIN "_t4d_catalog_seed" b
+             ON b."coverageVersion" = inc."v" AND b."effectKey" = a."effectKey"
+          WHERE a."coverageVersion" = x."coverageVersion"
+            AND a."pairingRequired" AND NOT b."pairingRequired");
+
 -- THE AUDIT IS TOTAL, AND UNTIL #582 ROUND 13 IT WAS A PROJECTION OF ITSELF (findings 1 and 6).
 --
 -- Round 9 wrote this as an inner JOIN over nine definition columns. Both halves of that shape
@@ -3050,54 +3138,11 @@ BEGIN
               FROM "ExternalEffectCatalog" x
              WHERE NOT EXISTS (SELECT 1 FROM "_t4d_catalog_seed" t
                                 WHERE t."coverageVersion" = x."coverageVersion")
-               -- … and is not the ONE successor generation 4d-i-b is specified to write.
-               AND NOT EXISTS (
-                 SELECT 1
-                   FROM (SELECT DISTINCT t2."coverageVersion" AS v FROM "_t4d_catalog_seed" t2) seeded
-                  WHERE
-                    -- same key set, in both directions
-                    NOT EXISTS (SELECT 1 FROM "ExternalEffectCatalog" a
-                                 WHERE a."coverageVersion" = x."coverageVersion"
-                                   AND NOT EXISTS (SELECT 1 FROM "_t4d_catalog_seed" b
-                                                    WHERE b."coverageVersion" = seeded.v
-                                                      AND b."effectKey" = a."effectKey"))
-                AND NOT EXISTS (SELECT 1 FROM "_t4d_catalog_seed" b
-                                 WHERE b."coverageVersion" = seeded.v
-                                   AND NOT EXISTS (SELECT 1 FROM "ExternalEffectCatalog" a
-                                                    WHERE a."coverageVersion" = x."coverageVersion"
-                                                      AND a."effectKey" = b."effectKey"))
-                    -- every column but `pairingRequired` identical, key by key
-                AND NOT EXISTS (
-                      SELECT 1 FROM "ExternalEffectCatalog" a
-                        JOIN "_t4d_catalog_seed" b
-                          ON b."coverageVersion" = seeded.v AND b."effectKey" = a."effectKey"
-                       WHERE a."coverageVersion" = x."coverageVersion"
-                         AND (a."eventType"      IS DISTINCT FROM b."eventType"
-                           OR a."invalidate"     IS DISTINCT FROM b."invalidate"
-                           OR a."pushRoles"      IS DISTINCT FROM b."pushRoles"
-                           OR a."pushFamily"     IS DISTINCT FROM b."pushFamily"
-                           OR a."frozenAudience" IS DISTINCT FROM b."frozenAudience"
-                           OR a."requiresPush"   IS DISTINCT FROM b."requiresPush"
-                           OR a."audience"       IS DISTINCT FROM b."audience"
-                           OR a."pushBody"       IS DISTINCT FROM b."pushBody"))
-                    -- and the `pairingRequired` flips are EXACTLY the plan's six, false → true
-                AND NOT EXISTS (
-                      SELECT 1 FROM "ExternalEffectCatalog" a
-                        JOIN "_t4d_catalog_seed" b
-                          ON b."coverageVersion" = seeded.v AND b."effectKey" = a."effectKey"
-                       WHERE a."coverageVersion" = x."coverageVersion"
-                         AND a."pairingRequired" IS DISTINCT FROM (
-                               b."pairingRequired"
-                               OR a."effectKey" IN ('decision.approved', 'decision.reapproved',
-                                                    'decision.change_requested', 'decision.change_withdrawn',
-                                                    'decision.consultation_requested',
-                                                    'decision.consultation_responded')))
-                AND EXISTS (
-                      SELECT 1 FROM "ExternalEffectCatalog" a
-                        JOIN "_t4d_catalog_seed" b
-                          ON b."coverageVersion" = seeded.v AND b."effectKey" = a."effectKey"
-                       WHERE a."coverageVersion" = x."coverageVersion"
-                         AND a."pairingRequired" AND NOT b."pairingRequired"))
+               -- … and is not the ONE successor generation 4d-i-b is specified to write, which
+               -- is derived ONCE beside the seed (round 38, findings 2 and 3) rather than
+               -- spelled out again here — two spellings diverged twice already.
+               AND NOT EXISTS (SELECT 1 FROM "_t4d_catalog_successor" s
+                                WHERE s."v" = x."coverageVersion")
              GROUP BY x."coverageVersion") q;
     IF v_alien > 0 THEN
       RAISE EXCEPTION
@@ -4273,20 +4318,11 @@ BEGIN
   -- The 4d-i-b witness is the one the catalog audit above already establishes — a generation
   -- carrying the seeded keys and columns with `pairingRequired` true on exactly the plan's six —
   -- so nothing new is trusted.
-  SELECT EXISTS (
-    SELECT 1 FROM (SELECT DISTINCT x."coverageVersion" AS v FROM "ExternalEffectCatalog" x
-                    WHERE NOT EXISTS (SELECT 1 FROM "_t4d_catalog_seed" t
-                                       WHERE t."coverageVersion" = x."coverageVersion")) g
-     WHERE EXISTS (
-       SELECT 1 FROM "ExternalEffectCatalog" a
-         JOIN "_t4d_catalog_seed" b ON b."effectKey" = a."effectKey"
-        WHERE a."coverageVersion" = g.v
-          AND a."pairingRequired" AND NOT b."pairingRequired"
-          AND a."effectKey" IN ('decision.approved', 'decision.reapproved',
-                                'decision.change_requested', 'decision.change_withdrawn',
-                                'decision.consultation_requested',
-                                'decision.consultation_responded'))
-  ) INTO v_4dib;
+  -- the SAME derivation the catalog audit uses, read rather than restated (round 38). The first
+  -- draft of this witness restated it — and restated it WEAKLY, asking only for the six flips
+  -- against any seeded generation, so a hand that flipped six keys in a clone of the outgoing
+  -- generation would have stood this audit down.
+  SELECT EXISTS (SELECT 1 FROM "_t4d_catalog_successor") INTO v_4dib;
 
   IF phase6_t4d_retired_at_start() OR phase6_t4d_ii_installed() THEN
     RAISE NOTICE 'phase6 4d-i: the dark window is CLOSED (retirement marker or 4d-ii writers present) — the dark-table emptiness audit is SKIPPED; these tables legitimately hold what 4d-ii wrote';
@@ -4327,8 +4363,14 @@ END $dark_registers$;
 DO $legacy_shape_kernel$
 DECLARE spec RECORD; v_rows BIGINT; v_sample TEXT; v_found TEXT := '';
 BEGIN
-  IF phase6_t4d_retired_at_start() THEN
-    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the kernel legacy-shape audit is SKIPPED (4d-ii has legitimately written these columns; this is a replay over a retired database)';
+  -- ON THE WRITERS' ARRIVAL, NOT ONLY ON RETIREMENT (#582's review round 38, finding 5). The
+  -- NOTICE below already said why this audit stands down — "4d-ii has legitimately written these
+  -- columns" — while the predicate asked about 4d-iii. Between those two units the sentence is
+  -- true and the gate is false, so a supported P3005 replay in that window aborts on the event
+  -- actor envelopes and bound notices 4d-ii wrote correctly. Round 36 gave the dark-register
+  -- audit this second witness and did not carry it here.
+  IF phase6_t4d_retired_at_start() OR phase6_t4d_ii_installed() THEN
+    RAISE NOTICE 'phase6 4d-i: the dark window is CLOSED (retirement marker or 4d-ii writers present) — the kernel legacy-shape audit is SKIPPED; these columns legitimately hold what 4d-ii wrote';
   ELSE
     FOR spec IN SELECT * FROM (VALUES
       ('DomainEvent', 'eventId', '"actorRole" IS NOT NULL OR "actorName" IS NOT NULL'),

@@ -1023,10 +1023,18 @@ BEGIN
     RETURN NULL;
   END IF;
 
+  -- IN THIS TRANSACTION, WHICH THE MESSAGE BELOW ALREADY CLAIMED (#582's review round 38,
+  -- finding 1). Without `xmin` the demand is satisfied by ANY open `countersign_rejection` row,
+  -- including one planted in the 4d-i → 4d-i-b window, where `ChangeRequest_t4d_paired` is
+  -- deliberately deferred and the insert seals still admit an open request with nullable
+  -- provenance. A historical row then licenses a later transition that wrote no request at all,
+  -- and the decision commits with a reason no reader can see — the exact outcome this seal
+  -- exists to refuse. `xmin` is this file's standing answer to "the bundle is one transaction".
   IF NOT EXISTS (
     SELECT 1 FROM "ChangeRequest" cr
      WHERE cr."projectId" = NEW."projectId" AND cr."decisionId" = NEW."id"
        AND cr."status" = 'open' AND cr."origin" = 'countersign_rejection'
+       AND cr."xmin" = txid_current()::text::xid
   ) THEN
     RAISE EXCEPTION
       'phase6 4d-i: decision % crossed `awaiting_countersign → change` in this transaction with no open `countersign_rejection` request — the disagreement is a BUNDLE (reject-back, forward-on or `returned` resolution alike), and the transition without its request leaves a decision whose reason no reader can see and which neither approve nor withdrawChange can close',
@@ -1082,9 +1090,12 @@ BEGIN
         'phase6 4d-i: DecisionStrandedResolution % returns decision % to its decider, but at commit the decision is `%` rather than `change`',
         NEW."id", NEW."decisionId", COALESCE(d.status, '<missing>');
     END IF;
+    -- the same `xmin` demand as the disagreement door, for the same reason and against the same
+    -- planted row (round 38, finding 1): this message says "in the same transaction" too.
     IF NOT EXISTS (SELECT 1 FROM "ChangeRequest" cr
                     WHERE cr."projectId" = NEW."projectId" AND cr."decisionId" = NEW."decisionId"
-                      AND cr."status" = 'open' AND cr."origin" = 'countersign_rejection') THEN
+                      AND cr."status" = 'open' AND cr."origin" = 'countersign_rejection'
+                      AND cr."xmin" = txid_current()::text::xid) THEN
       RAISE EXCEPTION
         'phase6 4d-i: DecisionStrandedResolution % returns decision % with no open `countersign_rejection` request in the same transaction — the bundle is the resolution AND the request, and the transition alone commits a decision nothing can close',
         NEW."id", NEW."decisionId";
@@ -3616,8 +3627,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS "DecisionEvent_countersign_renotified_key"
 DO $dark_tables$
 DECLARE v_table TEXT; v_rows BIGINT; v_found TEXT := '';
 BEGIN
-  IF phase6_t4d_retired_at_start() THEN
-    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the dark-fact emptiness audit is SKIPPED (4d-ii has legitimately written these tables; this is a replay over a retired database)';
+  -- ON THE WRITERS' ARRIVAL, NOT ONLY ON RETIREMENT. This is the TWIN of the registers half's
+  -- dark-register audit, and round 36's finding 3 gave that one a second witness and left this
+  -- one on the retirement snapshot alone — the sibling the round's own fix walked past. Between
+  -- 4d-ii and 4d-iii these three fact tables legitimately hold what 4d-ii's writers wrote, and a
+  -- replay in that window aborted on them. Codex did not name this site; the audit inventory did.
+  IF phase6_t4d_retired_at_start() OR phase6_t4d_ii_installed() THEN
+    RAISE NOTICE 'phase6 4d-i: the dark window is CLOSED (retirement marker or 4d-ii writers present) — the dark-fact emptiness audit is SKIPPED; these tables legitimately hold what 4d-ii wrote';
   ELSE
     -- THE TABLES THIS FILE CREATES. `MembershipTransition`, `DomainEventPairingClaim` and
     -- `ReleaseLease` are the registers half's, and it audits its own — a file cannot be said to
@@ -3673,8 +3689,11 @@ END $dark_tables$;
 DO $legacy_shape$
 DECLARE spec RECORD; v_rows BIGINT; v_sample TEXT; v_found TEXT := '';
 BEGIN
-  IF phase6_t4d_retired_at_start() THEN
-    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the legacy-shape audit is SKIPPED (4d-ii has legitimately written these columns; this is a replay over a retired database)';
+  -- ON THE WRITERS' ARRIVAL, NOT ONLY ON RETIREMENT (#582's review round 38, finding 5) — the
+  -- requester/resolver and consultation attribution columns 4d-ii writes are legitimate from the
+  -- moment its writers ship, and this gate asked about 4d-iii.
+  IF phase6_t4d_retired_at_start() OR phase6_t4d_ii_installed() THEN
+    RAISE NOTICE 'phase6 4d-i: the dark window is CLOSED (retirement marker or 4d-ii writers present) — the legacy-shape audit is SKIPPED; these columns legitimately hold what 4d-ii wrote';
   ELSE
     FOR spec IN SELECT * FROM (VALUES
       -- AND THE COLUMNS THIS FILE FREEZES, NOT THE ONES IT ADDED (#582's review round 35,

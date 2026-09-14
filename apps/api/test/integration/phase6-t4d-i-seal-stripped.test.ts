@@ -6507,4 +6507,235 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     }
     expect(applyWhole().ok, 'and with the siblings gone the 4d-i-b database replays again').toBe(true);
   }, 900_000);
+
+  /**
+   * #582's review round 38, finding 1 — A DEMAND MADE IN THE PROSE AND NOT IN THE PREDICATE.
+   *
+   * The arm above proves the disagreement door refuses a transition that carries NO request. It
+   * never asked where the request came from, and neither did the door: project, decision, status
+   * and origin, with nothing about WHEN. Both refusal messages say "in this transaction" and
+   * "in the same transaction" — so the contract was written, and the lookup did not implement it.
+   *
+   * The reachable plant is the 4d-i → 4d-i-b window, where `ChangeRequest_t4d_paired` is
+   * deliberately deferred to the next unit and the insert seals admit an open rejection with
+   * nullable provenance. This arm plants exactly that, IN ITS OWN COMMITTED TRANSACTION, and then
+   * drives the bare transition in a later one: a historical row must not license a bundle.
+   *
+   * Both doors are driven, because both carried the identical lookup and the identical claim.
+   */
+  it('round 38: a rejection request from an EARLIER transaction licenses no disagreement', () => {
+    const PLANT = `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId")
+         VALUES ('ss-cr-old','ss-dec','planted in the dark window',0,0,'open','countersign_rejection','ss-rev-p')`;
+
+    buildRun(AWAITING_DOORS);
+    expect(psql(RUN_DB, ['-c', PROVISIONAL]).ok, 'the provisional act must commit first').toBe(true);
+
+    // the plant is a SEPARATE, COMMITTED transaction — which is the window's whole shape.
+    const planted = psql(RUN_DB, ['-c', PLANT]);
+    expect(planted.ok, 'the 4d-i → 4d-i-b window admits an open `countersign_rejection` with '
+      + 'nullable provenance — `ChangeRequest_t4d_paired` is deferred to that unit. If this plant '
+      + `is refused the finding's premise is gone and this arm must be re-derived:\n${planted.output}`).toBe(true);
+
+    // …and now the transition, alone, in a LATER transaction.
+    const borrowed = psql(RUN_DB, ['-c',
+      `UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'ss-dec'`]);
+    expect(borrowed.ok, 'the disagreement wrote NO request — it found one already open from a '
+      + 'previous transaction. The door must refuse it: its own message says the request comes '
+      + '"in this transaction", and a demand satisfied by frozen history is not that demand. The '
+      + `decision would commit into \`change\` with a reason belonging to another act:\n${borrowed.output}`).toBe(false);
+    expect(borrowed.output).toMatch(/in this transaction with no open .countersign_rejection. request/);
+
+    // THE SIBLING DOOR, same lookup, same claim: the `returned` stranded resolution.
+    const RESOLVE = `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+         VALUES ('ss-cmd-sr','project','ss-org','ss-proj','ss-user','decisions.resolve_stranded','ss-key-sr','ss-hash-sr','reserved');
+       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-sr' WHERE "id" = 'ss-cmd-sr';
+       INSERT INTO "DecisionStrandedResolution"
+         ("id","projectId","decisionId","revisionId","outcome","resolvedById","resolvedByRole","resolvedByName","reason","sourceCommandId")
+       VALUES ('ss-sr','ss-proj','ss-dec','ss-rev-p','returned','ss-user','pmc','SS User','back to the decider','ss-cmd-sr');
+       UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'ss-dec'`;
+
+    buildRun(AWAITING_DOORS);
+    expect(psql(RUN_DB, ['-c', PROVISIONAL]).ok).toBe(true);
+    expect(psql(RUN_DB, ['-c', PLANT]).ok, 'the same historical plant').toBe(true);
+    // THE DECISION MUST ACTUALLY BE STRANDED. `PROVISIONAL` adds the architect the countersign
+    // path needs, and `phase6_t4d_stranded_seal` refuses the resolution while one stands — the
+    // stranded case is the architect LEAVING after the approval was parked. The departure is
+    // staged through the register the seal reads, under `replica`, because the membership seals
+    // are not the subject here; the door under test is the request lookup below it.
+    expect(psql(RUN_DB, ['-c',
+      `SET session_replication_role='replica';
+       UPDATE "Membership" SET "status" = 'removed' WHERE "id" = 'ss-mem-ar';
+       UPDATE "ProjectRoleStanding" SET "activeCount" = 0
+        WHERE "projectId" = 'ss-proj' AND "role" = 'architect';
+       SET session_replication_role='origin';`]).ok, 'the architect must depart').toBe(true);
+    const stranded = psql(RUN_DB, ['-c', RESOLVE]);
+    expect(stranded.ok, 'the `returned` resolution owes its OWN request too — "the bundle is the '
+      + 'resolution AND the request" is its own wording. Round 38 found the same unscoped lookup '
+      + `in both doors; a fix applied to one of them is this unit's standing failure:\n${stranded.output}`).toBe(false);
+    expect(stranded.output).toMatch(/no open .countersign_rejection. request in the same transaction/);
+  }, 900_000);
+
+  /**
+   * #582's review round 38, findings 2 and 3 — THE SUCCESSOR'S SHAPE, IN ONE SPELLING.
+   *
+   * Round 36 admitted 4d-i-b's generation by shape and wrote that shape inline. Round 37d asked
+   * the same question in the dark-register audit and wrote a second, weaker spelling of it. Two
+   * readings, both wrong the same two ways, which is why the fix is ONE derivation both read.
+   *
+   *   · matched against EITHER seeded generation, so a clone of the OUTGOING one with the six
+   *     flips passed — and that generation deliberately carries the previous release's weaker
+   *     policy (`decision.published` with `requiresPush = false`, no split record key), so an
+   *     event naming the clone suppresses an approval-demand push and still passes the envelope;
+   *   · `retiredAt` never compared, so a successor already stamped retired was admitted and then
+   *     frozen by the catalog seal — after which the envelope refuses every event naming it.
+   *
+   * The genuine successor must still be adopted, which the round-36 and round-37d arms assert, so
+   * this arm drives only the two hands that were passing.
+   */
+  it('round 38: an OUTGOING-generation clone and a RETIRED successor are both refused', () => {
+    const SIX = "'decision.approved','decision.reapproved','decision.change_requested',"
+      + "'decision.change_withdrawn','decision.consultation_requested','decision.consultation_responded'";
+    /** a copy of `from`, with `pairingRequired` flipped on exactly the plan's six */
+    const flipped = (from: string, to: string) => `SET session_replication_role = 'replica';
+      INSERT INTO "ExternalEffectCatalog"
+        ("coverageVersion","effectKey","eventType","invalidate","pushRoles","pushFamily",
+         "frozenAudience","requiresPush","audience","pushBody","pairingRequired")
+      SELECT '${to}', "effectKey","eventType","invalidate","pushRoles","pushFamily",
+             "frozenAudience","requiresPush","audience","pushBody", "effectKey" IN (${SIX})
+        FROM "ExternalEffectCatalog" WHERE "coverageVersion" = '${from}';
+      SET session_replication_role = 'origin';`;
+    const drop = (v: string) => psql(RUN_DB, ['-c',
+      `SET session_replication_role='replica'; DELETE FROM "ExternalEffectCatalog" WHERE "coverageVersion"='${v}'; SET session_replication_role='origin';`]);
+
+    buildRun([]);
+    expect(psql(RUN_DB, ['-c',
+      `SET session_replication_role='replica'; DELETE FROM "ReleaseLease"; SET session_replication_role='origin';`]).ok).toBe(true);
+
+    // ── (i) THE OUTGOING CLONE ────────────────────────────────────────────────────────────────
+    expect(psql(RUN_DB, ['-c', flipped(OUTGOING, 'handout')]).ok, 'the clone must plant').toBe(true);
+    const clone = applyWhole();
+    expect(clone.ok, '4d-i-b extends the generation THIS release compiles. A generation cloned '
+      + 'from the OUTGOING one carries the previous release\'s weaker dispatch policy, so an '
+      + 'event naming it would suppress a push this release owes and still satisfy the envelope. '
+      + `Matching the successor against either seeded generation admitted it:\n${clone.output}`).toBe(false);
+    expect(clone.output).toMatch(/phase6 4d-i ABORT/);
+    drop('handout');
+    expect(applyWhole().ok, 'and the database replays once the clone is gone').toBe(true);
+
+    // ── (ii) THE RETIRED SUCCESSOR ────────────────────────────────────────────────────────────
+    expect(psql(RUN_DB, ['-c', flipped(COVERAGE, 'handret')]).ok, 'the successor must plant').toBe(true);
+    expect(psql(RUN_DB, ['-c',
+      `SET session_replication_role='replica';
+       UPDATE "ExternalEffectCatalog" SET "retiredAt" = now() WHERE "coverageVersion" = 'handret';
+       SET session_replication_role='origin';`]).ok, 'the retirement stamp must plant').toBe(true);
+    const retired = applyWhole();
+    expect(retired.ok, 'the pre-retired arm is scoped to the SEEDED generations, so a '
+      + 'successor-shaped generation already stamped retired reached the catalog seal and was '
+      + 'frozen — after which `DomainEvent_t4d_envelope` refuses every event carrying 4d-i-b\'s '
+      + 'coverage as retired. This is the nine-columns-of-ten defect this file already records '
+      + `about the seeded generations, left standing in the successor added later:\n${retired.output}`).toBe(false);
+    expect(retired.output).toMatch(/phase6 4d-i ABORT/);
+    drop('handret');
+    expect(applyWhole().ok, 'and the database replays once the retired hand is gone').toBe(true);
+  }, 900_000);
+
+  /**
+   * #582's review round 38, finding 5, AND THE SIBLING IT DID NOT NAME.
+   *
+   * Round 36's finding 3 taught the dark-REGISTER audit that its window closes when 4d-ii's
+   * WRITERS arrive, not when 4d-iii records retirement. Every other apply-time audit was left on
+   * the retirement snapshot alone — including three whose own NOTICE text already said "4d-ii has
+   * legitimately written these". Between those two units the sentence is true and the gate is
+   * false, so a supported P3005 replay in that window aborts on correct data.
+   *
+   * THE POPULATION IS THE FILES' OWN `DO` BLOCKS, not a list I keep. Every top-level block that
+   * can RAISE a `phase6 4d-i ABORT` is an apply-time audit; each must appear in the map below
+   * with a verdict, so a later unit cannot add one and leave its stage reasoning unexamined. The
+   * three that need the witness are then driven BEHAVIOURALLY against a 4d-ii database.
+   */
+  const STAGE_VERDICT: Record<string, string> = {
+    // ── needs the writer witness: the data it judges is what 4d-ii legitimately writes ──
+    dark_registers: 'WITNESS',
+    dark_tables: 'WITNESS',
+    legacy_shape: 'WITNESS',
+    legacy_shape_kernel: 'WITNESS',
+    // ── correctly gated, each for a stated reason ──
+    unsealed_marker: 'its subject is a marker written WITHOUT the seals — the witness would defeat it',
+    ledger_prereq: 'phase-2 raw triggers; stage-independent, and deliberately ungated',
+    stream_heads: 'malformed counter shapes that no writer creates, only a db-push baseline',
+    reserved_rows: 'values reserved until 4d-iii, so a row carrying one is still wrong at 4d-ii',
+    pin: 'a delivered function body, which no rollout stage rewrites',
+    catalog_audit: 'its stage question IS the successor admission; a blanket writer skip would '
+      + 'reopen the foreign-generation door round 6 finding 1 closed',
+  };
+
+  it('round 38: every apply-time audit has a stage verdict, and the three that need it have it', () => {
+    const audits: Array<[string, string, string]> = [];
+    for (const file of UNIT_FILES) {
+      const sql = readFileSync(file, 'utf8');
+      const half = file === MIGRATION ? 'registers' : 'decisions';
+      for (const m of sql.matchAll(/^DO \$([A-Za-z0-9_]+)\$([\s\S]*?)^END \$\1\$;/gm)) {
+        if (!m[2]!.includes('phase6 4d-i ABORT')) continue;
+        audits.push([half, m[1]!, m[2]!]);
+      }
+    }
+    expect(audits.length, 'the halves must contain apply-time audits for this arm to mean anything')
+      .toBeGreaterThan(5);
+
+    const unclassified = audits.map(([, tag]) => tag).filter((t) => !(t in STAGE_VERDICT));
+    expect(unclassified, 'these apply-time audits can ABORT a deploy and carry no stage verdict. '
+      + 'The rollout has five stages and every audit reasons about some of them; an audit that '
+      + 'arrives without being asked which is how round 36 finding 3 and round 38 finding 5 both '
+      + 'happened.').toEqual([]);
+
+    const missing = audits
+      .filter(([, tag, body]) => STAGE_VERDICT[tag] === 'WITNESS'
+        && !body.includes('phase6_t4d_ii_installed()'))
+      .map(([half, tag]) => `${half}:${tag}`);
+    expect(missing, 'these audits are declared to need the 4d-ii writer witness and do not '
+      + 'consult it. Their window closes when the writers arrive, not when 4d-iii records '
+      + 'retirement, and between those units they abort on data the platform wrote correctly.')
+      .toEqual([]);
+  }, 60_000);
+
+  it('round 38: a 4d-ii database replays over the data its writers legitimately wrote', () => {
+    buildRun([]);
+    // 4d-ii has shipped: its writers exist, and everything below is their ordinary output.
+    expect(psql(RUN_DB, ['-c',
+      `CREATE FUNCTION platform_t4d_ii_writers_installed() RETURNS BOOLEAN LANGUAGE sql AS $$ SELECT true $$`]).ok).toBe(true);
+
+    // `dark_tables` (decisions) — the twin of `dark_registers`, and the site round 36's own fix
+    // walked past. Codex named the two legacy-shape audits; the audit inventory named this one.
+    const forward = psql(RUN_DB, ['-c',
+      `SET session_replication_role='replica';
+       INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+         VALUES ('ss-cmd-2f','project','ss-org','ss-proj','ss-user','decisions.forward','ss-key-2f','ss-hash-2f','succeeded');
+       INSERT INTO "DecisionForward"
+         ("id","projectId","decisionId","fromDesignationKind","toDesignationKind","forwardedById","forwardedByRole","forwardedByName","reason","sourceCommandId")
+       VALUES ('ss-fwd-2','ss-proj','ss-dec','client','pmc','ss-user','pmc','SS User','4d-ii wrote this','ss-cmd-2f');
+       SET session_replication_role='origin';`]);
+    expect(forward.ok, `the 4d-ii forward must plant:\n${forward.output}`).toBe(true);
+
+    // `legacy_shape` (decisions) — the requester/resolver and consultation attribution columns.
+    const cols = psql(RUN_DB, ['-c',
+      `SET session_replication_role='replica';
+       INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","requestedById","requestedByRole","requestedByName")
+         VALUES ('ss-cr-2','ss-proj','ss-dec','4d-ii wrote this',0,0,'open','standard','ss-user','pmc','SS User');
+       SET session_replication_role='origin';`]);
+    expect(cols.ok, `the 4d-ii request must plant:\n${cols.output}`).toBe(true);
+
+    // `legacy_shape_kernel` (registers) — the event actor envelope and the bound notice.
+    const kernel = psql(RUN_DB, ['-c',
+      `SET session_replication_role='replica';
+       INSERT INTO "Notification" ("id","projectId","text","color","time","kind","eventId")
+         VALUES ('ss-note-2','ss-proj','4d-ii wrote this','ink','now','decision.published','ss-ev1');
+       SET session_replication_role='origin';`]);
+    expect(kernel.ok, `the 4d-ii notice must plant:\n${kernel.output}`).toBe(true);
+
+    const replay = applyWhole();
+    expect(replay.ok, 'a replay over a 4d-ii database — dark facts written, 4d columns filled, '
+      + 'notices bound — must re-apply cleanly. `migrate.sh` leaves these files pending on the '
+      + 'P3005 path, so this replay is a SUPPORTED recovery, and an abort here tells the operator '
+      + `to delete rows and columns the platform wrote correctly:\n${replay.output}`).toBe(true);
+  }, 900_000);
 });
