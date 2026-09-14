@@ -12,7 +12,11 @@ import {
   selectAutonomousOpenPullRequests,
 } from './runner-continuation.mjs';
 import { loadStatusDocument, parseStatusNow, parseMaintenanceQueue } from './autonomous-status-state.mjs';
-import { isCorrectionEligiblePullRequest } from './correction-owner.mjs';
+import {
+  isCorrectionEligiblePullRequest,
+  correctionOwnerDeclaration,
+  correctionRouting,
+} from './correction-owner.mjs';
 import {
   assessCorrectionLease,
   correctionReasonFor,
@@ -236,27 +240,49 @@ export async function waitForTerminalPullRequest(client, number) {
   return pullRequest.state === 'open' ? null : pullRequest;
 }
 
-async function handOffConflict(
+export async function handOffConflict(
   client,
   pullRequest,
   repository,
   defaultBranch,
 ) {
-  if (!isAutonomousPullRequest(pullRequest, repository, defaultBranch)) return;
+  if (!isCorrectionEligiblePullRequest(pullRequest, repository, defaultBranch)) return;
   const live = await refreshedMergeability(client, pullRequest);
+  if (!isCorrectionEligiblePullRequest(live, repository, defaultBranch)) return;
   if (live.mergeable !== false && live.mergeable_state !== 'behind') return;
 
-  const marker = `${CONFLICT_MARKER}${live.head.sha} -->`;
+  const declaration = correctionOwnerDeclaration(live);
+  const routing = correctionRouting({ declaration, head: live.head.sha });
+  const marker = `${CONFLICT_MARKER}${live.head.sha}:owner=${routing.owner ?? declaration.state} -->`;
   const comments = await client.comments(live.number);
   if (comments.some((comment) =>
     comment.user?.login === ACTIONS_BOT_LOGIN && comment.body?.includes(marker)
   )) return;
 
+  // A metadata edit can transfer ownership without changing the head SHA. Recheck
+  // after the comment read so a stale branch snapshot cannot wake the old owner.
+  const current = await client.pullRequest(live.number);
+  if (
+    !isCorrectionEligiblePullRequest(current, repository, defaultBranch)
+    || current.head.sha !== live.head.sha
+    || current.head.ref !== live.head.ref
+    || current.body !== live.body
+    || current.base.sha !== live.base.sha
+    || (current.mergeable !== false && current.mergeable_state !== 'behind')
+  ) return;
+
+  const instruction = routing.awakenable
+    ? `@${routing.owner} This PR is behind or conflicts with the current base branch.`
+    : routing.owner
+      ? `**correction_stalled:** This PR is behind or conflicts with its base. The declared `
+        + `owner is \`${routing.owner}\`, whose GitHub wake integration is not enabled here. `
+        + 'Resume that owner on this branch if its session is not already running.'
+      : `**correction_stalled:** ${routing.instruction}`;
   await client.comment(
     live.number,
     [
       marker,
-      '@claude This autonomous PR is behind or conflicts with the current `main` branch.',
+      instruction,
       '',
       'Merge `origin/main` into this PR branch without rebasing or force-pushing. Resolve the conflicts according to `AGENTS.md`, run the complete documented validation suite, and push the resolution normally. Keep the PR in draft until CI and the exact-head Codex review are clean.',
     ].join('\n'),

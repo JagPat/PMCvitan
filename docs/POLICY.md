@@ -26,10 +26,23 @@ not complete until its focused tests and required `pnpm check` pass.
 
 Every PR declares exactly one correction owner in its leading marker block:
 `<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`.
-A `claude/**` branch can declare only `claude`. The marker selects an agent type,
+A `claude/**` branch must declare Claude. The marker selects an agent type,
 not a unique session: coordinate one producer on each branch before editing.
 Only the declared owner handles normal correction handoff; do not start a competing
-producer. Codex independently reviews and does not implement its own findings.
+producer. Conflict handoffs re-read the owner and current head before publication;
+invalid or non-awakenable ownership is reported without waking a different agent.
+
+Codex implementation ownership is currently inadmissible: GitHub implementation
+tasks and reviews share the Codex bot identity, and a fresh reaction does not prove
+a separate reviewer supplied it. A transfer marker cannot bypass this restriction.
+Enabling that role requires reviewer-specific provenance first. User-requested Codex
+assistance does not itself change the configured normal correction owner.
+
+This repository currently enables only the Claude correction wake integration.
+Codex supports GitHub task mentions such as `@codex fix the CI failures` through its
+[GitHub integration](https://learn.chatgpt.com/docs/third-party/github); independent
+reviewer provenance, account permissions and acceptance of watchdog-generated
+mentions must be verified before enabling that implementation route here.
 
 When opening or resuming a task-bearing autonomous PR, keep STATUS's `open_pr` and
 `task_state` coherent. Never start the next task while STATUS keeps this task open.
@@ -79,11 +92,14 @@ retargets and cancelled attempts, and revalidates before merge. Product coverage
 be reused for metadata edits only when the common CI-evidence rules permit it.
 
 The two invocation attempts and timeout budgets bound a workflow run; they do not
-limit correction heads or require a replacement. A current-head clean result allows
-the existing exact-SHA squash-merge path within the user's authorization. Explicit
-merge/deploy holds must be respected. The current merge helper does not parse a
-prose hold: that enforcement gap remains a separately identified follow-up, not a
-claim that this consolidation implements a durable hold mechanism.
+limit correction heads or require a replacement. After required CI and independent
+review pass on the exact current head, the system completes the exact-SHA squash
+merge automatically, or queues GitHub auto-merge behind branch protection.
+No per-commit human or Board authorization, authorization comment, or approver
+allow-list is required. This user decision of 2026-09-14 supersedes the proposed
+Board-held merge rule. Drafts, changed heads/bases and failed or missing required
+gates still prevent completion. The implementer cannot supply independent review
+clearance; it must come from the configured review integration.
 
 No routine human technical approval substitutes for CI or independent review.
 The retained production-drain exception is different: clearing
@@ -94,9 +110,10 @@ This consolidation does not reverse that decision or authorize a production acti
 ## Correction routing and recovery
 
 Naming an owner does not prove a running session. Claude is awakenable through the
-configured subscription integration. Cursor is routed but not awakenable by GitHub;
-report that limitation without claiming no session is running. Invalid ownership
-reports `correction_stalled` with the exact corrective action.
+configured subscription integration. Cursor is routed but has no enabled correction
+wake integration in this repository; report that configuration limit without claiming
+no session is running. Codex and other inadmissible owner declarations report
+`correction_stalled` with the exact corrective action.
 
 The correction watchdog identifies an owed failure from the gate's review/scope/CI
 classification, rechecks live owner/head/status before publishing, and sends at most
@@ -227,11 +244,30 @@ A SHA is evidence only when its origin and relevant contents have been verified.
 | Current task and post-merge coherence | docs/STATUS.md / autonomous-status-state.mjs | autonomous-status-state.test.mjs; continuation tests |
 | Engineering invariants | Owning product module, SQL constraints and review | Relevant unit, PostgreSQL, migration and browser proofs |
 
+### Claude independent-review shadow boundary
+
+The existing Claude subscription integration responds to GitHub PR conversation
+and can author corrections, but the repository has no documented, tested contract
+that exposes an immutable reviewer completion, actor and exact SHA. A comment,
+mention response, workflow exit code, absence of findings, skipped run or timeout
+therefore cannot become green review evidence. `claude-review-adapter.mjs` is a
+non-authoritative fail-closed boundary only. Activation requires the subscription
+provider to document and verify a GitHub App Check Run named
+`claude-independent-review`, emitted by a dedicated configured App identity, with
+an external id binding PR and SHA and the v1 structured summary validated by the
+adapter. Until a real current-head shadow run proves that contract, the adapter
+does not affect `codex-current-head`, merge eligibility or branch protection.
+
+Rollout is additive: merge this controller after required CI and independent
+Codex review; verify real Claude shadow evidence on a current SHA; then install a new required gate before retiring
+`codex-current-head`. Roll back by leaving or removing the future Claude required
+gate while retaining `codex-current-head`; never create an interval with neither
+gate. No workflow here changes branch protection, credentials, deployment, or drain state.
+
 `assessConvergence` and `assessRestructure` are legacy test/metrics models, not live
 closure authority. A test for a legacy model does not make it active policy. A
 synthetic APPROVED Codex review currently classifies as a finding; validate the
-adapter's actual contract before changing that behavior. Neither that classifier
-nor the durable hold gap is silently changed by this refactor.
+adapter's actual contract before changing that behavior. That classifier is not changed by this refactor.
 
 For every new blocking rule, document the concrete defect it prevents, enforcement
 location, failing counterexample, legitimate recovery path and operating cost.
