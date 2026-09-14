@@ -382,3 +382,5 @@ Audit every action target against the 44×44 floor in the same pass.
 **Do not widen the shell `Role` union** — that would grant navigation and authority neither persona should have. Instead settle: what surface each gets, how they authenticate (see master brief §6.2 — the reported worker-token gap must be reproduced and fixed as a security question first), and what authority each carries.
 
 Wave 4 depends on this, and the Wave 5 sessions for those two personas cannot run without it.
+
+The final review-state audit also exercises populated company edit/remove controls, both consultation compose forms, an empty consultant discipline, drawing revision history, Places create-menu transitions into all three inherited-location forms, and phone/OTP recovery actions. Each browser probe requires its conditional subject to appear before measuring it. These close the earlier coverage findings alongside the shared control floor; the combined mobile-field suite contains 23 cases.

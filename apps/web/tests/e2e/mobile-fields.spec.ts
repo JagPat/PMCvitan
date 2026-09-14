@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 // the product's own role list, so this file cannot drift from it (#584 review round 11)
 import { ROLES } from '../../src/lib/screens';
 import { pilotTargetState } from './fixtures/pilot-targets';
+import { SEED_DECISIONS, SEED_DRAWINGS } from '@vitan/shared';
 
 /**
  * Wave 0 / unit F-1b — NO TEXT-ENTRY CONTROL FALLS BELOW 16px ON MOBILE.
@@ -1085,26 +1086,83 @@ test('the daily log offers no action target below the 44px floor', async ({ page
   ).toHaveCount(0);
 });
 
-/**
- * #584 review round 2, finding 1 — THE CROSS-SURFACE AUDIT IS F-1c's, and this is the record of
- * why, with the measurement that settles it.
- *
- * The finding is accepted: sweeping only the Daily Log let this unit claim a generic audit while
- * three shipped controls stayed under the floor. Those three are FIXED on this head — the worker
- * and mistri sign-out buttons and the Places photo thumbnails — as are the Schedule surface's
- * three icon buttons, which the sweep found on the way.
- *
- * What a full sweep then measured is that the remaining violations are not size constants:
- *   · SCHEDULE applies a ~0.982 ancestor content scale, so a control whose CSS box is exactly
- *     44px is pressed at 43.2 — every control there is under the floor by construction — and its
- *     place breadcrumbs and drawing chips are inline TEXT links 18–21px tall.
- *   · the DECISION REGISTER's group-by chips are a 26px segmented control.
- * Each is a layout decision about a dense surface, not padding, and `WAVE_0_FOUNDATION.md` puts
- * "the sweep and the evidence, across all surfaces" in F-1c by name.
- *
- * So this file does NOT carry a cross-surface sweep. A sweep scoped to the surfaces that happen
- * to pass is the same narrowing round 2 caught, stated more confidently; the honest artifact is
- * the fixes above plus the measured inventory recorded in the brief for F-1c. The Daily Log's
- * multi-state sweep stays, because that surface IS this unit's named subject.
- */
+// These states were named in earlier reviews but were absent from the generic demo walk.
+// Assert each subject exists before measuring, so empty data cannot silently clear the audit.
+test('populated company actions and both consultation forms meet the target floor', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByTestId('mobile-role-switcher')).toBeVisible();
+  const decision = { ...SEED_DECISIONS[0], id: 'target-advice', status: 'pending', draft: false,
+    approvalCycle: 0, consultations: [{ id: 'target-question', consulteeMembershipId: 'm-target',
+      consulteeUserId: 'u-target', requestedById: 'u-requester', question: 'Which finish?',
+      openCycle: 0, requestedAt: '2026-08-01T10:00:00Z' }] };
+  await page.evaluate((decisions) => {
+    (window as unknown as { __vitanDevSeed: (p: Record<string, unknown>) => void }).__vitanDevSeed({
+      decisions, sessionUserId: 'u-target',
+      memberships: [{ projectId: 'ambli', orgId: 'org-targets', role: 'pmc' }],
+      members: [{ userId: 'u-requester', membershipId: 'm-requester', name: 'Requester',
+        role: 'engineer', status: 'active', canManage: true }],
+      companies: [{ id: 'company-target', kind: 'contractor', name: 'Target Builders' }],
+    });
+  }, [decision]);
+  await page.getByTestId('tab-more').click();
+  await page.getByTestId('more-item-team').click();
+  await expect(page.getByRole('button', { name: 'Edit Target Builders', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Remove Target Builders', exact: true })).toBeVisible();
+  await sweepActionTargets(page, 'populated companies');
+  await page.getByTestId('tab-more').click();
+  await page.getByTestId('more-item-decision-log').click();
+  await expect(page.getByRole('combobox', { name: 'Recommend an option' })).toBeVisible();
+  await sweepActionTargets(page, 'consultation response');
+  await page.getByTestId('consultation-ask-target-advice').click();
+  await expect(page.getByRole('combobox', { name: 'Who to ask' })).toBeVisible();
+  await sweepActionTargets(page, 'consultation request and response');
+});
 
+test('empty consultant discipline and drawing revision history meet the target floor', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('consultant');
+  await page.evaluate((drawings) => {
+    (window as unknown as { __vitanDevSeed: (p: Record<string, unknown>) => void }).__vitanDevSeed({ drawings });
+  }, SEED_DRAWINGS.filter((drawing) => drawing.discipline === 'architectural'));
+  await page.getByTestId('tab-drawings').click();
+  await expect(page.getByTestId('scope-all-empty')).toBeVisible();
+  await sweepActionTargets(page, 'empty consultant discipline');
+  await page.getByTestId('scope-all-empty').click();
+  await page.getByTestId('drawing-A-201').click();
+  await expect(page.locator('[data-testid^="rev-"]')).toHaveCount(3);
+  await sweepActionTargets(page, 'drawing revision history');
+});
+
+test('Places create-menu transitions expose usable inherited-location controls', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('tab-more').click();
+  await page.keyboard.press('Escape');
+  await page.getByTestId('tab-places').click();
+  await page.locator('[data-testid^="place-node-"]').first().click();
+  for (const [kind, prefix] of [['decision', 'dec'], ['inspection', 'chk'], ['material', 'mat']]) {
+    await page.getByTestId('place-add').click();
+    await page.getByTestId(`create-${kind}`).click();
+    await expect(page.getByTestId(`${prefix}-place-change`)).toBeVisible();
+    await sweepActionTargets(page, `Places inherited ${kind} form`);
+    await page.keyboard.press('Escape');
+  }
+});
+
+test('phone and worker OTP recovery actions meet the target floor', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('engineer');
+  await page.getByTestId('tab-more').click();
+  await page.getByTestId('more-item-team-access').click();
+  for (const step of ['phone', 'otp']) {
+    await page.evaluate((step) => {
+      (window as unknown as { __vitanDevSeed: (p: Record<string, unknown>) => void }).__vitanDevSeed({
+        access: { generation: 0, step, who: 'worker', trade: null, phone: '0000000000', email: '',
+          otp: '', worker: null, sending: false, error: null, devCode: null,
+          passwordRequestId: null, passwordSetupToken: null },
+      });
+    }, step);
+    if (step === 'phone') await expect(page.getByTestId('go-login')).toBeVisible();
+    else await expect(page.getByRole('button', { name: 'Resend code', exact: true })).toBeVisible();
+    await sweepActionTargets(page, `Team Access ${step}`);
+  }
+});
