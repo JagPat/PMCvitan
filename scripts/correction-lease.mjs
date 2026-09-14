@@ -303,7 +303,7 @@ export function assessCorrectionLease({
     : routing.owner
       ? `**Required resume action:** if no \`${routing.owner}\` session is already running on `
         + `branch \`${pullRequest?.head?.ref}\`, start one and have it correct head `
-        + `\`${expected}\`. GitHub can neither start that session nor observe whether one is `
+        + `\`${expected}\`. The configured GitHub loop can neither start that session nor observe whether one is `
         + 'already running, so check before starting: a second session on the same branch is a '
         + 'real risk of this notice, not a hypothetical one.'
       : '**Required resume action:** declare the correction owner in the PR body, then the '

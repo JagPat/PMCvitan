@@ -34,6 +34,7 @@ export const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 40 * 60_0
 export const REVIEW_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS ?? 25 * 60_000);
 export const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 15_000);
 export const CORRECTION_OWNERS = ['claude', 'cursor', 'codex'];
+// Wake integrations enabled in this repository, not a product capability inventory.
 export const AWAKENABLE_FROM_GITHUB = new Set(['claude']);
 export const CORRECTION_STALLED = 'correction_stalled';
 // An hourly watchdog reports an unchanged correction after 45-105 minutes.

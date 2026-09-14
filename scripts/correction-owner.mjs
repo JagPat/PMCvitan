@@ -185,7 +185,7 @@ export function correctionOwnerProblem(pullRequest) {
 
 function ownerLabel(owner) {
   if (owner === 'claude') return 'Claude Code web Auto-fix';
-  if (owner === 'codex') return 'The Codex cloud task explicitly transferred this branch';
+  if (owner === 'codex') return 'The Codex cloud task';
   return 'The Cursor agent on this branch';
 }
 
@@ -207,7 +207,7 @@ function declaredInstruction(owner, { reason, detail }) {
   // routing and stops there.
   const start = AWAKENABLE_FROM_GITHUB.has(owner)
     ? ''
-    : ' GitHub can neither start that session nor observe whether it is already running, so '
+    : ' The configured GitHub loop can neither start that session nor observe whether it is already running, so '
       + 'this notice reports the routing only, never whether the correction has begun.';
   if (reason === 'ci') {
     return `${who} owns this correction: fix the failed required checks and push one new head. `

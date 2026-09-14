@@ -372,7 +372,7 @@ test('O5: an owner GitHub cannot awaken is reported as correction_stalled, never
   });
   assert.equal(cursor.owner, 'cursor');
   assert.equal(cursor.awakenable, false, 'GitHub cannot start it');
-  assert.match(cursor.instruction, /GitHub can neither start that session nor observe/iu);
+  assert.match(cursor.instruction, /The configured GitHub loop can neither start that session nor observe/iu);
   assert.doesNotMatch(
     cursor.instruction,
     /(in progress|is working|continuing)/iu,
@@ -539,7 +539,7 @@ test('C4: legacy replacement reasons now instruct the declared owner to fix forw
     declaration: cursor, head: HEAD, detail: '3 findings', reason: 'review',
   });
   assert.match(review.instruction, /new head/iu);
-  assert.match(review.instruction, /GitHub can neither start that session nor observe/iu);
+  assert.match(review.instruction, /The configured GitHub loop can neither start that session nor observe/iu);
 });
 
 test('C5: a malformed declaration is told to REPLACE the marker, not add one', async () => {

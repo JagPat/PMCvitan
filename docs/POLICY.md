@@ -32,8 +32,11 @@ to Codex only by changing the owner and adding
 not a unique session: coordinate one producer on each branch before editing.
 Only the declared owner handles normal correction handoff; do not start a competing
 producer. A Codex owner implements but cannot independently review its own work.
-GitHub cannot currently awaken Codex, so Codex-owned corrections remain honestly
-needs-resume until a supported cloud wake mechanism is installed.
+This repository currently enables only the Claude correction wake integration.
+Codex supports GitHub task mentions such as `@codex fix the CI failures` through its
+[GitHub integration](https://learn.chatgpt.com/docs/third-party/github); account
+permissions and acceptance of watchdog-generated mentions must be verified before
+enabling that route here. A Codex declaration alone does not install or verify it.
 
 When opening or resuming a task-bearing autonomous PR, keep STATUS's `open_pr` and
 `task_state` coherent. Never start the next task while STATUS keeps this task open.
@@ -101,8 +104,9 @@ This consolidation does not reverse that decision or authorize a production acti
 ## Correction routing and recovery
 
 Naming an owner does not prove a running session. Claude is awakenable through the
-configured subscription integration. Cursor and Codex are routed but not awakenable by GitHub;
-report that limitation without claiming no session is running. Invalid ownership
+configured subscription integration. Cursor and Codex are routed but have no enabled
+correction wake integration in this repository; report that configuration limit
+without claiming no session is running or that the products lack GitHub support. Invalid ownership
 reports `correction_stalled` with the exact corrective action.
 
 The correction watchdog identifies an owed failure from the gate's review/scope/CI

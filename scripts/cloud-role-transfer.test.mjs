@@ -39,6 +39,15 @@ test('transfer examples outside the leading declarations cannot transfer ownersh
   }
 });
 
+test('native Codex ownership does not claim a transfer happened', () => {
+  const declaration = parseCorrectionOwner('<!-- correction-owner: codex -->', { headRef: 'codex/maintenance' });
+  for (const reason of ['ci', 'scope', 'review']) {
+    const route = correctionRouting({ declaration, head, reason });
+    assert.match(route.instruction, /Codex cloud task owns this correction/u);
+    assert.doesNotMatch(route.instruction, /transferred/u);
+  }
+});
+
 test('a newer pending Claude rerun supersedes an older clear completion', () => {
   for (const status of ['queued', 'in_progress']) {
     const newer = cleanRun({ id: 8, status, conclusion: null, completed_at: null });
