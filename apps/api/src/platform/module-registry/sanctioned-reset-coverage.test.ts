@@ -139,6 +139,25 @@ describe('Phase 6 unit 4c-0 — sanctioned resets route through the shared helpe
       // through the helper would disable the arm and leave the measurement vacuous, exactly as for
       // the marker seal above.
       'phase6-4c-iiir-inbox-repair.test.ts': 2,
+      // Phase 6 unit 4d-i: the SEAL-STRIPPED harness. Three of its arms are TRUNCATE statements —
+      // `ExternalEffectCatalog`, `RolloutRetirement` and `Notification` — and each is driven TWICE
+      // against scratch databases the harness builds itself: once with that no-TRUNCATE seal
+      // OMITTED from the migration, where the statement must SUCCEED, and once with the migration
+      // whole, where it must be REFUSED by that seal's own message. Routing them through the
+      // helper would disable the seals under test in the whole-migration half and disable nothing
+      // in the stripped half, which is two vacuous assertions instead of one measurement. The
+      // harness never touches the shared test database.
+      //
+      // #582's review round 24, finding 2 and the sweep behind it add six more, all the same
+      // shape and all on scratch databases: three ARMS — `DecisionEvent`, `DomainEvent` and
+      // `DomainEventPairingClaim` — each driven twice, plus three statements in the bespoke probe
+      // that measures what an arm cannot. That probe drives the register's truncate with NO
+      // approval row present (the exact state the DELIVERED `DecisionEvent_t4a_no_truncate`
+      // permits, which is what makes the new unconditional arm necessary), then the SANCTIONED
+      // path disabled by name — the one statement here that uses the bypass rather than meeting
+      // it, because a seal with no nameable bypass would break forty sanctioned resets — and then
+      // the stream. None may route through the helper: it disables the seals under test.
+      'phase6-t4d-i-seal-stripped.test.ts': 9,
     };
 
     const offenders: string[] = [];

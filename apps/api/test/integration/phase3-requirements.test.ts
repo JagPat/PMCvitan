@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, plantLegacyApprovalRevision } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, plantLegacyApprovalRevision, plantLegacyDecisionAudit } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import { MembersService } from '../../src/orgs/members.service';
@@ -146,7 +146,12 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
    *  history AND its immutable approval-register head (round 2) — `decisions.approvedRef`
    *  serves provenance from the register row alone. */
   const makeApprovedDecision = async (projectId: string, id: string, approvals: Array<'approved' | 'reapproved'> = ['approved']): Promise<void> => {
-    await t.prisma.$transaction(async (tx) => {
+    // Phase 6 unit 4d-i — planted through the NAMED bypass. `DecisionEvent_t4d_correspondence`
+    // (§A.3 obligation 7's weak converse) demands that an `approved` audit row on a decision that
+    // committed `approved` carry its `decision.approved` event in the SAME transaction. Every
+    // delivered writer does; this fixture is standing in for an approval that happened before
+    // this database existed, and the seal is right to refuse it rather than guess.
+    await plantLegacyDecisionAudit(t.prisma, async (tx) => {
       await tx.decision.create({
         data: {
           id, projectId, title: id, room: 'Living', photoSwatch: 'sw', status: 'approved',
@@ -475,7 +480,7 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     // and the approver's identity (on behalf of the client — never disguised)
     await makeApprovedDecision(projectId, 'IT-P3-LEG1');
     await t.prisma.decision.update({ where: { id: 'IT-P3-LEG1' }, data: { status: 'change' } });
-    await t.prisma.changeRequest.create({ data: { decisionId: 'IT-P3-LEG1', reason: 'shade', costImpact: 0, timeImpactDays: 0, status: 'open' } });
+    await t.prisma.changeRequest.create({ data: { projectId, decisionId: 'IT-P3-LEG1', reason: 'shade', costImpact: 0, timeImpactDays: 0, status: 'open' } });
     await decisions.approve(projectId, 'IT-P3-LEG1', { optionIndex: 1 }, pmc(projectId));
     const head1 = await t.prisma.decisionApprovalRevision.findFirstOrThrow({ where: { decisionId: 'IT-P3-LEG1' }, orderBy: { version: 'desc' } });
     expect(head1.version).toBe(2);
@@ -486,7 +491,12 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     // (b) an UNPROVABLE legacy history (two recorded approvals, NO register rows — the
     // migration's ambiguous-skip case): the next approval must version PAST that history,
     // never collide into a false "version 1"
-    await t.prisma.decision.create({
+    // Through the NAMED bypass, like `makeApprovedDecision` above and for the same reason one
+    // step further along (#582's review round 24, finding 1): these two audit rows land on a
+    // decision this transaction commits as `change`, and the correspondence now refuses a
+    // governed kind in a state its table does not pair it with. That refusal is what the finding
+    // asks for; this plant is the unprovable PAST it must not be read as, so it says so by name.
+    await plantLegacyDecisionAudit(t.prisma, (tx) => tx.decision.create({
       data: {
         id: 'IT-P3-LEG2', projectId, title: 'x', room: 'x', photoSwatch: 'sw', status: 'change',
         authorId: f.memberUser.id, approvedOption: 'Option A',
@@ -496,9 +506,9 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
         ] },
         events: { create: [{ type: 'approved', actor: 'm' }, { type: 'reapproved', actor: 'm' }] },
       },
-    });
+    }));
     await publishRow('IT-P3-LEG2');
-    await t.prisma.changeRequest.create({ data: { decisionId: 'IT-P3-LEG2', reason: 'again', costImpact: 0, timeImpactDays: 0, status: 'open' } });
+    await t.prisma.changeRequest.create({ data: { projectId, decisionId: 'IT-P3-LEG2', reason: 'again', costImpact: 0, timeImpactDays: 0, status: 'open' } });
     await decisions.approve(projectId, 'IT-P3-LEG2', { optionIndex: 0 }, pmc(projectId));
     const rows2 = await t.prisma.decisionApprovalRevision.findMany({ where: { decisionId: 'IT-P3-LEG2' } });
     expect(rows2).toHaveLength(1); // nothing fabricated for the unprovable past

@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import type { Prisma } from '@prisma/client';
 import type { PrismaService } from '../../src/prisma.service';
 
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
+import { effectCoverageVersion } from '../../src/platform/external-effects';
 export interface TwoProjectFixture {
   orgA: { id: string };
   orgB: { id: string };
@@ -122,12 +124,36 @@ export async function wipeDecisionEvents(
   prisma: PrismaService,
   where: Record<string, unknown>,
 ): Promise<void> {
-  await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
-  try {
-    await prisma.decisionEvent.deleteMany({ where });
-  } finally {
-    await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
-  }
+  // Phase 6 unit 4d-i — TWO new names join the delivered one (§A.3's "one new name", which
+  // became two once the correspondence trigger landed here rather than in 4d-iii):
+  // `DecisionEvent_t4d_append_only` refuses every UPDATE and DELETE on the register, and
+  // `DecisionEvent_t4d_correspondence` is a DEFERRED constraint trigger — a wipe that removes an
+  // audit row would otherwise leave its event unmatched and abort at commit.
+  //
+  // ONE INTERACTIVE TRANSACTION (#582's review round 18, finding 5). This was three separate
+  // auto-committed statements with a `try`/`finally` around the delete, and the `finally` is not
+  // the protection it looks like: `ALTER TABLE` takes ACCESS EXCLUSIVE and COMMITS IT AWAY at the
+  // end of each statement, so between the disable and the enable a PARALLEL suite on the shared
+  // integration database could update or delete immutable `DecisionEvent` evidence, and a process
+  // termination would leave the three triggers disabled permanently — `finally` does not run.
+  //
+  // Inside one transaction, DDL is transactional and rollback re-enables the seals; the lock is
+  // held to commit, so a parallel probe BLOCKS rather than observing the seal off. That is the
+  // shape `wipeDecisionsVia` below already had, with the reason written out in its own comment —
+  // this helper was the sibling that never got it. Every other bypass this unit added a `_t4d_`
+  // name to was checked and already holds it: `wipeDecisionsVia` (interactive), the arrays in
+  // `change-control.test.ts`, `phase1-baseline.test.ts` and `phase6-t4a-withdraw.test.ts`
+  // (`$transaction([...])`), and the single guarded `DO $$` blocks in `prisma/seed.ts` and
+  // `phase6-t4b-approval-attribution.test.ts`.
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_append_only"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_correspondence"');
+    await tx.decisionEvent.deleteMany({ where });
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_correspondence"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_append_only"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
+  }, { timeout: 60_000, maxWait: 30_000 });
 }
 
 /** Phase 6 unit 4b — an APPROVED decision is now permanent register evidence in a LIVE database:
@@ -142,7 +168,20 @@ export async function wipeDecisions(
   prisma: PrismaService,
   where: Record<string, unknown>,
 ): Promise<void> {
-  await wipeDecisionsVia(prisma, (tx) => tx.decision.deleteMany({ where }));
+  await wipeDecisionsVia(prisma, async (tx) => {
+    // CHILD-FIRST, and SCOPED to the decisions this reset actually targets. The three 4d chain
+    // facts hold `ON DELETE NO ACTION` composite FKs to `Decision`, so their rows would block the
+    // parent's deletion; an unscoped `deleteMany({})` would clear another parallel suite's rows
+    // in the shared database, which is the pollution class these fixtures exist to avoid.
+    const targets = await tx.decision.findMany({ where, select: { id: true } });
+    const decisionId = { in: targets.map((d) => d.id) };
+    if (targets.length > 0) {
+      await tx.decisionStrandedResolution.deleteMany({ where: { decisionId } });
+      await tx.decisionCountersign.deleteMany({ where: { decisionId } });
+      await tx.decisionForward.deleteMany({ where: { decisionId } });
+    }
+    return tx.decision.deleteMany({ where });
+  });
 }
 
 /** The same sanctioned bypass for a reset that is not a plain `decision.deleteMany` — a TRUNCATE,
@@ -158,6 +197,17 @@ export async function wipeDecisionsVia(
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await tx.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"');
+    // Phase 6 unit 4d-i — the three chain FACTS hold same-project composite FKs to `Decision`
+    // with `ON DELETE NO ACTION`, so a scenario that created one could never tear its decision
+    // down: a restrictive FK blocks the parent's deletion and a cascading one would meet the
+    // fact's own DELETE seal. They are therefore deleted CHILD-FIRST inside this same
+    // transaction, under their row seals disabled by name for that reset only (#561's review
+    // round 2, finding 9). Dark today — nothing writes them until 4d-ii — so these deletes clear
+    // nothing yet; the protocol exists from the unit that installs the seals, not from the one
+    // that first trips over them.
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionForward" DISABLE TRIGGER "DecisionForward_t4d_append_only"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionCountersign" DISABLE TRIGGER "DecisionCountersign_t4d_append_only"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionStrandedResolution" DISABLE TRIGGER "DecisionStrandedResolution_t4d_append_only"');
     await tx.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_evidence_no_delete"');
     await tx.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_no_truncate"');
     // Phase 6 task 4b — the published-record delete seal and the widened published-parent
@@ -169,6 +219,9 @@ export async function wipeDecisionsVia(
     await tx.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b2_record_no_delete"');
     await tx.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_no_truncate"');
     await tx.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_evidence_no_delete"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionStrandedResolution" ENABLE TRIGGER "DecisionStrandedResolution_t4d_append_only"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionCountersign" ENABLE TRIGGER "DecisionCountersign_t4d_append_only"');
+    await tx.$executeRawUnsafe('ALTER TABLE "DecisionForward" ENABLE TRIGGER "DecisionForward_t4d_append_only"');
     await tx.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"');
   }, { timeout: 60_000, maxWait: 30_000 });
 }
@@ -182,7 +235,7 @@ type TxClient = Parameters<Parameters<PrismaService['$transaction']>[0]>[0];
  *  arm re-validates the holder's standing — the project must hold an active member of the
  *  decision's decider role, `client` by default.) Returns the published row. */
 export async function seedPublishedDecision(
-  prisma: PrismaService,
+  prisma: PrismaService | Prisma.TransactionClient,
   data: { id: string } & Record<string, unknown>,
   options?: Array<Record<string, unknown>>,
 ): Promise<{ id: string }> {
@@ -190,13 +243,22 @@ export async function seedPublishedDecision(
     { label: 'Option A', optionKey: 'a', material: 'Granite', delta: 0, swatch: 'sw1', recommended: true, order: 0 },
     { label: 'Option B', optionKey: 'b', material: 'Quartz', delta: 20000, swatch: 'sw2', recommended: false, order: 1 },
   ];
-  return prisma.$transaction(async (tx) => {
+  const body = async (tx: Prisma.TransactionClient): Promise<{ id: string }> => {
     await tx.decision.create({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       data: { ...(data as any), publishedAt: null, options: { createMany: { data: opts as any } } },
     });
     return tx.decision.update({ where: { id: data.id }, data: { publishedAt: new Date() } });
-  });
+  };
+  // JOINS a transaction it is handed, opens one when it is not (#582's review round 22, finding
+  // 1). The create-then-publish pair must be atomic — the round-9 zero-option floor is DEFERRED
+  // and a publish committed on its own would be judged without its options — and since round 22
+  // the legacy-audit bypass IS a transaction, so a caller inside one has no `$transaction` to
+  // give. PostgreSQL has no nested transactions to open here anyway: a second one would be a
+  // second connection, outside the bypass, with the seals still on.
+  return '$transaction' in prisma
+    ? prisma.$transaction(body)
+    : body(prisma);
 }
 
 /**
@@ -225,9 +287,18 @@ export async function plantLegacyApprovalRevision(
   prisma: PrismaService,
   data: { id: string; projectId: string; decisionId: string; version: number; optionKey: string; approvedById?: string | null; onBehalfOf?: string | null },
 ): Promise<void> {
+  // Phase 6 unit 4d-i, #582 round 19, finding 2 — TWO names now. A legacy revision is born
+  // FINALIZED beside a decision nobody is touching, and `DecisionApprovalRevision_t4d_birth_paired`
+  // refuses exactly that shape from this unit on, because it is also the shape a forged no-chain
+  // approval takes. The import declares itself the way it already declares itself for the 4c
+  // provenance seal: by name, guarded on the trigger existing, so the helper works on databases
+  // migrated to any point in the series.
   const toggle = (action: 'DISABLE' | 'ENABLE'): string =>
-    `DO $do$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionApprovalRevision_t4c_provenance') THEN `
-    + `EXECUTE 'ALTER TABLE "DecisionApprovalRevision" ${action} TRIGGER "DecisionApprovalRevision_t4c_provenance"'; END IF; END $do$`;
+    ['DecisionApprovalRevision_t4c_provenance', 'DecisionApprovalRevision_t4d_birth_paired']
+      .map((t) => `IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = '${t}') THEN `
+        + `EXECUTE 'ALTER TABLE "DecisionApprovalRevision" ${action} TRIGGER "${t}"'; END IF;`)
+      .join(' ')
+      .replace(/^/, 'DO $do$ BEGIN ') + ' END $do$';
   await prisma.$transaction([
     prisma.$executeRawUnsafe(toggle('DISABLE')),
     prisma.decisionApprovalRevision.create({
@@ -237,6 +308,215 @@ export async function plantLegacyApprovalRevision(
         approvedById: data.approvedById ?? null, onBehalfOf: data.onBehalfOf ?? null,
       },
     }),
+    // THE DEFERRED QUEUE IS FLUSHED BEFORE THE SEAL GOES BACK ON (#582 round 10).
+    //
+    // PostgreSQL refuses `ALTER TABLE` while the table carries pending trigger events, and 4d-i's
+    // `DecisionApprovalRevision_t4d_birth_paired` is a DEFERRED constraint trigger on INSERT — so
+    // from that unit onward the plant above queues an event and the re-enable below fails with
+    // 55006. `reset-list-closure.test.ts` hit the same rule when it planted the two fact rows and
+    // solved it the same way. Flushing here also means the birth pairing actually JUDGES the
+    // planted row rather than being deferred past this transaction's end: a legacy row is born
+    // `finalized = true` (the column's default) and is the only birth in its transaction, so it
+    // passes — which is the right answer and one this fixture should be made to hear.
+    prisma.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE'),
     prisma.$executeRawUnsafe(toggle('ENABLE')),
   ]);
+}
+
+/**
+ * Phase 6 unit 4d-i — plant a raw `DomainEvent` the way `emitEvent` does: allocate and insert in
+ * ONE transaction.
+ *
+ * `DomainEvent_t4d_envelope` requires an event to sit at `ProjectEventStream.nextPosition - 1` of
+ * a stream row THIS TRANSACTION moved (§A.2). That is the increment-then-insert protocol
+ * `emitEvent` follows, and it is what makes allocations and events one-to-one: a writer that
+ * skips the increment lands on `nextPosition` and is refused; one that increments once and
+ * inserts twice has its second insert refused; and the deferred converse refuses an increment
+ * whose position no event took.
+ *
+ * So a probe that needs a raw row cannot choose a position, and cannot allocate in one statement
+ * and insert in another — the earlier version of this helper did exactly that, and it only ever
+ * worked because the seal was not yet asking. `columns`/`values` are appended to the fixed
+ * envelope so an arm can add `actorRole` or an explicit `eventId`.
+ *
+ * It also COPIES THE PERSISTED CATALOG'S INTENT for `effectKey` (§A.2 (b), the shape this
+ * helper was specified with; #582 round 2, finding 1). The envelope seal now resolves
+ * `dispatchIntent.(coverageVersion, effectKey)` in `ExternalEffectCatalog` and compares the
+ * event type and the invalidation flag, so a plant with no intent is refused — correctly, and
+ * for a reason that has nothing to do with what most arms are probing. The default key is
+ * `decision.drafted`: it invalidates nothing, may not push and is not `pairingRequired`, so a
+ * bare plant owes no push and no pairing claim. An arm that needs another key names it; an arm
+ * that wants to probe the intent arm itself passes its own `"dispatchIntent"` column, which is
+ * left untouched.
+ *
+ * Returns the position the plant consumed. A legacy-SHAPE plant — a pre-4d row that by
+ * construction cannot satisfy these seals — uses `plantLegacyEvent` instead, which declares a
+ * NAMED bypass.
+ */
+export async function insertRawEvent(
+  prisma: PrismaService,
+  spec: {
+    projectId: string;
+    organizationId: string;
+    eventId: string;
+    eventType?: string;
+    entityType?: string;
+    entityId?: string;
+    /** the catalog key whose PERSISTED intent this plant copies. Defaults to `decision.drafted`
+     *  — no invalidation, no push, no pairing claim owed. Ignored when the caller supplies its
+     *  own `"dispatchIntent"` column. */
+    effectKey?: string;
+    /** extra column names, already quoted, e.g. `"actorRole"` */
+    columns?: string[];
+    /** matching SQL value expressions, e.g. `'pmc'` */
+    values?: string[];
+  },
+): Promise<number> {
+  const ownIntent = (spec.columns ?? []).some((c) => c.includes('dispatchIntent'));
+  const effectKey = spec.effectKey ?? 'decision.drafted';
+  const columns = [...(spec.columns ?? [])];
+  const values = [...(spec.values ?? [])];
+  return prisma.$transaction(async (tx) => {
+    if (!ownIntent) {
+      // THIS RELEASE's definition of the key, named by version rather than ranked (#582's review
+      // round 8, finding 3). Two generations of every key now coexist from the moment 4d-i
+      // commits — the one this source computes and the outgoing one a still-serving process
+      // emits — so "pick a row for the key" is no longer a question with one answer. The previous
+      // form ordered by `coverageVersion DESC` and called the winner the newest, but a coverage
+      // version is a SHA-256: sorting it lexicographically ranks nothing, and the row it happened
+      // to return was decided by which hash sorted higher. A plant stands in for a CURRENT
+      // writer, so it names the version a current writer computes.
+      const cat = await tx.$queryRawUnsafe<Array<{ coverageVersion: string; eventType: string; invalidate: boolean }>>(
+        `SELECT "coverageVersion","eventType","invalidate" FROM "ExternalEffectCatalog"
+          WHERE "effectKey" = $1 AND "coverageVersion" = $2 AND "retiredAt" IS NULL`,
+        effectKey,
+        effectCoverageVersion(),
+      );
+      const row = cat[0];
+      if (!row) throw new Error(`insertRawEvent: no unretired ExternalEffectCatalog row for '${effectKey}' at coverage ${effectCoverageVersion()}`);
+      columns.push('"dispatchIntent"');
+      values.push(
+        `'${JSON.stringify({ effectKey, coverageVersion: row.coverageVersion, invalidate: row.invalidate })}'::jsonb`,
+      );
+      // the seal requires the event's type to equal the catalog row's, so the plant takes it
+      // from the row rather than from a caller that did not name one.
+      spec = { ...spec, eventType: spec.eventType ?? row.eventType };
+    }
+    const cols = columns.length > 0 ? `,${columns.join(',')}` : '';
+    const vals = values.length > 0 ? `,${values.join(',')}` : '';
+    const rows = await tx.$queryRawUnsafe<Array<{ at: bigint }>>(
+      `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1
+        WHERE "projectId" = $1 RETURNING "nextPosition" - 1 AS "at"`,
+      spec.projectId,
+    );
+    const at = Number(rows[0]!.at);
+    await tx.$executeRawUnsafe(
+      `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId"${cols})`
+      + ` VALUES ('${spec.eventId}','${spec.eventType ?? 'x'}',1,'${spec.organizationId}','${spec.projectId}',${at},'system','system:seed','${spec.entityType ?? 'Decision'}','${spec.entityId ?? 'x'}'${vals})`,
+    );
+    return at;
+  });
+}
+
+/**
+ * Phase 6 unit 4d-i — the NAMED BYPASS for a LEGACY-SHAPE raw event plant.
+ *
+ * Some probes need a position that is part of the sentence: a pre-cutover row that must sit
+ * BEFORE a later one, two deliveries whose relative order is the whole point. Those cannot take
+ * whatever the allocator hands out, and by construction they are pre-4d shapes the 4d seals are
+ * right to refuse. So they declare themselves BY NAME for exactly the plant.
+ *
+ * FOUR names, because the allocator is now sealed as a whole (§A.2): the envelope seal would
+ * refuse the chosen position, the pairing seal would demand a claim, and moving the counter past
+ * the plant afterwards would trip BOTH allocator arms — `_t4d_allocation` admits only `+1`, and
+ * `_t4d_allocation_bound` requires every increment to carry its own event. A legacy plant has
+ * neither, so the counter is set directly, inside the same bypass, and every seal goes back on in
+ * `finally`. The same contract `scripts/upgrade-proof.sh` uses for its legacy plants.
+ *
+ * Guarded on the triggers' existence, because a suite may run against an earlier migration point.
+ */
+export async function plantLegacyEvent<T>(
+  prisma: PrismaService,
+  projectId: string,
+  highestPosition: number,
+  plant: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  const NAMES: Array<[table: string, trigger: string]> = [
+    ['DomainEvent', 'DomainEvent_t4d_envelope'],
+    ['DomainEvent', 'DomainEvent_t4d_pairing_claimed'],
+    ['ProjectEventStream', 'ProjectEventStream_t4d_allocation'],
+    ['ProjectEventStream', 'ProjectEventStream_t4d_allocation_bound'],
+  ];
+  const toggle = (action: 'DISABLE' | 'ENABLE'): string =>
+    'DO $do$ BEGIN '
+    + NAMES.map(([table, trigger]) =>
+        `IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = '${trigger}') THEN `
+        + `EXECUTE 'ALTER TABLE "${table}" ${action} TRIGGER "${trigger}"'; END IF; `).join('')
+    + 'END $do$';
+  // ONE INTERACTIVE TRANSACTION (#582's review round 22, finding 1) — and this helper is the
+  // reason round 18's finding 5 is worth re-reading. That round fixed `wipeDecisionEvents` and
+  // wrote an inventory into its comment claiming every other bypass this unit added a `_t4d_`
+  // name to already held the property. The inventory was NOT EXHAUSTIVE: it named the arrays and
+  // the guarded `DO $$` blocks and omitted THIS helper and `plantLegacyDecisionAudit`, which are
+  // exactly that kind of bypass and held nothing. A list asserted to be complete is worse than no
+  // list, because the next reader stops looking — the same defect #572's round 4, finding 3
+  // recorded against a synthesis list of mine.
+  //
+  // The hazard is round 18's, unchanged: `ALTER TABLE` takes ACCESS EXCLUSIVE and COMMITS IT AWAY
+  // at the end of each statement, so between the disable and the enable these four seals are off
+  // for every session on the shared integration database, and a terminated process leaves them
+  // off permanently — `finally` does not run. Inside one transaction the DDL is transactional, a
+  // rollback restores the seals, and the lock is held to commit so a parallel probe BLOCKS rather
+  // than observing an unsealed ledger. A `plant` that THROWS therefore rolls the whole bypass
+  // back, which is the shape the expected-refusal arms want anyway.
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(toggle('DISABLE'));
+    const out = await plant(tx);
+    // the counter is set PAST the hand-chosen positions, so the allocator is never left behind its
+    // own stream once the seals go back on. Conditional: a counter already ahead is left alone.
+    await tx.$executeRawUnsafe(
+      `UPDATE "ProjectEventStream" SET "nextPosition" = $2::bigint + 1
+        WHERE "projectId" = $1 AND "nextPosition" < $2::bigint + 1`,
+      projectId,
+      highestPosition,
+    );
+    await tx.$executeRawUnsafe(toggle('ENABLE'));
+    return out;
+  }, { timeout: 60_000, maxWait: 30_000 });
+}
+
+/**
+ * Phase 6 unit 4d-i — run a HISTORICAL decision plant with the correspondence seal named off.
+ *
+ * `DecisionEvent_t4d_correspondence` is the WEAK converse of §A.3 obligation 7: an `approved`
+ * audit row on a decision that COMMITTED `approved` owes a `decision.approved` event in the same
+ * transaction. Every delivered writer satisfies it — `decisions.approve` inserts the audit row
+ * and emits in one transaction. A FIXTURE that fabricates an already-approved decision does not,
+ * and cannot: it is standing in for an approval that happened before this database existed, and
+ * the trigger is right to refuse it, because it cannot tell a simulated import from a forgery.
+ *
+ * So the fixture declares itself, by name, for exactly that plant — the same contract
+ * `plantLegacyApprovalRevision` and `sanctionedReset` use, and for the same reason: the bypass is
+ * the sanctioned path, and naming it is what keeps it visible.
+ *
+ * The seal is DEFERRED, so the disable must be COMMITTED before the plant's own transaction
+ * opens (a trigger disabled at INSERT time queues no commit-time firing). It is re-enabled in
+ * `finally`, so no failing plant leaves the seal off for a later probe. Guarded on the trigger's
+ * existence, because a suite may run against a database migrated to an earlier point.
+ */
+export async function plantLegacyDecisionAudit<T>(
+  prisma: PrismaService,
+  plant: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  const toggle = (action: 'DISABLE' | 'ENABLE'): string =>
+    `DO $do$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_t4d_correspondence') THEN `
+    + `EXECUTE 'ALTER TABLE "DecisionEvent" ${action} TRIGGER "DecisionEvent_t4d_correspondence"'; END IF; END $do$`;
+  // ONE INTERACTIVE TRANSACTION, for the reason set out on `plantLegacyEvent` above: this is the
+  // other helper round 18's "every other bypass was checked" inventory left out.
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(toggle('DISABLE'));
+    const out = await plant(tx);
+    await tx.$executeRawUnsafe(toggle('ENABLE'));
+    return out;
+  }, { timeout: 60_000, maxWait: 30_000 });
 }

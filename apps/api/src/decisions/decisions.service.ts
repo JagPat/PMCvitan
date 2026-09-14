@@ -221,7 +221,9 @@ export class DecisionsService {
         await recordAudit(tx, { projectId, actor, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id });
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: input.publish ? 'decision.published' : 'decision.drafted', entityType: 'Decision', entityId: id, payload: { title: input.title },
-          effectKey: input.publish ? 'decision.published' : 'decision.drafted',
+          // #582 round 18, finding 1 — the RECORD arm has its own key. The obligation is a
+          // property of the branch, and the branch is already decided here.
+          effectKey: input.publish ? (record ? 'decision.published.record' : 'decision.published') : 'decision.drafted',
           // A one-step ISSUE carries the approval-demand push AT THE DECIDER (§A.3): the catalog
           // names the role CEILING; the persisted intent narrows to the actual decider — the
           // named member's USER for `member`, the role audience for `client`/`pmc`, and NOBODY
@@ -333,7 +335,7 @@ export class DecisionsService {
         await recordAudit(tx, { projectId, actor, action: 'decision.publish', entity: 'Decision', entityId: decisionId });
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: d.title },
-          effectKey: 'decision.published',
+          effectKey: record ? 'decision.published.record' : 'decision.published',   // #582 round 18, finding 1
           // §A.3: the approval demand pushes AT THE DECIDER; a record pushes at NOBODY (there
           // is nothing to approve — the bell notice above is the announcement).
           dispatch: record
@@ -858,7 +860,14 @@ export class DecisionsService {
           });
           if (count === 0) throw new ConflictException('The decision changed while requesting — reload and retry');
           await tx.changeRequest.create({
-            data: { decisionId, reason: input.reason, costImpact: input.costImpact, timeImpactDays: input.timeImpactDays, status: 'open', requestedById: actor.actorId },
+            // Phase 6 unit 4d-i — `projectId` became NOT NULL when the row joined the uniform
+            // seal contract (§A.3 obligation 5: every reference project-bound through the
+            // child's own column). The migration's BEFORE INSERT trigger fills it from the
+            // row's decision for the PREVIOUS RELEASE, which never names it and must keep
+            // working through the drain; a writer compiled against the new client names it
+            // directly. Same row, same value, no behaviour change — the project is the one this
+            // command already holds.
+            data: { projectId, decisionId, reason: input.reason, costImpact: input.costImpact, timeImpactDays: input.timeImpactDays, status: 'open', requestedById: actor.actorId },
           });
           await tx.decisionEvent.create({ data: { decisionId, type: 'change_requested', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: input } });
           await recordAudit(tx, { projectId, actor, action: 'decision.change', entity: 'Decision', entityId: decisionId });
