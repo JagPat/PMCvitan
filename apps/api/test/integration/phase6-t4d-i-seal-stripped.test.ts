@@ -6322,4 +6322,189 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       + 'audit is a count taken once; it says nothing about the window that opens the moment '
       + 'the migration commits.').toEqual([]);
   }, 900_000);
+
+  /**
+   * #582's correction packet, item 1 — THE LOCK POPULATION IS MEASURED, NOT READ.
+   *
+   * The round-36 arm above derives its population from the file's own `ALTER TABLE`,
+   * `DROP TRIGGER … ON` and `CREATE TRIGGER … ON` text, and that is the shape this unit has now
+   * produced four instances of: an oracle that discovers its population by a regex over source I
+   * wrote inherits my blind spot exactly, and certifies precisely the constructs I did not think
+   * of. Round 34's adoption sites, round 36's lock population, round 36's stage reasoning — and
+   * here a THIRD construct that takes a relation lock, which no `ALTER TABLE`/`CREATE TRIGGER`
+   * pattern can see: `ADD CONSTRAINT … FOREIGN KEY … REFERENCES t` takes `ShareRowExclusive` on
+   * the REFERENCED table as well as on the constrained one. `"CommandExecution"` and `"Org"`
+   * (registers) and `"CommandExecution"` and `"User"` (decisions) were therefore acquired
+   * mid-file, while the transaction already held everything above them — the AB-BA shape the
+   * all-or-nothing window exists to remove, through a door the oracle could not enumerate.
+   *
+   * So this arm asks POSTGRESQL for the population instead of asking the file. Each half is
+   * applied to a scratch database with its acquisition window REMOVED and a census of `pg_locks`
+   * in place of its `COMMIT`, and the set the backend actually holds must EQUAL the set the
+   * window declares. Which relations count as PRE-EXISTING is measured too — a temp table of
+   * `pg_class` oids taken at `BEGIN` — so not one member of either side of the comparison comes
+   * from a pattern over prose. The only thing read out of the migration is the `LOCK TABLE`
+   * statement, which is the subject under test.
+   *
+   * EQUALITY IN BOTH DIRECTIONS is deliberate. A gap is the defect above. A surplus is the lazy
+   * fix — a table this half never touches, locked ACCESS EXCLUSIVE to quiet an oracle, is real
+   * contention bought with nothing — and it fails here too.
+   */
+  it("round 37: each half's declared lock set EQUALS what PostgreSQL actually grants it", () => {
+    const MARK = 't4d-lock-population=';
+    const CENSUS = `SELECT '${MARK}' || coalesce(string_agg(DISTINCT c.relname, ','), '')
+        FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+       WHERE l.locktype = 'relation' AND l.granted AND l.pid = pg_backend_pid()
+         AND l.mode IN ('ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock')
+         AND c.relkind IN ('r', 'p') AND c.relnamespace = 'public'::regnamespace
+         AND EXISTS (SELECT 1 FROM _t4d_pre p WHERE p.oid = c.oid);`;
+
+    /** the half with its window removed, its pre-existing relations recorded, and a census
+     *  standing in for its COMMIT — so the locks are read while the transaction still holds them */
+    const windowless = (file: string): string => {
+      const raw = readFileSync(file, 'utf8');
+      const cut = raw.replace(/DO \$t4d_window\$[\s\S]*?END \$t4d_window\$;/,
+        '-- [the acquisition window, removed by the census]');
+      expect(cut.length, 'the acquisition window must be FOUND and removed, or this census '
+        + 'measures the window itself and every table is trivially in it').toBeLessThan(raw.length);
+      expect((cut.match(/^BEGIN;$/gm) ?? []).length,
+        'the half must have exactly one top-level BEGIN for the census to bind to').toBe(1);
+      expect((cut.match(/^COMMIT;$/gm) ?? []).length,
+        'and exactly one top-level COMMIT, which the census replaces').toBe(1);
+      return cut
+        .replace(/^BEGIN;$/m, "BEGIN;\nCREATE TEMP TABLE _t4d_pre AS SELECT oid FROM pg_class WHERE relkind IN ('r','p');")
+        .replace(/^COMMIT;$/m, `${CENSUS}\nROLLBACK;`);
+    };
+
+    /** the set the half DECLARES, read from the one statement under test */
+    const declared = (file: string): string[] => {
+      const sql = readFileSync(file, 'utf8').replace(/^[ \t]*--.*$/gm, '');
+      const stmt = sql.match(/LOCK TABLE[\s\S]*?MODE NOWAIT;/);
+      expect(stmt, 'the half must declare an up-front NOWAIT acquisition').not.toBeNull();
+      return [...new Set([...stmt![0].matchAll(/"([A-Za-z0-9_]+)"/g)].map((m) => m[1]!))].sort();
+    };
+
+    /** the set PostgreSQL GRANTS it, applied over the halves that run before it */
+    const granted = (file: string, label: string, before: readonly string[]): string[] => {
+      psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${RUN_DB}" WITH (FORCE)`]);
+      const made = psql('postgres', ['-c', `CREATE DATABASE "${RUN_DB}" TEMPLATE "${BASE_DB}"`]);
+      expect(made.ok, made.output).toBe(true);
+      for (const earlier of before) {
+        const r = psql(RUN_DB, ['-f', earlier]);
+        expect(r.ok, `the census needs the earlier half applied first:\n${r.output}`).toBe(true);
+      }
+      const path = join(tmp, `census-${label}.sql`);
+      writeFileSync(path, windowless(file));
+      const run = psql(RUN_DB, ['-t', '-A', '-f', path]);
+      expect(run.ok, `the windowless ${label} half must still APPLY, or the census measures `
+        + `nothing:\n${run.output}`).toBe(true);
+      const line = run.output.split('\n').find((l) => l.trim().startsWith(MARK));
+      expect(line, `the ${label} census must report a population:\n${run.output}`).toBeDefined();
+      return line!.trim().slice(MARK.length).split(',').filter(Boolean).sort();
+    };
+
+    for (const [label, file, before] of [
+      ['registers', MIGRATION, []],
+      ['decisions', FACTS, [MIGRATION]],
+    ] as const) {
+      const held = granted(file, label, before);
+      const says = declared(file);
+      expect(held.length, `the ${label} census must find SOME lock, or the half applied without `
+        + 'touching a pre-existing table and this arm proves nothing').toBeGreaterThan(0);
+      expect(held.filter((t) => !says.includes(t)),
+        `PostgreSQL grants the ${label} half a lock on these PRE-EXISTING tables and its window `
+        + 'does not declare them. Each is acquired mid-file, while this transaction already holds '
+        + 'the tables above it — which is the shape the window exists to remove. The census sees '
+        + 'every construct that takes a lock; a pattern over the file sees only the ones I '
+        + 'remembered to write a pattern for.').toEqual([]);
+      expect(says.filter((t) => !held.includes(t)),
+        `the ${label} half declares these tables and never takes a lock on them. An ACCESS `
+        + 'EXCLUSIVE lock on a table this half does not touch is contention bought for nothing, '
+        + 'and it is how a gap gets closed by widening instead of by understanding.').toEqual([]);
+    }
+  }, 900_000);
+
+  /**
+   * #582's correction packet, item 2 — THE DARK WINDOW CLOSES AT A DIFFERENT MOMENT PER TABLE.
+   *
+   * Round 36's finding 3 gave the dark-table emptiness audit a second witness, so a replay over a
+   * 4d-ii database adopts the rows that unit's writers legitimately wrote. One witness for three
+   * tables is still one stage too coarse for `DomainEventPairingClaim`: the six effect keys
+   * 4d-i-b flips to `pairingRequired` are DELIVERED, ordinary-serving types, so the claimants
+   * THIS file installs begin writing the moment that flip lands — a whole unit before 4d-ii ships
+   * a writer. Between 4d-i-b and 4d-ii the table legitimately fills, and a replay in that window
+   * aborts telling the operator to delete correct audit rows.
+   *
+   * The witness is the one the catalog audit above already establishes, so nothing new is
+   * trusted; and the arm drives the two directions that make the narrowing a narrowing. The
+   * audit is a COUNT, so any row stands in for the population — the fixture's own committed
+   * `ss-ev1` is the one used here.
+   */
+  it("round 37: the pairing claims stand down at 4d-i-b, and only they do", () => {
+    const SIX = "'decision.approved','decision.reapproved','decision.change_requested',"
+      + "'decision.change_withdrawn','decision.consultation_requested','decision.consultation_responded'";
+    const SUCCESSOR = `SET session_replication_role = 'replica';
+      INSERT INTO "ExternalEffectCatalog"
+        ("coverageVersion","effectKey","eventType","invalidate","pushRoles","pushFamily",
+         "frozenAudience","requiresPush","audience","pushBody","pairingRequired")
+      SELECT 'b4dib', "effectKey","eventType","invalidate","pushRoles","pushFamily",
+             "frozenAudience","requiresPush","audience","pushBody", "effectKey" IN (${SIX})
+        FROM "ExternalEffectCatalog" WHERE "coverageVersion" = '${COVERAGE}';
+      SET session_replication_role = 'origin';`;
+    /** planted as the CLAIMANT would, not through the front door: the kernel writer gate is not
+     *  the subject here, the audit's stage reasoning is. */
+    const CLAIM = `SET session_replication_role='replica';
+      INSERT INTO "DomainEventPairingClaim" ("projectId","eventId","claimedBy","claimedById")
+        VALUES ('ss-proj','ss-ev1','DecisionFact','ss-dec');
+      SET session_replication_role='origin';`;
+
+    buildRun([]);
+    // the window under test has no 4d-ii writers in it, so the fixture's live lease — which such
+    // a writer is the one to claim — is not part of it, and would abort every replay below on a
+    // different table than the one this arm is about.
+    expect(psql(RUN_DB, ['-c',
+      `SET session_replication_role='replica'; DELETE FROM "ReleaseLease"; SET session_replication_role='origin';`]).ok).toBe(true);
+    expect(applyWhole().ok, 'the plain dark window, all three tables empty, must replay').toBe(true);
+
+    // ── the claim row in the PLAIN dark window: the audit must STILL bite ──────────────────────
+    expect(psql(RUN_DB, ['-c', CLAIM]).ok, 'the claim must plant').toBe(true);
+    const plain = applyWhole();
+    expect(plain.ok, 'before 4d-i-b no sanctioned claimant exists, so a claim row is exactly what '
+      + 'the emptiness audit is for. A stand-down that did not ask WHICH STAGE would have opened '
+      + `that door too, which is why this direction is driven first:\n${plain.output}`).toBe(false);
+    expect(plain.output).toMatch(/phase6 4d-i ABORT/);
+
+    // ── and at 4d-i-b the SAME row is legitimate ──────────────────────────────────────────────
+    expect(psql(RUN_DB, ['-c', SUCCESSOR]).ok, "4d-i-b's generation must plant").toBe(true);
+    const atB = applyWhole();
+    expect(atB.ok, 'the moment 4d-i-b sets `pairingRequired` on those six keys, the claimants '
+      + 'this file installs start writing — one unit before 4d-ii. A replay that aborts here '
+      + `tells the operator to delete audit rows the platform wrote correctly:\n${atB.output}`).toBe(true);
+
+    // ── and ONLY the claims stand down there ──────────────────────────────────────────────────
+    const siblings: Array<[string, string, string]> = [
+      ['MembershipTransition', `SET session_replication_role='replica';
+         INSERT INTO "MembershipTransition"
+           ("id","projectId","membershipId","userId","toRole","toStatus","actorId","actorRole","actorName","sourceCommandId")
+         VALUES ('ss-mt-b','ss-proj','ss-mem-b','ss-user','architect','active','ss-user','pmc','SS User','ss-cmd');
+         SET session_replication_role='origin';`,
+        `DELETE FROM "MembershipTransition" WHERE "id"='ss-mt-b'`],
+      ['ReleaseLease', `SET session_replication_role='replica';
+         INSERT INTO "ReleaseLease" ("instanceId","catalogVersion","release","startedAt","leaseUntil")
+         VALUES ('ss-ghost-b',2,'ss-release',now(),now() + interval '1 hour');
+         SET session_replication_role='origin';`,
+        `DELETE FROM "ReleaseLease" WHERE "instanceId"='ss-ghost-b'`],
+    ];
+    for (const [table, plant, remove] of siblings) {
+      expect(psql(RUN_DB, ['-c', plant]).ok, `the ${table} row must plant`).toBe(true);
+      const r = applyWhole();
+      expect(r.ok, `${table}'s sanctioned writer arrives at 4d-ii, not at 4d-i-b, so a row in it `
+        + 'at this stage is still unvalidated — the narrowing must be to the ONE table whose '
+        + `window closes early, never to the stage:\n${r.output}`).toBe(false);
+      expect(r.output).toMatch(/phase6 4d-i ABORT/);
+      expect(psql(RUN_DB, ['-c',
+        `SET session_replication_role='replica'; ${remove}; SET session_replication_role='origin';`]).ok).toBe(true);
+    }
+    expect(applyWhole().ok, 'and with the siblings gone the 4d-i-b database replays again').toBe(true);
+  }, 900_000);
 });

@@ -59,6 +59,11 @@ BEGIN;
 -- re-runnable. This transaction is then NEVER A WAITING PARTY on these tables, and a deadlock
 -- cycle needs one; no claim about anyone else's lock order is required, so none is made.
 --
+-- AND AN FK REFERENCE IS A THIRD WAY TO TAKE ONE (#582's review round 37). `"User"` is the
+-- sharpest case: the registers half locks it up front and this half did not, while this half adds
+-- an FK referencing it — so this transaction acquired `"User"` mid-file while holding its nine.
+-- `"CommandExecution"` is the same in both halves.
+--
 -- The list is every PRE-EXISTING table this half takes a lock on. Tables this transaction
 -- CREATES cannot be locked before they exist and cannot contend with anyone. The mode is the one
 -- the DDL below takes anyway, so this changes WHEN, never WHAT.
@@ -67,21 +72,23 @@ DECLARE attempts INT := 0;
 BEGIN
   LOOP
     BEGIN
-      LOCK TABLE "Membership",
+      LOCK TABLE "ChangeRequest",
+                 "CommandExecution",
                  "Decision",
-                 "ChangeRequest",
                  "DecisionApprovalRevision",
-                 "DecisionEvent",
                  "DecisionConsultation",
                  "DecisionConsultationResponse",
+                 "DecisionEvent",
+                 "LabourRequirementSpec",
                  "MaterialRequirementSpec",
-                 "LabourRequirementSpec"
+                 "Membership",
+                 "User"
         IN ACCESS EXCLUSIVE MODE NOWAIT;
       EXIT;
     EXCEPTION WHEN lock_not_available THEN
       attempts := attempts + 1;
       IF attempts >= 600 THEN
-        RAISE EXCEPTION 'phase6 4d-i (decisions half): could not obtain the deployment window on the nine pre-existing tables after % attempts — retry the deploy when writer traffic quiets. Nothing has been changed. See docs/RUNBOOK.md §P6T4D.', attempts;
+        RAISE EXCEPTION 'phase6 4d-i (decisions half): could not obtain the deployment window on the eleven pre-existing tables after % attempts — retry the deploy when writer traffic quiets. Nothing has been changed. See docs/RUNBOOK.md §P6T4D.', attempts;
       END IF;
       PERFORM pg_sleep(0.2);
     END;

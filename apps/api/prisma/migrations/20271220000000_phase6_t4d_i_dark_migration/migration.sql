@@ -71,6 +71,17 @@ BEGIN;
 -- never WAITS for one of these tables cannot be a party to a cycle over them, whatever order
 -- anyone else takes.
 --
+-- A THIRD CONSTRUCT TAKES A LOCK (#582's review round 37, the correction packet's item 2).
+-- `ADD CONSTRAINT … FOREIGN KEY … REFERENCES t` takes ShareRowExclusive on the REFERENCED table
+-- as well as on the constrained one — measured, not cited:
+--
+--     child  -> ShareRowExclusiveLock
+--     parent -> ShareRowExclusiveLock
+--
+-- Round 36 derived this list from DDL and triggers alone, so `"CommandExecution"` and `"Org"`
+-- were acquired mid-file while this transaction already held the seven — the AB-BA shape the
+-- window exists to remove, through a door the oracle did not enumerate.
+--
 -- The list is every PRE-EXISTING table this half takes a lock on, derived from its own DDL and
 -- enforced by the round-36 acquisition oracle; the ten tables this file CREATES cannot contend.
 -- The mode is ACCESS EXCLUSIVE because that is what the DDL below takes anyway: this moves WHEN,
@@ -81,9 +92,11 @@ DECLARE attempts INT := 0;
 BEGIN
   LOOP
     BEGIN
-      LOCK TABLE "DomainEvent",
+      LOCK TABLE "CommandExecution",
+                 "DomainEvent",
                  "Membership",
                  "Notification",
+                 "Org",
                  "OrgMembership",
                  "Project",
                  "ProjectEventStream",
@@ -93,7 +106,7 @@ BEGIN
     EXCEPTION WHEN lock_not_available THEN
       attempts := attempts + 1;
       IF attempts >= 600 THEN
-        RAISE EXCEPTION 'phase6 4d-i (registers half): could not obtain the deployment window on the seven pre-existing tables after % attempts — retry the deploy when writer traffic quiets. Nothing has been changed. See docs/RUNBOOK.md §P6T4D.', attempts;
+        RAISE EXCEPTION 'phase6 4d-i (registers half): could not obtain the deployment window on the nine pre-existing tables after % attempts — retry the deploy when writer traffic quiets. Nothing has been changed. See docs/RUNBOOK.md §P6T4D.', attempts;
       END IF;
       PERFORM pg_sleep(0.2);
     END;
@@ -4247,13 +4260,41 @@ CREATE TRIGGER "ExternalEffectCatalog_t4d_no_truncate" BEFORE TRUNCATE ON "Exter
 -- rows and abort a deploy it should wave through. Either witness therefore stands the audit down:
 -- retirement (round 6's finding 1, the gate the zero-count audit takes) or the writers' arrival.
 DO $dark_registers$
-DECLARE v_table TEXT; v_rows BIGINT; v_found TEXT := '';
+DECLARE v_table TEXT; v_rows BIGINT; v_found TEXT := ''; v_4dib BOOLEAN;
 BEGIN
+  -- PER TABLE, BECAUSE THE WINDOW CLOSES AT DIFFERENT MOMENTS (the correction packet's item 1).
+  -- A single `4d-ii` witness is one stage too late for `DomainEventPairingClaim`: the six types
+  -- 4d-i-b flips to `pairingRequired` are DELIVERED, ordinary-serving types, so the claimants
+  -- this file installs start writing the moment that flip lands — as the claimant comment in the
+  -- decisions half says, "the moment 4d-i-b sets `pairingRequired` on that key … the legitimate
+  -- `decisions.effects` transaction writes its event and its audit row". The other two tables
+  -- keep the 4d-ii witness, which is correct for them.
+  --
+  -- The 4d-i-b witness is the one the catalog audit above already establishes — a generation
+  -- carrying the seeded keys and columns with `pairingRequired` true on exactly the plan's six —
+  -- so nothing new is trusted.
+  SELECT EXISTS (
+    SELECT 1 FROM (SELECT DISTINCT x."coverageVersion" AS v FROM "ExternalEffectCatalog" x
+                    WHERE NOT EXISTS (SELECT 1 FROM "_t4d_catalog_seed" t
+                                       WHERE t."coverageVersion" = x."coverageVersion")) g
+     WHERE EXISTS (
+       SELECT 1 FROM "ExternalEffectCatalog" a
+         JOIN "_t4d_catalog_seed" b ON b."effectKey" = a."effectKey"
+        WHERE a."coverageVersion" = g.v
+          AND a."pairingRequired" AND NOT b."pairingRequired"
+          AND a."effectKey" IN ('decision.approved', 'decision.reapproved',
+                                'decision.change_requested', 'decision.change_withdrawn',
+                                'decision.consultation_requested',
+                                'decision.consultation_responded'))
+  ) INTO v_4dib;
+
   IF phase6_t4d_retired_at_start() OR phase6_t4d_ii_installed() THEN
     RAISE NOTICE 'phase6 4d-i: the dark window is CLOSED (retirement marker or 4d-ii writers present) — the dark-table emptiness audit is SKIPPED; these tables legitimately hold what 4d-ii wrote';
   ELSE
     FOREACH v_table IN ARRAY ARRAY['MembershipTransition', 'DomainEventPairingClaim',
                                    'ReleaseLease'] LOOP
+      -- the pairing claims, and ONLY those, also stand down one stage earlier
+      CONTINUE WHEN v_table = 'DomainEventPairingClaim' AND v_4dib;
       EXECUTE format('SELECT count(*) FROM %I', v_table) INTO v_rows;
       IF v_rows > 0 THEN
         v_found := v_found || format('%s%s (%s row(s))', CASE WHEN v_found = '' THEN '' ELSE ', ' END, v_table, v_rows);

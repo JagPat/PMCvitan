@@ -1196,12 +1196,16 @@ applies on top of it.
 ### The deploy stops with `could not obtain the deployment window`
 
 Each half opens by taking, in one all-or-nothing `NOWAIT` acquisition, every pre-existing table it
-will lock — seven in the registers half, nine in the decisions half. The acquisition never WAITS,
-so this migration can never be the blocked party in a deadlock with a serving command; instead it
-retries every 0.2s and, after 600 attempts (about two minutes), **fails closed**:
+will lock — nine in the registers half, eleven in the decisions half. A table is in that set if
+PostgreSQL grants a lock on it, which includes the one an `ADD CONSTRAINT … FOREIGN KEY …
+REFERENCES` takes on the REFERENCED table, not only the one named by an `ALTER TABLE`.
+
+The acquisition never WAITS, so this migration can never be the blocked party in a deadlock with
+a serving command; instead it retries every 0.2s and, after 600 attempts (about two minutes),
+**fails closed**:
 
 ```
-phase6 4d-i (registers half): could not obtain the deployment window on the seven pre-existing
+phase6 4d-i (registers half): could not obtain the deployment window on the nine pre-existing
 tables after 600 attempts — retry the deploy when writer traffic quiets.
 ```
 
