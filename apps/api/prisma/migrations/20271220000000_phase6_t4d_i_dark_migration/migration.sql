@@ -2260,8 +2260,7 @@ BEGIN
   -- `fromStatus` is enough: a non-null source status carries a non-null source role with it. A
   -- NULL source is the ADD's shape and only the add's — the arm below admits it there, because a
   -- membership that did not exist is exactly what an addition begins from.
-  IF c."commandType" = 'members.remove'
-     AND (NEW."toStatus" IS DISTINCT FROM 'removed' OR NEW."fromStatus" IS NULL) THEN
+  IF c."commandType" = 'members.remove' AND (NEW."toStatus" IS DISTINCT FROM 'removed' OR NEW."fromStatus" IS NULL) THEN
     RAISE EXCEPTION
       'phase6 4d-i: MembershipTransition % records membership % moving % → `%`, but cites a `members.remove` receipt — a removal ENDS a standing that EXISTED: it begins from a real membership and lands `removed`. A fact that ends anywhere else was produced by a different command, and one that begins from nothing at all records the removal of a membership there was never anything to remove — either would stand forever as that act authorised by a removal',
       NEW."id", NEW."membershipId", COALESCE(NEW."fromStatus", '<none>'), NEW."toStatus";

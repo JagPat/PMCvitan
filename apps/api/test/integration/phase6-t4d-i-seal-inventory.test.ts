@@ -112,8 +112,13 @@ const INVENTORY: Record<string, string[]> = {
     'Notification_t4d_identity',
     'Notification_t4d_no_truncate',
   ],
-  OrgMembership: ['OrgMembership_t4d_identity', 'OrgMembership_t4d_org_authority',
-    'OrgMembership_t4d_user_standing'],
+  // `OrgMembership_t4d_no_truncate` is the UNCONDITIONAL arm beside the delivered, CONDITIONAL
+  // `OrgMembership_t4b2_no_truncate` (#582 round 37, finding 1): this table is the source
+  // `OrgUserAuthority` and the membership-less `pmc` standings are projected from, and the
+  // delivered seal permits the statement in exactly the window where those projections would
+  // outlive it.
+  OrgMembership: ['OrgMembership_t4d_identity', 'OrgMembership_t4d_no_truncate',
+    'OrgMembership_t4d_org_authority', 'OrgMembership_t4d_user_standing'],
   OrgUserAuthority: ['OrgUserAuthority_t4d_backed', 'OrgUserAuthority_t4d_no_truncate', 'OrgUserAuthority_t4d_writer'],
   Project: ['Project_t4d_deleting', 'Project_t4d_project_org', 'Project_t4d_user_standing'],
   ProjectEventStream: [

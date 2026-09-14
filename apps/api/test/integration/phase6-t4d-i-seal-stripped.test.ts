@@ -1150,6 +1150,12 @@ const COVERED_BY_CLASS: Record<string, string> = {
   // statement-level seal on `DecisionConsultation` — an object this harness has no business
   // stripping. Same function as the arm above; measured there.
   Membership_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
+  // #582 round 37, finding 1 — the OTHER source, and it is here for the same reason `Membership`
+  // is. `TRUNCATE "OrgMembership"` cannot run alone either: the table is referenced by `Org` and
+  // `User` rows this harness does not own, so reaching it needs a CASCADE that meets delivered
+  // seals outside this unit. It is the same `platform_t4d_register_no_truncate` function the arm
+  // above drives, installed by the same loop, and it carries no arm of its own.
+  OrgMembership_t4d_no_truncate: 'ExternalEffectCatalog_t4d_no_truncate',
   RolloutRetirement_t4d_frozen: 'RolloutRetirement_t4d_gate',
   // the frozen/writer pair on a projected register: a DIRECT statement never reaches the freeze,
   // because the writer-depth seal refuses it one trigger earlier. Measured through its writer.
@@ -5768,8 +5774,9 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
    * `pg_get_triggerdef` — the rendering PostgreSQL itself produces, which carries every attribute
    * at once and keeps carrying the ones nobody here has thought of yet.
    *
-   * The arm DISCOVERS the sites from the migration source, so a tenth adoption cannot be added
-   * without either an attack here or a written reason none exists.
+   * The arm DISCOVERS the sites from the migration source, so a further adoption cannot be added
+   * without either an attack here or a written reason none exists. Twelve as of #582 round 37,
+   * which routed the last two reservation doors through the shared verifier.
    */
   it('round 34: every adopted trigger is pinned to its whole definition, and a weakened one aborts', () => {
     const sources = UNIT_FILES.map((f) => readFileSync(f, 'utf8')).join('\n');
@@ -5783,7 +5790,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     const adopted = [...sites, ...viaSpec];
     expect(adopted.length,
       'the adoption sites must be discoverable from the migration source; a regex that matches '
-      + 'nothing would make every assertion below vacuous').toBeGreaterThanOrEqual(9);
+      + 'nothing would make every assertion below vacuous').toBeGreaterThanOrEqual(11);
 
     /**
      * What a weakening looks like for each site, and — where none exists — why. A site with
@@ -5823,6 +5830,25 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       ReleaseLease_t4d_insert_reserved:
         `CREATE TRIGGER "ReleaseLease_t4d_insert_reserved" BEFORE INSERT ON "ReleaseLease"
            FOR EACH ROW WHEN (false) EXECUTE FUNCTION platform_t4d_release_lease_insert_reserved()`,
+      // #582 round 37, finding 2 — the last two reservation doors, which asked the pre-round-34
+      // enabled/function/tgtype triple until this round. Both weakenings below are tgtype 7 with
+      // the right function, so the triple admits each one unremarked; the full-definition pin is
+      // what refuses them.
+      //
+      // `DecisionForward_t4d_reserved` carries no WHEN of its own, so it is weakened the way a
+      // bare reservation always is: a predicate that can never be true, leaving forwarding
+      // writable for the whole dark window behind a door that reports itself sound.
+      DecisionForward_t4d_reserved:
+        `CREATE TRIGGER "DecisionForward_t4d_reserved" BEFORE INSERT ON "DecisionForward"
+           FOR EACH ROW WHEN (false) EXECUTE FUNCTION phase6_t4d_reserved('DecisionForward')`,
+      // `DecisionEvent_t4d_kind_reserved` is the opposite shape: its whole reservation LIVES in
+      // the WHEN clause, so it is weakened by NARROWING rather than by falsifying — one kind kept,
+      // three released. That is the more dangerous of the two, because the door still fires and
+      // still refuses something, and the three kinds it stops refusing are exactly what a weak
+      // correspondence admits.
+      DecisionEvent_t4d_kind_reserved:
+        `CREATE TRIGGER "DecisionEvent_t4d_kind_reserved" BEFORE INSERT ON "DecisionEvent"
+           FOR EACH ROW WHEN (NEW."type" = 'forwarded') EXECUTE FUNCTION phase6_t4d_reserved('DecisionEvent.type = a 4d-only kind')`,
       // statement-level TRUNCATE: no WHEN is permitted and there is no UPDATE to restrict, so
       // tgtype and the function already covered it.
       RolloutRetirement_t4d_no_truncate: null,

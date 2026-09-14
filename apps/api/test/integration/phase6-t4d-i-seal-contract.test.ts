@@ -448,7 +448,11 @@ const REGISTER: Record<string, SealContract> = {
       // #582 round 12, finding 1 — and each arm is the command's WHOLE shape now, not the
       // standing edge it owns. The tokens moved with the rules: an add's SOURCE and a removal's
       // DESTINATION are what round 7's fix left unbound, so they are what the register pins.
-      "'members.remove' AND NEW.\"toStatus\" IS DISTINCT FROM 'removed'",
+      // #582 round 37, finding 3 — the removal arm gained its SOURCE, so the token moved with the
+      // rule. Round 12 gave `add` and `updateRole` both ends and left this arm on the destination
+      // alone, which admitted `(NULL, NULL) -> (engineer, removed)`: the removal of a membership
+      // that never existed, permanent and fully receipted.
+      "'members.remove' AND (NEW.\"toStatus\" IS DISTINCT FROM 'removed' OR NEW.\"fromStatus\" IS NULL)",
       "NEW.\"fromStatus\" IS NOT NULL AND NEW.\"fromStatus\" <> 'removed'",
       // NOT the bare `'members.updateRole'` string: that already appears in the three-command
       // ARRAY above, so it is satisfied by the very body this token exists to reject — the
@@ -815,6 +819,11 @@ const REGISTER: Record<string, SealContract> = {
       'ProjectUserStanding.ProjectUserStanding_t4d_no_truncate': S('T'),
       'ReleaseLease.ReleaseLease_t4d_no_truncate': S('T'),
       'UserIdentity.UserIdentity_t4d_no_truncate': S('T'),
+      // and the two SOURCES the registers are projected FROM. A register outliving its source is
+      // the same defect as a source outliving its register: #582 round 37, finding 1 added
+      // `OrgMembership`, which `OrgUserAuthority` and the membership-less `pmc` standings are
+      // derived from, beside `Membership`, which the counted register mirrors.
+      'OrgMembership.OrgMembership_t4d_no_truncate': S('T'),
     },
     must: ['TRUNCATE'],
   },

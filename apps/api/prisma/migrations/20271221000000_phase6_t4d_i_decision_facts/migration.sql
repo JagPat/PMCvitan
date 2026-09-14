@@ -961,6 +961,13 @@ BEGIN
   -- moves the decision nowhere — the architect's action item silently handed to someone else with
   -- the countersign still pending and nothing recording why.
   --
+  -- THIS SEAL STILL DOES NOT LOOK FOR THE REQUEST, and the register forbids the token that would
+  -- say it does. Round 8 asked the disagreement question here, keyed on the status the decision
+  -- ENDED at, and round 10's finding 2 moved it to `phase6_t4d_disagreement_paired`, where OLD is
+  -- in hand. The arm below asks a different question — not "is the request present?" but "did
+  -- this forward leave the decision in the state only that bundle may move it out of?" — so the
+  -- rule that moved stays moved.
+  --
   -- The status cannot be judged at INSERT: the request may be written after the forward, which is
   -- exactly why the door defers it. It is judged HERE, and the question is the one the bundles
   -- answer rather than a search for the request. EVERY sanctioned way out of `awaiting_countersign`
@@ -971,7 +978,7 @@ BEGIN
   -- therefore in no bundle at all, and that is the whole hole.
   IF d.status = 'awaiting_countersign' THEN
     RAISE EXCEPTION
-      'phase6 4d-i: DecisionForward % re-homes decision %, which is STILL `awaiting_countersign` at commit — that status is the ARCHITECT''s action item and a forward out of it is admitted only as part of the disagreement bundle, which opens a `countersign_rejection` request and lands the decision in `change` (or, for a `returned` stranded resolution, does the same). A hand-off that leaves the decision awaiting a countersignature moves a provisional approval to a new holder with nothing recording why and nothing able to close it',
+      'phase6 4d-i: DecisionForward % re-homes decision %, which is STILL `awaiting_countersign` at commit — that status is the ARCHITECT''s action item and a forward out of it is admitted only as part of the disagreement bundle, which opens the architect''s rejection request and lands the decision in `change` (or, for a `returned` stranded resolution, does the same). A hand-off that leaves the decision awaiting a countersignature moves a provisional approval to a new holder with nothing recording why and nothing able to close it',
       NEW."id", NEW."decisionId";
   END IF;
   RETURN NULL;
