@@ -952,8 +952,8 @@ BEGIN
   -- AND `awaiting_countersign` IS ADMITTED ONLY AS PART OF THE BUNDLE (#582 round 37, finding 4).
   -- The door's own comment above `phase6_t4d_forward_seal` has said since this file was written
   -- that the status is "admitted by the DOOR only when the transaction also carries the
-  -- `countersign_rejection` request … judged at COMMIT by the pairing seal below" — and no seal
-  -- below judged it. The door lists the status among the forwardable three and returns; the arms
+  -- disagreement's open change request … judged at COMMIT by the pairing seal below" — and no
+  -- seal below judged it. The door lists the status among the forwardable three and returns; the arms
   -- above compare only the final HOLDER and count the facts; `phase6_t4d_disagreement_paired`
   -- judges the TRANSITION `awaiting_countersign → change` and returns early when the decision
   -- never leaves `awaiting_countersign`. Between them a receipt-backed direct `decisions.forward`
@@ -971,8 +971,8 @@ BEGIN
   -- The status cannot be judged at INSERT: the request may be written after the forward, which is
   -- exactly why the door defers it. It is judged HERE, and the question is the one the bundles
   -- answer rather than a search for the request. EVERY sanctioned way out of `awaiting_countersign`
-  -- LEAVES it: the reject-back and the forward-on land `change` (and owe their open
-  -- `countersign_rejection` to `phase6_t4d_disagreement_paired`), the `returned` stranded
+  -- LEAVES it: the reject-back and the forward-on land `change` (and owe their open request to
+  -- `phase6_t4d_disagreement_paired`, which is where that question lives), the `returned` stranded
   -- resolution lands `change` under the same demand, and the `completed` one lands `approved`
   -- through the finalizer. A forward whose decision is STILL `awaiting_countersign` at commit is
   -- therefore in no bundle at all, and that is the whole hole.
