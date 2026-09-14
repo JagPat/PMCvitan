@@ -214,16 +214,18 @@ Audit every action target against the 44×44 floor in the same pass.
 > already reaching for it. Round 3 answered that by freezing animation in the test, which stopped
 > the inventory seeing it and changed nothing for the user. `scale()` is now gone from the `vpop`
 > keyframe — `translateY` moves a box without resizing it, so the rise and fade stay and the floor
-> holds from the first frame — and the sweep deliberately does NOT freeze motion, so a future entry
-> animation that shrinks a control fails here instead of hiding. This applies to every `vpop`
+> holds from the first frame. The focused regression now pauses the real entry animation at 1ms
+> before measuring, so a slow test worker cannot miss a shrinking keyframe. Restoring `scale(0.98)`
+> fails at 43.12px; removing it passes. The other surface sweeps run with ordinary motion. This applies to every `vpop`
 > container with controls in it, not only Schedule: the Toast, the Modal and the notification panel
 > were all scaling their own buttons.
 >
-> **And the per-surface sweeps were measuring one dev-only control** (round 4, finding 1). Schedule's
-> and Drawings' own fields live behind dialogs, so those arms measured the TopBar persona `<select>`
-> — present on every screen, dev-only, and enough to make an empty sweep look populated. Each sweep
-> now states how many fields it must find, dev affordances are excluded from the count, and the
-> dialogs that hold the fields are opened.
+> **The per-surface sweeps were measuring only the shared persona control** (round 4, finding 1).
+> Schedule's and Drawings' own fields live behind dialogs, so those arms measured only the TopBar
+> selector. The selector also ships in API-less demo deployments and owes the same field and target
+> floors. It now measures at least 44×44px and participates in the font, target and reachability
+> sweeps. Each surface must still contribute its own minimum field count, excluding the shared
+> selector from that count only; the dialogs holding those fields are opened.
 >
 > **Amendment (2026-09-10, PR #584 review round 5): the deferral is WITHDRAWN and the targets are
 > raised.** Round 2 parked three known sub-floor groups in F-1c as "density decisions" — the

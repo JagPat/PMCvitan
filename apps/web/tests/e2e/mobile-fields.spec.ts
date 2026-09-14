@@ -48,7 +48,7 @@ const TOUCH = 44;
 const SUBPIXEL = 0.1;
 
 /**
- * Every enabled interactive element that is not a dev-only affordance.
+ * Every enabled interactive element, including controls in the demo shell.
  *
  * #584 review round 7, finding 1 — TEXT-ENTRY CONTROLS ARE POINTER TARGETS TOO, and the filter
  * below used to select them only to throw them away. The comment defending that read "a text
@@ -98,7 +98,6 @@ async function sweepActionTargets(page: Page, surface: string): Promise<void> {
   const small = await page.$$eval(INTERACTIVE, (els, { floor, eps }) =>
     (els as HTMLElement[])
       .filter((el) => el.offsetParent !== null)
-      .filter((el) => !el.closest('[data-dev-affordance]'))
       .filter((el) => {
         // a label is a target only when the control it activates has none of its own
         if (el.tagName !== 'LABEL') return true;
@@ -172,7 +171,6 @@ async function sweepReachable(page: Page, surface: string): Promise<void> {
   const out = await page.$$eval(INTERACTIVE, (els, eps) =>
     (els as HTMLElement[])
       .filter((el) => el.offsetParent !== null)
-      .filter((el) => !el.closest('[data-dev-affordance]'))
       .filter((el) => {
         if (el.tagName !== 'LABEL') return true;
         const controls = el.querySelectorAll('input, select, textarea, button');
@@ -213,7 +211,7 @@ async function sweepReachable(page: Page, surface: string): Promise<void> {
 }
 
 /** every control on the page that iOS would zoom for, with its computed size and a locator hint */
-async function visibleFields(page: Page): Promise<Array<{ where: string; size: number; under: boolean }>> {
+async function visibleFields(page: Page): Promise<Array<{ where: string; size: number; under: boolean; shell: boolean }>> {
   return page.$$eval(
     'input, textarea, select',
     (els, floor) => {
@@ -221,12 +219,6 @@ async function visibleFields(page: Page): Promise<Array<{ where: string; size: n
       return els
         .filter((el) => {
           if (el instanceof HTMLInputElement && NO_ZOOM.includes(el.type)) return false;
-          // DEV-ONLY affordances are not part of any surface. The persona switcher is a `<select>`
-          // in the TopBar, so it rides along on EVERY screen — and measuring it is what made the
-          // Schedule and Drawings arms look non-empty while the surfaces' own fields (all of them
-          // behind dialogs) went unmeasured. Counting it would have satisfied the `atLeast` guard
-          // below with the one control the guard exists to look past.
-          if (el.closest('[data-dev-affordance]')) return false;
           // `$$eval` types the node broadly; only an HTMLElement has offsetParent, and only
           // those three tags are selected anyway.
           return el instanceof HTMLElement && el.offsetParent !== null;   // visible only
@@ -235,6 +227,7 @@ async function visibleFields(page: Page): Promise<Array<{ where: string; size: n
           where: `<${el.tagName.toLowerCase()}${(el as HTMLInputElement).type ? ` type=${(el as HTMLInputElement).type}` : ''}`
             + `${el.getAttribute('placeholder') ? ` placeholder="${el.getAttribute('placeholder')}"` : ''}>`,
           size: parseFloat(getComputedStyle(el).fontSize),
+          shell: !!el.closest('[data-testid="mobile-role-switcher"]'),
         }))
         .map((f) => ({ ...f, under: f.size < floor }));
     },
@@ -257,9 +250,11 @@ async function visibleFields(page: Page): Promise<Array<{ where: string; size: n
  */
 async function sweep(page: Page, surface: string, atLeast: number) {
   const all = await visibleFields(page);
+  // Audit shell fields too, but require the surface itself to contribute its promised fields.
+  const surfaceFields = all.filter((field) => !field.shell);
   expect(
-    all.length,
-    `${surface}: this sweep measured ${all.length} fields and was asked for at least ${atLeast}. `
+    surfaceFields.length,
+    `${surface}: this sweep measured ${surfaceFields.length} surface fields and was asked for at least ${atLeast}. `
     + `An empty sweep proves nothing — either the surface stopped rendering the controls this arm `
     + `exists to check, or the arm never reached the state that holds them.`,
   ).toBeGreaterThanOrEqual(atLeast);
@@ -344,7 +339,7 @@ test('the team surface focuses without zooming', async ({ page }) => {
 test('every persona, every surface its navigation reaches, holds the 44px floor', async ({ page }) => {
   await page.goto('/');
   const personas = await page
-    .locator('[data-dev-affordance="role-switcher"] select option')
+    .locator('[data-testid="mobile-role-switcher"] select option')
     .evaluateAll((els) => els.map((e) => (e as HTMLOptionElement).value));
   expect(personas.length, 'the persona switcher must offer the roles this sweep walks').toBeGreaterThan(1);
 
@@ -365,7 +360,7 @@ test('every persona, every surface its navigation reaches, holds the 44px floor'
 
   for (const persona of personas) {
     await page.goto('/');
-    await page.locator('[data-dev-affordance="role-switcher"] select').selectOption(persona);
+    await page.locator('[data-testid="mobile-role-switcher"] select').selectOption(persona);
 
     const tabs = await page
       .locator('[data-testid^="tab-"]')
@@ -461,7 +456,7 @@ test('the states only real data reaches hold the 44px floor too', async ({ page 
   let sawEvidence = false;
 
   for (const persona of ROLES) {
-    await page.locator('[data-dev-affordance="role-switcher"] select').selectOption(persona);
+    await page.locator('[data-testid="mobile-role-switcher"] select').selectOption(persona);
     await seedServerBackedState(page);
 
     const tabs = await page.locator('[data-testid^="tab-"]')
@@ -538,7 +533,7 @@ test('every dialog a surface can open holds the 44px floor', async ({ page }) =>
   // and the floor is a property of a control, not of who is looking at it; the persona sweep
   // above is what covers every role's own surfaces.
   await page.goto('/');
-  await page.locator('[data-dev-affordance="role-switcher"] select').selectOption('pmc');
+  await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('pmc');
   const tabs = await page
     .locator('[data-testid^="tab-"]')
     .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')!).filter((t) => t !== 'tab-more'));
@@ -558,7 +553,7 @@ test('every dialog a surface can open holds the 44px floor', async ({ page }) =>
 
   const openSurface = async (surface: string): Promise<void> => {
     await page.goto('/');
-    await page.locator('[data-dev-affordance="role-switcher"] select').selectOption('pmc');
+    await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('pmc');
     if (surface.startsWith('more-item-')) {
       await page.getByTestId('tab-more').click();
       await page.getByTestId(surface).click();
@@ -581,7 +576,6 @@ test('every dialog a surface can open holds the 44px floor', async ({ page }) =>
       await openSurface(surface);
       const button = page.locator('button:not([disabled])').nth(i);
       if (!(await button.isVisible().catch(() => false))) continue;
-      if (await button.evaluate((el) => !!el.closest('[data-dev-affordance]')).catch(() => true)) continue;
 
       await button.click({ timeout: 1_500 }).catch(() => undefined);
       const dialog = page.locator('[role="dialog"]');
@@ -679,7 +673,7 @@ test('the decision modal holds the floor with a third option, and keeps its cont
  */
 test('the checklist modal holds the floor once a second item exists', async ({ page }) => {
   await page.goto('/');
-  await page.locator('[data-dev-affordance="role-switcher"] select').selectOption('pmc');
+  await page.locator('[data-testid="mobile-role-switcher"] select').selectOption('pmc');
   await page.getByTestId('tab-more').click();
   await page.getByTestId('more-item-inspect-review').click();
 
@@ -711,32 +705,46 @@ test('the checklist modal holds the floor once a second item exists', async ({ p
   await sweepActionTargets(page, 'checklist modal — two items');
 });
 
-/**
- * #584 review round 4, finding 2 — the ENTRY ANIMATION may not shrink a pressed control.
- *
- * This arm exists because the fix it guards is invisible to every other arm here: the Daily Log
- * sweep measures a surface `vpop` does not wrap, so the keyframe could regain its `scale()`
- * tomorrow and this file would stay green. It measures the FIRST frames deliberately — no wait
- * for the animation, no frozen motion — because that is the window in which the defect existed:
- * a row scaled to 0.98 renders its 44×44 edit button at ~43.1×43.1 while the thumb is already
- * moving toward it.
- */
+test('the demo role selector meets the mobile field and target floors', async ({ page }) => {
+  for (const width of [320, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto('/');
+    const selector = page.getByTestId('mobile-role-switcher').getByRole('combobox');
+    await expect(selector).toBeVisible();
+    const measured = await selector.evaluate((el) => {
+      const box = el.getBoundingClientRect();
+      return { width: box.width, height: box.height, font: parseFloat(getComputedStyle(el).fontSize) };
+    });
+    expect(measured.font).toBeGreaterThanOrEqual(FLOOR);
+    expect(Math.min(measured.width, measured.height)).toBeGreaterThanOrEqual(44);
+    await sweepReachable(page, `demo role selector at ${width}px`);
+  }
+});
+
 test('a schedule row\'s controls hold the 44px floor from their first frame', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
+  // Pause before rows mount so a slow worker cannot let the 300ms animation finish.
+  await page.addStyleTag({ content: '[data-testid^="sched-"] { animation-play-state: paused !important; }' });
   await page.getByTestId('tab-site-schedule').click();
-
-  // the first row to render, measured immediately — `vpop` runs for 300ms and we want this
-  // inside that window, so nothing here waits for it to settle.
   const edit = page.locator('[data-testid^="edit-"]').first();
   await expect(edit).toBeVisible();
+  const time = await edit.evaluate(async (el) => {
+    const row = el.closest('[data-testid^="sched-"]');
+    const animation = row?.getAnimations().find((candidate) =>
+      candidate instanceof CSSAnimation && candidate.animationName === 'vpop');
+    if (!animation) throw new Error('expected the schedule row entry animation');
+    animation.pause();
+    await animation.ready;
+    animation.currentTime = 1;
+    return animation.currentTime;
+  });
+  expect(time).toBe(1);
   const box = await edit.boundingBox();
   expect(box, 'the schedule must render at least one row control to measure').not.toBeNull();
   expect(
     Math.min(box!.width, box!.height),
-    `a schedule row control measures ${box!.width}×${box!.height} during its entry animation. `
-    + `A transform on the ROW scales its controls with it, so the target is under the 44px floor `
-    + `exactly while it is arriving under a thumb — the animation may move the box, never resize it.`,
+    `a schedule row control measures ${box!.width}×${box!.height} at 1ms of its entry animation`,
   ).toBeGreaterThanOrEqual(44);
 });
 
@@ -906,12 +914,6 @@ test('the daily log offers no action target below the 44px floor', async ({ page
     const small = await page.$$eval(INTERACTIVE, (els, eps) =>
       els
         .filter((el) => (el as HTMLElement).offsetParent !== null)
-        // DEV-ONLY affordances owe no field floor. The persona switcher renders under `DEV_AUTH`,
-        // which is on for the local demo and dev builds and off wherever an API is configured, so
-        // no site user ever presses it — but this suite runs the demo build, where it is on screen.
-        // The exclusion is a marked subtree rather than a narrowed query, so it stays greppable
-        // and anything NEW that appears is swept by default.
-        .filter((el) => !el.closest('[data-dev-affordance]'))
         .map((el) => {
           const r = el.getBoundingClientRect();
           return {

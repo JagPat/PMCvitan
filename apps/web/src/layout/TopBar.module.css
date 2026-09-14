@@ -84,7 +84,7 @@
   background: rgba(237, 231, 218, 0.1);
   border: 1px solid rgba(237, 231, 218, 0.2);
   border-radius: 8px;
-  padding: 4px 8px;
+  padding: 0 8px;
 }
 .viewingAs {
   font-family: var(--font-mono);
@@ -92,6 +92,8 @@
   color: rgba(237, 231, 218, 0.5);
 }
 .select {
+  min-width: 44px;
+  min-height: 44px;
   background: transparent;
   border: none;
   color: var(--sidebar-text);
