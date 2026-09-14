@@ -148,7 +148,7 @@ test('D2: the controller cannot distinguish correction owners', async () => {
 test('O1: the declaration is machine-readable, and every failure mode is named', async () => {
   const { parseCorrectionOwner, CORRECTION_OWNERS } = await ownerModule();
 
-  assert.deepEqual(CORRECTION_OWNERS, ['claude', 'cursor']);
+  assert.deepEqual(CORRECTION_OWNERS, ['claude', 'cursor', 'codex']);
 
   const claude = parseCorrectionOwner('<!-- correction-owner: claude -->');
   assert.equal(claude.state, 'declared');
@@ -164,7 +164,7 @@ test('O1: the declaration is machine-readable, and every failure mode is named',
   assert.equal(parseCorrectionOwner('').owner, null);
   assert.equal(parseCorrectionOwner(undefined).state, 'missing');
 
-  const invalid = parseCorrectionOwner('<!-- correction-owner: codex -->');
+  const invalid = parseCorrectionOwner('<!-- correction-owner: unknown -->');
   assert.equal(invalid.state, 'invalid');
   assert.equal(invalid.owner, null, 'an unknown agent is never routed to');
 
@@ -266,7 +266,7 @@ test('O2: review-scope rejects undeclared ownership before any expensive job', (
   assert.equal(undeclared.allowed, false);
   assert.match(undeclared.detail, /correction-owner/u);
 
-  const invalid = scoped({ declaration: '<!-- correction-owner: codex -->', ref: 'codex/x' });
+  const invalid = scoped({ declaration: '<!-- correction-owner: unknown -->', ref: 'codex/x' });
   assert.equal(invalid.allowed, false, 'an unknown agent is refused');
 
   const contradictory = scoped({
@@ -554,7 +554,7 @@ test('C5: a malformed declaration is told to REPLACE the marker, not add one', a
   assert.match(missing.instruction, /\badd\b/iu, 'nothing there yet: add one');
 
   for (const [label, body, headRef] of [
-    ['unknown agent', '<!-- correction-owner: codex -->', 'codex/x'],
+    ['unknown agent', '<!-- correction-owner: unknown -->', 'codex/x'],
     ['two owners', '<!-- correction-owner: claude -->\n<!-- correction-owner: cursor -->', 'codex/x'],
     ['branch conflict', '<!-- correction-owner: cursor -->', 'claude/x'],
   ]) {

@@ -25,11 +25,15 @@ statement, invariant matrix and review packet required by the active plan. A tas
 not complete until its focused tests and required `pnpm check` pass.
 
 Every PR declares exactly one correction owner in its leading marker block:
-`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`.
-A `claude/**` branch can declare only `claude`. The marker selects an agent type,
+`<!-- correction-owner: claude -->`, `<!-- correction-owner: cursor -->`, or
+`<!-- correction-owner: codex -->`. A `claude/**` branch may transfer from Claude
+to Codex only by changing the owner and adding
+`<!-- correction-transfer: claude->codex -->`; otherwise its owner remains Claude. The marker selects an agent type,
 not a unique session: coordinate one producer on each branch before editing.
 Only the declared owner handles normal correction handoff; do not start a competing
-producer. Codex independently reviews and does not implement its own findings.
+producer. A Codex owner implements but cannot independently review its own work.
+GitHub cannot currently awaken Codex, so Codex-owned corrections remain honestly
+needs-resume until a supported cloud wake mechanism is installed.
 
 When opening or resuming a task-bearing autonomous PR, keep STATUS's `open_pr` and
 `task_state` coherent. Never start the next task while STATUS keeps this task open.
@@ -82,8 +86,15 @@ The two invocation attempts and timeout budgets bound a workflow run; they do no
 limit correction heads or require a replacement. A current-head clean result allows
 the existing exact-SHA squash-merge path within the user's authorization. Explicit
 merge/deploy holds must be respected. The current merge helper does not parse a
-prose hold: that enforcement gap remains a separately identified follow-up, not a
-claim that this consolidation implements a durable hold mechanism.
+prose hold; instead, the durable machine-readable Board authorization below is
+the merge boundary, so prose cannot accidentally be interpreted as authority.
+
+Every merge entrypoint also requires an unedited exact-format authorization comment
+from a login in the trusted default-branch controller's `BOARD_MERGE_AUTHORIZERS`
+repository variable. The comment binds the PR number, current head SHA and current
+base SHA. A later matching trusted revocation, a new head/base, draft state, failed
+gate, edited comment, or empty authority configuration holds the merge. PR bodies,
+labels and implementer-authored metadata are never Board authorization.
 
 No routine human technical approval substitutes for CI or independent review.
 The retained production-drain exception is different: clearing
@@ -94,7 +105,7 @@ This consolidation does not reverse that decision or authorize a production acti
 ## Correction routing and recovery
 
 Naming an owner does not prove a running session. Claude is awakenable through the
-configured subscription integration. Cursor is routed but not awakenable by GitHub;
+configured subscription integration. Cursor and Codex are routed but not awakenable by GitHub;
 report that limitation without claiming no session is running. Invalid ownership
 reports `correction_stalled` with the exact corrective action.
 
@@ -226,6 +237,27 @@ A SHA is evidence only when its origin and relevant contents have been verified.
 | Correction lease and gate recovery | review-policy.mjs / correction-lease.mjs, autonomous-handoff.mjs | autonomous-correction-lease.test.mjs |
 | Current task and post-merge coherence | docs/STATUS.md / autonomous-status-state.mjs | autonomous-status-state.test.mjs; continuation tests |
 | Engineering invariants | Owning product module, SQL constraints and review | Relevant unit, PostgreSQL, migration and browser proofs |
+
+### Claude independent-review shadow boundary
+
+The existing Claude subscription integration responds to GitHub PR conversation
+and can author corrections, but the repository has no documented, tested contract
+that exposes an immutable reviewer completion, actor and exact SHA. A comment,
+mention response, workflow exit code, absence of findings, skipped run or timeout
+therefore cannot become green review evidence. `claude-review-adapter.mjs` is a
+non-authoritative fail-closed boundary only. Activation requires the subscription
+provider to document and verify a GitHub App Check Run named
+`claude-independent-review`, emitted by a dedicated configured App identity, with
+an external id binding PR and SHA and the v1 structured summary validated by the
+adapter. Until a real current-head shadow run proves that contract, the adapter
+does not affect `codex-current-head`, merge eligibility or branch protection.
+
+Rollout is additive: merge this controller under existing Codex review and Board
+authorization; configure the trusted Board actor variable; verify real Claude
+shadow evidence on a current SHA; then install a new required gate before retiring
+`codex-current-head`. Roll back by leaving or removing the future Claude required
+gate while retaining `codex-current-head`; never create an interval with neither
+gate. No workflow here changes branch protection, credentials, deployment, or drain state.
 
 `assessConvergence` and `assessRestructure` are legacy test/metrics models, not live
 closure authority. A test for a legacy model does not make it active policy. A

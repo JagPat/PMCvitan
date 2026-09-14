@@ -11,7 +11,8 @@ const DECLARATION = /<!--\s*correction-owner:\s*([A-Za-z][A-Za-z0-9_-]*)\s*-->/g
 // branch under it declaring another owner contradicts itself. No other prefix
 // implies anything — #349 and #350 are both loop PRs on `codex/**`.
 const CLAUDE_BRANCH_PREFIX = 'claude/';
-const MARKER_HELP = '`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`';
+const MARKER_HELP = '`<!-- correction-owner: claude -->`, `<!-- correction-owner: cursor -->`, or `<!-- correction-owner: codex -->`';
+const CODEX_TRANSFER = /<!--\s*correction-transfer:\s*claude->codex\s*-->/u;
 
 // A body DECLARES in its marker block and DESCRIBES everywhere else.
 //
@@ -105,7 +106,21 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
   }
 
   const ref = typeof headRef === 'string' ? headRef : '';
-  if (ref.startsWith(CLAUDE_BRANCH_PREFIX) && owner !== 'claude') {
+  if (
+    ref.startsWith(CLAUDE_BRANCH_PREFIX)
+    && owner === 'codex'
+    && !CODEX_TRANSFER.test(String(body ?? ''))
+  ) {
+    return {
+      state: 'contradictory',
+      owner: null,
+      declared,
+      detail: `branch \`${ref}\` began as Claude-authored work; transferring it to Codex `
+        + 'requires the explicit `<!-- correction-transfer: claude->codex -->` provenance marker',
+    };
+  }
+
+  if (ref.startsWith(CLAUDE_BRANCH_PREFIX) && !['claude', 'codex'].includes(owner)) {
     return {
       state: 'contradictory',
       owner: null,
@@ -167,7 +182,9 @@ export function correctionOwnerProblem(pullRequest) {
 }
 
 function ownerLabel(owner) {
-  return owner === 'claude' ? 'Claude Code web Auto-fix' : 'The Cursor agent on this branch';
+  if (owner === 'claude') return 'Claude Code web Auto-fix';
+  if (owner === 'codex') return 'The Codex cloud task explicitly transferred this branch';
+  return 'The Cursor agent on this branch';
 }
 
 // What the loop asks the declared owner to do, per reason. The OWNER decision is

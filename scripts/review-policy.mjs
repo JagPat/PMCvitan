@@ -33,7 +33,7 @@ export const MAX_REVIEW_ATTEMPTS = 2;
 export const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 40 * 60_000);
 export const REVIEW_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS ?? 25 * 60_000);
 export const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 15_000);
-export const CORRECTION_OWNERS = ['claude', 'cursor'];
+export const CORRECTION_OWNERS = ['claude', 'cursor', 'codex'];
 export const AWAKENABLE_FROM_GITHUB = new Set(['claude']);
 export const CORRECTION_STALLED = 'correction_stalled';
 // An hourly watchdog reports an unchanged correction after 45-105 minutes.
@@ -45,6 +45,8 @@ export const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
 export const CODEX_GRAPHQL_LOGIN = 'chatgpt-codex-connector';
 export const REQUIRED_CHECKS = [...GATE_CHECKS, ...PRODUCT_CHECKS];
 export const STATUS_CONTEXT = 'codex-current-head';
+export const CLAUDE_SHADOW_CONTEXT = 'claude-independent-review';
+export const BOARD_AUTHORIZATION_MARKER = 'pmcvitan-board-merge-authorization';
 export const ROOT_CAUSE_ADVISORY_AFTER_FINDING_HEADS = 2;
 
 export function requiredChecksForPullRequest(pullRequestNumber) {
