@@ -26,6 +26,10 @@ import { PrismaClient } from '@prisma/client';
 
 /** table → the `_t4d_` triggers 4d-i installs on it. */
 const INVENTORY: Record<string, string[]> = {
+  // #582's review round 40, finding 2 — the transition carrier's door. The record of what a
+  // transition trigger saw moved out of a session setting the CALLER can set and into a table
+  // only a trigger can write; this is that table's one seal.
+  _t4d_tx_transition: ['_t4d_tx_transition_trigger_only'],
   ChangeRequest: ['ChangeRequest_t4d_birth_pair', 'ChangeRequest_t4d_closure_bound',
     'ChangeRequest_t4d_evidence_frozen',
     // #582's review round 26, finding 3 — identity frozen from birth, the rule `Decision` already

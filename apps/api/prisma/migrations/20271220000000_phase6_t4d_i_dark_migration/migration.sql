@@ -293,9 +293,46 @@ END $$;
 --
 --   4d-ii installs `platform_t4d_ii_writers_installed()` alongside its startup writers and their
 --   validation. Until it exists, this unit's dark window is open.
-CREATE OR REPLACE FUNCTION phase6_t4d_ii_installed() RETURNS boolean AS $fn$
-  SELECT to_regprocedure('platform_t4d_ii_writers_installed()') IS NOT NULL;
-$fn$ LANGUAGE sql STABLE;
+-- A NAME IS NOT EVIDENCE EITHER (#582's review round 40, finding 1). The first version of this
+-- witness was `to_regprocedure(...) IS NOT NULL` — the mere EXISTENCE of a same-named function.
+-- That is the marker this file's own doctrine refuses ("A MARKER ALONE IS NOT EVIDENCE", round 5
+-- finding 2), written by the same hand that was applying the doctrine to `RolloutRetirement` four
+-- hundred lines above. Round 36 introduced it and round 38 widened its reach to three more
+-- audits, so a fix of mine enlarged the blast radius of a predicate that violated the rule the
+-- fix was enforcing. A stale stub left by a rolled-back 4d-ii, or a hand-made `SELECT true`,
+-- stood down every dark-table and legacy-shape audit and dropped the lease door.
+--
+-- TWO LEVELS, because the two uses ask different questions.
+--
+--   DECLARED — 4d-ii's witness exists AND SAYS YES. This is what the lease door may consult, and
+--   only that: the door has to open BEFORE the first lease can be written, so a witness that
+--   required a lease would make the first one impossible. Called dynamically because the
+--   function does not exist when this file is written, and a SQL body naming it would not parse.
+CREATE OR REPLACE FUNCTION phase6_t4d_ii_declared() RETURNS boolean LANGUAGE plpgsql STABLE AS $fn$
+DECLARE v BOOLEAN;
+BEGIN
+  IF to_regprocedure('platform_t4d_ii_writers_installed()') IS NULL THEN RETURN FALSE; END IF;
+  EXECUTE 'SELECT platform_t4d_ii_writers_installed()' INTO v;
+  RETURN COALESCE(v, FALSE);
+END $fn$;
+
+--   SERVING — declared AND a process actually claimed a `ReleaseLease`. That register is the
+--   in-database evidence the plan designates for exactly this ("the `ReleaseLease` register every
+--   serving process writes at startup and renews with its compiled consumer-catalog version —
+--   in-database evidence for every drain from 4d-ii on"), and a lease can only exist once the
+--   door above stood down, which needs the declaration. So the audits that ADOPT DATA — the ones
+--   that decide dark rows and 4d columns are legitimate — require proof that the writers RAN,
+--   not merely that something claims they were installed.
+--
+--   What this does NOT close, stated rather than implied: anyone holding DDL on this database can
+--   create the stub, replay this file to drop the door, write a lease and replay again. No
+--   in-database predicate closes that, and none here pretends to. What it closes is the case the
+--   finding names — a stale or no-op marker with no writers behind it — because that leaves the
+--   lease register empty.
+CREATE OR REPLACE FUNCTION phase6_t4d_ii_installed() RETURNS boolean LANGUAGE plpgsql STABLE AS $fn$
+BEGIN
+  RETURN phase6_t4d_ii_declared() AND EXISTS (SELECT 1 FROM "ReleaseLease");
+END $fn$;
 
 -- The ONE reader every conditional statement below shares. Kept as a function rather than an
 -- inline EXISTS so the marker-aware set is greppable and so a later unit changing the predicate
@@ -3891,12 +3928,25 @@ END $$;
 -- The audit has to run BEFORE the seals, or none of it can be acted on. Diagnostic-first and
 -- bounded like its siblings: it names each project and which of the three shapes it is in,
 -- because "some stream is wrong" is not a repair an operator can make.
+-- ON EVERY REPLAY, RETIRED OR NOT (#582's review round 40, finding 4). This audit was gated on
+-- the retirement snapshot like its siblings, and round 38's stage inventory recorded that gate as
+-- CORRECT with the reason "malformed counter shapes no writer creates". That answered the wrong
+-- question. The question an apply-time audit has to answer is not "who creates this shape" but
+-- "can its absence leave damage the statements after it make unrepairable" — and here it can: a
+-- restore that lost a counter row or left a head behind its events is damage no rollout stage
+-- causes and retirement does not heal, while the seals installed immediately below go back on
+-- REGARDLESS of retirement. `platform_t4d_stream_init` then admits a new stream only at 0 and
+-- only for a project holding no events, and the allocation seal admits only OLD + 1, so after
+-- this migration commits the missing counter cannot be created and the wrong head cannot be
+-- reset. Later emits fail and ordered consumers stay stuck at the gap. Retirement retires the
+-- reservation doors; it does not retire the allocator invariant.
+--
+-- Running it always is safe as well as necessary: a healthy database is in none of the three
+-- shapes, retired or not, so the audit is silent unless there is something to repair.
 DO $stream_heads$
 DECLARE v_rows BIGINT; v_sample TEXT;
 BEGIN
-  IF phase6_t4d_retired_at_start() THEN
-    RAISE NOTICE 'phase6 4d-i: RolloutRetirement carries phase6-4d — the stream audit is SKIPPED (this is a replay over a retired database)';
-  ELSE
+  BEGIN
     SELECT count(*), COALESCE(left(string_agg(q.txt, '; ' ORDER BY q.txt), 500), '')
       INTO v_rows, v_sample
       FROM (
@@ -3925,10 +3975,10 @@ BEGIN
 
     IF v_rows > 0 THEN
       RAISE EXCEPTION
-        'phase6 4d-i ABORT: % project event stream(s) are not in the shape the seals below adopt — %. Three shapes, one repair window: a project with NO counter row cannot be given one after this migration commits (`platform_t4d_stream_init` admits a new stream only at 0, and only for a project holding no events), a head that is not one past the last event can never be corrected (the allocation seal admits ONLY `nextPosition` = OLD + 1), and a HOLE in the positions is unreachable by either seal because both judge future writes alone. Repair each named project BEFORE this migration: INSERT the missing counter at the number given, and set each wrong head to one past that project''s highest `DomainEvent."streamPosition"` (0 where it has no events). A HOLE is closed by INSERTING an event at the missing position — the delivered `DomainEvent_append_only` refuses UPDATE and DELETE and admits INSERT, so filling the gap touches no committed position and invalidates no ordered consumer''s checkpoint. Re-numbering the events above the hole instead is an UPDATE of `streamPosition`, which that trigger refuses: it needs the transactional repair in docs/RUNBOOK.md §P6T4D, and it moves every position an ordered consumer has already checkpointed on. On a database that has genuinely run 4d-iii, restore its RolloutRetirement marker instead. See docs/RUNBOOK.md §P6T4D.',
+        'phase6 4d-i ABORT: % project event stream(s) are not in the shape the seals below adopt — %. Three shapes, one repair window: a project with NO counter row cannot be given one after this migration commits (`platform_t4d_stream_init` admits a new stream only at 0, and only for a project holding no events), a head that is not one past the last event can never be corrected (the allocation seal admits ONLY `nextPosition` = OLD + 1), and a HOLE in the positions is unreachable by either seal because both judge future writes alone. Repair each named project BEFORE this migration: INSERT the missing counter at the number given, and set each wrong head to one past that project''s highest `DomainEvent."streamPosition"` (0 where it has no events). A HOLE is closed by INSERTING an event at the missing position — the delivered `DomainEvent_append_only` refuses UPDATE and DELETE and admits INSERT, so filling the gap touches no committed position and invalidates no ordered consumer''s checkpoint. Re-numbering the events above the hole instead is an UPDATE of `streamPosition`, which that trigger refuses: it needs the transactional repair in docs/RUNBOOK.md §P6T4D, and it moves every position an ordered consumer has already checkpointed on. RETIREMENT IS NOT AN ESCAPE FROM THIS ONE: the seals below are reinstalled on every replay, so a retired database in one of these shapes is damaged in exactly the same way and must be repaired the same way. See docs/RUNBOOK.md §P6T4D.',
         v_rows, v_sample;
     END IF;
-  END IF;
+  END;
 END $stream_heads$;
 
 DROP TRIGGER IF EXISTS "ProjectEventStream_t4d_allocation" ON "ProjectEventStream";
@@ -4479,7 +4529,10 @@ END $$;
 DO $release_lease_reservation$
 DECLARE v_bad TEXT;
 BEGIN
-  IF phase6_t4d_retired_at_start() OR phase6_t4d_ii_installed() THEN
+  -- THE DECLARATION, not the serving witness (round 40, finding 1): this door is what stands
+  -- between 4d-ii's writer and its FIRST lease, so requiring a lease here would make the first
+  -- lease unwritable and 4d-ii undeployable. The data audits use the stronger witness.
+  IF phase6_t4d_retired_at_start() OR phase6_t4d_ii_declared() THEN
     -- the sanctioned writer is installed (or the whole unit is retired): the door stands down,
     -- and a replay must not put it back under a process that legitimately claims leases.
     DROP TRIGGER IF EXISTS "ReleaseLease_t4d_insert_reserved" ON "ReleaseLease";

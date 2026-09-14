@@ -2660,14 +2660,16 @@ BEGIN
   -- approval and a third source would not be one.
   IF OLD."status"::text IN ('pending', 'change')
      AND NEW."status"::text IS DISTINCT FROM OLD."status"::text THEN
-    IF NEW."status"::text = 'approved' THEN
-      PERFORM set_config('phase6.t4d_decision_approved',
-        (COALESCE(NULLIF(current_setting('phase6.t4d_decision_approved', true), ''), '[]')::jsonb
-          || to_jsonb(NEW."id"))::text, true);
-    ELSIF NEW."status"::text = 'awaiting_countersign' THEN
-      PERFORM set_config('phase6.t4d_decision_awaiting',
-        (COALESCE(NULLIF(current_setting('phase6.t4d_decision_awaiting', true), ''), '[]')::jsonb
-          || to_jsonb(NEW."id"))::text, true);
+    -- into the trigger-only carrier below, not a session setting (round 40, finding 2). The
+    -- DELETE clears this decision's rows from earlier transactions, so the table holds at most
+    -- one row per (decision, kind) at rest; both writes run at trigger depth and are admitted.
+    IF NEW."status"::text IN ('approved', 'awaiting_countersign') THEN
+      DELETE FROM "_t4d_tx_transition"
+       WHERE "decisionId" = NEW."id" AND "txid" <> txid_current();
+      INSERT INTO "_t4d_tx_transition" ("txid", "decisionId", "kind")
+      VALUES (txid_current(), NEW."id",
+              CASE WHEN NEW."status"::text = 'approved' THEN 'approved' ELSE 'awaiting' END)
+      ON CONFLICT DO NOTHING;
     END IF;
   END IF;
   RETURN NEW;
@@ -2677,16 +2679,55 @@ DROP TRIGGER IF EXISTS "Decision_t4d_approval_transition" ON "Decision";
 CREATE TRIGGER "Decision_t4d_approval_transition" BEFORE UPDATE ON "Decision"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_decision_approved_here();
 
+-- THE CARRIER IS NOT A GUC (#582's review round 40, finding 2). `set_config`/`current_setting`
+-- is a SIDE CHANNEL THE CALLER OWNS: `SET LOCAL phase6.t4d_decision_approved = '["<id>"]'` before
+-- inserting a finalized revision made this report a `pending`/`change` → `approved` transition
+-- that `Decision_t4d_approval_transition` never saw, for a decision that was already approved and
+-- never touched. The end-state check then agreed, the receipt and attribution were otherwise
+-- valid, and the immutable revision advanced the approval-cycle history for an act that did not
+-- happen. `xmin` does not help here: a no-op UPDATE supplies it and fires the transition trigger
+-- on an unchanged status, which records nothing — so the forger sets the GUC either way.
+--
+-- The carrier is now a table only a TRIGGER can write, which is this file's OWN idiom four
+-- hundred lines up: "`pg_trigger_depth() = 1` means the statement was issued DIRECTLY by a
+-- client". A nested INSERT from inside `phase6_t4d_decision_approved_here()` runs its own
+-- trigger at depth 2; a client's direct INSERT runs it at depth 1 and is refused. The row is
+-- keyed by `txid_current()`, so it speaks only for the transaction that wrote it, and the writer
+-- clears that decision's rows from earlier transactions so the table holds at most one row per
+-- (decision, kind) at rest.
+CREATE TABLE IF NOT EXISTS "_t4d_tx_transition" (
+    "txid"       BIGINT NOT NULL,
+    "decisionId" TEXT   NOT NULL,
+    "kind"       TEXT   NOT NULL,
+    PRIMARY KEY ("txid", "decisionId", "kind")
+);
+
+CREATE OR REPLACE FUNCTION phase6_t4d_tx_transition_trigger_only() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF pg_trigger_depth() <= 1 THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: "_t4d_tx_transition" records what a TRIGGER saw — the OLD and NEW images of a transition no later statement can reconstruct — and a client statement is not a witness to it. This table is written by the transition trigger alone; a caller that could write it could report an approval that never happened, which is exactly what replaced the session setting this table supersedes.';
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END $$;
+
+DROP TRIGGER IF EXISTS "_t4d_tx_transition_trigger_only" ON "_t4d_tx_transition";
+CREATE TRIGGER "_t4d_tx_transition_trigger_only"
+  BEFORE INSERT OR UPDATE OR DELETE ON "_t4d_tx_transition"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_tx_transition_trigger_only();
+
 CREATE OR REPLACE FUNCTION phase6_t4d_decision_approved_in_tx(p_decision TEXT) RETURNS BOOLEAN
 LANGUAGE sql STABLE AS $$
-  SELECT COALESCE(NULLIF(current_setting('phase6.t4d_decision_approved', true), ''), '[]')::jsonb
-         ? p_decision;
+  SELECT EXISTS (SELECT 1 FROM "_t4d_tx_transition"
+                  WHERE "txid" = txid_current() AND "decisionId" = p_decision
+                    AND "kind" = 'approved');
 $$;
 
 CREATE OR REPLACE FUNCTION phase6_t4d_decision_awaiting_in_tx(p_decision TEXT) RETURNS BOOLEAN
 LANGUAGE sql STABLE AS $$
-  SELECT COALESCE(NULLIF(current_setting('phase6.t4d_decision_awaiting', true), ''), '[]')::jsonb
-         ? p_decision;
+  SELECT EXISTS (SELECT 1 FROM "_t4d_tx_transition"
+                  WHERE "txid" = txid_current() AND "decisionId" = p_decision
+                    AND "kind" = 'awaiting');
 $$;
 
 CREATE OR REPLACE FUNCTION phase6_t4d_revision_birth_paired() RETURNS TRIGGER LANGUAGE plpgsql AS $$
@@ -3061,8 +3102,8 @@ DECLARE
   v_project  TEXT;
   v_required TEXT[];
   v_events   BIGINT; v_audits BIGINT;
-  v_facts    BIGINT;                     -- #582 round 39 — the withdrawal's act row COUNT, on
-                                         -- the one branch whose table is delivered, not dark
+  v_facts    BIGINT;                     -- #582 rounds 39/40 — the act row COUNT for both
+                                         -- ChangeRequest branches, whose table is delivered
 BEGIN
   SELECT d."status"::text, d."projectId" INTO v_status, v_project
     FROM "Decision" d WHERE d."id" = NEW."decisionId";
@@ -3353,7 +3394,8 @@ BEGIN
     -- `xmin` alone would also match the row this transaction CLOSED; the status separates them
     -- exactly, and each side reads the column its own act wrote.
     v_row := 'the change request this transaction opened';
-    SELECT min(cr."requestedById"), max(cr."requestedById") INTO v_approver, v_actor_hi
+    SELECT count(*), min(cr."requestedById"), max(cr."requestedById")
+      INTO v_facts, v_approver, v_actor_hi
       FROM "ChangeRequest" cr
      WHERE cr."projectId" = v_project AND cr."decisionId" = NEW."decisionId"
        AND cr."status" = 'open'
@@ -3389,17 +3431,25 @@ BEGIN
   -- not found), and `ChangeRequest` can carry that demand because it is a DELIVERED table every
   -- release writes in the same transaction as the audit row, not a dark one waiting for 4d-ii.
   --
-  -- THIS BRANCH AND NOT ITS SIBLING, deliberately. The first draft of this round counted
-  -- `change_requested` too, for symmetry — and symmetry is not evidence. It broke the arm above
-  -- whose subject is the audit/event count, which plants a `change_requested` row with no
-  -- request, and nothing in this round demonstrates a forgery on the opening side: there is only
-  -- ONE opener, and that branch already names its state. Extending a refusal into a branch where
-  -- no harm was shown is a rule change wearing a fix's clothes, which is a habit this unit has
-  -- been caught in before. The opening side keeps the drain's skip until something reaches it.
+  -- BOTH BRANCHES, and round 39 got this wrong (#582's review round 40, finding 3). Round 39
+  -- counted only the withdrawal, reasoning that the opening side has ONE opener and that no
+  -- forgery had been demonstrated there — so extending the refusal would be a rule change
+  -- without evidence. The reasoning was sound and the conclusion was not: the demonstration
+  -- existed and had simply not been attempted. A direct writer targeting a decision already in
+  -- `change` can append ONE catalog-valid `decision.change_requested` event and ONE
+  -- `change_requested` audit row and open NO request; the aggregate yields NULL, the withdrawal-
+  -- only guard passes it through, and both rows are then immutable.
+  --
+  -- WORSE, ROUND 39 PRESERVED AN ARM THAT ENCODED IT. The audit/event count arm above planted
+  -- exactly that bare pair and asserted it COMMITS, and round 39 read that as a constraint on
+  -- the rule instead of as an arm written before the rule existed. An arm whose subject is
+  -- something else is not evidence about this one; it needed its plant corrected, which it now
+  -- has. "No forgery was demonstrated" is a statement about what was tried, never about what is
+  -- reachable — and on this unit the difference has now cost a round.
   --
   -- A historical import is unaffected either way: `plantLegacyDecisionAudit` disables this
   -- trigger outright.
-  IF v_facts = 0 AND NEW."type" = 'change_withdrawn' THEN
+  IF v_facts = 0 THEN
     RAISE EXCEPTION
       'phase6 4d-i: the `%` audit row for decision % has no matching change request written by this transaction — %. The audit register records acts, and a row whose act left no trace in the delivered table it is defined against records something that did not happen; `DecisionEvent_t4d_append_only` is about to make it permanent.',
       NEW."type", NEW."decisionId", v_row;

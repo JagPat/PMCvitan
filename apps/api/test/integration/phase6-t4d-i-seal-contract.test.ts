@@ -128,15 +128,28 @@ const REGISTER: Record<string, SealContract> = {
       + 'deferred birth seal can tell the ACT from the STATE — no predicate over the decision\'s '
       + 'final row can, because the row is identical whether this transaction moved it or found '
       + 'it that way. WHICH moves are legal stays `Decision_t4d_entry_seal`\'s question',
-    plan: '§B.4 both revision births (#582 round 19, finding 2; round 22, finding 3 and its sweep)',
+    plan: '§B.4 both revision births (#582 round 19, finding 2; round 22, finding 3 and its '
+      + 'sweep; round 40, finding 2 moved the carrier)',
     on: { 'Decision.Decision_t4d_approval_transition': B('U') },
     must: [
       // a MOVE, not a state: the status must have CHANGED, and into one of the two parked/final
       // entries the birth seals are about
       'IS DISTINCT FROM', "'approved'", "'awaiting_countersign'",
-      // transaction-local, and a jsonb ARRAY rather than a delimited string — round 20, finding 2
-      'set_config', 'phase6.t4d_decision_approved', 'phase6.t4d_decision_awaiting', 'to_jsonb',
+      // THE CARRIER MOVED (round 40, finding 2). It was `set_config`, and a session setting is a
+      // side channel the CALLER owns: `SET LOCAL phase6.t4d_decision_approved = '["<id>"]'`
+      // reported a transition this trigger never saw. The record now goes into a table only a
+      // trigger can write, keyed by the transaction that wrote it. This register moved with the
+      // rule, which is what its own failure message asked for.
+      '_t4d_tx_transition', 'txid_current', "'approved'", "'awaiting'",
     ],
+  },
+  phase6_t4d_tx_transition_trigger_only: {
+    rule: 'the transition record is written by a TRIGGER and never by a client — it reports what '
+      + 'the trigger saw of OLD and NEW, which no later statement can reconstruct, so a caller '
+      + 'able to write it could report an approval that never happened',
+    plan: '§B.4 the transition carrier; #582 round 40, finding 2',
+    on: { '_t4d_tx_transition._t4d_tx_transition_trigger_only': B('I D U') },
+    must: ['pg_trigger_depth', 'is not a witness'],
   },
   phase6_t4d_change_request_closure_bound: {
     rule: 'the CLOSURE receipt is judged, not merely frozen: a COMPLETED same-transaction receipt '

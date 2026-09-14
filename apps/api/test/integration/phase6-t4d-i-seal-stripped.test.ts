@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { effectCoverageVersion } from '../../src/platform/external-effects';
 import { Prisma } from '@prisma/client';
@@ -1086,6 +1086,12 @@ const STRIPPED_BY_PROBE: Record<string, string> = {
   // planted row to exist before it can show the trap closing behind it.
   ReleaseLease_t4d_insert_reserved:
     'round 36: the dark window admits no ReleaseLease INSERT, and every dark table has a door',
+
+  // #582 round 40, finding 2 — the transition carrier's own door. Stripping it is not the shape
+  // this seal is proved in: the arm drives the FORGERY the session setting allowed and shows the
+  // direct write refused, which is the mechanism.
+  _t4d_tx_transition_trigger_only:
+    'round 40: a session setting the caller owns is not a record of what a trigger saw',
 
   // #582 round 26, finding 3 — stripped by the hand-written round-26 arm rather than by a table
   // entry, because the identity class needs a row PLANTED before the rewrite can be attempted and
@@ -2530,6 +2536,15 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
           FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
          WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.change_requested'
            AND c."coverageVersion" = '${COVERAGE}';
+      -- the OPENING FACT the correspondence now owes (#582 round 40, finding 3). This arm's
+      -- subject is the audit/event count, and its original plant plainly omitted the request —
+      -- which round 39 then read as evidence that no such rule was wanted. The arm keeps its
+      -- subject and stops encoding that gap.
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('ss-cmd-dbl','project','ss-org','ss-proj','ss-user','decisions.requestChange','ss-cmd-dbl-k','ss-cmd-dbl-h','reserved');
+      UPDATE "CommandExecution" SET "status"='succeeded', "completedAt"=now(), "resultRef"='ss-cr-dbl' WHERE "id"='ss-cmd-dbl';
+      INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","sourceCommandId","requestedById","requestedByRole","requestedByName")
+        VALUES ('ss-cr-dbl','ss-proj','ss-dec','the ask',0,2,'open','standard','ss-cmd-dbl','ss-user','pmc','SS User');
       INSERT INTO "DecisionEvent" ("id","decisionId","type","actor") VALUES ('ss-de-1','ss-dec','change_requested','X');
       INSERT INTO "DecisionEvent" ("id","decisionId","type","actor") VALUES ('ss-de-2','ss-dec','change_requested','X');
       COMMIT;
@@ -2551,6 +2566,11 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
           FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
          WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.change_requested'
            AND c."coverageVersion" = '${COVERAGE}';
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('ss-cmd-one','project','ss-org','ss-proj','ss-user','decisions.requestChange','ss-cmd-one-k','ss-cmd-one-h','reserved');
+      UPDATE "CommandExecution" SET "status"='succeeded', "completedAt"=now(), "resultRef"='ss-cr-one' WHERE "id"='ss-cmd-one';
+      INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","sourceCommandId","requestedById","requestedByRole","requestedByName")
+        VALUES ('ss-cr-one','ss-proj','ss-dec','the ask',0,2,'open','standard','ss-cmd-one','ss-user','pmc','SS User');
       INSERT INTO "DecisionEvent" ("id","decisionId","type","actor") VALUES ('ss-de-ok','ss-dec','change_requested','X');
       COMMIT;
     `]);
@@ -4212,6 +4232,15 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       writable: {
       },
     },
+    // #582 round 40, finding 2 — the transition carrier. Its seal fires on every operation
+    // including UPDATE, so the table joins this population; there is nothing a client may write
+    // to any of its three columns at all, which is the whole rule, so the proof is the door
+    // rather than a per-column freeze.
+    _t4d_tx_transition: {
+      proof: 'gate',
+      by: '_t4d_tx_transition_trigger_only',
+      refusal: 'records what a TRIGGER saw',
+    },
     ReleaseLease: {
       proof: 'columns',
       refused: {
@@ -5022,6 +5051,8 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     ProjectRoleStanding: { refused: {}, fillable: {} },
     // every column of ReleaseLease is NOT NULL — there is nothing to fill later.
     ReleaseLease: { refused: {}, fillable: {} },
+    // every column of _t4d_tx_transition is NOT NULL — there is nothing to fill later.
+    _t4d_tx_transition: { refused: {}, fillable: {} },
     // every column of RolloutRetirement is NOT NULL — there is nothing to fill later.
     RolloutRetirement: { refused: {}, fillable: {} },
     // every column of UserIdentity is NOT NULL — there is nothing to fill later.
@@ -6654,19 +6685,32 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
    * three that need the witness are then driven BEHAVIOURALLY against a 4d-ii database.
    */
   const STAGE_VERDICT: Record<string, string> = {
-    // ── needs the writer witness: the data it judges is what 4d-ii legitimately writes ──
+    // ── WITNESS: the data it judges is what 4d-ii legitimately writes, so it consults the writer
+    //    witness as well as the retirement snapshot ──
     dark_registers: 'WITNESS',
     dark_tables: 'WITNESS',
     legacy_shape: 'WITNESS',
     legacy_shape_kernel: 'WITNESS',
-    // ── correctly gated, each for a stated reason ──
-    unsealed_marker: 'its subject is a marker written WITHOUT the seals — the witness would defeat it',
-    ledger_prereq: 'phase-2 raw triggers; stage-independent, and deliberately ungated',
-    stream_heads: 'malformed counter shapes that no writer creates, only a db-push baseline',
-    reserved_rows: 'values reserved until 4d-iii, so a row carrying one is still wrong at 4d-ii',
-    pin: 'a delivered function body, which no rollout stage rewrites',
-    catalog_audit: 'its stage question IS the successor admission; a blanket writer skip would '
-      + 'reopen the foreign-generation door round 6 finding 1 closed',
+    // ── RETIREMENT: gated on the retirement snapshot alone. The question each verdict answers is
+    //    the one #582's round 40, finding 4 taught: could this audit's ABSENCE on a retired
+    //    database leave damage that the statements after it make unrepairable? "No writer creates
+    //    this shape" was the wrong question, and it is what the first version of this map asked
+    //    of `stream_heads` — so each answer below says why the absence is harmless, not who
+    //    would have caused the shape. ──
+    unsealed_marker: 'RETIREMENT: its subject is the marker itself — a genuine retirement is backed '
+      + 'by this file\'s artifacts, so the skip is the definition of retirement, not an exemption',
+    reserved_rows: 'RETIREMENT: after 4d-iii every reserved value is the healthy state; refusing '
+      + 'them would abort a correct replay, and no seal below makes a legitimate value into damage',
+    pin: 'RETIREMENT: the post-retirement body IS the right body (round 13, finding 2); asserting '
+      + 'the window fragment against it would abort a correct replay',
+    catalog_audit: 'RETIREMENT: after 4d-iii a third generation is the healthy state (round 6, '
+      + 'finding 1), indistinguishable by shape from a hand-made one, so the audit has no verdict '
+      + 'to give there — which is different from a verdict it declines to give',
+    // ── UNGATED: runs on every replay, retired or not ──
+    ledger_prereq: 'UNGATED: phase-2 raw triggers, stage-independent, and deliberately so',
+    stream_heads: 'UNGATED: a lost counter row or a head behind its events is restore damage no '
+      + 'stage causes and retirement does not heal, and the allocator seals go back on regardless '
+      + '— after which the repair the audit names is refused (round 40, finding 4)',
   };
 
   it('round 38: every apply-time audit has a stage verdict, and the three that need it have it', () => {
@@ -6696,6 +6740,25 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       + 'consult it. Their window closes when the writers arrive, not when 4d-iii records '
       + 'retirement, and between those units they abort on data the platform wrote correctly.')
       .toEqual([]);
+
+    // AND THE MAP MUST DESCRIBE THE FILE, NOT MY MEMORY OF IT (#582 round 40, finding 4). The
+    // first version of this map recorded `stream_heads` as retirement-gated with a reason, and
+    // nothing here checked that the verdict and the gate agreed — so when the gate was wrong the
+    // map was a second copy of the same mistake. Every verdict now names its gate shape, and the
+    // shape is read from the audit's body.
+    const gated = (body: string) => body.includes('phase6_t4d_retired_at_start()');
+    const disagree = audits
+      .filter(([, tag, body]) => {
+        const v = STAGE_VERDICT[tag]!;
+        if (v === 'WITNESS' || v.startsWith('RETIREMENT:')) return !gated(body);
+        if (v.startsWith('UNGATED:')) return gated(body);
+        return true; // an unknown verdict shape is a disagreement too
+      })
+      .map(([half, tag]) => `${half}:${tag} (${STAGE_VERDICT[tag]!.split(':')[0]})`);
+    expect(disagree, 'these audits\' stage verdicts do not match the gate their body actually '
+      + 'consults. A verdict that says RETIREMENT over an ungated body, or UNGATED over a gated '
+      + 'one, is the map lying about the file — and a map that can lie is how round 38 certified '
+      + 'the gate round 40 removed.').toEqual([]);
   }, 60_000);
 
   it('round 38: a 4d-ii database replays over the data its writers legitimately wrote', () => {
@@ -6818,5 +6881,321 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       + 'is not dark — it has no 4d-ii writer to wait for — so the drain\'s NULL-authority '
       + `exception is not this branch's, and absence must refuse:\n${bare.output}`).toBe(false);
     expect(bare.output).toMatch(/no matching change request written by this transaction/);
+  }, 900_000);
+
+  /**
+   * #582's review round 40, finding 1 — A NAME IS NOT EVIDENCE EITHER.
+   *
+   * Round 36 introduced `phase6_t4d_ii_installed()` as `to_regprocedure('platform_t4d_ii_writers_
+   * installed()') IS NOT NULL` — the EXISTENCE of a same-named function — and round 38 widened it
+   * to three more audits. That is a marker, and this unit's own round 5 doctrine refuses markers
+   * ("A MARKER ALONE IS NOT EVIDENCE"), applied by the same hand to `RolloutRetirement` four
+   * hundred lines above. A stale stub from a rolled-back 4d-ii, or a hand-made `SELECT true`,
+   * stood every dark-table and legacy-shape audit down AND dropped the lease door.
+   *
+   * The witness now has two levels. DECLARED: the function exists and SAYS YES — what the lease
+   * door consults, because the door must open before the first lease can be written. SERVING:
+   * declared AND a `ReleaseLease` row exists — the in-database evidence the plan designates, and
+   * what the audits that ADOPT DATA require. Three edges, one per claim: a declaration with no
+   * lease behind it adopts nothing; a stub that says NO declares nothing; and the door opens on
+   * the declaration alone, so 4d-ii's first lease can get in and turn the declaration into
+   * evidence. The last edge is the one a fix that simply demanded a lease everywhere would break.
+   *
+   * THE INVENTORY, so the class is closed and not just the site: the two files carry exactly ONE
+   * existence-style lookup (`to_regprocedure` / `to_regclass`) outside comments, and it is the
+   * one inside `phase6_t4d_ii_declared()`, where the result is then ASKED rather than trusted.
+   * The unit's other marker-shaped predicate, `phase6_t4d_retired_at_start()`, demands the raw
+   * seal functions beside its marker since round 32. There is no third.
+   */
+  it('round 40: a stub that says the writers are installed does not stand the data audits down', () => {
+    const STUB = (answer: 'true' | 'false') =>
+      `CREATE FUNCTION platform_t4d_ii_writers_installed() RETURNS BOOLEAN LANGUAGE sql AS $$ SELECT ${answer} $$`;
+    /** the fixture's live lease taken back out the way the fixture put it in — beside the door */
+    const NO_LEASE = `SET session_replication_role='replica'; DELETE FROM "ReleaseLease"; SET session_replication_role='origin';`;
+    /** the row 4d-ii's forward writer would leave, planted the way the round-38 arm plants it */
+    const DARK_ROW = `SET session_replication_role='replica';
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('ss-cmd-r40f','project','ss-org','ss-proj','ss-user','decisions.forward','ss-key-r40f','ss-hash-r40f','succeeded');
+      INSERT INTO "DecisionForward"
+        ("id","projectId","decisionId","fromDesignationKind","toDesignationKind","forwardedById","forwardedByRole","forwardedByName","reason","sourceCommandId")
+      VALUES ('ss-fwd-r40','ss-proj','ss-dec','client','pmc','ss-user','pmc','SS User','4d-ii wrote this','ss-cmd-r40f');
+      SET session_replication_role='origin';`;
+    const LEASE = `INSERT INTO "ReleaseLease" ("instanceId","release","catalogVersion","startedAt","leaseUntil")
+                   VALUES ('r40-first','r-40',1,now(),now() + interval '1 hour')`;
+    const door = () => psql(RUN_DB, ['-t', '-A', '-c',
+      `SELECT count(*) FROM pg_trigger WHERE tgname = 'ReleaseLease_t4d_insert_reserved' AND NOT tgisinternal`]).output.trim();
+
+    // ── (i) A DECLARATION WITH NO LEASE BEHIND IT ADOPTS NOTHING ──────────────────────────────
+    buildRun([]);
+    expect(psql(RUN_DB, ['-c', NO_LEASE]).ok, 'the fixture lease must come out').toBe(true);
+    expect(psql(RUN_DB, ['-c', STUB('true')]).ok).toBe(true);
+    expect(psql(RUN_DB, ['-c', DARK_ROW]).ok, 'the dark row must plant').toBe(true);
+    const stub = applyWhole();
+    expect(stub.ok, 'a function that merely EXISTS and says yes, with no process ever having '
+      + 'claimed a lease, is a marker: nothing ran. The dark-fact audit adopted the row on its word '
+      + `and the append-only seal then made it permanent evidence of an act nobody performed:\n${stub.output}`).toBe(false);
+    expect(stub.output).toMatch(/phase6 4d-i ABORT: dark fact table\(s\) already hold rows/);
+
+    // ── (ii) A STUB THAT SAYS NO DECLARES NOTHING — the door stays, and it still refuses ───────
+    // (the fixture lease comes out here too: with the window OPEN, which is what this edge
+    // asserts, the emptiness audit rightly refuses it — the round-36 arms do the same)
+    buildRun([]);
+    expect(psql(RUN_DB, ['-c', NO_LEASE]).ok).toBe(true);
+    expect(psql(RUN_DB, ['-c', STUB('false')]).ok).toBe(true);
+    const no = applyWhole();
+    expect(no.ok, `a witness that answers no is the dark window, unchanged:\n${no.output}`).toBe(true);
+    expect(door(), 'the name existed and the answer was NO — the existence-only witness dropped '
+      + 'the door on the name alone, which is the whole finding in one trigger').toBe('1');
+    const shut = psql(RUN_DB, ['-c', LEASE]);
+    expect(shut.ok, 'and the standing door still refuses the dark-window lease').toBe(false);
+    expect(shut.output).toMatch(/"ReleaseLease" takes no INSERT yet/);
+
+    // ── (iii) THE DOOR OPENS ON THE DECLARATION, because the first lease has to get in ────────
+    buildRun([]);
+    expect(psql(RUN_DB, ['-c', NO_LEASE]).ok).toBe(true);
+    expect(psql(RUN_DB, ['-c', STUB('true')]).ok).toBe(true);
+    const deploy = applyWhole();
+    expect(deploy.ok, '4d-ii deploying: its witness declared, no lease yet, nothing dark written '
+      + `yet — there is nothing to adopt, so the replay is clean:\n${deploy.output}`).toBe(true);
+    expect(door(), 'the door must stand down on the DECLARATION — a door that waited for a lease '
+      + 'would wait forever, because the lease is what it is refusing').toBe('0');
+    expect(psql(RUN_DB, ['-c', LEASE]).ok, 'the first lease is admitted').toBe(true);
+    // and NOW the declaration has evidence behind it: the writers' rows are adopted
+    expect(psql(RUN_DB, ['-c', DARK_ROW]).ok).toBe(true);
+    const serving = applyWhole();
+    expect(serving.ok, 'declared AND serving — a replay over what 4d-ii\'s writers legitimately '
+      + `wrote must re-apply cleanly, as round 38 already requires:\n${serving.output}`).toBe(true);
+
+    // ── THE INVENTORY: one existence lookup in the unit, and it is the one that asks ──────────
+    const lookups: string[] = [];
+    for (const file of UNIT_FILES) {
+      const code = readFileSync(file, 'utf8').replace(/^[ \t]*--.*$/gm, '');
+      for (const m of code.matchAll(/to_reg(?:procedure|class|type|namespace)\s*\(/g)) {
+        const fn = code.slice(0, m.index).match(/CREATE OR REPLACE FUNCTION (\w+)\(/g)?.pop() ?? '<top level>';
+        lookups.push(`${basename(dirname(file))}: ${m[0].trim()} in ${fn}`);
+      }
+    }
+    expect(lookups, 'an existence lookup is a marker; the ONE this unit carries is inside the '
+      + 'declaration witness, whose result is then CALLED rather than trusted. A second one is a '
+      + 'second instance of this finding.').toEqual([
+      '20271220000000_phase6_t4d_i_dark_migration: to_regprocedure( in CREATE OR REPLACE FUNCTION phase6_t4d_ii_declared(',
+    ]);
+  }, 900_000);
+
+  /**
+   * #582's review round 40, finding 2 — A SESSION SETTING IS A SIDE CHANNEL THE CALLER OWNS.
+   *
+   * Round 22 built the transition register so that only the UPDATE itself, holding OLD, could
+   * tell an act from a state — and carried what it saw in `set_config(..., is_local)`. Any
+   * client can write that carrier: `SET LOCAL phase6.t4d_decision_approved = '["<id>"]'` before
+   * inserting a finalized revision made the reader report a `pending`/`change` -> `approved` move
+   * the trigger never saw, for a decision approved in an earlier transaction and never touched.
+   * The end-state check agreed, the receipt was genuine, and the immutable revision advanced the
+   * approval-cycle history 4c reads. `xmin` does not close it: a no-op UPDATE supplies the xmin
+   * and fires the trigger on an unchanged status, which records nothing, so the forger sets the
+   * setting either way. The forgery below does both.
+   *
+   * The carrier is now `_t4d_tx_transition`, a table only a TRIGGER can write — this file's own
+   * `pg_trigger_depth()` idiom: the transition trigger's nested INSERT runs its door at depth 2,
+   * a client's direct write runs it at depth 1 and is refused. The row is keyed by
+   * `txid_current()`, so a row left at rest by an earlier transaction speaks for nobody later.
+   *
+   * Four edges: the forgery is refused; no client statement can write the carrier by any of its
+   * three operations; a row from an EARLIER transaction does not license a later one; and, with
+   * the door stripped, a client writes the carrier and the forgery commits THROUGH it — which is
+   * what makes the door the mechanism rather than a bystander.
+   */
+  it('round 40: a session setting the caller owns is not a record of what a trigger saw', () => {
+    const RECEIPT = (id: string, dec: string) => `
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('${id}','project','ss-org','ss-proj','ss-user','decisions.approve','${id}-k','${id}-h','reserved');
+      UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = '${dec}' WHERE "id" = '${id}';`;
+    const FINAL = (id: string, dec: string, version: number, cmd: string) => `
+      INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
+        VALUES ('${id}','ss-proj','${dec}',${version},'a',now(),'ss-user','${cmd}');`;
+    /** the no-op: `ss-dec2` was approved by the FIXTURE's transaction, so this changes nothing */
+    const TOUCH = `UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'ss-dec2';`;
+
+    // ── (i) THE FORGERY: the caller sets the carrier, touches the row for its xmin, and inserts ─
+    buildRun([]);
+    const forged = psql(RUN_DB, ['-c', `BEGIN;
+      SET LOCAL phase6.t4d_decision_approved = '["ss-dec2"]';
+      ${RECEIPT('ss-cmd-guc', 'ss-dec2')} ${TOUCH} ${FINAL('ss-rev-guc', 'ss-dec2', 1, 'ss-cmd-guc')} COMMIT;`]);
+    expect(forged.ok, 'a finalized revision for a decision approved in an EARLIER transaction, '
+      + 'licensed by a session setting the caller wrote — the reader believed the setting, the '
+      + `end state agreed, and the register gained a cycle nobody performed:\n${forged.output}`).toBe(false);
+    expect(forged.output).toMatch(/no `pending`\/`change` -> `approved` transition of decision ss-dec2/);
+
+    // ── (ii) THE CARRIER TAKES NO CLIENT WRITE — insert, update, delete ───────────────────────
+    // a genuine approval first, so the carrier holds a row at rest for the UPDATE and DELETE
+    const genuine = psql(RUN_DB, ['-c', `BEGIN; ${RECEIPT('ss-cmd-gen', 'ss-dec')}
+      UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'ss-dec';
+      ${FINAL('ss-rev-gen', 'ss-dec', 1, 'ss-cmd-gen')} COMMIT;`]);
+    expect(genuine.ok, `the real \`pending\` -> \`approved\` entry must still COMMIT:\n${genuine.output}`).toBe(true);
+    expect(psql(RUN_DB, ['-t', '-A', '-c',
+      `SELECT count(*) FROM "_t4d_tx_transition" WHERE "decisionId" = 'ss-dec' AND "kind" = 'approved'`]).output.trim(),
+      'the transition trigger wrote the carrier at depth 2 — one row, left at rest').toBe('1');
+    const direct: Array<[string, string]> = [
+      ['INSERT', `INSERT INTO "_t4d_tx_transition" ("txid","decisionId","kind") VALUES (txid_current(), 'ss-dec2', 'approved')`],
+      ['UPDATE', `UPDATE "_t4d_tx_transition" SET "txid" = txid_current() WHERE "decisionId" = 'ss-dec'`],
+      ['DELETE', `DELETE FROM "_t4d_tx_transition" WHERE "decisionId" = 'ss-dec'`],
+    ];
+    for (const [op, stmt] of direct) {
+      const r = psql(RUN_DB, ['-c', stmt]);
+      expect(r.ok, `a client ${op} of the carrier is a statement at depth 1 — not a witness to any transition:\n${r.output}`).toBe(false);
+      expect(r.output).toMatch(/records what a TRIGGER saw/);
+    }
+
+    // ── (iii) A ROW FROM AN EARLIER TRANSACTION SPEAKS FOR NOBODY ─────────────────────────────
+    // the carrier still holds (ii)'s row for `ss-dec`, keyed by THAT transaction's id. The same
+    // shape as (i) — receipt, no-op touch, finalized revision — riding it instead of the setting.
+    const stale = psql(RUN_DB, ['-c', `BEGIN; ${RECEIPT('ss-cmd-stale', 'ss-dec')}
+      UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'ss-dec';
+      ${FINAL('ss-rev-stale', 'ss-dec', 2, 'ss-cmd-stale')} COMMIT;`]);
+    expect(stale.ok, 'the row an earlier transaction\'s trigger wrote is keyed by that '
+      + 'transaction — a later one performing no move may not borrow it, or the table is the '
+      + `session setting with extra steps:\n${stale.output}`).toBe(false);
+    expect(stale.output).toMatch(/no `pending`\/`change` -> `approved` transition of decision ss-dec/);
+
+    // ── (iv) THE DOOR IS THE MECHANISM: stripped, the client writes the carrier and (i) commits ─
+    buildRun(['_t4d_tx_transition_trigger_only']);
+    const through = psql(RUN_DB, ['-c', `BEGIN;
+      INSERT INTO "_t4d_tx_transition" ("txid","decisionId","kind") VALUES (txid_current(), 'ss-dec2', 'approved');
+      ${RECEIPT('ss-cmd-thr', 'ss-dec2')} ${TOUCH} ${FINAL('ss-rev-thr', 'ss-dec2', 1, 'ss-cmd-thr')} COMMIT;`]);
+    expect(through.ok, 'with the carrier\'s door stripped the same forgery commits through a '
+      + `direct write — so it is THIS door, and not the reader, that closes it:\n${through.output}`).toBe(true);
+  }, 900_000);
+
+  /**
+   * #582's review round 40, finding 3 — "NO FORGERY WAS DEMONSTRATED" IS A STATEMENT ABOUT WHAT
+   * WAS TRIED.
+   *
+   * Round 39 counted the withdrawal's act row and deliberately left the opening branch on the
+   * drain's NULL skip, reasoning that no harm had been shown there and that an arm in this file
+   * — the audit/event count — planted a bare `change_requested` pair and asserted it commits.
+   * Both were true and neither was evidence: the arm was written before any rule about the
+   * request existed, and its subject was something else. The forgery is one statement away: a
+   * decision already in `change`, one catalog-valid `decision.change_requested` event, one
+   * `change_requested` audit row, and no request. The aggregate yields NULL, the skip passes it,
+   * and both rows are then immutable. Round 40 counts both branches; the count arm's plant now
+   * opens the request its own audit row records.
+   *
+   * Three edges: the bare pair is refused; a request opened by an EARLIER transaction does not
+   * stand in for this one's; and the genuine open — request and audit in one transaction — still
+   * commits.
+   */
+  it('round 40: a change_requested audit row whose transaction opened no request is refused', () => {
+    const EVENT = (id: string) => `
+      UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+      INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+        SELECT '${id}','decision.change_requested',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec',
+               jsonb_build_object('effectKey','decision.change_requested','coverageVersion',c."coverageVersion",'invalidate',c."invalidate")
+          FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+         WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.change_requested'
+           AND c."coverageVersion" = '${COVERAGE}';`;
+    const AUDIT = (id: string) =>
+      `INSERT INTO "DecisionEvent" ("id","decisionId","type","actor") VALUES ('${id}','ss-dec','change_requested','X');`;
+    const OPEN = (id: string) => `
+      INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+        VALUES ('${id}-cmd','project','ss-org','ss-proj','ss-user','decisions.requestChange','${id}-k','${id}-h','reserved');
+      UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = '${id}' WHERE "id" = '${id}-cmd';
+      INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","sourceCommandId","requestedById","requestedByRole","requestedByName")
+        VALUES ('${id}','ss-proj','ss-dec','the ask',0,2,'open','standard','${id}-cmd','ss-user','pmc','SS User');`;
+
+    buildRun([]);
+    // already in `change` from an earlier transaction — the state the audit map admits the pair in
+    expect(psql(RUN_DB, ['-c', `UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'ss-dec'`]).ok).toBe(true);
+
+    // ── (i) THE BARE PAIR: event and audit row, no request anywhere ───────────────────────────
+    const bare = psql(RUN_DB, ['-c', `BEGIN; ${EVENT('ss-ev-r40a')} ${AUDIT('ss-de-r40a')} COMMIT;`]);
+    expect(bare.ok, 'a `change_requested` audit row whose transaction opened NO request records an '
+      + 'act that left no trace in the delivered table it is defined against. `v_approver` was '
+      + 'NULL because nothing matched, the drain\'s NULL skip admitted it, and the append-only '
+      + `seals made it permanent — the sibling round 39 declined to close:\n${bare.output}`).toBe(false);
+    expect(bare.output).toMatch(/no matching change request written by this transaction — the change request this transaction opened/);
+
+    // ── (ii) THE GENUINE OPEN still commits — request, event and audit row in ONE transaction ──
+    const real = psql(RUN_DB, ['-c', `BEGIN; ${EVENT('ss-ev-r40b')} ${OPEN('ss-cr-r40')} ${AUDIT('ss-de-r40b')} COMMIT;`]);
+    expect(real.ok, `the delivered \`requestChange\` bundle must still be admitted:\n${real.output}`).toBe(true);
+
+    // ── (iii) AND THAT REQUEST, NOW AN EARLIER TRANSACTION'S, licenses no second audit row ─────
+    const borrowed = psql(RUN_DB, ['-c', `BEGIN; ${EVENT('ss-ev-r40c')} ${AUDIT('ss-de-r40c')} COMMIT;`]);
+    expect(borrowed.ok, 'the request (ii) opened is at rest; a later transaction appending another '
+      + '`change_requested` row against it performed no opening act — the count is of rows THIS '
+      + `transaction wrote, which is the rule every act row in this file is counted under:\n${borrowed.output}`).toBe(false);
+    expect(borrowed.output).toMatch(/no matching change request written by this transaction/);
+  }, 900_000);
+
+  /**
+   * #582's review round 40, finding 4 — RETIREMENT RETIRES THE DOORS, NOT THE ALLOCATOR INVARIANT.
+   *
+   * The `stream_heads` audit was gated on the retirement snapshot, and round 38's stage inventory
+   * recorded that gate as correct with the reason "malformed counter shapes no writer creates".
+   * That answered "who creates this shape". The question an apply-time audit has to answer is
+   * "can its ABSENCE leave damage the statements after it make unrepairable" — and here it can. A
+   * restore that lost a counter row is damage no rollout stage causes and retirement does not
+   * heal; the allocator seals go back on immediately below REGARDLESS of retirement; and after
+   * that commit `platform_t4d_stream_init` admits a new stream only at 0 and only for a project
+   * holding no events. The project can never emit again, and nothing in the replay said so.
+   *
+   * The arm retires the database exactly as 4d-iii does, loses the counter the way a restore
+   * does, and replays. The audit must abort, naming the repair; the seals must be shown to refuse
+   * that repair once they stand, which is why the audit is the only window; and after the repair
+   * the retired replay must still install no door — the round-16 property is not traded away.
+   *
+   * THE INVENTORY is the stage map below, re-asked with this question for every retirement-gated
+   * audit: `unsealed_marker` (its subject is the marker), `reserved_rows` (legitimate values after
+   * 4d-iii), `pin` (the post-retirement body is the right body), `catalog_audit` (a third
+   * generation is the healthy post-retirement state, so it has no verdict there). None of the
+   * four guards a shape a later seal makes permanent. `stream_heads` was the only one that did.
+   */
+  it('round 40: retirement does not excuse a damaged stream', () => {
+    buildRun([]);
+    const retire = psql(RUN_DB, ['-c', `
+      BEGIN;
+      SET LOCAL vitan.phase6_4d_retire = 'on';
+      INSERT INTO "RolloutRetirement" ("unit","retiredBy") VALUES ('phase6-4d','4d-iii');
+      COMMIT;
+      DROP TRIGGER IF EXISTS "Decision_t4d_architect_reserved" ON "Decision";
+      DROP TRIGGER IF EXISTS "Decision_t4d_awaiting_reserved" ON "Decision";
+      DROP TRIGGER IF EXISTS "Membership_t4d_architect_reserved" ON "Membership";
+      DROP TRIGGER IF EXISTS "User_t4d_architect_reserved" ON "User";
+      DROP TRIGGER IF EXISTS "DecisionForward_t4d_reserved" ON "DecisionForward";
+      DROP TRIGGER IF EXISTS "DecisionEvent_t4d_kind_reserved" ON "DecisionEvent";
+    `]);
+    expect(retire.ok, retire.output).toBe(true);
+    expect(psql(RUN_DB, ['-t', '-A', '-c', 'SELECT phase6_t4d_retired()']).output.trim(), 'genuinely retired').toBe('t');
+
+    // the damage a restore leaves: the project keeps its events (through position 0) and loses
+    // its counter. Under `replica` because the shape is the subject, not the delete door.
+    expect(psql(RUN_DB, ['-c',
+      `SET session_replication_role='replica'; DELETE FROM "ProjectEventStream" WHERE "projectId" = 'ss-proj'; SET session_replication_role='origin';`]).ok,
+      'the counter must come out').toBe(true);
+
+    const replay = applyWhole();
+    expect(replay.ok, 'a retired database missing a counter is damaged in exactly the way the '
+      + 'audit exists to name, and the skip let the replay commit over it: the seals went back on, '
+      + `and the project below can never be given an allocator again:\n${replay.output}`).toBe(false);
+    expect(replay.output).toMatch(/not in the shape the seals below adopt/);
+    expect(replay.output).toMatch(/ss-proj \(NO counter row, events through 0 — create it at 1\)/);
+    expect(replay.output).toMatch(/RETIREMENT IS NOT AN ESCAPE FROM THIS ONE/);
+
+    // WHY THE AUDIT IS THE ONLY WINDOW: the seals stand (they were installed before retirement and
+    // are reinstalled on every replay), and under them the named repair is refused — a stream is
+    // born at 0 and only for a project with no events.
+    const late = psql(RUN_DB, ['-c', `INSERT INTO "ProjectEventStream" ("projectId","nextPosition") VALUES ('ss-proj', 1)`]);
+    expect(late.ok, 'the repair the audit names is exactly what the allocator seal refuses once it stands').toBe(false);
+    expect(late.output).toMatch(/a project event stream is created at position 0/);
+
+    // the operator's repair, in the window the abort left open, and the retired replay after it
+    expect(psql(RUN_DB, ['-c',
+      `SET session_replication_role='replica'; INSERT INTO "ProjectEventStream" ("projectId","nextPosition") VALUES ('ss-proj', 1); SET session_replication_role='origin';`]).ok,
+      'the transactional repair in RUNBOOK §P6T4D must be possible').toBe(true);
+    const healed = applyWhole();
+    expect(healed.ok, `a healthy retired database replays silently:\n${healed.output}`).toBe(true);
+    expect(psql(RUN_DB, ['-t', '-A', '-c',
+      `SELECT count(*) FROM pg_trigger WHERE tgname IN ('Decision_t4d_awaiting_reserved','DecisionForward_t4d_reserved') AND NOT tgisinternal`]).output.trim(),
+      'and it is STILL a retired replay — ungating the audit did not put a door back').toBe('0');
+    expect(psql(RUN_DB, ['-t', '-A', '-c', 'SELECT phase6_t4d_retired()']).output.trim()).toBe('t');
   }, 900_000);
 });
