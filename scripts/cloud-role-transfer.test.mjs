@@ -50,6 +50,21 @@ test('Codex ownership requires a traceable transfer on claude branches and is no
   assert.match(route.instruction, /cannot start|neither start/iu);
 });
 
+test('transfer examples outside the leading declarations cannot transfer ownership', () => {
+  for (const prose of ['Example: <!-- correction-transfer: claude->codex -->', '```\n<!-- correction-transfer: claude->codex -->\n```']) {
+    assert.equal(parseCorrectionOwner(`<!-- correction-owner: codex -->\n\n${prose}`, { headRef: 'claude/product' }).state, 'contradictory');
+  }
+});
+
+test('a newer pending Claude rerun supersedes an older clear completion', () => {
+  for (const status of ['queued', 'in_progress']) {
+    const newer = cleanRun({ id: 8, status, conclusion: null, completed_at: null });
+    for (const runs of [[cleanRun(), newer], [newer, cleanRun()]]) {
+      assert.equal(classifyClaudeShadowReview({ checkRuns: runs, expectedHead: head, pullRequestNumber: 600, trustedAppSlug: 'claude-review-service' }).state, 'partial');
+    }
+  }
+});
+
 test('merge guard rejects drafts, new heads/base changes, revoked holds and non-green gates', async () => {
   const prior = process.env.BOARD_MERGE_AUTHORIZERS;
   process.env.BOARD_MERGE_AUTHORIZERS = 'board-chair';

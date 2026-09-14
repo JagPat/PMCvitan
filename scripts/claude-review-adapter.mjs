@@ -19,7 +19,8 @@ export function classifyClaudeShadowReview({
     && run?.app?.slug === trustedAppSlug
     && typeof run?.external_id === 'string'
     && run.external_id.startsWith(prefix));
-  const run = candidates.sort((a, b) => Date.parse(b.completed_at ?? 0) - Date.parse(a.completed_at ?? 0))[0];
+  // Check-run IDs order new attempts even before they acquire a completion time.
+  const run = candidates.sort((a, b) => b.id - a.id)[0];
   if (!run) return { state: 'missing', authoritative: false };
   if (run.status !== 'completed' || !run.completed_at) return { state: 'partial', authoritative: false };
   if (run.conclusion !== 'success') return { state: run.conclusion ?? 'error', authoritative: false };

@@ -31,15 +31,17 @@ const CODEX_TRANSFER = /<!--\s*correction-transfer:\s*claude->codex\s*-->/u;
 // editing one produces.
 function declarationBlock(body) {
   const declared = [];
+  const markers = [];
   for (const line of String(body ?? '').split(/\r?\n/u)) {
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
     if (!/^<!--[\s\S]*-->$/u.test(trimmed)) break;
+    markers.push(trimmed);
     for (const match of trimmed.matchAll(DECLARATION)) {
       declared.push(match[1].toLowerCase());
     }
   }
-  return declared;
+  return { declared, markers: markers.join('\n') };
 }
 
 /**
@@ -59,7 +61,7 @@ function declarationBlock(body) {
  * so the parser now says it too.
  */
 export function parseCorrectionOwner(body, { headRef } = {}) {
-  const declared = declarationBlock(body);
+  const { declared, markers } = declarationBlock(body);
 
   if (declared.length === 0) {
     return {
@@ -109,7 +111,7 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
   if (
     ref.startsWith(CLAUDE_BRANCH_PREFIX)
     && owner === 'codex'
-    && !CODEX_TRANSFER.test(String(body ?? ''))
+    && !CODEX_TRANSFER.test(markers)
   ) {
     return {
       state: 'contradictory',
