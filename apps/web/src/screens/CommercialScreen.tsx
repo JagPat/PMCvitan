@@ -659,7 +659,7 @@ export function CommercialScreen() {
     commercialPending.some((k) => isBillTransitionPending(k, billId));
   const input: CSSProperties = {
     border: '1px solid var(--hairline)', borderRadius: 8, padding: '7px 9px',
-    fontSize: 12.5, fontFamily: 'inherit', background: 'var(--canvas)', color: 'var(--ink)', minWidth: 0,
+    fontSize: 12.5, fontFamily: 'inherit', background: 'var(--canvas)', color: 'var(--ink)', minWidth: 44, minHeight: 44,
   };
 
   const claimPanel = (render: (loaded: CommercialClaimView) => JSX.Element): JSX.Element => {

@@ -132,8 +132,12 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
           <div key={o.id} style={{ marginTop: 14, padding: 12, border: '1px solid var(--hairline)', borderRadius: 12, background: 'var(--panel)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)' }}>OPTION {String.fromCharCode(65 + i)}</span>
+              {/* Wave 0 / F-1b round 9 — this control only EXISTS once a third option is added, and
+                  the dialog sweep deliberately does not press controls inside dialogs, so no arm
+                  ever reached the state that renders it. The floor applies to a control the user
+                  can reach, not to one a sweep happens to see. */}
               {options.length > 2 && (
-                <button onClick={() => setOptions((prev) => prev.filter((_, j) => j !== i))} aria-label={`Remove option ${i + 1}`} style={{ marginLeft: 'auto', background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex' }}>
+                <button onClick={() => setOptions((prev) => prev.filter((_, j) => j !== i))} aria-label={`Remove option ${i + 1}`} data-testid={`dec-opt-${i}-remove`} style={{ marginLeft: 'auto', minWidth: 44, minHeight: 44, background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
                   <X size={15} />
                 </button>
               )}
@@ -147,11 +151,16 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
                   {SWATCH_KEYS.map((k) => <option key={k} value={k}>{k}</option>)}
                 </select>
                 <span style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid var(--hairline)', background: o.photo ? `center/cover url(${o.photo.preview})` : swatchGradient(o.swatch) }} />
-                <label style={{ fontSize: 12, color: 'var(--accent)', cursor: 'pointer' }}>
+                {/* the file input is display:none, so the LABEL is the whole tap target and carries
+                    the floor itself — #584 review round 10, finding 1 */}
+                <label style={{ fontSize: 12, color: 'var(--accent)', cursor: 'pointer', minHeight: 44, display: 'inline-flex', alignItems: 'center' }} data-testid={`dec-opt-${i}-photo`}>
                   {o.photo ? 'Change photo' : 'Add sample photo'}
                   <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => pickPhoto(i, e.target.files?.[0] ?? null)} />
                 </label>
-                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
+                {/* the radio's own box is a 13px platform affordance, so the LABEL is the target
+                    and carries the floor — self-found once the label rule and the More-details
+                    expansion brought this state into the sweep at all */}
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, minHeight: 44 }} data-testid={`dec-opt-${i}-recommended`}>
                   <input type="radio" name="recommended" checked={o.recommended} onChange={() => setOpt(i, { recommended: true })} /> Recommended
                 </label>
               </div>
@@ -160,7 +169,7 @@ export function IssueDecisionModal({ context, onClose }: { context?: CaptureCont
         ))}
 
         {!record && options.length < 4 && (
-          <button onClick={() => setOptions((prev) => [...prev, blankOption()])} style={{ marginTop: 12, background: 'transparent', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 10, padding: '9px 14px', fontSize: 12.5, cursor: 'pointer', color: 'var(--muted)', width: '100%' }}>
+          <button onClick={() => setOptions((prev) => [...prev, blankOption()])} style={{ marginTop: 12, minHeight: 44, background: 'transparent', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 10, padding: '9px 14px', fontSize: 12.5, cursor: 'pointer', color: 'var(--muted)', width: '100%' }}>
             + Add another option
           </button>
         )}
@@ -191,4 +200,9 @@ const SWATCH_KEYS = Object.keys(SW) as SwatchKey[];
 let optionSeq = 0;
 const blankOption = (): OptionDraft => ({ id: `opt-${(optionSeq += 1)}`, material: '', delta: '0', swatch: 'tile', recommended: false });
 
-const fldD: CSSProperties = { height: 42, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none' };
+  // Wave 0 / F-1b round 8 — 42 -> 44. The DISCOVERY arm (round 8, finding 2) reached the
+  // "New decision" dialog and found this token undersized, and the sweep that followed found
+  // FOUR copies of the same field style living in four files. Round 7 raised the copy in
+  // `DecisionLogScreen` alone, which is the one-copy-of-a-duplicated-token defect, not a
+  // different one: a shared rule with four private spellings is fixed four times or not at all.
+const fldD: CSSProperties = { height: 44, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none' };

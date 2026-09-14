@@ -80,7 +80,7 @@ export function AddMaterialModal({ context, onClose }: { context?: CaptureContex
 
           <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
             <Swatch swatch={swatch} size={40} radius={9} />
-            <select value={swatch} onChange={(e) => setSwatch(e.target.value as SwatchKey)} style={{ ...fldM, flex: 1, minWidth: 0 }} aria-label="Material swatch">
+            <select value={swatch} onChange={(e) => setSwatch(e.target.value as SwatchKey)} style={{ ...fldM, flex: 1, minWidth: 44 }} aria-label="Material swatch">
               {swatchKeys.map((k) => (
                 <option key={k} value={k}>{k}</option>
               ))}
@@ -97,5 +97,10 @@ export function AddMaterialModal({ context, onClose }: { context?: CaptureContex
   );
 }
 
-const fldM: CSSProperties = { height: 42, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none' };
+  // Wave 0 / F-1b round 8 — 42 -> 44. The DISCOVERY arm (round 8, finding 2) reached the
+  // "New decision" dialog and found this token undersized, and the sweep that followed found
+  // FOUR copies of the same field style living in four files. Round 7 raised the copy in
+  // `DecisionLogScreen` alone, which is the one-copy-of-a-duplicated-token defect, not a
+  // different one: a shared rule with four private spellings is fixed four times or not at all.
+const fldM: CSSProperties = { height: 44, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none' };
 const sectionLabel: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)', margin: '0 0 6px' };

@@ -89,8 +89,10 @@ const wrap: CSSProperties = {
 
 const btn: CSSProperties = {
   flex: 'none',
-  // a real touch target on a phone, not a text link
-  minHeight: 34,
+  // a real touch target on a phone, not a text link — 44px, the floor (Wave 0 / F-1b).
+  // This comment already made the claim when the value was 34: the sentence was right and the
+  // number was not, which is only visible by measuring a rendered button rather than reading.
+  minHeight: 44,
   padding: '6px 12px',
   borderRadius: 8,
   border: '1px solid currentColor',

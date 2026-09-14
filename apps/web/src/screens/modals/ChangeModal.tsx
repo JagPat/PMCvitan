@@ -2,9 +2,15 @@ import { Modal, Button } from '@/components';
 import { useStore } from '@/store/store';
 import { deciderNoun } from '@vitan/shared';
 
+// Wave 0 / F-1b round 8 — `minHeight: 44`. 12px of padding around a 13.5px line lands at 43,
+// one pixel under the floor, which is exactly the kind of miss a rounded comparison hides and
+// the raw-rect measurement (round 8, finding 1) catches. This token is DUPLICATED in
+// `ChangeModal` and `WithdrawModal`; both copies carry the floor, because a shared rule with
+// two private spellings is fixed twice or not at all.
 const inputStyle: React.CSSProperties = {
   width: '100%',
   marginTop: 6,
+  minHeight: 44,
   padding: 12,
   border: '1px solid rgba(35,33,28,.2)',
   borderRadius: 10,

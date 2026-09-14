@@ -131,11 +131,14 @@ export function TeamScreen() {
             </div>
             {canManage ? (
               <>
-                <select value={m.role} onChange={(e) => { const r = e.target.value as Role; updateMemberRole(m.userId, r, r === 'consultant' ? (m.discipline ?? 'architect') : undefined); }} style={{ ...fld, flex: '0 0 120px', height: 38 }} data-testid={`member-role-${m.userId}`}>
+                {/* Wave 0 / F-1b round 8 — 38 -> 44 on every role/discipline select here. These
+                    override the shared `fld` height downward, so raising the token alone would
+                    have left them short: an override is a second spelling of the rule. */}
+                <select value={m.role} onChange={(e) => { const r = e.target.value as Role; updateMemberRole(m.userId, r, r === 'consultant' ? (m.discipline ?? 'architect') : undefined); }} style={{ ...fld, flex: '0 0 120px', height: 44 }} data-testid={`member-role-${m.userId}`}>
                   {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
                 </select>
                 {m.role === 'consultant' && (
-                  <select value={m.discipline ?? 'architect'} onChange={(e) => updateMemberRole(m.userId, 'consultant', e.target.value)} style={{ ...fld, flex: '0 0 120px', height: 38 }} aria-label={`Discipline for ${m.name}`}>
+                  <select value={m.discipline ?? 'architect'} onChange={(e) => updateMemberRole(m.userId, 'consultant', e.target.value)} style={{ ...fld, flex: '0 0 120px', height: 44 }} aria-label={`Discipline for ${m.name}`}>
                     {CONSULTANT_DISCIPLINES.map((d) => <option key={d} value={d}>{discLabel(d)}</option>)}
                   </select>
                 )}
@@ -144,7 +147,7 @@ export function TeamScreen() {
               <span style={roleChip}>{ROLE_LABEL[m.role]}{m.role === 'consultant' && m.discipline ? ` · ${discLabel(m.discipline)}` : ''}</span>
             )}
             {canManage && (
-              <button onClick={() => removeMember(m.userId)} aria-label={`Remove ${m.name}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 4 }}>
+              <button onClick={() => removeMember(m.userId)} aria-label={`Remove ${m.name}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 44, minHeight: 44, padding: 4 }}>
                 <X size={17} />
               </button>
             )}
@@ -257,7 +260,7 @@ function OrgRoster({ orgId, canManageRoles, canCorrectEmails }: { orgId: string;
                     value={correctedEmail}
                     onChange={(e) => setCorrectedEmail(e.target.value)}
                     aria-label={`Corrected email for ${m.name}`}
-                    style={{ ...fld, flex: '1 1 190px', height: 38 }}
+                    style={{ ...fld, flex: '1 1 190px', height: 44 }}
                   />
                   <Button
                     variant="ink"
@@ -289,7 +292,7 @@ function OrgRoster({ orgId, canManageRoles, canCorrectEmails }: { orgId: string;
                         onChange={(e) => updateOrgMemberRole(orgId, m.userId, e.target.value as OrgRole)}
                         aria-label={`Org role for ${m.name}`}
                         data-testid="org-member-role"
-                        style={{ ...fld, flex: '0 0 120px', height: 38, opacity: lastOwner ? 0.6 : 1 }}
+                        style={{ ...fld, flex: '0 0 120px', height: 44, opacity: lastOwner ? 0.6 : 1 }}
                       >
                         {ORG_ROLES.map((r) => <option key={r} value={r}>{ORG_ROLE_LABEL[r]}</option>)}
                       </select>
@@ -601,4 +604,8 @@ const cardStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 1
 const fld: CSSProperties = { height: 44, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink)', outline: 'none' };
 const roleChip: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 700, letterSpacing: '.06em', padding: '4px 9px', borderRadius: 6, border: '1px solid var(--hairline)', color: 'var(--muted)', textTransform: 'uppercase' };
 const discChip: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 8.5, fontWeight: 700, letterSpacing: '.06em', padding: '2px 6px', borderRadius: 5, border: '1px solid var(--accent)', color: 'var(--accent)', textTransform: 'uppercase' };
-const iconBtn: CSSProperties = { background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 4 };
+// #584 review round 14 — a 16px glyph with 4px of padding is a 24px target. Round 13 raised the
+// MEMBER row's Remove button and left this one, which serves the COMPANY rows: the demo store
+// ships an empty `companies` array, so neither ordinary walk nor the round-13 server-backed seed
+// ever rendered a company row for the sweep to measure.
+const iconBtn: CSSProperties = { background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 44, minHeight: 44, padding: 4 };

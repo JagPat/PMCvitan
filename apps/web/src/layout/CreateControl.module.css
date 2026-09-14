@@ -39,6 +39,8 @@
   justify-content: center;
   gap: 8px;
   width: 100%;
+  /* #584 review round 11 — the rail shell renders on a phone in landscape. */
+  min-height: 44px;
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid rgba(237, 231, 218, 0.22);

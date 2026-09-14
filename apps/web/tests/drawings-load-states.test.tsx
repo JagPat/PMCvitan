@@ -176,3 +176,61 @@ describe('finding 4 — the store tears down the drawings module read state on a
     expect(useStore.getState().drawingsSource).toBeNull();
   });
 });
+
+/**
+ * Wave 0 / F-1b — #584 review round 11, finding 1: THE VALID-BUT-EMPTY CONSULTANT DISCIPLINE.
+ *
+ * A consultant whose project HAS drawings but none in their own discipline sees one control and
+ * one only: the escape back to the whole register. It shipped as a zero-padding 13.5px caption
+ * and measured 116 x 15 the first time anything rendered the state.
+ *
+ * WHY THIS IS HERE AND NOT IN `mobile-fields.spec.ts`. That file measures real layout in a real
+ * browser, which is the right instrument and cannot reach this state: the demo build has no API,
+ * so a consultant's discipline is the hardcoded fallback, and the seed files a structural sheet.
+ * I briefly changed that fallback to `mep` to open the branch and it broke `consultant.spec.ts`,
+ * which proves the POPULATED default — the more important behaviour of the two. So the product
+ * keeps the fallback that demonstrates the feature working, and the state a browser cannot reach
+ * is driven here, where the store can simply be handed a register with no structural drawings.
+ *
+ * WHAT THIS TEST CAN AND CANNOT CLAIM, stated rather than implied. jsdom performs no layout, so
+ * `getBoundingClientRect` is all zeros and no assertion here MEASURES anything. It asserts the
+ * declared inline `min-height`, which is sound for THIS control precisely because its size is an
+ * inline style with no stylesheet involved — there is no cascade for jsdom to get wrong. That is
+ * the opposite of the 16px field rule, which is an `!important` author rule outranking inline
+ * styles and therefore has to be measured in a browser. A weaker instrument is honest only when
+ * the property is simple enough for it; it would not be honest for anything with a cascade.
+ */
+describe('the consultant escape from an empty discipline scope', () => {
+  const arch = (id: string, number: string): Drawing => ({ ...dwg(id, number), discipline: 'architectural' });
+
+  async function renderEmptyScope() {
+    const { useStore, DrawingsScreen } = await loadScreen('snapshot', {
+      role: 'consultant',
+      memberships: [],                 // no membership -> the demo fallback discipline (structural)
+      drawings: [arch('d1', 'A-201')], // a register WITH drawings, none of them structural
+    });
+    void useStore;
+    return render(<DrawingsScreen />);
+  }
+
+  it('renders the escape when the scope is empty but the register is not', async () => {
+    const { getByTestId, queryByTestId } = await renderEmptyScope();
+    expect(queryByTestId('drawing-A-201')).toBeNull(); // scoped away: this is the empty state
+    expect(getByTestId('scope-all-empty')).toBeTruthy();
+  });
+
+  it('the escape declares the 44px action-target floor', async () => {
+    const { getByTestId } = await renderEmptyScope();
+    const escape = getByTestId('scope-all-empty') as HTMLElement;
+    expect(
+      escape.style.minHeight,
+      'the only way out of an empty discipline scope is an action target and owes the 44px floor',
+    ).toBe('44px');
+  });
+
+  it('the escape actually escapes — it clears the scope and reveals the register', async () => {
+    const { getByTestId, queryByTestId } = await renderEmptyScope();
+    act(() => { fireEvent.click(getByTestId('scope-all-empty')); });
+    expect(queryByTestId('drawing-A-201')).toBeTruthy();
+  });
+});

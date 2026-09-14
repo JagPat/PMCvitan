@@ -33,7 +33,9 @@ export function PhotoViewer({ url, onClose }: { url: string; onClose: () => void
       <button
         onClick={onClose}
         aria-label="Close photo"
-        style={{ position: 'absolute', top: 16, right: 16, width: 40, height: 40, borderRadius: '50%', border: 'none', background: 'rgba(255,255,255,.16)', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+        // Wave 0 / F-1b round 7 — 40×40, four pixels under the floor, and it is the only way out of a
+        // full-screen overlay: a missed tap leaves the user staring at a photo with no visible exit.
+        style={{ position: 'absolute', top: 16, right: 16, width: 44, height: 44, borderRadius: '50%', border: 'none', background: 'rgba(255,255,255,.16)', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
       >
         <X size={20} />
       </button>

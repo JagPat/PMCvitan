@@ -66,8 +66,13 @@ export function drawingDisciplineFor(discipline: string | undefined | null): 'ar
 
 /**
  * The interactive session roles the web renders a full app shell for. `worker` is
- * excluded on purpose: workers use the job-card flow (never a role session), so the
- * screen/label maps stay a clean four-role set.
+ * excluded on purpose: workers use the job-card flow, never a role session.
+ *
+ * FIVE roles, not four (#584 review round 11). This comment said "a clean four-role set" while
+ * the type it describes has always resolved to five, and the miscount was load-bearing rather
+ * than cosmetic: `TopBar`'s persona switcher was written to the comment and omitted `consultant`,
+ * and the cross-surface target sweep reads its options to decide which personas exist. A stale
+ * count in a doc comment is how an entire persona's surfaces go unmeasured.
  */
 export type Role = Exclude<TokenRole, 'worker'>;
 

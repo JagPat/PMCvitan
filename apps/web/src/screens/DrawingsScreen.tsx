@@ -138,8 +138,30 @@ export function DrawingsScreen() {
 
       {scopeKey && scoped && groups.length === 0 && drawings.length > 0 && (
         <div style={{ marginTop: 30, textAlign: 'center', color: 'var(--muted)', fontSize: 13.5 }}>
-          No {scopeLabel} drawings filed yet —{' '}
-          <button onClick={() => setScoped(false)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--accent)', fontSize: 13.5, padding: 0 }}>show all disciplines</button>.
+          No {scopeLabel} drawings filed yet.
+          {/* #584 review round 11 — the escape from a valid-but-empty discipline scope, measured at
+              116 x 15 the first time any walk reached this branch. A zero-padding caption is not a
+              target, and this one is the only way out of a screen showing the viewer nothing. */}
+          <div style={{ marginTop: 4 }}>
+            <button
+              onClick={() => setScoped(false)}
+              data-testid="scope-all-empty"
+              style={{
+                minHeight: 44,
+                display: 'inline-flex',
+                alignItems: 'center',
+                padding: '0 12px',
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                color: 'var(--accent)',
+                fontSize: 13.5,
+                fontWeight: 600,
+              }}
+            >
+              Show all disciplines
+            </button>
+          </div>
         </div>
       )}
 
@@ -232,7 +254,9 @@ function AckBlock({ drawing }: { drawing: Drawing }) {
       {/* the frozen distribution (Phase 1 Task 3): who this revision was ISSUED to and hasn't confirmed yet */}
       {(rev.recipients ?? []).some((r) => !r.acked) && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: canAck ? 12 : 0 }} data-testid="ack-outstanding">
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.14em', color: 'var(--faint)' }}>ISSUED TO — NOT YET CONFIRMED</div>
+          {/* #584 review round 1, finding 3 — the outstanding ISSUED-TO status is the reason a
+              revision is still chased, so it carries F-1b's 13px floor rather than eyebrow type. */}
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>Issued to — not yet confirmed</div>
           {(rev.recipients ?? []).filter((r) => !r.acked).map((r, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: 'var(--muted)' }}>
               <span style={{ fontWeight: 600 }}>{r.userName}</span>
@@ -275,7 +299,9 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
           </div>
         </div>
         <span style={{ ...chip, background: sm.bg, color: sm.fg, borderColor: sm.border }}>{sm.label}</span>
-        <button onClick={onClose} aria-label="Close" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex' }}>
+        {/* Wave 0 / F-1b round 8 — the drawing viewer's dismiss. A glyph with no padding measured
+            32x22; it is the only way out of a full-screen sheet on a phone, so it takes the floor. */}
+        <button onClick={onClose} aria-label="Close" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 44, minHeight: 44 }}>
           <X size={20} />
         </button>
       </div>
@@ -311,7 +337,9 @@ export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose:
             const on = r.id === rev.id;
             const s = statusMeta(r.status);
             return (
-              <button key={r.id} onClick={() => setRev(r)} style={{ display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', padding: '9px 11px', borderRadius: 9, cursor: 'pointer', border: `1px solid ${on ? 'var(--ink)' : 'var(--hairline)'}`, background: on ? 'rgba(35,33,28,.04)' : '#fff' }}>
+              // #584 review round 12 — selecting a revision is an ordinary phone interaction and
+              // these rows measured ~35px. Inside the viewer dialog, in the default demo.
+              <button key={r.id} onClick={() => setRev(r)} data-testid={`rev-${r.id}`} style={{ display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', minHeight: 44, padding: '9px 11px', borderRadius: 9, cursor: 'pointer', border: `1px solid ${on ? 'var(--ink)' : 'var(--hairline)'}`, background: on ? 'rgba(35,33,28,.04)' : '#fff' }}>
                 <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 12, width: 42 }}>Rev {r.rev}</span>
                 <span style={{ ...chip, background: s.bg, color: s.fg, borderColor: s.border }}>{s.label}</span>
                 <span style={{ fontSize: 11.5, color: 'var(--muted)', flex: 1 }}>{r.issuedAt} · {r.issuedBy}</span>
@@ -455,8 +483,17 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
         <div style={{ fontSize: 11.5, color: 'var(--faint)', marginBottom: 7 }}>File it at its level — a floor plan on the zone, a detail on the object. Rooms below inherit it.</div>
         <LocationPicker value={nodeId} onChange={setNodeId} idPrefix="dwg-loc" />
 
+        {/* Wave 0 / F-1b round 7 — the file control rendered 254×21, the smallest target in this
+            dialog and the one that actually attaches the drawing. It sits inside a `<label>`, so
+            label activation forwards a tap anywhere in the box to the picker: giving the input a
+            44px band makes the whole band the target rather than the native button alone. */}
         <label style={{ display: 'block', marginTop: 10 }}>
-          <input type="file" accept=".pdf,.dwg,.dxf,image/*,application/pdf" onChange={(e) => onPick(e.target.files?.[0])} style={{ fontSize: 13 }} />
+          <input
+            type="file"
+            accept=".pdf,.dwg,.dxf,image/*,application/pdf"
+            onChange={(e) => onPick(e.target.files?.[0])}
+            style={{ fontSize: 13, display: 'block', width: '100%', minHeight: 44 }}
+          />
         </label>
         {file && <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>{file.name}</div>}
 
@@ -470,7 +507,13 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+// #584 review round 11 — these two toggles shipped at 26px tall and no sweep had ever measured
+// them, because the persona walk took its role list from `TopBar`'s switcher and that switcher
+// omitted `consultant`. They are the consultant's primary control on this surface.
 const scopeBtn = (active: boolean): CSSProperties => ({
+  minHeight: 44,
+  display: 'inline-flex',
+  alignItems: 'center',
   padding: '6px 11px',
   borderRadius: 8,
   border: 'none',
@@ -517,10 +560,14 @@ const fld: CSSProperties = {
   outline: 'none',
 };
 
+// Wave 0 / F-1b round 8 — 11px of padding around a 16px glyph lands at 41.6, and an `<a download>`
+// is a press target like any button. The floor is on the anchor, not on a wrapper.
 const dlBtn: CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
+  justifyContent: 'center',
   gap: 8,
+  minHeight: 44,
   padding: '11px 18px',
   borderRadius: 11,
   background: 'var(--ink)',

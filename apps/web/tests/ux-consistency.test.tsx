@@ -1,4 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
+// the screen's own SOURCE, as text — see the 44px-floor arm at the end of this file.
+import scheduleSource from '@/screens/ScheduleScreen.tsx?raw';
+import locationContextSource from '@/components/LocationContext.tsx?raw';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { Activity, Checklist, Decision, ProjectNode, Review } from '@vitan/shared';
 
@@ -361,5 +364,77 @@ describe('the schedule says WHY an activity cannot be acted on', () => {
     expect(r.queryByTestId('override-ACT-1')).not.toBeInTheDocument();
     const chip = r.getByTestId('override-chip-OV-1');
     expect(chip.querySelector('button[aria-label="Revoke override"]')).not.toBeNull();
+  });
+
+  it('the revoke control declares the 44px floor (Wave 0 F-1b, #584 review round 6)', () => {
+    // BY SOURCE, DELIBERATELY. Wave 0 allows a target to be verified "by computed style, or by
+    // source" — and source is what is available here: recording an override goes through
+    // `overrideGate`, which refuses without a server ("Gate overrides need the server"), so the
+    // API-less e2e demo can never render this control and `mobile-fields.spec.ts` cannot sweep
+    // it. Round 6 caught it at 11px with zero padding precisely because no arm could reach the
+    // state. jsdom gives no layout, so this asserts the DECLARATION: the inline style carries the
+    // floor in both axes. It is weaker than a measurement and it is not nothing — it fails the
+    // moment someone removes the minimums, which is the regression that actually happened.
+    // The source arrives through Vite's `?raw` import rather than `fs`: this package's `process`
+    // type carries `env` alone and `import.meta.url` is not a file URL under the runner, so the
+    // bundler is the one thing here that already knows where the file is.
+    const src = scheduleSource;
+    const revoke = src.slice(src.indexOf('aria-label="Revoke override"'));
+    const decl = revoke.slice(0, revoke.indexOf('>'));
+    expect(decl, 'the revoke control must declare minWidth: 44').toContain('minWidth: 44');
+    expect(decl, 'the revoke control must declare minHeight: 44').toContain('minHeight: 44');
+  });
+
+  it('the breadcrumb declares the 44px floor in BOTH axes (Wave 0 F-1b, #584 review round 6)', () => {
+    // BY SOURCE, for a different reason than the arm above: this control IS reachable, but the
+    // violation depends on the DATA. A crumb is only under-wide when the location name is very
+    // short — `createNodeSchema` accepts `min(1)` — and the demo fixture's names are "Ground
+    // Floor" and the like, so the e2e sweep measures crumbs that are comfortably past 44px and
+    // would stay green with the minimum removed (verified: removing `minWidth` leaves that arm
+    // passing). A sweep over friendly data is not a proof about hostile data, so the declaration
+    // is what gets guarded, and the guard fails the moment either minimum is dropped.
+    // `const crumb:` with the colon — `const crumbs` (the trail array) appears first otherwise,
+    // and slicing from it reads a different object entirely.
+    const crumbStyle = locationContextSource.slice(locationContextSource.indexOf('const crumb:'));
+    const decl = crumbStyle.slice(0, crumbStyle.indexOf('};'));
+    expect(decl, 'the breadcrumb must declare minWidth: 44').toContain('minWidth: 44');
+    expect(decl, 'the breadcrumb must declare minHeight: 44').toContain('minHeight: 44');
+  });
+
+  describe('the Button primitive\'s floor SURVIVES a caller (Wave 0 F-1b, #584 review round 7)', () => {
+    // Not by source this time, because the defect was not a missing declaration — the declaration
+    // was there and the CASCADE undid it. `...style` was spread after `minHeight: 44`, so a later
+    // property in the same object won outright and `style={{ minHeight: 34 }}` replaced the floor
+    // while the comment beside it promised a caller "cannot go shorter by accident". These arms
+    // render the component and read the inline style the clamp actually produced, which is the
+    // only thing that distinguishes the fixed shape from the broken one.
+    it('a caller trying to go SHORTER is clamped back to the floor', async () => {
+      const { Button } = await import('@/components/Button');
+      const r = render(<Button style={{ minHeight: 34, minWidth: 20 }}>Add</Button>);
+      const el = r.getByRole('button');
+      expect(el.style.minHeight, 'a 34px override may not lower the 44px floor').toBe('44px');
+      expect(el.style.minWidth, 'a 20px override may not lower the 44px floor').toBe('44px');
+    });
+
+    it('a caller with a genuine reason to go TALLER still wins', async () => {
+      const { Button } = await import('@/components/Button');
+      const r = render(<Button style={{ minHeight: 56 }}>Sign off</Button>);
+      expect(r.getByRole('button').style.minHeight).toBe('56px');
+    });
+
+    it('a caller with no minimum at all gets the floor', async () => {
+      const { Button } = await import('@/components/Button');
+      const r = render(<Button>Publish</Button>);
+      const el = r.getByRole('button');
+      expect(el.style.minHeight).toBe('44px');
+      expect(el.style.minWidth).toBe('44px');
+    });
+
+    it('a NON-NUMERIC override goes through CSS max(), so the floor holds without unit guessing', async () => {
+      const { Button } = await import('@/components/Button');
+      const r = render(<Button style={{ minHeight: '3rem' }}>Issue</Button>);
+      // jsdom keeps the declaration verbatim; the browser resolves `max()` at layout.
+      expect(r.getByRole('button').style.minHeight).toContain('max(44px');
+    });
   });
 });

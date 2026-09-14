@@ -44,10 +44,14 @@ export function MoreDetails({
   );
 }
 
+// Wave 0 / F-1b round 8 — this toggle is used inside dialogs and measured 91x26. It is a real
+// press target (it reveals the option's details), so it takes the floor like any other. The label
+// keeps its 12.5px size — the floor governs the HIT AREA, not the type.
 const toggle: CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
   gap: 6,
+  minHeight: 44,
   background: 'transparent',
   border: 'none',
   padding: '6px 0',

@@ -148,7 +148,7 @@ export function DraftsScreen() {
                         }}
                         disabled={!!draftPending[d.id]}
                         data-testid={`draft-decider-${d.id}`}
-                        style={{ height: 32, padding: '0 8px', borderRadius: 8, border: '1px solid var(--hairline)', fontSize: 12 }}
+                        style={{ height: 44, padding: '0 8px', borderRadius: 8, border: '1px solid var(--hairline)', fontSize: 12 }}
                         aria-label="Who decides"
                       >
                         <option value="client">The client</option>
@@ -162,7 +162,7 @@ export function DraftsScreen() {
                           onChange={(e) => void dispatchDraftUpdate(d.id, { deciderKind: 'member', deciderMembershipId: e.target.value })}
                           disabled={!!draftPending[d.id]}
                           data-testid={`draft-decider-member-${d.id}`}
-                          style={{ height: 32, padding: '0 8px', borderRadius: 8, border: '1px solid var(--hairline)', fontSize: 12 }}
+                          style={{ height: 44, padding: '0 8px', borderRadius: 8, border: '1px solid var(--hairline)', fontSize: 12 }}
                           aria-label="Named decider"
                         >
                           {memberCandidates.map((m) => (
@@ -188,7 +188,7 @@ export function DraftsScreen() {
                               onChange={(e) => setConvertForms((f) => ({ ...f, [d.id]: { ...f[d.id]!, membershipId: e.target.value } }))}
                               data-testid={`convert-member-${d.id}`}
                               aria-label="Named decider for the conversion"
-                              style={{ height: 32, padding: '0 8px', borderRadius: 8, border: '1px solid var(--hairline)', fontSize: 12 }}
+                              style={{ height: 44, padding: '0 8px', borderRadius: 8, border: '1px solid var(--hairline)', fontSize: 12 }}
                             >
                               {memberCandidates.map((m) => (
                                 <option key={m.membershipId} value={m.membershipId}>{m.name} · {m.role}</option>
@@ -208,7 +208,7 @@ export function DraftsScreen() {
                               placeholder={`Option ${String.fromCharCode(65 + i)} material`}
                               data-testid={`convert-material-${d.id}-${i}`}
                               aria-label={`Option ${i + 1} material`}
-                              style={{ flex: 1, height: 32, padding: '0 10px', borderRadius: 8, border: '1px solid var(--hairline)', fontSize: 12.5 }}
+                              style={{ flex: 1, height: 44, padding: '0 10px', borderRadius: 8, border: '1px solid var(--hairline)', fontSize: 12.5 }}
                             />
                             <select
                               value={o.swatch}
@@ -219,7 +219,7 @@ export function DraftsScreen() {
                               })}
                               data-testid={`convert-swatch-${d.id}-${i}`}
                               aria-label={`Option ${i + 1} swatch`}
-                              style={{ height: 32, padding: '0 8px', borderRadius: 8, border: '1px solid var(--hairline)', fontSize: 12 }}
+                              style={{ height: 44, padding: '0 8px', borderRadius: 8, border: '1px solid var(--hairline)', fontSize: 12 }}
                             >
                               {(Object.keys(SW) as SwatchKey[]).map((k) => <option key={k} value={k}>{k}</option>)}
                             </select>

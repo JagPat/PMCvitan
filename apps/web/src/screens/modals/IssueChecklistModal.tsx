@@ -66,7 +66,7 @@ export function IssueChecklistModal({ context, onClose }: { context?: CaptureCon
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--faint)', width: 18, flex: 'none' }}>{i + 1}</span>
               <input value={it} onChange={(e) => setItem(i, e.target.value)} placeholder="Item to verify on site" style={{ ...fld, flex: 1 }} data-testid={`chk-item-${i}`} />
               {items.length > 1 && (
-                <button onClick={() => removeItem(i)} aria-label={`Remove item ${i + 1}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex' }}>
+                <button onClick={() => removeItem(i)} aria-label={`Remove item ${i + 1}`} style={{ minWidth: 44, minHeight: 44, flex: 'none', background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }} data-testid={`chk-item-${i}-remove`}>
                   <Minus size={16} />
                 </button>
               )}
@@ -74,7 +74,7 @@ export function IssueChecklistModal({ context, onClose }: { context?: CaptureCon
           ))}
         </div>
         {items.length < 20 && (
-          <button onClick={addItem} style={{ marginTop: 10, background: 'transparent', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 10, padding: '9px 14px', fontSize: 12.5, cursor: 'pointer', color: 'var(--muted)', width: '100%' }} data-testid="chk-add-item">
+          <button onClick={addItem} style={{ marginTop: 10, minHeight: 44, background: 'transparent', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 10, padding: '9px 14px', fontSize: 12.5, cursor: 'pointer', color: 'var(--muted)', width: '100%' }} data-testid="chk-add-item">
             + Add item
           </button>
         )}
@@ -88,5 +88,10 @@ export function IssueChecklistModal({ context, onClose }: { context?: CaptureCon
   );
 }
 
-const fld: CSSProperties = { height: 42, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none' };
+  // Wave 0 / F-1b round 8 — 42 -> 44. The DISCOVERY arm (round 8, finding 2) reached the
+  // "New decision" dialog and found this token undersized, and the sweep that followed found
+  // FOUR copies of the same field style living in four files. Round 7 raised the copy in
+  // `DecisionLogScreen` alone, which is the one-copy-of-a-duplicated-token defect, not a
+  // different one: a shared rule with four private spellings is fixed four times or not at all.
+const fld: CSSProperties = { height: 44, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none' };
 const sectionLabel: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)', margin: '16px 0 8px' };
