@@ -6738,4 +6738,85 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       + 'P3005 path, so this replay is a SUPPORTED recovery, and an abort here tells the operator '
       + `to delete rows and columns the platform wrote correctly:\n${replay.output}`).toBe(true);
   }, 900_000);
+
+  /**
+   * #582's review round 39 — A STATE NAMED BY ITS COMPLEMENT IS BIGGER THAN THE STATE.
+   *
+   * The `change_withdrawn` branch of `DecisionEvent_t4d_correspondence` found its act row with
+   * `status <> 'open'`. `ChangeRequest` has TWO closures, not one: the delivered `withdrawChange`
+   * closes it `withdrawn`/`withdrawn`, and a direct REAPPROVAL closes it `resolved`/`reapproved`.
+   * The complement admitted both — and since a reapproval also leaves the decision `approved`,
+   * which is exactly the state the correspondence table admits `change_withdrawn` in, a
+   * transaction could append a `decision.change_withdrawn` event and audit row, have the actor
+   * comparison CONFIRM it against the reapproval's own resolver, and the append-only seals would
+   * make that false outcome permanent. The sibling branch one line above names its state (`open`)
+   * and its comment explains why; this one wrote the negation.
+   *
+   * NAMING THE STATE IS NOT ENOUGH, which is the part worth proving. `v_approver` is an aggregate
+   * over the matched rows, so it is NULL both when nothing matched and when the match names
+   * nobody, and the binding block skips on NULL — the drain's deliberate exception. Narrowing the
+   * predicate alone would move the forged row from "confirmed against the wrong act" to "checked
+   * against nothing", and it would still COMMIT. So the two `ChangeRequest` branches COUNT their
+   * act row, and absence is a refusal: that table is DELIVERED, written in the same transaction
+   * as the audit row, so its absence is a missing act rather than a rollout stage.
+   *
+   * Three arms, because the rule has three edges: the forged reapproval closure must be refused,
+   * a genuine withdrawal must still commit, and a `change_withdrawn` row with no closure at all
+   * must be refused too.
+   */
+  it('round 39: a reapproval closure is not a withdrawal, and a withdrawal audit owes one', () => {
+    /** the decision ends `approved` — the state the correspondence admits `change_withdrawn` in */
+    const APPROVE = `UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'ss-dec';`;
+    /** exactly one `decision.change_withdrawn`, allocated the way the envelope seal demands */
+    // allocated the way the envelope seal demands and the fixture already shows: increment the
+    // counter, then insert at `nextPosition - 1`, in the SAME transaction.
+    const EVENT = `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
+      INSERT INTO "DomainEvent"
+        ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition",
+         "actorId","actorKind","actorRole","actorName","entityType","entityId","dispatchIntent")
+      SELECT 'ss-ev-cw','decision.change_withdrawn',1,'ss-org','ss-proj',s."nextPosition" - 1,
+             'ss-user','human','pmc','SS User','Decision','ss-dec',
+             jsonb_build_object('effectKey','decision.change_withdrawn',
+                                'coverageVersion',c."coverageVersion",'invalidate',c."invalidate")
+        FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+       WHERE s."projectId" = 'ss-proj'
+         AND c."effectKey" = 'decision.change_withdrawn' AND c."coverageVersion" = '${COVERAGE}';`;
+    const AUDIT = `INSERT INTO "DecisionEvent" ("id","decisionId","type","actor","actorId","actorName","actorRole")
+      VALUES ('ss-de-cw','ss-dec','change_withdrawn','SS User','ss-user','SS User','pmc');`;
+    const close = (status: string, resolution: string) => `
+      UPDATE "ChangeRequest"
+         SET "status" = '${status}', "resolution" = '${resolution}',
+             "resolvedAt" = now(), "resolvedById" = 'ss-user',
+             "resolvedByRole" = 'pmc', "resolvedByName" = 'SS User'
+       WHERE "id" = 'ss-cr-r26';`;
+
+    // ── (i) THE FORGERY: a REAPPROVAL's closure, claimed as a withdrawal ──────────────────────
+    buildRun([]);
+    expect(psql(RUN_DB, ['-c', CR_OPEN]).ok, 'the open request must plant').toBe(true);
+    const forged = psql(RUN_DB, ['-c',
+      `BEGIN; ${close('resolved', 'reapproved')} ${APPROVE} ${EVENT} ${AUDIT} COMMIT;`]);
+    expect(forged.ok, 'a request closed `resolved`/`reapproved` is the REAPPROVAL\'s act, not a '
+      + 'withdrawal. `<> \'open\'` matched it, so this transaction could record a withdrawal that '
+      + 'never happened AND have the actor check confirm it against the reapproval\'s own '
+      + `resolver — and DecisionEvent_t4d_append_only makes that permanent:\n${forged.output}`).toBe(false);
+
+    // ── (ii) THE GENUINE WITHDRAWAL still commits — the narrowing is a narrowing ──────────────
+    buildRun([]);
+    expect(psql(RUN_DB, ['-c', CR_OPEN]).ok).toBe(true);
+    const real = psql(RUN_DB, ['-c',
+      `BEGIN; ${close('withdrawn', 'withdrawn')} ${APPROVE} ${EVENT} ${AUDIT} COMMIT;`]);
+    expect(real.ok, 'the delivered `withdrawChange` closes the request `withdrawn`/`withdrawn` in '
+      + 'the same transaction as the audit row and the event, and that bundle must still be '
+      + `admitted — a fix that refuses it has broken the path it was protecting:\n${real.output}`).toBe(true);
+
+    // ── (iii) NO CLOSURE AT ALL is refused too, which naming the state alone would not do ─────
+    buildRun([]);
+    expect(psql(RUN_DB, ['-c', CR_OPEN]).ok).toBe(true);
+    const bare = psql(RUN_DB, ['-c', `BEGIN; ${APPROVE} ${EVENT} ${AUDIT} COMMIT;`]);
+    expect(bare.ok, 'a `change_withdrawn` audit row whose transaction closed NO request records '
+      + 'an act that left no trace in the delivered table it is defined against. `ChangeRequest` '
+      + 'is not dark — it has no 4d-ii writer to wait for — so the drain\'s NULL-authority '
+      + `exception is not this branch's, and absence must refuse:\n${bare.output}`).toBe(false);
+    expect(bare.output).toMatch(/no matching change request written by this transaction/);
+  }, 900_000);
 });

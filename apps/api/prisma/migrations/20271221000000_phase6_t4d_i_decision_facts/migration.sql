@@ -3061,6 +3061,8 @@ DECLARE
   v_project  TEXT;
   v_required TEXT[];
   v_events   BIGINT; v_audits BIGINT;
+  v_facts    BIGINT;                     -- #582 round 39 — the withdrawal's act row COUNT, on
+                                         -- the one branch whose table is delivered, not dark
 BEGIN
   SELECT d."status"::text, d."projectId" INTO v_status, v_project
     FROM "Decision" d WHERE d."id" = NEW."decisionId";
@@ -3357,12 +3359,50 @@ BEGIN
        AND cr."status" = 'open'
        AND cr."xmin" = txid_current()::text::xid;
   ELSIF NEW."type" = 'change_withdrawn' THEN
-    v_row := 'the change request this transaction closed';
-    SELECT min(cr."resolvedById"), max(cr."resolvedById") INTO v_approver, v_actor_hi
+    -- WITHDRAWN, NAMED (#582's review round 39). `<> 'open'` is not the withdrawal, it is
+    -- everything that is not still open — and `ChangeRequest` has a SECOND closure: a direct
+    -- reapproval closes the open request as `status = 'resolved'`, `resolution = 'reapproved'`
+    -- (decisions.service.ts, the `reapprove` path). That row matched here, so a reapproval
+    -- transaction — which ends the decision `approved`, the very state the correspondence table
+    -- above admits `change_withdrawn` in — could append a `decision.change_withdrawn` event and
+    -- audit row, have the actor comparison CONFIRM it against the reapproval's own resolver, and
+    -- the append-only seals would make that false outcome permanent.
+    --
+    -- The branch above names its state (`open`) and its comment says why — "the status separates
+    -- them exactly, and each side reads the column its own act wrote". This side wrote the
+    -- complement instead of the name, and the complement is bigger than the thing.
+    v_row := 'the change request this transaction withdrew';
+    SELECT count(*), min(cr."resolvedById"), max(cr."resolvedById")
+      INTO v_facts, v_approver, v_actor_hi
       FROM "ChangeRequest" cr
      WHERE cr."projectId" = v_project AND cr."decisionId" = NEW."decisionId"
-       AND cr."status" <> 'open'
+       AND cr."status" = 'withdrawn' AND cr."resolution" = 'withdrawn'
        AND cr."xmin" = txid_current()::text::xid;
+  END IF;
+
+  -- AND ON THIS BRANCH ABSENCE IS A REFUSAL, NOT A SKIP — which naming the state alone would not
+  -- have achieved. `v_approver` is an AGGREGATE over the matched rows, so it is NULL both when no
+  -- row matched and when the matched row names nobody; the binding block below skips on NULL,
+  -- which is the drain's deliberate exception. Narrowing the predicate therefore moves the forged
+  -- row from "confirmed against the wrong act" to "checked against nothing" — and it still
+  -- commits. So this branch COUNTS (#582 round 10's rule: a fact that records an act is counted,
+  -- not found), and `ChangeRequest` can carry that demand because it is a DELIVERED table every
+  -- release writes in the same transaction as the audit row, not a dark one waiting for 4d-ii.
+  --
+  -- THIS BRANCH AND NOT ITS SIBLING, deliberately. The first draft of this round counted
+  -- `change_requested` too, for symmetry — and symmetry is not evidence. It broke the arm above
+  -- whose subject is the audit/event count, which plants a `change_requested` row with no
+  -- request, and nothing in this round demonstrates a forgery on the opening side: there is only
+  -- ONE opener, and that branch already names its state. Extending a refusal into a branch where
+  -- no harm was shown is a rule change wearing a fix's clothes, which is a habit this unit has
+  -- been caught in before. The opening side keeps the drain's skip until something reaches it.
+  --
+  -- A historical import is unaffected either way: `plantLegacyDecisionAudit` disables this
+  -- trigger outright.
+  IF v_facts = 0 AND NEW."type" = 'change_withdrawn' THEN
+    RAISE EXCEPTION
+      'phase6 4d-i: the `%` audit row for decision % has no matching change request written by this transaction — %. The audit register records acts, and a row whose act left no trace in the delivered table it is defined against records something that did not happen; `DecisionEvent_t4d_append_only` is about to make it permanent.',
+      NEW."type", NEW."decisionId", v_row;
   END IF;
 
   IF v_approver IS NOT NULL THEN
