@@ -148,7 +148,7 @@ test('D2: the controller cannot distinguish correction owners', async () => {
 test('O1: the declaration is machine-readable, and every failure mode is named', async () => {
   const { parseCorrectionOwner, CORRECTION_OWNERS } = await ownerModule();
 
-  assert.deepEqual(CORRECTION_OWNERS, ['claude', 'cursor', 'codex']);
+  assert.deepEqual(CORRECTION_OWNERS, ['claude', 'cursor']);
 
   const claude = parseCorrectionOwner('<!-- correction-owner: claude -->');
   assert.equal(claude.state, 'declared');

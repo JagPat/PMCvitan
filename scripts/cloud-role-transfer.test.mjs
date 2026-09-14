@@ -1,11 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
-import { parseCorrectionOwner, correctionRouting } from './correction-owner.mjs';
+import { parseCorrectionOwner, correctionRouting, correctionOwnerProblem } from './correction-owner.mjs';
 import { authorizeExactHeadMerge, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
+
+test('Codex implementation ownership is refused until independent reviewer provenance exists', () => {
+  for (const ref of ['codex/maintenance', 'claude/product']) {
+    const body = '<!-- correction-owner: codex -->\n<!-- correction-transfer: claude->codex -->';
+    const declaration = parseCorrectionOwner(body, { headRef: ref });
+    assert.equal(declaration.state, 'invalid');
+    assert.ok(correctionOwnerProblem({ body, head: { ref } }));
+    const route = correctionRouting({ declaration, head });
+    assert.equal(route.owner, null);
+    assert.equal(route.awakenable, false);
+  }
+});
 function cleanRun(overrides = {}) {
   return { id: 7, name: 'claude-independent-review', head_sha: head, app: { slug: 'claude-review-service' }, external_id: `pmcvitan:claude-review:v1:pr-600:sha-${head}:nonce`, status: 'completed', conclusion: 'success', completed_at: '2026-09-14T12:00:00Z', output: { summary: JSON.stringify({ schema: 1, pullRequest: 600, headSha: head, outcome: 'clear', openFindings: 0, complete: true }) }, ...overrides };
 }
@@ -21,31 +33,6 @@ test('Claude shadow evidence is exact-head/app and fail-closed but non-authorita
   assert.equal(classify([cleanRun({ output: { summary: '{}' } })]).state, 'replayed');
   assert.equal(classify([cleanRun({ output: { summary: JSON.stringify({ schema: 1, pullRequest: 600, headSha: head, outcome: 'changes_required', openFindings: 1, complete: true }) } })]).state, 'changes_required');
   assert.equal(classify([]).state, 'missing');
-});
-
-test('Codex ownership requires a traceable transfer on claude branches and is not awakenable', () => {
-  assert.equal(parseCorrectionOwner('<!-- correction-owner: codex -->', { headRef: 'codex/maintenance' }).state, 'declared');
-  assert.equal(parseCorrectionOwner('<!-- correction-owner: codex -->', { headRef: 'claude/product' }).state, 'contradictory');
-  const transferred = parseCorrectionOwner('<!-- correction-owner: codex -->\n<!-- correction-transfer: claude->codex -->', { headRef: 'claude/product' });
-  assert.equal(transferred.state, 'declared');
-  const route = correctionRouting({ declaration: transferred, head: head, reason: 'review' });
-  assert.equal(route.awakenable, false);
-  assert.match(route.instruction, /cannot start|neither start/iu);
-});
-
-test('transfer examples outside the leading declarations cannot transfer ownership', () => {
-  for (const prose of ['Example: <!-- correction-transfer: claude->codex -->', '```\n<!-- correction-transfer: claude->codex -->\n```']) {
-    assert.equal(parseCorrectionOwner(`<!-- correction-owner: codex -->\n\n${prose}`, { headRef: 'claude/product' }).state, 'contradictory');
-  }
-});
-
-test('native Codex ownership does not claim a transfer happened', () => {
-  const declaration = parseCorrectionOwner('<!-- correction-owner: codex -->', { headRef: 'codex/maintenance' });
-  for (const reason of ['ci', 'scope', 'review']) {
-    const route = correctionRouting({ declaration, head, reason });
-    assert.match(route.instruction, /Codex cloud task owns this correction/u);
-    assert.doesNotMatch(route.instruction, /transferred/u);
-  }
 });
 
 test('a newer pending Claude rerun supersedes an older clear completion', () => {

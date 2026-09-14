@@ -33,7 +33,9 @@ export const MAX_REVIEW_ATTEMPTS = 2;
 export const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 40 * 60_000);
 export const REVIEW_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS ?? 25 * 60_000);
 export const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 15_000);
-export const CORRECTION_OWNERS = ['claude', 'cursor', 'codex'];
+// The Codex GitHub implementation task and reviewer share one bot identity.
+// Keep implementation ownership inadmissible until review evidence distinguishes them.
+export const CORRECTION_OWNERS = ['claude', 'cursor'];
 // Wake integrations enabled in this repository, not a product capability inventory.
 export const AWAKENABLE_FROM_GITHUB = new Set(['claude']);
 export const CORRECTION_STALLED = 'correction_stalled';

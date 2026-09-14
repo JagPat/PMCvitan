@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-import { isAutonomousPullRequest } from './autonomous-handoff.mjs';
+import { isAutonomousPullRequest, handOffConflict } from './autonomous-handoff.mjs';
 
 const repository = 'JagPat/PMCvitan';
 
@@ -14,6 +14,92 @@ function pullRequest(overrides = {}) {
     ...overrides,
   };
 }
+
+function conflict(overrides = {}) {
+  return pullRequest({
+    number: 600,
+    body: '<!-- correction-owner: claude -->',
+    mergeable: false,
+    mergeable_state: 'dirty',
+    head: { ref: 'claude/task', sha: 'a'.repeat(40), repo: { full_name: repository } },
+    ...overrides,
+  });
+}
+
+test('conflict handoff uses the refreshed owner instead of waking the branch-prefix agent', async () => {
+  for (const owner of ['codex', 'cursor', 'unknown', null]) {
+    const live = conflict({ body: owner ? `<!-- correction-owner: ${owner} -->` : '' });
+    const comments = [];
+    await handOffConflict({
+      pullRequest: async () => live,
+      comments: async () => [],
+      comment: async (number, body) => comments.push(body),
+    }, conflict(), repository, 'main');
+    assert.equal(comments.length, 1);
+    assert.doesNotMatch(comments[0], /@claude|@codex|@cursor/u);
+    assert.match(comments[0], /correction_stalled/u);
+  }
+});
+
+test('a valid Claude owner is awakened for a conflict on a non-Claude branch', async () => {
+  const live = conflict({ head: { ref: 'codex/maintenance', sha: 'a'.repeat(40), repo: { full_name: repository } } });
+  const comments = [];
+  await handOffConflict({
+    pullRequest: async () => live,
+    comments: async () => [],
+    comment: async (number, body) => comments.push(body),
+  }, live, repository, 'main');
+  assert.equal(comments.length, 1);
+  assert.match(comments[0], /@claude/u);
+});
+
+test('conflict publication stops if the owner changes during the comments read', async () => {
+  const live = conflict();
+  let current = live;
+  const comments = [];
+  await handOffConflict({
+    pullRequest: async () => current,
+    comments: async () => { current = { ...live, body: '<!-- correction-owner: codex -->' }; return []; },
+    comment: async (number, body) => comments.push(body),
+  }, live, repository, 'main');
+  assert.equal(comments.length, 0);
+});
+
+test('conflict notices are idempotent per head and owner, and an owner fix can resume', async () => {
+  let live = conflict({ body: '<!-- correction-owner: codex -->' });
+  const comments = [];
+  const client = {
+    pullRequest: async () => live,
+    comments: async () => comments,
+    comment: async (number, body) => comments.push({ user: { login: 'github-actions[bot]' }, body }),
+  };
+  await handOffConflict(client, live, repository, 'main');
+  await handOffConflict(client, live, repository, 'main');
+  assert.equal(comments.length, 1);
+  live = { ...live, body: '<!-- correction-owner: claude -->' };
+  await handOffConflict(client, live, repository, 'main');
+  await handOffConflict(client, live, repository, 'main');
+  assert.equal(comments.length, 2);
+  assert.match(comments[1].body, /@claude/u);
+});
+
+test('conflict publication stops after closure, retargeting, or a new head', async () => {
+  const initial = conflict();
+  for (const changed of [
+    { ...initial, state: 'closed' },
+    { ...initial, base: { ...initial.base, ref: 'release' } },
+    { ...initial, base: { ...initial.base, sha: 'b'.repeat(40) } },
+    { ...initial, head: { ...initial.head, sha: 'b'.repeat(40) } },
+    { ...initial, head: { ...initial.head, repo: { full_name: 'fork/repo' } } },
+  ]) {
+    let live = initial;
+    await handOffConflict({
+      pullRequest: async () => live,
+      comments: async () => { live = changed; return []; },
+      comment: async () => assert.fail('must not publish after the review unit changes'),
+    }, initial, repository, 'main');
+  }
+});
 
 test('accepts only open same-repository Claude branches', () => {
   assert.equal(isAutonomousPullRequest(pullRequest(), repository, 'main'), true);

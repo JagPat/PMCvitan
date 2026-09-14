@@ -11,8 +11,7 @@ const DECLARATION = /<!--\s*correction-owner:\s*([A-Za-z][A-Za-z0-9_-]*)\s*-->/g
 // branch under it declaring another owner contradicts itself. No other prefix
 // implies anything — #349 and #350 are both loop PRs on `codex/**`.
 const CLAUDE_BRANCH_PREFIX = 'claude/';
-const MARKER_HELP = '`<!-- correction-owner: claude -->`, `<!-- correction-owner: cursor -->`, or `<!-- correction-owner: codex -->`';
-const CODEX_TRANSFER = /<!--\s*correction-transfer:\s*claude->codex\s*-->/u;
+const MARKER_HELP = '`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`';
 
 // A body DECLARES in its marker block and DESCRIBES everywhere else.
 //
@@ -31,17 +30,15 @@ const CODEX_TRANSFER = /<!--\s*correction-transfer:\s*claude->codex\s*-->/u;
 // editing one produces.
 function declarationBlock(body) {
   const declared = [];
-  const markers = [];
   for (const line of String(body ?? '').split(/\r?\n/u)) {
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
     if (!/^<!--[\s\S]*-->$/u.test(trimmed)) break;
-    markers.push(trimmed);
     for (const match of trimmed.matchAll(DECLARATION)) {
       declared.push(match[1].toLowerCase());
     }
   }
-  return { declared, markers: markers.join('\n') };
+  return { declared };
 }
 
 /**
@@ -61,7 +58,7 @@ function declarationBlock(body) {
  * so the parser now says it too.
  */
 export function parseCorrectionOwner(body, { headRef } = {}) {
-  const { declared, markers } = declarationBlock(body);
+  const { declared } = declarationBlock(body);
 
   if (declared.length === 0) {
     return {
@@ -108,21 +105,7 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
   }
 
   const ref = typeof headRef === 'string' ? headRef : '';
-  if (
-    ref.startsWith(CLAUDE_BRANCH_PREFIX)
-    && owner === 'codex'
-    && !CODEX_TRANSFER.test(markers)
-  ) {
-    return {
-      state: 'contradictory',
-      owner: null,
-      declared,
-      detail: `branch \`${ref}\` began as Claude-authored work; transferring it to Codex `
-        + 'requires the explicit `<!-- correction-transfer: claude->codex -->` provenance marker',
-    };
-  }
-
-  if (ref.startsWith(CLAUDE_BRANCH_PREFIX) && !['claude', 'codex'].includes(owner)) {
+  if (ref.startsWith(CLAUDE_BRANCH_PREFIX) && owner !== 'claude') {
     return {
       state: 'contradictory',
       owner: null,
@@ -185,7 +168,6 @@ export function correctionOwnerProblem(pullRequest) {
 
 function ownerLabel(owner) {
   if (owner === 'claude') return 'Claude Code web Auto-fix';
-  if (owner === 'codex') return 'The Codex cloud task';
   return 'The Cursor agent on this branch';
 }
 
