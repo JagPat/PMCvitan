@@ -44,9 +44,32 @@ $PSQL <<'SQL' || { echo "fixture failed"; exit 1; }
 INSERT INTO "Org" ("id","name","slug") VALUES ('o-abort','Abort Org','abort-org');
 INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
   VALUES ('p-abort','o-abort','Abort Site','AB','','Finishing','AB-01','01 Jan 2026','31 Dec 2026',0,0,0);
+-- Phase 6 unit 4d-i — a NAMED BYPASS for a LEGACY-SHAPE plant. This event is a pre-4d row by
+-- construction (no actor envelope, no pairing fact, a hand-chosen position), so the 4d seals are
+-- right to refuse it and this fixture declares itself by name for exactly the plant rather than
+-- leaving an implicit hole. Guarded on existence: this proof runs against a ledger truncated
+-- before 4d-i, where the triggers do not exist yet. Re-enabled immediately after the plant.
+DO $do$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DomainEvent_t4d_envelope') THEN
+    EXECUTE 'ALTER TABLE "DomainEvent" DISABLE TRIGGER "DomainEvent_t4d_envelope"';
+    EXECUTE 'ALTER TABLE "DomainEvent" DISABLE TRIGGER "DomainEvent_t4d_pairing_claimed"';
+  END IF;
+END $do$;
 -- a valid append-only event (system attribution) at stream position 0
 INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","occurredAt")
   VALUES ('ev-abort','decision.approved',1,'o-abort','p-abort',0,'system','system','Decision','D-1',now());
+-- and the allocator is advanced PAST the hand-chosen position, so the counter is never left
+-- behind its own stream (`ProjectEventStream_t4d_allocation_bound`). Conditional, because
+-- `ProjectEventStream_t4d_allocation` refuses a non-increasing update.
+INSERT INTO "ProjectEventStream" ("projectId","nextPosition") VALUES ('p-abort', 1)
+  ON CONFLICT ("projectId") DO UPDATE SET "nextPosition" = 1
+   WHERE "ProjectEventStream"."nextPosition" < 1;
+DO $do$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DomainEvent_t4d_envelope') THEN
+    EXECUTE 'ALTER TABLE "DomainEvent" ENABLE TRIGGER "DomainEvent_t4d_pairing_claimed"';
+    EXECUTE 'ALTER TABLE "DomainEvent" ENABLE TRIGGER "DomainEvent_t4d_envelope"';
+  END IF;
+END $do$;
 -- a delivery whose copied (projectId, streamPosition) DISAGREE with the event above
 INSERT INTO "OutboxDelivery" ("id","eventId","projectId","consumer","consumerKind","streamPosition","status","attempts","nextAttemptAt","createdAt","updatedAt")
   VALUES ('del-abort','ev-abort','WRONG-PROJECT','socket.invalidation','unordered',999,'pending',0,now(),now(),now());

@@ -14,7 +14,13 @@ export const orgsManifest: ModuleManifest = {
   // Phase 6 unit 6.1a (§A) — the canonical external party, the per-project association the
   // collaborator resolver reads, and the two per-origin source tables that justify it. Orgs-owned
   // so the access path never has to read procurement.
-  ownsModels: ['org', 'orgMembership', 'membership', 'project', 'projectCompany', 'projectTemplate', 'templateModule', 'user', 'workerDevice', 'externalParty', 'projectParty', 'projectPartyCompanySource', 'projectPartyVendorSource'],
+  ownsModels: ['org', 'orgMembership', 'membership', 'project', 'projectCompany', 'projectTemplate', 'templateModule', 'user', 'workerDevice', 'externalParty', 'projectParty', 'projectPartyCompanySource', 'projectPartyVendorSource',
+    // Phase 6 task 4d unit 4d-i (§A.3) — the attributable record of a membership's STANDING
+    // change. ORGS-owned because it is a fact about a team act on an orgs-owned table, and
+    // registered from the moment the table exists: the boundary suite requires this set to
+    // EQUAL the DMMF, so a table added without its registration cannot merge. Deployed DARK —
+    // nothing writes it until 4d-ii.
+    'membershipTransition'],
   // Task 8 reads decisions; Task 10 reads the existing inspection ids at init via the inspections query
   // (InspectionsQueryService.allIds) — both through their query contracts.
   // Phase 4 Task 3 — the WorkerDevice bind command reads the trusted-worker lifecycle through

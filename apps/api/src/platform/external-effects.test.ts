@@ -60,8 +60,16 @@ describe('PR C — external-effect catalog', () => {
           .map((k) => {
             // Phase 6 task 4b — the family declaration joins the sealed preimage: a family
             // change alters claim-time delivery semantics, so it must move the version.
-            const d = EXTERNAL_EFFECTS[k] as (typeof EXTERNAL_EFFECTS)[ExternalEffectKey] & { pushFamily?: string };
-            return [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(), d.pushFamily ?? null];
+            // `pushOptional` was a sixth element here from round 5 (finding 4) until round 18
+            // deleted the flag: the obligation belongs to a BRANCH, so a branch that says nothing
+            // has its own `push: null` key and there is no per-key qualifier left to hash. This
+            // replica exists to prove the real formula is order-independent, so it has to carry
+            // the same fields; when it drifts from `canonicalCatalog()` this arm fails, which is
+            // how the round-5 omission was caught here in the first place.
+            const d = EXTERNAL_EFFECTS[k] as (typeof EXTERNAL_EFFECTS)[ExternalEffectKey]
+              & { pushFamily?: string };
+            return [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(),
+              d.pushFamily ?? null];
           }),
       );
     const reversed = createHash('sha256').update(preimage([...keys].reverse())).digest('hex');

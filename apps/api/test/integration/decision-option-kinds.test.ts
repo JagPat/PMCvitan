@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, wipeDecisions, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, wipeDecisions, type TwoProjectFixture, plantLegacyDecisionAudit } from './fixtures';
 
 /**
  * Issue generalization unit A1-i — AN OPTION DECLARES WHAT KIND OF CHOICE IT IS.
@@ -72,24 +72,41 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
     /** Disable ONE named seal for exactly this delete, inside a single transaction — the
      *  repository's sanctioned destructive-reset contract (`wipeDecisionsVia` does the same).
      *  PostgreSQL DDL is transactional, so a throw rolls the disable back with it. */
-    const sealed = (table: string, trigger: string, sql: string) => () =>
+    // Phase 6 unit 4d-i — takes a LIST, and each toggle is GUARDED on the trigger's existence.
+    //
+    // Both changes are the same lesson from the same unit. Naming ONE seal per table rots: the
+    // `DecisionEvent` register carried one seal, then three, and a disable naming only the first
+    // is refused by the two it missed — on the very wipe it was written to perform. And naming a
+    // seal that a later unit REPLACED is an outright error, not a no-op: 4d-i drops
+    // `DecisionApprovalRevision_append_only` (the blanket immutability that would abort the
+    // countersign's one permitted flip) in favour of `DecisionApprovalRevision_t4d_one_flip`, so
+    // an unguarded `DISABLE TRIGGER` on the old name raises. The guard is the same shape
+    // `prisma/sanctioned-reset.ts` uses, and for the same reason: these suites run against
+    // whatever migration state the database happens to be at.
+    const sealed = (table: string, triggers: string[], sql: string) => () =>
       t.prisma.$transaction(async (tx) => {
-        await tx.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`);
+        const toggle = async (action: 'DISABLE' | 'ENABLE', trigger: string) =>
+          tx.$executeRawUnsafe(
+            `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = '${trigger}') THEN `
+            + `EXECUTE 'ALTER TABLE "${table}" ${action} TRIGGER "${trigger}"'; END IF; END $$;`,
+          );
+        for (const trigger of triggers) await toggle('DISABLE', trigger);
         await tx.$executeRawUnsafe(sql);
-        await tx.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`);
+        for (const trigger of [...triggers].reverse()) await toggle('ENABLE', trigger);
       }, { timeout: 60_000, maxWait: 30_000 });
 
     // The approval register, the legacy stamp and the approval event are all immutable BY DESIGN —
     // which is exactly why this suite plants real ones: an arm of the freeze that no probe can
     // reach is a check nobody knows works.
     await step('approval register', sealed('DecisionApprovalRevision',
-      'DecisionApprovalRevision_append_only',
+      ['DecisionApprovalRevision_append_only', 'DecisionApprovalRevision_t4d_one_flip'],
       `DELETE FROM "DecisionApprovalRevision" WHERE "decisionId" LIKE 'DL-a1-%'`));
     await step('legacy approval stamps', sealed('DecisionLegacyApproval',
-      'DecisionLegacyApproval_sealed',
+      ['DecisionLegacyApproval_sealed'],
       `DELETE FROM "DecisionLegacyApproval" WHERE "decisionId" LIKE 'DL-a1-%'`));
     await step('approval events', sealed('DecisionEvent',
-      'DecisionEvent_no_withdrawn_approval',
+      ['DecisionEvent_no_withdrawn_approval', 'DecisionEvent_t4d_append_only',
+       'DecisionEvent_t4d_correspondence'],
       `DELETE FROM "DecisionEvent" WHERE "decisionId" LIKE 'DL-a1-%'`));
     await step('options', () => t.prisma.$executeRawUnsafe(
       `DELETE FROM "DecisionOption" WHERE "id" LIKE 'opt-a1-%'`));
@@ -699,9 +716,13 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
       .toMatch(/legacy approval stamp/u);
 
     const evented = await mk('pending');
-    await t.prisma.$executeRawUnsafe(
+    // Through the NAMED bypass (#582's review round 24, finding 1). The point of this arm is a
+    // decision that is `pending` and carries a recorded approval EVENT — the legacy shape whose
+    // options the freeze must cover — and the correspondence now refuses that pair from an
+    // ordinary writer, which is the finding. A historical plant declares itself instead.
+    await plantLegacyDecisionAudit(t.prisma, (tx) => tx.$executeRawUnsafe(
       `INSERT INTO "DecisionEvent"("id","decisionId","type","actor","at")
-       VALUES ('ev-a1-${run}-${seq++}','${evented.d}','approved','pmc', now())`);
+       VALUES ('ev-a1-${run}-${seq++}','${evented.d}','approved','pmc', now())`));
     expect(await refusal(`UPDATE "DecisionOption" SET "description"='changed' WHERE "id"='${evented.id}'`))
       .toMatch(/recorded approval event/u);
 
@@ -799,14 +820,30 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
     // (b) the approval writes only the REGISTER and leaves the decision's own status alone — the
     // exact shape the finding named. Its entry seal reads the parent FOR UPDATE to judge
     // withdrawal, so this transaction holds the same row lock without ever writing to it.
-    await raceAgainst(
-      // Phase 6 unit 4c-ii — this approval must genuinely COMMIT (the reclassification is refused
-      // BECAUSE the register row is there by commit time), so it carries a real approval receipt:
-      // reserved, cited, completed in the same transaction, exactly as `executeCommand` does it.
-      // The fixture bypass would be wrong here — this is not a row standing in for history, it is
-      // an approval happening now, which is the whole shape of the race.
-      async (tx, d) => {
-        const receipt = `cmd-ok-${run}-${seq++}`;
+    //
+    // THAT SHAPE NO LONGER EXISTS, and the arm says so rather than being deleted or forced
+    // (#582's review round 19, finding 2). This arm used to require the register-only approval to
+    // COMMIT, because the reclassification is refused BY the register row being there. Round 19
+    // gave `DecisionApprovalRevision_t4d_birth_paired` its missing arm: a revision born FINALIZED
+    // — which is every approval this release performs — must leave its decision `approved` in the
+    // same transaction, because `xmin` alone is satisfied by a no-op write and an approval that
+    // moves nothing is an approval nobody performed.
+    //
+    // So the race #371 worried about is now unrepresentable at the database, which is a STRONGER
+    // answer to that finding than the reclassification seal written for it: the losing side is not
+    // refused, it never commits. The arm is kept and inverted — it drives the same register-only
+    // approval and requires the DATABASE to refuse it, by name. If a later unit ever readmits that
+    // shape, this goes red and the reclassification race comes back with it.
+    const registerOnlyApproval = async (): Promise<unknown> => {
+      const d = `DL-a1-${run}-${seq++}`;
+      await t.prisma.$executeRawUnsafe(
+        `INSERT INTO "Decision"("id","projectId","title","room","status","photoSwatch","authorId")
+         VALUES ('${d}','${f.projectA.id}','Q','Hall','pending','stone','${f.memberUser.id}')`);
+      await t.prisma.$executeRawUnsafe(
+        `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+         VALUES ('opt-a1-${run}-${seq++}','${d}','Teak','ka','Teak',0,'brown')`);
+      const receipt = `cmd-ok-${run}-${seq++}`;
+      return raceDb.$transaction(async (tx) => {
         await tx.$executeRawUnsafe(
           `INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
            SELECT '${receipt}','project', p."orgId", '${f.projectA.id}','${f.memberUser.id}','decisions.approve','${receipt}','${receipt}','reserved'
@@ -816,8 +853,13 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
            VALUES ('ar-a1-${run}-${seq++}','${f.projectA.id}','${d}',1,'ka', now(),'${f.memberUser.id}','${receipt}')`);
         await tx.$executeRawUnsafe(
           `UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='${d}', "completedAt"=now() WHERE "id"='${receipt}'`);
-      },
-      /entry in the approval register/u);
+      }, { timeout: 30_000 });
+    };
+    // #582 round 22, the class sweep — the ARM'S SUBJECT IS UNCHANGED (a register-only approval
+    // must not commit) and the rule that refuses it now names the MOVE rather than the end state,
+    // because a no-op against an already-approved decision satisfied the state. This bundle
+    // performs no move at all, so the move-demand is what answers.
+    await expect(registerOnlyApproval()).rejects.toThrow(/no `pending`\/`change` -> `approved` transition of decision/u);
   });
 
   // ── P14 (Codex round 2, F3) ─────────────────────────────────────────────────────────────────

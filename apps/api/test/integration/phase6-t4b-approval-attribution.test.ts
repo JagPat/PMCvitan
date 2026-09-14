@@ -105,6 +105,12 @@ describe('Phase 6 unit 4b — approval attribution expansion (live PG)', () => {
         IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN
           ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval";
         END IF;
+        IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_t4d_append_only') THEN
+          ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_append_only";
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_t4d_correspondence') THEN
+          ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_correspondence";
+        END IF;
         IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4b2_record_no_delete') THEN
           ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b2_record_no_delete";
         END IF;
@@ -121,6 +127,12 @@ describe('Phase 6 unit 4b — approval attribution expansion (live PG)', () => {
         END IF;
         IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4b2_record_no_delete') THEN
           ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b2_record_no_delete";
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_t4d_correspondence') THEN
+          ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_correspondence";
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_t4d_append_only') THEN
+          ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_append_only";
         END IF;
         IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN
           ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval";
@@ -539,11 +551,22 @@ describe('Phase 6 unit 4b — approval attribution expansion (live PG)', () => {
       const standing = await seedDecision({ status: 'approved' });
       const legacyColumns = await seedDecision({ approvedById: userId, approver: 'Legacy approver' });
       const event = await seedDecision();
-      await db.$executeRawUnsafe(
-        `INSERT INTO "DecisionEvent"("id","decisionId","type","actor") VALUES ($1, $2, 'approved', 'legacy writer')`,
-        nextId('ev'),
-        event,
-      );
+      // Through the NAMED bypass (#582's review round 24, finding 1). This arm needs a decision
+      // whose ONLY approval signal is a recorded EVENT, which means the decision itself is not
+      // `approved` — and the correspondence now refuses a governed audit kind in a state its table
+      // does not pair it with. That is the finding; this is the historical shape it must not be
+      // read as, so the plant declares itself. Inline rather than through `plantLegacyDecisionAudit`
+      // because this suite holds a raw `PrismaClient`, not the fixtures' service; the contract is
+      // the same one — one interactive transaction, disabled by name, re-enabled before commit.
+      await db.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4d_correspondence"');
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "DecisionEvent"("id","decisionId","type","actor") VALUES ($1, $2, 'approved', 'legacy writer')`,
+          nextId('ev'),
+          event,
+        );
+        await tx.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4d_correspondence"');
+      }, { timeout: 60_000, maxWait: 30_000 });
       const plainDraft = await seedDecision({ publishedAt: null });
 
       try {

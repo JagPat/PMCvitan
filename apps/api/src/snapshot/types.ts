@@ -48,12 +48,22 @@ export interface DecisionDto {
   room: string;
   /** the location-tree node this decision attaches to (null/absent = ungrouped, legacy `room`) */
   nodeId?: string;
-  status: 'pending' | 'approved' | 'change' | 'withdrawn' | 'recorded';
+  // Phase 6 task 4d unit 4d-i — `awaiting_countersign` is added here, with the enum value, because
+  // this union is a DECLARATIVE MIRROR of the Prisma `DecisionStatus` and `serializeDecision`
+  // assigns the generated type straight into it: without the value the migration unit does not
+  // compile. No row can carry it until 4d-iii — `Decision_t4d_awaiting_reserved` refuses the
+  // write — so this widens what the type admits and nothing about what the API can return.
+  // The READERS keyed by this value (the shared type, the web maps, the exhaustive switches) are
+  // 4d-ii's, per §A.2's reader enumeration.
+  status: 'pending' | 'approved' | 'change' | 'withdrawn' | 'recorded' | 'awaiting_countersign';
   ageDays?: number;
   /** absent for a RECORD (`deciderKind: 'none'`) — the zero-option form has no option swatch */
   photoSwatch?: string;
   /** Phase 6 task 4b — WHO decides this decision ('client' on every legacy row) */
-  deciderKind: 'client' | 'pmc' | 'member' | 'none';
+  // Phase 6 task 4d unit 4d-i — `architect` joins for the same reason as `awaiting_countersign`
+  // above: this union mirrors the Prisma `DeciderKind` the serializer assigns into it. Reserved
+  // by `Decision_t4d_architect_reserved` until 4d-iii, so no row can carry it yet.
+  deciderKind: 'client' | 'pmc' | 'member' | 'none' | 'architect';
   /** the named holder's membership id when `deciderKind='member'` */
   deciderMembershipId?: string;
   /** the named holder's USER id, resolved server-side (one predicate for every surface) */
