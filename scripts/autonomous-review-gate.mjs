@@ -31,6 +31,7 @@ import {
   correctionOwnerDeclaration,
   correctionRouting,
 } from './correction-owner.mjs';
+import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import {
   assessReviewScope,
   isRetryableReviewFailureDescription,
@@ -969,6 +970,11 @@ export async function completeReviewedPullRequest(
   pullRequest,
   expectedHead,
 ) {
+  const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead);
+  if (!authorization.allowed) {
+    return 'held_for_gates';
+  }
+  pullRequest = authorization.pullRequest;
   const direct = await client.mergeExactHead(
     pullRequest.number,
     expectedHead,
@@ -1002,6 +1008,30 @@ export async function completeReviewedPullRequest(
       { cause: error },
     );
   }
+}
+
+/** The common mandatory guard for both direct merge and auto-merge entrypoints. */
+export async function authorizeExactHeadMerge(client, pullRequest, expectedHead) {
+  const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
+  if (!live || live.draft || !live.base?.sha) {
+    return { allowed: false, state: live?.draft ? 'draft' : 'superseded' };
+  }
+  const [statuses, checks] = await Promise.all([
+    client.statuses(expectedHead),
+    client.checkRuns(expectedHead),
+  ]);
+  const latestReview = statuses.find((status) => status.context === STATUS_CONTEXT);
+  const required = summarizeRequiredChecks(checks, requiredChecksForPullRequest(live.number));
+  if (latestReview?.state !== 'success' || required.state !== 'success') {
+    return { allowed: false, state: 'gates_not_green' };
+  }
+  // Re-read after remote evidence. A push, base update, retarget or draft
+  // transition during validation fails closed.
+  const finalLive = await refreshCurrentHead(client, live.number, expectedHead);
+  if (!finalLive || finalLive.draft || finalLive.base?.sha !== live.base.sha) {
+    return { allowed: false, state: 'changed_during_validation' };
+  }
+  return { allowed: true, state: 'authorized', pullRequest: finalLive };
 }
 
 export async function ensureTerminalReviewState(
@@ -1805,6 +1835,15 @@ export async function run() {
         );
         throw new Error(detail);
       }
+      const shadow = classifyClaudeShadowReview({
+        checkRuns: await client.checkRuns(expectedHead),
+        expectedHead,
+        pullRequestNumber: pullRequest.number,
+        trustedAppSlug: process.env.CLAUDE_REVIEW_APP_SLUG ?? '',
+      });
+      console.log(
+        `Claude independent-review shadow: ${shadow.state}; non-authoritative`,
+      );
       // Publish the clean verdict while the pull request is still OPEN. This
       // sticky update is the last guaranteed-delivery event on the success
       // path: sessions subscribed to the PR receive comment updates only while
@@ -1868,7 +1907,9 @@ export async function run() {
           attempt,
           next: completion === 'merged'
             ? 'GitHub squash-merged this exact reviewed head.'
-            : 'GitHub auto-merge is queued behind branch protection.',
+            : completion === 'queued'
+              ? 'GitHub auto-merge is queued behind branch protection.'
+              : 'Merge is held because the current head, base, readiness or required gates changed during validation.',
         }),
       );
       return;

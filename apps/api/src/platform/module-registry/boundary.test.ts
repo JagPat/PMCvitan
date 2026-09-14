@@ -213,7 +213,12 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
     // once by the migration, read only by that seal's trigger, and encapsulated for the same
     // reason `decisionOptionKindSelection` is: a model owned but not read-encapsulated produces no
     // cross-module-read finding, so forgetting it here would silently lose its boundary.
-    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionKindSelection', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'decisionConsultation', 'decisionConsultationResponse', 'changeRequest', 'decisionProjection', 'phase6ApprovalSealWatermark']);
+    // Phase 6 unit 4d-i — the three chain FACTS (`decisionForward`, `decisionCountersign`,
+    // `decisionStrandedResolution`) join the encapsulated set the moment their tables exist,
+    // DARK, for exactly the reason the 4c pair did: a model owned but NOT read-encapsulated
+    // produces no cross-module-read finding, which is the gap that would let 4d-ii's first
+    // foreign read slip through unnoticed.
+    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionKindSelection', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'decisionConsultation', 'decisionConsultationResponse', 'changeRequest', 'decisionProjection', 'phase6ApprovalSealWatermark', 'decisionForward', 'decisionCountersign', 'decisionStrandedResolution']);
     // it declares the queries other modules reach it through, and depends on nothing
     expect(decisions?.queries.length).toBeGreaterThan(0);
     // and every module that reads decisions now declares the dependency

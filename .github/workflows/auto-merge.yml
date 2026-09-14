@@ -81,4 +81,5 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ inputs.pr_number }}
           STATUS_CONTEXT: codex-current-head
+          CLAUDE_REVIEW_APP_SLUG: ${{ vars.CLAUDE_REVIEW_APP_SLUG }}
         run: node scripts/autonomous-review-gate.mjs

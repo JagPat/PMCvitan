@@ -1,6 +1,7 @@
 // Tests for the parser binding.
 //
-// The claim is small enough to test directly: all 92 migrations parse with PostgreSQL's grammar
+// The claim is small enough to test directly: every migration in the corpus parses with
+// PostgreSQL's grammar
 // through this binding, and the binding neither leaks nor truncates on the largest of them. Each
 // probe below corresponds to a measured fact in the binding's header — a decision recorded there
 // without a test to hold it would be a comment, not a property.
@@ -27,10 +28,10 @@ const pg = await loadParser();
 
 test('every migration in the corpus parses with PostgreSQL’s own grammar', () => {
   const names = migrationNames();
-  assert.equal(names.length, 103, 'the corpus size is pinned, so a new migration is a visible diff');
+  assert.equal(names.length, 105, 'the corpus size is pinned, so a new migration is a visible diff');
   for (const name of names) {
     // The file is NAMED here, because parseSql is handed text and cannot name it. A check whose
-    // failure output does not say which of 103 files failed is not a usable check.
+    // failure output does not say which of the corpus's files failed is not a usable check.
     try {
       const tree = parseSql(sqlOf(name));
       assert.ok(Array.isArray(tree.stmts) && tree.stmts.length > 0, 'a migration has statements');
@@ -41,8 +42,11 @@ test('every migration in the corpus parses with PostgreSQL’s own grammar', () 
 });
 
 test('the largest migration parses — the case the convenience wrappers cannot do at all', () => {
-  // 177,493 bytes against an emscripten 64 KB stack. This is the measurement that decided the raw
-  // entry points, so it is the measurement that is pinned.
+  // 177,493 bytes against an emscripten 64 KB stack: that was the measurement that decided the
+  // raw entry points, so the SHAPE of the probe is what is pinned, not the file. The probe reads
+  // the largest migration each run rather than naming one — 4d-i's dark migration has since passed
+  // that file — and the assertion below is the property the measurement established: whatever is
+  // largest must exceed the stack, or this probe is testing nothing.
   const sizes = migrationNames()
     .map((name) => ({ name, bytes: Buffer.byteLength(sqlOf(name), 'utf8') }))
     .sort((a, b) => b.bytes - a.bytes);

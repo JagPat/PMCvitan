@@ -38,7 +38,7 @@ function declarationBlock(body) {
       declared.push(match[1].toLowerCase());
     }
   }
-  return declared;
+  return { declared };
 }
 
 /**
@@ -58,7 +58,7 @@ function declarationBlock(body) {
  * so the parser now says it too.
  */
 export function parseCorrectionOwner(body, { headRef } = {}) {
-  const declared = declarationBlock(body);
+  const { declared } = declarationBlock(body);
 
   if (declared.length === 0) {
     return {
@@ -167,7 +167,8 @@ export function correctionOwnerProblem(pullRequest) {
 }
 
 function ownerLabel(owner) {
-  return owner === 'claude' ? 'Claude Code web Auto-fix' : 'The Cursor agent on this branch';
+  if (owner === 'claude') return 'Claude Code web Auto-fix';
+  return 'The Cursor agent on this branch';
 }
 
 // What the loop asks the declared owner to do, per reason. The OWNER decision is
@@ -188,7 +189,7 @@ function declaredInstruction(owner, { reason, detail }) {
   // routing and stops there.
   const start = AWAKENABLE_FROM_GITHUB.has(owner)
     ? ''
-    : ' GitHub can neither start that session nor observe whether it is already running, so '
+    : ' The configured GitHub loop can neither start that session nor observe whether it is already running, so '
       + 'this notice reports the routing only, never whether the correction has begun.';
   if (reason === 'ci') {
     return `${who} owns this correction: fix the failed required checks and push one new head. `

@@ -202,3 +202,6 @@ Drawings register — an input, the haystack matching what each card displays (d
 else legacy `zone`, always as rendered), the filter-aware scoped-empty predicate, and the
 eight acceptance tests in §2. It touches no navigation logic, no policy, no server contract, and no other screen.
 E needs no unit; E2 rides with the change it guards against; D2 waits on its trigger.
+
+**Owner design GO (2026-09-11).** JagPat authorized D1. It is queued, not opened, while
+Phase 6 task 4d-i (#582) is the product task. D2 remains specified-not-built.

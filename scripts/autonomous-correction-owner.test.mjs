@@ -164,7 +164,7 @@ test('O1: the declaration is machine-readable, and every failure mode is named',
   assert.equal(parseCorrectionOwner('').owner, null);
   assert.equal(parseCorrectionOwner(undefined).state, 'missing');
 
-  const invalid = parseCorrectionOwner('<!-- correction-owner: codex -->');
+  const invalid = parseCorrectionOwner('<!-- correction-owner: unknown -->');
   assert.equal(invalid.state, 'invalid');
   assert.equal(invalid.owner, null, 'an unknown agent is never routed to');
 
@@ -266,7 +266,7 @@ test('O2: review-scope rejects undeclared ownership before any expensive job', (
   assert.equal(undeclared.allowed, false);
   assert.match(undeclared.detail, /correction-owner/u);
 
-  const invalid = scoped({ declaration: '<!-- correction-owner: codex -->', ref: 'codex/x' });
+  const invalid = scoped({ declaration: '<!-- correction-owner: unknown -->', ref: 'codex/x' });
   assert.equal(invalid.allowed, false, 'an unknown agent is refused');
 
   const contradictory = scoped({
@@ -372,7 +372,7 @@ test('O5: an owner GitHub cannot awaken is reported as correction_stalled, never
   });
   assert.equal(cursor.owner, 'cursor');
   assert.equal(cursor.awakenable, false, 'GitHub cannot start it');
-  assert.match(cursor.instruction, /GitHub can neither start that session nor observe/iu);
+  assert.match(cursor.instruction, /The configured GitHub loop can neither start that session nor observe/iu);
   assert.doesNotMatch(
     cursor.instruction,
     /(in progress|is working|continuing)/iu,
@@ -539,7 +539,7 @@ test('C4: legacy replacement reasons now instruct the declared owner to fix forw
     declaration: cursor, head: HEAD, detail: '3 findings', reason: 'review',
   });
   assert.match(review.instruction, /new head/iu);
-  assert.match(review.instruction, /GitHub can neither start that session nor observe/iu);
+  assert.match(review.instruction, /The configured GitHub loop can neither start that session nor observe/iu);
 });
 
 test('C5: a malformed declaration is told to REPLACE the marker, not add one', async () => {
@@ -554,7 +554,7 @@ test('C5: a malformed declaration is told to REPLACE the marker, not add one', a
   assert.match(missing.instruction, /\badd\b/iu, 'nothing there yet: add one');
 
   for (const [label, body, headRef] of [
-    ['unknown agent', '<!-- correction-owner: codex -->', 'codex/x'],
+    ['unknown agent', '<!-- correction-owner: unknown -->', 'codex/x'],
     ['two owners', '<!-- correction-owner: claude -->\n<!-- correction-owner: cursor -->', 'codex/x'],
     ['branch conflict', '<!-- correction-owner: cursor -->', 'claude/x'],
   ]) {

@@ -268,6 +268,11 @@ owner's. The resulting exact settings are:
 Do not add `codex-current-head` before the workflow is present on the default
 branch; doing so would intentionally block every PR, including the bootstrap PR.
 
+The system merges automatically after required CI and independent exact-head
+review pass. No human authorization comment or Board approver configuration is
+required. The controller revalidates the current head, base and readiness before
+completion; GitHub branch protection still governs direct and queued merges.
+
 ## External Dependencies
 
 The Codex GitHub review integration, GitHub Actions, and Claude Code web Auto-fix

@@ -45,7 +45,7 @@ A foundation stage plus five waves — six in all. Ordered by **dependency**, no
 ### Wave 0 — Foundation · units `F-1a` → `F-1b` → `F-1c`
 Three review units, **run in order**: `F-1c` validates the work of the other two and must follow both. Full spec: `WAVE_0_FOUNDATION.md`.
 - **F-1a — primitives + dialog focus.** Focus tokens; `:focus-visible` on shared primitives; focus trap in `Modal.tsx` and the 4 dialogs (`ApproveModal`, `ChangeModal`, `QrModal`, `PhotoViewer`); `ProjectSwitcher` is a non-modal disclosure per the Wave-0 amendment (2026-08-15).
-- **F-1b — mobile field and touch corrections.** 8 field constants to 16px; critical type off 9px; mismatch control to 44×44.
+- **F-1b — mobile field and touch corrections.** Stylesheet floor: `input`/`textarea`/`select` ≥16px on the mobile shell (`@media (width < 640px)`); critical type off 9px; every action target ≥44×44. No `Field` primitive. Vehicle #584.
 - **F-1c — per-surface validation.** The 23-surface sweep plus Playwright, automated a11y, and manual keyboard/screen-reader passes.
 
 **Why first:** every later unit needs accessibility checks and keyboard verification, and none can pass while focus is invisible app-wide.
@@ -67,6 +67,7 @@ Contractor and consultant already sit at five: **do not add a More sheet there.*
 
 **Client scale-up** (`ClientHealthScreen`, `ClientDecisionsScreen`): base 16px → **18–20px** desktop; measure capped ~640–720px and centred; thumbnails and photos enlarged; respect OS Dynamic Type and browser zoom. The client may be elderly reading on an iPad at home — the layout must *grow up*, not merely widen.
 Engineer and worker surfaces stay **single-column and large-target even on tablet**.
+**Owner design GO (2026-09-11).** This leftover is authorized and queued; do not open it while #582 is the product task. The mobile tab bar from #417 already covers the Wave 1 nav half.
 
 ### Wave 2 — Field language · unit `E` · M
 Add `daily-log`, `checklist`, `attendance`, `issues` namespaces for **en / hi / gu**, covering validation, offline and error messages — not only visible labels. Pair every icon-only control with a short word.
@@ -187,10 +188,12 @@ The "generate the weekly report" step was removed from the PMC scenario — see 
 
 **6.6 Audio for Listen — two layers.** Settle before Wave 4 opens. Fixed controls use bundled versioned recordings in en/hi/gu. Project-specific content — the task and the approved material — cannot be bundled and needs an **attributable voice briefing recorded by the engineer or PMC**, bound to the assignment revision or fingerprint and cached offline, invalidated when the assignment changes. Browser speech synthesis is ruled out for both layers: no guaranteed installed Hindi or Gujarati voice, and no offline guarantee. Decide who records, when they are prompted, and what happens when a briefing is missing.
 
-**6.7 Field style sharing.** The eight sub-16px field styles are separate per-screen objects, not shared constants. Either introduce a real shared field primitive (preferred — makes the property structurally guaranteed) or verify with Playwright computed-style assertions per surface. Decide before F-1b opens; it changes the unit's size. **Decided (2026-08-15, autonomous loop, per the non-blocking rule — F-1b is loop-assigned work):** the shared field primitive, this section's preferred option; the Wave-0 doc carries the full dated amendment, and the owner may override asynchronously.
+**6.7 Field style sharing.** The eight sub-16px field styles are separate per-screen objects, not shared constants. Either introduce a real shared field primitive (preferred — makes the property structurally guaranteed) or verify with Playwright computed-style assertions per surface. Decide before F-1b opens; it changes the unit's size. **Decided (2026-08-15, autonomous loop, per the non-blocking rule — F-1b is loop-assigned work):** the shared field primitive, this section's preferred option; the Wave-0 doc carries the full dated amendment, and the owner may override asynchronously. **Overridden (2026-09-11, JagPat design GO):** F-1b uses a mobile stylesheet floor `@media (width < 640px)` covering `input`, `textarea`, and `select` — not a shared `Field` primitive. See `WAVE_0_FOUNDATION.md` and `README.md`.
 
 ---
 
 ## 7. STATUS handoff
 
 At the next **safe** handoff, record this as an owner-mandated standalone-V1 completion gate. Do **not** modify or expand an active unrelated PR to record it. Task 4 must remain undisturbed. Continue the autonomous draft → CI → exact-head Codex → correction → merge sequence. **Never self-certify the final outcome.**
+
+**Owner design GO (2026-09-11), recorded here so a later STATUS flip does not have to reconstruct it.** JagPat approved: (1) F-1b look on #584, with the §6.7 Field-primitive override above; (2) D1 drawings search, queued; (3) client Health/Decisions type scale-up, queued; (4) contractor-capture unit 0 remains the already-cleared fail-closed — units 1–6 stay Board-gated. Do not open D1, the client scale-up, or a contractor unit 1–6 PR while #582 is the product task.

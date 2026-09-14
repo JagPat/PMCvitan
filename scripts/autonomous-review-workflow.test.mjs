@@ -22,6 +22,15 @@ function checkRun(name, conclusion = 'success', status = 'completed') {
   return { name, conclusion, status };
 }
 
+function automatedMergeEvidence(pullRequest) {
+  return {
+    repository: 'JagPat/PMCvitan',
+    async pullRequest() { return pullRequest; },
+    async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
+    async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
+  };
+}
+
 function deferred() {
   let resolve;
   const promise = new Promise((resolvePromise) => {
@@ -608,7 +617,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     // declares one; the test is about a buried clean verdict, not ownership.
     body: '<!-- correction-owner: claude -->',
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
-    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
   };
   const draftTransitions = [];
@@ -616,6 +625,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
   let autoMergeDraft = null;
   let reviewComments = [];
   const client = {
+    ...automatedMergeEvidence(pullRequest),
     async pullRequest() {
       return pullRequest;
     },
@@ -672,7 +682,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     true,
   );
   assert.deepEqual(draftTransitions, []);
-  assert.equal(autoMergeDraft, false);
+  assert.equal(autoMergeDraft, false, 'clean review and CI queue merge automatically');
   assert.equal(statusWrites[0].state, 'success');
   assert.match(statusWrites[0].description, /recovered prior clean/u);
 
@@ -692,7 +702,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     ),
     true,
   );
-  assert.equal(autoMergeDraft, false);
+  assert.equal(autoMergeDraft, false, 'stale findings do not prevent automatic merge');
   assert.equal(pullRequest.draft, false);
   assert.equal(statusWrites.at(-1).state, 'success');
 });
@@ -969,7 +979,7 @@ test('a buried current-head finding vetoes recovered clean state', async () => {
     state: 'open',
     draft: false,
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
-    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
   };
   const draftTransitions = [];
@@ -1014,7 +1024,7 @@ test('live current-head findings stop recovery before another ready transition',
     state: 'open',
     draft: true,
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
-    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
   };
   const draftTransitions = [];
@@ -1702,10 +1712,11 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
     state: 'open',
     draft: false,
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
-    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
   const calls = [];
   const client = {
+    ...automatedMergeEvidence(pullRequest),
     async mergeExactHead(number, head) {
       calls.push(['merge', number, head]);
       return { merged: true, sha: 'b'.repeat(40) };
@@ -1740,10 +1751,11 @@ test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
     state: 'open',
     draft: false,
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
-    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
   const calls = [];
   const client = {
+    ...automatedMergeEvidence(pullRequest),
     async mergeExactHead(number, head) {
       calls.push(['merge', number, head]);
       return { merged: false, message: 'Not ready to merge' };
@@ -1779,10 +1791,11 @@ test('a clean-state auto-merge race retries the exact-SHA merge once', async () 
     state: 'open',
     draft: false,
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
-    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
   let mergeAttempts = 0;
   const client = {
+    ...automatedMergeEvidence(pullRequest),
     async mergeExactHead(number, head) {
       assert.equal(number, 230);
       assert.equal(head, expectedHead);
