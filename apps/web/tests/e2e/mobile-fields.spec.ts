@@ -765,6 +765,31 @@ for (const width of [390, 1280]) {
 
 }
 
+test('new-project module selection and graft fields remain reachable touch targets', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/');
+  await expect(page.getByTestId('mobile-role-switcher')).toBeVisible();
+  await page.evaluate(() => {
+    (window as unknown as { __vitanDevSeed: (patch: Record<string, unknown>) => void }).__vitanDevSeed({
+      myOrgs: [{ id: 'org-targets', name: 'Target test', role: 'owner' }],
+      orgModules: [{ id: 'module-room', name: 'Door set', category: 'architecture', anchorKind: 'room',
+        counts: { nodes: 1, inspections: 0, phases: 0, activities: 0 } }],
+      loadOrgModules: async () => {}, loadOrgTemplates: async () => {},
+    });
+  });
+  await page.getByTestId('mobile-project-switcher').click();
+  await page.getByTestId('project-sheet-new').click();
+  const checkbox = page.getByTestId('np-module-module-room');
+  await expect(checkbox).toBeVisible();
+  await sweepActionTargets(page, 'new project module selection');
+  await checkbox.check();
+  await expect(page.getByTestId('np-under-room-module-room')).toBeVisible();
+  await sweepActionTargets(page, 'new project room graft');
+  await page.getByTestId('np-target-kind-module-room').selectOption('zone');
+  await expect(page.getByTestId('np-under-zone-module-room')).toBeVisible();
+  await sweepActionTargets(page, 'new project zone graft');
+});
+
 test('fractional mobile widths retain the font floor up to the desktop boundary', async ({ page }) => {
   await page.goto('/');
   // Zoom preserves fractional CSS viewport widths through Chromium viewport rounding.

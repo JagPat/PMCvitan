@@ -168,7 +168,9 @@ Audit every action target against the 44×44 floor in the same pass.
 > Capability-enabled Chromium probes exercise Commercial budget/cost-head and claim forms,
 > claim tabs and three stale retry states, plus Labour allocation/work entry, manual muster
 > and stale retry, at 390px and 1280px. The old Commercial fields measured 33px on mobile;
-> removing the native floor makes the raw controls fail at both widths. Source inspection
+> removing the native floor makes the raw controls fail at both widths. The new-project
+> module checkbox label is also raised from 19px to 44px; selecting it reveals room/zone
+> graft fields that wrap and remain reachable at 360px. Source inspection
 > also confirms that smaller CSS-module minimums belong to badges, not action controls.
 > F-1b still requires the complete current-head CI battery and independent review before
 > merge; F-1c remains its subsequent validation unit.

@@ -216,7 +216,7 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
                 const sel = picked[m.id];
                 return (
                   <div key={m.id} style={{ border: '1px solid rgba(35,33,28,.14)', borderRadius: 10, padding: '8px 10px', background: sel ? 'rgba(35,33,28,.04)' : '#fff' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 44, minHeight: 44, cursor: 'pointer', fontSize: 13 }}>
                       <input type="checkbox" checked={Boolean(sel)} onChange={() => togglePick(m.id)} data-testid={`np-module-${m.id}`} />
                       <span style={{ fontWeight: 600, flex: 1 }}>{m.name}</span>
                       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.08em', color: 'var(--muted)', textTransform: 'uppercase' }}>{m.category}</span>
@@ -225,7 +225,7 @@ export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose:
                       {[m.counts.nodes && `${m.counts.nodes} places`, m.counts.inspections && `${m.counts.inspections} checklists`, m.counts.phases && `${m.counts.phases} phases`, m.counts.activities && `${m.counts.activities} activities`].filter(Boolean).join(' · ') || 'empty'}
                     </div>
                     {sel && (
-                      <div style={{ display: 'flex', gap: 8, marginTop: 7, paddingLeft: 24, alignItems: 'center' }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 7, paddingLeft: 24, alignItems: 'center' }}>
                         <label style={{ fontSize: 11.5, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 5 }}>
                           ×
                           {/* Wave 0 / F-1b round 8 — 30 -> 44 across the new-project grafting
