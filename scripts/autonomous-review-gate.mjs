@@ -1264,9 +1264,8 @@ export async function revalidateFinalReviewPolicy(
 export const DOCS_ONLY_EXEMPTION = 'review: policy exemption — docs-only diff (docs/** or *.md only); CI and the author checklist passed; NO Codex review occurred';
 
 export async function assessDocsOnlyExemption(client, pullRequest, expectedHead, recoveryRequest) {
-  // The LIVE object is judged, never the one the caller carried in: the checklist, owner and
-  // lineage are read from the same fetch, and re-read at the end so an edit during the
-  // assessment refuses rather than being merged.
+  // The LIVE object is judged, never the carried-in one, and re-read at the end: an edit to the
+  // checklist, owner or lineage during the assessment refuses rather than merging.
   const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (!live) return { eligible: false, reason: 'superseded' };
   let files;
@@ -1276,8 +1275,7 @@ export async function assessDocsOnlyExemption(client, pullRequest, expectedHead,
   if (!scope.allowed) return { eligible: false, reason: `checklist: ${scope.detail}` };
   const checks = summarizeRequiredChecks(await client.checkRuns(expectedHead), requiredChecksForPullRequest(live.number));
   if (checks.state !== 'success') return { eligible: false, reason: `ci: ${checks.state}` };
-  // A finding that landed on this exact head while CI settled is a finding: it fails the
-  // required status and returns the unit to draft, exactly as on the reviewed path.
+  // a finding that landed on this exact head while CI settled fails the status and re-drafts, as on the reviewed path
   if (await guardAgainstCurrentHeadFinding(client, live, expectedHead, recoveryRequest)) return { eligible: false, reason: 'current-head Codex finding' };
   const settled = await refreshCurrentHead(client, live.number, expectedHead);
   if (!settled || settled.body !== live.body || settled.base?.sha !== live.base?.sha) return { eligible: false, reason: 'changed during assessment' };

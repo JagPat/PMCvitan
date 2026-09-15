@@ -69,7 +69,8 @@ lease feature outside a requested maintenance PR.
 
 Keep one concern per PR. A review unit is at most 20 files and 1,500 changed lines;
 an oversized unit is split. The only exemption is `<!-- migration-scope: inseparable -->`
-with all six invariant rows carrying concrete risk and evidence; for units after #590
+on a diff that carries a migration and its inseparable service, with all six invariant
+rows carrying concrete risk and evidence; for units after #590
 `<!-- review-size: justified-large -->` admits nothing and no human size marker exists.
 An added or modified plan is at most 400 lines at the PR head. Limits are aids, not proof.
 

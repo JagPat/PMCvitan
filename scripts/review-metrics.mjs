@@ -117,8 +117,7 @@ export async function collect({ week, repository, token, fetchImpl = globalThis.
       if (page > 200) throw new Error(`GitHub ${path}: pagination did not terminate`);
     }
   };
-  // merged: newest-updated first, and a PR merged in the week was updated in or after it, so stop early;
-  // open: the whole listing, because a dormant backlog item may predate the week entirely
+  // merged: newest-updated first, stopping before the week; open: the WHOLE listing (a dormant backlog item predates it)
   const closed = await api(`/repos/${repository}/pulls?state=closed&sort=updated&direction=desc`, (pr) => Date.parse(pr.updated_at) < Date.parse(bounds.start));
   const relevant = [...await api(`/repos/${repository}/pulls?state=open`), ...closed.filter((pr) => mergedInWeek(pr, bounds))];
   const snapshot = { week, fetchedAt: new Date().toISOString(), repository, pulls: relevant, comments: {}, reviews: {}, reactions: {}, jobs: {} };

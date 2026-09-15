@@ -1674,7 +1674,7 @@ const sixRows = (risk = 'a forged claim could cross the tenant boundary here', e
   '| Invariant | Risk | Evidence |', '| --- | --- | --- |',
   ...REQUIRED_INVARIANTS.map((invariant) => `| ${invariant} | ${risk} | ${evidence} |`),
 ];
-const capBody = (markers, rows = sixRows()) => [...markers, '<!-- correction-owner: claude -->', ...preReviewBody().split('\n').slice(3), '- Migration/service seam: the seed literal is generated from the compiled catalog', ...rows].join('\n');
+const capBody = (markers, rows = sixRows()) => [...markers, '<!-- correction-owner: claude -->', ...preReviewBody().split('\n').slice(3).filter((line) => !/Migration\/service seam/u.test(line)), '- Migration/service seam: the seed literal is generated from the compiled catalog', ...rows].join('\n');
 
 test('a new unit at exactly 20 files / 1,500 lines passes; 21 files or 1,501 lines fails whatever marker it carries', () => {
   const within = assessReviewScope(pullRequest({ number: NEW_UNIT, changed_files: 20, additions: 1_000, deletions: 500, body: preReviewBody() }), { changedFiles: [] });
@@ -1689,17 +1689,24 @@ test('a new unit at exactly 20 files / 1,500 lines passes; 21 files or 1,501 lin
   }
 });
 
-test('the only exemption is an inseparable migration unit whose six rows are concrete; one vague row fails', () => {
+test('the only exemption is an inseparable migration unit whose six rows are concrete; one vague row or no migration fails', () => {
   const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
-  const exempt = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->']) }), { changedFiles: [] });
+  // the marker and the rows exempt MIGRATION work only: the diff must carry a migration AND the service it cannot be separated from
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  const exempt = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->']) }), { changedFiles: mixed });
   assert.equal(exempt.allowed, true, exempt.detail);
   assert.equal(exempt.state, 'inseparable_large');
+  for (const files of [[], ['apps/api/src/x/x.service.ts', 'docs/a.md'], ['apps/api/prisma/migrations/20270101000000_x/migration.sql']]) {
+    const bare = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->']) }), { changedFiles: files });
+    assert.equal(bare.allowed, false, `an oversized unit without a migration+service seam is ordinary: ${files.join(',')}`);
+    assert.match(bare.detail, /carries no migration\+service seam/u);
+  }
   const vagueRow = sixRows().slice(0, -1).concat(`| ${REQUIRED_INVARIANTS.at(-1)} | n/a | checked |`);
-  const vague = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], vagueRow) }), { changedFiles: [] });
+  const vague = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], vagueRow) }), { changedFiles: mixed });
   assert.equal(vague.allowed, false);
   assert.match(vague.detail, new RegExp(`rows without concrete risk and evidence: ${REQUIRED_INVARIANTS.at(-1)}`, 'u'));
   const fiveRows = sixRows().slice(0, -1);
-  assert.equal(assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], fiveRows) }), { changedFiles: [] }).allowed, false);
+  assert.equal(assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], fiveRows) }), { changedFiles: mixed }).allowed, false);
   // an older unit keeps the justified-large rule it was authored under
   assert.equal(assessReviewScope(pullRequest({ ...large, number: 300, body: justifiedLargeBody() })).state, 'justified_large');
 });

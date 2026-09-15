@@ -45,11 +45,8 @@ export function plan(argv, { root = ROOT, exists = existsSync, files = testFiles
 /** The database NAME (decoded pathname), never the whole URL: a `test` user on a production host is not a test database. */
 const database = (url) => { try { return decodeURIComponent(new URL(url).pathname.slice(1)); } catch { return ''; } };
 
-/**
- * One lease per database, held from before the readiness check until the child exits: two
- * runners starting together would otherwise both pass the process scan, migrate and reset the
- * same fixtures. A lease left by a dead process is reclaimed; a live holder is refused.
- */
+/** One lease per database from before the readiness check until the child exits (two runners would
+ * otherwise both pass the process scan and reset the same fixtures); a dead holder's lease is reclaimed. */
 export function lease(env, { fs = { openSync, writeSync, closeSync, readFileSync, unlinkSync }, alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } } } = {}) {
   const path = join(tmpdir(), `pmcvitan-focused-${createHash('sha256').update(env.DATABASE_URL ?? '').digest('hex').slice(0, 16)}.lock`);
   for (let attempt = 0; attempt < 2; attempt += 1) {

@@ -398,14 +398,17 @@ export function assessReviewScope(
       const vague = REQUIRED_INVARIANTS.filter((invariant) => !tableRows.some(
         (cells) => cells[0]?.toLowerCase() === invariant && concreteCell(cells[1]) && concreteCell(cells[2]),
       ));
-      if (migrationScope === 'inseparable' && vague.length === 0) {
+      // the exemption is for MIGRATION work the service cannot be separated from: the diff itself
+      // must carry that seam, or the marker and six boilerplate rows would exempt anything
+      if (migrationScope === 'inseparable' && vague.length === 0 && migrationServiceMix) {
         state = 'inseparable_large';
       } else {
         sizeProblem = `Review unit exceeds the hard cap of ${maxFiles} files / ${maxChangedLines} changed lines `
           + `(${changedFileCount} files, ${changedLines} lines): split it into ordinary units. The only exemption is `
-          + `${INSEPARABLE_MIGRATION_MARKER} with all six invariant rows carrying concrete risk and evidence`
+          + `${INSEPARABLE_MIGRATION_MARKER} on a diff carrying a migration and its inseparable service, with all six invariant rows carrying concrete risk and evidence`
           + (justified ? '; `justified-large` no longer admits a new oversized unit' : '')
           + (migrationScope !== 'inseparable' ? '; no inseparable-migration marker' : '')
+          + (!migrationServiceMix ? '; the diff carries no migration+service seam' : '')
           + (vague.length > 0 ? `; rows without concrete risk and evidence: ${vague.join(', ')}` : '');
       }
     } else if (!justified || missingInvariants.length > 0) {
