@@ -238,6 +238,7 @@ Reviewer output rules, the family probes and the dispute path live in
 | Engineering invariants | Owning product module, SQL constraints and review | Relevant unit, PostgreSQL, migration and browser proofs |
 | Family probes (eight families) | apps/api/test/invariants/probes.ts | process-invariant-probes.test.ts |
 | Third-head stop and disputes | Correction owner, on the PR thread (no controller state) | policy-contract tests |
+| Weekly review metrics | review-metrics.mjs (read-only; published by a docs PR) | review-metrics.test.mjs |
 
 ### Claude independent-review shadow boundary
 

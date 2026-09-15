@@ -246,6 +246,16 @@ Correct such a claim **forward**, in a new commit that says what was wrong and w
 the measurement showed. Do not edit the merged PR body: the record of what was
 believed at the time is worth keeping next to the correction.
 
+## Weekly review metrics
+
+`pnpm review:metrics -- --week YYYY-MM-DD --output docs/METRICS.md` reads one UTC week of
+merged pull requests through the GitHub REST API (read-only; a token is optional where an
+authenticating proxy serves `api.github.com`), caches the raw snapshot under the system
+temp directory (`--from-cache` re-renders without fetching) and writes the report with its
+definitions in the file. Every Codex signal is read as of `merged_at`. The definitions
+differ from the historical audit the owner supplied and the totals are not tuned to
+reconcile; the report says so. Publish it through an ordinary docs-only pull request.
+
 ## GitHub Enforcement
 
 After the autonomous workflow is merged **and PR #246 has merged or closed**, add
