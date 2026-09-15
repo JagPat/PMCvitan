@@ -7766,12 +7766,33 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
 
     // (ii) a prior generation flipped by hand, and one thinned by hand
     buildRun([], DARK_FILES);
+    // the HAND: a hostile write past every seal, which is what a hand is
     const bend = (sql: string) => psql(RUN_DB, ['-c', `SET session_replication_role='replica'; ${sql}; SET session_replication_role='origin';`]);
+    // the OPERATOR: RUNBOOK §P6T4D's catalog repair, verbatim — the seal disabled BY NAME and
+    // re-enabled in the same transaction (#590's review round 1: the seal admits a migration's
+    // INSERT and the retirement stamp under `vitan.phase6_4d_catalog` and nothing else, so a
+    // repair written under that setting is refused and leaves the operator at P3009)
+    const REPAIR = (sql: string) => psql(RUN_DB, ['-c', `BEGIN;
+      ALTER TABLE "ExternalEffectCatalog" DISABLE TRIGGER "ExternalEffectCatalog_t4d_sealed";
+      ${sql};
+      ALTER TABLE "ExternalEffectCatalog" ENABLE TRIGGER "ExternalEffectCatalog_t4d_sealed";
+      COMMIT;`]);
+    const sealed = () => psql(RUN_DB, ['-t', '-A', '-c',
+      `SELECT tgenabled FROM pg_trigger WHERE tgname = 'ExternalEffectCatalog_t4d_sealed' AND NOT tgisinternal`]).output.trim();
     expect(bend(`UPDATE "ExternalEffectCatalog" SET "pairingRequired" = true WHERE "coverageVersion" = '${PRIOR}' AND "effectKey" = 'decision.approved'`).ok).toBe(true);
     const flipped = psql(RUN_DB, ['-f', SWITCH_ON]);
     expect(flipped.ok, 'a prior generation already carrying the flag was written by a hand').toBe(false);
     expect(flipped.output).toMatch(/already carries `pairingRequired` on 1 key\(s\) \(decision\.approved\)/);
-    expect(bend(`UPDATE "ExternalEffectCatalog" SET "pairingRequired" = false WHERE "coverageVersion" = '${PRIOR}' AND "effectKey" = 'decision.approved'`).ok).toBe(true);
+    // the repair as the first draft of the runbook wrote it — under the catalog setting — is
+    // refused by the seal, whose UPDATE arm admits the retirement stamp alone
+    const UNFLIP = `UPDATE "ExternalEffectCatalog" SET "pairingRequired" = false WHERE "coverageVersion" = '${PRIOR}' AND "pairingRequired"`;
+    const underSetting = psql(RUN_DB, ['-c', `BEGIN; SET LOCAL vitan.phase6_4d_catalog = 'on'; ${UNFLIP}; COMMIT;`]);
+    expect(underSetting.ok, 'the catalog setting licenses no repair — it is a migration\'s INSERT gate').toBe(false);
+    expect(underSetting.output).toMatch(/is frozen — the ONLY admitted update is the retirement stamp/);
+    // …and the documented one lands, and leaves the seal enabled behind it
+    const unflipped = REPAIR(UNFLIP);
+    expect(unflipped.ok, `RUNBOOK §P6T4D's catalog repair (1) must be executable as written:\n${unflipped.output}`).toBe(true);
+    expect(sealed(), 'the repair re-enables the seal in its own transaction').toBe('O');
     expect(bend(`DELETE FROM "ExternalEffectCatalog" WHERE "coverageVersion" = '${PRIOR}' AND "effectKey" = 'decision.drafted'`).ok).toBe(true);
     const thinned = psql(RUN_DB, ['-f', SWITCH_ON]);
     expect(thinned.ok, 'a prior generation missing a key this seed carries is not the generation this unit extends').toBe(false);
@@ -7788,7 +7809,26 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     const disagree = psql(RUN_DB, ['-f', SWITCH_ON]);
     expect(disagree.ok, 'a row at this generation that disagrees with the compiled catalog is refused, never adopted').toBe(false);
     expect(disagree.output).toMatch(/DISAGREE with the compiled catalog — decision\.drafted/);
-    expect(bend(`DELETE FROM "ExternalEffectCatalog" WHERE "coverageVersion" = '${COVERAGE}'`).ok).toBe(true);
+    // the bare DELETE is refused by the seal whatever the setting; the documented repair (3) lands
+    const bareDelete = psql(RUN_DB, ['-c', `BEGIN; SET LOCAL vitan.phase6_4d_catalog = 'on';
+      DELETE FROM "ExternalEffectCatalog" WHERE "coverageVersion" = '${COVERAGE}' AND "effectKey" = 'decision.drafted'; COMMIT;`]);
+    expect(bareDelete.ok).toBe(false);
+    expect(bareDelete.output).toMatch(/may not be DELETED/);
+    const removed = REPAIR(`DELETE FROM "ExternalEffectCatalog" WHERE "coverageVersion" = '${COVERAGE}' AND "effectKey" IN ('decision.drafted')`);
+    expect(removed.ok, `RUNBOOK §P6T4D's catalog repair (3) must be executable as written:\n${removed.output}`).toBe(true);
+    expect(sealed()).toBe('O');
+    // (iii-b) a retirement stamp on the prior generation that 4d-iii never earned
+    expect(bend(`UPDATE "ExternalEffectCatalog" SET "retiredAt" = now() WHERE "coverageVersion" = '${PRIOR}' AND "effectKey" = 'decision.approved'`).ok).toBe(true);
+    const stamped = psql(RUN_DB, ['-f', SWITCH_ON]);
+    expect(stamped.ok, 'a pre-retired row of the prior generation is refused before this unit seeds beside it').toBe(false);
+    expect(stamped.output).toMatch(/1 row\(s\) of the prior generation .* are already stamped retired/);
+    const UNSTAMP = `UPDATE "ExternalEffectCatalog" SET "retiredAt" = NULL WHERE "coverageVersion" = '${PRIOR}' AND "retiredAt" IS NOT NULL`;
+    const bareUnstamp = psql(RUN_DB, ['-c', `BEGIN; SET LOCAL vitan.phase6_4d_catalog = 'on'; ${UNSTAMP}; COMMIT;`]);
+    expect(bareUnstamp.ok, 'retirement is a ONE-WAY stamp under the seal').toBe(false);
+    expect(bareUnstamp.output).toMatch(/retirement is a ONE-WAY stamp/);
+    const unstamped = REPAIR(UNSTAMP);
+    expect(unstamped.ok, `RUNBOOK §P6T4D's catalog repair (4) must be executable as written:\n${unstamped.output}`).toBe(true);
+    expect(sealed()).toBe('O');
     const applied = psql(RUN_DB, ['-f', SWITCH_ON]);
     expect(applied.ok, `and with the hands undone the switch-on applies:\n${applied.output}`).toBe(true);
 
@@ -7801,6 +7841,13 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     const beside = psql(RUN_DB, ['-f', SWITCH_ON]);
     expect(beside.ok, '4d-i admits any successor-SHAPED generation; this unit is what makes a second one too many').toBe(false);
     expect(beside.output).toMatch(/phase6 4d-i-b ABORT: 111 "ExternalEffectCatalog" row\(s\) sit in a coverage generation this rollout does not admit — hand-fourth/);
+    // the documented repair (2) removes the generation and the replay is clean again…
+    const dropped = REPAIR(`DELETE FROM "ExternalEffectCatalog" WHERE "coverageVersion" = 'hand-fourth'`);
+    expect(dropped.ok, `RUNBOOK §P6T4D's catalog repair (2) must be executable as written:\n${dropped.output}`).toBe(true);
+    expect(sealed()).toBe('O');
+    expect(psql(RUN_DB, ['-f', SWITCH_ON]).ok, 'without the foreign generation the switch-on replays').toBe(true);
+    // …and it is planted again for the stand-down leg
+    expect(fourth('hand-fourth').ok).toBe(true);
     // once 4d-ii's writers have arrived (declared AND serving — the fixture holds a live lease),
     // a further generation is the healthy state and the arm stands down
     expect(psql(RUN_DB, ['-c',

@@ -1388,13 +1388,18 @@ and until 4d-iii retires the unit those are the only generations anything has wr
 anywhere else is a dispatch policy no release computed, and `DomainEvent_t4d_envelope` will
 resolve an event against it by the exact `(coverageVersion, effectKey)` the event carries.
 
-**Repair — remove the rows.** The catalog's write seal admits writes only under
-`vitan.phase6_4d_catalog`, so this runs in one transaction that says so:
+**Repair — remove the rows.** The catalog's seal, `ExternalEffectCatalog_t4d_sealed`, refuses
+DELETE outright — `vitan.phase6_4d_catalog` licenses only a migration's INSERT and the one-way
+retirement stamp, never a removal — so on a database where 4d-i has already applied once (the
+replay that runs this audit) the repair is the transactional bypass this runbook uses for every
+delivered seal: disable the seal BY NAME, repair, re-enable, in ONE transaction, so the seal is
+never off for anyone else:
 
 ```sql
 BEGIN;
-SET LOCAL vitan.phase6_4d_catalog = 'on';
-DELETE FROM "ExternalEffectCatalog" WHERE "coverageVersion" = '<the named version>';
+  ALTER TABLE "ExternalEffectCatalog" DISABLE TRIGGER "ExternalEffectCatalog_t4d_sealed";
+  DELETE FROM "ExternalEffectCatalog" WHERE "coverageVersion" = '<the named version>';
+  ALTER TABLE "ExternalEffectCatalog" ENABLE TRIGGER "ExternalEffectCatalog_t4d_sealed";
 COMMIT;
 ```
 
@@ -1597,30 +1602,56 @@ resolves through, so a rolled-back switch-on refuses nothing at commit. The abor
   catalog must seed its own generation through its own migration. If 4d-i's generation is simply
   MISSING (a hand-deleted row), a 4d-i replay re-seeds it.
 - `the prior generation … already carries pairingRequired on N key(s)` — 4d-i seeds the flag
-  false everywhere, so a true there was written by a hand. Clear it under the catalog seal:
-
-  ```sql
-  BEGIN;
-  SET LOCAL vitan.phase6_4d_catalog = 'on';
-  UPDATE "ExternalEffectCatalog" SET "pairingRequired" = false
-   WHERE "coverageVersion" = '<the prior version the abort names>' AND "pairingRequired";
-  COMMIT;
-  ```
+  false everywhere, so a true there was written by a hand. Clear it with the catalog repair
+  below (its first statement).
 - `N "ExternalEffectCatalog" row(s) sit in a coverage generation this rollout does not admit` —
   between 4d-i-b and 4d-ii the catalog holds exactly THREE generations (the two 4d-i seeded and
   the pairing generation). 4d-i's own audit admits a third generation by SHAPE, which this unit's
-  existence makes one too many, so this file names the admitted set explicitly. Same repair as
-  *A catalog row in a generation this migration does not seed* above, with the same caveat: on a
-  database that has genuinely run 4d-ii or 4d-iii, restore its witness or marker instead of
-  deleting a generation a later release serves.
+  existence makes one too many, so this file names the admitted set explicitly. Remove the
+  generation with the catalog repair below (its second statement), with the same caveat as
+  *A catalog row in a generation this migration does not seed* above: on a database that has
+  genuinely run 4d-ii or 4d-iii, restore its witness or marker instead of deleting a generation a
+  later release serves.
 - `N row(s) already sit at this unit's generation under a key this release never compiled` and
   `… already exist at this unit's generation and DISAGREE with the compiled catalog` — rows at the
   pairing generation that this release did not compute. The pairing seal reads `pairingRequired`
   from these rows to decide which events owe a claim, so a hand-written row would refuse valid
-  events or admit unclaimed ones. Remove the named rows (under the catalog seal, as above).
+  events or admit unclaimed ones. Remove the named rows (the catalog repair's third statement).
 - `… already stamped retired` (either generation) — retirement is 4d-iii's act and
-  `RolloutRetirement` does not carry the unit. Clear `retiredAt` on the named rows under the
-  catalog seal, then redeploy; on a database that has genuinely run 4d-iii, restore its marker.
+  `RolloutRetirement` does not carry the unit. Clear `retiredAt` on the named rows (the catalog
+  repair's fourth statement), then redeploy; on a database that has genuinely run 4d-iii, restore
+  its marker instead.
+
+**The catalog repair, executable as written.** Every one of those four shapes is a write that
+`ExternalEffectCatalog_t4d_sealed` refuses — it admits a migration's INSERT and the one-way
+retirement stamp under `vitan.phase6_4d_catalog` and nothing else, so `SET LOCAL` licenses none
+of them: a flag cannot be switched, a row cannot be deleted, a stamp cannot be cleared. The
+repair is the same transactional bypass every delivered seal in this runbook takes — disable the
+seal BY NAME, write exactly what the abort named, re-enable, in ONE transaction, so it is never
+off for anyone else. Keep only the statement(s) the abort names and fill in its ids:
+
+```sql
+BEGIN;
+  ALTER TABLE "ExternalEffectCatalog" DISABLE TRIGGER "ExternalEffectCatalog_t4d_sealed";
+  -- (1) a hand-flipped prior generation
+  UPDATE "ExternalEffectCatalog" SET "pairingRequired" = false
+   WHERE "coverageVersion" = '<the prior version the abort names>' AND "pairingRequired";
+  -- (2) a generation this rollout does not admit
+  DELETE FROM "ExternalEffectCatalog" WHERE "coverageVersion" = '<the foreign version>';
+  -- (3) rows at this unit's generation under a key it never compiled, or that disagree with it
+  DELETE FROM "ExternalEffectCatalog"
+   WHERE "coverageVersion" = '<this unit's version>' AND "effectKey" IN (:keys);
+  -- (4) a stamp 4d-iii has not earned
+  UPDATE "ExternalEffectCatalog" SET "retiredAt" = NULL
+   WHERE "coverageVersion" = '<the version the abort names>' AND "retiredAt" IS NOT NULL;
+  ALTER TABLE "ExternalEffectCatalog" ENABLE TRIGGER "ExternalEffectCatalog_t4d_sealed";
+COMMIT;
+```
+
+`phase6-t4d-i-seal-stripped.test.ts` plants each of those shapes, shows the switch-on refusing
+it by name, shows the bare statement refused by the seal, runs this script verbatim, and
+requires the switch-on to apply afterwards — a documented repair nobody has executed is not a
+repair.
 - `after seeding, generation … carries pairingRequired on N key(s) rather than exactly the plan's
   six` — the read-back after the seed disagrees with the plan. Nothing below it installs. This is
   a build fault (a seed literal regenerated from a catalog with the wrong flips), not a database
