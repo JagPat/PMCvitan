@@ -206,6 +206,14 @@ const OPENING = (o: { cr: string; ev: string; version: string; order?: Order; au
   return TX(`UPDATE "Decision" SET "status" = 'change' WHERE "id" = '${dec}';`,
     o.order === 'event-first' ? event + fact : fact + event, audit);
 };
+/** the disagreement (4d-ii's `decisions.disagree`) on a decision parked in `awaiting_countersign` with the provisional head `mx-rev-park` */
+const REJECT = (o: { cr: string; ev: string; version: string; order?: Order }) => {
+  const fact = `INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId")
+      VALUES ('${o.cr}','mx-proj','mx-dec','the architect disagrees',0,0,'open','countersign_rejection','mx-rev-park');`;
+  const event = EV({ id: o.ev, type: 'decision.change_requested', dec: 'mx-dec', version: o.version });
+  return TX(`UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'mx-dec';`,
+    o.order === 'event-first' ? event + fact : fact + event);
+};
 /** the delivered `withdrawChange` on the reopened decision */
 const WITHDRAWAL = (o: { cr: string; ev: string; version: string; order?: Order; audit?: boolean; dec?: string }) => {
   const dec = o.dec ?? 'mx-dec2';
@@ -364,6 +372,45 @@ const MATRIX: Branch[] = [
     ],
   },
   {
+    // the SECOND writer branch of `decision.change_requested` — the architect's disagreement
+    // (reject-back / forward-on, 4d-ii's `decisions.disagree`): `awaiting_countersign → change`
+    // with an open `countersign_rejection` request citing the provisional head. The world no
+    // delivered writer produces before 4d-ii is planted by HAND (the reservation door admits
+    // leaving `awaiting_countersign`; only entering it is reserved), and the bundle itself runs
+    // through every seal. #590's review round 3: the first head claimed this branch's event only
+    // in the deferred seal, so the event-first order below was refused as unclaimed.
+    key: 'decision.change_requested',
+    writer: 'decisions.disagree (countersign_rejection)',
+    fact: 'ChangeRequest (origin countersign_rejection, citing the provisional revision)',
+    audit: null,
+    transition: 'Decision awaiting_countersign → change (recorded as change_from_awaiting)',
+    enforcedBy: ['ChangeRequest_t4d_paired', 'ChangeRequest_t4d_claim', 'Decision_t4d_disagreement_paired',
+      'Decision_t4d_change_transition', 'DomainEvent_t4d_pairing_claimed'],
+    setup: HAND(`UPDATE "Decision" SET "status" = 'awaiting_countersign' WHERE "id" = 'mx-dec';
+      INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","finalized","approvedFrom")
+        VALUES ('mx-rev-park','mx-proj','mx-dec',1,'a',now(),'mx-client',FALSE,'pending');`),
+    positive: (order, version) => REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version, order }),
+    claim: 'mx-ev-rej:ChangeRequest:mx-cr-rej',
+    negatives: [
+      { name: 'the decision is moved out of awaiting_countersign with its event but NO rejection request (missing converse)',
+        bundle: TX(`UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'mx-dec';`,
+          EV({ id: 'mx-ev-rej', type: 'decision.change_requested', dec: 'mx-dec', version: CURRENT })),
+        // two seals refuse this — this unit's decision-side arm (queued first, by name) and 4d-i's
+        // disagreement door — and either message binds the arm to the missing request
+        refusal: /awaiting_countersign → change.* with 0 open `countersign_rejection` change request\(s\) born here|in this transaction with no open `countersign_rejection` request/ },
+      { name: 'a rejection request PLANTED EARLIER is no-op updated to stand in for the one this disagreement owes, at the drain generation (no-op substitution)',
+        // 4d-i's disagreement door reads the request by `xmin`, which the touch supplies; at the
+        // prior generation the event owes no claim, so at cc923fdd this bundle COMMITTED — a
+        // decision reopened with a reason another act wrote
+        setup: HAND(`INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId")
+          VALUES ('mx-cr-old','mx-proj','mx-dec','an earlier disagreement',0,0,'open','countersign_rejection','mx-rev-park');`),
+        bundle: TX(`UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'mx-dec';`,
+          `UPDATE "ChangeRequest" SET "reason" = "reason" WHERE "id" = 'mx-cr-old';`,
+          EV({ id: 'mx-ev-rej', type: 'decision.change_requested', dec: 'mx-dec', version: PRIOR })),
+        refusal: /awaiting_countersign → change.* with 0 open `countersign_rejection` change request\(s\) born here/ },
+    ],
+  },
+  {
     key: 'decision.change_withdrawn',
     writer: 'decisions.withdrawChange',
     fact: 'ChangeRequest open → withdrawn',
@@ -449,7 +496,9 @@ describe('phase 6 unit 4d-i-b — the bundle proof matrix: every pairingRequired
   it('coverage: the matrix names exactly the compiled catalog\'s pairingRequired keys', () => {
     const flagged = Object.entries(EXTERNAL_EFFECTS as Record<string, { pairingRequired?: true }>)
       .filter(([, d]) => d.pairingRequired === true).map(([k]) => k).sort();
-    expect(MATRIX.map((b) => b.key).sort(), 'a flipped type without executable bundle coverage fails here').toEqual(flagged);
+    // a key may carry more than one WRITER BRANCH (`decision.change_requested`: the standard
+    // opening and the disagreement's `countersign_rejection`), so the set of keys is compared
+    expect([...new Set(MATRIX.map((b) => b.key))].sort(), 'a flipped type without executable bundle coverage fails here').toEqual(flagged);
     for (const b of MATRIX) {
       expect(b.negatives.length, `${b.key} needs at least a missing-counterpart variant`).toBeGreaterThan(0);
       expect(b.enforcedBy.length, `${b.key} names its enforcement`).toBeGreaterThan(0);
@@ -457,7 +506,7 @@ describe('phase 6 unit 4d-i-b — the bundle proof matrix: every pairingRequired
   });
 
   for (const b of MATRIX) {
-    describe(b.key, () => {
+    describe(`${b.key} · ${b.writer}`, () => {
       const run = (setup: string | undefined, bundle: string) => {
         reset();
         if (setup) {

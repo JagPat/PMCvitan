@@ -3945,7 +3945,10 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
           WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.change_requested'
             AND c."coverageVersion" = '${COVERAGE}'`;
 
-    buildRun([...AWAITING_DOORS, 'Decision_t4d_disagreement_paired']);
+    // #590 round 3 — the switch-on's decision-side arm (`Decision_t4d_change_paired`) now asks the
+    // same question of the request recorder, so it is stripped beside the door under test; whole,
+    // the bare disagreement is refused by whichever of the two speaks first (both messages bind).
+    buildRun([...AWAITING_DOORS, 'Decision_t4d_disagreement_paired', 'Decision_t4d_change_paired']);
     expect(psql(RUN_DB, ['-c', PROVISIONAL]).ok, 'the provisional act must commit first').toBe(true);
     const stripped = psql(RUN_DB, ['-c', bare]);
     expect(
@@ -3957,7 +3960,9 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     expect(psql(RUN_DB, ['-c', PROVISIONAL]).ok, 'the provisional act must commit first').toBe(true);
     const whole = psql(RUN_DB, ['-c', bare]);
     expect(whole.ok, 'the disagreement without its request must be REFUSED').toBe(false);
-    expect(whole.output).toMatch(/in this transaction with no open .countersign_rejection. request/);
+    // two seals refuse the bare disagreement — this unit's decision-side arm (#590 round 3, queued
+    // first by name) and 4d-i's door — and either message names the missing request
+    expect(whole.output).toMatch(/in this transaction with no open .countersign_rejection. request|awaiting_countersign → change.* with 0 open .countersign_rejection. change request\(s\) born here/);
 
     // the BUNDLE — the same transition carrying the request — must commit, which is what makes
     // the refusal above a rule about the bundle rather than about the transition.
@@ -3965,6 +3970,20 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     expect(psql(RUN_DB, ['-c', PROVISIONAL]).ok, 'the provisional act must commit first').toBe(true);
     const ok = psql(RUN_DB, ['-c', bundled]);
     expect(ok.ok, `the disagreement BUNDLE must COMMIT:\n${ok.output}`).toBe(true);
+    expect(CLAIMS()).toContain('ss-ev-rej:ChangeRequest:ss-cr-rej');
+
+    // #590's review round 3 — AND EVENT-FIRST. A reject-back that emits before it writes its
+    // request queues the kernel's deferred check ahead of `ChangeRequest_t4d_paired`; the first
+    // head's immediate half claimed only `standard` openings, so this order was refused whole.
+    const request = `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId")
+         VALUES ('ss-cr-rej','ss-dec','the architect disagrees',0,0,'open','countersign_rejection','ss-rev-p');`;
+    expect(bundled.includes(request), 'the fact-first bundle above must start with the request this arm re-orders').toBe(true);
+    const eventFirst = `${bundled.replace(request, '')}; ${request}`;
+    buildRun(AWAITING_DOORS);
+    expect(psql(RUN_DB, ['-c', PROVISIONAL]).ok, 'the provisional act must commit first').toBe(true);
+    const ef = psql(RUN_DB, ['-c', eventFirst]);
+    expect(ef.ok, `the disagreement BUNDLE written event-first must COMMIT too:\n${ef.output}`).toBe(true);
+    expect(CLAIMS()).toContain('ss-ev-rej:ChangeRequest:ss-cr-rej');
   }, 300_000);
 
   it('a GENERIC forward of an already-changed decision still commits', () => {
@@ -6886,7 +6905,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       + 'previous transaction. The door must refuse it: its own message says the request comes '
       + '"in this transaction", and a demand satisfied by frozen history is not that demand. The '
       + `decision would commit into \`change\` with a reason belonging to another act:\n${borrowed.output}`).toBe(false);
-    expect(borrowed.output).toMatch(/in this transaction with no open .countersign_rejection. request/);
+    expect(borrowed.output).toMatch(/in this transaction with no open .countersign_rejection. request|awaiting_countersign → change.* with 0 open .countersign_rejection. change request\(s\) born here/);
 
     // THE SIBLING DOOR, same lookup, same claim: the `returned` stranded resolution.
     const RESOLVE = `INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")

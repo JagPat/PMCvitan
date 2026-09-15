@@ -770,10 +770,20 @@ BEGIN
 
     -- the `returned` stranded resolution's bundle: the resolution is the primary fact and the
     -- claimant; this request verifies only. Decided at commit, where the whole bundle is visible.
+    -- The immediate half claims a rejection request's event when no resolution is visible yet, so
+    -- the one order it cannot judge — event, request, THEN resolution — arrives here with the
+    -- request holding a claim the resolution owns, and is refused by name (#590 round 3): the
+    -- returned bundle writes its resolution before its request, or its event after both.
     IF NEW."origin" = 'countersign_rejection' AND EXISTS (
          SELECT 1 FROM "DecisionStrandedResolution" s
           WHERE s."projectId" = NEW."projectId" AND s."decisionId" = NEW."decisionId"
             AND s."outcome" = 'returned' AND s."xmin" = txid_current()::text::xid) THEN
+      IF EXISTS (SELECT 1 FROM "DomainEventPairingClaim" k
+                  WHERE k."projectId" = NEW."projectId" AND k."claimedBy" = 'ChangeRequest' AND k."claimedById" = NEW."id") THEN
+        RAISE EXCEPTION
+          'phase6 4d-i-b: countersign_rejection request % of decision % claimed its `decision.change_requested` event, but this transaction also carries a `returned` DecisionStrandedResolution for the decision — in the returned bundle the RESOLUTION is the branch''s primary fact and its claimant (§A.3), and the request verifies only. The request claimed because the event was already written when it was inserted and no resolution was visible yet: write the resolution before the request, or the event after both',
+          NEW."id", NEW."decisionId";
+      END IF;
       RETURN NULL;
     END IF;
 
@@ -861,18 +871,28 @@ CREATE CONSTRAINT TRIGGER "ChangeRequest_t4d_paired"
 -- empty register (measured while this file was written — the withdrawal bundle written
 -- event-first was refused as unclaimed). So the two claims the request owns are ALSO made
 -- immediately, by a claimant that judges nothing: when the event is already there it claims it,
--- and the deferred seal's own `_once` call then finds the claim made. Only the UNCONDITIONAL
--- claims live here — the standard opening and the withdrawal. A `countersign_rejection`
--- request's claim is conditional on the bundle's primary (the `returned` resolution), which only
--- the whole transaction can show, so it stays with the deferred seal; its reject-back writer is
--- a 4d-ii command that writes its request before its event like every delivered writer.
+-- and the deferred seal's own `_once` call then finds the claim made. The standard opening and
+-- the withdrawal claim unconditionally. A `countersign_rejection` request claims when the event
+-- is there AND no `returned` `DecisionStrandedResolution` for its decision has been written in
+-- this transaction yet — in the returned bundle the RESOLUTION is the branch's primary and the
+-- request verifies only (§A.3, the derived-primary rule), and a resolution already present is
+-- the one fact this half can see. #590's review round 3: the first head left the rejection
+-- request's claim to the deferred seal alone, so a reject-back or forward-on written EVENT-FIRST
+-- reached the kernel's deferred check with an empty register and was refused whole. The one
+-- order this half cannot judge — event, then request, then the resolution — is refused by the
+-- deferred seal below, which finds the request holding a claim the resolution owns.
 CREATE OR REPLACE FUNCTION phase6_t4d_change_request_claims_event() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE v_event TEXT;
 BEGIN
   IF TG_OP = 'INSERT' THEN
-    IF NEW."status" IS DISTINCT FROM 'open' OR NEW."origin" IS DISTINCT FROM 'standard' THEN
-      RETURN NULL;
+    IF NEW."status" IS DISTINCT FROM 'open' THEN RETURN NULL; END IF;
+    IF NEW."origin" = 'countersign_rejection' AND EXISTS (
+         SELECT 1 FROM "DecisionStrandedResolution" s
+          WHERE s."projectId" = NEW."projectId" AND s."decisionId" = NEW."decisionId"
+            AND s."outcome" = 'returned' AND s."xmin" = txid_current()::text::xid) THEN
+      RETURN NULL;   -- the returned bundle: the resolution is the claimant, this request verifies
     END IF;
+    IF NEW."origin" NOT IN ('standard', 'countersign_rejection') THEN RETURN NULL; END IF;
     v_event := platform_tx_event(NEW."projectId", 'Decision', NEW."decisionId",
                                  ARRAY['decision.change_requested']);
   ELSE
@@ -908,6 +928,12 @@ CREATE TRIGGER "ChangeRequest_t4d_claim"
 --                                    `open → resolved` row; #572's round 10, finding 2 is about
 --                                    the COUNTERSIGN that follows, which carries none, and is
 --                                    untouched)
+--   `awaiting_countersign → change` ⇒ exactly ONE `countersign_rejection` request BORN open here.
+--                                    4d-i's `Decision_t4d_disagreement_paired` asks the same
+--                                    question by `xmin`, which a no-op UPDATE of an open
+--                                    rejection request planted earlier supplies; this arm asks it
+--                                    of the recorder (#590 round 3, the whole-family audit), and
+--                                    the `returned` resolution's bundle writes the same request.
 --
 -- and the move must still STAND at commit (a later statement walking it back leaves the request
 -- recording a move that did not happen). Counted, not found: two requests born beside one
@@ -945,6 +971,20 @@ BEGIN
     IF v_n <> 1 THEN
       RAISE EXCEPTION
         'phase6 4d-i-b: decision % moved `change → approved` in this transaction with % change request(s) closed here — the closure and the restoration are ONE bundle in both directions (#558 round 1, finding 2; round 2, finding 6): a decision restored with its request left open occupies the one-open-request slot forever, one restored with two closures records two acts for one, and a historical closure re-written without leaving `open` is not a closure performed here',
+        NEW."id", v_n;
+    END IF;
+  END IF;
+
+  IF phase6_t4d_decision_moved_in_tx(NEW."id", 'change_from_awaiting') THEN
+    IF NEW."status"::text <> 'change' THEN
+      RAISE EXCEPTION
+        'phase6 4d-i-b: decision % moved `awaiting_countersign → change` in this transaction and does not END it in `change` (it is `%`) — a disagreement walked back by a later statement leaves its request recording a move that did not stand',
+        NEW."id", NEW."status";
+    END IF;
+    v_n := phase6_t4d_requests_moved_in_tx(NEW."projectId", NEW."id", ARRAY['request_opened'], 'countersign_rejection');
+    IF v_n <> 1 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i-b: decision % moved `awaiting_countersign → change` in this transaction with % open `countersign_rejection` change request(s) born here — the disagreement (reject-back, forward-on or the `returned` resolution) is one bundle in both directions: a rejection request planted earlier and touched again is a write, not the request this move owes',
         NEW."id", v_n;
     END IF;
   END IF;

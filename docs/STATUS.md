@@ -112,10 +112,22 @@ catalog, driving each of the six types' complete bundle in both write orders and
 at the prior generation, plus the negatives (missing counterpart, wrong
 identity/audience, duplicated/reused evidence, no-op versus real transition).
 Against the failed head's migration bytes 13 of its 39 cases were RED — each a
-defective bundle that COMMITTED — and all 39 are green here. The harness gained
+defective bundle that COMMITTED — and all are green here. The harness gained
 the response claimant's OWN arm (it had been "declared covered" by the request's)
 and a round-2 arm driving every defective bundle stripped-versus-whole. The
-lesson is recorded once, in `docs/POLICY.md` → *Transaction evidence*.
+lesson is recorded once, in `docs/POLICY.md` → *Transaction evidence*. Round 3
+(one P2 on `cc923fdd`) was the same lesson's last corner: the immediate claimant
+skipped `countersign_rejection`, so a reject-back written EVENT-FIRST was refused
+as unclaimed; it now claims that origin too unless a `returned` resolution is
+already visible in the transaction (the resolution is that bundle's claimant),
+the deferred seal refuses the one order this cannot judge by name; the
+whole-family audit the directive asked for added the decision side's
+`awaiting_countersign → change` arm (exactly one `countersign_rejection` request
+BORN here, read from the request recorder — 4d-i's door asks by `xmin`, which a
+touched earlier request supplies), and the matrix carries the disagreement as its
+own writer branch (both orders, the prior generation, the missing-request
+converse, the no-op stand-in at the drain generation) — 44 cases, the event-first
+case and the no-op stand-in both RED on `cc923fdd` and green here.
 
 **Gate results at this head.** `pnpm check` green by exit code (automation 332 pass / 0
 fail; web 65 files / 1028 tests; api typecheck, unit tests 64 files / 875 — including the

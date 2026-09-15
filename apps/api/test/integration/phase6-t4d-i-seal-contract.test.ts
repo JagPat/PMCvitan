@@ -477,27 +477,31 @@ const REGISTER: Record<string, SealContract> = {
       'decision.approved', 'decision.reapproved', 'decision.awaiting_countersign',
       'platform_tx_event_count', 'platform_claim_event_pairing_once',
       'DecisionStrandedResolution', 'returned', 'countersign_rejection', 'standard',
-      'DecisionApprovalRevision', 'withdrawn', 'resolved',
+      'DecisionApprovalRevision', 'withdrawn', 'resolved', 'DomainEventPairingClaim',
     ],
   },
   phase6_t4d_change_request_claims_event: {
-    rule: 'the request\'s IMMEDIATE claim half: when the event of a standard opening or a '
-      + 'withdrawal is already written, claim it now — so a bundle that emits before it writes the '
-      + 'request is not refused by a deferred check queued ahead of the deferred seal; judges nothing',
-    plan: '§D 4d-i-b (b), "order-independent by construction"',
+    rule: 'the request\'s IMMEDIATE claim half: when the event of a standard opening, a '
+      + 'countersign_rejection opening (with no same-transaction `returned` resolution visible yet) '
+      + 'or a withdrawal is already written, claim it now — so a bundle that emits before it writes '
+      + 'the request is not refused by a deferred check queued ahead of the deferred seal; judges nothing',
+    plan: '§D 4d-i-b (b), "order-independent by construction"; #590 r3',
     on: { 'ChangeRequest.ChangeRequest_t4d_claim': A('I U') },
     must: ['platform_tx_event', 'platform_claim_event_pairing_once',
-      'decision.change_requested', 'decision.change_withdrawn', 'standard', 'withdrawn'],
+      'decision.change_requested', 'decision.change_withdrawn', 'standard', 'countersign_rejection',
+      'DecisionStrandedResolution', 'returned', 'withdrawn'],
   },
   phase6_t4d_change_transition_paired: {
     rule: 'the DECISION side: `approved → change` carries exactly ONE standard request born open '
       + 'here, `change → approved` exactly ONE closure (withdrawn or resolved) here, '
-      + '`change → awaiting_countersign` exactly ONE resolution here — each move still STANDS at '
-      + 'commit, and BORN / CLOSED are read from the request recorder, never from xmin',
-    plan: '§A.3 the ChangeRequest row ("in BOTH directions"); §D 4d-i-b (a); #590 r2 f4',
+      + '`change → awaiting_countersign` exactly ONE resolution here, `awaiting_countersign → change` '
+      + 'exactly ONE countersign_rejection request born here — each move still STANDS at commit, '
+      + 'and BORN / CLOSED are read from the request recorder, never from xmin',
+    plan: '§A.3 the ChangeRequest row ("in BOTH directions"); §D 4d-i-b (a); #590 r2 f4, r3',
     on: { 'Decision.Decision_t4d_change_paired': C('U') },
-    must: ['change_from_approved', 'approved_from_change', 'awaiting_from_change',
-      'phase6_t4d_requests_moved_in_tx', 'request_opened', 'request_withdrawn', 'request_resolved', 'standard'],
+    must: ['change_from_approved', 'approved_from_change', 'awaiting_from_change', 'change_from_awaiting',
+      'phase6_t4d_requests_moved_in_tx', 'request_opened', 'request_withdrawn', 'request_resolved',
+      'standard', 'countersign_rejection'],
   },
   phase6_t4d_revision_claims_approval: {
     rule: 'a FINALIZED revision birth claims the decision\'s same-transaction `decision.approved` '
