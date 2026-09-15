@@ -16,6 +16,8 @@ function repo() {
   const cwd = mkdtempSync(join(tmpdir(), 'manifest-'));
   git(cwd, 'init', '-q', '-b', 'main');
   git(cwd, 'config', 'user.email', 't@example.com'); git(cwd, 'config', 'user.name', 't');
+  // commit must not detach background maintenance: it writes under .git while the repo is removed
+  git(cwd, 'config', 'gc.auto', '0'); git(cwd, 'config', 'maintenance.auto', 'false');
   const write = (path, text) => { mkdirSync(join(cwd, path, '..'), { recursive: true }); writeFileSync(join(cwd, path), text); };
   const commit = (message) => { git(cwd, 'add', '-A'); git(cwd, 'commit', '-q', '-m', message); return git(cwd, 'rev-parse', 'HEAD'); };
   write(`${DIR}/20260101000000_one/migration.sql`, 'CREATE TABLE one (id int);\n');
@@ -28,7 +30,7 @@ function repo() {
 }
 
 test('an unchanged head verifies; one changed byte, a deletion, or a re-blessed digest fails against the BASE manifest', (t) => {
-  const r = repo(); t.after(() => rmSync(r.cwd, { recursive: true, force: true }));
+  const r = repo(); t.after(() => rmSync(r.cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   assert.equal(r.verify().ok, true);
   r.write(`${DIR}/20260101000000_one/migration.sql`, 'CREATE TABLE one (id int) ;\n'); r.commit('one byte');
   assert.match(r.verify().problems.join(';'), /bytes changed: .*20260101000000_one/u);
@@ -42,7 +44,7 @@ test('an unchanged head verifies; one changed byte, a deletion, or a re-blessed 
 });
 
 test('a new migration passes only once it is recorded; a missing base ref fails explicitly', (t) => {
-  const r = repo(); t.after(() => rmSync(r.cwd, { recursive: true, force: true }));
+  const r = repo(); t.after(() => rmSync(r.cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   r.write(`${DIR}/20260103000000_three/migration.sql`, 'CREATE TABLE three (id int);\n'); r.commit('additive');
   assert.match(r.verify().problems.join(';'), /new migration not recorded: .*_three/u);
   r.bless(); r.commit('recorded');
@@ -54,7 +56,7 @@ test('a new migration passes only once it is recorded; a missing base ref fails 
 });
 
 test('bootstrap: with no manifest at the base, the base TREE is the protected set; the head manifest cannot narrow or redefine it', (t) => {
-  const r = repo(); t.after(() => rmSync(r.cwd, { recursive: true, force: true }));
+  const r = repo(); t.after(() => rmSync(r.cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   const ok = r.verify('HEAD', r.bootstrap);
   assert.equal(ok.ok, true, ok.problems.join(';')); assert.equal(ok.protected, 2); assert.match(ok.source, /bootstrap/u);
   const based = (migrations) => r.write(MANIFEST_PATH, `${JSON.stringify({ ...generate({ cwd: r.cwd }), ...migrations }, null, 1)}\n`);
