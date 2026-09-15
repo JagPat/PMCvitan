@@ -73,10 +73,25 @@ const invoke = <T,>(fn: () => Promise<T>): Promise<T> => new Promise<T>((resolve
  * FOR UPDATE, or no lock at all), and `verify` reads back the terminal ORDER the interleaving must leave, so a guard
  * that commits and then mutates outside its lock fails there. A read returned before `release` escaped the
  * holder's lock; a contender that never reports proves nothing; a holder, contender, inspection, competitor,
- * release or abort that throws is a failure, never evidence (assert an EXPECTED domain refusal inside the
- * callback). Every exit path, readiness included, aborts the holder (`abort` rolls it back independently of
- * `release`; its failure is named) and settles the contender and the competitor under bounded waits: a contender
- * still running is aborted through the `signal` it MUST honour and awaited again. */
+ * release or abort that throws is a failure, never evidence (assert an EXPECTED domain refusal inside the callback).
+ *
+ * Cleanup is enforceable, not merely cooperative. The holder is rolled back by `abort` (independent of `release`).
+ * The contender MUST run inside a transaction whose OWN timeout bounds how long it can hold the row: a broken guard
+ * that ignores the `signal` and hangs still has its transaction rolled back by the database at that timeout, which
+ * releases its lock; the settle window is sized ABOVE that timeout so the probe observes the release before it
+ * returns, and it then confirms the competitor landed. The one worker that can outlast the probe is a contender
+ * that hangs in JS while holding NO lock (an autocommit read that already returned) — it is named `stuck`, and it
+ * holds nothing, so no lock outlives the probe. Every wait is bounded (`SETTLE_WINDOW_MS`, or `contenderSettleMs`)
+ * and the whole hung-guard budget stays under the integration suite's per-test timeout. */
+export const SETTLE_WINDOW_MS = 9_000;
+const GRACE_MS = 2_000;
+// The worst-case wall time for a hung guard on the default window: the lock-inspection poll ceiling, one settle
+// window plus a cancellation grace, and two bounded competitor waits. It MUST stay under the integration suite's
+// 30s per-test timeout, or the probe times the test out before it can name the very hung-guard case it exists to
+// diagnose (asserted in the suite). The settle window MUST also exceed the contender's transaction timeout, so a
+// database-rolled-back guard's lock release is observed rather than mistaken for an ignored signal.
+export const SETTLE_WINDOW_MS_MUST_EXCEED_CONTENDER_TX = true;
+export const LOCK_PROBE_WORST_CASE_MS = 3_000 + SETTLE_WINDOW_MS + GRACE_MS * 3;
 export async function lockOrderProbe(o: {
   holderReady: () => Promise<void>;
   contenderStarted: (milestone: { observed: () => void; proceed: Promise<void>; signal: AbortSignal }) => Promise<unknown>;
@@ -85,7 +100,8 @@ export async function lockOrderProbe(o: {
   contenderSettleMs?: number;
 }) {
   type Outcome = { ok: true } | { ok: false; error: unknown } | { stuck: true };
-  const windowMs = o.contenderSettleMs ?? 15_000;
+  const windowMs = o.contenderSettleMs ?? SETTLE_WINDOW_MS;
+  const graceMs = Math.min(windowMs, GRACE_MS);
   let released = false; let reads = 0; let escaped = false; let timedOut = false;
   let windowOpen = false; let competitorBlocked = false; let competitorLanded = false; let landedInWindow = false;
   let competitorFailure: unknown; let abortFailure: unknown; let windowFailure: unknown;
@@ -107,10 +123,20 @@ export async function lockOrderProbe(o: {
   };
   const settle = async () => {
     if (contender === undefined || outcome !== undefined) return;
-    const race = () => within(contender!.then(() => ({ ok: true as const }), (error: unknown) => ({ ok: false as const, error })), windowMs);
-    let settled = await race();
-    if ('stuck' in settled) { timedOut = true; openWindow(); cancel.abort(new ProbeFailure('aborted by lockOrderProbe: the contender outlived the settle window')); settled = await race(); }
-    outcome = settled;
+    const race = (ms: number) => within(contender!.then(() => ({ ok: true as const }), (error: unknown) => ({ ok: false as const, error })), ms);
+    // the window is sized above the contender's transaction timeout: a hung guard's tx is rolled back by the
+    // database within it, so its lock is released and its promise rejects before the window elapses
+    let settled = await race(windowMs);
+    if ('stuck' in settled) { // it did not even reject at its transaction timeout: cancel cooperatively, then a grace
+      timedOut = true; openWindow(); cancel.abort(new ProbeFailure('aborted by lockOrderProbe: the contender outlived the settle window'));
+      settled = await race(graceMs);
+    }
+    outcome = settled; // still stuck ⇒ a lockless JS-only hang; its transaction (if any) has already rolled back
+  };
+  const awaitCompetitor = async (ms: number): Promise<{ stuck: true } | undefined> => {
+    if (competitor === undefined) return undefined;
+    const landed = await within(competitor, ms); // the competitor resolves to void; only a timeout yields { stuck }
+    return typeof landed === 'object' && landed !== null && 'stuck' in landed ? { stuck: true } : undefined;
   };
   const observed = () => {
     reads += 1;
@@ -137,10 +163,10 @@ export async function lockOrderProbe(o: {
     if (releaseFailure !== undefined) await abortHolder();
     await settle();
     await window;
-    const landed = competitor === undefined ? undefined : await within(competitor, windowMs);
+    const landed = await awaitCompetitor(windowMs);
     const settled = outcome === undefined || 'stuck' in outcome
-      ? fail('the contender ignored its abort signal and still runs after two settle windows: the fixture cannot terminate it') : outcome;
-    if (timedOut) fail('the contender was still running after the holder was released and aborted: the guarded command never completed, and was aborted');
+      ? fail('the contender ignored its abort signal and never settled; its transaction, if any, has been rolled back by its own timeout, so it holds no lock — but a guard that only hangs in JS proves no lock order') : outcome;
+    if (timedOut) fail('the contender was still running after the holder was released and aborted: the guarded command never completed within its transaction, and was aborted');
     const inspected = 'failure' in inspection ? fail(`the lock inspection failed: ${reason(inspection.failure)}`) : inspection;
     if (escaped) fail('the contender completed its status read before the holder released: the guard read the status before taking the lock (lock-after-read)');
     if (!inspected.blocked) fail('the contender was never blocked behind the holder: the guard read the status before taking the lock (lock-after-read)');
@@ -157,13 +183,13 @@ export async function lockOrderProbe(o: {
   } catch (error) {
     primary = error; failed = true;
   }
-  // whatever happened above: free the row (a no-op once the holder settled), let no contender or competitor outlive the
-  // probe, and never hide a cleanup failure
+  // whatever happened above: free the row (a no-op once the holder settled), let no contender or competitor outlive
+  // the probe (the contender's own transaction timeout has released any lock), and never hide a cleanup failure
   released = true; openWindow();
   await abortHolder();
   await settle();
   await window.catch(() => undefined);
-  if (competitor !== undefined) await within(competitor, windowMs);
+  await awaitCompetitor(graceMs);
   if (abortFailure !== undefined) {
     fail(`${failed ? `${reason(primary)}; then ` : ''}the holder's abort failed: ${reason(abortFailure)}: the row may remain locked and the contender blocked`);
   }
