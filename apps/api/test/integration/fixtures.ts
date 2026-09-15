@@ -324,6 +324,61 @@ export async function plantLegacyApprovalRevision(
 }
 
 /**
+ * Phase 6 unit 4d-i-b — the NAMED BYPASS for a fixture that plants a DECISION STATE the pairing
+ * switch-on would otherwise refuse.
+ *
+ * From 4d-i-b, `decision.approved`, `decision.reapproved`, `decision.change_requested`,
+ * `decision.change_withdrawn` and the two consultation families are `pairingRequired` at the
+ * compiled coverage generation: the kernel's deferred `DomainEvent_t4d_pairing_claimed` refuses
+ * such an event unless a FACT claimed it in the same transaction, and `ChangeRequest_t4d_paired`
+ * refuses a request born open beside a decision that did not move `approved → change` here (with
+ * `Decision_t4d_change_paired` refusing the move without its request). Every delivered writer
+ * satisfies all three in one transaction. A fixture that FABRICATES an already-reopened or
+ * already-approved decision — a request beside a decision born in `change`, an approval event
+ * with no revision behind it — does not, and cannot: it stands in for an act that happened before
+ * this database existed, and the seals are right to refuse it, because they cannot tell a
+ * simulated history from a forgery.
+ *
+ * So such a plant declares itself, BY NAME, for exactly its own writes — the same contract
+ * `plantLegacyDecisionAudit`, `plantLegacyApprovalRevision` and `sanctionedReset` use, and for
+ * the same reason: the bypass is the sanctioned path, and naming it is what keeps it visible.
+ * The production twin is the seed's DL-003 plant, which disables `ChangeRequest_t4d_paired`
+ * alone (`prisma/seed.ts`); this helper is TEST-ONLY. A row that is meant to be the product of a
+ * request, a withdrawal, an approval or a consultation goes through the service, which claims.
+ *
+ * ONE INTERACTIVE TRANSACTION: the seals are DEFERRED, and a trigger disabled at write time
+ * queues no commit-time firing; they go back on before the transaction ends, so a failing plant
+ * rolls the disable back with it. Guarded on each trigger's existence, because a suite may run
+ * against a database migrated to an earlier point.
+ */
+export async function plantUnpairedDecisionState<T>(
+  prisma: PrismaService,
+  plant: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  const NAMES: Array<[table: string, trigger: string]> = [
+    ['DomainEvent', 'DomainEvent_t4d_pairing_claimed'],
+    ['ChangeRequest', 'ChangeRequest_t4d_paired'],
+    ['Decision', 'Decision_t4d_change_paired'],
+  ];
+  const toggle = (action: 'DISABLE' | 'ENABLE'): string =>
+    'DO $do$ BEGIN '
+    + NAMES.map(([table, trigger]) =>
+        `IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = '${trigger}') THEN `
+        + `EXECUTE 'ALTER TABLE "${table}" ${action} TRIGGER "${trigger}"'; END IF; `).join('')
+    + 'END $do$';
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(toggle('DISABLE'));
+    const out = await plant(tx);
+    // the deferred queue is flushed before the seals go back on: PostgreSQL refuses `ALTER TABLE`
+    // over a table carrying pending trigger events (55006), and the plant may have queued the
+    // immediate claimants' siblings or a 4d-i deferred seal.
+    await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE');
+    await tx.$executeRawUnsafe(toggle('ENABLE'));
+    return out;
+  }, { timeout: 60_000, maxWait: 30_000 });
+}
+
+/**
  * Phase 6 unit 4d-i — plant a raw `DomainEvent` the way `emitEvent` does: allocate and insert in
  * ONE transaction.
  *

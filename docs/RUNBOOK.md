@@ -1188,15 +1188,21 @@ The unit ships as two files applied in order:
 |---|---|---|
 | 1 | `20271220000000_phase6_t4d_i_dark_migration` | Part 0's retirement marker and its seals, the shared refusal function and the two orgs-owned architect-STANDING doors with their diagnostic-first audits, the four adopted platform registers (`ProjectOrg`, `ProjectRoleStanding`, `ProjectUserStanding`, `UserIdentity`) with their writers, backfills and baseline audits, `OrgUserAuthority`, the orgs-owned `MembershipTransition` fact and the membership seals around it, `ExternalEffectCatalog` with both seeded coverage generations, `ReleaseLease`, the generic pairing mechanism (`DomainEventPairingClaim`, `platform_claim_event_pairing`, `DomainEvent_t4d_pairing_claimed`), and the WHOLE KERNEL — the envelope columns and `DomainEvent_t4d_envelope`, the five `ProjectEventStream_t4d_*` allocation seals (preceded by the stream ADOPTION audit: every project has a counter, at its stream's true next position, over positions contiguous from 0), the notice binding, and the `platform_tx_*` / `platform_role_*` reads. It also VERIFIES, rather than installing, the two RAW triggers of `20261015000000_phase2_event_envelope` that `prisma db push` does not reproduce and that 4d-i seals on top of — `DomainEvent_append_only` and `Project_ensure_event_stream` — and refuses to commit without either |
 | 2 | `20271221000000_phase6_t4d_i_decision_facts` | the two Decision CHAIN doors, Part 2's enum values, the three decisions-owned fact tables with their seven obligations (`DecisionForward_t4d_reserved` among them), the 4d-only columns added to `ChangeRequest`, `DecisionApprovalRevision`, the two consultation tables and the two requirement-spec tables with their legacy-shape audit, the `DecisionEvent` audit register's append-only and correspondence seals, the delivered 4b/4c seals widened with their architect arms, and the approval finality key |
+| 3 | `20271222000000_phase6_t4d_i_b_pairing_switch_on` | unit **4d-i-b**, the PAIRING SWITCH-ON: a third `ExternalEffectCatalog` generation that is 4d-i's current generation with `pairingRequired` flipped on exactly the plan's six decision event types (`decision.approved`, `decision.reapproved`, `decision.change_requested`, `decision.change_withdrawn`, `decision.consultation_requested`, `decision.consultation_responded`), and the claimants that flag obliges — `ChangeRequest_t4d_paired` / `Decision_t4d_change_paired` (the change-request opening, withdrawal and resolution judged as ONE bundle from both sides), the immediate-plus-deferred claimant halves on `ChangeRequest`, `DecisionApprovalRevision`, `DecisionConsultation` and `DecisionConsultationResponse`, the `_t4d_tx_transition` recorder `Decision_t4d_change_transition`, and the idempotent `platform_claim_event_pairing_once`. It installs NOTHING that 4d-i does not already define the mechanism for, and it changes no byte of either 4d-i file |
 
 They are separate because the dependency runs one way only: the fact seals read the registers, and
 no register reads a fact table. The first half therefore applies and stands alone; the second
-applies on top of it.
+applies on top of it. The third (4d-i-b) is a separate UNIT with its own PR: it switches on the
+pairing obligation 4d-i installed dark, and it is separate so that the generation whose events
+owe a claim is the one this release compiles — a 4d-i process keeps resolving its events through
+4d-i's own rows, on which the flag is false, until it is drained.
 
 ### The deploy stops with `could not obtain the deployment window`
 
-Each half opens by taking, in one all-or-nothing `NOWAIT` acquisition, every pre-existing table it
-will lock — nine in the registers half, eleven in the decisions half. A table is in that set if
+Each file opens by taking, in one all-or-nothing `NOWAIT` acquisition, every pre-existing table it
+will lock — nine in the registers half, eleven in the decisions half, five in the 4d-i-b switch-on
+(`ChangeRequest`, `Decision`, `DecisionApprovalRevision`, `DecisionConsultation`,
+`DecisionConsultationResponse`). A table is in that set if
 PostgreSQL grants a lock on it, which includes the one an `ADD CONSTRAINT … FOREIGN KEY …
 REFERENCES` takes on the REFERENCED table, not only the one named by an `ALTER TABLE`.
 
@@ -1566,10 +1572,76 @@ UPDATE of `streamPosition`, which the delivered append-only trigger refuses (so 
 transactional bypass pattern shown under *The legacy-shape repair* above), and it moves every
 position an ordered consumer has already checkpointed on. Prefer the fill.
 
+### The 4d-i-b switch-on: its aborts all name catalog rows, or the 4d-i objects it expected
+
+`20271222000000_phase6_t4d_i_b_pairing_switch_on` applies on top of BOTH 4d-i halves. Its
+messages begin `phase6 4d-i-b ABORT:`; every one of them rolls the whole file back, both 4d-i
+halves stay committed and are not implicated, and the recovery after the named repair is always
+
+```
+prisma migrate resolve --rolled-back 20271222000000_phase6_t4d_i_b_pairing_switch_on
+```
+
+and a redeploy. Until it commits, the pairing flag is false on every row the serving release
+resolves through, so a rolled-back switch-on refuses nothing at commit. The aborts:
+
+- `this unit switches on a mechanism 4d-i installs, and this database holds none of: …` — the
+  4d-i primitives its claimants call are absent. Both 4d-i files precede it in the
+  ledger, and `scripts/migrate.sh` EXECUTES them from `ALWAYS_EXECUTE` on the baseline path for
+  exactly this reason. Apply them first; do not create the named objects by hand.
+- `the prior generation … does not carry the same effect keys as this seed`, `… differ from the
+  prior generation … in a column other than pairingRequired`, `the seed literal names the PRIOR
+  generation … as its own` — the unit's contract is that its generation is 4d-i's current one with
+  ONE column changed. Each of these says the compiled catalog moved between 4d-i and this file.
+  That is a deploy ordering fault, not a database repair: the release that compiles the moved
+  catalog must seed its own generation through its own migration. If 4d-i's generation is simply
+  MISSING (a hand-deleted row), a 4d-i replay re-seeds it.
+- `the prior generation … already carries pairingRequired on N key(s)` — 4d-i seeds the flag
+  false everywhere, so a true there was written by a hand. Clear it under the catalog seal:
+
+  ```sql
+  BEGIN;
+  SET LOCAL vitan.phase6_4d_catalog = 'on';
+  UPDATE "ExternalEffectCatalog" SET "pairingRequired" = false
+   WHERE "coverageVersion" = '<the prior version the abort names>' AND "pairingRequired";
+  COMMIT;
+  ```
+- `N "ExternalEffectCatalog" row(s) sit in a coverage generation this rollout does not admit` —
+  between 4d-i-b and 4d-ii the catalog holds exactly THREE generations (the two 4d-i seeded and
+  the pairing generation). 4d-i's own audit admits a third generation by SHAPE, which this unit's
+  existence makes one too many, so this file names the admitted set explicitly. Same repair as
+  *A catalog row in a generation this migration does not seed* above, with the same caveat: on a
+  database that has genuinely run 4d-ii or 4d-iii, restore its witness or marker instead of
+  deleting a generation a later release serves.
+- `N row(s) already sit at this unit's generation under a key this release never compiled` and
+  `… already exist at this unit's generation and DISAGREE with the compiled catalog` — rows at the
+  pairing generation that this release did not compute. The pairing seal reads `pairingRequired`
+  from these rows to decide which events owe a claim, so a hand-written row would refuse valid
+  events or admit unclaimed ones. Remove the named rows (under the catalog seal, as above).
+- `… already stamped retired` (either generation) — retirement is 4d-iii's act and
+  `RolloutRetirement` does not carry the unit. Clear `retiredAt` on the named rows under the
+  catalog seal, then redeploy; on a database that has genuinely run 4d-iii, restore its marker.
+- `after seeding, generation … carries pairingRequired on N key(s) rather than exactly the plan's
+  six` — the read-back after the seed disagrees with the plan. Nothing below it installs. This is
+  a build fault (a seed literal regenerated from a catalog with the wrong flips), not a database
+  one: re-derive the literal from `external-effects.ts`.
+
+The switch-on's own abort message is swallowed by the aborted transaction like 4d-i's, so
+`scripts/migrate.sh` (`report_4d_i_migration_failure`) prints the recovery steps for this file too.
+
+Once committed, the seals it installs refuse at COMMIT any transaction that opens, withdraws or
+resolves a `standard` change request, writes a finalized approval revision, or writes a
+consultation or its response WITHOUT the matching decision event at the pairing generation — and
+refuse any such event that lacks its claim. A refusal naming `requires a pairing claim and none was
+made` on a serving process means that process emits at a generation whose flag is on without
+running the code that writes the fact: that is a build from before 4d-i-b resolving through the
+new generation, which the coverage reseal under *Deploying 4d-i RESEALS the external-effect
+cutover* prevents. Check `OutboxBootstrap`'s recorded coverage before anything else.
+
 ### The baseline path runs the audit too
 
-BOTH halves of 4d-i are in `ALWAYS_EXECUTE`, so a P3005 `db push` baseline replays them rather
-than marking them applied. That is required for correctness — the reservation and the audit are the whole point of
+BOTH halves of 4d-i and the 4d-i-b switch-on are in `ALWAYS_EXECUTE`, so a P3005 `db push`
+baseline replays them rather than marking them applied. That is required for correctness — the reservation and the audit are the whole point of
 the unit — and it means the same abort and the same repair apply on a baselined database.
 
 ### The reservation is retired by 4d-iii, not by hand

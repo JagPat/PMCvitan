@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, plantUnpairedDecisionState } from './fixtures';
 
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
@@ -262,10 +262,14 @@ describe('decision change-control (integration)', () => {
     // one statement. The 4d-i lifecycle now refuses an incomplete closure (it would be frozen
     // unrepairable), so the fixture closes the way the product does. The state under test — a
     // `change` decision with no open request — is identical.
-    await t.prisma.changeRequest.updateMany({
+    // Phase 6 unit 4d-i-b — and it is now a closure WITHOUT its reapproval, which
+    // `ChangeRequest_t4d_paired` refuses at commit from the switch-on (the resolution pairs with
+    // the decision leaving `change`). The inconsistency is the legacy PAST this arm reasons
+    // from, so the fixture declares itself by name for exactly this write.
+    await plantUnpairedDecisionState(t.prisma, (tx) => tx.changeRequest.updateMany({
       where: { decisionId: id, status: 'open' },
       data: { status: 'resolved', resolution: 'reapproved', resolvedById: f.memberUser.id, resolvedAt: new Date() },
-    });
+    }));
 
     // re-approval must REFUSE — there is nothing to resolve, so 'reapproved' would lie
     const res = await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 });
@@ -317,8 +321,11 @@ describe('decision change-control (integration)', () => {
     const id = await issueDecision('Gate motor');
     expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 })).status).toBe(201);
     expect((await as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'r', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
+    // Phase 6 unit 4d-i-b — under the named pairing bypass, so the refusal measured is the
+    // index's (P2002, at INSERT) and not `ChangeRequest_t4d_paired`'s at commit.
     await expect(
-      t.prisma.changeRequest.create({ data: { projectId: f.projectA.id, decisionId: id, reason: 'forged duplicate', costImpact: 0, timeImpactDays: 0 } }),
+      plantUnpairedDecisionState(t.prisma, (tx) =>
+        tx.changeRequest.create({ data: { projectId: f.projectA.id, decisionId: id, reason: 'forged duplicate', costImpact: 0, timeImpactDays: 0 } })),
     ).rejects.toMatchObject({ code: 'P2002' });
   });
 });

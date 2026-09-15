@@ -43,6 +43,74 @@ frontend delivery evidence, not proof that the API ran the 4d migrations or
 that a previous-release drain or outbox reseal completed. Existing production
 attestation requirements remain in force.
 
+### Unit 4d-i-b — the PAIRING SWITCH-ON, underway on `claude/phase6-t4d-i-b-pairing-switch-on`
+
+`task_state` stays `in_progress`: Phase 6 task 4 continues, and 4d-i-b is its next
+permitted unit under the active plan's §D, ordered between 4d-i and 4d-ii-a. On the
+unit's own commit `work_item` and `open_pr` are both `none`, by the §D self-naming
+convention — the PR number does not exist until the PR does — and both take their
+values together on the pointer commit that follows, because `assessRunnerState`
+sends a named `work_item` with no `open_pr` beside it to the PARENT task.
+
+**What the unit is.** ONE migration,
+`20271222000000_phase6_t4d_i_b_pairing_switch_on`, applied on top of both 4d-i
+files, which it does not change — their bytes on `main` are the ones #582 merged,
+verified before this unit began (`a8b0abda…` and `ea7e6ee8…` at `e3c3cfb9`). It
+seeds a THIRD `ExternalEffectCatalog` generation — 4d-i's current generation with
+`pairingRequired` flipped on exactly the plan's six decision event types — and
+installs the claimants that flag obliges: `ChangeRequest_t4d_paired` with
+`Decision_t4d_change_paired` (the opening, withdrawal and resolution of a
+`standard` change request judged as ONE bundle from both sides), the
+immediate-plus-deferred claimant halves on `ChangeRequest`,
+`DecisionApprovalRevision`, `DecisionConsultation` and
+`DecisionConsultationResponse`, the `_t4d_tx_transition` recorder on `Decision`,
+and the idempotent `platform_claim_event_pairing_once`. Under `src/` it changes
+EXACTLY the compiled catalog: `pairingRequired` on the six keys, and the
+`canonicalCatalog()` preimage that makes the flip a new `effectCoverageVersion()`.
+No service, command, route, reader or UI; the seed's DL-003 plant is the only
+production bypass, and it disables and re-enables the one seal around one
+transaction. `scripts/migrate.sh` executes the file from `ALWAYS_EXECUTE` on the
+baseline path and reports its aborts; RUNBOOK §P6T4D carries the third row and
+the aborts' repairs.
+
+**Nothing is deployed and nothing is reachable.** Between 4d-i-b and 4d-ii the
+catalog holds exactly three generations — the outgoing `6313b00c…`, 4d-i's
+`842cc9fc…`, and this unit's `7dac2bd5…` — and the unit's audit refuses a fourth
+by name. A still-serving 4d-i process resolves its events through 4d-i's own
+rows, on which the flag is false, so the switch-on refuses nothing that release
+emits; the coverage reseal under RUNBOOK §P6T4D governs the cutover. The drain
+gate `phase-6-4d-previous-release-drained` (KEEP, human `OPERATOR-ATTESTATION`)
+and every existing production attestation requirement remain in force; this unit
+lifts nothing.
+
+**Proofs on this branch.** The compiled-catalog oracles pin the seed literal to
+`canonicalCatalog()` for BOTH generations and require the current one to equal the
+previous with exactly six flips (`external-effect-catalog-seed.test.ts`,
+`external-effects.test.ts`). The three-generation contract — every seed, the
+drain admitting all three and refusing an unknown one, an unclaimed
+`decision.change_requested` admitted at 4d-i's generation and refused at this
+unit's — is `phase6-t4d-i-catalog-generations.test.ts`. The seal inventory and
+seal-contract oracles carry the nine new triggers and eight new functions. The
+seal-stripped harness (`phase6-t4d-i-seal-stripped.test.ts`) builds the unit from
+all three files, strips each new seal by name and requires the half-write it
+refuses to be ACCEPTED without it and REFUSED with it, and adds six 4d-i-b arms:
+the request bundle in both directions, the order-independence of each claimant
+pair, the revision and consultation claimants, the generation semantics, and the
+switch-on's own apply-time aborts (ahead of 4d-i, a hand-flipped or thinned prior
+generation, a disagreeing row, a fourth generation before and after 4d-ii's
+writers). Gate results at the unit commit: `pnpm check` green (automation 332
+pass, web and api green); the full API integration suite 109 files / 1636 tests
+green after the last arm was re-derived (the harness file alone: 124 of 124);
+`pnpm test:e2e:api` 32 of 32 in legacy mode and 32 of 32 in outbox mode; and
+`upgrade-proof.sh` PASSED, its P42 previous-release plant now the whole
+`requestChange` bundle at 4d-i's generation, with the bare request refused by
+name; the three `migrate.sh` runner proofs (schedule B1, schema enforcement,
+4c-iii-r) PASSED; the 4d-i migration files unchanged (`a8b0abda…`, `ea7e6ee8…`).
+
+**What follows.** After this unit merges: 4d-ii-a, 4d-ii-b, the drain attestation,
+then 4d-iii. None is started here; F-1c and the maintenance queue keep their
+priority.
+
 ### Historical record — 4d-i while #582 was open
 
 `task_state` is `in_progress`, because the 4d plan merged as #572 and its FIRST

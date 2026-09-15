@@ -1,54 +1,77 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { EXTERNAL_EFFECTS, effectCoverageVersion } from '../../src/platform/external-effects';
 
 /**
- * Phase 6 unit 4d-i — THE COEXISTING COVERAGE GENERATIONS (#582's review round 8, finding 3).
+ * Phase 6 units 4d-i and 4d-i-b — THE COEXISTING COVERAGE GENERATIONS (#582's review round 8,
+ * finding 3; §D's 4d-i-b bullet).
  *
  * WHAT BROKE. `DomainEvent_t4d_envelope` resolves an event's intent by the EXACT
  * `(coverageVersion, effectKey)` pair and raises "which this database does not hold" on a miss —
  * and it does so from the moment 4d-i commits, with no dark window for the intent. A rolling
  * deploy therefore has previous-release processes still emitting under the version THEY compute.
  * With a single generation seeded, every one of those events is refused: not a dark rollout but
- * an outage lasting the whole drain.
+ * an outage lasting the whole drain. So ANY migration that changes `effectCoverageVersion()` must
+ * seed beside the generations still being emitted, never over them.
  *
- * WHY THE VERSIONS DIVERGED, AND WHY THAT ANSWER CHANGED TWICE. `pushOptional` was introduced by
- * this unit at round 2 to DESCRIBE four emit paths the previous release already takes silently,
- * and joined the preimage at round 5 because it decides the sealed `requiresPush`. At that point
- * the two releases declared the same POLICY and hashed apart only over the spelling of a tuple.
+ * THREE GENERATIONS NOW, and each is DERIVED from this source rather than transcribed:
  *
- * They no longer do. Round 13 and then round 18 established that the flag could not express what
- * it claimed — the obligation belongs to a BRANCH and `requiresPush` to a KEY — and split all four
- * of its keys in two. So this release genuinely refuses a silent event at `activity.created`,
- * `decision.published`, `inspection.created` and `inspection.approved`, and the previous release
- * genuinely admits one. The divergence is a POLICY divergence now, which is exactly the case the
- * paragraph below was written to catch.
+ *   · OUTGOING `6313b00c…` — the pre-4d-i release: the five-element preimage over this catalog
+ *     minus the keys 4d-i added, with the DECLARED policy divergence below (rounds 13 and 18).
+ *   · PRIOR `842cc9fc…` — the 4d-i release: the same five-element preimage over the whole key set.
+ *     4d-i seeded it with `pairingRequired` false on every row and named it
+ *     `_t4d_catalog_incoming`.
+ *   · CURRENT — the 4d-i-b release: the SIX-element preimage, `pairingRequired` normalised to a
+ *     boolean as the sixth element, `true` on exactly the plan's six types. 4d-i-b seeds it
+ *     BESIDE the prior one, every other column of every key equal, and it is the ONE successor
+ *     shape 4d-i's `_t4d_catalog_successor` derivation admits.
  *
- * WHAT THIS SUITE HOLDS. The migration copies the current generation's rows to the outgoing
- * version rather than transcribing a second literal block, and that copy is licensed by the
- * DECLARED divergence below and nothing else. `licences the seed` RE-DERIVES the rest of the
- * equality from source on every run, so the licence cannot outlive its proof — anything that
- * diverges without being declared changes a hash and fails there.
+ * WHAT THIS SUITE HOLDS. `licences the seeds` RE-DERIVES all three from source on every run, so
+ * neither migration's literal can outlive its proof: a key added without its row, a policy that
+ * moved without being declared, or a seventh flip changes a hash and fails here. The rest reads
+ * the live table and drives the envelope seal end to end under each generation.
  */
 
 /** The version this source computes — the generation a CURRENT writer emits under. */
 const CURRENT = effectCoverageVersion();
 
 /**
- * The outgoing generation, as the migration names it. Not transcribed from the deployed database:
- * it is `canonicalCatalog()` over this same catalog with the keys this release ADDED removed,
- * which is precisely what the previous release's `canonicalCatalog()` emits. `licences the seed`
- * asserts the two agree, and this constant is UNCHANGED by round 18 — the three new keys are
- * skipped, and removing `pushOptional` from the preimage returns it to the shape the previous
- * release always had.
+ * The generation 4d-i compiled, as 4d-i's migration names it. Not transcribed from the deployed
+ * database: it is `canonicalCatalog()` over this same catalog WITHOUT the `pairingRequired`
+ * element, which is precisely what the 4d-i release's `canonicalCatalog()` emitted — 4d-i-b
+ * flipped six keys and joined the flag to the preimage, and nothing else about the catalog moved.
+ * Read out of 4d-i's migration text rather than retyped, so a probe can never assert against a
+ * constant the file stopped using; `licences the seeds` asserts the derivation agrees.
+ */
+const PRIOR = (() => {
+  const sql = readFileSync(join(__dirname, '..', '..', 'prisma', 'migrations',
+    '20271220000000_phase6_t4d_i_dark_migration', 'migration.sql'), 'utf8');
+  const m = sql.match(/INSERT INTO "_t4d_catalog_incoming" \("v"\) VALUES \('([0-9a-f]{64})'\)/);
+  if (!m) throw new Error('the 4d-i incoming coverage generation could not be read from its migration');
+  return m[1]!;
+})();
+
+/**
+ * The outgoing generation, as the migration names it: `canonicalCatalog()` over this same catalog
+ * with the keys 4d-i ADDED removed and no `pairingRequired` element, which is what the pre-4d-i
+ * release's `canonicalCatalog()` emitted.
  */
 const OUTGOING = '6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbca7';
 
+/** Phase 6 unit 4d-i-b — the SIX types the switch-on flips, and no seventh (§D (c)). */
+const PAIRING_REQUIRED = [
+  'decision.approved', 'decision.reapproved',
+  'decision.change_requested', 'decision.change_withdrawn',
+  'decision.consultation_requested', 'decision.consultation_responded',
+];
+
 /**
- * THE DECLARED DIVERGENCE between the two generations (#582 rounds 13 and 18).
+ * THE DECLARED DIVERGENCE between the outgoing and the prior generations (#582 rounds 13 and 18).
  *
  * Round 13 split `activity.created`; round 18 split the other three keys that carried the same
  * flag, which exhausts the class — the flag is gone, so no fifth key can be in this state. For
@@ -59,10 +82,9 @@ const OUTGOING = '6313b00c54f0ecfbc8798e88d77bc025faa6d30367921127181653d42b0cbc
  * The divergence is declared in ONE place, here and in the migration's seed, so the licence stays
  * a DERIVATION rather than becoming a pinned constant nobody can check. Only the ADDED KEYS are
  * hash-affecting: the previous release's preimage never contained the `pushOptional` element, so
- * this release removing it restores the same five-element tuple and reproduces the outgoing
- * version exactly. An undeclared divergence still goes red.
+ * removing it restores the same five-element tuple and reproduces the outgoing version exactly.
  */
-const ADDED_THIS_RELEASE = [
+const ADDED_BY_4D_I = [
   'activity.created.init',          // round 13, finding 3
   'decision.published.record',      // round 18, finding 1
   'inspection.created.init',        // round 18, finding 2
@@ -70,16 +92,10 @@ const ADDED_THIS_RELEASE = [
 ];
 
 /**
- * Keys whose `requiresPush` the previous release computed differently, because there it is ONE key
- * carrying `pushOptional` — a silent branch and an announcing branch under one obligation.
- *
- * Round 13 split the first of these and round 18 split the other three, which is the whole of the
- * class: after round 18 the flag does not exist, so no further key can be in this state. Each entry
- * is a REAL policy divergence, not a preimage difference — the previous release genuinely admits a
- * silent event at these keys and this release genuinely does not — and that is why the outgoing
- * generation must be seeded with `FALSE` here rather than copied from this release's rows. Seeding
- * this release's obligation would refuse every record publication, participant checklist
- * initialisation and closing approval a still-serving process emits, for the whole drain.
+ * Keys whose `requiresPush` the outgoing release computed differently, because there it is ONE key
+ * carrying `pushOptional` — a silent branch and an announcing branch under one obligation. Each
+ * entry is a REAL policy divergence, not a preimage difference, and that is why the outgoing
+ * generation must be seeded with `FALSE` here rather than copied from a later release's rows.
  */
 const REQUIRES_PUSH_DIVERGENCE = new Map<string, boolean>([
   ['activity.created', false],
@@ -88,28 +104,20 @@ const REQUIRES_PUSH_DIVERGENCE = new Map<string, boolean>([
   ['inspection.approved', false],
 ]);
 
+type Def = { eventType: string; invalidate: boolean; push: readonly string[] | null; pushFamily?: string; pairingRequired?: true };
+
 /**
- * `canonicalCatalog()`, with keys optionally skipped.
- *
- * The `withPushOptional` parameter is GONE (#582 round 18). It existed because this release's
- * preimage carried a sixth element the previous release's did not; round 18 removed the flag, so
- * both preimages are the same five elements again and the ONLY thing that separates the two
- * generations is the key set. That is a simplification of the derivation, not a weakening of it:
- * what the licence below asserts is unchanged, and it now has one fewer moving part to be wrong about.
+ * `canonicalCatalog()`, replicated with two knobs: keys to skip, and whether the sixth
+ * (`pairingRequired`) element is present. Five elements is the shape both earlier releases
+ * hashed; six is this one's. The knobs are what make each generation a DERIVATION of this source.
  */
-function canonical(skip: readonly string[] = []): string {
+function canonical(skip: readonly string[] = [], withPairing = false): string {
   const keys = Object.keys(EXTERNAL_EFFECTS).filter((k) => !skip.includes(k)).sort();
   return JSON.stringify(
     keys.map((k) => {
-      const d = (EXTERNAL_EFFECTS as Record<string, {
-        eventType: string; invalidate: boolean; push: readonly string[] | null;
-        pushFamily?: string;
-      }>)[k]!;
-      return [
-        k, d.eventType, d.invalidate,
-        d.push === null ? null : [...d.push].slice().sort(),
-        d.pushFamily ?? null,
-      ];
+      const d = (EXTERNAL_EFFECTS as Record<string, Def>)[k]!;
+      const five = [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(), d.pushFamily ?? null];
+      return withPairing ? [...five, d.pairingRequired === true] : five;
     }),
   );
 }
@@ -123,7 +131,7 @@ type Row = {
   pairingRequired: boolean; retiredAt: Date | null;
 };
 
-describe('phase 6 4d-i — the catalog carries every generation still being emitted', () => {
+describe('phase 6 4d-i / 4d-i-b — the catalog carries every generation still being emitted', () => {
   let t: TestApp;
   let f: TwoProjectFixture;
   beforeAll(async () => { t = await createTestApp(); f = await createTwoProjectFixture(t.prisma); });
@@ -136,45 +144,69 @@ describe('phase 6 4d-i — the catalog carries every generation still being emit
   const rowsAt = (v: string) => t.prisma.$queryRawUnsafe<Row[]>(
     `SELECT * FROM "ExternalEffectCatalog" WHERE "coverageVersion" = $1 ORDER BY "effectKey"`, v,
   );
-
-  it('licences the seed — the outgoing generation is THIS catalog minus the declared divergence', () => {
-    // The migration seeds the outgoing generation from the same compiled source with two declared
-    // bends. This is the derivation of that claim: remove the key this release added and the
-    // previous release's own `canonicalCatalog()` output falls out exactly. Anything that
-    // diverges WITHOUT being declared above changes this hash and fails here.
-    expect(sha(canonical(ADDED_THIS_RELEASE))).toBe(OUTGOING);
-    expect(sha(canonical())).toBe(CURRENT);
-    expect(CURRENT).not.toBe(OUTGOING);
+  const policy = (r: Row) => ({
+    effectKey: r.effectKey, eventType: r.eventType, invalidate: r.invalidate,
+    pushRoles: r.pushRoles, pushFamily: r.pushFamily, frozenAudience: r.frozenAudience,
+    requiresPush: r.requiresPush, audience: r.audience, pushBody: r.pushBody,
+    pairingRequired: r.pairingRequired,
   });
 
-  it('seeds BOTH generations, over the same key set', async () => {
+  it('licences the seeds — all three generations fall out of THIS catalog, and only the declared bends separate them', () => {
+    // 4d-i-b's generation: the six-element preimage, which is what `effectCoverageVersion()` is.
+    expect(sha(canonical([], true))).toBe(CURRENT);
+    // 4d-i's generation: the same catalog, five elements. The flag's normalisation is what makes
+    // "remove the element" reproduce the older preimage exactly.
+    expect(sha(canonical([], false))).toBe(PRIOR);
+    // the pre-4d-i generation: five elements, minus the keys 4d-i added.
+    expect(sha(canonical(ADDED_BY_4D_I, false))).toBe(OUTGOING);
+    expect(new Set([CURRENT, PRIOR, OUTGOING]).size, 'three DISTINCT generations').toBe(3);
+    // and the flip is EXACTLY the plan's six — a seventh flag, or a missing one, moves CURRENT
+    // and fails the first assertion; this arm says WHICH key did it.
+    const flagged = Object.entries(EXTERNAL_EFFECTS as Record<string, Def>)
+      .filter(([, d]) => d.pairingRequired === true).map(([k]) => k).sort();
+    expect(flagged).toEqual([...PAIRING_REQUIRED].sort());
+  });
+
+  it('seeds ALL THREE generations, over the right key sets', async () => {
     const current = await rowsAt(CURRENT);
+    const prior = await rowsAt(PRIOR);
     const outgoing = await rowsAt(OUTGOING);
 
     expect(current.length, `no rows at the current generation ${CURRENT}`).toBeGreaterThan(0);
     expect(current.length).toBe(Object.keys(EXTERNAL_EFFECTS).length);
+    // 4d-i-b extends 4d-i's generation over the SAME keys, both directions
+    expect(prior.map((r) => r.effectKey)).toEqual(current.map((r) => r.effectKey));
     // A generation seeded PARTIALLY is worse than one not seeded at all: the drain would then
     // reject exactly the keys nobody thought to copy, and only for the events that use them. The
-    // outgoing set is the current set minus the key this release added — asserted as that
-    // subtraction, so a key going missing for any OTHER reason still fails.
+    // outgoing set is the key set minus what 4d-i added — asserted as that subtraction, so a key
+    // going missing for any OTHER reason still fails.
     expect(outgoing.map((r) => r.effectKey)).toEqual(
-      current.map((r) => r.effectKey).filter((k) => !ADDED_THIS_RELEASE.includes(k)),
+      current.map((r) => r.effectKey).filter((k) => !ADDED_BY_4D_I.includes(k)),
     );
   });
 
-  it('the outgoing rows say what the outgoing release means, column for column', async () => {
+  it('4d-i-b: the current generation is the prior one with `pairingRequired` flipped on EXACTLY the six, column for column', async () => {
     const current = await rowsAt(CURRENT);
+    const prior = await rowsAt(PRIOR);
+    // every column but the flag equal — the shape 4d-i's `_t4d_catalog_successor` admits and
+    // nothing else; asserted from the live rows, not from the literal.
+    expect(current.map(policy)).toEqual(prior.map((r) => ({
+      ...policy(r), pairingRequired: PAIRING_REQUIRED.includes(r.effectKey),
+    })));
+    expect(prior.filter((r) => r.pairingRequired).map((r) => r.effectKey),
+      '4d-i seeds the flag false on every row').toEqual([]);
+    expect(current.filter((r) => r.pairingRequired).map((r) => r.effectKey).sort())
+      .toEqual([...PAIRING_REQUIRED].sort());
+  });
+
+  it('the outgoing rows say what the outgoing release means, column for column', async () => {
+    const prior = await rowsAt(PRIOR);
     const outgoing = await rowsAt(OUTGOING);
-    const policy = (r: Row) => ({
-      effectKey: r.effectKey, eventType: r.eventType, invalidate: r.invalidate,
-      pushRoles: r.pushRoles, pushFamily: r.pushFamily, frozenAudience: r.frozenAudience,
-      requiresPush: r.requiresPush, audience: r.audience, pushBody: r.pushBody,
-      pairingRequired: r.pairingRequired,
-    });
-    // Every column still agrees except the one the divergence declares, and that one is asserted
-    // to hold the PREVIOUS release's value rather than merely being excluded from the comparison.
-    const expected = current
-      .filter((r) => !ADDED_THIS_RELEASE.includes(r.effectKey))
+    // Every column still agrees with 4d-i's generation except the one the divergence declares,
+    // and that one is asserted to hold the PREVIOUS release's value rather than merely being
+    // excluded from the comparison. (The flag is false in both: the outgoing release has none.)
+    const expected = prior
+      .filter((r) => !ADDED_BY_4D_I.includes(r.effectKey))
       .map((r) => {
         const p = policy(r);
         const bend = REQUIRES_PUSH_DIVERGENCE.get(r.effectKey);
@@ -188,8 +220,8 @@ describe('phase 6 4d-i — the catalog carries every generation still being emit
     }
   });
 
-  it('neither generation is born retired — a retired row may not back a new event', async () => {
-    for (const v of [CURRENT, OUTGOING]) {
+  it('no generation is born retired — a retired row may not back a new event', async () => {
+    for (const v of [CURRENT, PRIOR, OUTGOING]) {
       const rows = await rowsAt(v);
       // presence first, or an absent generation would make this arm vacuously green — which is
       // exactly what it did on the RED measurement of the unfixed head.
@@ -198,9 +230,10 @@ describe('phase 6 4d-i — the catalog carries every generation still being emit
     }
   });
 
-  it('THE DRAIN: the envelope seal admits an event emitted under the outgoing generation', async () => {
+  it('THE DRAIN: the envelope seal admits an event emitted under every seeded generation, and only those', async () => {
     // The behaviour the finding is about, driven end to end rather than inferred from the rows:
-    // a previous-release process emits its OWN version and the event must COMMIT.
+    // a previous-release process emits its OWN version and the event must COMMIT. A key that is
+    // `pairingRequired` at none of the three, so the pairing seal asks nothing here.
     const org = f.orgA.id;
     const proj = f.projectA.id;
 
@@ -228,20 +261,49 @@ describe('phase 6 4d-i — the catalog carries every generation still being emit
 
     // the outgoing release's event — this is the write round 8 found refused
     await emitAt(OUTGOING, 'cg-ev-outgoing');
-    // and this release's own, unchanged
+    // the 4d-i release's, still serving through 4d-i-b's own drain
+    await emitAt(PRIOR, 'cg-ev-prior');
+    // and this release's own
     await emitAt(CURRENT, 'cg-ev-current');
-    // both COMMITTED, and each carries the version its own emitter computed
+    // all COMMITTED, and each carries the version its own emitter computed
     const landed = await t.prisma.$queryRawUnsafe<{ eventId: string; v: string }[]>(
       `SELECT "eventId", "dispatchIntent" ->> 'coverageVersion' AS v FROM "DomainEvent"
-        WHERE "eventId" IN ('cg-ev-outgoing','cg-ev-current') ORDER BY "eventId"`,
+        WHERE "eventId" IN ('cg-ev-outgoing','cg-ev-prior','cg-ev-current') ORDER BY "eventId"`,
     );
     expect(landed).toEqual([
       { eventId: 'cg-ev-current', v: CURRENT },
       { eventId: 'cg-ev-outgoing', v: OUTGOING },
+      { eventId: 'cg-ev-prior', v: PRIOR },
     ]);
     // while a generation this database never registered stays refused: seeding the drain's
-    // predecessor widens the catalog by ONE known version, it does not stop the seal asking.
+    // predecessors widens the catalog by KNOWN versions, it does not stop the seal asking.
     await expect(emitAt('0'.repeat(64), 'cg-ev-unknown'))
       .rejects.toThrow(/which this database does not hold/);
+  });
+
+  it('4d-i-b: the SWITCH-ON is a property of the generation, not of the key — the same type is unclaimed-admitted at the prior generation and refused at the current one', async () => {
+    const org = f.orgA.id;
+    const proj = f.projectA.id;
+    // An UNCLAIMED `decision.change_requested` — the shape the pairing seal exists to refuse.
+    // Nothing else in this transaction: no request, no transition, no claimant.
+    const unclaimedAt = (version: string, eventId: string) => t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = $1`, proj,
+      );
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+         SELECT $1,'decision.change_requested',1,$2,$3,s."nextPosition" - 1,'system','system:cg','Decision','cg-dec',
+                jsonb_build_object('effectKey','decision.change_requested','coverageVersion',$4,'invalidate',true)
+           FROM "ProjectEventStream" s WHERE s."projectId" = $3`,
+        eventId, org, proj, version,
+      );
+    });
+    // a still-serving 4d-i process emits under its own generation, where the flag is false: the
+    // mechanism is dark for it, exactly as 4d-i left it, so the drain stays open.
+    await unclaimedAt(PRIOR, 'cg-ev-unclaimed-prior');
+    // a current writer emits under the switched-on generation: the same event, unclaimed, is an
+    // effect with no act behind it, and the kernel's seal refuses it at commit.
+    await expect(unclaimedAt(CURRENT, 'cg-ev-unclaimed-current'))
+      .rejects.toThrow(/requires a pairing claim and none was made/);
   });
 });

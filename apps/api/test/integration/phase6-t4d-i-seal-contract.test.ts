@@ -404,6 +404,98 @@ const REGISTER: Record<string, SealContract> = {
     must: ['projectId', 'Decision'],
   },
 
+  // ── Phase 6 unit 4d-i-b — the PAIRING SWITCH-ON (§D 4d-i-b; §A.3 obligation 7) ──────────────
+  platform_claim_event_pairing_once: {
+    rule: 'the claim that may be asked twice of ONE row: the first call claims through the '
+      + 'kernel primitive, the second from the same (table, row) finds its own claim and returns, '
+      + 'and any OTHER row still meets the per-event UNIQUE — which is what lets a claimant run '
+      + 'as an immediate half and a deferred half and be order-independent',
+    plan: '§D 4d-i-b (b), "order-independent by construction"',
+    on: {},
+    must: ['claimedBy', 'claimedById', 'platform_claim_event_pairing'],
+  },
+  phase6_t4d_decision_change_here: {
+    rule: 'the change lifecycle\'s THREE moves — `approved → change`, `change → approved`, '
+      + '`change → awaiting_countersign` — are recorded into the trigger-only carrier where OLD '
+      + 'is in hand, because a state is not a transition (a no-op UPDATE supplies xmin and '
+      + 'leaves the status); records, refuses nothing',
+    plan: '§D 4d-i-b (a); #582 rounds 8, 22 and 40',
+    on: { 'Decision.Decision_t4d_change_transition': B('U') },
+    must: ['change_from_approved', 'approved_from_change', 'awaiting_from_change',
+      '_t4d_tx_transition', 'txid_current'],
+  },
+  phase6_t4d_decision_moved_in_tx: {
+    rule: 'the reader of that carrier: did THIS transaction perform the named move on this decision',
+    plan: '§D 4d-i-b (a)',
+    on: {},
+    must: ['txid_current', '"kind" = p_kind'],
+  },
+  phase6_t4d_change_request_paired: {
+    rule: 'the REQUEST side of the change lifecycle\'s pairings, judged at COMMIT: a request born '
+      + 'open rides the decision\'s same-transaction landing in `change` (for `standard`, the '
+      + 'EXACT `approved → change` move) and exactly ONE `decision.change_requested` event, which '
+      + 'it CLAIMS unless a same-transaction `returned` stranded resolution is the bundle\'s '
+      + 'primary; a request written `withdrawn` rides the `change → approved` restoration and '
+      + 'claims its one `decision.change_withdrawn`; a request written `resolved` rides the '
+      + 'reapproval\'s landing with exactly one revision born here and its event present — '
+      + 'verification only, the revision claims',
+    plan: '§A.3 the ChangeRequest row; §D 4d-i-b (a); #568 r1 f3; #558 r1 f2, r2 f6; #572 r11 f1',
+    on: { 'ChangeRequest.ChangeRequest_t4d_paired': C('I U') },
+    must: [
+      'txid_current', 'change_from_approved', 'approved_from_change', 'awaiting_from_change',
+      'decision.change_requested', 'decision.change_withdrawn',
+      'decision.approved', 'decision.reapproved', 'decision.awaiting_countersign',
+      'platform_tx_event_count', 'platform_claim_event_pairing_once',
+      'DecisionStrandedResolution', 'returned', 'countersign_rejection', 'standard',
+      'DecisionApprovalRevision', 'withdrawn', 'resolved',
+    ],
+  },
+  phase6_t4d_change_request_claims_event: {
+    rule: 'the request\'s IMMEDIATE claim half: when the event of a standard opening or a '
+      + 'withdrawal is already written, claim it now — so a bundle that emits before it writes the '
+      + 'request is not refused by a deferred check queued ahead of the deferred seal; judges nothing',
+    plan: '§D 4d-i-b (b), "order-independent by construction"',
+    on: { 'ChangeRequest.ChangeRequest_t4d_claim': A('I U') },
+    must: ['platform_tx_event', 'platform_claim_event_pairing_once',
+      'decision.change_requested', 'decision.change_withdrawn', 'standard', 'withdrawn'],
+  },
+  phase6_t4d_change_transition_paired: {
+    rule: 'the DECISION side: `approved → change` carries exactly ONE standard request born open '
+      + 'here, `change → approved` exactly ONE closure (withdrawn or resolved) here, '
+      + '`change → awaiting_countersign` exactly ONE resolution here — and each move still STANDS '
+      + 'at commit',
+    plan: '§A.3 the ChangeRequest row ("in BOTH directions"); §D 4d-i-b (a)',
+    on: { 'Decision.Decision_t4d_change_paired': C('U') },
+    must: ['change_from_approved', 'approved_from_change', 'awaiting_from_change',
+      'count(*)', 'txid_current', 'standard', 'withdrawn', 'resolved'],
+  },
+  phase6_t4d_revision_claims_approval: {
+    rule: 'a FINALIZED revision birth claims the decision\'s same-transaction `decision.approved` '
+      + 'or `decision.reapproved` — the direct approve and the no-chain reapproval\'s claimant, '
+      + 'the closure verifying only; a provisional birth claims nothing here (its event is 4d-ii\'s)',
+    plan: '§A.3 correspondence table (#572 r9 f1); §D 4d-i-b (b)',
+    on: {
+      'DecisionApprovalRevision.DecisionApprovalRevision_t4d_claim': A('I'),
+      'DecisionApprovalRevision.DecisionApprovalRevision_t4d_claim_deferred': C('I'),
+    },
+    must: ['"finalized"', 'platform_tx_event', 'platform_claim_event_pairing_once',
+      'decision.approved', 'decision.reapproved'],
+  },
+  phase6_t4d_consultation_claims_event: {
+    rule: 'a consultation request claims its `decision.consultation_requested`, a response its '
+      + '`decision.consultation_responded`, each the decision\'s same-transaction event, by '
+      + 'TG_TABLE_NAME; claiming is all it does',
+    plan: '§A.3 the two consultation rows; §D 4d-i-b (b)',
+    on: {
+      'DecisionConsultation.DecisionConsultation_t4d_claim': A('I'),
+      'DecisionConsultation.DecisionConsultation_t4d_claim_deferred': C('I'),
+      'DecisionConsultationResponse.DecisionConsultationResponse_t4d_claim': A('I'),
+      'DecisionConsultationResponse.DecisionConsultationResponse_t4d_claim_deferred': C('I'),
+    },
+    must: ['TG_TABLE_NAME', 'decision.consultation_requested', 'decision.consultation_responded',
+      'platform_tx_event', 'platform_claim_event_pairing_once'],
+  },
+
   // ── the membership side ─────────────────────────────────────────────────────────────────────
   phase6_t4d_renotified_claims_event: {
     rule: 'the `countersign_renotified` audit row CLAIMS its own same-transaction '
@@ -868,7 +960,10 @@ describe('phase 6 unit 4d-i — every seal is checked against its CONTRACT, not 
     const defs = await t.prisma.$queryRaw<Array<{ name: string; def: string }>>`
       SELECT p.proname AS name, pg_get_functiondef(p.oid) AS def
         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-       WHERE n.nspname = 'public' AND (p.proname LIKE '%t4d%' OR p.proname LIKE 'platform_tx_%')`;
+       WHERE n.nspname = 'public'
+         AND (p.proname LIKE '%t4d%' OR p.proname LIKE 'platform_tx_%'
+              -- Phase 6 unit 4d-i-b: the kernel's claim primitives carry no t4d in their names
+              OR p.proname LIKE 'platform_claim_event_pairing%')`;
     bodies = new Map(defs.map((d) => [d.name, d.def]));
   });
 
