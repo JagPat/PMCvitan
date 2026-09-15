@@ -92,22 +92,42 @@ previous with exactly six flips (`external-effect-catalog-seed.test.ts`,
 drain admitting all three and refusing an unknown one, an unclaimed
 `decision.change_requested` admitted at 4d-i's generation and refused at this
 unit's — is `phase6-t4d-i-catalog-generations.test.ts`. The seal inventory and
-seal-contract oracles carry the nine new triggers and eight new functions. The
-seal-stripped harness (`phase6-t4d-i-seal-stripped.test.ts`) builds the unit from
-all three files, strips each new seal by name and requires the half-write it
-refuses to be ACCEPTED without it and REFUSED with it, and adds six 4d-i-b arms:
-the request bundle in both directions, the order-independence of each claimant
-pair, the revision and consultation claimants, the generation semantics, and the
-switch-on's own apply-time aborts (ahead of 4d-i, a hand-flipped or thinned prior
-generation, a disagreeing row, a fourth generation before and after 4d-ii's
-writers). Gate results at the unit commit: `pnpm check` green (automation 332
-pass, web and api green); the full API integration suite 109 files / 1636 tests
-green after the last arm was re-derived (the harness file alone: 124 of 124);
-`pnpm test:e2e:api` 32 of 32 in legacy mode and 32 of 32 in outbox mode; and
-`upgrade-proof.sh` PASSED, its P42 previous-release plant now the whole
-`requestChange` bundle at 4d-i's generation, with the bare request refused by
-name; the three `migrate.sh` runner proofs (schedule B1, schema enforcement,
-4c-iii-r) PASSED; the 4d-i migration files unchanged (`a8b0abda…`, `ea7e6ee8…`).
+seal-contract oracles carry the ten new triggers and eleven new functions.
+
+**Review round 2 (Codex, six P1s on `2ff21dc1`) and the proof it left behind.**
+The six findings shared one cause — the per-branch claimants returned on absence
+("claiming is all they do"), delegating to correspondence seals that fire only
+when an audit row or an event exists, so a fact written with NEITHER was judged
+by nobody; `xmin` was read as a transition; a same-type event for the same
+decision was taken as this fact's without binding its payload or recipient. The
+correction: the decision recorder gains `awaiting_countersign → change`; a
+request recorder (`ChangeRequest_t4d_lifecycle_transition`) writes the request's
+own moves into 4d-i's carrier so the decision side counts transitions, not
+writes; the request seal demands the `change_requested` / `change_withdrawn`
+audit row; the revision and consultation claimants' DEFERRED halves demand
+exactly one bound event (and, for the revision, one audit row) at commit. The
+reusable instrument is `phase6-t4d-i-b-pairing-matrix.test.ts`: a table-driven
+bundle matrix whose coverage is derived from the compiled `pairingRequired`
+catalog, driving each of the six types' complete bundle in both write orders and
+at the prior generation, plus the negatives (missing counterpart, wrong
+identity/audience, duplicated/reused evidence, no-op versus real transition).
+Against the failed head's migration bytes 13 of its 39 cases were RED — each a
+defective bundle that COMMITTED — and all 39 are green here. The harness gained
+the response claimant's OWN arm (it had been "declared covered" by the request's)
+and a round-2 arm driving every defective bundle stripped-versus-whole. The
+lesson is recorded once, in `docs/POLICY.md` → *Transaction evidence*.
+
+**Gate results at this head.** `pnpm check` green by exit code (automation 332 pass / 0
+fail; web 65 files / 1028 tests; api typecheck, unit tests 64 files / 875 — including the
+raw-plant tripwire that now classifies the three event-planting suites this round touched — and
+build). `pnpm --filter api test:integration`, alone, on a `pmcvitan_test` rebuilt from zero
+after the last migration edit: 110 files / 1677 tests green (the harness file 126 / 126, the
+matrix 39 / 39). `pnpm test:e2e:api:legacy` 32 / 32; `pnpm test:e2e:api:outbox` 32 / 32.
+`upgrade-proof.sh` PASSED (788 assertions, 0 failed) — its 4c-ii "real writer shape" plant now
+carries the `decision.approved` event and the `approved` audit row the delivered writer produces,
+and its P42 previous-release bundle carries the `change_requested` audit row. The three
+`migrate.sh` runner proofs (schedule B1, schema enforcement, 4c-iii-r) PASSED. Both 4d-i
+migration files unchanged (`a8b0abda…`, `ea7e6ee8…`).
 
 **What follows.** After this unit merges: 4d-ii-a, 4d-ii-b, the drain attestation,
 then 4d-iii. None is started here; F-1c and the maintenance queue keep their

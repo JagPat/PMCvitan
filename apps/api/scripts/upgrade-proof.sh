@@ -4519,6 +4519,21 @@ UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='UP4A-D2', "comp
 -- nobody performed. Adding it here keeps this assertion about the real shape rather than about a
 -- shape the database no longer admits — which is the whole point of the pair above and below it.
 UPDATE "Decision" SET "status"='approved' WHERE "id"='UP4A-D2' AND "projectId"='p1';
+-- Phase 6 unit 4d-i-b (#590's review round 2, finding 5) — AND IT ANNOUNCES AND REGISTERS ITSELF.
+-- The real writer's shape has two more members from the switch-on: the `decision.approved` event
+-- at this release's (flagged) generation, which the finalized revision CLAIMS, and the `approved`
+-- audit row `approve` appends beside it. The revision's deferred claimant refuses a head with
+-- neither at commit, so this block carries both — the same three-part bundle the matrix proof
+-- drives, here on the upgraded database.
+UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'p1';
+INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+  SELECT 'UP4CII-EV','decision.approved',1,p."orgId",'p1',s."nextPosition" - 1,'system','upgrade-proof','Decision','UP4A-D2',
+         jsonb_build_object('effectKey','decision.approved','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
+                            'push', jsonb_build_object('body','upgrade-proof','roles', c."pushRoles"))
+    FROM "ProjectEventStream" s, "Project" p, "ExternalEffectCatalog" c
+   WHERE s."projectId" = 'p1' AND p."id" = 'p1'
+     AND c."effectKey" = 'decision.approved' AND c."pairingRequired";
+INSERT INTO "DecisionEvent" ("id","decisionId","type","actor") VALUES ('UP4CII-AU','UP4A-D2','approved','upgrade-proof');
 COMMIT;
 SQL
 assert "4c-ii: the accepted revision names the approval command it is the product of" \
@@ -5054,6 +5069,10 @@ BEGIN;
 UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'UP4A-D2';
 INSERT INTO "ChangeRequest"("id","decisionId","reason","costImpact","timeImpactDays","status")
 VALUES ('UP4D-CR1','UP4A-D2','old writer names no project',0,0,'open');
+-- Phase 6 unit 4d-i-b (#590's review round 2, finding 6) — the previous release's `requestChange`
+-- appends the `change_requested` audit row beside the request and the event (it is the same
+-- code), and the switch-on's request seal demands exactly one at commit.
+INSERT INTO "DecisionEvent" ("id","decisionId","type","actor") VALUES ('UP4D-CR1-AU','UP4A-D2','change_requested','upgrade-proof');
 UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'p1';
 -- the generation a 4d-i process compiles: the unflagged generation with the switch-on's key set
 INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","payload","dispatchIntent")

@@ -8,6 +8,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, wipeDecisionEvents, type TwoProjectFixture, plantLegacyApprovalRevision, plantLegacyDecisionAudit } from './fixtures';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
+import { effectCoverageVersion } from '../../src/platform/external-effects';
 import { ActivitiesService } from '../../src/activities/activities.service';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
@@ -574,6 +575,27 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
           // which plants a legacy revision beside a pending decision through the named bypass.
           await tx.$executeRawUnsafe(
             `UPDATE "Decision" SET "status"='approved' WHERE "id"=$1`, id);
+          // Phase 6 unit 4d-i-b (#590 round 2, finding 5) — AND IT ANNOUNCES AND REGISTERS
+          // ITSELF. From the switch-on a finalized revision's deferred claimant demands exactly
+          // one `decision.approved` event and one `approved` audit row in the same transaction,
+          // which is what the delivered `approve` writes; this arm keeps standing in for that
+          // writer, so it carries both. Written after the transition so the lock choreography
+          // the arm measures is unchanged. The event takes its position from the allocator in
+          // this same transaction (`insertRawEvent`'s protocol, inline because the helper opens
+          // a transaction of its own); nothing is bypassed.
+          await tx.$executeRawUnsafe(
+            `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = $1`, f.projectA.id);
+          await tx.$executeRawUnsafe(
+            `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
+               SELECT $1,'decision.approved',1,$2,$3,s."nextPosition" - 1,'system','system:t4a','Decision',$4,
+                      jsonb_build_object('effectKey','decision.approved','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
+                                         'push', jsonb_build_object('body','race','roles', c."pushRoles"))
+                 FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
+                WHERE s."projectId" = $3 AND c."effectKey" = 'decision.approved' AND c."coverageVersion" = $5`,
+            `ev-${id}-race-b`, f.orgA.id, f.projectA.id, id, effectCoverageVersion());
+          await tx.$executeRawUnsafe(
+            `INSERT INTO "DecisionEvent" ("id","decisionId","type","actor") VALUES ($1,$2,'approved','race')`,
+            `de-${id}-race-b`, id);
           inserted();
           await gate;
         },

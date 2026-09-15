@@ -38,6 +38,10 @@ const INVENTORY: Record<string, string[]> = {
     // #582's review round 26, finding 3 — identity frozen from birth, the rule `Decision` already
     // carried and three of its four siblings did not.
     'ChangeRequest_t4d_identity',
+    // Phase 6 unit 4d-i-b (#590 round 2, finding 4) — the request's own moves (born open, left
+    // open for withdrawn / resolved) recorded into 4d-i's trigger-only carrier where OLD is in
+    // hand, so the decision side counts transitions and not writes
+    'ChangeRequest_t4d_lifecycle_transition',
     'ChangeRequest_t4d_no_truncate',
     // Phase 6 unit 4d-i-b (§D (a)) — THE ONE deferred pairing seal on the table: the opening
     // and the two closures, in the request's direction, and the two claims it owns
@@ -214,6 +218,11 @@ const FUNCTIONS = [
   'platform_claim_event_pairing_once',
   'phase6_t4d_decision_change_here',
   'phase6_t4d_decision_moved_in_tx',
+  // #590 round 2 — the request recorder and its counting reader, and the audit-row counter the
+  // fact-side seals ask for the register row the delivered writer appends
+  'phase6_t4d_change_request_here',
+  'phase6_t4d_requests_moved_in_tx',
+  'phase6_t4d_tx_audit_count',
   'phase6_t4d_change_request_paired',
   'phase6_t4d_change_request_claims_event',
   'phase6_t4d_change_transition_paired',

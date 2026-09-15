@@ -415,14 +415,41 @@ const REGISTER: Record<string, SealContract> = {
     must: ['claimedBy', 'claimedById', 'platform_claim_event_pairing'],
   },
   phase6_t4d_decision_change_here: {
-    rule: 'the change lifecycle\'s THREE moves — `approved → change`, `change → approved`, '
-      + '`change → awaiting_countersign` — are recorded into the trigger-only carrier where OLD '
-      + 'is in hand, because a state is not a transition (a no-op UPDATE supplies xmin and '
-      + 'leaves the status); records, refuses nothing',
-    plan: '§D 4d-i-b (a); #582 rounds 8, 22 and 40',
+    rule: 'the change lifecycle\'s FOUR moves — `approved → change`, `change → approved`, '
+      + '`change → awaiting_countersign`, `awaiting_countersign → change` — are recorded into the '
+      + 'trigger-only carrier where OLD is in hand, because a state is not a transition (a no-op '
+      + 'UPDATE supplies xmin and leaves the status); records, refuses nothing',
+    plan: '§D 4d-i-b (a); #582 rounds 8, 22 and 40; #590 r2 f2',
     on: { 'Decision.Decision_t4d_change_transition': B('U') },
-    must: ['change_from_approved', 'approved_from_change', 'awaiting_from_change',
+    must: ['change_from_approved', 'approved_from_change', 'awaiting_from_change', 'change_from_awaiting',
       '_t4d_tx_transition', 'txid_current'],
+  },
+  phase6_t4d_change_request_here: {
+    rule: 'the REQUEST\'s own moves — born open, left open for `withdrawn`, left open for '
+      + '`resolved` — recorded into the same carrier where OLD is in hand, one row per (request, '
+      + 'move) per transaction, so the decision side counts TRANSITIONS and not writes: a no-op '
+      + 'UPDATE of a historical closure supplies xmin and is not a closure performed here; '
+      + 'records, refuses nothing',
+    plan: '§D 4d-i-b (a); #590 r2 f4',
+    on: { 'ChangeRequest.ChangeRequest_t4d_lifecycle_transition': B('I U') },
+    must: ['request_opened', 'request_withdrawn', 'request_resolved', 'OLD."status"',
+      '_t4d_tx_transition', 'txid_current'],
+  },
+  phase6_t4d_requests_moved_in_tx: {
+    rule: 'the counting reader of the request recorder: how many of this decision\'s requests '
+      + 'performed one of the named moves in THIS transaction and still stand in the state the '
+      + 'move reached at commit, optionally narrowed to one origin',
+    plan: '§D 4d-i-b (a); #590 r2 f4',
+    on: {},
+    must: ['txid_current', 'split_part', 'request_opened', 'request_withdrawn', 'request_resolved', 'p_origin'],
+  },
+  phase6_t4d_tx_audit_count: {
+    rule: 'how many `DecisionEvent` audit rows of the named types THIS transaction appended for '
+      + 'the decision — the fact side\'s converse of the audit correspondence, which fires only '
+      + 'when an audit row exists',
+    plan: '#590 r2 f5, f6',
+    on: {},
+    must: ['"DecisionEvent"', 'count(*)', 'txid_current'],
   },
   phase6_t4d_decision_moved_in_tx: {
     rule: 'the reader of that carrier: did THIS transaction perform the named move on this decision',
@@ -435,14 +462,17 @@ const REGISTER: Record<string, SealContract> = {
       + 'open rides the decision\'s same-transaction landing in `change` (for `standard`, the '
       + 'EXACT `approved → change` move) and exactly ONE `decision.change_requested` event, which '
       + 'it CLAIMS unless a same-transaction `returned` stranded resolution is the bundle\'s '
-      + 'primary; a request written `withdrawn` rides the `change → approved` restoration and '
-      + 'claims its one `decision.change_withdrawn`; a request written `resolved` rides the '
-      + 'reapproval\'s landing with exactly one revision born here and its event present — '
-      + 'verification only, the revision claims',
-    plan: '§A.3 the ChangeRequest row; §D 4d-i-b (a); #568 r1 f3; #558 r1 f2, r2 f6; #572 r11 f1',
+      + 'primary, and for `standard` exactly ONE `change_requested` audit row appended here; for '
+      + '`countersign_rejection` the EXACT `awaiting_countersign → change` move; a request written '
+      + '`withdrawn` rides the `change → approved` restoration, exactly one `change_withdrawn` '
+      + 'audit row, and claims its one `decision.change_withdrawn`; a request written `resolved` '
+      + 'rides the reapproval\'s landing with exactly one revision born here and its event present '
+      + '— verification only, the revision claims',
+    plan: '§A.3 the ChangeRequest row; §D 4d-i-b (a); #568 r1 f3; #558 r1 f2, r2 f6; #572 r11 f1; #590 r2 f2, f6',
     on: { 'ChangeRequest.ChangeRequest_t4d_paired': C('I U') },
     must: [
-      'txid_current', 'change_from_approved', 'approved_from_change', 'awaiting_from_change',
+      'txid_current', 'change_from_approved', 'approved_from_change', 'awaiting_from_change', 'change_from_awaiting',
+      'phase6_t4d_tx_audit_count', "ARRAY['change_requested']", "ARRAY['change_withdrawn']",
       'decision.change_requested', 'decision.change_withdrawn',
       'decision.approved', 'decision.reapproved', 'decision.awaiting_countersign',
       'platform_tx_event_count', 'platform_claim_event_pairing_once',
@@ -462,38 +492,45 @@ const REGISTER: Record<string, SealContract> = {
   phase6_t4d_change_transition_paired: {
     rule: 'the DECISION side: `approved → change` carries exactly ONE standard request born open '
       + 'here, `change → approved` exactly ONE closure (withdrawn or resolved) here, '
-      + '`change → awaiting_countersign` exactly ONE resolution here — and each move still STANDS '
-      + 'at commit',
-    plan: '§A.3 the ChangeRequest row ("in BOTH directions"); §D 4d-i-b (a)',
+      + '`change → awaiting_countersign` exactly ONE resolution here — each move still STANDS at '
+      + 'commit, and BORN / CLOSED are read from the request recorder, never from xmin',
+    plan: '§A.3 the ChangeRequest row ("in BOTH directions"); §D 4d-i-b (a); #590 r2 f4',
     on: { 'Decision.Decision_t4d_change_paired': C('U') },
     must: ['change_from_approved', 'approved_from_change', 'awaiting_from_change',
-      'count(*)', 'txid_current', 'standard', 'withdrawn', 'resolved'],
+      'phase6_t4d_requests_moved_in_tx', 'request_opened', 'request_withdrawn', 'request_resolved', 'standard'],
   },
   phase6_t4d_revision_claims_approval: {
     rule: 'a FINALIZED revision birth claims the decision\'s same-transaction `decision.approved` '
       + 'or `decision.reapproved` — the direct approve and the no-chain reapproval\'s claimant, '
-      + 'the closure verifying only; a provisional birth claims nothing here (its event is 4d-ii\'s)',
-    plan: '§A.3 correspondence table (#572 r9 f1); §D 4d-i-b (b)',
+      + 'the closure verifying only; a provisional birth claims nothing here (its event is 4d-ii\'s). '
+      + 'The immediate half may defer absence; the DEFERRED half demands exactly one event of the '
+      + 'family and exactly one `approved` / `reapproved` audit row at commit',
+    plan: '§A.3 correspondence table (#572 r9 f1); §D 4d-i-b (b); #590 r2 f5',
     on: {
       'DecisionApprovalRevision.DecisionApprovalRevision_t4d_claim': A('I'),
       'DecisionApprovalRevision.DecisionApprovalRevision_t4d_claim_deferred': C('I'),
     },
-    must: ['"finalized"', 'platform_tx_event', 'platform_claim_event_pairing_once',
-      'decision.approved', 'decision.reapproved'],
+    must: ['"finalized"', 'TG_NAME', 'platform_tx_event', 'platform_tx_event_count',
+      'phase6_t4d_tx_audit_count', "ARRAY['approved', 'reapproved']",
+      'platform_claim_event_pairing_once', 'decision.approved', 'decision.reapproved'],
   },
   phase6_t4d_consultation_claims_event: {
     rule: 'a consultation request claims its `decision.consultation_requested`, a response its '
-      + '`decision.consultation_responded`, each the decision\'s same-transaction event, by '
-      + 'TG_TABLE_NAME; claiming is all it does',
-    plan: '§A.3 the two consultation rows; §D 4d-i-b (b)',
+      + '`decision.consultation_responded`, by TG_TABLE_NAME — the decision\'s same-transaction '
+      + 'event whose payload names THIS row (`consultationId` and `consulteeUserId`; '
+      + '`responseId` and `consultationId`) and whose push targets its recipient (the consultee; '
+      + 'the consultation\'s `requestedById`). The immediate half may defer absence; the DEFERRED '
+      + 'half demands exactly one such event at commit',
+    plan: '§A.3 the two consultation rows; §D 4d-i-b (b); #590 r2 f1, f3',
     on: {
       'DecisionConsultation.DecisionConsultation_t4d_claim': A('I'),
       'DecisionConsultation.DecisionConsultation_t4d_claim_deferred': C('I'),
       'DecisionConsultationResponse.DecisionConsultationResponse_t4d_claim': A('I'),
       'DecisionConsultationResponse.DecisionConsultationResponse_t4d_claim_deferred': C('I'),
     },
-    must: ['TG_TABLE_NAME', 'decision.consultation_requested', 'decision.consultation_responded',
-      'platform_tx_event', 'platform_claim_event_pairing_once'],
+    must: ['TG_TABLE_NAME', 'TG_NAME', 'decision.consultation_requested', 'decision.consultation_responded',
+      "'consultationId'", "'consulteeUserId'", "'responseId'", "'targetUserId'", '"requestedById"',
+      'txid_current', 'platform_claim_event_pairing_once'],
   },
 
   // ── the membership side ─────────────────────────────────────────────────────────────────────

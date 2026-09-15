@@ -39,18 +39,25 @@
 --       finding 6), and the `decision.change_requested` / `decision.change_withdrawn` CLAIMS it
 --       owns (#572's review round 11, finding 1). "Both directions" needs a seal on each side:
 --       the request side is this trigger; the DECISION side is `Decision_t4d_change_paired`
---       beside it, over the three moves a small recorder (`Decision_t4d_change_transition`)
---       writes into the trigger-only carrier 4d-i created at round 40 — because only the update
---       itself holds OLD, and a state is not a transition (#582's rounds 8, 22 and 40).
+--       beside it, over the four decision moves a small recorder (`Decision_t4d_change_transition`)
+--       and the request's own moves a second one (`ChangeRequest_t4d_lifecycle_transition`)
+--       write into the trigger-only carrier 4d-i created at round 40 — because only the update
+--       itself holds OLD, and a state is not a transition (#582's rounds 8, 22 and 40; #590's
+--       round 2, findings 2 and 4). Each side also demands the audit row the delivered writer
+--       appends beside its fact (round 2, finding 6).
 --
 --   (b) THE REMAINING PER-BRANCH CLAIMANTS the §A.3 correspondence table names for the six
 --       types: the finalized `DecisionApprovalRevision` birth for the direct approve and the
 --       no-chain reapproval (#572's review round 9, finding 1), and the consultation request and
 --       response rows for their two families. Each claims through the kernel's own
---       same-transaction primitive and NOTHING ELSE — verification stays where it already lives
---       (`DecisionEvent_t4d_correspondence`, the entry seals, the 4c consultation seals). 4d-i
---       already installed the ONE other claimant, `DecisionEvent_t4d_renotified_claim`, for the
---       branch whose only fact is an audit row.
+--       same-transaction primitive, and at COMMIT its deferred half demands the evidence its act
+--       must have produced — exactly one event of the family bound to the row and its recipient,
+--       and the audit row where the delivered writer appends one. Verification of the AUDIT row's
+--       own bundle stays where it lives (`DecisionEvent_t4d_correspondence`, the entry seals, the
+--       4c consultation seals); what those cannot see is a fact written with no audit row and no
+--       event, which is why the fact's claimant judges absence itself (#590's round 2, findings
+--       1, 3 and 5). 4d-i already installed the ONE other claimant,
+--       `DecisionEvent_t4d_renotified_claim`, for the branch whose only fact is an audit row.
 --
 --       ORDER-INDEPENDENT BY CONSTRUCTION, and this is the design point of the unit. The kernel
 --       seal is DEFERRED, and PostgreSQL fires deferred triggers in the order their events were
@@ -544,25 +551,31 @@ BEGIN
   PERFORM platform_claim_event_pairing(p_project, p_event, p_table, p_row);
 END $$;
 
--- ── the change lifecycle's three MOVES, recorded where OLD is in hand ───────────────────────
+-- ── the change lifecycle's FOUR MOVES, recorded where OLD is in hand ────────────────────────
 -- `Decision_t4d_approval_transition` (4d-i, round 40) records the approval family's entry into
 -- the trigger-only carrier `_t4d_tx_transition`, keyed by `txid_current()`, because a state is
 -- not a transition: a no-op UPDATE supplies `xmin` and leaves the status, and only the update
--- itself holds OLD. The change lifecycle's pairings are stated over THREE moves that recorder
+-- itself holds OLD. The change lifecycle's pairings are stated over FOUR moves that recorder
 -- does not distinguish — `approved → change` (the standard opening), `change → approved` (the
--- withdrawal's restoration and the no-chain reapproval's landing) and
--- `change → awaiting_countersign` (the chain reapproval's landing, 4d-ii) — so this recorder
--- writes those three, by the same idiom: a nested INSERT from inside a trigger, at depth 2,
--- which `_t4d_tx_transition_trigger_only` admits and a client statement is refused for.
--- Records, refuses nothing; the readers below are the seals.
+-- withdrawal's restoration and the no-chain reapproval's landing),
+-- `change → awaiting_countersign` (the chain reapproval's landing, 4d-ii) and
+-- `awaiting_countersign → change` (the disagreement's reopening: reject-back, forward-on or the
+-- `returned` stranded resolution) — so this recorder writes those four, by the same idiom: a
+-- nested INSERT from inside a trigger, at depth 2, which `_t4d_tx_transition_trigger_only`
+-- admits and a client statement is refused for. The fourth was MISSING on #590's first head
+-- (review round 2, finding 2): the `countersign_rejection` request's seal asked only that the
+-- decision be in `change` with a current `xmin`, which a no-op UPDATE of a decision already in
+-- `change` supplies — a request "opened by a disagreement" beside a decision that never left
+-- `awaiting_countersign` in this transaction. Records, refuses nothing; the readers are the seals.
 CREATE OR REPLACE FUNCTION phase6_t4d_decision_change_here() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE v_kind TEXT;
 BEGIN
   IF NEW."status"::text IS NOT DISTINCT FROM OLD."status"::text THEN RETURN NEW; END IF;
   v_kind := CASE
-    WHEN OLD."status"::text = 'approved' AND NEW."status"::text = 'change'                THEN 'change_from_approved'
-    WHEN OLD."status"::text = 'change'   AND NEW."status"::text = 'approved'              THEN 'approved_from_change'
-    WHEN OLD."status"::text = 'change'   AND NEW."status"::text = 'awaiting_countersign'  THEN 'awaiting_from_change'
+    WHEN OLD."status"::text = 'approved'             AND NEW."status"::text = 'change'                THEN 'change_from_approved'
+    WHEN OLD."status"::text = 'change'               AND NEW."status"::text = 'approved'              THEN 'approved_from_change'
+    WHEN OLD."status"::text = 'change'               AND NEW."status"::text = 'awaiting_countersign'  THEN 'awaiting_from_change'
+    WHEN OLD."status"::text = 'awaiting_countersign' AND NEW."status"::text = 'change'                THEN 'change_from_awaiting'
     ELSE NULL END;
   IF v_kind IS NULL THEN RETURN NEW; END IF;
   -- this decision's rows from EARLIER transactions are cleared so the carrier holds at most one
@@ -585,6 +598,76 @@ LANGUAGE sql STABLE AS $$
                   WHERE "txid" = txid_current() AND "decisionId" = p_decision AND "kind" = p_kind);
 $$;
 
+-- ── the REQUEST's own moves, recorded the same way ──────────────────────────────────────────
+-- The decision side below (`Decision_t4d_change_paired`) counted the requests "born" or "closed"
+-- in this transaction by `xmin` — and `xmin` is a WRITE, not a transition. A no-op UPDATE of a
+-- request withdrawn last month (`SET "reason" = "reason"`) supplies a current `xmin` on a
+-- `withdrawn` row, and a `change → approved` performed beside it counted that historical closure
+-- as this transaction's (#590's review round 2, finding 4). Only the request's own BEFORE trigger
+-- holds OLD and can say that a row LEFT `open` here or was BORN here, so it records exactly that
+-- into 4d-i's carrier, keyed by the decision (the carrier's key) and naming the request inside
+-- the kind — `request_opened:<id>`, `request_withdrawn:<id>`, `request_resolved:<id>` — so that
+-- one row exists per (request, move) per transaction and a COUNT of moves is still a count.
+-- The carrier is the right record: it already exists for exactly this purpose ("what a TRIGGER
+-- saw — the OLD and NEW images of a transition no later statement can reconstruct"), it is
+-- trigger-only, and no new table or column is added. What counts as a birth or a closure is
+-- `ChangeRequest_t4d_evidence_frozen`'s rule (an INSERT-born closure and a reopened row are
+-- refused there); this recorder writes for the shapes that rule admits and refuses nothing.
+CREATE OR REPLACE FUNCTION phase6_t4d_change_request_here() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_move TEXT;
+BEGIN
+  v_move := CASE
+    WHEN TG_OP = 'INSERT' AND NEW."status"::text = 'open'                                       THEN 'request_opened'
+    WHEN TG_OP = 'UPDATE' AND OLD."status"::text = 'open' AND NEW."status"::text = 'withdrawn'  THEN 'request_withdrawn'
+    WHEN TG_OP = 'UPDATE' AND OLD."status"::text = 'open' AND NEW."status"::text = 'resolved'   THEN 'request_resolved'
+    ELSE NULL END;
+  IF v_move IS NULL THEN RETURN NEW; END IF;
+  DELETE FROM "_t4d_tx_transition"
+   WHERE "decisionId" = NEW."decisionId" AND "kind" LIKE 'request\_%' AND "txid" <> txid_current();
+  INSERT INTO "_t4d_tx_transition" ("txid", "decisionId", "kind")
+  VALUES (txid_current(), NEW."decisionId", v_move || ':' || NEW."id")
+  ON CONFLICT DO NOTHING;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS "ChangeRequest_t4d_lifecycle_transition" ON "ChangeRequest";
+CREATE TRIGGER "ChangeRequest_t4d_lifecycle_transition" BEFORE INSERT OR UPDATE ON "ChangeRequest"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4d_change_request_here();
+
+-- How many requests of this decision performed one of the named moves in THIS transaction and
+-- still STAND in the state the move reached at commit (a move walked back by a later statement
+-- is not a move that stood). Optionally narrowed to one origin — the standard opening's count.
+CREATE OR REPLACE FUNCTION phase6_t4d_requests_moved_in_tx(
+  p_project TEXT, p_decision TEXT, p_moves TEXT[], p_origin TEXT DEFAULT NULL
+) RETURNS BIGINT LANGUAGE sql STABLE AS $$
+  SELECT count(*)
+    FROM "_t4d_tx_transition" t
+    JOIN "ChangeRequest" cr
+      ON cr."projectId" = p_project AND cr."decisionId" = p_decision
+     AND cr."id" = substr(t."kind", position(':' IN t."kind") + 1)
+   WHERE t."txid" = txid_current() AND t."decisionId" = p_decision
+     AND split_part(t."kind", ':', 1) = ANY (p_moves)
+     AND cr."status"::text = CASE split_part(t."kind", ':', 1)
+                               WHEN 'request_opened'    THEN 'open'
+                               WHEN 'request_withdrawn' THEN 'withdrawn'
+                               WHEN 'request_resolved'  THEN 'resolved' END
+     AND (p_origin IS NULL OR cr."origin"::text = p_origin);
+$$;
+
+-- ── the audit register, counted in THIS transaction ─────────────────────────────────────────
+-- `DecisionEvent_t4d_correspondence` (4d-i) fires on the AUDIT row and demands its event and its
+-- fact — so a bundle that writes its fact and its event and NO audit row is never judged by it
+-- (#590's review round 2, findings 5 and 6). The fact's own seal must ask the converse: that the
+-- audit row for the act it records was appended here. Counted, by `xmin`, the way the kernel
+-- counts events: two audit rows for one act are as wrong as none. `DecisionEvent` is append-only
+-- under 4d-i, so a current `xmin` on an audit row IS its birth.
+CREATE OR REPLACE FUNCTION phase6_t4d_tx_audit_count(p_decision TEXT, p_types TEXT[]) RETURNS BIGINT
+LANGUAGE sql STABLE AS $$
+  SELECT count(*) FROM "DecisionEvent" a
+   WHERE a."decisionId" = p_decision AND a."type" = ANY (p_types)
+     AND a."xmin" = txid_current()::text::xid;
+$$;
+
 -- ════════════════════════════════════════════════════════════════════════════════════════════
 -- PART 3 — (a) THE CHANGE REQUEST'S PAIRING SEAL, IN BOTH DIRECTIONS
 -- ════════════════════════════════════════════════════════════════════════════════════════════
@@ -592,9 +675,10 @@ $$;
 -- ── the REQUEST side: `ChangeRequest_t4d_paired` ────────────────────────────────────────────
 -- The ONE deferred pairing seal on the table (§A.3; §D 4d-i-b (a)). A `ChangeRequest` row is
 -- written by TWO acts in its life — the REQUEST that opens it and the CLOSURE that takes it out
--- of `open` — and each act is a BUNDLE with the decision's transition and the event that
--- announces it. This seal judges the request's side of both bundles at COMMIT, when the whole
--- transaction is visible, and CLAIMS the two events the request row is the primary fact of:
+-- of `open` — and each act is a BUNDLE with the decision's transition, the audit row that
+-- registers it and the event that announces it. This seal judges the request's side of both
+-- bundles at COMMIT, when the whole transaction is visible, and CLAIMS the two events the
+-- request row is the primary fact of:
 --
 --   INSERT, `status = 'open'`:
 --     · the decision landed `change` in THIS transaction (own table, `xmin` current) — a request
@@ -602,10 +686,15 @@ $$;
 --       strands the decision in whatever state it was in (#568's round 1, finding 3);
 --     · for `origin = 'standard'`, the move was the EXACT `approved → change` the delivered
 --       `requestChange` performs, read from the recorder above — a `pending → change` with a
---       planted request is a state, not that act;
---     · for `origin = 'countersign_rejection'`, the move `awaiting_countersign → change` is
---       judged by 4d-i's `Decision_t4d_disagreement_paired`, which already demands this request
---       in the same transaction; here only the landing is asked;
+--       planted request is a state, not that act — and exactly ONE `change_requested` audit row
+--       was appended here: the delivered writer appends it beside the fact, and a request with
+--       no audit row is an act the register cannot show (#590 round 2, finding 6);
+--     · for `origin = 'countersign_rejection'`, the move was the EXACT
+--       `awaiting_countersign → change` the disagreement performs, read from the same recorder.
+--       4d-i's `Decision_t4d_disagreement_paired` demands this request when that move happens;
+--       this is the converse, and a decision merely SITTING in `change` (a no-op UPDATE supplies
+--       its `xmin`) is not that move (#590 round 2, finding 2). The disagreement's audit row is
+--       4d-ii's to declare with its writers and is not asked here;
 --     · exactly ONE same-transaction `decision.change_requested` event for the decision, and the
 --       request CLAIMS it — unless the bundle's primary is a `returned`
 --       `DecisionStrandedResolution` (the §A.3 table names the resolution as that branch's
@@ -614,6 +703,7 @@ $$;
 --   UPDATE, `open → withdrawn` (the delivered `withdrawChange`, any origin):
 --     · the decision was RESTORED in this transaction — `change → approved`, from the recorder,
 --       and still `approved` at commit;
+--     · exactly one `change_withdrawn` audit row appended here (finding 6, the withdrawal arm);
 --     · exactly one same-transaction `decision.change_withdrawn` event, CLAIMED by the closure.
 --
 --   UPDATE, `open → resolved` (the reapproval's closure):
@@ -622,19 +712,21 @@ $$;
 --     · exactly one `DecisionApprovalRevision` born in this transaction — the reapproval's own
 --       head, which is the branch's CLAIMANT (#572's round 9, finding 1) — and its event
 --       (`decision.approved`, `decision.reapproved` or `decision.awaiting_countersign`) present.
---       VERIFICATION ONLY: the closure claims nothing here, because the revision does.
+--       VERIFICATION ONLY: the closure claims nothing here, because the revision does — and the
+--       revision's own claimant below demands the audit row, so it is not asked twice.
 --
 -- Anything else about a request's lifecycle — INSERT-born closures, a third state, a closed row
 -- reopened, the outcome/status pair — is `ChangeRequest_t4d_evidence_frozen`'s rule (4d-i,
 -- round 35) and is not restated here. DEFERRED, because within one transaction the request may
--- be written before or after its transition and its event, and every delivered writer writes
--- the event LAST. The ONE admitted bypass is the seed's DL-003 plant, which disables this seal
--- by name for exactly that row and re-enables it in the same transaction.
+-- be written before or after its transition, its audit row and its event, and every delivered
+-- writer writes the event LAST. The ONE admitted bypass is the seed's DL-003 plant, which
+-- disables this seal by name for exactly that row and re-enables it in the same transaction.
 CREATE OR REPLACE FUNCTION phase6_t4d_change_request_paired() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE
   d RECORD;
   v_event  TEXT;
   v_events BIGINT;
+  v_audits BIGINT;
   v_births BIGINT;
 BEGIN
   IF TG_OP = 'INSERT' THEN
@@ -648,11 +740,24 @@ BEGIN
         NEW."id", NEW."decisionId", COALESCE(d.status, '<missing>'),
         CASE WHEN COALESCE(d.here, FALSE) THEN 'written here' ELSE 'NOT written in this transaction' END;
     END IF;
-    IF NEW."origin" = 'standard'
-       AND NOT phase6_t4d_decision_moved_in_tx(NEW."decisionId", 'change_from_approved') THEN
-      RAISE EXCEPTION
-        'phase6 4d-i-b: standard change request % was opened in this transaction, but no `approved → change` move of decision % was performed in it — the standard request pairs with EXACTLY that transition (the delivered `requestChange` performs the CAS and the insert together), and a decision written into `change` from any other state carries a request no act opened',
-        NEW."id", NEW."decisionId";
+    IF NEW."origin" = 'standard' THEN
+      IF NOT phase6_t4d_decision_moved_in_tx(NEW."decisionId", 'change_from_approved') THEN
+        RAISE EXCEPTION
+          'phase6 4d-i-b: standard change request % was opened in this transaction, but no `approved → change` move of decision % was performed in it — the standard request pairs with EXACTLY that transition (the delivered `requestChange` performs the CAS and the insert together), and a decision written into `change` from any other state carries a request no act opened',
+          NEW."id", NEW."decisionId";
+      END IF;
+      v_audits := phase6_t4d_tx_audit_count(NEW."decisionId", ARRAY['change_requested']);
+      IF v_audits <> 1 THEN
+        RAISE EXCEPTION
+          'phase6 4d-i-b: standard change request % was opened in this transaction with % `change_requested` audit row(s) for decision % — the delivered `requestChange` appends the audit row beside the request and the event, and the register, the fact and the stream record the SAME act: a request with no audit row is an opening the decision log cannot show, and one with two is an act registered twice',
+          NEW."id", v_audits, NEW."decisionId";
+      END IF;
+    ELSIF NEW."origin" = 'countersign_rejection' THEN
+      IF NOT phase6_t4d_decision_moved_in_tx(NEW."decisionId", 'change_from_awaiting') THEN
+        RAISE EXCEPTION
+          'phase6 4d-i-b: countersign_rejection request % was opened in this transaction, but no `awaiting_countersign → change` move of decision % was performed in it — the rejection request pairs with EXACTLY the disagreement''s transition (`Decision_t4d_disagreement_paired` demands the request when that move happens; this is its converse), and a decision that merely sits in `change` at commit, its `xmin` supplied by a no-op UPDATE, has not been disagreed with here',
+          NEW."id", NEW."decisionId";
+      END IF;
     END IF;
 
     v_events := platform_tx_event_count(NEW."projectId", 'Decision', NEW."decisionId",
@@ -694,6 +799,12 @@ BEGIN
         NEW."id", NEW."decisionId", COALESCE(d.status, '<missing>'),
         CASE WHEN phase6_t4d_decision_moved_in_tx(NEW."decisionId", 'approved_from_change')
              THEN 'performed here' ELSE 'NOT performed in this transaction' END;
+    END IF;
+    v_audits := phase6_t4d_tx_audit_count(NEW."decisionId", ARRAY['change_withdrawn']);
+    IF v_audits <> 1 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i-b: change request % was withdrawn in this transaction with % `change_withdrawn` audit row(s) for decision % — the delivered `withdrawChange` appends the audit row beside the closure and the event, and a withdrawal the decision log cannot show is a closure nobody registered',
+        NEW."id", v_audits, NEW."decisionId";
     END IF;
     v_events := platform_tx_event_count(NEW."projectId", 'Decision', NEW."decisionId",
                                         ARRAY['decision.change_withdrawn']);
@@ -787,18 +898,23 @@ CREATE TRIGGER "ChangeRequest_t4d_claim"
 -- recording why, and the decision then cannot be approved (the reapproval demands exactly one
 -- open request to resolve) or withdrawn from (the withdrawal demands one to close). And a
 -- `change → approved` with no closure leaves the request open beside an approved decision, which
--- is the one-open-request slot occupied forever. So, over the recorder's three moves:
+-- is the one-open-request slot occupied forever. So, over the recorder's moves:
 --
---   `approved → change`            ⇒ exactly ONE `standard` request born OPEN in this transaction
---   `change → approved`            ⇒ exactly ONE request CLOSED (`withdrawn` or `resolved`) here
---   `change → awaiting_countersign` ⇒ exactly ONE request closed `resolved` here (the chain
---                                    reapproval carries its closure — §A.3's `open → resolved`
---                                    row; #572's round 10, finding 2 is about the COUNTERSIGN
---                                    that follows, which carries none, and is untouched)
+--   `approved → change`            ⇒ exactly ONE `standard` request BORN open in this transaction
+--   `change → approved`            ⇒ exactly ONE request that LEFT `open` here (`withdrawn` or
+--                                    `resolved`)
+--   `change → awaiting_countersign` ⇒ exactly ONE request that left `open` for `resolved` here
+--                                    (the chain reapproval carries its closure — §A.3's
+--                                    `open → resolved` row; #572's round 10, finding 2 is about
+--                                    the COUNTERSIGN that follows, which carries none, and is
+--                                    untouched)
 --
 -- and the move must still STAND at commit (a later statement walking it back leaves the request
 -- recording a move that did not happen). Counted, not found: two requests born beside one
--- opening are two immutable requesters for one act. The delivered `requestChange`,
+-- opening are two immutable requesters for one act. BORN and LEFT are read from the request
+-- recorder above, not from `xmin`: a current `xmin` on a `withdrawn` row is a write to that row
+-- in this transaction, which a no-op UPDATE of a historical closure supplies without any request
+-- having been closed here (#590 round 2, finding 4). The delivered `requestChange`,
 -- `withdrawChange` and `approve` each satisfy this in one transaction; the previous release's
 -- writers are the same code. `awaiting_countersign → change` (the disagreement) and every other
 -- move are other seals' questions and are not re-decided here.
@@ -811,10 +927,7 @@ BEGIN
         'phase6 4d-i-b: decision % moved `approved → change` in this transaction and does not END it in `change` (it is `%`) — a reopening walked back by a later statement leaves its request recording a move that did not stand',
         NEW."id", NEW."status";
     END IF;
-    SELECT count(*) INTO v_n FROM "ChangeRequest" cr
-     WHERE cr."projectId" = NEW."projectId" AND cr."decisionId" = NEW."id"
-       AND cr."status" = 'open' AND cr."origin" = 'standard'
-       AND cr."xmin" = txid_current()::text::xid;
+    v_n := phase6_t4d_requests_moved_in_tx(NEW."projectId", NEW."id", ARRAY['request_opened'], 'standard');
     IF v_n <> 1 THEN
       RAISE EXCEPTION
         'phase6 4d-i-b: decision % moved `approved → change` in this transaction with % open `standard` change request(s) born here — the OPENING is one bundle in both directions (#568 round 1, finding 3): the transition without its request leaves a decision in `change` whose reason no reader can see and which neither approve nor withdrawChange can close',
@@ -828,13 +941,10 @@ BEGIN
         'phase6 4d-i-b: decision % moved `change → approved` in this transaction and does not END it in `approved` (it is `%`) — a restoration walked back by a later statement leaves its closure recording a move that did not stand',
         NEW."id", NEW."status";
     END IF;
-    SELECT count(*) INTO v_n FROM "ChangeRequest" cr
-     WHERE cr."projectId" = NEW."projectId" AND cr."decisionId" = NEW."id"
-       AND cr."status" IN ('withdrawn', 'resolved')
-       AND cr."xmin" = txid_current()::text::xid;
+    v_n := phase6_t4d_requests_moved_in_tx(NEW."projectId", NEW."id", ARRAY['request_withdrawn', 'request_resolved']);
     IF v_n <> 1 THEN
       RAISE EXCEPTION
-        'phase6 4d-i-b: decision % moved `change → approved` in this transaction with % change request(s) closed here — the closure and the restoration are ONE bundle in both directions (#558 round 1, finding 2; round 2, finding 6): a decision restored with its request left open occupies the one-open-request slot forever, and one restored with two closures records two acts for one',
+        'phase6 4d-i-b: decision % moved `change → approved` in this transaction with % change request(s) closed here — the closure and the restoration are ONE bundle in both directions (#558 round 1, finding 2; round 2, finding 6): a decision restored with its request left open occupies the one-open-request slot forever, one restored with two closures records two acts for one, and a historical closure re-written without leaving `open` is not a closure performed here',
         NEW."id", v_n;
     END IF;
   END IF;
@@ -845,10 +955,7 @@ BEGIN
         'phase6 4d-i-b: decision % moved `change → awaiting_countersign` in this transaction and does not END it there (it is `%`) — a provisional reapproval walked back by a later statement leaves its closure recording a move that did not stand',
         NEW."id", NEW."status";
     END IF;
-    SELECT count(*) INTO v_n FROM "ChangeRequest" cr
-     WHERE cr."projectId" = NEW."projectId" AND cr."decisionId" = NEW."id"
-       AND cr."status" = 'resolved'
-       AND cr."xmin" = txid_current()::text::xid;
+    v_n := phase6_t4d_requests_moved_in_tx(NEW."projectId", NEW."id", ARRAY['request_resolved']);
     IF v_n <> 1 THEN
       RAISE EXCEPTION
         'phase6 4d-i-b: decision % moved `change → awaiting_countersign` in this transaction with % change request(s) resolved here — the chain reapproval carries the closure of the request it reapproves from (§A.3, the `open → resolved` pairing): a provisional reapproval that leaves its request open parks a decision whose reopening was never answered',
@@ -872,26 +979,56 @@ CREATE CONSTRAINT TRIGGER "Decision_t4d_change_paired"
 -- at commit when the event arrived after the fact — the delivered order, where the fact's
 -- deferred claimant is queued AHEAD of the event's deferred check). Through
 -- `platform_claim_event_pairing_once`, so the half that finds its own claim already made is a
--- no-op. CLAIMING IS ALL THEY DO: a claimant that finds no event returns — the missing event is
--- the correspondence's or the entry seal's refusal, which owes that message, and a legacy plant
--- that carries no event (the historical-import fixtures) owes no claim. The event is resolved
--- through the kernel's own same-transaction primitive, never by a lookup this module invents.
+-- no-op. THE TWO HALVES ARE NOT THE SAME QUESTION. The IMMEDIATE half may defer absence: the
+-- event is usually not written yet, and returning is the only correct answer. The DEFERRED half
+-- runs at commit, when the whole bundle is visible, and there absence is a VERDICT: #590's first
+-- head let both halves return on absence ("the missing event is the correspondence's or the entry
+-- seal's refusal"), and no such seal exists for a fact written with NO audit row and NO event —
+-- `DecisionEvent_t4d_correspondence` fires on the audit row, the kernel seal fires on the event,
+-- and a bundle that writes neither is judged by nobody (round 2, findings 1, 3 and 5). So at
+-- commit each claimant COUNTS the evidence its fact's act must have produced — exactly one event
+-- of the family, BOUND to this fact where the payload names it and to its recipient where the
+-- delivered writer targets one, and exactly one audit row where the delivered writer appends
+-- one — and refuses anything else. The event is resolved through the kernel's own
+-- same-transaction primitive or the same `xmin` scope it uses, never by a lookup that looks
+-- outside this transaction. A legacy plant that carries no event declares itself by name
+-- (`plantLegacyApprovalRevision` disables the deferred half beside 4d-i's birth seals) and is
+-- not admitted by silence.
 
 -- ── the FINALIZED revision birth claims `decision.approved` / `decision.reapproved` ─────────
 -- The direct approve from `pending` and the no-chain reapproval from `change` each write ONE
--- revision born `finalized = true` and ONE event of the family; the revision is the branch's
--- fact on every instance (the `change` arm's request CLOSURE exists only when approving from
--- `change`, so the revision claims and the closure verifies — #572's round 9, finding 1). A
--- PROVISIONAL birth (`finalized = false`) claims nothing here: its event is
--- `decision.awaiting_countersign`, a 4d-ii type declared with its claimant in that unit, and a
--- claimant for a type the catalog does not carry would be a roster to keep in step.
+-- revision born `finalized = true`, ONE `approved` / `reapproved` audit row and ONE event of the
+-- family; the revision is the branch's fact on every instance (the `change` arm's request
+-- CLOSURE exists only when approving from `change`, so the revision claims and the closure
+-- verifies — #572's round 9, finding 1). A PROVISIONAL birth (`finalized = false`) claims
+-- nothing here: its event is `decision.awaiting_countersign`, a 4d-ii type declared with its
+-- claimant in that unit, and a claimant for a type the catalog does not carry would be a roster
+-- to keep in step. At commit the deferred half demands exactly one event and exactly one audit
+-- row: a finalized head with neither is an approval the stream never announced and the decision
+-- log cannot show, and the transition-and-receipt seals of 4d-i, which judge the revision's
+-- birth against the decision's move, say nothing about either (round 2, finding 5).
 CREATE OR REPLACE FUNCTION phase6_t4d_revision_claims_approval() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_event TEXT;
+DECLARE v_event TEXT; v_events BIGINT; v_audits BIGINT;
 BEGIN
   IF NEW."finalized" IS DISTINCT FROM TRUE THEN RETURN NULL; END IF;
+  IF TG_NAME LIKE '%\_deferred' THEN
+    v_events := platform_tx_event_count(NEW."projectId", 'Decision', NEW."decisionId",
+                                        ARRAY['decision.approved', 'decision.reapproved']);
+    IF v_events <> 1 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i-b: approval revision % of decision % was born finalized in this transaction with % approval-family event(s) (`decision.approved` / `decision.reapproved`) for the decision — the finalized head IS the approval, and the approval announces itself exactly ONCE in the same transaction; a head with no event is an approval the stream never carried and no consumer will ever act on, and one with two is an act announced twice',
+        NEW."id", NEW."decisionId", v_events;
+    END IF;
+    v_audits := phase6_t4d_tx_audit_count(NEW."decisionId", ARRAY['approved', 'reapproved']);
+    IF v_audits <> 1 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i-b: approval revision % of decision % was born finalized in this transaction with % `approved` / `reapproved` audit row(s) — the delivered `approve` appends the audit row beside the head and the event, and the register, the fact and the stream record the SAME act: a head with no audit row is an approval the decision log cannot show',
+        NEW."id", NEW."decisionId", v_audits;
+    END IF;
+  END IF;
   v_event := platform_tx_event(NEW."projectId", 'Decision', NEW."decisionId",
                                ARRAY['decision.approved', 'decision.reapproved']);
-  IF v_event IS NULL THEN RETURN NULL; END IF;
+  IF v_event IS NULL THEN RETURN NULL; END IF;   -- the immediate half, before the event: the deferred half decides
   PERFORM platform_claim_event_pairing_once(NEW."projectId", v_event, 'DecisionApprovalRevision', NEW."id");
   RETURN NULL;
 END $$;
@@ -905,14 +1042,25 @@ CREATE CONSTRAINT TRIGGER "DecisionApprovalRevision_t4d_claim_deferred"
   AFTER INSERT ON "DecisionApprovalRevision" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_revision_claims_approval();
 
--- ── the consultation request and response claim their families ─────────────────────────────
--- One function over both 4c fact tables, by `TG_TABLE_NAME`: the request row claims the
--- decision's same-transaction `decision.consultation_requested`, the response row its
--- `decision.consultation_responded`. Both delivered writers write the row and then emit, in one
--- transaction; the 4c seals judge the row and the envelope seal judges the targeted push, so the
--- claim is the only new obligation and the only thing done here.
+-- ── the consultation request and response claim their families, BOUND to the row ───────────
+-- One function over both 4c fact tables, by `TG_TABLE_NAME`. The delivered writers emit the
+-- event with the fact IN the payload and the recipient IN the dispatch intent:
+--   `consultations.request` — `payload = {consultationId, consulteeUserId}`,
+--                             `dispatchIntent.push.targetUserId = consulteeUserId`;
+--   `consultations.respond` — `payload = {consultationId, responseId}`,
+--                             `dispatchIntent.push.targetUserId = <the consultation's requestedById>`.
+-- A type-only lookup (#590's first head) is satisfied by an event that names ANOTHER
+-- consultation, or names this one and pushes to someone who was never consulted — the
+-- consultee's notice going to a stranger, the requester's answer going back to the consultee —
+-- because the 4c seals judge the row and the envelope seal judges the push's SHAPE, and nothing
+-- judged that the event's payload and audience are THIS row's (round 2, finding 3). So the event
+-- a claimant may claim is the same-transaction event of the family, for this decision, under
+-- this project, whose payload names THIS row (and, for the request, THIS consultee) and whose
+-- push targets the person the act is for. Exactly one such event at commit; a consultation with
+-- none is an ask nobody was told about (finding 1), and the deferred half refuses it.
+-- Consultations carry no `DecisionEvent` audit row by the delivered contract, so none is asked.
 CREATE OR REPLACE FUNCTION phase6_t4d_consultation_claims_event() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_event TEXT; v_type TEXT;
+DECLARE v_event TEXT; v_type TEXT; v_n BIGINT; v_target TEXT;
 BEGIN
   v_type := CASE TG_TABLE_NAME
     WHEN 'DecisionConsultation'         THEN 'decision.consultation_requested'
@@ -921,8 +1069,38 @@ BEGIN
   IF v_type IS NULL THEN
     RAISE EXCEPTION 'phase6 4d-i-b: phase6_t4d_consultation_claims_event is installed on %, which is not a consultation fact table', TG_TABLE_NAME;
   END IF;
-  v_event := platform_tx_event(NEW."projectId", 'Decision', NEW."decisionId", ARRAY[v_type]);
-  IF v_event IS NULL THEN RETURN NULL; END IF;
+
+  IF TG_TABLE_NAME = 'DecisionConsultation' THEN
+    SELECT count(*), max(e."eventId") INTO v_n, v_event
+      FROM "DomainEvent" e
+     WHERE e."projectId" = NEW."projectId" AND e."entityType" = 'Decision' AND e."entityId" = NEW."decisionId"
+       AND e."eventType" = v_type AND e."xmin" = txid_current()::text::xid
+       AND e."payload" ->> 'consultationId' = NEW."id"
+       AND e."payload" ->> 'consulteeUserId' = NEW."consulteeUserId"
+       AND e."dispatchIntent" -> 'push' ->> 'targetUserId' = NEW."consulteeUserId";
+    IF TG_NAME LIKE '%\_deferred' AND v_n <> 1 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i-b: consultation % of decision % was written in this transaction with % `decision.consultation_requested` event(s) that name it (`payload.consultationId`), carry its consultee (`payload.consulteeUserId`) and target that consultee (`dispatchIntent.push.targetUserId` — the delivered `consultations.request` pushes to exactly the person asked) — a consultation is an ask, and an ask announced to nobody, or announced as someone else''s, or pushed to a stranger, is not the act this row records',
+        NEW."id", NEW."decisionId", v_n;
+    END IF;
+  ELSE
+    SELECT c."requestedById" INTO v_target FROM "DecisionConsultation" c
+     WHERE c."projectId" = NEW."projectId" AND c."id" = NEW."consultationId";
+    SELECT count(*), max(e."eventId") INTO v_n, v_event
+      FROM "DomainEvent" e
+     WHERE e."projectId" = NEW."projectId" AND e."entityType" = 'Decision' AND e."entityId" = NEW."decisionId"
+       AND e."eventType" = v_type AND e."xmin" = txid_current()::text::xid
+       AND e."payload" ->> 'responseId' = NEW."id"
+       AND e."payload" ->> 'consultationId' = NEW."consultationId"
+       AND e."dispatchIntent" -> 'push' ->> 'targetUserId' = v_target;
+    IF TG_NAME LIKE '%\_deferred' AND v_n <> 1 THEN
+      RAISE EXCEPTION
+        'phase6 4d-i-b: consultation response % of decision % was written in this transaction with % `decision.consultation_responded` event(s) that name it (`payload.responseId`), name its consultation (`payload.consultationId`) and target the requester (`dispatchIntent.push.targetUserId` = the consultation''s `requestedById`, who the delivered `consultations.respond` pushes to) — an answer announced to nobody, announced as another response, or pushed to anyone but the person who asked, is not the act this row records',
+        NEW."id", NEW."decisionId", v_n;
+    END IF;
+  END IF;
+
+  IF v_n <> 1 THEN RETURN NULL; END IF;   -- the immediate half, before the event: the deferred half decides
   PERFORM platform_claim_event_pairing_once(NEW."projectId", v_event, TG_TABLE_NAME, NEW."id");
   RETURN NULL;
 END $$;

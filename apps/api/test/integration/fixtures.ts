@@ -294,7 +294,11 @@ export async function plantLegacyApprovalRevision(
   // provenance seal: by name, guarded on the trigger existing, so the helper works on databases
   // migrated to any point in the series.
   const toggle = (action: 'DISABLE' | 'ENABLE'): string =>
-    ['DecisionApprovalRevision_t4c_provenance', 'DecisionApprovalRevision_t4d_birth_paired']
+    // Phase 6 unit 4d-i-b (#590 round 2, finding 5) — THREE names. The finalized revision's
+    // deferred claimant now refuses a birth with no approval event and no audit row at commit,
+    // which is exactly what a historical import is; it declares itself the same way.
+    ['DecisionApprovalRevision_t4c_provenance', 'DecisionApprovalRevision_t4d_birth_paired',
+      'DecisionApprovalRevision_t4d_claim_deferred']
       .map((t) => `IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = '${t}') THEN `
         + `EXECUTE 'ALTER TABLE "DecisionApprovalRevision" ${action} TRIGGER "${t}"'; END IF;`)
       .join(' ')
@@ -359,6 +363,12 @@ export async function plantUnpairedDecisionState<T>(
     ['DomainEvent', 'DomainEvent_t4d_pairing_claimed'],
     ['ChangeRequest', 'ChangeRequest_t4d_paired'],
     ['Decision', 'Decision_t4d_change_paired'],
+    // Phase 6 unit 4d-i-b (#590 round 2, findings 1, 3 and 5) — the deferred claimant halves
+    // judge absence at commit from the switch-on, so a plant that writes a fact with no event is
+    // a declared bypass of them too, by name, for exactly this plant.
+    ['DecisionApprovalRevision', 'DecisionApprovalRevision_t4d_claim_deferred'],
+    ['DecisionConsultation', 'DecisionConsultation_t4d_claim_deferred'],
+    ['DecisionConsultationResponse', 'DecisionConsultationResponse_t4d_claim_deferred'],
   ];
   const toggle = (action: 'DISABLE' | 'ENABLE'): string =>
     'DO $do$ BEGIN '
