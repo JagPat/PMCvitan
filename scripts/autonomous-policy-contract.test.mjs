@@ -57,4 +57,9 @@ test('the rubric and POLICY stay within their line budgets and name the executab
   assert.ok(lines(contract) <= 275, `POLICY.md is ${lines(contract)} lines; the reform may not grow the contract past its 275-line base`);
   for (const rule of [/REVIEW_RUBRIC\.md/u, /disputed-finding/u, /THIRD distinct/u]) assert.match(contract, rule);
   for (const helper of ['pairingMatrix', 'lockOrderProbe', 'rerunTwice', 'noOpUpdateProbe', 'whitespaceCheckProbe']) assert.match(rubric, new RegExp(helper, 'u'));
+  // the four negatives every writer branch owes are named identically by the rubric and by the helper that enforces them
+  const probes = await readFile(new URL('../apps/api/test/invariants/probes.ts', import.meta.url), 'utf8');
+  const owed = ['missing-counterpart', 'wrong-identity', 'wrong-audience', 'wrong-actor'];
+  assert.match(probes, new RegExp(`REQUIRED_NEGATIVES = \\[${owed.map((n) => `'${n}'`).join(', ')}\\] as const`, 'u'));
+  for (const name of owed) assert.match(rubric, new RegExp(`\`${name}\``, 'u'));
 });

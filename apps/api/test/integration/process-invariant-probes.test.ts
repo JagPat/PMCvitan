@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import {
-  ASCII_WHITESPACE, ProbeFailure, lockOrderProbe, noOpUpdateProbe, pairingMatrix, rerunTwice, whitespaceCheckProbe,
+  ASCII_WHITESPACE, ProbeFailure, REQUIRED_NEGATIVES, lockOrderProbe, noOpUpdateProbe, pairingMatrix, rerunTwice, whitespaceCheckProbe,
 } from '../invariants/probes';
 
 const a = new PrismaClient();
@@ -130,15 +130,24 @@ describe('lockOrderProbe', () => {
     await lockOrderProbe({ ...holder(), inspectBlocked, verify,
       contenderStarted: ({ observed }) => (async () => { const r = await read(' FOR UPDATE'); observed(); return r; })() });
   });
+  it('fails when the contender or the release throws after a correct wait: a crashed command is not evidence', async () => {
+    await failsWith(/contender failed instead of completing.*connection reset/u)(() => lockOrderProbe({ ...holder(), inspectBlocked, verify,
+      contenderStarted: ({ observed }) => (async () => { await read(' FOR UPDATE'); observed(); throw new Error('connection reset'); })() }));
+    const h = holder();
+    await failsWith(/holder's release failed.*pool exhausted/u)(() => lockOrderProbe({ ...h, inspectBlocked, verify,
+      release: async () => { await h.release(); throw new Error('pool exhausted'); },
+      contenderStarted: ({ observed }) => (async () => { const r = await read(' FOR UPDATE'); observed(); return r; })() }));
+  });
 });
 
 describe('pairingMatrix', () => {
   const probe = (log: string[], name: string) => async () => { log.push(name); };
-  const row = (log: string[], key: string, branch: string) => ({
+  const negatives = (log: string[], branch: string, names: readonly string[]) => Object.fromEntries(names.map((n) => [n, probe(log, `${branch}:${n}`)]));
+  const row = (log: string[], key: string, branch: string, names: readonly string[] = REQUIRED_NEGATIVES) => ({
     key, branch, valid: { 'fact-first': probe(log, `${branch}:ff`), 'event-first': probe(log, `${branch}:ef`) },
-    invalid: { 'missing event': probe(log, `${branch}:neg`) }, priorWriter: probe(log, `${branch}:prior`),
+    invalid: negatives(log, branch, names), priorWriter: probe(log, `${branch}:prior`),
   });
-  const pair = (key: string, branch: string) => ({ key, branch });
+  const pair = (key: string, branch: string, negatives?: readonly string[]) => ({ key, branch, negatives });
   it('fails on an expected writer BRANCH with no row, a row outside the population, a missing order, and a duplicate', async () => {
     const log: string[] = [];
     // the population is key AND branch: a second writer of the same key cannot hide behind the first
@@ -149,10 +158,19 @@ describe('pairingMatrix', () => {
     await failsWith(/duplicate writer branch/u)(() => pairingMatrix([pair('decision.approved', 'approve')], [row(log, 'decision.approved', 'approve'), row(log, 'decision.approved', 'approve')]));
     expect(log).toEqual([]);
   });
+  it('requires every binding negative per writer: one negative is not the four, and a writer may not declare none', async () => {
+    const log: string[] = [];
+    await failsWith(/k · one lacks its wrong-identity negative/u)(() => pairingMatrix([pair('k', 'one')], [row(log, 'k', 'one', ['missing-counterpart'])]));
+    await failsWith(/k · one lacks its custom negative/u)(() => pairingMatrix([pair('k', 'one', ['custom'])], [row(log, 'k', 'one')]));
+    await failsWith(/k · one declares no negative dimension/u)(() => pairingMatrix([pair('k', 'one', [])], [row(log, 'k', 'one')]));
+    expect(log).toEqual([]);
+  });
   it('executes every positive order, prior writer and named negative on a complete matrix', async () => {
     const log: string[] = [];
-    const result = await pairingMatrix([pair('k', 'one'), pair('k', 'two')], [row(log, 'k', 'one'), row(log, 'k', 'two')]);
+    const extra = [...REQUIRED_NEGATIVES, 'extra'];
+    const result = await pairingMatrix([pair('k', 'one'), pair('k', 'two')], [row(log, 'k', 'one'), row(log, 'k', 'two', extra)]);
     expect(result.rows).toBe(2);
-    expect(log).toEqual(['one:ff', 'one:ef', 'one:prior', 'one:neg', 'two:ff', 'two:ef', 'two:prior', 'two:neg']);
+    const neg = (branch: string, names: readonly string[]) => names.map((n) => `${branch}:${n}`);
+    expect(log).toEqual(['one:ff', 'one:ef', 'one:prior', ...neg('one', REQUIRED_NEGATIVES), 'two:ff', 'two:ef', 'two:prior', ...neg('two', extra)]);
   });
 });
