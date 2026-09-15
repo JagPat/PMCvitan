@@ -1,7 +1,8 @@
 # PMCvitan policy
 
 This is the canonical written contract for authoring, reviewing and monitoring this
-repository. `scripts/review-policy.mjs` is the shared executable definition module.
+repository. `scripts/review-policy.mjs` is the shared executable definition module;
+[REVIEW_RUBRIC.md](REVIEW_RUBRIC.md) is the whole-file self-review every push follows.
 AGENTS.md and CLAUDE.md are entrypoints; AUTONOMOUS_LOOP.md is the operations guide.
 Do not copy policy definitions into those files, workflow prompts or new controllers.
 
@@ -57,9 +58,16 @@ merged changes advance `main`. Historical replacement labels cannot block unrela
 fresh work. Existing explicit replacement declarations retain provenance validation.
 
 A replacement is exceptional: record a concrete scope or approach benefit, preserve
-every unresolved finding and reproduce-first proof, and link both PRs. Repeated
-findings call for a root-cause audit and stronger proofs, not automatic renumbering.
-The declared correction owner continues fixing the current PR.
+every unresolved finding and reproduce-first proof, and link both PRs.
+The declared correction owner continues fixing the current PR, family-wide
+(REVIEW_RUBRIC.md): every dimension, every writer branch, whole file, before one push. At the THIRD distinct
+reviewed head with a P1 in the same file, ordinary patching stops for an additive
+redesign in smaller units; the findings stay open. This stop binds the correction owner,
+who records it on the PR; the controller counts finding heads as a signal and mints no
+obligation from the count (review-lifecycle.mjs). A disputed finding is argued on its
+thread with a concrete counterexample; no label or gate state reads a dispute, and the
+finding blocks until a new head answers it or the repository owner rules. Review machinery
+is frozen: no new controller, watchdog or lease feature outside a requested maintenance PR.
 
 Keep one concern per PR. A standard review unit is at most 20 files and 1,500 changed
 lines. Larger units need `<!-- review-size: justified-large -->` and all six invariant
@@ -206,23 +214,8 @@ A SHA is evidence only when its origin and relevant contents have been verified.
 
 ## Review output expectations
 
-- On the first reviewed head, complete one comprehensive pass across the entire
-  diff and all six invariant-matrix categories before submitting the review.
-  Report the complete set of current findings together.
-- On correction heads, review the correction delta, every prior finding, and the
-  adjacent invariants the correction can affect. Do not reopen a cleared area
-  merely to restate it, but do report any newly exposed correctness or integrity
-  defect. Continue correcting on this PR until the findings are resolved;
-  review count alone does not require a fresh PR.
-- Rank findings by severity. Lead with anything that is a correctness,
-  data-integrity, or ordering bug.
-- For each finding, give the concrete failure: the inputs or interleaving that
-  produce the wrong result. "This could be a race" without the interleaving is not
-  a finding.
-- Do not pad the review with style nits when there are substantive findings. If
-  there are no substantive findings, say so plainly rather than manufacturing
-  concerns.
-- Cite the rule above that a finding violates, so the standard stays visible.
+Reviewer output rules, the family probes and the dispute path live in
+[REVIEW_RUBRIC.md](REVIEW_RUBRIC.md); a finding cites the rule here that it violates.
 
 ## Repository conventions
 
@@ -243,6 +236,8 @@ A SHA is evidence only when its origin and relevant contents have been verified.
 | Correction lease and gate recovery | review-policy.mjs / correction-lease.mjs, autonomous-handoff.mjs | autonomous-correction-lease.test.mjs |
 | Current task and post-merge coherence | docs/STATUS.md / autonomous-status-state.mjs | autonomous-status-state.test.mjs; continuation tests |
 | Engineering invariants | Owning product module, SQL constraints and review | Relevant unit, PostgreSQL, migration and browser proofs |
+| Family probes (eight families) | apps/api/test/invariants/probes.ts | process-invariant-probes.test.ts |
+| Third-head stop and disputes | Correction owner, on the PR thread (no controller state) | policy-contract tests |
 
 ### Claude independent-review shadow boundary
 
