@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import {
-  ASCII_WHITESPACE, ProbeFailure, REQUIRED_NEGATIVES, lockOrderProbe, noOpUpdateProbe, pairingMatrix, rerunTwice, whitespaceCheckProbe,
+  ASCII_WHITESPACE, type Bundle, ProbeFailure, REQUIRED_NEGATIVES, lockOrderProbe, noOpUpdateProbe, pairingMatrix, rerunTwice, whitespaceCheckProbe,
 } from '../invariants/probes';
 
 const a = new PrismaClient();
@@ -32,11 +32,13 @@ const SETUP = [
   "INSERT INTO _probe_lock VALUES (1, 'open')",
 ];
 
+/** a disposable database is NAMED `test` or `<anything>_test`; a name that merely contains the word (pmcvitan_latest, contest) is not one */
+const disposable = (database: string) => /(?:^|_)test$/u.test(database);
 // afterAll runs even when beforeAll threw: nothing destructive may run against a database setup refused
 let setupPassed = false;
 beforeAll(async () => {
   const database = (() => { try { return decodeURIComponent(new URL(process.env.DATABASE_URL ?? '').pathname.slice(1)); } catch { return ''; } })();
-  if (!/test/u.test(database)) throw new Error('DATABASE_URL must name a disposable *test* database');
+  if (!disposable(database)) throw new Error(`DATABASE_URL must name a disposable test database (\`test\` or \`*_test\`), not "${database}"`);
   await sql(a, `DROP TABLE IF EXISTS ${SCRATCH.join(', ')}`);
   for (const statement of SETUP) await sql(a, statement);
   setupPassed = true;
@@ -47,6 +49,13 @@ afterAll(async () => {
     await sql(a, 'DROP FUNCTION IF EXISTS _probe_noop_weak(), _probe_noop_strong()');
   }
   await a.$disconnect(); await b.$disconnect();
+});
+
+describe('database guard', () => {
+  it('accepts only a database named test or *_test, never a name that merely contains the word', () => {
+    for (const name of ['pmcvitan_test', 'test', 'api_e2e_test']) expect(disposable(name)).toBe(true);
+    for (const name of ['pmcvitan_latest', 'contest', 'test_db', 'pmcvitan', 'pmcvitan_e2e', '']) expect(disposable(name)).toBe(false);
+  });
 });
 
 describe('whitespaceCheckProbe', () => {
@@ -141,6 +150,12 @@ describe('lockOrderProbe', () => {
     // NOWAIT: the row must be free the moment the probe returns
     await read(' FOR UPDATE NOWAIT');
   });
+  it('fails, and still frees the row, when the lock inspection itself throws (every exit path aborts the holder)', async () => {
+    await failsWith(/lock inspection failed.*connection reset/u)(() => lockOrderProbe({ ...holder(), verify,
+      inspectBlocked: async () => { throw new Error('connection reset'); },
+      contenderStarted: ({ observed }) => (async () => { const r = await read(' FOR UPDATE'); observed(); return r; })() }));
+    await read(' FOR UPDATE NOWAIT');
+  });
   it('fails when the contender or the release throws after a correct wait: a crashed command is not evidence', async () => {
     await failsWith(/contender failed instead of completing.*connection reset/u)(() => lockOrderProbe({ ...holder(), inspectBlocked, verify,
       contenderStarted: ({ observed }) => (async () => { await read(' FOR UPDATE'); observed(); throw new Error('connection reset'); })() }));
@@ -167,6 +182,9 @@ describe('pairingMatrix', () => {
     const partial = { ...row(log, 'decision.approved', 'approve'), valid: { 'fact-first': probe(log, 'x') } } as unknown as Parameters<typeof pairingMatrix>[1][number];
     await failsWith(/lacks its event-first positive/u)(() => pairingMatrix([pair('decision.approved', 'approve')], [partial]));
     await failsWith(/duplicate writer branch/u)(() => pairingMatrix([pair('decision.approved', 'approve')], [row(log, 'decision.approved', 'approve'), row(log, 'decision.approved', 'approve')]));
+    // the previous-generation family: a row without its prior-generation writer fails by name before any callback runs
+    const noPrior = { ...row(log, 'decision.approved', 'approve'), priorWriter: undefined } as unknown as Bundle;
+    await failsWith(/decision\.approved · approve lacks its prior-generation writer/u)(() => pairingMatrix([pair('decision.approved', 'approve')], [noPrior]));
     expect(log).toEqual([]);
   });
   it('requires every binding negative per writer: one negative is not the four, and a writer\'s own negatives add to them', async () => {

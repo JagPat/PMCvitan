@@ -59,10 +59,10 @@ export async function pairingMatrix(expected: readonly ExpectedWriter[], rows: r
 /** A guard that reads a serialized row's status must lock it FIRST. `holderReady` locks on one session;
  * `contenderStarted` begins the guarded write on another and calls `observed()` the moment its STATUS READ
  * returns; `inspectBlocked` observes a real lock wait from a third session. A read returned before `release`
- * escaped the lock whatever waits afterwards; a contender that never reports its read proves nothing; a contender
- * or release that throws is a failure, never evidence (assert an EXPECTED domain refusal inside the callback).
- * `abort` rolls the holder back independently of `release`, so a release that failed BEFORE unlocking cannot leave
- * the contender blocked or the row locked after the probe; a contender still blocked after that bounded wait fails. */
+ * escaped the lock whatever waits afterwards; a contender that never reports its read proves nothing; a contender,
+ * inspection or release that throws is a failure, never evidence (assert an EXPECTED domain refusal inside the
+ * callback). Every exit path aborts the holder (`abort` rolls it back independently of `release`) and settles the
+ * contender under a bounded wait, so no lock and no contender outlives the probe. */
 export async function lockOrderProbe(o: {
   holderReady: () => Promise<void>; contenderStarted: (milestone: { observed: () => void }) => Promise<unknown>;
   inspectBlocked: () => Promise<boolean>; release: () => Promise<void>; abort: () => Promise<void>; verify: () => Promise<void>;
@@ -70,22 +70,37 @@ export async function lockOrderProbe(o: {
 }) {
   await o.holderReady();
   let released = false; let reads = 0; let escaped = false;
-  const contender = o.contenderStarted({ observed: () => { reads += 1; if (!released) escaped = true; } });
-  const blocked = await o.inspectBlocked();
-  released = true;
-  const releaseFailure = await o.release().then(() => undefined, (error: unknown) => error ?? new Error('release rejected'));
-  if (releaseFailure !== undefined) await o.abort().catch(() => undefined);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const settleLimit = new Promise<{ stuck: true }>((resolve) => { timer = setTimeout(() => resolve({ stuck: true }), o.contenderSettleMs ?? 15_000); });
-  const raced = await Promise.race([contender.then(() => ({ ok: true as const }), (error: unknown) => ({ ok: false as const, error })), settleLimit]).finally(() => clearTimeout(timer));
-  if ('stuck' in raced) await o.abort().catch(() => undefined);
-  const outcome = 'stuck' in raced ? fail('the contender is still blocked after the holder was released and aborted: the fixture cannot free the row') : raced;
-  if (escaped) fail('the contender completed its status read before the holder released: the guard read the status before taking the lock (lock-after-read)');
-  if (!blocked) fail('the contender was never blocked behind the holder: the guard read the status before taking the lock (lock-after-read)');
-  if (!outcome.ok) fail(`the contender failed instead of completing its command: ${reason(outcome.error)}`);
-  if (reads === 0) fail('the contender never reported its status read (call observed() when it returns); a wait alone is not the proof');
-  if (releaseFailure !== undefined) fail(`the holder's release failed: ${reason(releaseFailure)}`);
-  await o.verify();
+  let contender: Promise<unknown> | undefined;
+  let outcome: { ok: true } | { ok: false; error: unknown } | { stuck: true } | undefined;
+  const settle = async () => {
+    if (outcome !== undefined || contender === undefined) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limit = new Promise<{ stuck: true }>((resolve) => { timer = setTimeout(() => resolve({ stuck: true }), o.contenderSettleMs ?? 15_000); });
+    outcome = await Promise.race([contender.then(() => ({ ok: true as const }), (error: unknown) => ({ ok: false as const, error })), limit]).finally(() => clearTimeout(timer));
+  };
+  const failureOf = (error: unknown, fallback: string) => error ?? new Error(fallback);
+  try {
+    contender = o.contenderStarted({ observed: () => { reads += 1; if (!released) escaped = true; } });
+    const inspection = await o.inspectBlocked().then((blocked) => ({ blocked }), (error: unknown) => ({ failure: failureOf(error, 'inspection rejected') }));
+    released = true;
+    const releaseFailure = await o.release().then(() => undefined, (error: unknown) => failureOf(error, 'release rejected'));
+    if (releaseFailure !== undefined) await o.abort().catch(() => undefined);
+    await settle();
+    const settled = outcome !== undefined && 'stuck' in outcome
+      ? fail('the contender is still blocked after the holder was released and aborted: the fixture cannot free the row') : outcome;
+    const inspected = 'failure' in inspection ? fail(`the lock inspection failed: ${reason(inspection.failure)}`) : inspection;
+    if (escaped) fail('the contender completed its status read before the holder released: the guard read the status before taking the lock (lock-after-read)');
+    if (!inspected.blocked) fail('the contender was never blocked behind the holder: the guard read the status before taking the lock (lock-after-read)');
+    if (settled !== undefined && !settled.ok) fail(`the contender failed instead of completing its command: ${reason(settled.error)}`);
+    if (reads === 0) fail('the contender never reported its status read (call observed() when it returns); a wait alone is not the proof');
+    if (releaseFailure !== undefined) fail(`the holder's release failed: ${reason(releaseFailure)}`);
+    await o.verify();
+  } finally {
+    // whatever threw above: free the row (a no-op once the holder settled) and let no contender outlive the probe
+    released = true;
+    await o.abort().catch(() => undefined);
+    await settle();
+  }
 }
 
 /** Applying twice must leave the canonical snapshot exactly as applying once did. */
