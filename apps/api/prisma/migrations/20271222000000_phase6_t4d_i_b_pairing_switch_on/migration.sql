@@ -51,8 +51,11 @@
 --       no-chain reapproval (#572's review round 9, finding 1), and the consultation request and
 --       response rows for their two families. Each claims through the kernel's own
 --       same-transaction primitive, and at COMMIT its deferred half demands the evidence its act
---       must have produced — exactly one event of the family bound to the row and its recipient,
---       and the audit row where the delivered writer appends one. Verification of the AUDIT row's
+--       must have produced — exactly one event of the family bound to the row, its recipient AND
+--       the actor the fact records (#590's round 4: where no audit row exists for 4d-i's
+--       correspondence to bind them through, the fact's own seal equates `actorId` with the
+--       fact's actor column), and the audit row where the delivered writer appends one.
+--       Verification of the AUDIT row's
 --       own bundle stays where it lives (`DecisionEvent_t4d_correspondence`, the entry seals, the
 --       4c consultation seals); what those cannot see is a fact written with no audit row and no
 --       event, which is why the fact's claimant judges absence itself (#590's round 2, findings
@@ -668,6 +671,44 @@ LANGUAGE sql STABLE AS $$
      AND a."xmin" = txid_current()::text::xid;
 $$;
 
+-- ── the event, bound to the ACTOR the fact records ──────────────────────────────────────────
+-- One act has one actor. The fact names who performed it (`requestedById`, `respondedById`,
+-- `approvedById`, `resolvedById`); the event's envelope names who is announced as performing
+-- it (`actorId`), and the push renders the envelope. Two immutable records that disagree leave
+-- a register that cannot say who acted (#590's review round 4). For the four branches that
+-- carry a `DecisionEvent` audit row, 4d-i's `DecisionEvent_t4d_correspondence` already equates
+-- the event's actor with the fact's when the event names one — and this unit's mandatory audit
+-- row makes that seal fire on every such bundle. The branches that carry NO audit row by the
+-- delivered contract (the two consultation facts; the `countersign_rejection` request) are
+-- judged by nobody there, so their own claimants ask — through these, the kernel's
+-- `platform_tx_event` / `platform_tx_event_count` narrowed to one actor, or, for the
+-- consultations, through the same predicate inline beside the payload and audience bindings.
+-- STRICT, not NULL-tolerant: every writer of these three facts (4c-ii's and later) emits a
+-- `human` event whose `actorId` is the acting user, and a `system` event announcing an ask, an
+-- answer or a disagreement is not a shape any release produces.
+CREATE OR REPLACE FUNCTION phase6_t4d_tx_actor_event(
+  p_project TEXT, p_decision TEXT, p_types TEXT[], p_actor TEXT
+) RETURNS TEXT LANGUAGE sql STABLE AS $$
+  SELECT e."eventId" FROM "DomainEvent" e
+   WHERE e."projectId" = p_project
+     AND e."entityType" = 'Decision' AND e."entityId" = p_decision
+     AND e."eventType" = ANY (p_types)
+     AND e."actorId" = p_actor
+     AND e."xmin" = txid_current()::text::xid
+   ORDER BY e."streamPosition" DESC
+   LIMIT 1;
+$$;
+CREATE OR REPLACE FUNCTION phase6_t4d_tx_actor_event_count(
+  p_project TEXT, p_decision TEXT, p_types TEXT[], p_actor TEXT
+) RETURNS BIGINT LANGUAGE sql STABLE AS $$
+  SELECT count(*) FROM "DomainEvent" e
+   WHERE e."projectId" = p_project
+     AND e."entityType" = 'Decision' AND e."entityId" = p_decision
+     AND e."eventType" = ANY (p_types)
+     AND e."actorId" = p_actor
+     AND e."xmin" = txid_current()::text::xid;
+$$;
+
 -- ════════════════════════════════════════════════════════════════════════════════════════════
 -- PART 3 — (a) THE CHANGE REQUEST'S PAIRING SEAL, IN BOTH DIRECTIONS
 -- ════════════════════════════════════════════════════════════════════════════════════════════
@@ -694,7 +735,10 @@ $$;
 --       4d-i's `Decision_t4d_disagreement_paired` demands this request when that move happens;
 --       this is the converse, and a decision merely SITTING in `change` (a no-op UPDATE supplies
 --       its `xmin`) is not that move (#590 round 2, finding 2). The disagreement's audit row is
---       4d-ii's to declare with its writers and is not asked here;
+--       4d-ii's to declare with its writers and is not asked here — which is why the request
+--       itself binds its event's ACTOR: exactly one same-transaction `decision.change_requested`
+--       attributed to `requestedById` (#590 round 4), where a `standard` request's is bound by
+--       4d-i's audit-row correspondence;
 --     · exactly ONE same-transaction `decision.change_requested` event for the decision, and the
 --       request CLAIMS it — unless the bundle's primary is a `returned`
 --       `DecisionStrandedResolution` (the §A.3 table names the resolution as that branch's
@@ -757,6 +801,17 @@ BEGIN
         RAISE EXCEPTION
           'phase6 4d-i-b: countersign_rejection request % was opened in this transaction, but no `awaiting_countersign → change` move of decision % was performed in it — the rejection request pairs with EXACTLY the disagreement''s transition (`Decision_t4d_disagreement_paired` demands the request when that move happens; this is its converse), and a decision that merely sits in `change` at commit, its `xmin` supplied by a no-op UPDATE, has not been disagreed with here',
           NEW."id", NEW."decisionId";
+      END IF;
+      -- ONE act, ONE actor (#590 round 4). No audit row is declared for this branch, so 4d-i's
+      -- `DecisionEvent_t4d_correspondence` never compares the event's envelope with the request:
+      -- the request does it, and does it for the `returned` resolution's request too (the PMC
+      -- who returned the decision is the requester that request records).
+      v_events := phase6_t4d_tx_actor_event_count(NEW."projectId", NEW."decisionId",
+                                                   ARRAY['decision.change_requested'], NEW."requestedById");
+      IF NEW."requestedById" IS NULL OR v_events <> 1 THEN
+        RAISE EXCEPTION
+          'phase6 4d-i-b: countersign_rejection request % of decision % names % as its requester, and this transaction carries % `decision.change_requested` event(s) attributed to that person (`actorId`) — the disagreement is ONE act with ONE actor: the request records who disagreed and the event announces who did, no `DecisionEvent` audit row is declared for this branch for 4d-i''s correspondence to bind them through, and two immutable records that disagree about who reopened the decision leave a register that cannot say',
+          NEW."id", NEW."decisionId", COALESCE(NEW."requestedById", '<nobody>'), v_events;
       END IF;
     END IF;
 
@@ -892,9 +947,18 @@ BEGIN
             AND s."outcome" = 'returned' AND s."xmin" = txid_current()::text::xid) THEN
       RETURN NULL;   -- the returned bundle: the resolution is the claimant, this request verifies
     END IF;
-    IF NEW."origin" NOT IN ('standard', 'countersign_rejection') THEN RETURN NULL; END IF;
-    v_event := platform_tx_event(NEW."projectId", 'Decision', NEW."decisionId",
-                                 ARRAY['decision.change_requested']);
+    IF NEW."origin" = 'countersign_rejection' THEN
+      -- bound to the requester (#590 round 4): the deferred seal demands exactly one event of the
+      -- family attributed to `requestedById`, so an event attributed to anyone else is not this
+      -- request's to claim, whichever order the bundle is written in
+      v_event := phase6_t4d_tx_actor_event(NEW."projectId", NEW."decisionId",
+                                           ARRAY['decision.change_requested'], NEW."requestedById");
+    ELSIF NEW."origin" = 'standard' THEN
+      v_event := platform_tx_event(NEW."projectId", 'Decision', NEW."decisionId",
+                                   ARRAY['decision.change_requested']);
+    ELSE
+      RETURN NULL;
+    END IF;
   ELSE
     IF OLD."status" IS DISTINCT FROM 'open' OR NEW."status" IS DISTINCT FROM 'withdrawn' THEN
       RETURN NULL;
@@ -1027,9 +1091,10 @@ CREATE CONSTRAINT TRIGGER "Decision_t4d_change_paired"
 -- `DecisionEvent_t4d_correspondence` fires on the audit row, the kernel seal fires on the event,
 -- and a bundle that writes neither is judged by nobody (round 2, findings 1, 3 and 5). So at
 -- commit each claimant COUNTS the evidence its fact's act must have produced — exactly one event
--- of the family, BOUND to this fact where the payload names it and to its recipient where the
--- delivered writer targets one, and exactly one audit row where the delivered writer appends
--- one — and refuses anything else. The event is resolved through the kernel's own
+-- of the family, BOUND to this fact where the payload names it, to its recipient where the
+-- delivered writer targets one, and to the ACTOR the fact records where no audit row exists for
+-- 4d-i's correspondence to bind them through (round 4), and exactly one audit row where the
+-- delivered writer appends one — and refuses anything else. The event is resolved through the kernel's own
 -- same-transaction primitive or the same `xmin` scope it uses, never by a lookup that looks
 -- outside this transaction. A legacy plant that carries no event declares itself by name
 -- (`plantLegacyApprovalRevision` disables the deferred half beside 4d-i's birth seals) and is
@@ -1096,9 +1161,15 @@ CREATE CONSTRAINT TRIGGER "DecisionApprovalRevision_t4d_claim_deferred"
 -- judged that the event's payload and audience are THIS row's (round 2, finding 3). So the event
 -- a claimant may claim is the same-transaction event of the family, for this decision, under
 -- this project, whose payload names THIS row (and, for the request, THIS consultee) and whose
--- push targets the person the act is for. Exactly one such event at commit; a consultation with
--- none is an ask nobody was told about (finding 1), and the deferred half refuses it.
--- Consultations carry no `DecisionEvent` audit row by the delivered contract, so none is asked.
+-- push targets the person the act is for — AND whose `actorId` is the person the row records as
+-- acting (`requestedById`; `respondedById`). Identity and audience alone admit an event that
+-- names this consultation, pushes to its consultee and announces it as SOMEONE ELSE's ask, and
+-- the 4c seals judge `requestedById` while the envelope seal judges `actorId` with nothing
+-- equating the two (#590's review round 4); the four audit-bearing branches get that equation
+-- from 4d-i's `DecisionEvent_t4d_correspondence`, and consultations carry no audit row by the
+-- delivered contract, so the claimant asks it here. Exactly one such event at commit; a
+-- consultation with none is an ask nobody was told about (finding 1), and the deferred half
+-- refuses it. No audit row is asked, because none is written.
 CREATE OR REPLACE FUNCTION phase6_t4d_consultation_claims_event() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE v_event TEXT; v_type TEXT; v_n BIGINT; v_target TEXT;
 BEGIN
@@ -1117,10 +1188,11 @@ BEGIN
        AND e."eventType" = v_type AND e."xmin" = txid_current()::text::xid
        AND e."payload" ->> 'consultationId' = NEW."id"
        AND e."payload" ->> 'consulteeUserId' = NEW."consulteeUserId"
-       AND e."dispatchIntent" -> 'push' ->> 'targetUserId' = NEW."consulteeUserId";
+       AND e."dispatchIntent" -> 'push' ->> 'targetUserId' = NEW."consulteeUserId"
+       AND e."actorId" = NEW."requestedById";
     IF TG_NAME LIKE '%\_deferred' AND v_n <> 1 THEN
       RAISE EXCEPTION
-        'phase6 4d-i-b: consultation % of decision % was written in this transaction with % `decision.consultation_requested` event(s) that name it (`payload.consultationId`), carry its consultee (`payload.consulteeUserId`) and target that consultee (`dispatchIntent.push.targetUserId` — the delivered `consultations.request` pushes to exactly the person asked) — a consultation is an ask, and an ask announced to nobody, or announced as someone else''s, or pushed to a stranger, is not the act this row records',
+        'phase6 4d-i-b: consultation % of decision % was written in this transaction with % `decision.consultation_requested` event(s) that name it (`payload.consultationId`), carry its consultee (`payload.consulteeUserId`), target that consultee (`dispatchIntent.push.targetUserId` — the delivered `consultations.request` pushes to exactly the person asked) and are attributed to its requester (`actorId` = `requestedById`) — a consultation is an ask, and an ask announced to nobody, announced as another consultation, pushed to a stranger, or announced in somebody else''s name, is not the act this row records',
         NEW."id", NEW."decisionId", v_n;
     END IF;
   ELSE
@@ -1132,10 +1204,11 @@ BEGIN
        AND e."eventType" = v_type AND e."xmin" = txid_current()::text::xid
        AND e."payload" ->> 'responseId' = NEW."id"
        AND e."payload" ->> 'consultationId' = NEW."consultationId"
-       AND e."dispatchIntent" -> 'push' ->> 'targetUserId' = v_target;
+       AND e."dispatchIntent" -> 'push' ->> 'targetUserId' = v_target
+       AND e."actorId" = NEW."respondedById";
     IF TG_NAME LIKE '%\_deferred' AND v_n <> 1 THEN
       RAISE EXCEPTION
-        'phase6 4d-i-b: consultation response % of decision % was written in this transaction with % `decision.consultation_responded` event(s) that name it (`payload.responseId`), name its consultation (`payload.consultationId`) and target the requester (`dispatchIntent.push.targetUserId` = the consultation''s `requestedById`, who the delivered `consultations.respond` pushes to) — an answer announced to nobody, announced as another response, or pushed to anyone but the person who asked, is not the act this row records',
+        'phase6 4d-i-b: consultation response % of decision % was written in this transaction with % `decision.consultation_responded` event(s) that name it (`payload.responseId`), name its consultation (`payload.consultationId`), target the requester (`dispatchIntent.push.targetUserId` = the consultation''s `requestedById`, who the delivered `consultations.respond` pushes to) and are attributed to its responder (`actorId` = `respondedById`) — an answer announced to nobody, announced as another response, pushed to anyone but the person who asked, or announced in somebody else''s name, is not the act this row records',
         NEW."id", NEW."decisionId", v_n;
     END IF;
   END IF;

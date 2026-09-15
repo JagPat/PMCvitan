@@ -2407,7 +2407,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
        UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-con-u' WHERE "id" = 'ss-cmd-con-u';
        ${B_EVENT('ss-ev-con-u', 'decision.consultation_requested', 'ss-dec', COVERAGE,
          `, 'push', jsonb_build_object('body','asked','roles', jsonb_build_array('client'),'targetUserId','ss-client')`,
-         `jsonb_build_object('consultationId','ss-con-u','consulteeUserId','ss-client')`)}`]);
+         `jsonb_build_object('consultationId','ss-con-u','consulteeUserId','ss-client')`, 'ss-user')}`]);
     expect(born.ok, `a consultation with the all-null legacy pair must COMMIT — it is the drain shape:\n${born.output}`).toBe(true);
 
     const fill = psql(RUN_DB, ['-c',
@@ -3933,13 +3933,14 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     // Phase 6 unit 4d-i-b — the bundle carries its `decision.change_requested` event too: from the
     // switch-on `ChangeRequest_t4d_paired` demands exactly one of a request born open (and the
     // rejection request claims it), so a bundle without it would be refused by that seal rather
-    // than admitted by the door under test.
-    const bundled = `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId")
-         VALUES ('ss-cr-rej','ss-dec','the architect disagrees',0,0,'open','countersign_rejection','ss-rev-p');
+    // than admitted by the door under test. #590 round 4: the request names its requester and the
+    // event is attributed to that person, as 4d-ii's `decisions.disagree` will write both.
+    const bundled = `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId","requestedById")
+         VALUES ('ss-cr-rej','ss-dec','the architect disagrees',0,0,'open','countersign_rejection','ss-rev-p','ss-user');
        UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'ss-dec';
        UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
-       INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
-         SELECT 'ss-ev-rej','decision.change_requested',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','ss-dec',
+       INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","actorId","entityType","entityId","dispatchIntent")
+         SELECT 'ss-ev-rej','decision.change_requested',1,'ss-org','ss-proj',s."nextPosition" - 1,'human','ss-user','Decision','ss-dec',
                 jsonb_build_object('effectKey','decision.change_requested','coverageVersion',c."coverageVersion",'invalidate',c."invalidate")
            FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
           WHERE s."projectId" = 'ss-proj' AND c."effectKey" = 'decision.change_requested'
@@ -3975,8 +3976,8 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     // #590's review round 3 — AND EVENT-FIRST. A reject-back that emits before it writes its
     // request queues the kernel's deferred check ahead of `ChangeRequest_t4d_paired`; the first
     // head's immediate half claimed only `standard` openings, so this order was refused whole.
-    const request = `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId")
-         VALUES ('ss-cr-rej','ss-dec','the architect disagrees',0,0,'open','countersign_rejection','ss-rev-p');`;
+    const request = `INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId","requestedById")
+         VALUES ('ss-cr-rej','ss-dec','the architect disagrees',0,0,'open','countersign_rejection','ss-rev-p','ss-user');`;
     expect(bundled.includes(request), 'the fact-first bundle above must start with the request this arm re-orders').toBe(true);
     const eventFirst = `${bundled.replace(request, '')}; ${request}`;
     buildRun(AWAITING_DOORS);
@@ -7572,10 +7573,10 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
   // ════════════════════════════════════════════════════════════════════════════════════════════
 
   /** an event of `type` for `dec`, allocated the way `emitEvent` allocates, at `version` */
-  const B_EVENT = (id: string, type: string, dec: string, version = COVERAGE, extra = '', payload = "'{}'::jsonb") => `
+  const B_EVENT = (id: string, type: string, dec: string, version = COVERAGE, extra = '', payload = "'{}'::jsonb", actor = '') => `
       UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'ss-proj';
-      INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","payload","dispatchIntent")
-        SELECT '${id}','${type}',1,'ss-org','ss-proj',s."nextPosition" - 1,'system','system:seed','Decision','${dec}',${payload},
+      INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","actorId","entityType","entityId","payload","dispatchIntent")
+        SELECT '${id}','${type}',1,'ss-org','ss-proj',s."nextPosition" - 1,${actor ? `'human',NULL,'${actor}'` : `'system','system:seed',NULL`},'Decision','${dec}',${payload},
                jsonb_build_object('effectKey','${type}','coverageVersion',c."coverageVersion",'invalidate',c."invalidate"${extra})
           FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
          WHERE s."projectId" = 'ss-proj' AND c."effectKey" = '${type}' AND c."coverageVersion" = '${version}';`;
@@ -7771,7 +7772,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dc' WHERE "id" = 'ss-cmd-dc';`;
     const event = B_EVENT('ss-ev-dc', 'decision.consultation_requested', 'ss-dec', COVERAGE,
       `, 'push', jsonb_build_object('body','asked','roles', jsonb_build_array('engineer'),'targetUserId','ss-eng')`,
-      `jsonb_build_object('consultationId','ss-dc','consulteeUserId','ss-eng')`);
+      `jsonb_build_object('consultationId','ss-dc','consulteeUserId','ss-eng')`, 'ss-user');
     return `BEGIN; ${reserve} ${eventFirst ? event + fact : fact + event} COMMIT;`;
   };
   /** the delivered `consultations.respond`: receipt, fact, and the event that names consultation AND response and targets the requester */
@@ -7783,7 +7784,7 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       UPDATE "CommandExecution" SET "status" = 'succeeded', "completedAt" = now(), "resultRef" = 'ss-dr' WHERE "id" = 'ss-cmd-dr';`;
     const event = B_EVENT('ss-ev-dr', 'decision.consultation_responded', 'ss-dec', COVERAGE,
       `, 'push', jsonb_build_object('body','answered','roles', jsonb_build_array('pmc'),'targetUserId','ss-user')`,
-      `jsonb_build_object('consultationId','ss-dc','responseId','ss-dr')`);
+      `jsonb_build_object('consultationId','ss-dc','responseId','ss-dr')`, 'ss-eng');
     return `BEGIN; ${reserve} ${eventFirst ? event + fact : fact + event} COMMIT;`;
   };
 
@@ -7865,12 +7866,12 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     const HEAD = `UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'ss-dec';
       INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
         VALUES ('ss-rev-r2','ss-proj','ss-dec',1,'a',now(),'ss-user','ss-cmd-r2');`;
-    const twoSided = (strip: string[], bundle: string, refusal: RegExp, what: string, setup?: () => void) => {
-      buildRun(strip);
+    const twoSided = (strip: string[], bundle: string, refusal: RegExp, what: string, setup?: () => void, whole: string[] = []) => {
+      buildRun([...whole, ...strip]);
       setup?.();
       const admitted = psql(RUN_DB, ['-c', bundle]);
       expect(admitted.ok, `with ${strip.join(' + ')} OMITTED, ${what} must be ACCEPTED:\n${admitted.output}`).toBe(true);
-      buildRun([]);
+      buildRun(whole);
       setup?.();
       const refused = psql(RUN_DB, ['-c', bundle]);
       expect(refused.ok, `whole, ${what} must be REFUSED`).toBe(false);
@@ -7913,6 +7914,42 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
       /consultation ss-dc of decision ss-dec was written in this transaction with 0 `decision.consultation_requested` event/,
       'a consultation whose event names another consultation and pushes to a stranger',
       () => { expect(psql(RUN_DB, ['-c', CONSULTEE]).ok).toBe(true); });
+    // #590 round 4 — the WRONG ACTOR: identified and targeted correctly, and announced in someone
+    // else's name. The four audit-bearing branches are bound by 4d-i's correspondence (driven in
+    // the matrix); the three audit-less ones are bound by their own claimants, driven here. The
+    // kernel seal is stripped beside the claimant so the stripped side shows the FACT committing.
+    twoSided(['DecisionConsultation_t4d_claim_deferred', 'DomainEvent_t4d_pairing_claimed'],
+      `BEGIN; ${RESERVE('ss-cmd-dc', 'consultations.request')} ${ASK_FACT} ${COMPLETE('ss-cmd-dc', 'ss-dc')}
+       ${B_EVENT('ss-ev-dc-a', 'decision.consultation_requested', 'ss-dec', COVERAGE,
+         `, 'push', jsonb_build_object('body','asked','roles', jsonb_build_array('engineer'),'targetUserId','ss-eng')`,
+         `jsonb_build_object('consultationId','ss-dc','consulteeUserId','ss-eng')`, 'ss-eng')} COMMIT;`,
+      /consultation ss-dc of decision ss-dec was written in this transaction with 0 `decision.consultation_requested` event/,
+      'a consultation whose event is attributed to the consultee instead of the requester',
+      () => { expect(psql(RUN_DB, ['-c', CONSULTEE]).ok).toBe(true); });
+    twoSided(['DecisionConsultationResponse_t4d_claim_deferred', 'DomainEvent_t4d_pairing_claimed'],
+      `BEGIN; ${RESERVE('ss-cmd-dr', 'consultations.respond', 'ss-eng')}
+       INSERT INTO "DecisionConsultationResponse" ("id","projectId","consultationId","decisionId","respondedById","response","respondedAt","sourceCommandId")
+         VALUES ('ss-dr','ss-proj','ss-dc','ss-dec','ss-eng','use the granite',now(),'ss-cmd-dr');
+       ${COMPLETE('ss-cmd-dr', 'ss-dr')}
+       ${B_EVENT('ss-ev-dr-a', 'decision.consultation_responded', 'ss-dec', COVERAGE,
+         `, 'push', jsonb_build_object('body','answered','roles', jsonb_build_array('pmc'),'targetUserId','ss-user')`,
+         `jsonb_build_object('consultationId','ss-dc','responseId','ss-dr')`, 'ss-user')} COMMIT;`,
+      /consultation response ss-dr of decision ss-dec was written in this transaction with 0 `decision.consultation_responded` event/,
+      'a response whose event is attributed to the requester instead of the responder',
+      () => { expect(psql(RUN_DB, ['-c', CONSULTEE]).ok).toBe(true); expect(psql(RUN_DB, ['-c', CONSULT(false)]).ok).toBe(true); });
+    // …and the disagreement, whose branch declares no audit row for 4d-i's correspondence to bind
+    // through: the provisional act is committed first (the reservation doors stay omitted on both
+    // sides, as the disagreement arm omits them), then the reject-back is written FACT-FIRST with
+    // its event attributed to somebody other than the requester the request records
+    twoSided(['ChangeRequest_t4d_paired', 'DomainEvent_t4d_pairing_claimed'],
+      `BEGIN; INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId","requestedById")
+         VALUES ('ss-cr-r4','ss-proj','ss-dec','the architect disagrees',0,0,'open','countersign_rejection','ss-rev-p','ss-user');
+       UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'ss-dec';
+       ${B_EVENT('ss-ev-r4', 'decision.change_requested', 'ss-dec', COVERAGE, '', "'{}'::jsonb", 'ss-client')} COMMIT;`,
+      /countersign_rejection request ss-cr-r4 of decision ss-dec names ss-user as its requester, and this transaction carries 0 `decision.change_requested` event\(s\) attributed to that person/,
+      'a disagreement whose event is attributed to somebody other than the requester',
+      () => { expect(psql(RUN_DB, ['-c', PROVISIONAL]).ok, 'the provisional act must commit first').toBe(true); },
+      AWAITING_DOORS);
     // finding 6 — the standard opening and the withdrawal with their events (written first) and NO audit row
     twoSided(['ChangeRequest_t4d_paired'], B_OPEN('ss-cr-r2', 'ss-ev-r2o', true, 'ss-dec2', false),
       /standard change request ss-cr-r2 was opened in this transaction with 0 `change_requested` audit row/,

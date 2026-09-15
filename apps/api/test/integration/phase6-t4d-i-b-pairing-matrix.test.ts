@@ -22,10 +22,11 @@ import { EXTERNAL_EFFECTS, effectCoverageVersion } from '../../src/platform/exte
  *   · the COMPLETE bundle commits, fact-first and event-first, and the fact CLAIMS its event;
  *   · the same bundle at the PRIOR generation — a still-serving 4d-i writer — commits too;
  *   · every NEGATIVE variant is refused AT COMMIT: a missing counterpart (fact without event,
- *     fact without audit row, transition without fact), evidence with the wrong identity or the
- *     wrong audience, evidence reused from an earlier transaction or duplicated inside one, and a
- *     no-op write standing in for a real transition — including the drain window's
- *     old-generation shape, where the kernel's own pairing seal is silent by design.
+ *     fact without audit row, transition without fact), evidence with the wrong identity, the
+ *     wrong audience or the WRONG ACTOR (an event attributed to someone other than the person the
+ *     fact records — #590 round 4), evidence reused from an earlier transaction or duplicated
+ *     inside one, and a no-op write standing in for a real transition — including the drain
+ *     window's old-generation shape, where the kernel's own pairing seal is silent by design.
  *
  * and `coverage` asserts that the matrix's keys ARE the compiled catalog's `pairingRequired` keys,
  * so a future flip without executable coverage fails here before it ships.
@@ -143,12 +144,16 @@ const P2: Proj = { id: 'mx-proj2', org: 'mx-org2' };
 const EV = (o: {
   id: string; type: string; dec: string; version: string; proj?: Proj;
   payload?: string; push?: string;
+  /** the HUMAN actor the event is attributed to (`actorId`), as `emitEvent` attributes every
+   *  delivered writer's event; omitted, the event is a `system` one that names nobody */
+  actor?: string;
 }) => {
   const p = o.proj ?? P1;
+  const who = o.actor ? `'human',NULL,'${o.actor}'` : `'system','system:mx',NULL`;
   return `
     UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = '${p.id}';
-    INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","payload","dispatchIntent")
-      SELECT '${o.id}','${o.type}',1,'${p.org}','${p.id}',s."nextPosition" - 1,'system','system:mx','Decision','${o.dec}',
+    INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","actorId","entityType","entityId","payload","dispatchIntent")
+      SELECT '${o.id}','${o.type}',1,'${p.org}','${p.id}',s."nextPosition" - 1,${who},'Decision','${o.dec}',
              ${o.payload ?? "'{}'::jsonb"},
              jsonb_build_object('effectKey','${o.type}','coverageVersion',c."coverageVersion",'invalidate',c."invalidate"${o.push ?? ''})
         FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
@@ -197,57 +202,59 @@ type Branch = {
 
 // ── SHARED BUNDLE PIECES ─────────────────────────────────────────────────────────────────────
 /** the delivered `requestChange` on the approved decision, at `version` */
-const OPENING = (o: { cr: string; ev: string; version: string; order?: Order; audit?: boolean; dec?: string }) => {
+const OPENING = (o: { cr: string; ev: string; version: string; order?: Order; audit?: boolean; dec?: string; actor?: string }) => {
   const dec = o.dec ?? 'mx-dec2';
   const fact = `INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","requestedById")
       VALUES ('${o.cr}','mx-proj','${dec}','the ask',0,0,'open','mx-pmc');`;
-  const event = EV({ id: o.ev, type: 'decision.change_requested', dec, version: o.version });
+  const event = EV({ id: o.ev, type: 'decision.change_requested', dec, version: o.version, actor: o.actor ?? 'mx-pmc' });
   const audit = o.audit === false ? '' : AU(dec, 'change_requested');
   return TX(`UPDATE "Decision" SET "status" = 'change' WHERE "id" = '${dec}';`,
     o.order === 'event-first' ? event + fact : fact + event, audit);
 };
 /** the disagreement (4d-ii's `decisions.disagree`) on a decision parked in `awaiting_countersign` with the provisional head `mx-rev-park` */
-const REJECT = (o: { cr: string; ev: string; version: string; order?: Order }) => {
-  const fact = `INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId")
-      VALUES ('${o.cr}','mx-proj','mx-dec','the architect disagrees',0,0,'open','countersign_rejection','mx-rev-park');`;
-  const event = EV({ id: o.ev, type: 'decision.change_requested', dec: 'mx-dec', version: o.version });
+const REJECT = (o: { cr: string; ev: string; version: string; order?: Order; actor?: string }) => {
+  // the disagreeing party is the request's `requestedById` AND the event's actor (no seal under
+  // test judges that party's standing; 4d-ii's `decisions.disagree` binds it to the architect)
+  const fact = `INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","origin","revisionId","requestedById")
+      VALUES ('${o.cr}','mx-proj','mx-dec','the architect disagrees',0,0,'open','countersign_rejection','mx-rev-park','mx-client');`;
+  const event = EV({ id: o.ev, type: 'decision.change_requested', dec: 'mx-dec', version: o.version, actor: o.actor ?? 'mx-client' });
   return TX(`UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'mx-dec';`,
     o.order === 'event-first' ? event + fact : fact + event);
 };
 /** the delivered `withdrawChange` on the reopened decision */
-const WITHDRAWAL = (o: { cr: string; ev: string; version: string; order?: Order; audit?: boolean; dec?: string }) => {
+const WITHDRAWAL = (o: { cr: string; ev: string; version: string; order?: Order; audit?: boolean; dec?: string; actor?: string }) => {
   const dec = o.dec ?? 'mx-dec2';
   const closure = `UPDATE "ChangeRequest" SET "status" = 'withdrawn', "resolution" = 'withdrawn', "resolvedById" = 'mx-pmc', "resolvedAt" = now() WHERE "id" = '${o.cr}';`;
-  const event = EV({ id: o.ev, type: 'decision.change_withdrawn', dec, version: o.version });
+  const event = EV({ id: o.ev, type: 'decision.change_withdrawn', dec, version: o.version, actor: o.actor ?? 'mx-pmc' });
   const audit = o.audit === false ? '' : AU(dec, 'change_withdrawn');
   return TX(`UPDATE "Decision" SET "status" = 'approved' WHERE "id" = '${dec}';`,
     o.order === 'event-first' ? event + closure : closure + event, audit);
 };
 /** the delivered `approve` from `pending`: receipt, transition, finalized revision, audit, event */
-const APPROVAL = (o: { rev: string; ev: string; version: string; order?: Order; audit?: boolean; event?: boolean; cmd?: string }) => {
+const APPROVAL = (o: { rev: string; ev: string; version: string; order?: Order; audit?: boolean; event?: boolean; cmd?: string; actor?: string }) => {
   const cmd = o.cmd ?? `${o.rev}-cmd`;
   const act = `UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'mx-dec';
     INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
       VALUES ('${o.rev}','mx-proj','mx-dec',1,'a',now(),'mx-pmc','${cmd}');`;
-  const event = o.event === false ? '' : EV({ id: o.ev, type: 'decision.approved', dec: 'mx-dec', version: o.version,
+  const event = o.event === false ? '' : EV({ id: o.ev, type: 'decision.approved', dec: 'mx-dec', version: o.version, actor: o.actor ?? 'mx-pmc',
     push: `, 'push', jsonb_build_object('body','approved','roles', c."pushRoles")` });
   const audit = o.audit === false ? '' : AU('mx-dec', 'approved');
   return TX(RESERVE(cmd, 'decisions.approve', 'mx-pmc'), o.order === 'event-first' ? event + act : act + event, audit, COMPLETE(cmd, 'mx-dec'));
 };
 /** the delivered `approve` from `change` — the reapproval: closes the open request `cr` as resolved */
-const REAPPROVAL = (o: { rev: string; ev: string; cr: string; version: string; order?: Order; audit?: boolean; event?: boolean; closure?: boolean }) => {
+const REAPPROVAL = (o: { rev: string; ev: string; cr: string; version: string; order?: Order; audit?: boolean; event?: boolean; closure?: boolean; actor?: string }) => {
   const cmd = `${o.rev}-cmd`;
   const act = `UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'mx-dec2';
     ${o.closure === false ? '' : `UPDATE "ChangeRequest" SET "status" = 'resolved', "resolution" = 'reapproved', "resolvedById" = 'mx-pmc', "resolvedAt" = now() WHERE "id" = '${o.cr}';`}
     INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
       VALUES ('${o.rev}','mx-proj','mx-dec2',1,'a',now(),'mx-pmc','${cmd}');`;
-  const event = o.event === false ? '' : EV({ id: o.ev, type: 'decision.reapproved', dec: 'mx-dec2', version: o.version,
+  const event = o.event === false ? '' : EV({ id: o.ev, type: 'decision.reapproved', dec: 'mx-dec2', version: o.version, actor: o.actor ?? 'mx-pmc',
     push: `, 'push', jsonb_build_object('body','reapproved','roles', c."pushRoles")` });
   const audit = o.audit === false ? '' : AU('mx-dec2', 'reapproved');
   return TX(RESERVE(cmd, 'decisions.approve', 'mx-pmc'), o.order === 'event-first' ? event + act : act + event, audit, COMPLETE(cmd, 'mx-dec2'));
 };
 /** the delivered `consultations.request`: receipt, fact, targeted event naming the consultation */
-const CONSULT = (o: { dc: string; ev: string; version: string; order?: Order; event?: boolean; namedId?: string; consultee?: string; target?: string; proj?: Proj; dec?: string; cmd?: string }) => {
+const CONSULT = (o: { dc: string; ev: string; version: string; order?: Order; event?: boolean; namedId?: string; consultee?: string; target?: string; proj?: Proj; dec?: string; cmd?: string; actor?: string }) => {
   const cmd = o.cmd ?? `${o.dc}-cmd`;
   const dec = o.dec ?? 'mx-dec';
   const fact = `INSERT INTO "DecisionConsultation" ("id","projectId","decisionId","requestedById","consulteeMembershipId","consulteeUserId","question","openCycle","requestedAt","sourceCommandId")
@@ -255,17 +262,17 @@ const CONSULT = (o: { dc: string; ev: string; version: string; order?: Order; ev
   const named = o.namedId ?? o.dc;
   const consultee = o.consultee ?? 'mx-eng';
   const target = o.target ?? consultee;
-  const event = o.event === false ? '' : EV({ id: o.ev, type: 'decision.consultation_requested', dec, version: o.version, proj: o.proj,
+  const event = o.event === false ? '' : EV({ id: o.ev, type: 'decision.consultation_requested', dec, version: o.version, proj: o.proj, actor: o.actor ?? 'mx-pmc',
     payload: `jsonb_build_object('consultationId','${named}','consulteeUserId','${consultee}')`,
     push: `, 'push', jsonb_build_object('body','asked','roles', jsonb_build_array('engineer'),'targetUserId','${target}')` });
   return TX(RESERVE(cmd, 'consultations.request', 'mx-pmc'), o.order === 'event-first' ? event + fact : fact + event, COMPLETE(cmd, o.dc));
 };
 /** the delivered `consultations.respond`: receipt, fact, targeted event naming consultation AND response */
-const RESPOND = (o: { dcr: string; dc: string; ev: string; version: string; order?: Order; event?: boolean; namedResponse?: string; namedConsultation?: string; target?: string }) => {
+const RESPOND = (o: { dcr: string; dc: string; ev: string; version: string; order?: Order; event?: boolean; namedResponse?: string; namedConsultation?: string; target?: string; actor?: string }) => {
   const cmd = `${o.dcr}-cmd`;
   const fact = `INSERT INTO "DecisionConsultationResponse" ("id","projectId","consultationId","decisionId","respondedById","response","respondedAt","sourceCommandId")
       VALUES ('${o.dcr}','mx-proj','${o.dc}','mx-dec','mx-eng','use the granite',now(),'${cmd}');`;
-  const event = o.event === false ? '' : EV({ id: o.ev, type: 'decision.consultation_responded', dec: 'mx-dec', version: o.version,
+  const event = o.event === false ? '' : EV({ id: o.ev, type: 'decision.consultation_responded', dec: 'mx-dec', version: o.version, actor: o.actor ?? 'mx-eng',
     payload: `jsonb_build_object('consultationId','${o.namedConsultation ?? o.dc}','responseId','${o.namedResponse ?? o.dcr}')`,
     push: `, 'push', jsonb_build_object('body','answered','roles', jsonb_build_array('pmc'),'targetUserId','${o.target ?? 'mx-pmc'}')` });
   return TX(RESERVE(cmd, 'consultations.respond', 'mx-eng'), o.order === 'event-first' ? event + fact : fact + event, COMPLETE(cmd, o.dcr));
@@ -301,6 +308,11 @@ const MATRIX: Branch[] = [
         // without the audit row the revision claimant refuses for the same reason: an earlier
         // transaction's event is not THIS transaction's evidence under either seal
         refusal: /has no matching decision\.approved event in this transaction|approval revision .* with 0 approval-family event/ },
+      { name: 'the approval event is attributed to ANOTHER user than the revision\'s approver (wrong actor)',
+        // bound by 4d-i's `DecisionEvent_t4d_correspondence`, which this unit's mandatory audit
+        // row now makes fire on every approval; the message is that seal's
+        bundle: APPROVAL({ rev: 'mx-rev', ev: 'mx-ev-ap', version: CURRENT, actor: 'mx-client' }),
+        refusal: /names an actor other than mx-pmc/ },
       { name: 'TWO revisions born beside one event (duplicated evidence)',
         bundle: TX(RESERVE('mx-c1', 'decisions.approve', 'mx-pmc'), RESERVE('mx-c2', 'decisions.approve', 'mx-pmc'),
           `UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'mx-dec';
@@ -330,6 +342,9 @@ const MATRIX: Branch[] = [
       { name: 'the reapproval writes its event but NO audit row',
         bundle: REAPPROVAL({ rev: 'mx-rev2', ev: 'mx-ev-re', cr: 'mx-cr', version: CURRENT, audit: false }),
         refusal: /with 0 `approved` \/ `reapproved` audit row/ },
+      { name: 'the reapproval event is attributed to ANOTHER user than the revision\'s approver (wrong actor)',
+        bundle: REAPPROVAL({ rev: 'mx-rev2', ev: 'mx-ev-re', cr: 'mx-cr', version: CURRENT, actor: 'mx-client' }),
+        refusal: /names an actor other than mx-pmc/ },
       { name: 'the reapproval moves the decision and writes its revision but leaves the request OPEN (missing converse)',
         bundle: REAPPROVAL({ rev: 'mx-rev2', ev: 'mx-ev-re', cr: 'mx-cr', version: CURRENT, closure: false }),
         refusal: /change → approved.* with 0 change request\(s\) closed here/ },
@@ -349,6 +364,9 @@ const MATRIX: Branch[] = [
       { name: 'the standard opening is written with its event but NO audit row (finding 6)',
         bundle: OPENING({ cr: 'mx-cr', ev: 'mx-ev-open', version: CURRENT, audit: false }),
         refusal: /with 0 `change_requested` audit row/ },
+      { name: 'the standard opening\'s event is attributed to ANOTHER user than the request\'s requester (wrong actor)',
+        bundle: OPENING({ cr: 'mx-cr', ev: 'mx-ev-open', version: CURRENT, actor: 'mx-client' }),
+        refusal: /names an actor other than mx-pmc/ },
       { name: 'the standard opening is written with NO event',
         bundle: TX(`UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'mx-dec2';`,
           `INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","requestedById")
@@ -398,6 +416,11 @@ const MATRIX: Branch[] = [
         // two seals refuse this — this unit's decision-side arm (queued first, by name) and 4d-i's
         // disagreement door — and either message binds the arm to the missing request
         refusal: /awaiting_countersign → change.* with 0 open `countersign_rejection` change request\(s\) born here|in this transaction with no open `countersign_rejection` request/ },
+      { name: 'the disagreement\'s event is attributed to ANOTHER user than the request\'s requester (wrong actor, #590 round 4)',
+        // no audit row is declared for this branch, so 4d-i's correspondence never looks: the
+        // request's own seal binds the event's actor to `requestedById`
+        bundle: REJECT({ cr: 'mx-cr-rej', ev: 'mx-ev-rej', version: CURRENT, actor: 'mx-pmc' }),
+        refusal: /countersign_rejection request .* names mx-client as its requester, and this transaction carries 0 `decision.change_requested` event\(s\) attributed to that person/ },
       { name: 'a rejection request PLANTED EARLIER is no-op updated to stand in for the one this disagreement owes, at the drain generation (no-op substitution)',
         // 4d-i's disagreement door reads the request by `xmin`, which the touch supplies; at the
         // prior generation the event owes no claim, so at cc923fdd this bundle COMMITTED — a
@@ -425,6 +448,9 @@ const MATRIX: Branch[] = [
       { name: 'the withdrawal is written with its event but NO audit row (finding 6)',
         bundle: WITHDRAWAL({ cr: 'mx-cr', ev: 'mx-ev-wd', version: CURRENT, audit: false }),
         refusal: /with 0 `change_withdrawn` audit row/ },
+      { name: 'the withdrawal\'s event is attributed to ANOTHER user than the closure\'s resolver (wrong actor)',
+        bundle: WITHDRAWAL({ cr: 'mx-cr', ev: 'mx-ev-wd', version: CURRENT, actor: 'mx-client' }),
+        refusal: /names an actor other than mx-pmc/ },
       { name: 'a HISTORICAL withdrawn request is no-op updated to stand in for the closure, at the drain generation (finding 4)',
         // an older request, opened and withdrawn in earlier transactions, then the live one
         setup: [WITHDRAWAL({ cr: 'mx-cr', ev: 'mx-ev-wd0', version: PRIOR }),
@@ -455,6 +481,10 @@ const MATRIX: Branch[] = [
       { name: 'the event targets a DIFFERENT user than the consultee (wrong audience, finding 3)',
         bundle: CONSULT({ dc: 'mx-dc', ev: 'mx-ev-dc', version: CURRENT, consultee: 'mx-client', target: 'mx-client' }),
         refusal: /consultation .* with 0 `decision.consultation_requested` event/ },
+      { name: 'the event is attributed to ANOTHER user than the consultation\'s requester (wrong actor, #590 round 4)',
+        // identified and targeted correctly, and announced as the consultee's own ask
+        bundle: CONSULT({ dc: 'mx-dc', ev: 'mx-ev-dc', version: CURRENT, actor: 'mx-eng' }),
+        refusal: /consultation .* with 0 `decision.consultation_requested` event/ },
       { name: 'the event is emitted under ANOTHER project for its own decision (cross-project)',
         bundle: CONSULT({ dc: 'mx-dc', ev: 'mx-ev-dc', version: CURRENT, proj: P2, dec: 'mx-decB' }).replace(
           // the FACT stays on mx-proj / mx-dec; only the event moves projects
@@ -481,6 +511,10 @@ const MATRIX: Branch[] = [
         refusal: /response .* with 0 `decision.consultation_responded` event/ },
       { name: 'the event targets the CONSULTEE instead of the requester (wrong audience, finding 3)',
         bundle: RESPOND({ dcr: 'mx-dcr', dc: 'mx-dc', ev: 'mx-ev-dcr', version: CURRENT, target: 'mx-eng' }),
+        refusal: /response .* with 0 `decision.consultation_responded` event/ },
+      { name: 'the event is attributed to ANOTHER user than the response\'s responder (wrong actor, #590 round 4)',
+        // identified and targeted correctly, and announced as the requester's own answer
+        bundle: RESPOND({ dcr: 'mx-dcr', dc: 'mx-dc', ev: 'mx-ev-dcr', version: CURRENT, actor: 'mx-pmc' }),
         refusal: /response .* with 0 `decision.consultation_responded` event/ },
     ],
   },

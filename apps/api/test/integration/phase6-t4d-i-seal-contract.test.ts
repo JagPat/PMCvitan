@@ -451,6 +451,22 @@ const REGISTER: Record<string, SealContract> = {
     on: {},
     must: ['"DecisionEvent"', 'count(*)', 'txid_current'],
   },
+  phase6_t4d_tx_actor_event: {
+    rule: 'the kernel\'s same-transaction event lookup narrowed to ONE actor: the latest event of '
+      + 'the named types for the decision whose `actorId` is the named person — what the claimant '
+      + 'of an audit-less branch may claim, since 4d-i\'s correspondence binds the actor only where '
+      + 'an audit row exists',
+    plan: '#590 r4',
+    on: {},
+    must: ['"actorId" = p_actor', 'txid_current', '"streamPosition" DESC', 'LIMIT 1'],
+  },
+  phase6_t4d_tx_actor_event_count: {
+    rule: 'how many same-transaction events of the named types for the decision are attributed to '
+      + 'the named actor — the exactness the audit-less branches demand at commit',
+    plan: '#590 r4',
+    on: {},
+    must: ['"actorId" = p_actor', 'count(*)', 'txid_current'],
+  },
   phase6_t4d_decision_moved_in_tx: {
     rule: 'the reader of that carrier: did THIS transaction perform the named move on this decision',
     plan: '§D 4d-i-b (a)',
@@ -463,16 +479,19 @@ const REGISTER: Record<string, SealContract> = {
       + 'EXACT `approved → change` move) and exactly ONE `decision.change_requested` event, which '
       + 'it CLAIMS unless a same-transaction `returned` stranded resolution is the bundle\'s '
       + 'primary, and for `standard` exactly ONE `change_requested` audit row appended here; for '
-      + '`countersign_rejection` the EXACT `awaiting_countersign → change` move; a request written '
+      + '`countersign_rejection` the EXACT `awaiting_countersign → change` move and exactly ONE '
+      + 'event attributed to its `requestedById` (no audit row is declared for that branch, so '
+      + '4d-i\'s correspondence cannot bind the actor there); a request written '
       + '`withdrawn` rides the `change → approved` restoration, exactly one `change_withdrawn` '
       + 'audit row, and claims its one `decision.change_withdrawn`; a request written `resolved` '
       + 'rides the reapproval\'s landing with exactly one revision born here and its event present '
       + '— verification only, the revision claims',
-    plan: '§A.3 the ChangeRequest row; §D 4d-i-b (a); #568 r1 f3; #558 r1 f2, r2 f6; #572 r11 f1; #590 r2 f2, f6',
+    plan: '§A.3 the ChangeRequest row; §D 4d-i-b (a); #568 r1 f3; #558 r1 f2, r2 f6; #572 r11 f1; #590 r2 f2, f6, r4',
     on: { 'ChangeRequest.ChangeRequest_t4d_paired': C('I U') },
     must: [
       'txid_current', 'change_from_approved', 'approved_from_change', 'awaiting_from_change', 'change_from_awaiting',
       'phase6_t4d_tx_audit_count', "ARRAY['change_requested']", "ARRAY['change_withdrawn']",
+      'phase6_t4d_tx_actor_event_count', 'NEW."requestedById"',
       'decision.change_requested', 'decision.change_withdrawn',
       'decision.approved', 'decision.reapproved', 'decision.awaiting_countersign',
       'platform_tx_event_count', 'platform_claim_event_pairing_once',
@@ -484,10 +503,11 @@ const REGISTER: Record<string, SealContract> = {
     rule: 'the request\'s IMMEDIATE claim half: when the event of a standard opening, a '
       + 'countersign_rejection opening (with no same-transaction `returned` resolution visible yet) '
       + 'or a withdrawal is already written, claim it now — so a bundle that emits before it writes '
-      + 'the request is not refused by a deferred check queued ahead of the deferred seal; judges nothing',
-    plan: '§D 4d-i-b (b), "order-independent by construction"; #590 r3',
+      + 'the request is not refused by a deferred check queued ahead of the deferred seal; judges nothing. '
+      + 'A countersign_rejection request looks up the event attributed to its own `requestedById`',
+    plan: '§D 4d-i-b (b), "order-independent by construction"; #590 r3, r4',
     on: { 'ChangeRequest.ChangeRequest_t4d_claim': A('I U') },
-    must: ['platform_tx_event', 'platform_claim_event_pairing_once',
+    must: ['platform_tx_event', 'phase6_t4d_tx_actor_event', 'NEW."requestedById"', 'platform_claim_event_pairing_once',
       'decision.change_requested', 'decision.change_withdrawn', 'standard', 'countersign_rejection',
       'DecisionStrandedResolution', 'returned', 'withdrawn'],
   },
@@ -522,10 +542,11 @@ const REGISTER: Record<string, SealContract> = {
     rule: 'a consultation request claims its `decision.consultation_requested`, a response its '
       + '`decision.consultation_responded`, by TG_TABLE_NAME — the decision\'s same-transaction '
       + 'event whose payload names THIS row (`consultationId` and `consulteeUserId`; '
-      + '`responseId` and `consultationId`) and whose push targets its recipient (the consultee; '
-      + 'the consultation\'s `requestedById`). The immediate half may defer absence; the DEFERRED '
+      + '`responseId` and `consultationId`), whose push targets its recipient (the consultee; '
+      + 'the consultation\'s `requestedById`) and whose `actorId` is the person the row records as '
+      + 'acting (`requestedById`; `respondedById`). The immediate half may defer absence; the DEFERRED '
       + 'half demands exactly one such event at commit',
-    plan: '§A.3 the two consultation rows; §D 4d-i-b (b); #590 r2 f1, f3',
+    plan: '§A.3 the two consultation rows; §D 4d-i-b (b); #590 r2 f1, f3; r4',
     on: {
       'DecisionConsultation.DecisionConsultation_t4d_claim': A('I'),
       'DecisionConsultation.DecisionConsultation_t4d_claim_deferred': C('I'),
@@ -534,6 +555,7 @@ const REGISTER: Record<string, SealContract> = {
     },
     must: ['TG_TABLE_NAME', 'TG_NAME', 'decision.consultation_requested', 'decision.consultation_responded',
       "'consultationId'", "'consulteeUserId'", "'responseId'", "'targetUserId'", '"requestedById"',
+      'e."actorId" = NEW."requestedById"', 'e."actorId" = NEW."respondedById"',
       'txid_current', 'platform_claim_event_pairing_once'],
   },
 

@@ -223,6 +223,10 @@ const FUNCTIONS = [
   'phase6_t4d_change_request_here',
   'phase6_t4d_requests_moved_in_tx',
   'phase6_t4d_tx_audit_count',
+  // #590 round 4 — the kernel's same-transaction lookup and count narrowed to one actor, for the
+  // branches no audit row binds
+  'phase6_t4d_tx_actor_event',
+  'phase6_t4d_tx_actor_event_count',
   'phase6_t4d_change_request_paired',
   'phase6_t4d_change_request_claims_event',
   'phase6_t4d_change_transition_paired',

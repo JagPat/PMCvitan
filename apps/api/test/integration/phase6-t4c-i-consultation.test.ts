@@ -100,10 +100,13 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
   // position it handed out — `insertRawEvent`'s allocate-then-insert protocol, inline because the
   // bundle is one `$transaction` with the fact and the helper opens a transaction of its own; no
   // position is chosen by hand and no allocation seal is bypassed
-  const eventSql = (o: { eventId: string; type: string; decisionId: string; project: string; org: string; payload: string; target: string; roles: string }): [string, string] => [
+  // …and ATTRIBUTED to the acting user (`actorId`), as `emitEvent` attributes every delivered
+  // writer's event: from #590 round 4 the claimant binds the event's actor to `requestedById` /
+  // `respondedById`, so the event is a `human` one in that user's name
+  const eventSql = (o: { eventId: string; type: string; decisionId: string; project: string; org: string; payload: string; target: string; roles: string; actor: string }): [string, string] => [
     `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = '${o.project}'`,
-    `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","payload","dispatchIntent")
-       SELECT '${o.eventId}','${o.type}',1,'${o.org}','${o.project}',s."nextPosition" - 1,'system','system:t4c-i','Decision','${o.decisionId}',
+    `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","actorId","entityType","entityId","payload","dispatchIntent")
+       SELECT '${o.eventId}','${o.type}',1,'${o.org}','${o.project}',s."nextPosition" - 1,'human','${o.actor}','Decision','${o.decisionId}',
               ${o.payload},
               jsonb_build_object('effectKey','${o.type}','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
                                  'push', jsonb_build_object('body','t4c-i','roles', jsonb_build_array('${o.roles}'),'targetUserId','${o.target}'))
@@ -117,6 +120,7 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
       eventId: id(`ev${seq++}`), type: 'decision.consultation_requested', decisionId: o.decisionId ?? decisionId,
       project, org: project === projectBId ? orgBId : orgId,
       payload: `jsonb_build_object('consultationId','${rid}','consulteeUserId','${consultee}')`, target: consultee, roles: 'engineer',
+      actor: o.requestedById ?? users.pmc,
     });
   };
   const responseEventSql = (rid: string, o: ResOverrides, requestedById: string) => {
@@ -125,6 +129,7 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
       eventId: id(`ev${seq++}`), type: 'decision.consultation_responded', decisionId: o.decisionId ?? decisionId,
       project, org: project === projectBId ? orgBId : orgId,
       payload: `jsonb_build_object('consultationId','${o.consultationId}','responseId','${rid}')`, target: requestedById, roles: 'pmc',
+      actor: o.respondedById ?? users.eng,
     });
   };
 

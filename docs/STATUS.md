@@ -92,7 +92,7 @@ previous with exactly six flips (`external-effect-catalog-seed.test.ts`,
 drain admitting all three and refusing an unknown one, an unclaimed
 `decision.change_requested` admitted at 4d-i's generation and refused at this
 unit's — is `phase6-t4d-i-catalog-generations.test.ts`. The seal inventory and
-seal-contract oracles carry the ten new triggers and eleven new functions.
+seal-contract oracles carry the ten new triggers and thirteen new functions.
 
 **Review round 2 (Codex, six P1s on `2ff21dc1`) and the proof it left behind.**
 The six findings shared one cause — the per-branch claimants returned on absence
@@ -127,14 +127,31 @@ BORN here, read from the request recorder — 4d-i's door asks by `xmin`, which 
 touched earlier request supplies), and the matrix carries the disagreement as its
 own writer branch (both orders, the prior generation, the missing-request
 converse, the no-op stand-in at the drain generation) — 44 cases, the event-first
-case and the no-op stand-in both RED on `cc923fdd` and green here.
+case and the no-op stand-in both RED on `cc923fdd` and green here. Round 4 (one
+P1 on `40c896f0`) was the binding's third dimension: identity and audience were
+bound, the ACTOR was not — an event that named the consultation, pushed to the
+consultee and was attributed to somebody else claimed. The family was walked on
+every writer branch: the four audit-bearing branches are bound by 4d-i's
+`DecisionEvent_t4d_correspondence`, which this unit's mandatory audit row makes
+fire on every bundle (proven, not assumed — a wrong-actor negative on each);
+the three audit-less branches (consultation request, response, and the
+`countersign_rejection` request) are bound by their own claimants now
+(`actorId` = `requestedById` / `respondedById`; the request seal through the new
+`phase6_t4d_tx_actor_event(_count)`), strictly, since every writer of those
+facts emits a `human` event in the acting user's name. 51 matrix cases; the
+three audit-less wrong-actor cases COMMITTED on `40c896f0` and are refused here;
+the harness's round-2 arm drives the same three stripped-versus-whole.
 
 **Gate results at this head.** `pnpm check` green by exit code (automation 332 pass / 0
 fail; web 65 files / 1028 tests; api typecheck, unit tests 64 files / 875 — including the
 raw-plant tripwire that now classifies the three event-planting suites this round touched — and
 build). `pnpm --filter api test:integration`, alone, on a `pmcvitan_test` rebuilt from zero
-after the last migration edit: 110 files / 1677 tests green (the harness file 126 / 126, the
-matrix 39 / 39). `pnpm test:e2e:api:legacy` 32 / 32; `pnpm test:e2e:api:outbox` 32 / 32.
+after the last full-battery migration edit (the round-3 tree): 110 files / 1681 tests green (the
+harness file 126 / 126, the matrix 43 / 43). The round-3 whole-family additions and the round-4
+actor binding were proven with FOCUSED runs only, per the directive (matrix 51 / 51 on a database
+rebuilt from zero, seal-contract + seal-inventory 9 / 9, the touched harness arms 7 / 7,
+`phase6-t4c-i-consultation` 22 / 22, api typecheck clean); the full battery runs in GitHub on the
+head. `pnpm test:e2e:api:legacy` 32 / 32; `pnpm test:e2e:api:outbox` 32 / 32.
 `upgrade-proof.sh` PASSED (788 assertions, 0 failed) — its 4c-ii "real writer shape" plant now
 carries the `decision.approved` event and the `approved` audit row the delivered writer produces,
 and its P42 previous-release bundle carries the `change_requested` audit row. The three

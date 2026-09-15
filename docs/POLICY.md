@@ -189,10 +189,11 @@ every member, on every writer branch:
   event is not written yet; a deferred one may not. "The missing counterpart is
   another seal's refusal" is a claim to verify by naming that seal, never a
   reason to return.
-- **Evidence is bound, not typed.** The event names the fact (payload identity)
-  and targets the act's recipient (dispatch audience); a same-type event for
-  the same decision is not this fact's event. A transition is recorded where
-  `OLD` is in hand; `xmin` proves a write, and a no-op `UPDATE` supplies it.
+- **Evidence is bound, not typed.** The event names the fact (payload identity),
+  targets the act's recipient (dispatch audience) and is attributed to the actor
+  the fact records (`actorId`); a same-type event for the same decision is not
+  this fact's event. A transition is recorded where `OLD` is in hand; `xmin`
+  proves a write, and a no-op `UPDATE` supplies it.
 - **Every writer branch has its own proof.** A claimant shared by two tables or
   two branches is not "covered" by one branch's arm. The proof is the
   table-driven bundle matrix
