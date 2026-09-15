@@ -7538,9 +7538,12 @@ describe('phase 6 unit 4d-i — the seal-stripped migration harness (§C)', () =
     return `BEGIN; UPDATE "Decision" SET "status" = 'approved' WHERE "id" = '${dec}';
       ${eventFirst ? event + closure : closure + event} COMMIT;`;
   };
+  // sorted in JS, by code unit: CI's database collates under a locale that ranks `ss-ev-ib:` ahead
+  // of `ss-ev-ib-w:`, this box's under C, and an `ORDER BY` over either is not the order the
+  // expectations below are written in.
   const CLAIMS = () => psql(RUN_DB, ['-t', '-A', '-c',
-    `SELECT "eventId" || ':' || "claimedBy" || ':' || "claimedById" FROM "DomainEventPairingClaim" ORDER BY 1`])
-    .output.trim().split('\n').filter(Boolean);
+    `SELECT "eventId" || ':' || "claimedBy" || ':' || "claimedById" FROM "DomainEventPairingClaim"`])
+    .output.trim().split('\n').filter(Boolean).sort();
 
   /**
    * (a) `ChangeRequest_t4d_paired` and `Decision_t4d_change_paired` — the request's lifecycle is

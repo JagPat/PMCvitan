@@ -506,7 +506,9 @@ DO $t4dib_flip$
 DECLARE v_seed TEXT; v_n BIGINT; v_s TEXT;
 BEGIN
   SELECT DISTINCT "coverageVersion" INTO v_seed FROM "_t4dib_catalog_seed";
-  SELECT count(*), COALESCE(string_agg(c."effectKey", ', ' ORDER BY c."effectKey"), '') INTO v_n, v_s
+  -- ordered under "C": the comparison below is byte-wise against a literal, and the database's own
+  -- collation is whatever the deployment chose.
+  SELECT count(*), COALESCE(string_agg(c."effectKey", ', ' ORDER BY c."effectKey" COLLATE "C"), '') INTO v_n, v_s
     FROM "ExternalEffectCatalog" c
    WHERE c."coverageVersion" = v_seed AND c."pairingRequired";
   IF v_n <> 6 OR v_s <> 'decision.approved, decision.change_requested, decision.change_withdrawn, decision.consultation_requested, decision.consultation_responded, decision.reapproved' THEN
