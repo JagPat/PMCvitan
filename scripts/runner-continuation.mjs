@@ -84,7 +84,8 @@ export function openPrIsLive(statusNow, openPullRequests) {
 }
 
 /**
- * The HANDOFF shape: nothing in progress, the last unit merged, and a next task named.
+ * The HANDOFF shape: no PR or named unit remains open, and continuation is named.
+ * A completed unit can hand back to an unfinished parent task without marking it merged.
  *
  * A STATUS-only handoff PR is not a work item — it IS the handoff, and the runner reads it only
  * once it has merged, at which point no PR exists. So it correctly records `open_pr: none` while
@@ -104,9 +105,16 @@ export function isHandoffShape(now) {
   const state = String(now?.task_state ?? '').trim().toLowerCase();
   const openPr = String(now?.open_pr ?? '').trim().toLowerCase();
   const nextTask = String(now?.next_task ?? '').trim();
+  // Preserve an unfinished parent after one of its units merges. The same
+  // proposed-state and other-open-PR checks below apply to this landing.
+  const partialTask = now?.task_state === 'in_progress'
+    && !isNoneValue(now?.task)
+    && isNoneValue(now?.work_item)
+    && isNoneValue(now?.open_pr)
+    && isNoneValue(now?.blocking_directive);
   return (
     (workItem === '' || workItem === 'none')
-    && TERMINAL_HANDOFF_STATES.has(state)
+    && (TERMINAL_HANDOFF_STATES.has(state) || partialTask)
     && (openPr === '' || openPr === 'none')
     // A handoff NAMES its next task. The `none` sentinel is the ABSENCE of one (the
     // owner-gated interregnum: merged, nothing scheduled, the maintenance queue as the
