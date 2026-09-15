@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, plantLegacyApprovalRevision, plantLegacyDecisionAudit } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisionsVia, plantLegacyApprovalRevision, plantLegacyDecisionAudit, plantUnpairedDecisionState } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import { MembersService } from '../../src/orgs/members.service';
@@ -479,8 +479,13 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     // command appends v2 IN THE SAME TRANSACTION, pinning the newly selected option's key
     // and the approver's identity (on behalf of the client — never disguised)
     await makeApprovedDecision(projectId, 'IT-P3-LEG1');
-    await t.prisma.decision.update({ where: { id: 'IT-P3-LEG1' }, data: { status: 'change' } });
-    await t.prisma.changeRequest.create({ data: { projectId, decisionId: 'IT-P3-LEG1', reason: 'shade', costImpact: 0, timeImpactDays: 0, status: 'open' } });
+    // Phase 6 unit 4d-i-b — a reopening FABRICATED beside the decision (no `requestChange`, no
+    // event), which `ChangeRequest_t4d_paired` and its decision-side converse refuse from the
+    // switch-on. The plant is the legacy PAST this arm reasons from, so it declares itself by name.
+    await plantUnpairedDecisionState(t.prisma, async (tx) => {
+      await tx.decision.update({ where: { id: 'IT-P3-LEG1' }, data: { status: 'change' } });
+      await tx.changeRequest.create({ data: { projectId, decisionId: 'IT-P3-LEG1', reason: 'shade', costImpact: 0, timeImpactDays: 0, status: 'open' } });
+    });
     await decisions.approve(projectId, 'IT-P3-LEG1', { optionIndex: 1 }, pmc(projectId));
     const head1 = await t.prisma.decisionApprovalRevision.findFirstOrThrow({ where: { decisionId: 'IT-P3-LEG1' }, orderBy: { version: 'desc' } });
     expect(head1.version).toBe(2);
@@ -508,7 +513,9 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
       },
     }));
     await publishRow('IT-P3-LEG2');
-    await t.prisma.changeRequest.create({ data: { projectId, decisionId: 'IT-P3-LEG2', reason: 'again', costImpact: 0, timeImpactDays: 0, status: 'open' } });
+    // the same named bypass, for the same reason: a decision BORN in `change` with its request planted
+    await plantUnpairedDecisionState(t.prisma, (tx) =>
+      tx.changeRequest.create({ data: { projectId, decisionId: 'IT-P3-LEG2', reason: 'again', costImpact: 0, timeImpactDays: 0, status: 'open' } }));
     await decisions.approve(projectId, 'IT-P3-LEG2', { optionIndex: 0 }, pmc(projectId));
     const rows2 = await t.prisma.decisionApprovalRevision.findMany({ where: { decisionId: 'IT-P3-LEG2' } });
     expect(rows2).toHaveLength(1); // nothing fabricated for the unprovable past

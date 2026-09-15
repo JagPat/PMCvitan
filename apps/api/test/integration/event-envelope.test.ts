@@ -30,10 +30,18 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
     await t?.close();
   });
 
-  /** emit one event inside a real interactive transaction, like a command would. */
+  /** emit one event inside a real interactive transaction, like a command would.
+   *
+   *  Phase 6 unit 4d-i-b — `activity.completion_requested`, not `decision.approved`. This suite
+   *  is about the ENVELOPE (tenant derivation, attribution, positions, immutability), and it
+   *  needs a key that announces (a broadcast push, so the push arms mean something). From the
+   *  switch-on, `decision.approved` is `pairingRequired`: the kernel's deferred seal refuses an
+   *  approval event no `DecisionApprovalRevision` claimed, so a bare emit of it is exactly the
+   *  forgery the seal exists for and no longer a neutral stand-in. The completion request is a
+   *  broadcast family with no fact behind it, which is what an envelope probe needs. */
   const emit = (over: Partial<EmitInput> = {}) =>
     t.prisma.$transaction((tx) =>
-      emitEvent(tx, { projectId: f.projectA.id, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-1', effectKey: 'decision.approved', dispatch: { push: { body: 'approved' } }, ...over }),
+      emitEvent(tx, { projectId: f.projectA.id, actor: human, eventType: 'activity.completion_requested', entityType: 'Activity', entityId: 'A-1', effectKey: 'activity.completion_requested', dispatch: { push: { body: 'completion requested' } }, ...over }),
     );
 
   const streamOf = (projectId: string) => t.prisma.projectEventStream.findUnique({ where: { projectId } });
@@ -43,12 +51,12 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
     const ev = await t.prisma.domainEvent.findUniqueOrThrow({ where: { eventId } });
     expect(ev.organizationId, 'org is DERIVED from the project, never passed by the caller').toBe(f.orgA.id);
     expect(ev.projectId).toBe(f.projectA.id);
-    expect(ev.eventType).toBe('decision.approved');
+    expect(ev.eventType).toBe('activity.completion_requested');
     expect(ev.payloadVersion).toBe(1);
     expect(ev.actorId).toBe(f.memberUser.id);
     expect(ev.actorKind).toBe('human');
     expect(ev.systemActor).toBeNull();
-    expect(ev.entityType).toBe('Decision');
+    expect(ev.entityType).toBe('Activity');
     expect(ev.entityId).toBe('D-complete');
     expect(ev.payload).toEqual({ title: 'Slab grade' });
     expect(ev.occurredAt).toBeInstanceOf(Date);
@@ -68,7 +76,7 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
     const before = (await streamOf(f.projectA.id))!.nextPosition;
     await expect(
       t.prisma.$transaction(async (tx) => {
-        await emitEvent(tx, { projectId: f.projectA.id, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-rollback', effectKey: 'decision.approved', dispatch: { push: { body: 'approved' } } });
+        await emitEvent(tx, { projectId: f.projectA.id, actor: human, eventType: 'activity.completion_requested', entityType: 'Activity', entityId: 'D-rollback', effectKey: 'activity.completion_requested', dispatch: { push: { body: 'completion requested' } } });
         throw new Error('boom'); // the command failed after emitting — everything rolls back
       }),
     ).rejects.toThrow('boom');
@@ -172,7 +180,7 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
     await expect(t.prisma.$executeRawUnsafe(`UPDATE "DomainEvent" SET "eventType"='tampered' WHERE "eventId"='${eventId}'`)).rejects.toThrow(/append-only/i);
     await expect(t.prisma.$executeRawUnsafe(`DELETE FROM "DomainEvent" WHERE "eventId"='${eventId}'`)).rejects.toThrow(/append-only/i);
     // the row is untouched
-    expect((await t.prisma.domainEvent.findUnique({ where: { eventId } }))?.eventType).toBe('decision.approved');
+    expect((await t.prisma.domainEvent.findUnique({ where: { eventId } }))?.eventType).toBe('activity.completion_requested');
   });
 
   it('every project has its stream counter, and a project WITHOUT one cannot emit', async () => {

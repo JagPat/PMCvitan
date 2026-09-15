@@ -218,10 +218,30 @@ report_4c_iiir_migration_failure() {
 # again, on a migration the operator believes they already cleared.
 report_4d_i_migration_failure() {
   _failed_half=''
-  for _half in 20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d_i_decision_facts; do
+  for _half in 20271220000000_phase6_t4d_i_dark_migration 20271221000000_phase6_t4d_i_decision_facts 20271222000000_phase6_t4d_i_b_pairing_switch_on; do
     printf '%s\n' "$1" | grep -q "$_half" && _failed_half="$_half"
   done
   [ -n "$_failed_half" ] || return 0
+  if [ "$_failed_half" = 20271222000000_phase6_t4d_i_b_pairing_switch_on ]; then
+    echo "[migrate] That failure is the 4d-i-b pairing switch-on. It changes ONE column of ONE catalog"
+    echo "[migrate] generation and installs the claimants that column obliges, so every abort it raises"
+    echo "[migrate] names catalog rows — a generation this rollout does not admit, a key this release"
+    echo "[migrate] never compiled, a row that disagrees with the compiled catalog, a stamp 4d-iii has"
+    echo "[migrate] not yet earned, or a prior generation a hand already flipped — or names the 4d-i"
+    echo "[migrate] objects it expected and did not find. Read the abort and repair exactly what it"
+    echo "[migrate] names (a catalog row is repaired inside ONE transaction that disables"
+    echo "[migrate] ExternalEffectCatalog_t4d_sealed BY NAME and re-enables it — the script is in the"
+    echo "[migrate] runbook; SET LOCAL vitan.phase6_4d_catalog licenses no repair), then:"
+    echo "[migrate]   1. prisma migrate resolve --rolled-back $_failed_half"
+    echo "[migrate]      (without this the next deploy stops at P3009 — the schema rolled back, but the"
+    echo "[migrate]       failed attempt is still recorded)"
+    echo "[migrate]   2. redeploy"
+    echo "[migrate] Both 4d-i halves committed and stay committed; they are separate migrations and"
+    echo "[migrate] must NOT be resolved or re-run by hand. A 4d-i-b that rolled back left the pairing"
+    echo "[migrate] flag off everywhere, so the serving release keeps resolving through 4d-i's rows."
+    echo "[migrate] Full detail: docs/RUNBOOK.md §P6T4D."
+    return 0
+  fi
   if [ "$_failed_half" = 20271221000000_phase6_t4d_i_decision_facts ]; then
     echo "[migrate] That failure is the 4d-i decisions half. Its audits name the tables and rows"
     echo "[migrate] they refuse — a dark fact table that already holds rows, or rows already"
@@ -456,6 +476,14 @@ if echo "$out" | grep -q "P3005"; then
   # are absent, and the second half's dark fact tables would be adopted and frozen with no audit
   # having asked whether they are empty. Both are re-runnable on the same terms as the 4c files
   # above.
+  #
+  # AND 4d-i-b, THE PAIRING SWITCH-ON, directly after them. It seeds a third coverage generation
+  # under the catalog gate and installs the claimants and the change-request pairing seal on
+  # tables `prisma db push` reproduces with none of their raw triggers; a baseline that carried
+  # the flipped generation without the seals behind it would refuse every approval, change
+  # request and consultation at commit — or, without the generation, resolve every current
+  # event as "a version this database does not hold". Re-runnable on the same terms as 4d-i, and
+  # its own prerequisite audit refuses to run ahead of the two halves it depends on.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -471,7 +499,8 @@ if echo "$out" | grep -q "P3005"; then
 20271216000000_inspection_submit_authority_fence
 20271217000000_inspection_evidence_authority_fence
 20271220000000_phase6_t4d_i_dark_migration
-20271221000000_phase6_t4d_i_decision_facts"
+20271221000000_phase6_t4d_i_decision_facts
+20271222000000_phase6_t4d_i_b_pairing_switch_on"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

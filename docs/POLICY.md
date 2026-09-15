@@ -173,6 +173,38 @@ checks do not prove every domain invariant.
 - New user-supplied text columns carry the same non-blank discipline as their
   existing siblings. Inconsistency here is a finding.
 
+### Transaction evidence
+
+A fact row that records an act (an approval head, a change request, a
+consultation) is admitted only with the evidence that act must produce, judged
+at COMMIT where the whole bundle is visible. Author and reviewer alike check
+every member, on every writer branch:
+
+- **The counterpart is counted, not found.** The event that announces the act,
+  the audit-register row the delivered writer appends beside it, and the state
+  transition it performs each exist exactly once in the same transaction. A seal
+  that fires on the audit row or on the event cannot see a bundle that writes
+  neither, so the fact's own seal asks the converse.
+- **Absence at commit is a verdict.** An immediate claimant may return when the
+  event is not written yet; a deferred one may not. "The missing counterpart is
+  another seal's refusal" is a claim to verify by naming that seal, never a
+  reason to return.
+- **Evidence is bound, not typed.** The event names the fact (payload identity),
+  targets the act's recipient (dispatch audience) and is attributed to the actor
+  the fact records (`actorId`); a same-type event for the same decision is not
+  this fact's event. A transition is recorded where `OLD` is in hand; `xmin`
+  proves a write, and a no-op `UPDATE` supplies it.
+- **Every writer branch has its own proof.** A claimant shared by two tables or
+  two branches is not "covered" by one branch's arm. The proof is the
+  table-driven bundle matrix
+  `apps/api/test/integration/phase6-t4d-i-b-pairing-matrix.test.ts`: coverage is
+  asserted from the compiled `pairingRequired` catalog, so an enabled event type
+  without a matrix row fails; each row drives the complete bundle in both write
+  orders and at the supported outgoing generation, and the negatives — missing
+  counterpart, wrong identity or audience, duplicated or reused evidence, no-op
+  versus real transition — refused by the seal's own message. Body hashes,
+  trigger existence and inventory pins are structural evidence only.
+
 ### Concurrency / serialization
 
 - A guard that depends on a head/root row's status must take the same row lock
@@ -243,6 +275,7 @@ A SHA is evidence only when its origin and relevant contents have been verified.
 | Correction lease and gate recovery | review-policy.mjs / correction-lease.mjs, autonomous-handoff.mjs | autonomous-correction-lease.test.mjs |
 | Current task and post-merge coherence | docs/STATUS.md / autonomous-status-state.mjs | autonomous-status-state.test.mjs; continuation tests |
 | Engineering invariants | Owning product module, SQL constraints and review | Relevant unit, PostgreSQL, migration and browser proofs |
+| Transaction evidence (fact, event, audit row, transition) | Owning fact table's deferred seals | phase6-t4d-i-b-pairing-matrix.test.ts; seal-stripped harness |
 
 ### Claude independent-review shadow boundary
 

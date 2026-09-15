@@ -30,18 +30,33 @@ const INVENTORY: Record<string, string[]> = {
   // transition trigger saw moved out of a session setting the CALLER can set and into a table
   // only a trigger can write; this is that table's one seal.
   _t4d_tx_transition: ['_t4d_tx_transition_trigger_only'],
-  ChangeRequest: ['ChangeRequest_t4d_birth_pair', 'ChangeRequest_t4d_closure_bound',
+  ChangeRequest: ['ChangeRequest_t4d_birth_pair',
+    // Phase 6 unit 4d-i-b — the request's IMMEDIATE claim half (a claimant, refuses nothing)
+    'ChangeRequest_t4d_claim',
+    'ChangeRequest_t4d_closure_bound',
     'ChangeRequest_t4d_evidence_frozen',
     // #582's review round 26, finding 3 — identity frozen from birth, the rule `Decision` already
     // carried and three of its four siblings did not.
     'ChangeRequest_t4d_identity',
-    'ChangeRequest_t4d_no_truncate', 'ChangeRequest_t4d_project',
+    // Phase 6 unit 4d-i-b (#590 round 2, finding 4) — the request's own moves (born open, left
+    // open for withdrawn / resolved) recorded into 4d-i's trigger-only carrier where OLD is in
+    // hand, so the decision side counts transitions and not writes
+    'ChangeRequest_t4d_lifecycle_transition',
+    'ChangeRequest_t4d_no_truncate',
+    // Phase 6 unit 4d-i-b (§D (a)) — THE ONE deferred pairing seal on the table: the opening
+    // and the two closures, in the request's direction, and the two claims it owns
+    'ChangeRequest_t4d_paired',
+    'ChangeRequest_t4d_project',
     'ChangeRequest_t4d_source_bound'],
   Decision: [
     'Decision_t4d_approval_transition',
     'Decision_t4d_architect_reserved',
     'Decision_t4d_awaiting_paired',
     'Decision_t4d_awaiting_reserved',
+    // Phase 6 unit 4d-i-b — the DECISION side of the change lifecycle's pairings, over the
+    // three moves its recorder writes into 4d-i's trigger-only carrier
+    'Decision_t4d_change_paired',
+    'Decision_t4d_change_transition',
     'Decision_t4d_disagreement_paired',
     'Decision_t4d_entry_seal',
     'Decision_t4d_holder_standing',
@@ -49,13 +64,19 @@ const INVENTORY: Record<string, string[]> = {
   DecisionApprovalRevision: [
     'DecisionApprovalRevision_t4d_birth',
     'DecisionApprovalRevision_t4d_birth_paired',
+    // Phase 6 unit 4d-i-b (§D (b)) — the finalized birth's claimant, immediate and deferred
+    'DecisionApprovalRevision_t4d_claim',
+    'DecisionApprovalRevision_t4d_claim_deferred',
     'DecisionApprovalRevision_t4d_flip_paired',
     'DecisionApprovalRevision_t4d_one_flip',
   ],
   DecisionConsultation: ['DecisionConsultation_t4d_attribution',
-    'DecisionConsultation_t4d_attribution_present'],
+    'DecisionConsultation_t4d_attribution_present',
+    // Phase 6 unit 4d-i-b (§D (b)) — the two consultation families' claimants
+    'DecisionConsultation_t4d_claim', 'DecisionConsultation_t4d_claim_deferred'],
   DecisionConsultationResponse: ['DecisionConsultationResponse_t4d_attribution',
-    'DecisionConsultationResponse_t4d_attribution_present'],
+    'DecisionConsultationResponse_t4d_attribution_present',
+    'DecisionConsultationResponse_t4d_claim', 'DecisionConsultationResponse_t4d_claim_deferred'],
   DecisionCountersign: [
     'DecisionCountersign_t4d_append_only',
     'DecisionCountersign_t4d_no_truncate',
@@ -191,9 +212,29 @@ const FUNCTIONS = [
   'platform_claim_event_pairing',
   'platform_tx_event',
   'platform_tx_notification',
+  // Phase 6 unit 4d-i-b — the idempotent claim the order-independent claimants call, the change
+  // lifecycle's recorder and its reader, the request's deferred seal and immediate claimant, the
+  // decision-side converse, and the two remaining per-branch claimants.
+  'platform_claim_event_pairing_once',
+  'phase6_t4d_decision_change_here',
+  'phase6_t4d_decision_moved_in_tx',
+  // #590 round 2 — the request recorder and its counting reader, and the audit-row counter the
+  // fact-side seals ask for the register row the delivered writer appends
+  'phase6_t4d_change_request_here',
+  'phase6_t4d_requests_moved_in_tx',
+  'phase6_t4d_tx_audit_count',
+  // #590 round 4 — the kernel's same-transaction lookup and count narrowed to one actor, for the
+  // branches no audit row binds
+  'phase6_t4d_tx_actor_event',
+  'phase6_t4d_tx_actor_event_count',
+  'phase6_t4d_change_request_paired',
+  'phase6_t4d_change_request_claims_event',
+  'phase6_t4d_change_transition_paired',
+  'phase6_t4d_revision_claims_approval',
+  'phase6_t4d_consultation_claims_event',
 ];
 
-describe('Phase 6 unit 4d-i — every seal the migration names is INSTALLED (live PG)', () => {
+describe('Phase 6 units 4d-i and 4d-i-b — every seal the migrations name is INSTALLED (live PG)', () => {
   let prisma: PrismaClient;
 
   beforeAll(async () => {
