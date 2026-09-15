@@ -23,7 +23,8 @@ export function classify(body) {
 }
 export function weekBounds(week) {
   const start = new Date(`${week}T00:00:00Z`);
-  if (Number.isNaN(start.getTime())) throw new Error('--week must be a UTC date, YYYY-MM-DD');
+  // an impossible date (2026-02-30) would be normalised forward by Date: refuse unless it round-trips
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(String(week)) || Number.isNaN(start.getTime()) || start.toISOString().slice(0, 10) !== week) throw new Error('--week must be a real UTC date, YYYY-MM-DD');
   return { start: start.toISOString(), end: new Date(start.getTime() + 7 * 86_400_000).toISOString() };
 }
 const hours = (from, to) => (Date.parse(to) - Date.parse(from)) / 3_600_000;
@@ -46,7 +47,7 @@ export function aggregate(snapshot) {
     const findingHeads = new Set(comments.map((c) => c.original_commit_id ?? c.commit_id).filter(Boolean));
     const first = comments.map((c) => c.created_at).sort()[0] ?? null;
     const cleanReactions = (snapshot.reactions[pr.number] ?? []).filter((r) => isCodex(r) && r.content === '+1').length;
-    if (comments.length === 0 && cleanReactions > 0) missingEvidence += 1; // a reaction binds no SHA
+    if (comments.length === 0 && reviews.length === 0 && cleanReactions > 0) missingEvidence += 1; // a reaction binds no SHA; a review does
     const jobs = snapshot.jobs[pr.number];
     if (!Array.isArray(jobs)) jobsMissing += 1;
     const seen = new Set();
@@ -116,9 +117,10 @@ export async function collect({ week, repository, token, fetchImpl = globalThis.
       if (page > 200) throw new Error(`GitHub ${path}: pagination did not terminate`);
     }
   };
-  // newest-updated first; a PR merged in the week was updated in or after it, so stop early
-  const pulls = await api(`/repos/${repository}/pulls?state=all&sort=updated&direction=desc`, (pr) => Date.parse(pr.updated_at) < Date.parse(bounds.start));
-  const relevant = pulls.filter((pr) => pr.state === 'open' || mergedInWeek(pr, bounds));
+  // merged: newest-updated first, and a PR merged in the week was updated in or after it, so stop early;
+  // open: the whole listing, because a dormant backlog item may predate the week entirely
+  const closed = await api(`/repos/${repository}/pulls?state=closed&sort=updated&direction=desc`, (pr) => Date.parse(pr.updated_at) < Date.parse(bounds.start));
+  const relevant = [...await api(`/repos/${repository}/pulls?state=open`), ...closed.filter((pr) => mergedInWeek(pr, bounds))];
   const snapshot = { week, fetchedAt: new Date().toISOString(), repository, pulls: relevant, comments: {}, reviews: {}, reactions: {}, jobs: {} };
   for (const pr of relevant) {
     log(`collecting #${pr.number}`);

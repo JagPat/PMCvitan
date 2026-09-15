@@ -91,9 +91,10 @@ The trusted controller admits only open same-repository PRs targeting the config
 base. Required CI precedes review; it marks the CI-green draft ready to invoke Codex
 on the exact current head. A current-head finding fails `codex-current-head` and
 returns the same PR to draft. Read all findings and reproduce/fix them as one batch.
-A unit whose cumulative diff (renames and deletions included) touches only `docs/**`
-or `*.md` files is exempt from Codex: required CI and the author checklist merge it,
-and the status records truthfully that no review occurred. Any other path keeps review.
+A unit whose cumulative diff (renames and deletions included) touches only documentation
+files under `docs/**` or `*.md` anywhere is exempt from Codex: required CI, the author
+checklist and no finding on the head merge it, and the status records truthfully that no
+review occurred. A runnable file is code wherever it lives; any other path keeps review.
 
 Missing, stale or timed-out review evidence cannot authorize merge. Every push
 invalidates prior clearance. The controller accepts only the configured Codex actor

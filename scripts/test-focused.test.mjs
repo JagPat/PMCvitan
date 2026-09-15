@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { main, plan, readiness } from './test-focused.mjs';
+import { lease, main, plan, readiness } from './test-focused.mjs';
 
 const ROOT = '/repo';
-const files = (absolute, pattern) => (absolute.endsWith('/dir')
+const files = (absolute, pattern) => (absolute.endsWith('/dir') || absolute.endsWith('/integration')
   ? ['/repo/apps/api/test/integration/dir/a.test.ts', '/repo/apps/api/test/integration/dir/b.test.ts']
   : [absolute]).filter((f) => pattern.test(f));
 const options = (exists = () => true) => ({ root: ROOT, exists, files });
@@ -18,6 +18,7 @@ test('one existing path resolves to the configuration that owns it, with exact s
   assert.deepEqual(plan(['apps/api/src/y.test.ts'], options()).argv, ['pnpm', 'exec', 'vitest', 'run', 'src/y.test.ts']);
   assert.deepEqual(plan(['scripts/z.test.mjs'], options()).argv, ['node', '--test', 'scripts/z.test.mjs']);
   assert.equal(plan(['scripts/z.test.mjs'], options()).suite.postgres, undefined);
+  assert.equal(plan(['apps/api/test/integration'], options()).selectors.length, 2, 'the test root itself is a valid selection');
 });
 
 test('missing paths, escapes, flag-only arguments, unknown roots and unmatched selections are refused', () => {
@@ -44,6 +45,7 @@ test('a PostgreSQL suite needs a test database, no live run, and applied migrati
   const idle = (command) => (command === 'ps' ? { stdout: 'bash\nnode scripts/test-focused.mjs x\n' } : { status: 0 });
   assert.match(readiness({}, idle), /\*test\* database/u);
   assert.match(readiness({ DATABASE_URL: 'postgresql://x/pmcvitan_prod' }, idle), /\*test\* database/u);
+  assert.match(readiness({ DATABASE_URL: 'postgresql://test-user:secret@prod.example/pmcvitan' }, idle), /\*test\* database/u, 'the DATABASE name decides, not the whole URL');
   assert.equal(readiness({ DATABASE_URL: 'postgresql://x/pmcvitan_test' }, idle), null);
   const busy = (command) => (command === 'ps' ? { stdout: 'node vitest run --config vitest.integration.config.ts\n' } : { status: 0 });
   assert.match(readiness({ DATABASE_URL: 'postgresql://x/pmcvitan_test' }, busy), /live run/u);
@@ -54,4 +56,23 @@ test('a PostgreSQL suite needs a test database, no live run, and applied migrati
     exec: (command, args) => { seen.push([command, ...args].join(' ')); return command === 'ps' ? { stdout: '' } : { status: 0 }; },
     planImpl: () => ({ suite: { postgres: true }, cwd: '/repo/apps/api', argv: ['pnpm', 'exec', 'vitest', 'run', '--config', 'vitest.integration.config.ts', 'test/integration/x.test.ts'] }) });
   assert.deepEqual(seen, ['ps -eo args', 'pnpm --filter api exec prisma migrate deploy', 'pnpm exec vitest run --config vitest.integration.config.ts test/integration/x.test.ts']);
+});
+
+test('one database lease spans the readiness check and the child: a second runner is refused, a dead holder is reclaimed', () => {
+  const store = new Map();
+  const fs = { openSync(p) { if (store.has(p)) { const e = new Error('exists'); e.code = 'EEXIST'; throw e; } store.set(p, ''); return p; },
+    writeSync(fd, text) { store.set(fd, text); }, closeSync() {}, readFileSync(p) { return store.get(p); }, unlinkSync(p) { store.delete(p); } };
+  const env = { DATABASE_URL: 'postgresql://x/pmcvitan_test' };
+  const held = lease(env, { fs, alive: () => true });
+  assert.equal(held.error, undefined);
+  assert.match(lease(env, { fs, alive: () => true }).error, /holds the database lease/u);
+  held.release(); assert.equal(store.size, 0);
+  const stale = lease(env, { fs, alive: () => false }); store.set(stale.path, '999999'); // left behind by a dead process
+  assert.equal(lease(env, { fs, alive: () => false }).error, undefined, 'a dead holder is reclaimed');
+  const seen = [];
+  const planImpl = () => ({ suite: { postgres: true }, cwd: '/repo/apps/api', argv: ['pnpm', 'exec', 'vitest', 'run', 'x'] });
+  assert.equal(main(['x'], { env, log() {}, planImpl, exec: () => { seen.push('child'); return { status: 0 }; }, leaseImpl: () => ({ error: 'held elsewhere' }) }), 2);
+  assert.deepEqual(seen, [], 'nothing runs without the lease');
+  main(['x'], { env, log() {}, planImpl, exec: (c) => { seen.push(c); return c === 'ps' ? { stdout: '' } : { status: 0 }; }, leaseImpl: () => ({ release: () => seen.push('release') }) });
+  assert.deepEqual(seen, ['ps', 'pnpm', 'pnpm', 'release'], 'the lease outlives readiness and the child');
 });

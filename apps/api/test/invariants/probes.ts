@@ -18,13 +18,19 @@ export class ProbeFailure extends Error {}
 const fail = (message: string): never => { throw new ProbeFailure(message); };
 const canonical = (value: unknown) => JSON.stringify(value, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
 
-/** Every flagged key has a row, every row is flagged and unique, and every callback runs. */
-export async function pairingMatrix(flaggedKeys: readonly string[], rows: readonly Bundle[]) {
+export type ExpectedWriter = { key: string; branch: string };
+/**
+ * The expected population is every (flagged key, writer branch) pair from the compiled catalog —
+ * a key alone would let one writer's row stand in for a second writer of the same key. Every
+ * expected pair has a row, every row is expected and unique, and every callback runs.
+ */
+export async function pairingMatrix(expected: readonly ExpectedWriter[], rows: readonly Bundle[]) {
   const seen = new Set<string>();
-  for (const key of flaggedKeys) if (!rows.some((row) => row.key === key)) fail(`flagged key ${key} has no bundle row`);
+  const label = (w: ExpectedWriter) => `${w.key} · ${w.branch}`;
+  for (const writer of expected) if (!rows.some((row) => row.key === writer.key && row.branch === writer.branch)) fail(`expected writer ${label(writer)} has no bundle row`);
   for (const row of rows) {
-    const id = `${row.key} · ${row.branch}`;
-    if (!flaggedKeys.includes(row.key)) fail(`${id} names a key that is not flagged`);
+    const id = label(row);
+    if (!expected.some((writer) => writer.key === row.key && writer.branch === row.branch)) fail(`${id} is not in the expected population`);
     if (seen.has(id)) fail(`duplicate writer branch ${id}`);
     seen.add(id);
     for (const order of ['fact-first', 'event-first'] as const) if (typeof row.valid?.[order] !== 'function') fail(`${id} lacks its ${order} positive`);

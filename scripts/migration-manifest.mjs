@@ -1,9 +1,12 @@
 // Protected-migration checksums: the protected inventory is the BASE ref's committed manifest
 // (bootstrap, while the base has none: the base TREE itself), compared with the HEAD ref's bytes;
 // a head manifest can add entries but never redefine or drop a protected digest. Built-ins only.
+// The record is written as ONE line: it is generated, `verify` names exactly what differs, and a
+// generated file must not spend a review unit's line budget.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 // beside the migrations directory, never inside it: migrate.sh, the proof scripts and the
@@ -33,12 +36,20 @@ export function migrationsAt(ref, cwd) {
 export function digestsAt(ref, cwd) {
   return Object.fromEntries(migrationsAt(ref, cwd).map((path) => [path, sha256(blob(ref, path, cwd))]));
 }
-export function generate({ ref = 'HEAD', cwd = process.cwd() } = {}) {
+/** The WORKING TREE's migrations: generation runs before the new migration is committed. */
+export function digestsInTree(cwd) {
+  const dir = join(cwd, 'apps/api/prisma/migrations');
+  return Object.fromEntries(readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && existsSync(join(dir, entry.name, 'migration.sql')))
+    .map((entry) => [`apps/api/prisma/migrations/${entry.name}/migration.sql`, sha256(readFileSync(join(dir, entry.name, 'migration.sql')))])
+    .sort(([a], [b]) => (a < b ? -1 : 1)));
+}
+export function generate({ cwd = process.cwd() } = {}) {
   return {
     schema: 1,
-    protects: 'every migration present at baseRef — a conservative superset of the deployed inventory, not a verified deployment record',
-    baseRef: git(['rev-parse', `${ref}^{commit}`], cwd).trim(),
-    migrations: digestsAt(ref, cwd),
+    protects: 'every migration in the tree when generated (baseRef is the commit generated from) — a conservative superset of the deployed inventory, not a verified deployment record',
+    baseRef: git(['rev-parse', 'HEAD^{commit}'], cwd).trim(),
+    migrations: digestsInTree(cwd),
   };
 }
 export function readManifest(ref, cwd) {
@@ -89,7 +100,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   const [command, ...rest] = process.argv.slice(2);
   const option = (flag, fallback) => (rest.includes(flag) ? rest[rest.indexOf(flag) + 1] : fallback);
   if (command === 'generate') {
-    writeFileSync(MANIFEST_PATH, `${JSON.stringify(generate({ ref: option('--ref', 'HEAD') }), null, 1)}\n`);
+    writeFileSync(MANIFEST_PATH, `${JSON.stringify(generate())}\n`);
     console.log(`migration-manifest: wrote ${MANIFEST_PATH}`);
   } else if (command === 'verify') {
     const result = verify({ baseRef: option('--base'), headRef: option('--head', 'HEAD') });
@@ -97,7 +108,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
     console.log(`migration-manifest: ${result.ok ? 'ok' : 'FAILED'}; ${result.protected} protected (${result.source})`);
     process.exitCode = result.ok ? 0 : 1;
   } else {
-    console.error('usage: migration-manifest.mjs generate [--ref <ref>] | verify --base <ref> [--head <ref>]');
+    console.error('usage: migration-manifest.mjs generate | verify --base <ref> [--head <ref>]');
     process.exitCode = 2;
   }
 }

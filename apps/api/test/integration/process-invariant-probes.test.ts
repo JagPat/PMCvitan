@@ -134,17 +134,20 @@ describe('pairingMatrix', () => {
     key, branch, valid: { 'fact-first': probe(log, `${branch}:ff`), 'event-first': probe(log, `${branch}:ef`) },
     invalid: { 'missing event': probe(log, `${branch}:neg`) }, priorWriter: probe(log, `${branch}:prior`),
   });
-  it('fails on an unregistered flagged key, a missing writer-branch order, and a duplicate branch', async () => {
+  const pair = (key: string, branch: string) => ({ key, branch });
+  it('fails on an expected writer BRANCH with no row, a row outside the population, a missing order, and a duplicate', async () => {
     const log: string[] = [];
-    await failsWith(/flagged key decision\.reapproved has no bundle row/u)(() => pairingMatrix(['decision.approved', 'decision.reapproved'], [row(log, 'decision.approved', 'approve')]));
+    // the population is key AND branch: a second writer of the same key cannot hide behind the first
+    await failsWith(/decision\.approved · restore has no bundle row/u)(() => pairingMatrix([pair('decision.approved', 'approve'), pair('decision.approved', 'restore')], [row(log, 'decision.approved', 'approve')]));
+    await failsWith(/not in the expected population/u)(() => pairingMatrix([pair('k', 'one')], [row(log, 'k', 'one'), row(log, 'k', 'two')]));
     const partial = { ...row(log, 'decision.approved', 'approve'), valid: { 'fact-first': probe(log, 'x') } } as unknown as Parameters<typeof pairingMatrix>[1][number];
-    await failsWith(/lacks its event-first positive/u)(() => pairingMatrix(['decision.approved'], [partial]));
-    await failsWith(/duplicate writer branch/u)(() => pairingMatrix(['decision.approved'], [row(log, 'decision.approved', 'approve'), row(log, 'decision.approved', 'approve')]));
+    await failsWith(/lacks its event-first positive/u)(() => pairingMatrix([pair('decision.approved', 'approve')], [partial]));
+    await failsWith(/duplicate writer branch/u)(() => pairingMatrix([pair('decision.approved', 'approve')], [row(log, 'decision.approved', 'approve'), row(log, 'decision.approved', 'approve')]));
     expect(log).toEqual([]);
   });
   it('executes every positive order, prior writer and named negative on a complete matrix', async () => {
     const log: string[] = [];
-    const result = await pairingMatrix(['k'], [row(log, 'k', 'one'), row(log, 'k', 'two')]);
+    const result = await pairingMatrix([pair('k', 'one'), pair('k', 'two')], [row(log, 'k', 'one'), row(log, 'k', 'two')]);
     expect(result.rows).toBe(2);
     expect(log).toEqual(['one:ff', 'one:ef', 'one:prior', 'one:neg', 'two:ff', 'two:ef', 'two:prior', 'two:neg']);
   });

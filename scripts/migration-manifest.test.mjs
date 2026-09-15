@@ -23,7 +23,7 @@ function repo() {
   write(`${DIR}/20260101000000_one/migration.sql`, 'CREATE TABLE one (id int);\n');
   write(`${DIR}/20260102000000_two/migration.sql`, 'CREATE TABLE two (id int);\n');
   const bootstrap = commit('migrations');
-  const bless = () => write(MANIFEST_PATH, `${JSON.stringify(generate({ cwd }), null, 1)}\n`);
+  const bless = () => write(MANIFEST_PATH, `${JSON.stringify(generate({ cwd }))}\n`);
   bless();
   const base = commit('manifest');
   return { cwd, write, commit, bless, base, bootstrap, verify: (head = 'HEAD', baseRef = base) => verify({ baseRef, headRef: head, cwd }) };
@@ -43,9 +43,11 @@ test('an unchanged head verifies; one changed byte, a deletion, or a re-blessed 
   assert.match(r.verify().problems.join(';'), /protected migration removed: .*_two/u);
 });
 
-test('a new migration passes only once it is recorded; a missing base ref fails explicitly', (t) => {
+test('a new migration passes only once it is recorded; generation sees the UNCOMMITTED tree; a missing base ref fails explicitly', (t) => {
   const r = repo(); t.after(() => rmSync(r.cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
-  r.write(`${DIR}/20260103000000_three/migration.sql`, 'CREATE TABLE three (id int);\n'); r.commit('additive');
+  r.write(`${DIR}/20260103000000_three/migration.sql`, 'CREATE TABLE three (id int);\n');
+  assert.ok(generate({ cwd: r.cwd }).migrations[`${DIR}/20260103000000_three/migration.sql`], 'the manifest is generated before the migration is committed');
+  r.commit('additive');
   assert.match(r.verify().problems.join(';'), /new migration not recorded: .*_three/u);
   r.bless(); r.commit('recorded');
   const ok = r.verify();
@@ -59,7 +61,7 @@ test('bootstrap: with no manifest at the base, the base TREE is the protected se
   const r = repo(); t.after(() => rmSync(r.cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   const ok = r.verify('HEAD', r.bootstrap);
   assert.equal(ok.ok, true, ok.problems.join(';')); assert.equal(ok.protected, 2); assert.match(ok.source, /bootstrap/u);
-  const based = (migrations) => r.write(MANIFEST_PATH, `${JSON.stringify({ ...generate({ cwd: r.cwd }), ...migrations }, null, 1)}\n`);
+  const based = (migrations) => r.write(MANIFEST_PATH, `${JSON.stringify({ ...generate({ cwd: r.cwd }), ...migrations })}\n`);
   r.write(`${DIR}/20260101000000_one/migration.sql`, 'CREATE TABLE one (id bigint);\n'); r.commit('tamper'); based({}); r.commit('rebless');
   assert.match(r.verify('HEAD', r.bootstrap).problems.join(';'), /bytes changed.*_one.*digest redefined.*_one/u);
   // a manifest that records only what the author chose protects nothing extra and is refused
@@ -75,6 +77,9 @@ test('the committed manifest covers every migration in the tree at its recorded 
   const local = compare({ protectedDigests: manifest.migrations, headManifest: manifest, headDigests: (await import('./migration-manifest.mjs')).digestsAt('HEAD', here), source: 'tree' });
   assert.equal(local.ok, true, local.problems.join('; '));
   const ci = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
-  assert.match(ci, /migration-manifest\.mjs verify --base "\$\{\{ github\.event\.pull_request\.base\.sha \}\}" --head "\$\{\{ github\.event\.pull_request\.head\.sha \}\}"/u);
-  assert.match(ci, /git fetch --no-tags --depth=1 origin "\$\{\{ github\.event\.pull_request\.base\.sha \}\}" "\$\{\{ github\.event\.pull_request\.head\.sha \}\}"/u);
+  // the verifier RUNS FROM THE BASE: a candidate that edits a migration and the verifier together verifies nothing
+  assert.match(ci, /git fetch --no-tags --depth=1 origin "\$BASE" "\$HEAD"/u);
+  assert.match(ci, /git show "\$BASE:scripts\/migration-manifest\.mjs" > "\$RUNNER_TEMP\/migration-manifest\.mjs"/u);
+  assert.match(ci, /node "\$RUNNER_TEMP\/migration-manifest\.mjs" verify --base "\$BASE" --head "\$HEAD"/u);
+  assert.match(ci, /BASE: \$\{\{ github\.event\.pull_request\.base\.sha \}\}\n\s+HEAD: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/u);
 });

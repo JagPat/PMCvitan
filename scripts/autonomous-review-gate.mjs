@@ -1263,26 +1263,34 @@ export async function revalidateFinalReviewPolicy(
 // exact-head review below. Fits under 140 characters, the status description limit.
 export const DOCS_ONLY_EXEMPTION = 'review: policy exemption — docs-only diff (docs/** or *.md only); CI and the author checklist passed; NO Codex review occurred';
 
-export async function assessDocsOnlyExemption(client, pullRequest, expectedHead) {
-  let files;
-  try { files = await client.pullRequestFiles(pullRequest.number); } catch { files = undefined; }
-  if (!Array.isArray(files) || !isDocsOnlyDiff(files)) return { eligible: false, reason: 'not docs-only' };
-  const scope = assessReviewScope(pullRequest, { changedFiles: files, requireChangedFiles: true });
-  if (!scope.allowed) return { eligible: false, reason: `checklist: ${scope.detail}` };
-  const checks = summarizeRequiredChecks(await client.checkRuns(expectedHead), requiredChecksForPullRequest(pullRequest.number));
-  if (checks.state !== 'success') return { eligible: false, reason: `ci: ${checks.state}` };
+export async function assessDocsOnlyExemption(client, pullRequest, expectedHead, recoveryRequest) {
+  // The LIVE object is judged, never the one the caller carried in: the checklist, owner and
+  // lineage are read from the same fetch, and re-read at the end so an edit during the
+  // assessment refuses rather than being merged.
   const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (!live) return { eligible: false, reason: 'superseded' };
-  return { eligible: true, live };
+  let files;
+  try { files = await client.pullRequestFiles(live.number); } catch { files = undefined; }
+  if (!Array.isArray(files) || !isDocsOnlyDiff(files)) return { eligible: false, reason: 'not docs-only' };
+  const scope = assessReviewScope(live, { changedFiles: files, requireChangedFiles: true });
+  if (!scope.allowed) return { eligible: false, reason: `checklist: ${scope.detail}` };
+  const checks = summarizeRequiredChecks(await client.checkRuns(expectedHead), requiredChecksForPullRequest(live.number));
+  if (checks.state !== 'success') return { eligible: false, reason: `ci: ${checks.state}` };
+  // A finding that landed on this exact head while CI settled is a finding: it fails the
+  // required status and returns the unit to draft, exactly as on the reviewed path.
+  if (await guardAgainstCurrentHeadFinding(client, live, expectedHead, recoveryRequest)) return { eligible: false, reason: 'current-head Codex finding' };
+  const settled = await refreshCurrentHead(client, live.number, expectedHead);
+  if (!settled || settled.body !== live.body || settled.base?.sha !== live.base?.sha) return { eligible: false, reason: 'changed during assessment' };
+  return { eligible: true, live: settled };
 }
 
 export async function completeDocsOnlyExemption(client, pullRequest, expectedHead, recoveryRequest) {
-  const first = await assessDocsOnlyExemption(client, pullRequest, expectedHead);
+  const first = await assessDocsOnlyExemption(client, pullRequest, expectedHead, recoveryRequest);
   if (!first.eligible) return { state: 'not_applicable', reason: first.reason };
   const ready = await setDraftForCurrentHead(client, pullRequest.number, expectedHead, false);
   if (!ready) return { state: 'superseded' };
   // Re-read EVERYTHING after the readiness mutation: head, base, cumulative diff, CI and checklist.
-  const again = await assessDocsOnlyExemption(client, ready, expectedHead);
+  const again = await assessDocsOnlyExemption(client, ready, expectedHead, recoveryRequest);
   if (!again.eligible || again.live.base?.sha !== first.live.base?.sha) {
     await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
     return { state: 'revoked', reason: again.reason ?? 'base changed' };

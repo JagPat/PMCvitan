@@ -25,7 +25,7 @@ Each family names the probe that turns the question into a failing test first (h
 | missing-counterpart | A fact written with NO event, NO audit row or NO transition: who refuses it at commit? | `pairingMatrix` negative per writer branch |
 | identity / recipient / actor binding | Does the event name THIS row, target THIS recipient and carry THIS actor? A same-type event for the same decision is not this fact's. | `pairingMatrix` wrong-identity, wrong-audience, wrong-actor negatives |
 | no-op transition | Does a `SET x = x` touch satisfy a rule that means "moved"? Transitions are recorded where `OLD` is in hand. | `noOpUpdateProbe` |
-| shared-function / alternate-writer coverage | A trigger installed on two tables, or a key with two writer branches: does EACH branch have its own arm, in BOTH write orders? | `pairingMatrix` coverage from the compiled flagged keys |
+| shared-function / alternate-writer coverage | A trigger installed on two tables, or a key with two writer branches: does EACH branch have its own arm, in BOTH write orders? | `pairingMatrix` over the compiled (key, writer branch) pairs |
 | lock order / concurrency | Is the guard's lock taken before its read? Show the interleaving. | `lockOrderProbe` (a real lock wait, never a sleep) |
 | migration immutability / replay | Are deployed bytes unchanged (`scripts/migration-manifest.mjs`)? Does the new migration apply twice? | `rerunTwice`; the CI manifest step |
 | whitespace / input constraints | Does a non-blank CHECK reject the whole ASCII whitespace set? | `whitespaceCheckProbe` |
@@ -40,8 +40,8 @@ Each family names the probe that turns the question into a failing test first (h
    dimension not bound is a finding, whether or not a reviewer has asked for it yet.
 3. For each `xmin` read: is it a write, or a transition? Only a recorder with `OLD` proves a move.
 4. For each lock: which statement takes it, which statement reads the status, in that order?
-5. For each new migration: `pnpm migrations:manifest` records it; the manifest step refuses any
-   change to a protected file. Re-run the migration over a database that carries it.
+5. For each new migration: `pnpm migrations:manifest` records it from the working tree; CI's
+   base-sourced verifier refuses any change to a protected file. Re-run it over a carrying database.
 6. For each CHECK on user text: `btrim(x, E' \t\n\x0B\f\r')`, never `btrim(x)`.
 7. Run only the focused suites the diff touches (`pnpm test:focused -- <path>`); the full battery
    runs in GitHub. Push once.

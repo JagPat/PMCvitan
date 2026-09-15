@@ -14,19 +14,21 @@ const snapshot = (extra = {}) => ({
     { number: 3, state: 'closed', merged_at: at(7), created_at: at(3) }, // start boundary: included
     { number: 4, state: 'open', created_at: at(4) },
     { number: 5, state: 'open', created_at: at(15) }, // opened after the week: not its backlog
+    { number: 6, state: 'closed', merged_at: at(10), created_at: at(2) }, // a SHA-bound clean review plus a reaction: evidence, not missing
   ],
   comments: { 1: [comment(10, 'aaa', at(8, 12)), comment(10, 'aaa', at(8, 12)), comment(11, 'aaa', at(8, 13), 'a wrong actorId is claimed'), comment(12, 'bbb', at(9), 'something novel')], 3: [] },
-  reviews: { 1: [{ user: CODEX, commit_id: 'aaa' }, { user: CODEX, commit_id: 'aaa' }, { user: CODEX, commit_id: 'ccc' }], 3: [] },
-  reactions: { 1: [], 3: [{ user: CODEX, content: '+1' }] },
-  jobs: { 1: [job(1, at(8, 12), at(8, 13)), job(1, at(8, 12), at(8, 13)), job(2, at(8, 14), at(8, 15))], 3: [] },
+  reviews: { 1: [{ user: CODEX, commit_id: 'aaa' }, { user: CODEX, commit_id: 'aaa' }, { user: CODEX, commit_id: 'ccc' }], 3: [], 6: [{ user: CODEX, commit_id: 'ddd' }] },
+  reactions: { 1: [], 3: [{ user: CODEX, content: '+1' }], 6: [{ user: CODEX, content: '+1' }] },
+  jobs: { 1: [job(1, at(8, 12), at(8, 13)), job(1, at(8, 12), at(8, 13)), job(2, at(8, 14), at(8, 15))], 3: [], 6: [] },
   ...extra,
 });
 
 test('week bounds are UTC and end-exclusive; the merged cohort respects both boundaries and open PRs are backlog', () => {
   assert.deepEqual(weekBounds('2026-09-07'), { start: '2026-09-07T00:00:00.000Z', end: '2026-09-14T00:00:00.000Z' });
   assert.throws(() => weekBounds('next monday'), /YYYY-MM-DD/u);
+  assert.throws(() => weekBounds('2026-02-30'), /YYYY-MM-DD/u, 'an impossible date is refused, not normalised to March');
   const report = aggregate(snapshot());
-  assert.deepEqual(report.pulls.map((p) => p.number), [1, 3]);
+  assert.deepEqual(report.pulls.map((p) => p.number), [1, 3, 6]);
   assert.deepEqual(report.backlog, [{ number: 4, ageDays: 10 }]);
 });
 
@@ -43,8 +45,8 @@ test('clean-only evidence is reported as missing evidence, zero merges divide no
   const report = aggregate(snapshot());
   assert.equal(report.missingEvidence, 1);
   assert.equal(report.medianFirstFindingToMergeHours, 24);
-  assert.equal(report.ciHoursPerMerge, 1);
-  assert.equal(aggregate(snapshot({ jobs: { 1: undefined, 3: [] } })).jobsMissing, 1);
+  assert.equal(report.ciHoursPerMerge, 2 / 3);
+  assert.equal(aggregate(snapshot({ jobs: { 1: undefined, 3: [], 6: [] } })).jobsMissing, 1);
   const empty = aggregate(snapshot({ pulls: [{ number: 4, state: 'open', created_at: at(4) }] }));
   assert.equal(empty.merges, 0);
   assert.equal(empty.ciHoursPerMerge, null);
@@ -70,15 +72,15 @@ test('collection fails visibly on a rate limit or an incomplete page instead of 
   const malformed = async () => ({ ok: true, status: 200, json: async () => ({ nope: true }) });
   await assert.rejects(collect({ week: '2026-09-07', repository: 'o/r', token: 't', fetchImpl: malformed }), /unexpected payload/u);
   const calls = [];
-  const paged = async (url) => { calls.push(url); return { ok: true, status: 200, json: async () => (url.includes('/pulls?') && url.endsWith('page=1') ? [{ number: 9, state: 'open', updated_at: at(10), created_at: at(1) }] : []) }; };
-  // a full first page whose LAST item predates the week stops the listing without a second page
+  // a dormant open PR (last updated before the week) is backlog: it comes from the OPEN listing, which has no week cutoff
+  const paged = async (url) => { calls.push(url); return { ok: true, status: 200, json: async () => (url.includes('state=open') && url.endsWith('page=1') ? [{ number: 9, state: 'open', updated_at: at(1), created_at: at(1) }] : []) }; };
   const result = await collect({ week: '2026-09-07', repository: 'o/r', token: 't', fetchImpl: paged });
   assert.equal(result.pulls.length, 1);
   assert.ok(calls.every((url) => url.includes('per_page=100')));
   assert.deepEqual(result.jobs, {}, 'an open PR fetches no job data');
   const full = Array.from({ length: 100 }, (_, i) => ({ number: 100 - i, state: 'closed', updated_at: i < 99 ? at(10) : at(1), created_at: at(1) }));
   const pages = [];
-  const early = async (url) => { pages.push(url); return { ok: true, status: 200, json: async () => (url.includes('/pulls?') ? full : []) }; };
+  const early = async (url) => { pages.push(url); return { ok: true, status: 200, json: async () => (url.includes('state=closed') ? full : []) }; };
   await collect({ week: '2026-09-07', repository: 'o/r', token: 't', fetchImpl: early });
-  assert.equal(pages.filter((url) => url.includes('/pulls?')).length, 1);
+  assert.equal(pages.filter((url) => url.includes('state=closed')).length, 1, 'the merged listing stops at the week; the open listing is separate');
 });
