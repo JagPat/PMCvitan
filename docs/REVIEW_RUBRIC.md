@@ -1,0 +1,61 @@
+# Review rubric — whole-file self-review before a push
+
+Read [POLICY.md](POLICY.md) first; this rubric is how an author reviews their own diff and how a
+reviewer reads it. Run it on the WHOLE of every touched file, not on the changed hunks (five of
+#590's six round-2 findings sat in untouched lines); repeat until a pass finds nothing, then push once.
+
+## The six invariants (one row each in the PR's invariant matrix)
+
+| Invariant | Ask of every touched file |
+| --- | --- |
+| authorization-tenancy | Does every read and write bind the project and org the row belongs to? Can a composite key be satisfied across projects? |
+| civil-time-lifecycle | Which clock decides "in this transaction" or "at commit"? Is `xmin` read as a transition anywhere? |
+| concurrency-idempotency | Is the row locked BEFORE its status is read? Is a re-run a no-op? Do deferred triggers fire in the order the writer assumes? |
+| data-integrity-conservation | For every fact: is its counterpart (event, audit row, transition) COUNTED in the same transaction, on every writer branch, not found by type? |
+| offline-reconciliation | Does a previous-release or prior-generation writer still commit through the drain? Does a replayed command produce one fact? |
+| ui-server-parity | Does the client render exactly what the server now refuses or admits? |
+
+## The eight finding families and their probes
+
+Each family names the probe that turns the question into a failing test first (helpers in
+`apps/api/test/invariants/probes.ts`, shown RED then GREEN in `process-invariant-probes.test.ts`).
+
+| Family | The question | Probe |
+| --- | --- | --- |
+| missing-counterpart | A fact written with NO event, NO audit row or NO transition: who refuses it at commit? | `pairingMatrix` negative per writer branch |
+| identity / recipient / actor binding | Does the event name THIS row, target THIS recipient and carry THIS actor? A same-type event for the same decision is not this fact's. | `pairingMatrix` wrong-identity, wrong-audience, wrong-actor negatives |
+| no-op transition | Does a `SET x = x` touch satisfy a rule that means "moved"? Transitions are recorded where `OLD` is in hand. | `noOpUpdateProbe` |
+| shared-function / alternate-writer coverage | A trigger installed on two tables, or a key with two writer branches: does EACH branch have its own arm, in BOTH write orders? | `pairingMatrix` coverage from the compiled flagged keys |
+| lock order / concurrency | Is the guard's lock taken before its read? Show the interleaving. | `lockOrderProbe` (a real lock wait, never a sleep) |
+| migration immutability / replay | Are deployed bytes unchanged (`scripts/migration-manifest.mjs`)? Does the new migration apply twice? | `rerunTwice`; the CI manifest step |
+| whitespace / input constraints | Does a non-blank CHECK reject the whole ASCII whitespace set? | `whitespaceCheckProbe` |
+| previous-generation compatibility | Does the still-serving release's exact bundle commit at the prior generation? | `pairingMatrix` `priorWriter` |
+
+## The self-review pass
+
+1. List every writer branch beneath each flagged key (the compiled catalog is the population, not
+   your memory). For each: fact, audit row, transition, event, and the seal that refuses each
+   absence. A branch with no seal named is a finding.
+2. For each binding, name the dimensions: identity, recipient, actor, project, generation. A
+   dimension not bound is a finding, whether or not a reviewer has asked for it yet.
+3. For each `xmin` read: is it a write, or a transition? Only a recorder with `OLD` proves a move.
+4. For each lock: which statement takes it, which statement reads the status, in that order?
+5. For each new migration: `pnpm migrations:manifest` records it; the manifest step refuses any
+   change to a protected file. Re-run the migration over a database that carries it.
+6. For each CHECK on user text: `btrim(x, E' \t\n\x0B\f\r')`, never `btrim(x)`.
+7. Run only the focused suites the diff touches (`pnpm test:focused -- <path>`); the full battery
+   runs in GitHub. Push once.
+
+## Review output expectations
+
+- First reviewed head: one comprehensive pass over the entire diff and all six invariants;
+  report the complete set together. Correction heads: the delta, every prior finding, and the
+  adjacent invariants the correction can affect; continue on the same PR.
+- Rank by severity; lead with correctness, data-integrity and ordering. Give the concrete failure
+  (inputs or interleaving). No style nits beside substantive findings; say plainly when there are
+  none. Cite the POLICY rule a finding violates.
+- A family-wide correction answers the family, not the line: when a finding names one dimension
+  of a binding, audit every dimension on every branch before pushing.
+- Dispute path: an author who believes a finding is wrong replies on the thread with a concrete
+  counterexample (inputs, interleaving or a test), labels the PR `disputed-finding`, and gets ONE
+  reconsideration round. An unresolved blocking finding stays blocked; the cap is not dismissal.

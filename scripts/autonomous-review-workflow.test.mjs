@@ -2341,3 +2341,124 @@ test('below the threshold nothing is advised, so the signal means something', as
   assert.equal(result.findingHeadCount, 1);
   assert.equal(result.rootCauseAdvisory, undefined, 'one head raises no root-cause signal');
 });
+
+// ── the docs-only exemption (user decision, 2026-09-15) ────────────────────────────────────────
+const DOCS_HEAD = '1'.repeat(40);
+function docsUnit(overrides = {}) {
+  return {
+    number: 601, state: 'open', draft: true, node_id: 'PR_docs',
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/601',
+    body: ['<!-- correction-owner: claude -->', 'Replaces: none',
+      ...['concurrency-serialization', 'old-release-migration-compatibility', 'trigger-alternate-writers', 'authorization-tenancy', 'ci-reproduce-first']
+        .map((key) => `- [x] \`${key}\` — not applicable to prose`)].join('\n'),
+    head: { sha: DOCS_HEAD, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
+    ...overrides,
+  };
+}
+function docsClient({ files = [{ filename: 'docs/METRICS.md' }], checks = REQUIRED_CHECKS.map((name) => checkRun(name)), live = docsUnit() } = {}) {
+  const calls = [];
+  let current = live;
+  const never = (name) => async () => { throw new Error(`${name} must not be called on a docs-only unit`); };
+  return {
+    calls,
+    set(next) { current = next; },
+    async pullRequest() { return current; },
+    async pullRequestFiles() { return typeof files === 'function' ? files() : files; },
+    async checkRuns() { return checks; },
+    async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
+    async setDraft(pullRequest, draft) { calls.push(['draft', draft]); current = { ...current, draft }; return current; },
+    async setStatus(head, state, description) { calls.push(['status', state, description]); },
+    async mergeExactHead(number, head) { calls.push(['merge', number, head]); return { merged: true }; },
+    async dispatchHandoff() { calls.push(['handoff']); },
+    async enableAutoMerge() { calls.push(['auto-merge']); },
+    async updateStickyComment(number, body) { calls.push(['sticky', body]); },
+    reviews: never('reviews'), reviewComments: never('reviewComments'), reactions: never('reactions'),
+  };
+}
+
+test('a docs-only unit with green CI and the author checklist merges with a truthful exemption and no reviewer call', async () => {
+  const client = docsClient({ files: [{ filename: 'docs/METRICS.md' }, { filename: 'apps/api/README.md' }] });
+  const result = await reviewGate.completeDocsOnlyExemption(client, docsUnit(), DOCS_HEAD, null);
+  assert.equal(result.state, 'completed');
+  assert.equal(result.completion, 'merged');
+  const status = client.calls.find((call) => call[0] === 'status');
+  assert.equal(status[1], 'success');
+  assert.match(status[2], /NO Codex review occurred/u);
+  assert.doesNotMatch(status[2], /found no blocking/u);
+  assert.ok(status[2].length <= 140, 'the status description must survive GitHub\'s 140-character limit intact');
+  assert.deepEqual(client.calls.filter((c) => c[0] === 'draft'), [['draft', false]]);
+  assert.ok(client.calls.some((c) => c[0] === 'merge' && c[2] === DOCS_HEAD));
+  assert.match(client.calls.find((c) => c[0] === 'sticky')[1], /docs_only_exempt/u);
+});
+
+test('one non-doc path, a rename from code, an empty or unreadable file list, a missing checklist item or red CI keeps the ordinary reviewer', async () => {
+  const cases = [
+    [{ files: [{ filename: 'docs/a.md' }, { filename: 'scripts/x.mjs' }] }, /not docs-only/u],
+    [{ files: [{ filename: 'docs/gate.md', previous_filename: 'scripts/gate.mjs', status: 'renamed' }] }, /not docs-only/u],
+    [{ files: [] }, /not docs-only/u],
+    [{ files: () => { throw new Error('HTTP 502'); } }, /not docs-only/u],
+    [{ live: docsUnit({ body: '<!-- correction-owner: claude -->\nReplaces: none' }) }, /checklist/u],
+    [{ checks: [...REQUIRED_CHECKS.filter((n) => n !== 'api').map((n) => checkRun(n)), checkRun('api', 'failure')] }, /ci: failure/u],
+  ];
+  for (const [options, reason] of cases) {
+    const client = docsClient(options);
+    const result = await reviewGate.completeDocsOnlyExemption(client, await client.pullRequest(), DOCS_HEAD, null);
+    assert.equal(result.state, 'not_applicable', reason.source);
+    assert.match(result.reason, reason);
+    assert.deepEqual(client.calls, [], 'nothing is mutated when the exemption does not apply');
+  }
+});
+
+test('a head, base or diff that changes during the exemption revokes it before any status is written', async () => {
+  let reads = 0;
+  const shifting = docsClient({ files: () => (reads++ < 1 ? [{ filename: 'docs/a.md' }] : [{ filename: 'docs/a.md' }, { filename: 'scripts/x.mjs' }]) });
+  const diff = await reviewGate.completeDocsOnlyExemption(shifting, docsUnit(), DOCS_HEAD, null);
+  assert.equal(diff.state, 'revoked');
+  assert.ok(!shifting.calls.some((c) => c[0] === 'status' || c[0] === 'merge'));
+  assert.deepEqual(shifting.calls.filter((c) => c[0] === 'draft'), [['draft', false], ['draft', true]]);
+
+  const rebased = docsClient();
+  const original = rebased.pullRequest;
+  let served = 0;
+  rebased.pullRequest = async () => ({ ...(await original()), base: { ...docsUnit().base, sha: served++ < 2 ? 'b'.repeat(40) : 'c'.repeat(40) } });
+  const base = await reviewGate.completeDocsOnlyExemption(rebased, docsUnit(), DOCS_HEAD, null);
+  assert.equal(base.state, 'revoked');
+  assert.ok(!rebased.calls.some((c) => c[0] === 'status'));
+
+  const moved = docsClient();
+  moved.set(docsUnit({ head: { sha: '2'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } } }));
+  assert.equal((await reviewGate.completeDocsOnlyExemption(moved, docsUnit(), DOCS_HEAD, null)).state, 'not_applicable');
+});
+
+test('the exemption runs after CI and convergence and before any Codex invocation, and is the only controller change of its kind', async () => {
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const convergence = gate.indexOf('await enforceReviewConvergence(\n    client,\n    pullRequest,\n    expectedHead,\n  );\n  if (convergence.superseded) return;');
+  const exemption = gate.indexOf('await completeDocsOnlyExemption(client, pullRequest, expectedHead, recoveryRequest)');
+  const review = gate.indexOf('await reviewAttempt(', exemption);
+  assert.ok(convergence > 0 && exemption > convergence && review > exemption);
+  assert.equal([...gate.matchAll(/isDocsOnlyDiff\(/gu)].length, 1, 'one classifier call, the shared one');
+  assert.doesNotMatch(gate, /size-approved-by/u);
+});
+
+test('an added or modified plan is measured at the exact head through the trusted scope enforcement', async () => {
+  const head = '3'.repeat(40);
+  const plan = 'docs/superpowers/plans/2026-09-15-example.md';
+  const unit = docsUnit({ number: 602, draft: false, head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } } });
+  const statuses = [];
+  const client = {
+    async pullRequest() { return unit; },
+    async pullRequestFiles() { return [{ filename: plan, status: 'modified' }]; },
+    async replacementLineage() { return { requiredReplacements: [], replacementPullRequests: [] }; },
+    async fileContent(ref, path) { return ref === head && path === plan ? `${'x\n'.repeat(401)}` : null; },
+    async setDraft(live, draft) { return { ...live, draft }; },
+    async setStatus(...args) { statuses.push(args); },
+    async updateStickyComment() {},
+  };
+  const result = await reviewGate.enforceReviewScope(client, unit, head);
+  assert.equal(result.allowed, false);
+  assert.match(result.detail, /401 lines at the PR head/u);
+  assert.equal(statuses[0][1], 'failure');
+  client.fileContent = async () => `${'x\n'.repeat(400)}`;
+  assert.equal((await reviewGate.enforceReviewScope(client, unit, head)).allowed, true);
+});

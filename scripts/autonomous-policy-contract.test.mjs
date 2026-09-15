@@ -48,3 +48,19 @@ test('all agent entrypoints require the canonical contract instead of embedding 
   assert.match(contract, /OPERATOR-ATTESTATION/u);
   assert.match(contract, /scripts\/review-policy\.mjs/u);
 });
+
+test('the rubric and POLICY stay within their line budgets and reference the executable enforcement', async () => {
+  const lines = (text) => text.replace(/\n$/u, '').split('\n').length;
+  const rubric = await readFile(new URL('../docs/REVIEW_RUBRIC.md', import.meta.url), 'utf8');
+  const contract = await readFile(new URL('../docs/POLICY.md', import.meta.url), 'utf8');
+  assert.ok(lines(rubric) <= 120, `REVIEW_RUBRIC.md is ${lines(rubric)} lines; the cap is 120`);
+  // the maintenance base (main e3c3cfb9) was 275 lines; the reform may not grow the contract
+  assert.ok(lines(contract) <= 275, `POLICY.md is ${lines(contract)} lines; the base was 275`);
+  assert.match(contract, /REVIEW_RUBRIC\.md/u);
+  assert.match(contract, /migration-manifest\.mjs/u);
+  assert.match(contract, /disputed-finding/u);
+  assert.match(contract, /docs\/\*\*/u);
+  for (const helper of ['pairingMatrix', 'lockOrderProbe', 'rerunTwice', 'noOpUpdateProbe', 'whitespaceCheckProbe']) assert.match(rubric, new RegExp(helper, 'u'));
+  assert.equal(scope.HARD_SIZE_CAP_AFTER_PR, 590);
+  assert.equal(scope.PLAN_MAX_LINES, 400);
+});

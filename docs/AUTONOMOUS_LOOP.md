@@ -29,6 +29,30 @@ owner is routed but not awakenable; an invalid declaration is correction_stalled
 Use live PRs and STATUS for the current position; do not maintain a second timeline here.
 
 
+## Focused tests, the migration manifest and the weekly report
+
+`pnpm test:focused -- <one test file or directory>` runs exactly that selection with the
+configuration that owns it (`apps/api/test/integration/**` → the serial PostgreSQL suite,
+`apps/api/src/**` and `apps/web/src/**` → the unit suites, `scripts/**` → `node --test`).
+It refuses a missing or escaping path, a flag-only argument and a selection with no test
+file. The PostgreSQL suite also needs `DATABASE_URL` naming a disposable `*test*` database
+and no live integration or API e2e run (checked from `ps`); migrations are applied first.
+Run the focused suites the diff touches before a push; the full battery runs in GitHub.
+
+`apps/api/prisma/migrations/manifest.sha256.json` records the SHA-256 of every migration
+present at its `baseRef` (a conservative superset of the deployed inventory). The
+`review-scope` job fetches the PR's base and head commits and runs
+`scripts/migration-manifest.mjs verify`: a protected file whose head bytes differ from the
+BASE manifest's digest, a removed entry, a redefined digest or a phantom entry fails; a new
+migration is recorded with `pnpm migrations:manifest`. While the base carries no manifest,
+the base TREE is the protected set, so a head never chooses what it protects. Recovery from
+a wrong bless: regenerate from the trusted base commit, never from a tampered head.
+
+`pnpm review:metrics -- --week YYYY-MM-DD --output docs/METRICS.md` collects one UTC week
+read-only (a `GITHUB_TOKEN` when set), caches the raw snapshot under the system temp
+directory (`--from-cache` reruns without fetching) and writes the report with its
+definitions. Publish the report through an ordinary docs-only PR; it is not a controller.
+
 ## Recovery
 
 When an accidental merge or stale state occurs:

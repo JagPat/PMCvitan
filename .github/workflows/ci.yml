@@ -34,6 +34,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/review-scope.mjs
+      # Deployed migrations are immutable (docs/POLICY.md): the protected inventory comes from the
+      # PR's BASE commit, the bytes from its HEAD, both fetched explicitly (the checkout is the merge).
+      - name: Protected migration checksums (base manifest vs PR head bytes)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+          node scripts/migration-manifest.mjs verify --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}"
 
   # Cheap by construction: one checkout + one script (a single check-runs API
   # read); no dependency install, no database. Fails toward running products.
