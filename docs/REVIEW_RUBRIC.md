@@ -48,14 +48,13 @@ Each family names the probe that turns the question into a failing test first (h
 
 ## Review output expectations
 
-- First reviewed head: one comprehensive pass over the entire diff and all six invariants;
-  report the complete set together. Correction heads: the delta, every prior finding, and the
-  adjacent invariants the correction can affect; continue on the same PR.
-- Rank by severity; lead with correctness, data-integrity and ordering. Give the concrete failure
-  (inputs or interleaving). No style nits beside substantive findings; say plainly when there are
-  none. Cite the POLICY rule a finding violates.
-- A family-wide correction answers the family, not the line: when a finding names one dimension
-  of a binding, audit every dimension on every branch before pushing.
-- Dispute path: an author who believes a finding is wrong replies on the thread with a concrete
-  counterexample (inputs, interleaving or a test), labels the PR `disputed-finding`, and gets ONE
-  reconsideration round. An unresolved blocking finding stays blocked; the cap is not dismissal.
+- First reviewed head: one comprehensive pass over the entire diff and all six invariants, reported
+  together. Correction heads: the delta, every prior finding, and the adjacent invariants the
+  correction can affect; continue on the same PR. Rank by severity (correctness, data integrity,
+  ordering first), give the concrete failure (inputs or interleaving), no style nits beside
+  substantive findings, say plainly when there are none, cite the POLICY rule violated.
+- A family-wide correction answers the family, not the line: a finding on one dimension of a
+  binding means auditing every dimension on every branch before pushing.
+- Dispute path: reply on the thread with a concrete counterexample (inputs, interleaving or a
+  test), label the PR `disputed-finding`, and get ONE reconsideration round. An unresolved
+  blocking finding stays blocked; the cap is not dismissal.

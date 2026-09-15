@@ -16,8 +16,9 @@ const snapshot = (extra = {}) => ({
     { number: 5, state: 'open', created_at: at(15) }, // opened after the week: not its backlog
     { number: 6, state: 'closed', merged_at: at(10), created_at: at(2) }, // a SHA-bound clean review plus a reaction: evidence, not missing
   ],
-  comments: { 1: [comment(10, 'aaa', at(8, 12)), comment(10, 'aaa', at(8, 12)), comment(11, 'aaa', at(8, 13), 'a wrong actorId is claimed'), comment(12, 'bbb', at(9), 'something novel')], 3: [] },
-  reviews: { 1: [{ user: CODEX, commit_id: 'aaa' }, { user: CODEX, commit_id: 'aaa' }, { user: CODEX, commit_id: 'ccc' }], 3: [], 6: [{ user: CODEX, commit_id: 'ddd' }] },
+  // comment 13 and the 'eee' review landed AFTER the merge: never evidence for this PR's review
+  comments: { 1: [comment(10, 'aaa', at(8, 12)), comment(10, 'aaa', at(8, 12)), comment(11, 'aaa', at(8, 13), 'a wrong actorId is claimed'), comment(12, 'bbb', at(9), 'something novel'), comment(13, 'fff', at(10))], 3: [] },
+  reviews: { 1: [{ user: CODEX, commit_id: 'aaa' }, { user: CODEX, commit_id: 'aaa' }, { user: CODEX, commit_id: 'ccc' }, { user: CODEX, commit_id: 'eee', submitted_at: at(10) }], 3: [], 6: [{ user: CODEX, commit_id: 'ddd' }] },
   reactions: { 1: [], 3: [{ user: CODEX, content: '+1' }], 6: [{ user: CODEX, content: '+1' }] },
   jobs: { 1: [job(1, at(8, 12), at(8, 13)), job(1, at(8, 12), at(8, 13)), job(2, at(8, 14), at(8, 15))], 3: [], 6: [] },
   ...extra,
@@ -76,6 +77,7 @@ test('collection fails visibly on a rate limit or an incomplete page instead of 
   const paged = async (url) => { calls.push(url); return { ok: true, status: 200, json: async () => (url.includes('state=open') && url.endsWith('page=1') ? [{ number: 9, state: 'open', updated_at: at(1), created_at: at(1) }] : []) }; };
   const result = await collect({ week: '2026-09-07', repository: 'o/r', token: 't', fetchImpl: paged });
   assert.equal(result.pulls.length, 1);
+  assert.ok(calls.every((url) => !url.includes('/pulls/9/') && !url.includes('/issues/9/')), 'an open backlog entry is listed, never mined for evidence');
   assert.ok(calls.every((url) => url.includes('per_page=100')));
   assert.deepEqual(result.jobs, {}, 'an open PR fetches no job data');
   const full = Array.from({ length: 100 }, (_, i) => ({ number: 100 - i, state: 'closed', updated_at: i < 99 ? at(10) : at(1), created_at: at(1) }));

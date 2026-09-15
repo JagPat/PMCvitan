@@ -2374,8 +2374,8 @@ function docsClient({ files = [{ filename: 'docs/METRICS.md' }], checks = REQUIR
     async dispatchHandoff() { calls.push(['handoff']); },
     async enableAutoMerge() { calls.push(['auto-merge']); },
     async updateStickyComment(number, body) { calls.push(['sticky', body]); },
-    // existing evidence is READ (a finding on this head is a finding); Codex is never invoked
     async reviews() { return []; }, async reviewComments() { return comments; }, reactions: never('reactions'),
+    async replacementLineage() { return { requiredReplacements: [], replacementPullRequests: [] }; },
   };
 }
 
@@ -2401,6 +2401,7 @@ test('one non-doc path, a rename from code, an empty or unreadable file list, a 
     [{ files: [] }, /not docs-only/u],
     [{ files: () => { throw new Error('HTTP 502'); } }, /not docs-only/u],
     [{ live: docsUnit({ body: '<!-- correction-owner: claude -->\nReplaces: none' }) }, /checklist/u],
+    [{ live: docsUnit({ body: docsUnit().body.replace('Replaces: none', 'Replaces: #999') }) }, /checklist/u],
     [{ checks: [...REQUIRED_CHECKS.filter((n) => n !== 'api').map((n) => checkRun(n)), checkRun('api', 'failure')] }, /ci: failure/u],
   ];
   for (const [options, reason] of cases) {
@@ -2415,7 +2416,6 @@ test('one non-doc path, a rename from code, an empty or unreadable file list, a 
   const finding = await reviewGate.completeDocsOnlyExemption(found, docsUnit(), DOCS_HEAD, null);
   assert.equal(finding.state, 'not_applicable'); assert.match(finding.reason, /Codex finding/u);
   assert.ok(found.calls.some((c) => c[0] === 'status' && c[1] === 'failure') && !found.calls.some((c) => c[0] === 'merge' || (c[0] === 'status' && c[1] === 'success')));
-  // the body judged for the checklist is the LIVE body: an edit during the assessment is refused
   const edited = docsClient(); let served = 0; const original = edited.pullRequest;
   edited.pullRequest = async () => ({ ...(await original()), body: served++ < 1 ? docsUnit().body : '<!-- correction-owner: claude -->\nReplaces: none' });
   const body = await reviewGate.completeDocsOnlyExemption(edited, docsUnit(), DOCS_HEAD, null);

@@ -1,6 +1,5 @@
-// Weekly review metrics: read-only GitHub REST collection into a timestamped snapshot, then a
-// pure aggregation with explicit definitions (docs/METRICS.md restates them beside the numbers).
-//   node scripts/review-metrics.mjs --week 2026-09-07 --output docs/METRICS.md [--from-cache]
+// Weekly review metrics: read-only GitHub REST collection into a timestamped snapshot, then a pure
+// aggregation with explicit definitions. `--week 2026-09-07 --output docs/METRICS.md [--from-cache]`
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -41,8 +40,9 @@ export function aggregate(snapshot) {
   const families = {};
   let ciHours = 0; let jobsMissing = 0; let missingEvidence = 0;
   for (const pr of merged) {
-    const comments = [...new Map((snapshot.comments[pr.number] ?? []).filter(isCodex).map((c) => [c.id, c])).values()];
-    const reviews = (snapshot.reviews[pr.number] ?? []).filter(isCodex);
+    const before = (at) => !at || Date.parse(at) <= Date.parse(pr.merged_at);
+    const comments = [...new Map((snapshot.comments[pr.number] ?? []).filter((c) => isCodex(c) && before(c.created_at)).map((c) => [c.id, c])).values()];
+    const reviews = (snapshot.reviews[pr.number] ?? []).filter((r) => isCodex(r) && before(r.submitted_at));
     const heads = new Set([...comments.map((c) => c.original_commit_id ?? c.commit_id), ...reviews.map((r) => r.commit_id)].filter(Boolean));
     const findingHeads = new Set(comments.map((c) => c.original_commit_id ?? c.commit_id).filter(Boolean));
     const first = comments.map((c) => c.created_at).sort()[0] ?? null;
@@ -122,11 +122,11 @@ export async function collect({ week, repository, token, fetchImpl = globalThis.
   const relevant = [...await api(`/repos/${repository}/pulls?state=open`), ...closed.filter((pr) => mergedInWeek(pr, bounds))];
   const snapshot = { week, fetchedAt: new Date().toISOString(), repository, pulls: relevant, comments: {}, reviews: {}, reactions: {}, jobs: {} };
   for (const pr of relevant) {
+    if (!pr.merged_at) continue; // an open entry is backlog by its creation time only: no evidence feeds are spent on it
     log(`collecting #${pr.number}`);
     snapshot.comments[pr.number] = await api(`/repos/${repository}/pulls/${pr.number}/comments`);
     snapshot.reviews[pr.number] = await api(`/repos/${repository}/pulls/${pr.number}/reviews`);
     snapshot.reactions[pr.number] = await api(`/repos/${repository}/issues/${pr.number}/reactions`);
-    if (!pr.merged_at) continue;
     const commits = await api(`/repos/${repository}/pulls/${pr.number}/commits`);
     const jobs = [];
     for (const commit of commits) {

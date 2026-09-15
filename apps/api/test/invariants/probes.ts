@@ -19,11 +19,8 @@ const fail = (message: string): never => { throw new ProbeFailure(message); };
 const canonical = (value: unknown) => JSON.stringify(value, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
 
 export type ExpectedWriter = { key: string; branch: string };
-/**
- * The expected population is every (flagged key, writer branch) pair from the compiled catalog —
- * a key alone would let one writer's row stand in for a second writer of the same key. Every
- * expected pair has a row, every row is expected and unique, and every callback runs.
- */
+/** The expected population is every (flagged key, writer branch) pair from the compiled catalog (a key alone
+ * would let one writer's row stand in for another's): every pair has a row, every row is expected and unique, every callback runs. */
 export async function pairingMatrix(expected: readonly ExpectedWriter[], rows: readonly Bundle[]) {
   const seen = new Set<string>();
   const label = (w: ExpectedWriter) => `${w.key} · ${w.branch}`;
@@ -47,24 +44,24 @@ export async function pairingMatrix(expected: readonly ExpectedWriter[], rows: r
   return { rows: rows.length, executed };
 }
 
-/**
- * A guard that reads a serialized row's status must lock it FIRST. `holderReady` takes the lock
- * on one session and returns; `contenderStarted` begins the guarded write on another and returns
- * its promise; `inspectBlocked` must observe (from a third session) that the contender is waiting
- * on the lock — a real lock wait, not a sleep — before `release` lets the holder commit.
- */
+/** A guard that reads a serialized row's status must lock it FIRST. `holderReady` locks on one session;
+ * `contenderStarted` begins the guarded write on another and calls `observed()` the moment its STATUS READ
+ * returns; `inspectBlocked` observes a real lock wait from a third session. A read returned before `release`
+ * escaped the lock whatever waits afterwards; a contender that never reports its read proves nothing. */
 export async function lockOrderProbe(o: {
-  holderReady: () => Promise<void>; contenderStarted: () => Promise<unknown>;
+  holderReady: () => Promise<void>; contenderStarted: (milestone: { observed: () => void }) => Promise<unknown>;
   inspectBlocked: () => Promise<boolean>; release: () => Promise<void>; verify: () => Promise<void>;
 }) {
   await o.holderReady();
-  const contender = o.contenderStarted();
+  let released = false; let reads = 0; let escaped = false;
+  const contender = o.contenderStarted({ observed: () => { reads += 1; if (!released) escaped = true; } });
   const blocked = await o.inspectBlocked();
-  if (!blocked) {
-    await o.release().catch(() => undefined); await contender.catch(() => undefined);
-    fail('the contender was never blocked behind the holder: the guard read the status before taking the lock (lock-after-read)');
-  }
-  await o.release(); await contender; await o.verify();
+  released = true;
+  await o.release().catch(() => undefined); await contender.catch(() => undefined);
+  if (escaped) fail('the contender completed its status read before the holder released: the guard read the status before taking the lock (lock-after-read)');
+  if (!blocked) fail('the contender was never blocked behind the holder: the guard read the status before taking the lock (lock-after-read)');
+  if (reads === 0) fail('the contender never reported its status read (call observed() when it returns); a wait alone is not the proof');
+  await o.verify();
 }
 
 /** Applying twice must leave the canonical snapshot exactly as applying once did. */

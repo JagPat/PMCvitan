@@ -1255,27 +1255,27 @@ export async function revalidateFinalReviewPolicy(
   return { state: 'allowed', allowed: true, pullRequest };
 }
 
-// The ONE review exemption (user decision, 2026-09-15): a unit whose CUMULATIVE diff is
-// documentation only — every touched path, rename sources and deletions included, under
-// `docs/**` or a `*.md` — merges on required CI plus the author checklist, with no Codex
-// invocation. The required status is written truthfully: it says the exemption applied and
-// that no review occurred; it never claims reviewer evidence. Any other path keeps the
-// exact-head review below. Fits under 140 characters, the status description limit.
+// The ONE review exemption (user decision, 2026-09-15): a unit whose CUMULATIVE diff (renames and
+// deletions included) is documentation only merges on required CI plus the author checklist with no
+// Codex invocation; the status says so truthfully and never claims reviewer evidence (≤140 chars).
 export const DOCS_ONLY_EXEMPTION = 'review: policy exemption — docs-only diff (docs/** or *.md only); CI and the author checklist passed; NO Codex review occurred';
 
 export async function assessDocsOnlyExemption(client, pullRequest, expectedHead, recoveryRequest) {
-  // The LIVE object is judged, never the carried-in one, and re-read at the end: an edit to the
-  // checklist, owner or lineage during the assessment refuses rather than merging.
+  // the LIVE object is judged (never the carried-in one) and re-read at the end: an edit during the assessment refuses
   const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (!live) return { eligible: false, reason: 'superseded' };
   let files;
   try { files = await client.pullRequestFiles(live.number); } catch { files = undefined; }
   if (!Array.isArray(files) || !isDocsOnlyDiff(files)) return { eligible: false, reason: 'not docs-only' };
-  const scope = assessReviewScope(live, { changedFiles: files, requireChangedFiles: true });
+  let lineage;
+  try { lineage = await client.replacementLineage(); } catch { lineage = undefined; }
+  const scope = assessReviewScope(live, {
+    changedFiles: files, requireChangedFiles: true, requireReplacementLineage: live.number > PRE_REVIEW_ENFORCE_AFTER_PR,
+    requiredReplacements: lineage?.requiredReplacements, replacementPullRequests: lineage?.replacementPullRequests,
+  });
   if (!scope.allowed) return { eligible: false, reason: `checklist: ${scope.detail}` };
   const checks = summarizeRequiredChecks(await client.checkRuns(expectedHead), requiredChecksForPullRequest(live.number));
   if (checks.state !== 'success') return { eligible: false, reason: `ci: ${checks.state}` };
-  // a finding that landed on this exact head while CI settled fails the status and re-drafts, as on the reviewed path
   if (await guardAgainstCurrentHeadFinding(client, live, expectedHead, recoveryRequest)) return { eligible: false, reason: 'current-head Codex finding' };
   const settled = await refreshCurrentHead(client, live.number, expectedHead);
   if (!settled || settled.body !== live.body || settled.base?.sha !== live.base?.sha) return { eligible: false, reason: 'changed during assessment' };

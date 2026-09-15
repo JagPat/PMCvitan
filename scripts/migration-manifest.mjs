@@ -1,7 +1,7 @@
 // Protected-migration checksums: the protected inventory is the BASE ref's committed manifest
 // (bootstrap, while the base has none: the base TREE itself), compared with the HEAD ref's bytes;
-// a head manifest can add entries but never redefine or drop a protected digest. Built-ins only.
-// The record is ONE line: generated, `verify` names what differs, and it must not spend review budget.
+// a head manifest can add entries but never redefine or drop a protected digest. Built-ins only;
+// the record is ONE line (generated; `verify` names what differs; it must not spend review budget).
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';

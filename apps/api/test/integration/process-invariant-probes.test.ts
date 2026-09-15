@@ -1,6 +1,4 @@
-// The invariant probes (test/invariants/probes.ts) against REAL PostgreSQL: each helper is shown
-// FAILING on a deliberately broken fixture and PASSING on the corrected one, so a helper that
-// merely resolves cannot pass as evidence. Scratch tables only; nothing in the schema is touched.
+// The probes against REAL PostgreSQL: each helper FAILS on a broken fixture and PASSES on the corrected one. Scratch tables only.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import {
@@ -35,7 +33,8 @@ const SETUP = [
 ];
 
 beforeAll(async () => {
-  if (!process.env.DATABASE_URL?.includes('test')) throw new Error('DATABASE_URL must name a disposable *test* database');
+  const database = (() => { try { return decodeURIComponent(new URL(process.env.DATABASE_URL ?? '').pathname.slice(1)); } catch { return ''; } })();
+  if (!/test/u.test(database)) throw new Error('DATABASE_URL must name a disposable *test* database');
   await sql(a, `DROP TABLE IF EXISTS ${SCRATCH.join(', ')}`);
   for (const statement of SETUP) await sql(a, statement);
 });
@@ -111,20 +110,20 @@ describe('lockOrderProbe', () => {
     return false;
   };
   const verify = async () => { expect((await rows<{ status: string }>(a, 'SELECT status FROM _probe_lock WHERE id = 1'))[0]!.status).toBe('open'); };
-  it('fails on a guard that reads the status before locking (the read is never blocked)', async () => {
-    const h = holder();
-    await failsWith(/lock-after-read/u)(() => lockOrderProbe({
-      ...h, inspectBlocked, verify,
-      // an async IIFE, because a Prisma promise is lazy and would not run until awaited
-      contenderStarted: () => (async () => rows(b, 'SELECT status FROM _probe_lock WHERE id = 1'))(),
-    }));
+  const read = (sql: string) => rows(b, `SELECT status FROM _probe_lock WHERE id = 1${sql}`);
+  it('fails on a guard that reads the status before locking: never blocked, or read first then locked', async () => {
+    // an async IIFE, because a Prisma promise is lazy and would not run until awaited
+    await failsWith(/lock-after-read/u)(() => lockOrderProbe({ ...holder(), inspectBlocked, verify,
+      contenderStarted: ({ observed }) => (async () => { const r = await read(''); observed(); return r; })() }));
+    // the read escapes BEFORE the lock wait: the wait alone proves nothing
+    await failsWith(/status read before the holder released/u)(() => lockOrderProbe({ ...holder(), inspectBlocked, verify,
+      contenderStarted: ({ observed }) => (async () => { await read(''); observed(); return read(' FOR UPDATE'); })() }));
+    await failsWith(/never reported its status read/u)(() => lockOrderProbe({ ...holder(), inspectBlocked, verify,
+      contenderStarted: () => (async () => read(' FOR UPDATE'))() }));
   });
-  it('passes on a guard that locks first: the contender is observed waiting, then proceeds after release', async () => {
-    const h = holder();
-    await lockOrderProbe({
-      ...h, inspectBlocked, verify,
-      contenderStarted: () => (async () => rows(b, 'SELECT status FROM _probe_lock WHERE id = 1 FOR UPDATE'))(),
-    });
+  it('passes on a guard that locks first: the contender waits, reads only after release, then proceeds', async () => {
+    await lockOrderProbe({ ...holder(), inspectBlocked, verify,
+      contenderStarted: ({ observed }) => (async () => { const r = await read(' FOR UPDATE'); observed(); return r; })() });
   });
 });
 

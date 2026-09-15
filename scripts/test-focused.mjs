@@ -1,11 +1,9 @@
-// Run ONE test file or directory with the configuration that owns it:
-//   pnpm test:focused -- apps/api/test/integration/some.test.ts
-// The path must exist inside the repository and select at least one test file; the
-// PostgreSQL suites additionally need a disposable *test* database that is ready, migrated
-// and not already in use by a live run. The child's exit status is the exit status.
+// Run ONE test file or directory (`pnpm test:focused -- <path>`) with the configuration that owns it. The
+// path must exist inside the repository and select a test file; the PostgreSQL suites also need a ready,
+// migrated *test* database that no live run is using. The child's exit status is the exit status.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -26,7 +24,7 @@ function testFiles(absolute, pattern) {
     .map((entry) => resolve(entry.parentPath ?? entry.path, entry.name)).sort();
 }
 
-export function plan(argv, { root = ROOT, exists = existsSync, files = testFiles } = {}) {
+export function plan(argv, { root = ROOT, exists = existsSync, files = testFiles, real = realpathSync } = {}) {
   const args = argv.filter((arg) => arg !== '--');
   if (args.length !== 1 || args[0].startsWith('-')) return { error: 'usage: pnpm test:focused -- <one test file or directory inside the repository>' };
   const absolute = resolve(root, args[0]);
@@ -37,6 +35,10 @@ export function plan(argv, { root = ROOT, exists = existsSync, files = testFiles
   if (!suite) return { error: `${rel} is not under a test root (${SUITES.map((s) => s.prefix).join(', ')})` };
   const matched = files(absolute, suite.pattern);
   if (matched.length === 0) return { error: `${rel} selects no test file matching ${suite.pattern}` };
+  // containment is judged on REAL paths: a symlink under a test root must not run code outside the checkout
+  const realRoot = real(root);
+  const escaped = [absolute, ...matched].map((path) => real(path)).find((path) => path !== realRoot && !path.startsWith(realRoot + sep));
+  if (escaped) return { error: `${rel} resolves outside the repository (${escaped})` };
   const cwd = resolve(root, suite.cwd);
   const selectors = matched.map((file) => posix(relative(cwd, file)));
   return { suite, cwd, argv: [...suite.command, ...selectors], selectors };
@@ -44,11 +46,13 @@ export function plan(argv, { root = ROOT, exists = existsSync, files = testFiles
 
 /** The database NAME (decoded pathname), never the whole URL: a `test` user on a production host is not a test database. */
 const database = (url) => { try { return decodeURIComponent(new URL(url).pathname.slice(1)); } catch { return ''; } };
+/** host, port and name: the lease is per DATABASE, so two credentials or option sets for one database share it */
+const identity = (url) => { try { const u = new URL(url); return `${u.hostname}:${u.port || '5432'}/${database(url)}`; } catch { return url; } };
 
 /** One lease per database from before the readiness check until the child exits (two runners would
  * otherwise both pass the process scan and reset the same fixtures); a dead holder's lease is reclaimed. */
 export function lease(env, { fs = { openSync, writeSync, closeSync, readFileSync, unlinkSync }, alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } } } = {}) {
-  const path = join(tmpdir(), `pmcvitan-focused-${createHash('sha256').update(env.DATABASE_URL ?? '').digest('hex').slice(0, 16)}.lock`);
+  const path = join(tmpdir(), `pmcvitan-focused-${createHash('sha256').update(identity(env.DATABASE_URL ?? '')).digest('hex').slice(0, 16)}.lock`);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const fd = fs.openSync(path, 'wx'); fs.writeSync(fd, String(process.pid)); fs.closeSync(fd);

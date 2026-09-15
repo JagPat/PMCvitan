@@ -77,7 +77,6 @@ test('the committed manifest covers every migration in the tree at its recorded 
   const local = compare({ protectedDigests: manifest.migrations, headManifest: manifest, headDigests: (await import('./migration-manifest.mjs')).digestsAt('HEAD', here), source: 'tree' });
   assert.equal(local.ok, true, local.problems.join('; '));
   const ci = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
-  // the verifier RUNS FROM THE BASE: a candidate that edits a migration and the verifier together verifies nothing
   assert.match(ci, /git fetch --no-tags --depth=1 origin "\$BASE" "\$HEAD"/u);
   assert.match(ci, /git show "\$BASE:scripts\/migration-manifest\.mjs" > "\$RUNNER_TEMP\/migration-manifest\.mjs"/u);
   assert.match(ci, /node "\$RUNNER_TEMP\/migration-manifest\.mjs" verify --base "\$BASE" --head "\$HEAD"/u);

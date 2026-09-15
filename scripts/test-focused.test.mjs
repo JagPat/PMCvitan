@@ -6,7 +6,7 @@ const ROOT = '/repo';
 const files = (absolute, pattern) => (absolute.endsWith('/dir') || absolute.endsWith('/integration')
   ? ['/repo/apps/api/test/integration/dir/a.test.ts', '/repo/apps/api/test/integration/dir/b.test.ts']
   : [absolute]).filter((f) => pattern.test(f));
-const options = (exists = () => true) => ({ root: ROOT, exists, files });
+const options = (exists = () => true) => ({ root: ROOT, exists, files, real: (p) => p });
 
 test('one existing path resolves to the configuration that owns it, with exact selectors', () => {
   const api = plan(['--', 'apps/api/test/integration/x.test.ts'], options());
@@ -29,6 +29,9 @@ test('missing paths, escapes, flag-only arguments, unknown roots and unmatched s
   assert.match(plan(['apps/api/test/integration/missing.test.ts'], options(() => false)).error, /does not exist/u);
   assert.match(plan(['docs/POLICY.md'], options()).error, /not under a test root/u);
   assert.match(plan(['apps/api/test/integration/helper.ts'], options()).error, /selects no test file/u);
+  const real = (p) => (p.includes('external') ? '/elsewhere/external.test.mjs' : p);
+  assert.match(plan(['scripts/external.test.mjs'], { ...options(), real }).error, /resolves outside the repository/u);
+  assert.equal(plan(['scripts/z.test.mjs'], { ...options(), real }).error, undefined);
 });
 
 test('the child process receives an argument array and its exact status becomes the exit code', () => {
@@ -66,6 +69,9 @@ test('one database lease spans the readiness check and the child: a second runne
   const held = lease(env, { fs, alive: () => true });
   assert.equal(held.error, undefined);
   assert.match(lease(env, { fs, alive: () => true }).error, /holds the database lease/u);
+  assert.match(lease({ DATABASE_URL: 'postgresql://other:pw@x:5432/pmcvitan_test?schema=public' }, { fs, alive: () => true }).error, /holds the database lease/u);
+  const other = lease({ DATABASE_URL: 'postgresql://x/pmcvitan_test2' }, { fs, alive: () => true });
+  assert.equal(other.error, undefined, 'a different database is a different lease'); other.release();
   held.release(); assert.equal(store.size, 0);
   const stale = lease(env, { fs, alive: () => false }); store.set(stale.path, '999999'); // left behind by a dead process
   assert.equal(lease(env, { fs, alive: () => false }).error, undefined, 'a dead holder is reclaimed');
