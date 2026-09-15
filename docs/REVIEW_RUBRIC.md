@@ -18,8 +18,7 @@ reviewer reads it. Run it on the WHOLE of every touched file, not on the changed
 ## The eight finding families and their probes
 
 Each family names the probe that turns the question into a failing test first (helpers in
-`apps/api/test/invariants/probes.ts`, shown RED then GREEN in `process-invariant-probes.test.ts`;
-`lockOrderProbe` arrives in its own unit, `reform-1b`).
+`apps/api/test/invariants/probes.ts`, shown RED then GREEN in `process-invariant-probes.test.ts`).
 
 | Family | The question | Probe |
 | --- | --- | --- |
@@ -27,7 +26,7 @@ Each family names the probe that turns the question into a failing test first (h
 | identity / recipient / actor binding | Does the event name THIS row, target THIS recipient and carry THIS actor? A same-type event for the same decision is not this fact's. | `pairingMatrix` negatives `wrong-identity`, `wrong-audience`, `wrong-actor`, owed by every writer branch (`REQUIRED_NEGATIVES`; a writer's own negatives add to them, never replace them) |
 | no-op transition | Does a `SET x = x` touch satisfy a rule that means "moved"? Transitions are recorded where `OLD` is in hand. | `noOpUpdateProbe` |
 | shared-function / alternate-writer coverage | A trigger installed on two tables, or a key with two writer branches: does EACH branch have its own arm, in BOTH write orders? | `pairingMatrix` over the compiled (key, writer branch) pairs |
-| lock order / concurrency | Is the guard's lock taken before its read, and held through its mutation? Show the interleaving. | `lockOrderProbe` (arrives in `reform-1b`: a real lock wait, never a sleep; a competing writer held pending through the guard's transaction, its order asserted) |
+| lock order / concurrency | Is the guard's lock taken before its read, and held through its mutation? Show the interleaving. | `lockOrderProbe` (a real lock wait, never a sleep; a competing writer is seen waiting behind the guard before the guard may mutate and lands only after it; a holder, contender, inspection, competitor, release or abort that throws fails the probe) |
 | migration immutability / replay | Are deployed bytes unchanged (POLICY: deployed migrations are immutable)? Does the new migration apply twice? | bytes: `git diff --name-only <base>...HEAD -- apps/api/prisma/migrations/` names only NEW directories (a reviewer-read rule until the migration-manifest unit lands its CI check); replay only: `rerunTwice` |
 | whitespace / input constraints | Does a non-blank CHECK reject the whole ASCII whitespace set? | `whitespaceCheckProbe` |
 | previous-generation compatibility | Does the still-serving release's exact bundle commit at the prior generation? | `pairingMatrix` `priorWriter` |
