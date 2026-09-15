@@ -14,15 +14,36 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-unit-i-dark-migration
-reviewed_merge: 1fb8f531
-open_pr: 582
+work_item: none
+reviewed_merge: 5be4de3d
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-10
+updated: 2026-09-15
 ```
 
-### Unit 4d-i — the DARK MIGRATION — is the OPEN work item
+### Post-#584 handoff — resume the unfinished Phase 6 task 4
+
+PR #582 merged at `acbcd780e004a752483e090aa135abb902902e34`; both dark-migration
+files are present on main. PR #584 then merged at
+`5be4de3d40e928f560450ba8c6695793cda93821`, completing F-1b code delivery.
+Neither PR remains open. Clear the completed unit and stale PR pointer together.
+
+The parent task remains `in_progress`: Phase 6 task 4 and the remaining 4d
+workflow are **not complete**. The next planned unit is **4d-i-b, the pairing
+switch-on**, under the active plan's §D, before 4d-ii-a, 4d-ii-b, the drain
+attestation and 4d-iii. The next author must verify fresh main and the active
+producer before opening that unit; no successor session is claimed by this record.
+F-1c and the maintenance queue retain their existing priority.
+
+The user reported manually redeploying `5be4de3d` to Coolify on 2026-09-15.
+The public frontend stylesheet contains F-1b's 44px target floor and fractional
+mobile media query, and the API health endpoint responds HTTP 200. This is
+frontend delivery evidence, not proof that the API ran the 4d migrations or
+that a previous-release drain or outbox reseal completed. Existing production
+attestation requirements remain in force.
+
+### Historical record — 4d-i while #582 was open
 
 `task_state` is `in_progress`, because the 4d plan merged as #572 and its FIRST
 implementation unit is now underway on `claude/jagpat-pmcvitan-pr-552-6bfsa9`.
@@ -4307,9 +4328,13 @@ Review Stops" section of the phase plan.
 - `ready` — PR marked ready for review; the merge is queued behind CI
 ### A STATUS-only HANDOFF PR records the state AFTER its own merge
 
-A PR whose entire diff is this file is not a work item — it IS the handoff, and the
-runner reads it only once it has merged. So it must land in the handoff shape
-(`task_state: merged`, `work_item: none`, `open_pr: none`), never recording ITSELF as
+A STATUS handoff is not a work item — it IS the handoff, and the
+runner reads it only once it has merged. A completed task lands with
+`task_state: merged`, `work_item: none`, `open_pr: none`. When only a unit has
+merged and its parent still has work, retain `task_state: in_progress`, clear
+`work_item` and `open_pr`, keep `blocking_directive: none`, and name the parent
+continuation in `next_task`. The resolver then resumes that same parent task.
+Neither handoff records ITSELF as
 the open PR: `assessRunnerState` consumes any non-`none` `open_pr` before it reaches
 `next_task`, so a handoff naming its own number sends the post-merge runner back to a
 PR that no longer exists instead of starting the next unit.

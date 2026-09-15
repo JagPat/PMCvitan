@@ -162,3 +162,41 @@ test('buildDriftHandoff handles stale open_pr with no live autonomous PR', () =>
   assert.match(message, /no live autonomous PR to shepherd/u);
   assert.match(message, /open_pr` to `none`/u);
 });
+
+
+test('a partial-task handoff corrects its own stale PR without closing the parent task', async () => {
+  const { detectStatusDriftAcrossHeads } = await import('./runner-continuation.mjs');
+  const { assessRunnerState } = await import('./autonomous-status-state.mjs');
+  const before = { phase: '6', task: '4', task_state: 'in_progress',
+    work_item: 'phase-6-task-4d-unit-i-dark-migration', open_pr: '582',
+    next_task: 'phase-6-task-4d', blocking_directive: 'none' };
+  const after = { ...before, work_item: 'none', open_pr: 'none' };
+  const handoff = pullRequest({ number: 590 });
+  const verdict = detectStatusDriftAcrossHeads({ defaultBranchNow: before,
+    openPullRequests: [handoff], headStatuses: [{ number: 590, now: after, editsStatus: true }] });
+  assert.equal(verdict.correctedInFlight, true);
+  assert.equal(assessRunnerState(after).nextStep, 'task:4');
+  assert.equal(after.task_state, 'in_progress');
+
+  // An unchanged maintenance head and an unrelated live task still need shepherding.
+  assert.equal(detectStatusDriftAcrossHeads({ defaultBranchNow: after,
+    openPullRequests: [handoff], headStatuses: [{ number: 590, now: after, editsStatus: true }] }).drift, true);
+  assert.equal(detectStatusDriftAcrossHeads({ defaultBranchNow: before,
+    openPullRequests: [handoff, pullRequest({ number: 591 })],
+    headStatuses: [{ number: 590, now: after, editsStatus: true }] }).drift, true);
+  assert.equal(detectStatusDriftAcrossHeads({ defaultBranchNow: before,
+    openPullRequests: [handoff], headStatuses: [{ number: 590, now: after, editsStatus: false }] }).drift, true);
+});
+
+
+test('partial-task handoff classification does not admit malformed or active work', async () => {
+  const { isHandoffShape } = await import('./runner-continuation.mjs');
+  const now = { task: '4', task_state: 'in_progress', work_item: 'none',
+    open_pr: 'none', next_task: 'phase-6-task-4d', blocking_directive: 'none' };
+  assert.equal(isHandoffShape(now), true);
+  for (const change of [{ task_state: 'IN_PROGRESS' }, { task: 'none' },
+    { work_item: 'next-unit' }, { open_pr: '590' }, { blocking_directive: 'repair' },
+    { next_task: 'none' }, { open_pr: 'NONE' }, { work_item: 'NONE' }]) {
+    assert.equal(isHandoffShape({ ...now, ...change }), false, JSON.stringify(change));
+  }
+});
