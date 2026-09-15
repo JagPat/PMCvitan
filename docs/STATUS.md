@@ -14,9 +14,9 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: none
+work_item: phase-6-task-4d-unit-i-b-pairing-switch-on
 reviewed_merge: 5be4de3d
-open_pr: none
+open_pr: 590
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-15
@@ -50,7 +50,9 @@ permitted unit under the active plan's §D, ordered between 4d-i and 4d-ii-a. On
 unit's own commit `work_item` and `open_pr` are both `none`, by the §D self-naming
 convention — the PR number does not exist until the PR does — and both take their
 values together on the pointer commit that follows, because `assessRunnerState`
-sends a named `work_item` with no `open_pr` beside it to the PARENT task.
+sends a named `work_item` with no `open_pr` beside it to the PARENT task. This is
+that pointer commit: `open_pr` is **#590**, the draft PR opened from the unit commit
+`12e31b36ca24084b0670df6fcc75d3dfca8fc0c2` on `claude/phase6-t4d-i-b-pairing-switch-on`.
 
 **What the unit is.** ONE migration,
 `20271222000000_phase6_t4d_i_b_pairing_switch_on`, applied on top of both 4d-i
