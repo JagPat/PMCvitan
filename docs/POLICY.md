@@ -62,10 +62,12 @@ every unresolved finding and reproduce-first proof, and link both PRs.
 The declared correction owner continues fixing the current PR, family-wide
 (REVIEW_RUBRIC.md): every dimension, every writer branch, whole file, before one push. At the THIRD distinct
 reviewed head with a P1 in the same file, ordinary patching stops for an additive
-redesign in smaller units; the findings stay open. A disputed finding gets one
-reconsideration round on a concrete counterexample under the `disputed-finding` label;
-unresolved, it still blocks. Review machinery is frozen: no new controller, watchdog or
-lease feature outside a requested maintenance PR.
+redesign in smaller units; the findings stay open. This stop binds the correction owner,
+who records it on the PR; the controller counts finding heads as a signal and mints no
+obligation from the count (review-lifecycle.mjs). A disputed finding is argued on its
+thread with a concrete counterexample; no label or gate state reads a dispute, and the
+finding blocks until a new head answers it or the repository owner rules. Review machinery
+is frozen: no new controller, watchdog or lease feature outside a requested maintenance PR.
 
 Keep one concern per PR. A standard review unit is at most 20 files and 1,500 changed
 lines. Larger units need `<!-- review-size: justified-large -->` and all six invariant
@@ -235,6 +237,7 @@ Reviewer output rules, the family probes and the dispute path live in
 | Current task and post-merge coherence | docs/STATUS.md / autonomous-status-state.mjs | autonomous-status-state.test.mjs; continuation tests |
 | Engineering invariants | Owning product module, SQL constraints and review | Relevant unit, PostgreSQL, migration and browser proofs |
 | Family probes (eight families) | apps/api/test/invariants/probes.ts | process-invariant-probes.test.ts |
+| Third-head stop and disputes | Correction owner, on the PR thread (no controller state) | policy-contract tests |
 
 ### Claude independent-review shadow boundary
 

@@ -94,15 +94,19 @@ describe('rerunTwice', () => {
 describe('lockOrderProbe', () => {
   /** the holder: session A locks the row inside a transaction it holds open until released */
   const holder = () => {
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let release!: () => void; let abort!: (error: Error) => void;
+    const gate = new Promise<void>((resolve, reject) => { release = resolve; abort = reject; });
     let ready!: () => void;
     const locked = new Promise<void>((resolve) => { ready = resolve; });
     const tx = a.$transaction(async (t) => {
       await t.$queryRawUnsafe('SELECT status FROM _probe_lock WHERE id = 1 FOR UPDATE');
       ready(); await gate;
     }, { timeout: 30_000, maxWait: 10_000 });
-    return { holderReady: () => locked, release: async () => { release(); await tx; } };
+    return {
+      holderReady: () => locked, release: async () => { release(); await tx; },
+      /** rolls the holder back whatever release did: the callback throws on the rejected gate */
+      abort: async () => { abort(new Error('holder aborted')); await tx.catch(() => undefined); },
+    };
   };
   /** does another session currently wait on a lock over the probe table? polled from session A's pool */
   const inspectBlocked = async () => {
@@ -129,6 +133,13 @@ describe('lockOrderProbe', () => {
   it('passes on a guard that locks first: the contender waits, reads only after release, then proceeds', async () => {
     await lockOrderProbe({ ...holder(), inspectBlocked, verify,
       contenderStarted: ({ observed }) => (async () => { const r = await read(' FOR UPDATE'); observed(); return r; })() });
+  });
+  it('fails, and still frees the row, when the release rejects BEFORE unlocking (no lock outlives the probe)', async () => {
+    await failsWith(/holder's release failed.*connection lost/u)(() => lockOrderProbe({ ...holder(), inspectBlocked, verify,
+      release: async () => { throw new Error('connection lost'); },
+      contenderStarted: ({ observed }) => (async () => { const r = await read(' FOR UPDATE'); observed(); return r; })() }));
+    // NOWAIT: the row must be free the moment the probe returns
+    await read(' FOR UPDATE NOWAIT');
   });
   it('fails when the contender or the release throws after a correct wait: a crashed command is not evidence', async () => {
     await failsWith(/contender failed instead of completing.*connection reset/u)(() => lockOrderProbe({ ...holder(), inspectBlocked, verify,
@@ -158,17 +169,24 @@ describe('pairingMatrix', () => {
     await failsWith(/duplicate writer branch/u)(() => pairingMatrix([pair('decision.approved', 'approve')], [row(log, 'decision.approved', 'approve'), row(log, 'decision.approved', 'approve')]));
     expect(log).toEqual([]);
   });
-  it('requires every binding negative per writer: one negative is not the four, and a writer may not declare none', async () => {
+  it('requires every binding negative per writer: one negative is not the four, and a writer\'s own negatives add to them', async () => {
     const log: string[] = [];
     await failsWith(/k · one lacks its wrong-identity negative/u)(() => pairingMatrix([pair('k', 'one')], [row(log, 'k', 'one', ['missing-counterpart'])]));
     await failsWith(/k · one lacks its custom negative/u)(() => pairingMatrix([pair('k', 'one', ['custom'])], [row(log, 'k', 'one')]));
-    await failsWith(/k · one declares no negative dimension/u)(() => pairingMatrix([pair('k', 'one', [])], [row(log, 'k', 'one')]));
+    // a declared set never REPLACES the four: a row carrying only the writer's own negative still owes the rubric's
+    await failsWith(/k · one lacks its missing-counterpart negative/u)(() => pairingMatrix([pair('k', 'one', ['custom'])], [row(log, 'k', 'one', ['custom'])]));
+    expect(log).toEqual([]);
+  });
+  it('refuses an empty expected population and a duplicated expected writer: a silent catalog is not a passing matrix', async () => {
+    const log: string[] = [];
+    await failsWith(/expected population is empty/u)(() => pairingMatrix([], []));
+    await failsWith(/duplicate expected writer k · one/u)(() => pairingMatrix([pair('k', 'one'), pair('k', 'one')], [row(log, 'k', 'one')]));
     expect(log).toEqual([]);
   });
   it('executes every positive order, prior writer and named negative on a complete matrix', async () => {
     const log: string[] = [];
     const extra = [...REQUIRED_NEGATIVES, 'extra'];
-    const result = await pairingMatrix([pair('k', 'one'), pair('k', 'two')], [row(log, 'k', 'one'), row(log, 'k', 'two', extra)]);
+    const result = await pairingMatrix([pair('k', 'one'), pair('k', 'two', ['extra'])], [row(log, 'k', 'one'), row(log, 'k', 'two', extra)]);
     expect(result.rows).toBe(2);
     const neg = (branch: string, names: readonly string[]) => names.map((n) => `${branch}:${n}`);
     expect(log).toEqual(['one:ff', 'one:ef', 'one:prior', ...neg('one', REQUIRED_NEGATIVES), 'two:ff', 'two:ef', 'two:prior', ...neg('two', extra)]);
