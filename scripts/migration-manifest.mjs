@@ -6,7 +6,9 @@ import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-export const MANIFEST_PATH = 'apps/api/prisma/migrations/manifest.sha256.json';
+// beside the migrations directory, never inside it: migrate.sh, the proof scripts and the
+// seal-stripped harness enumerate every entry of that directory as a migration
+export const MANIFEST_PATH = 'apps/api/prisma/migration-manifest.sha256.json';
 const MIGRATION = /^apps\/api\/prisma\/migrations\/[^/]+\/migration\.sql$/u;
 const MAX = 64 * 1024 * 1024;
 

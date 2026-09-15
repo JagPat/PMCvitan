@@ -39,7 +39,7 @@ file. The PostgreSQL suite also needs `DATABASE_URL` naming a disposable `*test*
 and no live integration or API e2e run (checked from `ps`); migrations are applied first.
 Run the focused suites the diff touches before a push; the full battery runs in GitHub.
 
-`apps/api/prisma/migrations/manifest.sha256.json` records the SHA-256 of every migration
+`apps/api/prisma/migration-manifest.sha256.json` records the SHA-256 of every migration
 present at its `baseRef` (a conservative superset of the deployed inventory). The
 `review-scope` job fetches the PR's base and head commits and runs
 `scripts/migration-manifest.mjs verify`: a protected file whose head bytes differ from the

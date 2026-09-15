@@ -155,7 +155,7 @@ checks do not prove every domain invariant.
 
 - Deployed migrations are immutable. Never edit, reorder, or rewrite a migration
   that has already shipped — new changes go in a new, additive migration. CI verifies
-  every protected file's bytes against `manifest.sha256.json` at the PR base
+  every protected file's bytes against `migration-manifest.sha256.json` at the PR base
   (`scripts/migration-manifest.mjs`); a new migration is recorded with `pnpm migrations:manifest`.
 - If a migration adds a column that an append-only trigger governs, the same
   migration must add that column to the trigger's frozen identity/evidence set.
