@@ -58,6 +58,15 @@ export const CONVERGENCE_AFTER_FINDING_HEADS = 2;
 // review stop will settle it. The finding is kept and its verification is moved to the
 // one place a verification can exist.
 export const PLAN_REVIEW_ROUND_CAP = 3;
+// Units numbered above this carry the HARD size cap (user decision, 2026-09-15): an oversized
+// ordinary unit is split, `justified-large` admits nothing, no human size marker exists, and the
+// ONLY exemption is an inseparable migration unit whose diff carries the migration and its
+// service and whose six invariant rows carry concrete risk and evidence.
+export const HARD_SIZE_CAP_AFTER_PR = 590;
+// A plan added or modified by a unit is read at the PR head and may not exceed this many lines;
+// an untouched historical plan is never re-measured.
+export const PLAN_FILE = /^docs\/superpowers\/plans\/[^/]+\.md$/u;
+export const PLAN_MAX_LINES = 400;
 
 const LARGE_MARKER = '<!-- review-size: justified-large -->';
 const INSEPARABLE_MIGRATION_MARKER = '<!-- migration-scope: inseparable -->';
@@ -386,7 +395,25 @@ export function assessReviewScope(
           && Boolean(cells[2]),
       ),
     );
-    if (!justified || missingInvariants.length > 0) {
+    if (number > HARD_SIZE_CAP_AFTER_PR) {
+      const vague = REQUIRED_INVARIANTS.filter((invariant) => !tableRows.some(
+        (cells) => cells[0]?.toLowerCase() === invariant && concreteCell(cells[1]) && concreteCell(cells[2]),
+      ));
+      missingInvariants = vague;
+      // the exemption is for MIGRATION work the service cannot be separated from: the diff itself
+      // must carry that seam, or the marker and six boilerplate rows would exempt anything
+      if (migrationScope === 'inseparable' && vague.length === 0 && migrationServiceMix) {
+        state = 'inseparable_large';
+      } else {
+        sizeProblem = `Review unit exceeds the hard cap of ${maxFiles} files / ${maxChangedLines.toLocaleString('en-US')} changed lines `
+          + `(${changedFileCount} files, ${changedLines.toLocaleString('en-US')} lines): split it into ordinary units. The only exemption is `
+          + `${INSEPARABLE_MIGRATION_MARKER} on a diff carrying a migration and its inseparable service, with a complete invariant matrix whose six rows carry concrete risk and evidence`
+          + (justified ? '; `justified-large` no longer admits a new oversized unit' : '')
+          + (migrationScope !== 'inseparable' ? '; no inseparable-migration marker' : '')
+          + (!migrationServiceMix ? '; the diff carries no migration+service seam' : '')
+          + (vague.length > 0 ? `; rows without concrete risk and evidence: ${vague.join(', ')}` : '');
+      }
+    } else if (!justified || missingInvariants.length > 0) {
       const missing = [
         ...(!justified ? [`the ${LARGE_MARKER} marker`] : []),
         ...(missingInvariants.length > 0
@@ -508,6 +535,35 @@ export function codexFindingHeads(comments, reviews = []) {
 
 function changedFilename(file) {
   return typeof file === 'string' ? file : file?.filename;
+}
+
+const CELL_PLACEHOLDERS = /^(?:n\/?a|none|tbd|todo|to do|yes|ok|done|checked|-+|\?+|see above|as above|relevant risk|focused probe)$/iu;
+/** A risk or evidence cell that states something: not blank, not a placeholder, not a fragment. */
+function concreteCell(cell) {
+  const text = String(cell ?? '').trim();
+  return text.length >= 20 && !CELL_PLACEHOLDERS.test(text);
+}
+
+/**
+ * Added or modified plan files, measured by their CONTENT at the authoritative PR head:
+ * `contents` maps each changed plan path to its text, or null when it could not be read.
+ * A removed plan is not measured; a renamed one is measured under its new name. An
+ * unreadable plan fails, never skips: the alternative is a plan that grows past the cap
+ * and passes because the check could not read what the PR changed.
+ */
+export function changedPlanPaths(changedFiles) {
+  return (changedFiles ?? []).map((file) => (file?.status === 'removed' ? undefined : changedFilename(file)))
+    .filter((name) => typeof name === 'string' && PLAN_FILE.test(name));
+}
+export function assessPlanSizes(changedFiles, contents = {}, maxLines = PLAN_MAX_LINES) {
+  const problems = [];
+  for (const name of changedPlanPaths(changedFiles)) {
+    const text = contents[name];
+    if (typeof text !== 'string') { problems.push(`plan ${name} changed but its head content could not be read`); continue; }
+    const lines = text.length === 0 ? 0 : text.replace(/\n$/u, '').split('\n').length;
+    if (lines > maxLines) problems.push(`plan ${name} is ${lines} lines at the PR head; the limit for an added or modified plan is ${maxLines}`);
+  }
+  return { allowed: problems.length === 0, measured: changedPlanPaths(changedFiles).length, problems };
 }
 
 // Documentation, for the purpose of "can a finding on this be proven?". Anything that

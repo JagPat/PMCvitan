@@ -20,8 +20,10 @@ import { OPEN_TASK_STATES, parseStatusNow } from './autonomous-status-state.mjs'
 import {
   assessTrackedTree,
   parseTrackedTree,
+  planContentsAt,
   run as runScope,
 } from './review-scope.mjs';
+import { HARD_SIZE_CAP_AFTER_PR, PLAN_MAX_LINES, assessPlanSizes, changedPlanPaths } from './review-efficiency.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
 
@@ -1660,6 +1662,130 @@ test('the scope CLI refuses a tracked dependency path independently of the scope
     assert.equal(refused.allowed, true, 'the scope verdict is unchanged');
     assert.equal(refused.tree.allowed, false);
     assert.equal(process.exitCode, 1);
+  } finally {
+    process.exitCode = previousExitCode;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// ── the hard size cap for units numbered above HARD_SIZE_CAP_AFTER_PR (2026-09-15) ────────────
+const NEW_UNIT = HARD_SIZE_CAP_AFTER_PR + 1;
+const sixRows = (risk = 'a forged claim could cross the tenant boundary here', evidence = 'refused by the composite FK probe in the integration battery') => [
+  '| Invariant | Risk | Evidence |', '| --- | --- | --- |',
+  ...REQUIRED_INVARIANTS.map((invariant) => `| ${invariant} | ${risk} | ${evidence} |`),
+];
+const capBody = (markers, rows = sixRows()) => [...markers, '<!-- correction-owner: claude -->', ...preReviewBody().split('\n').slice(3).filter((line) => !/Migration\/service seam/u.test(line)), '- Migration/service seam: the seed literal is generated from the compiled catalog', ...rows].join('\n');
+
+test('a new unit at exactly 20 files / 1,500 lines passes; 21 files or 1,501 lines fails whatever marker it carries', () => {
+  const within = assessReviewScope(pullRequest({ number: NEW_UNIT, changed_files: 20, additions: 1_000, deletions: 500, body: preReviewBody() }), { changedFiles: [] });
+  assert.equal(within.allowed, true, within.detail);
+  for (const overrides of [{ changed_files: 21, additions: 100, deletions: 0 }, { changed_files: 3, additions: 1_500, deletions: 1 }]) {
+    const plain = assessReviewScope(pullRequest({ number: NEW_UNIT, ...overrides, body: preReviewBody() }), { changedFiles: [] });
+    assert.equal(plain.allowed, false);
+    assert.match(plain.detail, /exceeds the hard cap of 20 files \/ 1,500 changed lines .* split it into ordinary units/u);
+    // the correction owner's remedy classifier reads this phrase; the refusal must keep it
+    assert.match(plain.detail, /invariant matrix/u);
+    const justified = assessReviewScope(pullRequest({ number: NEW_UNIT, ...overrides, body: capBody(['<!-- review-size: justified-large -->']) }), { changedFiles: [] });
+    assert.equal(justified.allowed, false);
+    assert.match(justified.detail, /`justified-large` no longer admits/u);
+  }
+});
+
+test('the only exemption is an inseparable migration unit whose diff carries the seam and whose six rows are concrete', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  // the marker and the rows exempt MIGRATION work only: the diff must carry a migration AND the service it cannot be separated from
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  const exempt = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->']) }), { changedFiles: mixed });
+  assert.equal(exempt.allowed, true, exempt.detail);
+  assert.equal(exempt.state, 'inseparable_large');
+  for (const files of [[], ['apps/api/src/x/x.service.ts', 'docs/a.md'], ['apps/api/prisma/migrations/20270101000000_x/migration.sql']]) {
+    const bare = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->']) }), { changedFiles: files });
+    assert.equal(bare.allowed, false, `an oversized unit without a migration+service seam is ordinary: ${files.join(',')}`);
+    assert.match(bare.detail, /carries no migration\+service seam/u);
+  }
+  // an unreadable file list cannot prove the seam, so it cannot exempt
+  const unreadable = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->']) }), { requireChangedFiles: true });
+  assert.equal(unreadable.allowed, false);
+  assert.match(unreadable.detail, /carries no migration\+service seam/u);
+  const vagueRow = sixRows().slice(0, -1).concat(`| ${REQUIRED_INVARIANTS.at(-1)} | n/a | checked |`);
+  const vague = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], vagueRow) }), { changedFiles: mixed });
+  assert.equal(vague.allowed, false);
+  assert.match(vague.detail, new RegExp(`rows without concrete risk and evidence: ${REQUIRED_INVARIANTS.at(-1)}`, 'u'));
+  assert.deepEqual(vague.missingInvariants, [REQUIRED_INVARIANTS.at(-1)]);
+  const fiveRows = sixRows().slice(0, -1);
+  assert.equal(assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], fiveRows) }), { changedFiles: mixed }).allowed, false);
+  // a legacy placeholder pair that satisfied the old rule is not concrete
+  const legacyCells = sixRows('relevant risk', 'focused probe');
+  assert.match(assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], legacyCells) }), { changedFiles: mixed }).detail, /rows without concrete risk and evidence: authorization-tenancy/u);
+  // an older unit keeps the justified-large rule it was authored under
+  assert.equal(assessReviewScope(pullRequest({ ...large, number: 300, body: justifiedLargeBody() })).state, 'justified_large');
+});
+
+test('no human size-approval marker is read anywhere in the scope logic', async () => {
+  for (const path of ['./review-efficiency.mjs', './review-policy.mjs', './review-scope.mjs', './autonomous-review-gate.mjs']) {
+    assert.doesNotMatch(await readFile(new URL(path, import.meta.url), 'utf8'), /size-approved-by/u, path);
+  }
+});
+
+test('an added or modified plan is measured by its head content: 400 lines pass, 401 fail, unreadable fails, removed and untouched plans are not measured', () => {
+  const plan = 'docs/superpowers/plans/2026-09-15-example.md';
+  const lines = (n) => `${Array.from({ length: n }, (_, i) => `line ${i}`).join('\n')}\n`;
+  assert.equal(assessPlanSizes([{ filename: plan, status: 'added' }], { [plan]: lines(PLAN_MAX_LINES) }).allowed, true);
+  const over = assessPlanSizes([{ filename: plan, status: 'modified' }], { [plan]: lines(PLAN_MAX_LINES + 1) });
+  assert.equal(over.allowed, false);
+  assert.match(over.problems[0], /401 lines at the PR head/u);
+  assert.match(assessPlanSizes([{ filename: plan, status: 'modified' }], { [plan]: null }).problems[0], /could not be read/u);
+  assert.match(assessPlanSizes([{ filename: plan, status: 'modified' }], {}).problems[0], /could not be read/u);
+  assert.equal(assessPlanSizes([{ filename: plan, status: 'removed' }], {}).allowed, true);
+  assert.equal(assessPlanSizes([{ filename: 'docs/POLICY.md', status: 'modified' }], {}).allowed, true);
+  assert.deepEqual(changedPlanPaths([{ filename: plan, status: 'removed' }, { filename: 'docs/POLICY.md' }, { filename: plan.replace('example', 'kept') }]), [plan.replace('example', 'kept')]);
+  // a rename is judged under its NEW name, from the head's content
+  const renamed = assessPlanSizes([{ filename: plan, previous_filename: 'docs/superpowers/plans/old.md', status: 'renamed' }], { [plan]: lines(500) });
+  assert.match(renamed.problems[0], /2026-09-15-example\.md is 500 lines/u);
+});
+
+test('the scope CLI reads each changed plan at the PR HEAD commit and fails on an oversized or unreadable one', async () => {
+  const plan = 'docs/superpowers/plans/2026-09-15-wired.md';
+  const lines = (n) => `${Array.from({ length: n }, (_, i) => `line ${i}`).join('\n')}\n`;
+  const directory = await mkdtemp(join(tmpdir(), 'pmcvitan-review-plan-'));
+  const eventPath = join(directory, 'event.json');
+  const previousExitCode = process.exitCode;
+  const requested = [];
+  const serve = (planText) => async (url, init) => {
+    requested.push(String(url));
+    if (/\/pulls\/401\/files/u.test(String(url))) {
+      return new Response(JSON.stringify([{ filename: plan, status: 'modified' }, { filename: 'scripts/review-efficiency.mjs', status: 'modified' }]));
+    }
+    if (/\/contents\/docs\/superpowers\/plans\/2026-09-15-wired\.md\?ref=head-sha-1$/u.test(String(url))) {
+      assert.equal(init.headers.accept, 'application/vnd.github.raw+json');
+      return planText === null ? new Response('gone', { status: 404 }) : new Response(planText);
+    }
+    return new Response('unexpected', { status: 500 });
+  };
+  await writeFile(eventPath, JSON.stringify({
+    repository: { full_name: 'JagPat/PMCvitan' },
+    pull_request: pullRequest({ number: 401, changed_files: 2, additions: 40, deletions: 0, body: preReviewBody(), head: { sha: 'head-sha-1' } }),
+  }));
+  try {
+    const within = await runScope({ eventPath, token: 'test-token', fetchImpl: serve(lines(PLAN_MAX_LINES)) });
+    assert.equal(within.plans.allowed, true, within.plans.problems.join('; '));
+    assert.equal(within.plans.measured, 1);
+    assert.ok(requested.some((url) => /contents\/.*\?ref=head-sha-1$/u.test(url)), 'the plan is read at the head SHA, not from the checkout');
+    assert.notEqual(process.exitCode, 1);
+
+    const over = await runScope({ eventPath, token: 'test-token', fetchImpl: serve(lines(PLAN_MAX_LINES + 1)) });
+    assert.equal(over.plans.allowed, false);
+    assert.match(over.plans.problems[0], /401 lines at the PR head/u);
+    assert.equal(process.exitCode, 1);
+
+    process.exitCode = previousExitCode;
+    const unreadable = await runScope({ eventPath, token: 'test-token', fetchImpl: serve(null) });
+    assert.equal(unreadable.plans.allowed, false);
+    assert.match(unreadable.plans.problems[0], /could not be read/u);
+    assert.equal(process.exitCode, 1);
+
+    // no token, no fetch: the plan is unreadable by construction, never silently skipped
+    assert.deepEqual(await planContentsAt({ paths: [plan], headSha: 'x', repository: 'a/b' }), { [plan]: null });
   } finally {
     process.exitCode = previousExitCode;
     await rm(directory, { recursive: true, force: true });
