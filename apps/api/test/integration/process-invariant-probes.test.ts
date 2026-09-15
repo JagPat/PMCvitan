@@ -150,6 +150,29 @@ describe('lockOrderProbe', () => {
     // NOWAIT: the row must be free the moment the probe returns
     await read(' FOR UPDATE NOWAIT');
   });
+  it('fails, and still frees the row, when the holder fails AFTER taking the lock (readiness is inside the guard)', async () => {
+    const h = holder();
+    await failsWith(/holder failed before it was ready.*readiness monitor failed/u)(() => lockOrderProbe({ ...h, inspectBlocked, verify,
+      holderReady: async () => { await h.holderReady(); throw new Error('readiness monitor failed'); },
+      contenderStarted: ({ observed }) => (async () => { const r = await read(' FOR UPDATE'); observed(); return r; })() }));
+    await read(' FOR UPDATE NOWAIT');
+  });
+  it('aborts a contender that hangs after reporting, and awaits its settlement; a contender that ignores the signal is named', async () => {
+    let settled = false;
+    await failsWith(/still running after the holder was released and aborted/u)(() => lockOrderProbe({ ...holder(), inspectBlocked, verify, contenderSettleMs: 500,
+      contenderStarted: ({ observed, signal }) => {
+        const work = (async () => {
+          await read(' FOR UPDATE'); observed();
+          await new Promise<never>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+        })();
+        void work.catch(() => undefined).finally(() => { settled = true; });
+        return work;
+      } }));
+    expect(settled).toBe(true);
+    await failsWith(/ignored its abort signal/u)(() => lockOrderProbe({ ...holder(), inspectBlocked, verify, contenderSettleMs: 300,
+      contenderStarted: ({ observed }) => (async () => { await read(' FOR UPDATE'); observed(); await new Promise(() => undefined); })() }));
+    await read(' FOR UPDATE NOWAIT');
+  });
   it('fails, and still frees the row, when the lock inspection itself throws (every exit path aborts the holder)', async () => {
     await failsWith(/lock inspection failed.*connection reset/u)(() => lockOrderProbe({ ...holder(), verify,
       inspectBlocked: async () => { throw new Error('connection reset'); },
@@ -200,6 +223,15 @@ describe('pairingMatrix', () => {
     await failsWith(/expected population is empty/u)(() => pairingMatrix([], []));
     await failsWith(/duplicate expected writer k · one/u)(() => pairingMatrix([pair('k', 'one'), pair('k', 'one')], [row(log, 'k', 'one')]));
     expect(log).toEqual([]);
+  });
+  it('executes the owed negatives by NAME: callbacks held on a prototype or as non-enumerable properties still run', async () => {
+    const log: string[] = [];
+    const inherited = { ...row(log, 'k', 'one'), invalid: Object.create(negatives(log, 'one', REQUIRED_NEGATIVES)) as Record<string, () => Promise<void>> };
+    const hidden = { ...row(log, 'k', 'two'), invalid: {} as Record<string, () => Promise<void>> };
+    for (const name of REQUIRED_NEGATIVES) Object.defineProperty(hidden.invalid, name, { value: probe(log, `two:${name}`), enumerable: false });
+    const result = await pairingMatrix([pair('k', 'one'), pair('k', 'two')], [inherited, hidden]);
+    expect(result.executed.filter((e) => /wrong-|missing-/u.test(e))).toHaveLength(8);
+    for (const branch of ['one', 'two']) for (const name of REQUIRED_NEGATIVES) expect(log).toContain(`${branch}:${name}`);
   });
   it('executes every positive order, prior writer and named negative on a complete matrix', async () => {
     const log: string[] = [];
