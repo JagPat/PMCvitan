@@ -1,7 +1,8 @@
 # PMCvitan policy
 
 This is the canonical written contract for authoring, reviewing and monitoring this
-repository. `scripts/review-policy.mjs` is the shared executable definition module.
+repository. `scripts/review-policy.mjs` is the shared executable definition module;
+[REVIEW_RUBRIC.md](REVIEW_RUBRIC.md) is the whole-file self-review every push follows.
 AGENTS.md and CLAUDE.md are entrypoints; AUTONOMOUS_LOOP.md is the operations guide.
 Do not copy policy definitions into those files, workflow prompts or new controllers.
 
@@ -57,14 +58,21 @@ merged changes advance `main`. Historical replacement labels cannot block unrela
 fresh work. Existing explicit replacement declarations retain provenance validation.
 
 A replacement is exceptional: record a concrete scope or approach benefit, preserve
-every unresolved finding and reproduce-first proof, and link both PRs. Repeated
-findings call for a root-cause audit and stronger proofs, not automatic renumbering.
-The declared correction owner continues fixing the current PR.
+every unresolved finding and reproduce-first proof, and link both PRs.
+The declared correction owner continues fixing the current PR, family-wide
+(REVIEW_RUBRIC.md): every dimension, every writer branch, whole file, before one push. At the THIRD distinct
+reviewed head with a P1 in the same file, ordinary patching stops for an additive
+redesign in smaller units; the findings stay open. A disputed finding gets one
+reconsideration round on a concrete counterexample under the `disputed-finding` label;
+unresolved, it still blocks. Review machinery is frozen: no new controller, watchdog or
+lease feature outside a requested maintenance PR.
 
-Keep one concern per PR. A standard review unit is at most 20 files and 1,500 changed
-lines. Larger units need `<!-- review-size: justified-large -->` and all six invariant
-rows with concrete risk and verification evidence. Numeric limits are review aids,
-not proof of quality. Legacy PR-number exemptions remain solely for compatibility.
+Keep one concern per PR. A review unit is at most 20 files and 1,500 changed lines;
+an oversized unit is split. The only exemption is `<!-- migration-scope: inseparable -->`
+on a diff that carries a migration and its inseparable service, with all six invariant
+rows carrying concrete risk and evidence; for units after #590
+`<!-- review-size: justified-large -->` admits nothing and no human size marker exists.
+An added or modified plan is at most 400 lines at the PR head. Limits are aids, not proof.
 
 Complete the template's five pre-review checks: concurrency/serialization, previous-
 release compatibility, alternate writers/triggers, authorization/tenancy, and
@@ -84,6 +92,10 @@ The trusted controller admits only open same-repository PRs targeting the config
 base. Required CI precedes review; it marks the CI-green draft ready to invoke Codex
 on the exact current head. A current-head finding fails `codex-current-head` and
 returns the same PR to draft. Read all findings and reproduce/fix them as one batch.
+A unit whose cumulative diff (renames and deletions included) touches only documentation
+files under `docs/**` or `*.md` anywhere is exempt from Codex: required CI, the author
+checklist and no finding on the head merge it, and the status records truthfully that no
+review occurred. A runnable file is code wherever it lives; any other path keeps review.
 
 Missing, stale or timed-out review evidence cannot authorize merge. Every push
 invalidates prior clearance. The controller accepts only the configured Codex actor
@@ -144,8 +156,9 @@ checks do not prove every domain invariant.
 ### Database migrations
 
 - Deployed migrations are immutable. Never edit, reorder, or rewrite a migration
-  that has already shipped — new changes go in a new, additive migration. Flag any
-  diff that touches the bytes of an already-deployed migration.
+  that has already shipped — new changes go in a new, additive migration. CI verifies
+  every protected file's bytes against `migration-manifest.sha256.json` at the PR base
+  (`scripts/migration-manifest.mjs`); a new migration is recorded with `pnpm migrations:manifest`.
 - If a migration adds a column that an append-only trigger governs, the same
   migration must add that column to the trigger's frozen identity/evidence set.
   Flag a new column that an existing trigger's column list does not cover.
@@ -206,23 +219,8 @@ A SHA is evidence only when its origin and relevant contents have been verified.
 
 ## Review output expectations
 
-- On the first reviewed head, complete one comprehensive pass across the entire
-  diff and all six invariant-matrix categories before submitting the review.
-  Report the complete set of current findings together.
-- On correction heads, review the correction delta, every prior finding, and the
-  adjacent invariants the correction can affect. Do not reopen a cleared area
-  merely to restate it, but do report any newly exposed correctness or integrity
-  defect. Continue correcting on this PR until the findings are resolved;
-  review count alone does not require a fresh PR.
-- Rank findings by severity. Lead with anything that is a correctness,
-  data-integrity, or ordering bug.
-- For each finding, give the concrete failure: the inputs or interleaving that
-  produce the wrong result. "This could be a race" without the interleaving is not
-  a finding.
-- Do not pad the review with style nits when there are substantive findings. If
-  there are no substantive findings, say so plainly rather than manufacturing
-  concerns.
-- Cite the rule above that a finding violates, so the standard stays visible.
+Reviewer output rules, the family probes and the dispute path live in
+[REVIEW_RUBRIC.md](REVIEW_RUBRIC.md); a finding cites the rule here that it violates.
 
 ## Repository conventions
 
@@ -243,33 +241,27 @@ A SHA is evidence only when its origin and relevant contents have been verified.
 | Correction lease and gate recovery | review-policy.mjs / correction-lease.mjs, autonomous-handoff.mjs | autonomous-correction-lease.test.mjs |
 | Current task and post-merge coherence | docs/STATUS.md / autonomous-status-state.mjs | autonomous-status-state.test.mjs; continuation tests |
 | Engineering invariants | Owning product module, SQL constraints and review | Relevant unit, PostgreSQL, migration and browser proofs |
+| Hard size cap, plan size, docs-only exemption | review-efficiency.mjs / autonomous-review-gate.mjs | review-efficiency.test.mjs; autonomous-review-workflow.test.mjs |
+| Migration immutability | migration-manifest.mjs / CI `review-scope` job | migration-manifest.test.mjs |
+| Family probes (eight families) | apps/api/test/invariants/probes.ts | process-invariant-probes.test.ts |
+| Weekly metrics | review-metrics.mjs → docs/METRICS.md | review-metrics.test.mjs |
 
 ### Claude independent-review shadow boundary
 
-The existing Claude subscription integration responds to GitHub PR conversation
-and can author corrections, but the repository has no documented, tested contract
-that exposes an immutable reviewer completion, actor and exact SHA. A comment,
-mention response, workflow exit code, absence of findings, skipped run or timeout
-therefore cannot become green review evidence. `claude-review-adapter.mjs` is a
-non-authoritative fail-closed boundary only. Activation requires the subscription
-provider to document and verify a GitHub App Check Run named
-`claude-independent-review`, emitted by a dedicated configured App identity, with
-an external id binding PR and SHA and the v1 structured summary validated by the
-adapter. Until a real current-head shadow run proves that contract, the adapter
-does not affect `codex-current-head`, merge eligibility or branch protection.
-
-Rollout is additive: merge this controller after required CI and independent
-Codex review; verify real Claude shadow evidence on a current SHA; then install a new required gate before retiring
-`codex-current-head`. Roll back by leaving or removing the future Claude required
-gate while retaining `codex-current-head`; never create an interval with neither
-gate. No workflow here changes branch protection, credentials, deployment, or drain state.
-
-`assessConvergence` and `assessRestructure` are legacy test/metrics models, not live
-closure authority. A test for a legacy model does not make it active policy. A
-synthetic APPROVED Codex review currently classifies as a finding; validate the
-adapter's actual contract before changing that behavior. That classifier is not changed by this refactor.
+The Claude subscription integration exposes no immutable reviewer completion, actor
+and exact SHA, so no comment, mention response, exit code, absence of findings or
+timeout is green review evidence. `claude-review-adapter.mjs` is a non-authoritative
+fail-closed boundary: activation needs a documented GitHub App Check Run named
+`claude-independent-review` from a dedicated App identity with an external id binding
+PR and SHA and the v1 structured summary, proven on a real current-head shadow run.
+Rollout is additive (install a new required gate before retiring `codex-current-head`;
+never an interval with neither); it changes no branch protection, credential,
+deployment or drain state. `assessConvergence` and `assessRestructure` are legacy
+models, not live closure authority; a synthetic APPROVED Codex review classifies as a
+finding until the adapter's contract is validated.
 
 For every new blocking rule, document the concrete defect it prevents, enforcement
 location, failing counterexample, legitimate recovery path and operating cost.
 Measure merged outcomes, review-to-merge time, repeated findings, unnecessary CI and
-escaped defects. Do not use PR counts or completed checklists as delivery measures.
+escaped defects weekly with `pnpm review:metrics` (definitions in docs/METRICS.md).
+Do not use PR counts or completed checklists as delivery measures.

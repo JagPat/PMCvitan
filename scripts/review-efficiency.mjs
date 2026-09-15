@@ -61,6 +61,14 @@ export const PLAN_REVIEW_ROUND_CAP = 3;
 
 const LARGE_MARKER = '<!-- review-size: justified-large -->';
 const INSEPARABLE_MIGRATION_MARKER = '<!-- migration-scope: inseparable -->';
+// Units numbered above this carry the HARD size cap (user decision, 2026-09-15): an oversized
+// ordinary unit is split, `justified-large` admits nothing, and the ONLY exemption is an
+// inseparable migration unit whose six invariant rows carry concrete risk and evidence.
+export const HARD_SIZE_CAP_AFTER_PR = 590;
+// A plan added or modified by a unit is read at the PR head and may not exceed this many lines;
+// an untouched historical plan is never re-measured.
+export const PLAN_FILE = /^docs\/superpowers\/plans\/[^/]+\.md$/u;
+export const PLAN_MAX_LINES = 400;
 const CONVERGENCE_PACKET = /^docs\/reviews\/[^/]*convergence[^/]*\.md$/iu;
 const MIGRATION_FILE = /^apps\/api\/prisma\/migrations\/[^/]+\/migration\.sql$/u;
 const SERVICE_OR_UI_FILE = /^(?:apps\/api\/src|apps\/web\/src|packages\/shared\/src)\//u;
@@ -386,7 +394,24 @@ export function assessReviewScope(
           && Boolean(cells[2]),
       ),
     );
-    if (!justified || missingInvariants.length > 0) {
+    if (number > HARD_SIZE_CAP_AFTER_PR) {
+      const vague = REQUIRED_INVARIANTS.filter((invariant) => !tableRows.some(
+        (cells) => cells[0]?.toLowerCase() === invariant && concreteCell(cells[1]) && concreteCell(cells[2]),
+      ));
+      // the exemption is for MIGRATION work the service cannot be separated from: the diff itself
+      // must carry that seam, or the marker and six boilerplate rows would exempt anything
+      if (migrationScope === 'inseparable' && vague.length === 0 && migrationServiceMix) {
+        state = 'inseparable_large';
+      } else {
+        sizeProblem = `Review unit exceeds the hard cap of ${maxFiles} files / ${maxChangedLines} changed lines `
+          + `(${changedFileCount} files, ${changedLines} lines): split it into ordinary units. The only exemption is `
+          + `${INSEPARABLE_MIGRATION_MARKER} on a diff carrying a migration and its inseparable service, with all six invariant rows carrying concrete risk and evidence`
+          + (justified ? '; `justified-large` no longer admits a new oversized unit' : '')
+          + (migrationScope !== 'inseparable' ? '; no inseparable-migration marker' : '')
+          + (!migrationServiceMix ? '; the diff carries no migration+service seam' : '')
+          + (vague.length > 0 ? `; rows without concrete risk and evidence: ${vague.join(', ')}` : '');
+      }
+    } else if (!justified || missingInvariants.length > 0) {
       const missing = [
         ...(!justified ? [`the ${LARGE_MARKER} marker`] : []),
         ...(missingInvariants.length > 0
@@ -526,10 +551,38 @@ function changedFilename(file) {
 // closed. An empty diff is not a plan review either; it is a broken read, and it also
 // fails toward the strict path.
 const DOCS_EXTENSION = /\.(?:md|mdx|txt|rst|svg|png|jpe?g|gif|webp|pdf)$/iu;
-const DOCS_LOCATION = /^(?:docs\/.+|\.github\/.+|[^/]+)$/u;
+// `docs/**` or any `*.md` (the docs-only Codex exemption's definition), plus the root and
+// `.github/` documentation the plan-review cap already admitted; the extension allowlist still
+// applies, so a runnable file under `docs/` is code.
+const DOCS_LOCATION = /^(?:docs\/.+|\.github\/.+|[^/]+|.*\.md)$/iu;
 
 function isDocumentation(name) {
   return DOCS_EXTENSION.test(name) && DOCS_LOCATION.test(name);
+}
+
+/**
+ * Added or modified plan files, measured by their CONTENT at the authoritative PR head:
+ * `contents` maps each changed plan path to its text, or null when it could not be read.
+ * A removed plan is not measured; a renamed one is measured under its new name.
+ */
+export function assessPlanSizes(changedFiles, contents = {}, maxLines = PLAN_MAX_LINES) {
+  const problems = [];
+  for (const file of changedFiles ?? []) {
+    const name = changedFilename(file);
+    if (file?.status === 'removed' || typeof name !== 'string' || !PLAN_FILE.test(name)) continue;
+    const text = contents[name];
+    if (typeof text !== 'string') { problems.push(`plan ${name} changed but its head content could not be read`); continue; }
+    const lines = text.length === 0 ? 0 : text.replace(/\n$/u, '').split('\n').length;
+    if (lines > maxLines) problems.push(`plan ${name} is ${lines} lines at the PR head; the limit for an added or modified plan is ${maxLines}`);
+  }
+  return { allowed: problems.length === 0, problems };
+}
+
+const CELL_PLACEHOLDERS = /^(?:n\/?a|none|tbd|todo|to do|yes|ok|done|checked|-+|\?+|see above|as above|relevant risk|focused probe)$/iu;
+/** A risk or evidence cell that states something: not blank, not a placeholder, not a fragment. */
+function concreteCell(cell) {
+  const text = String(cell ?? '').trim();
+  return text.length >= 20 && !CELL_PLACEHOLDERS.test(text);
 }
 
 // Every path a diff entry TOUCHES. A rename touches two: GitHub reports it as

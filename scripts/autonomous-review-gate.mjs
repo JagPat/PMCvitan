@@ -33,9 +33,12 @@ import {
 } from './correction-owner.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import {
+  assessPlanSizes,
   assessReviewScope,
+  isDocsOnlyDiff,
   isRetryableReviewFailureDescription,
   codexFindingHeads,
+  PLAN_FILE,
   PRE_REVIEW_ENFORCE_AFTER_PR,
   REPLACEMENT_REQUIRED_LABEL,
 } from './review-efficiency.mjs';
@@ -555,6 +558,18 @@ export class GitHubClient {
     return this.paginated(
       `/repos/${this.repository}/pulls/${number}/files`,
     );
+  }
+
+  /** A file's text at an exact ref (the authoritative PR head), or null when unreadable. */
+  async fileContent(ref, path) {
+    try {
+      const payload = await this.request(
+        `/repos/${this.repository}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${ref}`,
+      );
+      return payload?.encoding === 'base64' && typeof payload.content === 'string'
+        ? Buffer.from(payload.content, 'base64').toString('utf8')
+        : null;
+    } catch { return null; }
   }
 
   async replacementLineage() {
@@ -1155,13 +1170,21 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
       ? lineageResult.value
       : undefined;
   }
-  const result = assessReviewScope(pullRequest, {
+  let result = assessReviewScope(pullRequest, {
     changedFiles,
     requireChangedFiles: true,
     requireReplacementLineage: pullRequest.number > PRE_REVIEW_ENFORCE_AFTER_PR,
     requiredReplacements: lineage?.requiredReplacements,
     replacementPullRequests: lineage?.replacementPullRequests,
   });
+  if (result.allowed && Array.isArray(changedFiles)) {
+    // An added or modified plan is measured by its content at the exact head under review.
+    const plans = changedFiles.filter((file) => file?.status !== 'removed' && PLAN_FILE.test(file?.filename ?? ''));
+    const contents = Object.fromEntries(await Promise.all(plans.map(async (file) =>
+      [file.filename, await client.fileContent(expectedHead, file.filename)])));
+    const planResult = assessPlanSizes(plans, contents);
+    if (!planResult.allowed) result = { ...result, state: 'blocked', allowed: false, detail: planResult.problems.join('; ') };
+  }
   if (result.allowed) return result;
 
   const live = await setDraftForCurrentHead(
@@ -1230,6 +1253,64 @@ export async function revalidateFinalReviewPolicy(
   }
 
   return { state: 'allowed', allowed: true, pullRequest };
+}
+
+// The ONE review exemption (user decision, 2026-09-15): a unit whose CUMULATIVE diff (renames and
+// deletions included) is documentation only merges on required CI plus the author checklist with no
+// Codex invocation; the status says so truthfully and never claims reviewer evidence (≤140 chars).
+export const DOCS_ONLY_EXEMPTION = 'review: policy exemption — docs-only diff (docs/** or *.md only); CI and the author checklist passed; NO Codex review occurred';
+
+export async function assessDocsOnlyExemption(client, pullRequest, expectedHead, recoveryRequest) {
+  // the LIVE object is judged (never the carried-in one) and re-read at the end: an edit during the assessment refuses
+  const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
+  if (!live) return { eligible: false, reason: 'superseded' };
+  let files;
+  try { files = await client.pullRequestFiles(live.number); } catch { files = undefined; }
+  if (!Array.isArray(files) || !isDocsOnlyDiff(files)) return { eligible: false, reason: 'not docs-only' };
+  let lineage;
+  try { lineage = await client.replacementLineage(); } catch { lineage = undefined; }
+  const scope = assessReviewScope(live, {
+    changedFiles: files, requireChangedFiles: true, requireReplacementLineage: live.number > PRE_REVIEW_ENFORCE_AFTER_PR,
+    requiredReplacements: lineage?.requiredReplacements, replacementPullRequests: lineage?.replacementPullRequests,
+  });
+  if (!scope.allowed) return { eligible: false, reason: `checklist: ${scope.detail}` };
+  const checks = summarizeRequiredChecks(await client.checkRuns(expectedHead), requiredChecksForPullRequest(live.number));
+  if (checks.state !== 'success') return { eligible: false, reason: `ci: ${checks.state}` };
+  if (await guardAgainstCurrentHeadFinding(client, live, expectedHead, recoveryRequest)) return { eligible: false, reason: 'current-head Codex finding' };
+  const settled = await refreshCurrentHead(client, live.number, expectedHead);
+  if (!settled || settled.body !== live.body || settled.base?.sha !== live.base?.sha) return { eligible: false, reason: 'changed during assessment' };
+  return { eligible: true, live: settled };
+}
+
+export async function completeDocsOnlyExemption(client, pullRequest, expectedHead, recoveryRequest) {
+  const first = await assessDocsOnlyExemption(client, pullRequest, expectedHead, recoveryRequest);
+  if (!first.eligible) return { state: 'not_applicable', reason: first.reason };
+  const ready = await setDraftForCurrentHead(client, pullRequest.number, expectedHead, false);
+  if (!ready) return { state: 'superseded' };
+  // Re-read EVERYTHING after the readiness mutation: head, base, cumulative diff, CI and checklist.
+  const again = await assessDocsOnlyExemption(client, ready, expectedHead, recoveryRequest);
+  if (!again.eligible || again.live.base?.sha !== first.live.base?.sha) {
+    await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
+    return { state: 'revoked', reason: again.reason ?? 'base changed' };
+  }
+  await client.setStatus(expectedHead, 'success', DOCS_ONLY_EXEMPTION, pullRequest.html_url);
+  await settleRecoveryRequest(client, expectedHead, again.live, recoveryRequest, 'docs-only exemption');
+  const completion = await completeReviewedPullRequest(client, again.live, expectedHead);
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: 'docs_only_exempt',
+      head: expectedHead,
+      detail: DOCS_ONLY_EXEMPTION,
+      attempt: 0,
+      next: completion === 'merged'
+        ? 'GitHub squash-merged this exact docs-only head; no Codex review was invoked.'
+        : completion === 'queued'
+          ? 'GitHub auto-merge is queued behind branch protection; no Codex review was invoked.'
+          : 'Merge is held because the head, base, readiness or required gates changed during validation.',
+    }),
+  );
+  return { state: 'completed', completion };
 }
 
 async function reviewAttempt(
@@ -1696,6 +1777,10 @@ export async function run() {
       `${convergence.findingHeadCount} finding heads require a replacement PR`,
     );
   }
+
+  const exemption = await completeDocsOnlyExemption(client, pullRequest, expectedHead, recoveryRequest);
+  if (exemption.state === 'completed' || exemption.state === 'superseded') return;
+  if (exemption.state === 'revoked') throw new Error(`docs-only exemption revoked: ${exemption.reason}`);
 
   // Observe the lifecycle BEFORE promoting for another review — this is the
   // path the first attempt missed.
