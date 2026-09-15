@@ -48,3 +48,13 @@ test('all agent entrypoints require the canonical contract instead of embedding 
   assert.match(contract, /OPERATOR-ATTESTATION/u);
   assert.match(contract, /scripts\/review-policy\.mjs/u);
 });
+
+test('the rubric and POLICY stay within their line budgets and name the executable probes', async () => {
+  const lines = (text) => text.replace(/\n$/u, '').split('\n').length;
+  const rubric = await readFile(new URL('../docs/REVIEW_RUBRIC.md', import.meta.url), 'utf8');
+  const contract = await readFile(new URL('../docs/POLICY.md', import.meta.url), 'utf8');
+  assert.ok(lines(rubric) <= 120, `REVIEW_RUBRIC.md is ${lines(rubric)} lines; the cap is 120`);
+  assert.ok(lines(contract) <= 275, `POLICY.md is ${lines(contract)} lines; the reform may not grow the contract past its 275-line base`);
+  for (const rule of [/REVIEW_RUBRIC\.md/u, /disputed-finding/u, /THIRD distinct/u]) assert.match(contract, rule);
+  for (const helper of ['pairingMatrix', 'lockOrderProbe', 'rerunTwice', 'noOpUpdateProbe', 'whitespaceCheckProbe']) assert.match(rubric, new RegExp(helper, 'u'));
+});
