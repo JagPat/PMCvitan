@@ -1,5 +1,5 @@
 // The probes against REAL PostgreSQL: each helper FAILS on a broken fixture and PASSES on the corrected one. Scratch tables only.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import {
   ASCII_WHITESPACE, type Bundle, ProbeFailure, REQUIRED_NEGATIVES, lockOrderProbe, noOpUpdateProbe, pairingMatrix, rerunTwice, whitespaceCheckProbe,
@@ -101,7 +101,8 @@ describe('rerunTwice', () => {
 });
 
 describe('lockOrderProbe', () => {
-  /** the holder: session A locks the row inside a transaction it holds open until released */
+  beforeEach(() => sql(a, "UPDATE _probe_lock SET status = 'open' WHERE id = 1"));
+  /** the holder: session A locks the row inside a transaction, CLOSES it, and holds the transaction open until released */
   const holder = () => {
     let release!: () => void; let abort!: (error: Error) => void;
     const gate = new Promise<void>((resolve, reject) => { release = resolve; abort = reject; });
@@ -109,6 +110,7 @@ describe('lockOrderProbe', () => {
     const locked = new Promise<void>((resolve) => { ready = resolve; });
     const tx = a.$transaction(async (t) => {
       await t.$queryRawUnsafe('SELECT status FROM _probe_lock WHERE id = 1 FOR UPDATE');
+      await t.$executeRawUnsafe("UPDATE _probe_lock SET status = 'closed' WHERE id = 1");
       ready(); await gate;
     }, { timeout: 30_000, maxWait: 10_000 });
     return {
@@ -127,39 +129,70 @@ describe('lockOrderProbe', () => {
     }
     return false;
   };
-  const verify = async () => { expect((await rows<{ status: string }>(a, 'SELECT status FROM _probe_lock WHERE id = 1'))[0]!.status).toBe('open'); };
-  const read = (sql: string) => rows(b, `SELECT status FROM _probe_lock WHERE id = 1${sql}`);
+  /** a competing writer on a third session, raced into the guard's read-to-mutation window: refused only if the guard still holds the row */
+  const raceWriter = async () => {
+    try {
+      await a.$transaction(async (t) => {
+        await t.$queryRawUnsafe('SELECT status FROM _probe_lock WHERE id = 1 FOR UPDATE NOWAIT');
+        await t.$executeRawUnsafe("UPDATE _probe_lock SET status = 'raced' WHERE id = 1");
+      });
+      return 'wrote' as const;
+    } catch (error) {
+      if (/could not obtain lock/u.test(String((error as Error).message))) return 'refused' as const;
+      throw error;
+    }
+  };
+  /** the terminal invariant: the holder closed the row; a correct guard read 'closed' and left it so */
+  const verify = async () => { expect((await rows<{ status: string }>(a, 'SELECT status FROM _probe_lock WHERE id = 1'))[0]!.status).toBe('closed'); };
+  const read = (suffix: string) => rows<{ status: string }>(b, `SELECT status FROM _probe_lock WHERE id = 1${suffix}`);
+  const reopenIfOpen = "UPDATE _probe_lock SET status = 'reopened' WHERE id = 1 AND status = 'open'";
+  const fixture = (h = holder()) => ({ ...h, inspectBlocked, raceWriter, verify });
+  /** the correct guard: ONE transaction locks the row, reads, reports, waits for the probe's window, then mutates on what it read */
+  const guardedContender = ({ observed, proceed }: { observed: () => void; proceed: Promise<void> }) => b.$transaction(async (t) => {
+    const r = await t.$queryRawUnsafe<{ status: string }[]>('SELECT status FROM _probe_lock WHERE id = 1 FOR UPDATE');
+    observed(); await proceed;
+    await t.$executeRawUnsafe(reopenIfOpen);
+    return r;
+  }, { timeout: 30_000, maxWait: 10_000 });
   it('fails on a guard that reads the status before locking: never blocked, or read first then locked', async () => {
     // an async IIFE, because a Prisma promise is lazy and would not run until awaited
-    await failsWith(/lock-after-read/u)(() => lockOrderProbe({ ...holder(), inspectBlocked, verify,
+    await failsWith(/lock-after-read/u)(() => lockOrderProbe({ ...fixture(),
       contenderStarted: ({ observed }) => (async () => { const r = await read(''); observed(); return r; })() }));
     // the read escapes BEFORE the lock wait: the wait alone proves nothing
-    await failsWith(/status read before the holder released/u)(() => lockOrderProbe({ ...holder(), inspectBlocked, verify,
+    await failsWith(/status read before the holder released/u)(() => lockOrderProbe({ ...fixture(),
       contenderStarted: ({ observed }) => (async () => { await read(''); observed(); return read(' FOR UPDATE'); })() }));
-    await failsWith(/never reported its status read/u)(() => lockOrderProbe({ ...holder(), inspectBlocked, verify,
+    await failsWith(/never reported its status read/u)(() => lockOrderProbe({ ...fixture(),
       contenderStarted: () => (async () => read(' FOR UPDATE'))() }));
   });
-  it('passes on a guard that locks first: the contender waits, reads only after release, then proceeds', async () => {
-    await lockOrderProbe({ ...holder(), inspectBlocked, verify,
-      contenderStarted: ({ observed }) => (async () => { const r = await read(' FOR UPDATE'); observed(); return r; })() });
+  it('fails on a guard whose FOR UPDATE is one autocommit statement: the lock is gone before the mutation, and a competing writer gets in', async () => {
+    await failsWith(/competing writer changed the row between the guard's status read and its mutation/u)(() => lockOrderProbe({ ...fixture(),
+      contenderStarted: ({ observed, proceed }) => (async () => { const r = await read(' FOR UPDATE'); observed(); await proceed; await sql(b, reopenIfOpen); return r; })() }));
   });
-  it('fails, and still frees the row, when the release rejects BEFORE unlocking (no lock outlives the probe)', async () => {
-    await failsWith(/holder's release failed.*connection lost/u)(() => lockOrderProbe({ ...holder(), inspectBlocked, verify,
-      release: async () => { throw new Error('connection lost'); },
-      contenderStarted: ({ observed }) => (async () => { const r = await read(' FOR UPDATE'); observed(); return r; })() }));
-    // NOWAIT: the row must be free the moment the probe returns
-    await read(' FOR UPDATE NOWAIT');
+  it('passes on a guard that locks first inside one transaction: the contender waits, reads the CLOSED row after release, keeps the lock through its mutation', async () => {
+    await lockOrderProbe({ ...fixture(), contenderStarted: guardedContender });
   });
   it('fails, and still frees the row, when the holder fails AFTER taking the lock (readiness is inside the guard)', async () => {
     const h = holder();
-    await failsWith(/holder failed before it was ready.*readiness monitor failed/u)(() => lockOrderProbe({ ...h, inspectBlocked, verify,
+    await failsWith(/holder failed before it was ready.*readiness monitor failed/u)(() => lockOrderProbe({ ...fixture(h),
       holderReady: async () => { await h.holderReady(); throw new Error('readiness monitor failed'); },
-      contenderStarted: ({ observed }) => (async () => { const r = await read(' FOR UPDATE'); observed(); return r; })() }));
+      contenderStarted: guardedContender }));
+    await read(' FOR UPDATE NOWAIT');
+  });
+  it('names a holder abort that fails, instead of returning as if the row were free', async () => {
+    const h = holder();
+    await failsWith(/holder's abort failed.*abort connection lost/u)(() => lockOrderProbe({ ...fixture(h), contenderSettleMs: 500,
+      release: async () => { throw new Error('connection lost'); },
+      abort: async () => { throw new Error('abort connection lost'); },
+      contenderStarted: ({ observed, signal }) => (async () => {
+        const r = await Promise.race([read(' FOR UPDATE'), new Promise<never>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))]);
+        observed(); return r;
+      })() }));
+    await h.abort(); // the fixture's fake abort did nothing: free the row for the next test
     await read(' FOR UPDATE NOWAIT');
   });
   it('aborts a contender that hangs after reporting, and awaits its settlement; a contender that ignores the signal is named', async () => {
     let settled = false;
-    await failsWith(/still running after the holder was released and aborted/u)(() => lockOrderProbe({ ...holder(), inspectBlocked, verify, contenderSettleMs: 500,
+    await failsWith(/still running after the holder was released and aborted/u)(() => lockOrderProbe({ ...fixture(), contenderSettleMs: 500,
       contenderStarted: ({ observed, signal }) => {
         const work = (async () => {
           await read(' FOR UPDATE'); observed();
@@ -169,23 +202,34 @@ describe('lockOrderProbe', () => {
         return work;
       } }));
     expect(settled).toBe(true);
-    await failsWith(/ignored its abort signal/u)(() => lockOrderProbe({ ...holder(), inspectBlocked, verify, contenderSettleMs: 300,
+    await failsWith(/ignored its abort signal/u)(() => lockOrderProbe({ ...fixture(), contenderSettleMs: 300,
       contenderStarted: ({ observed }) => (async () => { await read(' FOR UPDATE'); observed(); await new Promise(() => undefined); })() }));
     await read(' FOR UPDATE NOWAIT');
   });
   it('fails, and still frees the row, when the lock inspection itself throws (every exit path aborts the holder)', async () => {
-    await failsWith(/lock inspection failed.*connection reset/u)(() => lockOrderProbe({ ...holder(), verify,
+    await failsWith(/lock inspection failed.*connection reset/u)(() => lockOrderProbe({ ...fixture(),
       inspectBlocked: async () => { throw new Error('connection reset'); },
-      contenderStarted: ({ observed }) => (async () => { const r = await read(' FOR UPDATE'); observed(); return r; })() }));
+      contenderStarted: guardedContender }));
+    await read(' FOR UPDATE NOWAIT');
+  });
+  it('fails, and still frees the row, when the release rejects BEFORE unlocking (no lock outlives the probe)', async () => {
+    await failsWith(/holder's release failed.*connection lost/u)(() => lockOrderProbe({ ...fixture(),
+      release: async () => { throw new Error('connection lost'); },
+      contenderStarted: guardedContender }));
+    // NOWAIT: the row must be free the moment the probe returns
     await read(' FOR UPDATE NOWAIT');
   });
   it('fails when the contender or the release throws after a correct wait: a crashed command is not evidence', async () => {
-    await failsWith(/contender failed instead of completing.*connection reset/u)(() => lockOrderProbe({ ...holder(), inspectBlocked, verify,
-      contenderStarted: ({ observed }) => (async () => { await read(' FOR UPDATE'); observed(); throw new Error('connection reset'); })() }));
+    // a guard that holds its lock correctly and then crashes inside its transaction: the crash, not the lock, is the verdict
+    await failsWith(/contender failed instead of completing.*connection reset/u)(() => lockOrderProbe({ ...fixture(),
+      contenderStarted: ({ observed, proceed }) => b.$transaction(async (t) => {
+        await t.$queryRawUnsafe('SELECT status FROM _probe_lock WHERE id = 1 FOR UPDATE'); observed(); await proceed;
+        throw new Error('connection reset');
+      }, { timeout: 30_000, maxWait: 10_000 }) }));
     const h = holder();
-    await failsWith(/holder's release failed.*pool exhausted/u)(() => lockOrderProbe({ ...h, inspectBlocked, verify,
+    await failsWith(/holder's release failed.*pool exhausted/u)(() => lockOrderProbe({ ...fixture(h),
       release: async () => { await h.release(); throw new Error('pool exhausted'); },
-      contenderStarted: ({ observed }) => (async () => { const r = await read(' FOR UPDATE'); observed(); return r; })() }));
+      contenderStarted: guardedContender }));
   });
 });
 
