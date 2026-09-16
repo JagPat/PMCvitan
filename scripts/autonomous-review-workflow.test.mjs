@@ -28,13 +28,11 @@ function automatedMergeEvidence(pullRequest) {
     async pullRequest() { return pullRequest; },
     async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
     async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
-    // Ownership is the head COMMIT's Correction-Owner trailer (a clean non-Codex owner here).
     async commit(sha) { return ownerCommit(sha); },
     async disableAutoMerge() {},
   };
 }
 
-// A commit carrying a single non-Codex Correction-Owner trailer, addressed to the exact head SHA.
 function ownerCommit(sha, owner = 'claude') {
   return {
     sha,
@@ -655,7 +653,6 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     async markReplacementRequired() {},
     async commit(sha) { return ownerCommit(sha); },
     async updateStickyComment() {},
-    // Completion is only the immediate exact-SHA merge, never a future server auto-merge.
     async mergeExactHead(number, head) {
       merges.push([number, head]);
       return { merged: true, sha: 'b'.repeat(40) };
@@ -1513,7 +1510,7 @@ test('final admission revalidates live scope and the late review-round reset', a
     additions: 2_000,
     deletions: 0,
     changed_files: 24,
-    body: '<!-- review-size: standard -->',
+    body: '<!-- review-size: standard -->\n<!-- correction-owner: claude -->',
     state: 'open',
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
@@ -1530,7 +1527,6 @@ test('final admission revalidates live scope and the late review-round reset', a
     async reviewComments() { return []; },
     async reviews() { return []; },
     async markReplacementRequired() {},
-    // Eligible owner, so final admission is gated on scope/convergence, not held on ownership.
     async commit(sha) { return ownerCommit(sha); },
     async disableAutoMerge() {},
   };
@@ -1727,6 +1723,7 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
     number: 230,
     state: 'open',
     draft: false,
+    body: '<!-- correction-owner: claude -->',
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
     base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
@@ -1760,14 +1757,13 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
 });
 
 test('a reviewed head GitHub will not merge immediately is held fail-closed, never queued', async () => {
-  // The only owner-bound completion is the immediate exact-SHA merge; a candidate GitHub will not
-  // merge now is held fail-closed, not queued behind a server auto-merge that cannot be pinned.
   assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
   const expectedHead = 'a'.repeat(40);
   const pullRequest = {
     number: 230,
     state: 'open',
     draft: false,
+    body: '<!-- correction-owner: claude -->',
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
     base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
@@ -1794,18 +1790,17 @@ test('a reviewed head GitHub will not merge immediately is held fail-closed, nev
     ),
     'held_for_gates',
   );
-  // One exact-SHA attempt; no auto-merge armed and no handoff for a merge that did not happen.
   assert.deepEqual(calls, [['merge', 230, expectedHead]]);
 });
 
 test('the exact-SHA merge is attempted once and never falls back to auto-merge', async () => {
-  // A single not-ready result holds fail-closed: no auto-merge, no retry behind a server merge.
   assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
   const expectedHead = 'a'.repeat(40);
   const pullRequest = {
     number: 230,
     state: 'open',
     draft: false,
+    body: '<!-- correction-owner: claude -->',
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
     base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
@@ -1918,7 +1913,6 @@ test('terminal failures restore draft and CI failures run before recovery', asyn
     liveFindingGuard >= 0 && liveFindingGuard < terminalRecovery,
     'live Codex evidence must be checked before recovered success can return',
   );
-  // The failure-truthful condition precedes the `ci:` write.
   assert.match(
     runBody,
     /effectiveCiFailure \|\| !isTerminalReviewStatus\(existingStatus\)\)[\s\S]*`ci:/,
@@ -2195,7 +2189,6 @@ test('a base retargeted INSIDE the setDraft window is refused on the post-mutati
   const client = {
     // The pre-mutation refresh sees `main`; the post-mutation refetch sees `release`.
     async pullRequest() { return onMain; },
-    // Eligible owner, so promotion clears the guard and reaches the setDraft window under test.
     async commit(sha) { return ownerCommit(sha); },
     async disableAutoMerge() {},
     async setDraft(current, draft) {
@@ -2210,7 +2203,9 @@ test('a base retargeted INSIDE the setDraft window is refused on the post-mutati
 
   const result = await reviewGate.setDraftForCurrentHead(client, 700, expectedHead, false);
 
-  assert.equal(setDraftCalls, 1, 'the mutation really was attempted — this is not a no-op');
+  assert.equal(setDraftCalls, 2,
+    'the promotion is attempted, then the off-main object that came back READY is compensated '
+    + 'back to draft so no non-current unit is left ready');
   assert.equal(result, null,
     'the post-mutation object must be refused, so no caller proceeds with an off-main unit');
 });

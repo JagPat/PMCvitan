@@ -121,39 +121,34 @@ branch" leaves unattended publication unproven.
 
 Codex is now a truthful candidate correction owner, including on retained `claude/**` source
 branches, but is deliberately not GitHub-awakenable and has no merge authority. The trusted
-controller holds every Codex-owned candidate draft with `codex-current-head` pending before any
-old or recovered Codex success can be reused. The manual probe reads and fully reauthorizes with
-`GITHUB_TOKEN`, then uses `CODEX_WAKE_GITHUB_TOKEN` only for the final comment POST; a missing or
-identical credential fails closed, and the returned author/id/URL are recorded rather than assumed.
+controller holds every Codex-owned candidate draft with `codex-current-head` pending before any old
+or recovered Codex success can be reused. The manual probe reauthorizes with `GITHUB_TOKEN`, then
+uses `CODEX_WAKE_GITHUB_TOKEN` only for the final comment POST; a missing or identical credential
+fails closed, and the returned author/id/URL are recorded rather than assumed.
 
-Shadow review now requires a server-associated CI merge-identity artifact binding the current
-target tip, candidate head, tested merge commit, and the GitHub run attempt that uploaded it.
-The selector accepts only artifacts server-associated with the exact CI run/head, chooses the highest
-unambiguous encoded upload attempt no newer than the refreshed run, and therefore supports both
-full reruns and partial reruns that carry the earlier successful artifact. The current target must
-also be the comparison
-merge base, PR-file and comparison-file sets must agree, and candidate changes to the CI workflow
-are refused. Trusted workflow commit, current target tip, comparison base, tested base, and tested
-merge identity remain distinct evidence fields. This remains non-authoritative shadow validation.
+Shadow review requires a server-associated CI merge-identity artifact binding the current target tip,
+candidate head, tested merge commit, and the uploading run attempt. The selector accepts only
+artifacts server-associated with the exact CI run/head and takes the highest unambiguous upload
+attempt no newer than the refreshed run (supporting full and partial reruns). The current target
+must also be the comparison merge base, PR-file and comparison-file sets must agree, and candidate
+changes to the CI workflow are refused. This remains non-authoritative shadow validation.
 
 ### Private shadow failure diagnostics
 
 The Claude action keeps `show_full_output: false`. An `if: always()` trusted step reads only the
-action's exact regular, bounded `$RUNNER_TEMP/claude-execution-output.json` file and emits a fixed
-categorical record: initialization, result/error/structured-output booleans, and an allowlisted SDK
-assistant error enum or `unclassified`. It never emits or uploads transcript content, messages,
-results, parser errors, environment data, or unexpected fields. This distinguishes a bounded early
-inference failure from an authentication conclusion without exposing private model output.
-Artifact digests accept only raw 64-hex action output or canonical `sha256:` API form, normalize to
-the canonical form, and still require an exact server-associated metadata match.
+bounded `$RUNNER_TEMP/claude-execution-output.json` file and emits a fixed categorical record
+(initialization, result/error/structured-output booleans, and an allowlisted SDK assistant error
+enum or `unclassified`) — never transcript content, messages, results, environment data, or
+unexpected fields. It distinguishes a bounded early inference failure from an authentication
+conclusion without exposing private output. Artifact digests accept only raw 64-hex or canonical
+`sha256:` form, normalize, and still require an exact server-associated metadata match.
 
 ### Trusted workflow execution provenance
 
 Both shadow jobs run only when GitHub reports `refs/heads/main`. Authorization and publication
 require the exact `JagPat/PMCvitan/.github/workflows/claude-shadow-review.yml@refs/heads/main`
-workflow ref and main execution ref; the consumer independently verifies the server Actions run's
-workflow path, SHA, attempt, successful publisher job, artifact, repository, and `head_branch=main`.
-The trusted workflow SHA may be an earlier main commit and remains distinct from the current tested
-base, but an off-main dispatch is never accepted. These checks authenticate this pipeline and its
-evidence. A source-controlled guard does not sandbox a repository principal who can arbitrarily
-replace workflows; repository administration and branch protection remain outside this mechanism.
+workflow ref; the consumer independently verifies the server Actions run's workflow path, SHA,
+attempt, successful publisher job, artifact, repository, and `head_branch=main`. The trusted workflow
+SHA may be an earlier main commit but an off-main dispatch is never accepted. A source-controlled
+guard does not sandbox a principal who can replace workflows; repository administration and branch
+protection remain outside this mechanism.

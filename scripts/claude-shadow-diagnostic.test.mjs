@@ -3,7 +3,6 @@ import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-
 import { categorizeClaudeExecution, emitClaudeExecutionDiagnostic, readClaudeExecutionDiagnostic } from './claude-shadow-diagnostic.mjs';
 
 const fallback = {

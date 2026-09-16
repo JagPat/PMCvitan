@@ -214,7 +214,6 @@ test('O1: the declaration is machine-readable, and every failure mode is named',
   assert.equal(buried.state, 'missing');
   assert.match(buried.detail, /top of the PR body/u);
 
-  // Historical branch prefixes do not override the truthful declaration.
   const branchConflict = parseCorrectionOwner('<!-- correction-owner: cursor -->', {
     headRef: 'claude/some-task',
   });
