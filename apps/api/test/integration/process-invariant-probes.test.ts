@@ -180,6 +180,13 @@ describe('lockOrderProbe', () => {
     await failsWith(/never reported its status read/u)(() => lockOrderProbe({ ...fixture(),
       contenderStarted: () => (async () => read(' FOR UPDATE'))() }));
   });
+  it('names a contender that crashes BEFORE it can take the lock, instead of misreading the absent lock wait as lock-after-read', async () => {
+    // opening the transaction/connection fails before the guard ever reaches the row: the probe must surface
+    // the contender's own failure, not diagnose a lock-after-read from the (correctly) absent lock wait
+    await failsWith(/contender failed instead of completing.*connection refused/u)(() => lockOrderProbe({ ...fixture(),
+      contenderStarted: () => Promise.reject(new Error('connection refused')) }));
+    await assertFreeSoon();
+  });
   it('fails on a guard that does not hold its lock through the mutation: an autocommit FOR UPDATE, or a commit between read and mutation', async () => {
     await failsWith(/competing writer landed between the guard's status read and its mutation/u)(() => lockOrderProbe({ ...fixture(),
       contenderStarted: ({ observed, proceed }) => (async () => { const r = await read(' FOR UPDATE'); observed(); await proceed; await sql(b, guardMark); return r; })() }));

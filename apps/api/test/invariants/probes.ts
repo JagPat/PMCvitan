@@ -169,13 +169,15 @@ export async function lockOrderProbe(o: {
     if (timedOut) fail('the contender was still running after the holder was released and aborted: the guarded command never completed within its transaction, and was aborted');
     const inspected = 'failure' in inspection ? fail(`the lock inspection failed: ${reason(inspection.failure)}`) : inspection;
     if (escaped) fail('the contender completed its status read before the holder released: the guard read the status before taking the lock (lock-after-read)');
+    // a contender that FAILED to complete its command is not evidence of lock order: name its failure before
+    // interpreting the (correctly) absent lock wait as lock-after-read
+    if (!settled.ok) fail(`the contender failed instead of completing its command: ${reason(settled.error)}`);
     if (!inspected.blocked) fail('the contender was never blocked behind the holder: the guard read the status before taking the lock (lock-after-read)');
     if (windowFailure !== undefined) fail(`the lock inspection failed during the guard's window: ${reason(windowFailure)}`);
     if (competitorFailure !== undefined) fail(`the competing writer failed instead of landing: ${reason(competitorFailure)}`);
     if (landedInWindow) fail("a competing writer landed between the guard's status read and its mutation: the guard did not hold its lock across the window (an autocommit FOR UPDATE, a commit before the mutation, or no lock at all)");
     if (competitor !== undefined && !competitorBlocked) fail('the competing writer was never seen waiting behind the guard, and did not land: the interleaving was not observed');
     if (landed !== undefined && 'stuck' in landed) fail('the competing writer never landed after the guard finished: the row is still locked');
-    if (!settled.ok) fail(`the contender failed instead of completing its command: ${reason(settled.error)}`);
     if (reads === 0) fail('the contender never reported its status read (call observed() when it returns); a wait alone is not the proof');
     if (releaseFailure !== undefined) fail(`the holder's release failed: ${reason(releaseFailure)}`);
     // the ORDER witness: the fixture reads back the terminal state the interleaving must leave (holder, then guard, then competitor)
