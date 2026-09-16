@@ -151,18 +151,21 @@ bounded `$RUNNER_TEMP/claude-execution-output.json` file and emits a fixed categ
 enum or `unclassified`) — never transcript content, messages, results, environment data, or
 unexpected fields. It distinguishes a bounded early inference failure from an authentication
 conclusion without exposing private output. Artifact digests accept only raw 64-hex or canonical
-`sha256:` form, normalize, and still require an exact server-associated metadata match.
+`sha256:` form: the publisher validates and normalizes the digest the upload action returns; the
+unchanged non-authoritative consumer compares that reported artifact metadata to GitHub; operator
+verification additionally hashes the downloaded ZIP bytes.
 
 ### Trusted workflow execution provenance
 
-Both shadow jobs run only when GitHub reports `refs/heads/main`, and the A **producer's**
-authorization and publication require the exact
-`JagPat/PMCvitan/.github/workflows/claude-shadow-review.yml@refs/heads/main` workflow ref and a
-`refs/heads/main` execution ref. The producer independently verifies the server Actions run's
-workflow path, SHA, run attempt, successful publisher job, artifact name and digest, and repository
-before it treats a producer claim as trusted; the shared `github-actions` App identity and
-self-asserted check payload are not provenance. The producer's trusted workflow SHA may be an earlier
-`main` commit, but an off-`main` dispatch is never accepted.
+Both shadow jobs require `refs/heads/main`. The producer checks its workflow and execution refs from
+GitHub-provided environment values and binds evidence to the workflow SHA. It re-reads the source CI
+run, live PR, current main tip, comparison and PR files, and server-associated CI merge-identity
+artifacts; stale or inconsistent bindings and candidate CI-workflow edits are rejected. Publication
+records the artifact ID and normalized digest returned by the pinned upload action. The producer does
+not independently query its own publisher jobs or download and hash its uploaded artifact. Before a
+hosted review counts as operational proof, the operator must verify publisher run/job provenance,
+artifact association and downloaded ZIP digest against GitHub server metadata, plus complete
+structured coverage of the expected commit.
 
 This unit does **not** change the consumer. The existing (D6) adapter that reads the published shadow
 check stays non-authoritative and unchanged: it binds evidence to the shadow-review workflow path and
