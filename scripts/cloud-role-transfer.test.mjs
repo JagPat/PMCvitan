@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
-import { parseCorrectionOwner, correctionRouting, correctionOwnerProblem } from './correction-owner.mjs';
+import { parseCorrectionOwner, parseCommitCorrectionOwner, correctionRouting, correctionOwnerProblem } from './correction-owner.mjs';
 import { authorizeExactHeadMerge, completeReviewedPullRequest, ensureTerminalReviewState, GitHubClient, REQUIRED_CHECKS, revalidateFinalReviewPolicy, reviewAttempt, run, setDraftForCurrentHead } from './autonomous-review-gate.mjs';
 
 const head = 'a'.repeat(40);
@@ -80,11 +80,37 @@ test('server-side workflow run and artifact association rejects forged producer 
   assert.equal(await makeClient({ artifacts: [{ ...artifact, digest: `sha256:${'e'.repeat(64)}` }] }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
 });
 
-test('automatic merge needs CI and exact-head review, with no human authorization', async () => {
-  const pull = { number: 600, state: 'open', draft: false, head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } }, base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } } };
-  const checks = REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
-  const makeClient = ({ pulls = [pull, pull], statuses = [{ context: 'codex-current-head', state: 'success' }], runs = checks } = {}) => ({
+// --- Commit-addressed ownership, positive eligibility, fail-closed merge (PR #598 batch) ---
+// Ownership is the `Correction-Owner:` trailer in the head COMMIT, content-addressed by the SHA;
+// the PR body is descriptive only. Promotion/success/recovery/merge require POSITIVE eligibility
+// (a cleanly declared, non-Codex commit owner); a real transfer needs a NEW commit (a new head).
+const REQUIRED = REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
+const ownerCommit = (owner, sha = head) => ({ sha, commit: { message: `chore: unit\n\nCorrection-Owner: ${owner}\n` } });
+const noOwnerCommit = (sha = head) => ({ sha, commit: { message: 'chore: unit with no trailer\n' } });
+const pullAt = (number, overrides = {}) => ({
+  number, state: 'open', draft: false, node_id: 'PR', html_url: 'https://github.com/JagPat/PMCvitan/pull/x',
+  head: { sha: head, ref: 'codex/unit', repo: { full_name: 'JagPat/PMCvitan' } },
+  base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } }, ...overrides,
+});
+
+test('commit-owner trailer parses one owner strictly and fails closed otherwise', () => {
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\n').owner, 'claude');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: codex').owner, 'codex');
+  assert.equal(parseCommitCorrectionOwner('no trailer here').state, 'missing');
+  assert.equal(parseCommitCorrectionOwner('Correction-Owner: claude\nCorrection-Owner: claude\n').state, 'conflicting');
+  assert.equal(parseCommitCorrectionOwner('Correction-Owner: claude\nCorrection-Owner: cursor\n').state, 'conflicting');
+  assert.equal(parseCommitCorrectionOwner('Correction-Owner: nobody\n').state, 'invalid');
+  for (const bad of ['missing', 'conflicting', 'invalid']) {
+    // eslint-disable-next-line no-unused-expressions
+    assert.equal(parseCommitCorrectionOwner(bad === 'missing' ? '' : bad === 'conflicting' ? 'Correction-Owner: a\nCorrection-Owner: b\n' : 'Correction-Owner: zzz\n').owner, null);
+  }
+});
+
+test('automatic merge needs an eligible commit owner, CI and exact-head review, no human authorization', async () => {
+  const pull = pullAt(600);
+  const makeClient = ({ pulls = [pull, pull], statuses = [{ context: 'codex-current-head', state: 'success' }], runs = REQUIRED, commit = ownerCommit('claude') } = {}) => ({
     repository: 'JagPat/PMCvitan',
+    async commit() { return commit; },
     async pullRequest() { return pulls.shift() ?? pull; },
     async statuses() { return statuses; },
     async checkRuns() { return runs; },
@@ -100,113 +126,171 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   assert.equal((await authorizeExactHeadMerge(makeClient({ statuses: [] }), pull, head)).state, 'gates_not_green');
   assert.equal((await authorizeExactHeadMerge(makeClient({ runs: [] }), pull, head)).state, 'gates_not_green');
   for (const name of REQUIRED_CHECKS) {
-    assert.equal((await authorizeExactHeadMerge(makeClient({ runs: checks.map(run => run.name === name ? { ...run, conclusion: 'failure' } : run) }), pull, head)).state, 'gates_not_green');
+    assert.equal((await authorizeExactHeadMerge(makeClient({ runs: REQUIRED.map((r) => (r.name === name ? { ...r, conclusion: 'failure' } : r)) }), pull, head)).state, 'gates_not_green');
   }
 });
 
+test('authoritative ownership is the head commit trailer, immutable under body edits and fresh objects', async () => {
+  const clientFor = (commitOwner) => ({
+    repository: 'JagPat/PMCvitan',
+    async commit() { return ownerCommit(commitOwner); },
+    async pullRequest() { return pullAt(600); },
+    async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
+    async checkRuns() { return REQUIRED; },
+  });
+  // Same head H, opposite BODY markers on fresh objects → the same authoritative owner (the commit).
+  const bodyClaude = pullAt(600, { body: '<!-- correction-owner: claude -->' });
+  assert.equal((await authorizeExactHeadMerge(clientFor('codex'), bodyClaude, head)).state, 'validation_only_codex_owner');
+  const bodyCodex = pullAt(600, { body: '<!-- correction-owner: codex -->' });
+  assert.equal((await authorizeExactHeadMerge(clientFor('claude'), bodyCodex, head)).allowed, true);
+});
 
-test('Codex-owned candidates are held across merge authorization and recovered terminal success', async () => {
-  const codexPull = { number: 601, state: 'open', draft: false, html_url: 'https://github.com/JagPat/PMCvitan/pull/601', body: '<!-- correction-owner: codex -->', head: { sha: head, ref: 'claude/retained', repo: { full_name: 'JagPat/PMCvitan' } }, base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } } };
-  const checks = REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
+test('a missing / malformed / wrong-SHA commit-owner trailer is held fail-closed: no READY, review, success or merge', async () => {
+  for (const commit of [
+    noOwnerCommit(),
+    ownerCommit('claude', 'c'.repeat(40)),
+    { sha: head, commit: { message: 'Correction-Owner: claude\nCorrection-Owner: cursor\n' } },
+  ]) {
+    const events = [];
+    const pull = pullAt(606);
+    const client = {
+      repository: 'JagPat/PMCvitan',
+      async commit() { return commit; },
+      async pullRequest() { return pull; },
+      async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
+      async checkRuns() { return REQUIRED; },
+      async setStatus(_h, state, description) { events.push(['status', state, description]); },
+      async setDraft(p, draft) { events.push(['draft', draft]); return { ...p, draft }; },
+      async disableAutoMerge() { events.push(['disableAutoMerge']); },
+      async mergeExactHead() { events.push(['merge']); return { merged: true }; },
+      async enableAutoMerge() { events.push(['enableAutoMerge']); },
+      async dispatchHandoff() {},
+    };
+    assert.equal((await authorizeExactHeadMerge(client, pull, head)).state, 'owner_not_merge_eligible');
+    assert.equal(await completeReviewedPullRequest(client, pull, head), 'held_for_gates');
+    const held = await setDraftForCurrentHead(client, 606, head, false);
+    assert.equal(held.draft, true, 'a missing-binding head is held as draft, never promoted');
+    assert.equal(events.some(([k, v]) => k === 'draft' && v === false), false, 'never promoted to READY');
+    assert.equal(events.some(([k]) => k === 'merge'), false, 'never merged');
+    assert.equal(events.some(([k]) => k === 'enableAutoMerge'), false, 'never arms auto-merge');
+  }
+});
+
+test('a real transfer H1->H2 is rejected by the exact-H1 authorization and merge', async () => {
+  const H2 = 'c'.repeat(40);
+  const pull1 = pullAt(607);
+  const pull2 = pullAt(607, { head: { sha: H2, repo: { full_name: 'JagPat/PMCvitan' } } });
+  let mergeSha = null;
+  const client = {
+    repository: 'JagPat/PMCvitan',
+    async commit() { return ownerCommit('claude'); },
+    async pullRequest() { return pull2; },
+    async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
+    async checkRuns() { return REQUIRED; },
+    async mergeExactHead(_n, sha) { mergeSha = sha; return { merged: false }; },
+    async enableAutoMerge() { throw new Error('auto-merge must not be armed'); },
+    async dispatchHandoff() {},
+  };
+  assert.equal((await authorizeExactHeadMerge(client, pull1, head)).state, 'superseded');
+  assert.equal(await completeReviewedPullRequest(client, pull1, head), 'held_for_gates');
+  assert.equal(mergeSha, null, 'no merge is attempted once the head has moved');
+});
+
+test('a Codex commit owner is held across merge authorization and recovered terminal success, and armed auto-merge is reconciled', async () => {
+  const codexPull = pullAt(601, { auto_merge: { enabled_by: {} } });
   let current = codexPull;
   const mutations = [];
   const client = {
     repository: 'JagPat/PMCvitan',
+    async commit() { return ownerCommit('codex'); },
     async pullRequest() { return current; },
     async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
-    async checkRuns() { return checks; },
-    async setStatus(_head, state, description) { mutations.push(['status', state, description]); },
-    async setDraft(_pull, draft) { mutations.push(['draft', draft]); current = { ...current, draft }; return current; },
+    async checkRuns() { return REQUIRED; },
+    async setStatus(_h, state, description) { mutations.push(['status', state, description]); },
+    async setDraft(_p, draft) { mutations.push(['draft', draft]); current = { ...current, draft }; return current; },
+    async disableAutoMerge() { mutations.push(['disableAutoMerge']); },
   };
   assert.equal((await authorizeExactHeadMerge(client, codexPull, head)).state, 'validation_only_codex_owner');
   assert.equal(await ensureTerminalReviewState(client, codexPull, head, { context: 'codex-current-head', state: 'success' }, [{ context: 'codex-current-head', state: 'success' }]), true);
-  assert.deepEqual(mutations.map(([kind, value]) => [kind, value]), [['status', 'pending'], ['draft', true]]);
-
-  current = { ...current, body: '<!-- correction-owner: claude -->', draft: false };
-  const changingClient = { ...client, async pullRequest() { const value = current; current = { ...current, body: '<!-- correction-owner: codex -->' }; return value; } };
-  assert.equal((await authorizeExactHeadMerge(changingClient, current, head)).allowed, false, 'owner changing to Codex during final validation is held');
+  assert.deepEqual(mutations.map((m) => m.slice(0, 2)), [['status', 'pending'], ['disableAutoMerge'], ['draft', true]]);
 });
 
-
-test('owner changes are held at promotion and final-policy boundaries', async () => {
-  const claude = { number: 602, state: 'open', draft: false, html_url: 'https://github.com/JagPat/PMCvitan/pull/602', body: '<!-- correction-owner: claude -->', head: { sha: head, ref: 'claude/unit', repo: { full_name: 'JagPat/PMCvitan' } }, base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } } };
-  const codex = { ...claude, body: '<!-- correction-owner: codex -->' };
-  let current = claude;
-  const drafts = [];
-  const statuses = [];
+test('a terminal Codex failure stays a truthful failure, never masked with a validation pending', async () => {
+  const codexPull = pullAt(608);
+  let current = codexPull;
+  const statusWrites = [];
+  const failure = { id: 5, context: 'codex-current-head', state: 'failure', description: 'review: current-head Codex finding' };
   const client = {
+    repository: 'JagPat/PMCvitan',
+    async commit() { return ownerCommit('codex'); },
     async pullRequest() { return current; },
-    async setDraft(_pull, draft) { drafts.push(draft); current = draft ? codex : { ...current, draft }; return { ...current, draft }; },
-    async setStatus(_head, state) { statuses.push(state); },
+    async setStatus(_h, state, description) { statusWrites.push({ state, description }); },
+    async setDraft(_p, draft) { current = { ...current, draft }; return current; },
+    async disableAutoMerge() {},
   };
-  assert.equal((await reviewAttempt(client, claude, head, 1, new Date().toISOString())).state, 'validation_only_codex_owner');
-  assert.deepEqual(drafts, [true, true], 'the Codex transfer is re-drafted and never promoted ready');
-  assert.deepEqual(statuses, ['pending']);
-  assert.equal((await revalidateFinalReviewPolicy(client, 602, head)).state, 'validation_only_codex_owner');
+  assert.equal(await ensureTerminalReviewState(client, codexPull, head, failure, [failure]), true);
+  assert.equal(statusWrites.some((s) => s.state === 'pending'), false, 'a terminal failure is never replaced with pending');
 });
 
-test('each merge, queue, and clean-status fallback operation gets fresh authorization', async () => {
-  const claude = { number: 603, state: 'open', draft: false, html_url: 'https://github.com/JagPat/PMCvitan/pull/603', body: '<!-- correction-owner: claude -->', head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } }, base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } } };
-  const codex = { ...claude, body: '<!-- correction-owner: codex -->' };
-  const checks = REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
-  const makeClient = () => {
-    let current = claude;
-    let mergeCalls = 0;
-    let queueCalls = 0;
-    return {
-      get counts() { return { mergeCalls, queueCalls }; },
+test('promotion and final-policy require positive eligibility: Codex and missing-owner heads are held', async () => {
+  for (const commit of [ownerCommit('codex'), noOwnerCommit()]) {
+    let current = pullAt(602);
+    const drafts = [];
+    const client = {
+      repository: 'JagPat/PMCvitan',
+      async commit() { return commit; },
       async pullRequest() { return current; },
       async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
-      async checkRuns() { return checks; },
-      async mergeExactHead() { mergeCalls += 1; current = codex; return { merged: false }; },
-      async enableAutoMerge() { queueCalls += 1; },
-      async dispatchHandoff() {},
+      async setDraft(_p, draft) { drafts.push(draft); current = { ...current, draft }; return current; },
+      async setStatus() {},
+      async disableAutoMerge() {},
     };
-  };
-  const changedBeforeQueue = makeClient();
-  assert.equal(await completeReviewedPullRequest(changedBeforeQueue, claude, head), 'held_for_gates');
-  assert.deepEqual(changedBeforeQueue.counts, { mergeCalls: 1, queueCalls: 0 });
-
-  let current = claude;
-  let mergeCalls = 0;
-  let queueCalls = 0;
-  const fallback = {
-    async pullRequest() { return current; },
-    async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
-    async checkRuns() { return checks; },
-    async mergeExactHead() { mergeCalls += 1; return { merged: false }; },
-    async enableAutoMerge() { queueCalls += 1; current = codex; throw new Error('is in clean status'); },
-    async dispatchHandoff() {},
-  };
-  assert.equal(await completeReviewedPullRequest(fallback, claude, head), 'held_for_gates');
-  assert.equal(mergeCalls, 1, 'the fallback direct merge is not attempted after ownership changes');
-  assert.equal(queueCalls, 1);
+    assert.equal((await reviewAttempt(client, pullAt(602), head, 1, new Date().toISOString())).state, 'held_ineligible_owner');
+    assert.equal(drafts.some((d) => d === false), false, 'never promoted READY');
+    assert.equal((await revalidateFinalReviewPolicy(client, 602, head)).state, 'held_ineligible_owner');
+  }
 });
 
+test('completeReviewedPullRequest merges the exact head or holds fail-closed, never arming auto-merge', async () => {
+  const pull = pullAt(603);
+  const baseClient = () => ({
+    repository: 'JagPat/PMCvitan',
+    async commit() { return ownerCommit('claude'); },
+    async pullRequest() { return pull; },
+    async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
+    async checkRuns() { return REQUIRED; },
+    async enableAutoMerge() { throw new Error('auto-merge must not be armed in the validation stage'); },
+    async dispatchHandoff() {},
+  });
+  assert.equal(await completeReviewedPullRequest({ ...baseClient(), async mergeExactHead() { return { merged: true }; } }, pull, head), 'merged');
+  assert.equal(await completeReviewedPullRequest({ ...baseClient(), async mergeExactHead() { return { merged: false }; } }, pull, head), 'held_for_gates');
+});
 
-test('the real GitHubClient draft seam never emits READY for a known Codex owner', async () => {
-  const codex = { number: 604, node_id: 'PR_node', state: 'open', draft: true, html_url: 'https://github.com/JagPat/PMCvitan/pull/604', body: '<!-- correction-owner: codex -->', head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } }, base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } } };
+test('the real GitHubClient draft seam never emits READY for a Codex commit owner', async () => {
+  const codex = pullAt(604, { node_id: 'PR_node', draft: true });
   const client = new GitHubClient({ repository: 'JagPat/PMCvitan', token: 'unused' });
   const mutations = [];
   client.pullRequest = async () => codex;
+  client.commit = async () => ownerCommit('codex');
+  client.statuses = async () => [{ context: 'codex-current-head', state: 'success' }];
+  client.setStatus = async () => {};
   client.request = async () => ({});
   client.graphql = async (query) => { mutations.push(query); return {}; };
   const held = await setDraftForCurrentHead(client, 604, head, false);
   assert.equal(held.draft, true);
   assert.equal(mutations.some((query) => query.includes('markPullRequestReadyForReview')), false);
-  assert.equal(mutations.some((query) => query.includes('convertPullRequestToDraft')), false, 'already-draft hold needs no GraphQL mutation');
 });
 
-test('full run stops on validation-only owner transfer without retry or timeout failure', async () => {
+test('full run holds a non-eligible head without retry or timeout failure, never READY', async () => {
   const checklist = ['concurrency-serialization', 'old-release-migration-compatibility', 'trigger-alternate-writers', 'authorization-tenancy', 'ci-reproduce-first'].map((item) => `- [x] \`${item}\``).join('\n');
-  const claude = { number: 605, node_id: 'PR_node', state: 'open', draft: false, additions: 1, deletions: 0, changed_files: 1, html_url: 'https://github.com/JagPat/PMCvitan/pull/605', body: `<!-- correction-owner: claude -->\n${checklist}\nReplaces: none`, head: { sha: head, ref: 'claude/unit', repo: { full_name: 'JagPat/PMCvitan' } }, base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } } };
-  let current = claude;
+  const codexBody = pullAt(605, { additions: 1, deletions: 0, changed_files: 1, body: `<!-- correction-owner: codex -->\n${checklist}\nReplaces: none` });
+  let current = codexBody;
   const statusWrites = [];
-  const sticky = [];
   let readyCalls = 0;
-  const checks = REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success', started_at: '2026-09-16T12:00:00Z' }));
+  const checks = REQUIRED.map((r) => ({ ...r, started_at: '2026-09-16T12:00:00Z' }));
   const client = {
     repository: 'JagPat/PMCvitan',
+    async commit() { return ownerCommit('codex'); },
     async pullRequest() { return current; },
     async pullRequestFiles() { return [{ filename: 'scripts/example.mjs', additions: 1, deletions: 0, changes: 1 }]; },
     async replacementLineage() { return { requiredReplacements: [], replacementPullRequests: [] }; },
@@ -215,17 +299,39 @@ test('full run stops on validation-only owner transfer without retry or timeout 
     async reviewComments() { return []; },
     async reviews() { return []; },
     async reactions() { return []; },
-    async setStatus(_head, state, description) { statusWrites.unshift({ state, description }); },
-    async setDraft(_pull, draft) {
-      if (!draft) readyCalls += 1;
-      current = draft ? { ...current, body: '<!-- correction-owner: codex -->', draft: true } : { ...current, draft: false };
-      return current;
-    },
-    async updateStickyComment(_number, body) { sticky.push(body); },
+    async setStatus(_h, state, description) { statusWrites.unshift({ state, description }); },
+    async setDraft(_p, draft) { if (!draft) readyCalls += 1; current = { ...current, draft }; return current; },
+    async disableAutoMerge() {},
+    async updateStickyComment() {},
   };
   await run({ context: { number: 605, expectedHead: head, ciConclusion: 'success' }, client });
-  assert.equal(readyCalls, 0, 'the full orchestrator never requests READY after the owner transfer');
+  assert.equal(readyCalls, 0, 'the full orchestrator never requests READY for a non-eligible head');
   assert.equal(statusWrites.some(({ state, description }) => state === 'failure' && /timed out/u.test(description)), false);
-  assert.equal(sticky.some((body) => /timed out/u.test(body)), false);
-  assert.equal(statusWrites.filter(({ state }) => state === 'pending').length >= 2, true);
+  assert.equal(statusWrites.some(({ state }) => state === 'pending'), true);
+});
+
+test('failed CI records a truthful failure and routes, never a masking pending, even over a stale terminal success', async () => {
+  const checklist = ['concurrency-serialization', 'old-release-migration-compatibility', 'trigger-alternate-writers', 'authorization-tenancy', 'ci-reproduce-first'].map((item) => `- [x] \`${item}\``).join('\n');
+  const codexBody = pullAt(609, { additions: 1, deletions: 0, changed_files: 1, body: `<!-- correction-owner: codex -->\n${checklist}\nReplaces: none` });
+  let current = codexBody;
+  const statusWrites = [];
+  const seed = [{ id: 1, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head' }];
+  const failingChecks = REQUIRED.map((r, i) => (i === 0 ? { ...r, conclusion: 'failure' } : r));
+  const client = {
+    repository: 'JagPat/PMCvitan',
+    async commit() { return ownerCommit('codex'); },
+    async pullRequest() { return current; },
+    async pullRequestFiles() { return [{ filename: 'scripts/example.mjs', additions: 1, deletions: 0, changes: 1 }]; },
+    async replacementLineage() { return { requiredReplacements: [], replacementPullRequests: [] }; },
+    async statuses() { return [...statusWrites.map((value, index) => ({ id: 100 + index, context: 'codex-current-head', ...value })), ...seed]; },
+    async checkRuns() { return failingChecks; },
+    async setStatus(_h, state, description) { statusWrites.unshift({ state, description }); },
+    async setDraft(_p, draft) { current = { ...current, draft }; return current; },
+    async disableAutoMerge() {},
+    async updateStickyComment() {},
+  };
+  await assert.rejects(run({ context: { number: 609, expectedHead: head, ciConclusion: 'failure' }, client }), /Failed checks/u);
+  assert.equal(statusWrites.some(({ state, description }) => state === 'failure' && description.startsWith('ci:')), true, 'a truthful ci: failure is recorded, overriding the stale terminal success');
+  assert.equal(statusWrites[0].state, 'failure', 'the last write is the failure, not a masking validation pending');
+  assert.equal(statusWrites.some(({ state }) => state === 'pending'), false, 'no masking pending is written');
 });

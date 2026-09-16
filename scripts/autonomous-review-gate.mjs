@@ -31,6 +31,7 @@ import {
   CORRECTION_STALLED,
   correctionOwnerDeclaration,
   correctionRouting,
+  parseCommitCorrectionOwner,
 } from './correction-owner.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import {
@@ -676,6 +677,9 @@ export class GitHubClient {
     return this.pullRequest(pullRequest.number);
   }
 
+  // Auto-merge is NOT armed by the controller in this validation stage: its enable-time
+  // `expectedHeadOid` does not durably pin a later server-side merge, so a queued merge cannot
+  // be proven owner-bound here. Retained for a future, independently reviewed activation stage.
   async enableAutoMerge(pullRequest, expectedHead) {
     if (pullRequest.auto_merge) return;
     await this.graphql(
@@ -691,6 +695,20 @@ export class GitHubClient {
         }
       }`,
       { id: pullRequest.node_id, expectedHead },
+    );
+  }
+
+  // Reconcile an already-armed auto-merge so no delayed server merge can complete a held or
+  // transferred candidate. Idempotent: a no-op when nothing is armed.
+  async disableAutoMerge(pullRequest) {
+    if (!pullRequest?.auto_merge) return;
+    await this.graphql(
+      `mutation($id: ID!) {
+        disablePullRequestAutoMerge(input: { pullRequestId: $id }) {
+          pullRequest { id }
+        }
+      }`,
+      { id: pullRequest.node_id },
     );
   }
 
@@ -972,18 +990,83 @@ export async function settleRecoveryRequest(
  * merge breaks the relation a second way, so an ancestry test refuses ordinary valid work.
  * This reads `base.ref` and nothing else.
  */
+// Immutable, commit-addressed correction ownership (docs/POLICY.md). The authoritative owner
+// of an EXACT head is the single `Correction-Owner:` trailer in THAT head commit's message,
+// which is content-addressed by the commit SHA and so cannot change without a new commit — a
+// new head — and fresh checks. A pull-request BODY edit is descriptive only (routing, notices,
+// the scope gate); it can never redefine this owner. This resolver fetches the head commit and
+// trusts its message ONLY after the SERVER-returned SHA equals the expected head, so a moved
+// head is never read as this head's owner, and it returns the SAME owner for the same head
+// across fresh PR objects and independently restarted runs. Missing/malformed/conflicting/
+// unknown trailers, an unreachable commit, or a moved head all yield no authoritative owner:
+// every promotion/recovery/success/merge boundary fails closed.
+async function resolveHeadBoundOwner(client, expectedHead) {
+  if (typeof expectedHead !== 'string' || expectedHead.length === 0) {
+    return { owner: null, bound: false };
+  }
+  let commit;
+  try {
+    commit = await client.commit(expectedHead);
+  } catch {
+    return { owner: null, bound: false };
+  }
+  if (!commit || commit.sha !== expectedHead) return { owner: null, bound: false };
+  const { state, owner } = parseCommitCorrectionOwner(commit.commit?.message);
+  return { owner: state === 'declared' ? owner : null, bound: true };
+}
+
+// Positive merge/promotion eligibility: a commit-addressed, cleanly declared, NON-Codex owner
+// of THIS exact head. Everything else — Codex, or a missing / malformed / conflicting / unknown
+// trailer, an unreachable commit, or a moved head — is INELIGIBLE and fails closed. Promotion,
+// success, recovery and merge require positive eligibility; "not Codex" is never sufficient,
+// because a missing or unresolvable owner must also be held.
+async function headOwnerEligibility(client, expectedHead) {
+  const { owner, bound } = await resolveHeadBoundOwner(client, expectedHead);
+  return { owner, bound, eligible: bound && owner !== null && owner !== 'codex' };
+}
+
+async function isMergeEligibleOwnerHead(client, expectedHead) {
+  return (await headOwnerEligibility(client, expectedHead)).eligible;
+}
+
+function ineligibleHoldDetail(owner) {
+  return owner === 'codex'
+    ? 'validation: Codex-owned candidate held for independent reviewer activation'
+    : 'validation: candidate held — this exact head has no authoritative Correction-Owner trailer';
+}
+
+// The PR BODY marker remains a descriptive routing signal (scope gate, correction notices);
+// it is NOT authoritative for merge/promotion, which use the commit-addressed resolver above.
 export function isValidationOnlyCodexOwner(pullRequest) {
   return correctionOwnerDeclaration(pullRequest).owner === 'codex';
 }
 
-async function holdValidationOnlyCodexOwner(client, pullRequest, expectedHead) {
-  if (!isValidationOnlyCodexOwner(pullRequest)) return false;
-  await client.setStatus(
-    expectedHead,
-    'pending',
-    'validation: Codex-owned candidate held for independent reviewer activation',
-    pullRequest.html_url,
-  );
+// Write the validation-hold pending status UNLESS an actionable failure already stands on this
+// head. A preexisting ci:/finding/terminal failure is a truthful, routable state (it routes
+// correction_stalled for a non-awakenable owner); the hold must never replace it with a masking
+// pending. The hold's job is to prevent promotion/merge, not to erase a failure.
+async function writeValidationHoldStatus(client, expectedHead, owner, htmlUrl, statuses) {
+  const live = statuses ?? await client.statuses(expectedHead);
+  const actionableFailure = live.some((status) =>
+    status.context === STATUS_CONTEXT
+    && status.state === 'failure'
+    && (status.description?.startsWith('ci:') || isTerminalReviewStatus(status)));
+  if (!actionableFailure) {
+    await client.setStatus(expectedHead, 'pending', ineligibleHoldDetail(owner), htmlUrl);
+  }
+}
+
+// Hold (draft + auto-merge reconciled) any head that is NOT positively eligible for promotion or
+// merge — Codex-owned, or with missing/malformed/conflicting/unresolvable commit ownership. The
+// only way an ineligible head becomes promotable/mergeable is a NEW, eligible commit (a new
+// head); a body edit never changes it. Reconciling any armed auto-merge is defence in depth
+// beside the primary guarantee that the controller never arms auto-merge in this validation
+// stage.
+async function holdIneligibleOwner(client, pullRequest, expectedHead, statuses = null) {
+  const { owner, eligible } = await headOwnerEligibility(client, expectedHead);
+  if (eligible) return false;
+  await writeValidationHoldStatus(client, expectedHead, owner, pullRequest.html_url, statuses);
+  await client.disableAutoMerge(pullRequest);
   await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
   return true;
 }
@@ -1016,15 +1099,18 @@ export async function setDraftForCurrentHead(
 ) {
   const pullRequest = await refreshCurrentHead(client, number, expectedHead);
   if (!pullRequest) return null;
-  if (!draft && isValidationOnlyCodexOwner(pullRequest)) {
-    await client.setStatus(
-      expectedHead,
-      'pending',
-      'validation: Codex-owned candidate held for independent reviewer activation',
-      pullRequest.html_url,
-    );
-    const held = await client.setDraft(pullRequest, true);
-    return isCurrentReviewUnit(held, expectedHead) ? held : null;
+  if (!draft) {
+    // Promotion to READY requires POSITIVE eligibility: a commit-addressed, cleanly declared,
+    // non-Codex owner of this exact head. Codex, or a missing/malformed/unresolvable owner, is
+    // held as a pending draft (auto-merge reconciled), never promoted — and a preexisting
+    // actionable failure is preserved, not overwritten with the validation pending.
+    const { owner, eligible } = await headOwnerEligibility(client, expectedHead);
+    if (!eligible) {
+      await writeValidationHoldStatus(client, expectedHead, owner, pullRequest.html_url, null);
+      await client.disableAutoMerge(pullRequest);
+      const held = await client.setDraft(pullRequest, true);
+      return isCurrentReviewUnit(held, expectedHead) ? held : null;
+    }
   }
   // `client.setDraft` REFETCHES and returns the post-mutation pull request, so `updated` is
   // authoritative evidence about a moment AFTER the guard above ran — and a retarget inside
@@ -1044,40 +1130,37 @@ export async function completeReviewedPullRequest(
     return result;
   };
   if (!(await authorize()).allowed) return 'held_for_gates';
+  // Validation stage: the IMMEDIATE, exact-SHA merge is the only owner-bound completion. A
+  // real transfer is a new commit that moves the head, which this SHA-conditional merge
+  // rejects. A delayed/server auto-merge is deliberately NOT armed here — its future server
+  // merge cannot be proven owner-bound in this stage (enable-time `expectedHeadOid` does not
+  // durably pin a later server merge), so a candidate GitHub will not merge immediately is
+  // held fail-closed rather than queued. An already-armed auto-merge is reconciled (disabled)
+  // wherever a Codex candidate is held; it is never reported here as a completed or owner-safe
+  // merge.
   const direct = await client.mergeExactHead(pullRequest.number, expectedHead);
   if (direct?.merged) {
     await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
     return 'merged';
   }
-
-  if (!(await authorize()).allowed) return 'held_for_gates';
-  try {
-    await client.enableAutoMerge(pullRequest, expectedHead);
-    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-    return 'queued';
-  } catch (error) {
-    if (!(error instanceof Error) || !error.message.includes('is in clean status')) throw error;
-    if (!(await authorize()).allowed) return 'held_for_gates';
-    const raced = await client.mergeExactHead(pullRequest.number, expectedHead);
-    if (raced?.merged) {
-      await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-      return 'merged';
-    }
-    throw new Error(
-      `GitHub reported a clean pull request but refused the exact-head merge: ${raced?.message ?? 'unknown reason'}`,
-      { cause: error },
-    );
-  }
+  return 'held_for_gates';
 }
 
 /** The common mandatory guard for both direct merge and auto-merge entrypoints. */
 export async function authorizeExactHeadMerge(client, pullRequest, expectedHead) {
+  // Ownership is commit-addressed and immutable for this exact head; resolve it once.
+  const headOwner = await resolveHeadBoundOwner(client, expectedHead);
   const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
-  if (live && isValidationOnlyCodexOwner(live)) {
+  if (live && headOwner.owner === 'codex') {
     return { allowed: false, state: 'validation_only_codex_owner' };
   }
   if (!live || live.draft || !live.base?.sha) {
     return { allowed: false, state: live?.draft ? 'draft' : 'superseded' };
+  }
+  // A merge is admitted only for a commit-addressed, cleanly declared, non-Codex owner of THIS
+  // exact head. Missing/malformed/conflicting/unknown ownership fails closed here.
+  if (!(headOwner.bound && headOwner.owner !== null && headOwner.owner !== 'codex')) {
+    return { allowed: false, state: 'owner_not_merge_eligible' };
   }
   const [statuses, checks] = await Promise.all([
     client.statuses(expectedHead),
@@ -1088,14 +1171,16 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead)
   if (latestReview?.state !== 'success' || required.state !== 'success') {
     return { allowed: false, state: 'gates_not_green' };
   }
-  // Re-read after remote evidence. A push, base update, retarget or draft
-  // transition during validation fails closed.
+  // Re-read after remote evidence. A push, base update, retarget or draft transition fails
+  // closed. Ownership needs no re-read: it is commit-addressed and immutable for this exact
+  // head, so a real transfer is a NEW commit that moves the head — rejected here (the head is
+  // no longer current) and by the exact-SHA merge precondition — while a body edit cannot
+  // change it. The authorized object returned here is what the caller merges by exact SHA.
   const finalLive = await refreshCurrentHead(client, live.number, expectedHead);
   if (
     !finalLive
     || finalLive.draft
     || finalLive.base?.sha !== live.base.sha
-    || isValidationOnlyCodexOwner(finalLive)
   ) {
     return { allowed: false, state: 'changed_during_validation' };
   }
@@ -1112,8 +1197,11 @@ export async function ensureTerminalReviewState(
   if (!isTerminalReviewStatus(status)) return false;
   const liveOwner = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (!liveOwner) return true;
-  if (await holdValidationOnlyCodexOwner(client, liveOwner, expectedHead)) return true;
   if (status.state === 'success') {
+    // A recovered clean result must not promote a validation-only Codex candidate: hold it
+    // in draft/pending. The hold applies ONLY on the success path — an effective failure
+    // (below) must never be masked with a pending validation status.
+    if (await holdIneligibleOwner(client, liveOwner, expectedHead)) return true;
     if (persistentReviewFailure(statuses)) {
       await client.setStatus(
         expectedHead,
@@ -1166,6 +1254,10 @@ export async function ensureTerminalReviewState(
       expectedHead,
     );
   } else {
+    // A terminal FAILURE stays a truthful failure for every owner, Codex included — it is
+    // never replaced with a validation-only pending status. Its correction_stalled routing
+    // for a non-awakenable owner is owed by the correction watchdog, which reads this
+    // failing head-bound status.
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
     );
@@ -1283,8 +1375,8 @@ export async function revalidateFinalReviewPolicy(
   if (!pullRequest) {
     return { state: 'superseded', allowed: false, superseded: true };
   }
-  if (await holdValidationOnlyCodexOwner(client, pullRequest, expectedHead)) {
-    return { state: 'validation_only_codex_owner', allowed: false, superseded: false };
+  if (await holdIneligibleOwner(client, pullRequest, expectedHead)) {
+    return { state: 'held_ineligible_owner', allowed: false, superseded: false };
   }
 
   // And at final admission, so a clean head is also measured — after the head is
@@ -1313,8 +1405,8 @@ export async function revalidateFinalReviewPolicy(
   if (!finalPullRequest) {
     return { state: 'superseded', allowed: false, superseded: true };
   }
-  if (await holdValidationOnlyCodexOwner(client, finalPullRequest, expectedHead)) {
-    return { state: 'validation_only_codex_owner', allowed: false, superseded: false };
+  if (await holdIneligibleOwner(client, finalPullRequest, expectedHead)) {
+    return { state: 'held_ineligible_owner', allowed: false, superseded: false };
   }
 
   return { state: 'allowed', allowed: true, pullRequest: finalPullRequest };
@@ -1334,8 +1426,8 @@ export async function reviewAttempt(
     expectedHead,
   );
   if (!live) return { state: 'superseded' };
-  if (await holdValidationOnlyCodexOwner(client, live, expectedHead)) {
-    return { state: 'validation_only_codex_owner' };
+  if (await holdIneligibleOwner(client, live, expectedHead)) {
+    return { state: 'held_ineligible_owner' };
   }
 
   live = await setDraftForCurrentHead(
@@ -1345,8 +1437,8 @@ export async function reviewAttempt(
     true,
   );
   if (!live) return { state: 'superseded' };
-  if (await holdValidationOnlyCodexOwner(client, live, expectedHead)) {
-    return { state: 'validation_only_codex_owner' };
+  if (await holdIneligibleOwner(client, live, expectedHead)) {
+    return { state: 'held_ineligible_owner' };
   }
   live = await setDraftForCurrentHead(
     client,
@@ -1355,8 +1447,8 @@ export async function reviewAttempt(
     false,
   );
   if (!live) return { state: 'superseded' };
-  if (await holdValidationOnlyCodexOwner(client, live, expectedHead)) {
-    return { state: 'validation_only_codex_owner' };
+  if (await holdIneligibleOwner(client, live, expectedHead)) {
+    return { state: 'held_ineligible_owner' };
   }
   const deadline = new Date(Date.now() + REVIEW_TIMEOUT_MS).toISOString();
 
@@ -1379,8 +1471,8 @@ export async function reviewAttempt(
       expectedHead,
     );
     if (!live) return { state: 'superseded' };
-    if (await holdValidationOnlyCodexOwner(client, live, expectedHead)) {
-      return { state: 'validation_only_codex_owner' };
+    if (await holdIneligibleOwner(client, live, expectedHead)) {
+      return { state: 'held_ineligible_owner' };
     }
 
     const [reviews, comments, reactions] = await Promise.all([
@@ -1627,15 +1719,12 @@ export async function run({ context: suppliedContext, client: suppliedClient } =
   if (scope.superseded) return;
   if (!scope.allowed) throw new Error(scope.detail);
 
-  // Codex ownership is admitted to candidate CI only. Until independent Claude verdict
-  // consumption is activated, no existing/recovered Codex result may promote or merge it.
   pullRequest = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (!pullRequest) return;
-  if (await holdValidationOnlyCodexOwner(client, pullRequest, expectedHead)) {
-    console.log('Codex-owned candidate validated and held in draft; no review or merge authority is active.');
-    return;
-  }
 
+  // Failed CI is processed and routed FIRST, for every owner. A validation-only Codex
+  // candidate must still record a truthful failure and correction_stalled routing; the
+  // Codex hold below (green-CI path) must never replace an actionable failure with pending.
   if (context.ciConclusion && context.ciConclusion !== 'success') {
     const ciSummary = summarizeRequiredChecks(
       await client.checkRuns(expectedHead),
@@ -1662,7 +1751,11 @@ export async function run({ context: suppliedContext, client: suppliedClient } =
         );
       }
     }
-    pullRequest = shouldDraftForCiFailure(existingStatus)
+    // A currently-failing required check always wins over a stale terminal success: draft and
+    // record the truthful `ci:` failure so a candidate can never merge on legacy green, and so
+    // the effective failure — not a masking pending — is what the watchdog routes.
+    const effectiveCiFailure = ciSummary.failed.length > 0;
+    pullRequest = (effectiveCiFailure || shouldDraftForCiFailure(existingStatus))
       ? await setDraftForCurrentHead(
           client,
           pullRequest.number,
@@ -1675,10 +1768,10 @@ export async function run({ context: suppliedContext, client: suppliedClient } =
           expectedHead,
         );
     if (!pullRequest) return;
-    const ciDetail = ciSummary.failed.length > 0
+    const ciDetail = effectiveCiFailure
       ? `Failed checks: ${ciSummary.failed.join(', ')}`
       : `CI workflow concluded ${context.ciConclusion}`;
-    if (!isTerminalReviewStatus(existingStatus)) {
+    if (effectiveCiFailure || !isTerminalReviewStatus(existingStatus)) {
       await client.setStatus(
         expectedHead,
         'failure',
@@ -1703,6 +1796,16 @@ export async function run({ context: suppliedContext, client: suppliedClient } =
       }),
     );
     throw new Error(ciDetail);
+  }
+
+  // Green (or non-failing) CI: hold any head that is not positively eligible for promotion —
+  // Codex-owned, or with missing/malformed/unresolvable commit ownership — in draft/pending so
+  // no existing or recovered success can promote or merge it. Any effective failure was already
+  // recorded and routed above; the hold preserves it (it never overwrites an actionable failure
+  // with the validation pending).
+  if (await holdIneligibleOwner(client, pullRequest, expectedHead, existingStatuses)) {
+    console.log('Candidate is not a positively eligible owner of this exact head; held in draft. No review or merge authority is active.');
+    return;
   }
 
   const terminalStatus = recoverableTerminalReviewStatus(existingStatuses);
@@ -1821,7 +1924,7 @@ export async function run({ context: suppliedContext, client: suppliedClient } =
       advisory,
     );
     if (result.state === 'superseded') return;
-    if (result.state === 'validation_only_codex_owner') {
+    if (result.state === 'held_ineligible_owner') {
       console.log('Codex-owned candidate became validation-only during review; held pending in draft.');
       return;
     }
@@ -2031,9 +2134,7 @@ export async function run({ context: suppliedContext, client: suppliedClient } =
           attempt,
           next: completion === 'merged'
             ? 'GitHub squash-merged this exact reviewed head.'
-            : completion === 'queued'
-              ? 'GitHub auto-merge is queued behind branch protection.'
-              : 'Merge is held because the current head, base, readiness or required gates changed during validation.',
+            : 'Merge is held: in this validation stage only the immediate exact-head merge completes; a delayed queued merge is not armed. It is held because the current head, base, readiness, required gates or head-bound ownership are not both green and eligible now.',
         }),
       );
       return;

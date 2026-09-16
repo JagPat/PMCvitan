@@ -105,6 +105,38 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
   return { state: 'declared', owner, declared, detail: null };
 }
 
+// Immutable, commit-addressed correction ownership.
+//
+// The authoritative correction owner of an EXACT head is declared by a single
+// `Correction-Owner:` trailer line in THAT head commit's message. Because the message is
+// content-addressed by the commit SHA, this owner cannot change without a new commit — a new
+// head — and re-running every check. A pull-request BODY edit is descriptive only (routing,
+// notices, the scope gate) and never redefines it. Callers verify the server-returned commit
+// SHA equals the expected head before trusting the message, so a moved head is never read as
+// this head's owner, and resolve the SAME owner for the same head across fresh objects and
+// independently restarted runs.
+//
+// Fail closed: no trailer, more than one trailer (even the same owner twice), two different
+// owners, or an unknown owner all yield no authoritative owner.
+const COMMIT_OWNER_TRAILER = /^Correction-Owner:[ \t]+([A-Za-z][A-Za-z0-9_-]*)[ \t]*$/gmu;
+
+export function parseCommitCorrectionOwner(commitMessage) {
+  const declared = [...String(commitMessage ?? '').matchAll(COMMIT_OWNER_TRAILER)]
+    .map((match) => match[1].toLowerCase());
+  if (declared.length === 0) {
+    return { state: 'missing', owner: null, declared };
+  }
+  const distinct = [...new Set(declared)];
+  if (declared.length > 1 || distinct.length > 1) {
+    return { state: 'conflicting', owner: null, declared };
+  }
+  const [owner] = distinct;
+  if (!CORRECTION_OWNERS.includes(owner)) {
+    return { state: 'invalid', owner: null, declared };
+  }
+  return { state: 'declared', owner, declared };
+}
+
 /**
  * Whether a pull request is inside the correction watchdog's remit.
  *
