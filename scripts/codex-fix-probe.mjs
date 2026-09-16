@@ -251,22 +251,37 @@ export async function runDispatch({ env, loadEvent, api, writeOutput = () => {},
 
   await onBeforePost();
 
-  // Recheck immediately before posting: the head must not have advanced, and no probe comment for
-  // this PR/head may have appeared since the first list, so an overlapping dispatch cannot double-post.
-  const recheck = await api.getPull(repository, pullRequestNumber);
-  if (recheck?.state !== 'open' || recheck?.head?.sha !== headSha) throw new Error('stale_before_post');
-  const prefix = dedupPrefix({ pullRequest: pullRequestNumber, headSha });
-  const recheckComments = await api.listComments(repository, pullRequestNumber);
-  if (recheckComments.some((comment) => typeof comment?.body === 'string' && comment.body.includes(prefix))) {
-    throw new Error('duplicate');
+  // Recheck immediately before posting by re-fetching ALL inputs and re-running the COMPLETE
+  // authorizer, not just open+head. State can change during the window: the thread can be resolved,
+  // the PR can be retargeted off main, the finding body can be withdrawn, or an overlapping dispatch
+  // can post first. Any of those must abort here. The comment is rendered from the refreshed source
+  // branch and marker so a mid-window rename cannot mislabel the request.
+  const freshPull = await api.getPull(repository, pullRequestNumber);
+  const freshComment = await api.getReviewComment(repository, findingCommentId);
+  const freshThreadUnresolved = await api.threadUnresolved(repository, pullRequestNumber, findingCommentId);
+  const freshFindingRef = freshComment?.html_url ?? `comment-${findingCommentId}`;
+  const freshComments = await api.listComments(repository, pullRequestNumber);
+  const reauthorized = authorizeCodexFixDispatch({
+    repository,
+    pullRequestNumber,
+    headSha,
+    findingRef: freshFindingRef,
+    authorization,
+    livePull: freshPull,
+    findingComment: freshComment,
+    threadUnresolved: freshThreadUnresolved,
+    existingComments: freshComments,
+  });
+  if (!reauthorized.allowed) {
+    throw new Error(reauthorized.state === 'duplicate' ? 'duplicate' : 'stale_before_post');
   }
 
   const created = await api.postComment(repository, pullRequestNumber, codexFixComment({
     pullRequestNumber,
     headSha,
-    sourceBranch: authorized.sourceBranch,
-    findingRef,
-    marker: authorized.marker,
+    sourceBranch: reauthorized.sourceBranch,
+    findingRef: freshFindingRef,
+    marker: reauthorized.marker,
   }));
   const evidence = { commentId: created.id, commentAuthor: created.user?.login };
   writeOutput(`comment_id=${evidence.commentId}\ncomment_author=${evidence.commentAuthor}\n`);

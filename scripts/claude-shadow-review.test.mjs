@@ -101,6 +101,10 @@ test('hosted workflow is shadow-only, pinned, read-only, and publishes from trus
   assert.match(workflow, /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/u);
   assert.doesNotMatch(workflow.match(/review:[\s\S]*?\n  publish:/u)[0], /checks: write/u);
   assert.doesNotMatch(workflow, /Bash\(/u);
+  // --allowedTools only pre-approves; the real read-only boundary needs --tools to constrain
+  // built-ins and --disallowedTools to deny the MCP servers the action enables from project config.
+  assert.match(workflow, /--tools "Read,Glob,Grep"/u);
+  assert.match(workflow, /--disallowedTools "mcp__\*"/u);
   assert.match(workflow, /git -C candidate diff --no-ext-diff --no-textconv/u);
   assert.match(workflow, /publish:[\s\S]*github\.event\.workflow_run\.event == 'pull_request'/u);
   assert.match(workflow, /ref: \$\{\{ github\.workflow_sha \}\}/u);

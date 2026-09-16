@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -165,4 +166,45 @@ test('overlapping dispatches post once: the second dedups at the pre-post rechec
   assert.equal(aEvidence.commentAuthor, 'github-actions[bot]');
   await assert.rejects(bRun, /duplicate/u);
   assert.equal(comments.length, 1, 'exactly one @codex fix comment was posted');
+});
+
+test('the pre-post recheck reruns the full authorizer: a mid-window resolve, retarget or withdrawal aborts with no post', async () => {
+  const commentId = 4023550608;
+  const env = { GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/main', PROBE_PR_NUMBER: '597', PROBE_HEAD_SHA: headSha, PROBE_FINDING_COMMENT_ID: String(commentId), PROBE_AUTHORIZATION: expectedAuthorization({ pullRequest: 597, headSha }) };
+  const loadEvent = () => ({ repository: { full_name: repository } });
+  for (const [label, mutate] of [
+    ['selected thread resolved', (state) => { state.threadUnresolved = false; }],
+    ['PR retargeted off main', (state) => { state.pull = livePull({ base: { ref: 'release', sha: base, repo: { full_name: repository } } }); }],
+    ['finding body withdrawn', (state) => { state.comment = findingComment({ body: 'withdrawn — no severity here' }); }],
+  ]) {
+    const comments = [];
+    const state = { pull: livePull(), comment: findingComment(), threadUnresolved: true };
+    const api = {
+      getPull: async () => state.pull,
+      getReviewComment: async () => state.comment,
+      threadUnresolved: async () => state.threadUnresolved,
+      listComments: async () => comments.map((comment) => ({ ...comment })),
+      postComment: async (_repo, _n, body) => { const created = { id: comments.length + 1, user: { login: 'github-actions[bot]' }, body }; comments.push(created); return created; },
+    };
+    await assert.rejects(
+      runDispatch({ env, loadEvent, api, onBeforePost: async () => { mutate(state); } }),
+      /stale_before_post/u,
+      label,
+    );
+    assert.equal(comments.length, 0, `${label}: nothing was posted`);
+  }
+});
+
+test('the probe workflow declares a non-cancelling per-PR concurrency group, the main-ref guard and minimal permissions', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/codex-fix-probe.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /on:\s*\n\s*workflow_dispatch:/u);
+  assert.match(workflow, /concurrency:\s*\n\s*group: codex-fix-probe-pr-/u);
+  assert.match(workflow, /cancel-in-progress: false/u);
+  assert.match(workflow, /if: github\.ref == 'refs\/heads\/main'/u);
+  assert.match(workflow, /^permissions: \{\}/mu);
+  assert.match(workflow, /pull-requests: write/u);
+  assert.match(workflow, /contents: read/u);
+  assert.doesNotMatch(workflow, /contents: write|actions: write|checks: write|statuses: write/u);
+  assert.match(workflow, /actions\/checkout@11d5960a326750d5838078e36cf38b85af677262/u);
+  assert.match(workflow, /node scripts\/codex-fix-probe\.mjs dispatch/u);
 });

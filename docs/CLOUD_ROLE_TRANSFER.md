@@ -12,7 +12,11 @@ publisher and prompt from the default branch, and checks the candidate out separ
 at the immutable PR head. It accepts only one open, same-repository PR targeting
 `main`, with successful CI and unchanged base/head bindings. The official Claude Code
 action is pinned to commit `7b0b255830a1fab6e602658672acad11c12d841d` and receives
-only read permissions. It cannot edit, push, approve, or merge.
+only read permissions. The reviewer's tool surface is constrained, not merely
+pre-approved: `--tools "Read,Glob,Grep"` restricts the available built-ins (because
+`--allowedTools` alone only pre-approves and does not remove Bash/Write/Edit) and
+`--disallowedTools "mcp__*"` denies every MCP tool the action would otherwise enable
+from project config. It cannot edit, push, approve, or merge.
 
 Claude returns structured findings. A trusted deterministic publisher validates the
 repository, PR, base SHA, head SHA, workflow run id and run attempt, completeness,
@@ -33,8 +37,9 @@ The publisher has `actions: read` only because manual dispatch re-fetches its na
 run for authorization; artifact upload needs no Actions write permission. Only
 `checks: write` is retained for publishing the shadow check.
 
-Candidate content is still adversarial model input. The reviewer has no shell or write
-tools, receives a diff materialized by trusted code, is told candidate text is data and
+Candidate content is still adversarial model input. The reviewer's built-ins are
+restricted to `Read`/`Glob`/`Grep` and all MCP tools are denied, so it has no shell,
+write, or network tools; it receives a diff materialized by trusted code, is told candidate text is data and
 must cover every changed file, but these controls do not mathematically prove that a
 model resisted every prompt injection. Consequently even server-associated empty
 findings are classified only as `shadow_clear`, never authoritative clearance. A real
@@ -99,6 +104,15 @@ mentions, but the available contract does not say that a comment authored by
 `github-actions[bot]` is accepted, nor does it expose a documented Actions API for
 starting a hosted Codex task. PR #597 has no GitHub-generated Codex wake that started
 a task and pushed a new head. Consequently Codex remains **not awakenable** in the
-repository policy. No watchdog route, bot mention, undocumented endpoint, lease, or
-local process is added here. Activation requires observable GitHub evidence linking
-an automated trusted event to a new hosted Codex task and its pushed PR head.
+repository policy.
+
+To MEASURE — not assume — that boundary, this PR adds one bounded, manual,
+disabled-by-default probe (`.github/workflows/codex-fix-probe.yml`) that, only when an
+operator arms it for one chosen PR/head/finding on the trusted `main` ref, posts a
+single `github-actions[bot]`-authored `@codex fix` comment and records the created
+comment id and author as dispatch evidence. That is the only bot mention added, and it
+is inert until dispatched. No automatic watchdog route, no unattended wake, no
+undocumented endpoint, no lease, and no local process is added. Activation still
+requires observable GitHub evidence linking an automated trusted event to a new hosted
+Codex task and its pushed PR head; a task that only returns a diff or needs "Update
+branch" leaves unattended publication unproven.
