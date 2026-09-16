@@ -1041,19 +1041,61 @@ export function isValidationOnlyCodexOwner(pullRequest) {
   return correctionOwnerDeclaration(pullRequest).owner === 'codex';
 }
 
-// Write the validation-hold pending status UNLESS an actionable failure already stands on this
-// head. A preexisting ci:/finding/terminal failure is a truthful, routable state (it routes
-// correction_stalled for a non-awakenable owner); the hold must never replace it with a masking
-// pending. The hold's job is to prevent promotion/merge, not to erase a failure.
-async function writeValidationHoldStatus(client, expectedHead, owner, htmlUrl, statuses) {
+// Reconcile the held head's LATEST routable status before every generic hold return, so a hold
+// never masks an effective current-head failure with a validation pending (or a stale success).
+//
+// Precedence, evaluated on the CURRENT head — never invoking Codex review or waiting on a
+// timeout, only reading statuses and required checks:
+//   1. An actionable failure (ci:/terminal review) is ALREADY the latest status → leave it; it is
+//      truthful and routes correction_stalled for a non-awakenable owner.
+//   2. Otherwise, a persistent current-head review finding buried below a later pending/success is
+//      reconciled forward as the latest failure — the finding, not the pending, is what routes.
+//   3. Otherwise, a currently-failing required check (which a `workflow_dispatch` run reaches here
+//      without ever having read, having no `ciConclusion`) is written as the latest ci: failure.
+//   4. Otherwise — a clean but ineligible candidate — the hold's own validation pending, which
+//      prevents promotion/merge without fabricating a failure while checks are still settling.
+async function writeValidationHoldStatus(client, pullRequest, expectedHead, owner, statuses) {
   const live = statuses ?? await client.statuses(expectedHead);
-  const actionableFailure = live.some((status) =>
-    status.context === STATUS_CONTEXT
-    && status.state === 'failure'
-    && (status.description?.startsWith('ci:') || isTerminalReviewStatus(status)));
-  if (!actionableFailure) {
-    await client.setStatus(expectedHead, 'pending', ineligibleHoldDetail(owner), htmlUrl);
+  const latest = live.find((status) => status.context === STATUS_CONTEXT);
+  const latestActionableFailure = latest
+    && latest.state === 'failure'
+    && (latest.description?.startsWith('ci:') || isTerminalReviewStatus(latest));
+  if (latestActionableFailure) return;
+
+  const reviewFailure = persistentReviewFailure(live);
+  if (reviewFailure) {
+    await client.setStatus(
+      expectedHead,
+      'failure',
+      reviewFailure.description ?? 'review: current-head Codex finding latched',
+      pullRequest.html_url,
+    );
+    return;
   }
+
+  const required = summarizeRequiredChecks(
+    await client.checkRuns(expectedHead),
+    requiredChecksForPullRequest(pullRequest.number),
+  );
+  if (required.state === 'failure') {
+    await client.setStatus(
+      expectedHead,
+      'failure',
+      `ci: Failed checks: ${required.failed.join(', ')}`,
+      pullRequest.html_url,
+    );
+    return;
+  }
+
+  // Reconcile LIVE current-head review evidence before declaring a held head clean. A current-head
+  // Codex finding may carry no status yet (its publisher was interrupted or has not run), and a
+  // held candidate returns before `run()`'s own finding guard — so this surfaces and routes the
+  // finding here (a failing review status via the ordinary correction path), never a masking
+  // pending. This reads existing evidence once; it never invokes a review or waits on a timeout.
+  const liveFinding = await guardAgainstCurrentHeadFinding(client, pullRequest, expectedHead, null);
+  if (liveFinding) return;
+
+  await client.setStatus(expectedHead, 'pending', ineligibleHoldDetail(owner), pullRequest.html_url);
 }
 
 // Hold (draft + auto-merge reconciled) any head that is NOT positively eligible for promotion or
@@ -1065,7 +1107,7 @@ async function writeValidationHoldStatus(client, expectedHead, owner, htmlUrl, s
 async function holdIneligibleOwner(client, pullRequest, expectedHead, statuses = null) {
   const { owner, eligible } = await headOwnerEligibility(client, expectedHead);
   if (eligible) return false;
-  await writeValidationHoldStatus(client, expectedHead, owner, pullRequest.html_url, statuses);
+  await writeValidationHoldStatus(client, pullRequest, expectedHead, owner, statuses);
   await client.disableAutoMerge(pullRequest);
   await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
   return true;
@@ -1106,7 +1148,7 @@ export async function setDraftForCurrentHead(
     // actionable failure is preserved, not overwritten with the validation pending.
     const { owner, eligible } = await headOwnerEligibility(client, expectedHead);
     if (!eligible) {
-      await writeValidationHoldStatus(client, expectedHead, owner, pullRequest.html_url, null);
+      await writeValidationHoldStatus(client, pullRequest, expectedHead, owner, null);
       await client.disableAutoMerge(pullRequest);
       const held = await client.setDraft(pullRequest, true);
       return isCurrentReviewUnit(held, expectedHead) ? held : null;
@@ -1198,10 +1240,12 @@ export async function ensureTerminalReviewState(
   const liveOwner = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (!liveOwner) return true;
   if (status.state === 'success') {
-    // A recovered clean result must not promote a validation-only Codex candidate: hold it
-    // in draft/pending. The hold applies ONLY on the success path — an effective failure
-    // (below) must never be masked with a pending validation status.
-    if (await holdIneligibleOwner(client, liveOwner, expectedHead)) return true;
+    // A recovered clean result must not promote an ineligible candidate: hold it, and reconcile
+    // any effective current-head failure (a persistent finding buried below this recovered
+    // success, or a currently-failing check) into the latest routable status — the recovered
+    // SUCCESS must never remain latest over a real finding. The authoritative `statuses` are
+    // passed so the reconciliation sees the same evidence this recovery is judging.
+    if (await holdIneligibleOwner(client, liveOwner, expectedHead, statuses)) return true;
     if (persistentReviewFailure(statuses)) {
       await client.setStatus(
         expectedHead,

@@ -93,16 +93,46 @@ const pullAt = (number, overrides = {}) => ({
   base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } }, ...overrides,
 });
 
-test('commit-owner trailer parses one owner strictly and fails closed otherwise', () => {
+test('the commit-owner trailer is read only from the terminal trailer block, Git-faithfully', () => {
+  // Authoritative single declarations in a real terminal trailer block.
   assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\n').owner, 'claude');
   assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: codex').owner, 'codex');
+  // Git recognises the key case-insensitively; a single clean declaration is still authoritative.
+  assert.equal(parseCommitCorrectionOwner('x\n\ncorrection-owner: claude\n').owner, 'claude');
+  // A valid multi-trailer footer with the real Co-Authored-By / Claude-Session lines still works.
+  assert.equal(parseCommitCorrectionOwner(
+    'fix: x\n\nbody\n\nCorrection-Owner: claude\n'
+    + 'Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n'
+    + 'Claude-Session: https://claude.ai/code/session_x\n',
+  ).owner, 'claude');
+
+  // Fail closed: no trailer at all, or a declaration that is not in the terminal trailer block.
   assert.equal(parseCommitCorrectionOwner('no trailer here').state, 'missing');
-  assert.equal(parseCommitCorrectionOwner('Correction-Owner: claude\nCorrection-Owner: claude\n').state, 'conflicting');
-  assert.equal(parseCommitCorrectionOwner('Correction-Owner: claude\nCorrection-Owner: cursor\n').state, 'conflicting');
-  assert.equal(parseCommitCorrectionOwner('Correction-Owner: nobody\n').state, 'invalid');
-  for (const bad of ['missing', 'conflicting', 'invalid']) {
-    // eslint-disable-next-line no-unused-expressions
-    assert.equal(parseCommitCorrectionOwner(bad === 'missing' ? '' : bad === 'conflicting' ? 'Correction-Owner: a\nCorrection-Owner: b\n' : 'Correction-Owner: zzz\n').owner, null);
+  assert.equal(parseCommitCorrectionOwner('subject only\n').state, 'missing');
+  // A `Correction-Owner:` line inside a fenced example / body prose never confers ownership.
+  assert.equal(parseCommitCorrectionOwner('doc: how to\n\n```\nCorrection-Owner: claude\n```\n').state, 'missing');
+  assert.equal(parseCommitCorrectionOwner('doc\n\nUse Correction-Owner: claude\n\nMore prose.\n').state, 'missing');
+
+  // Conflicting / duplicate declarations Git would honour are SEEN and rejected — including the
+  // no-space separator form and a second declaration written with a lowercase key.
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\nCorrection-Owner: claude\n').state, 'conflicting');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\nCorrection-Owner: cursor\n').state, 'conflicting');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\nCorrection-Owner:codex\n').state, 'conflicting');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\ncorrection-owner:codex\n').state, 'conflicting');
+  // A folded continuation attached to the owner trailer is validated as part of the value
+  // (Git reads "claude\n codex" as one value), so it cannot slip through as a clean single token.
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\n codex\n').state, 'invalid');
+  // A malformed / unknown owner value fails closed.
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: nobody\n').state, 'invalid');
+
+  for (const message of [
+    '',
+    'x\n\nCorrection-Owner: a\nCorrection-Owner: b\n',
+    'x\n\nCorrection-Owner: zzz\n',
+    'x\n\nCorrection-Owner: claude\n codex\n',
+    'doc\n\n```\nCorrection-Owner: claude\n```\n',
+  ]) {
+    assert.equal(parseCommitCorrectionOwner(message).owner, null);
   }
 });
 
@@ -149,7 +179,7 @@ test('a missing / malformed / wrong-SHA commit-owner trailer is held fail-closed
   for (const commit of [
     noOwnerCommit(),
     ownerCommit('claude', 'c'.repeat(40)),
-    { sha: head, commit: { message: 'Correction-Owner: claude\nCorrection-Owner: cursor\n' } },
+    { sha: head, commit: { message: 'chore: unit\n\nCorrection-Owner: claude\nCorrection-Owner: cursor\n' } },
   ]) {
     const events = [];
     const pull = pullAt(606);
@@ -159,6 +189,8 @@ test('a missing / malformed / wrong-SHA commit-owner trailer is held fail-closed
       async pullRequest() { return pull; },
       async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
       async checkRuns() { return REQUIRED; },
+      async reviews() { return []; },
+      async reviewComments() { return []; },
       async setStatus(_h, state, description) { events.push(['status', state, description]); },
       async setDraft(p, draft) { events.push(['draft', draft]); return { ...p, draft }; },
       async disableAutoMerge() { events.push(['disableAutoMerge']); },
@@ -206,6 +238,8 @@ test('a Codex commit owner is held across merge authorization and recovered term
     async pullRequest() { return current; },
     async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
     async checkRuns() { return REQUIRED; },
+    async reviews() { return []; },
+    async reviewComments() { return []; },
     async setStatus(_h, state, description) { mutations.push(['status', state, description]); },
     async setDraft(_p, draft) { mutations.push(['draft', draft]); current = { ...current, draft }; return current; },
     async disableAutoMerge() { mutations.push(['disableAutoMerge']); },
@@ -241,6 +275,9 @@ test('promotion and final-policy require positive eligibility: Codex and missing
       async commit() { return commit; },
       async pullRequest() { return current; },
       async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
+      async checkRuns() { return REQUIRED; },
+      async reviews() { return []; },
+      async reviewComments() { return []; },
       async setDraft(_p, draft) { drafts.push(draft); current = { ...current, draft }; return current; },
       async setStatus() {},
       async disableAutoMerge() {},
@@ -273,6 +310,9 @@ test('the real GitHubClient draft seam never emits READY for a Codex commit owne
   client.pullRequest = async () => codex;
   client.commit = async () => ownerCommit('codex');
   client.statuses = async () => [{ context: 'codex-current-head', state: 'success' }];
+  client.reviews = async () => [];
+  client.reviewComments = async () => [];
+  client.checkRuns = async () => REQUIRED;
   client.setStatus = async () => {};
   client.request = async () => ({});
   client.graphql = async (query) => { mutations.push(query); return {}; };
@@ -334,4 +374,43 @@ test('failed CI records a truthful failure and routes, never a masking pending, 
   assert.equal(statusWrites.some(({ state, description }) => state === 'failure' && description.startsWith('ci:')), true, 'a truthful ci: failure is recorded, overriding the stale terminal success');
   assert.equal(statusWrites[0].state, 'failure', 'the last write is the failure, not a masking validation pending');
   assert.equal(statusWrites.some(({ state }) => state === 'pending'), false, 'no masking pending is written');
+});
+
+test('a held ineligible head surfaces and routes a LIVE current-head finding, never a masking pending', async () => {
+  // workflow_dispatch (no ciConclusion) with a Codex commit owner and green CI, but an actual
+  // current-head Codex P1 review comment already present that carries no status yet. run() reaches
+  // the ineligible-owner hold before its own finding guard, so the hold must itself reconcile the
+  // live review evidence: publish a failing review status through the ordinary correction path,
+  // never leave a masking validation pending, and never promote to READY.
+  const checklist = ['concurrency-serialization', 'old-release-migration-compatibility', 'trigger-alternate-writers', 'authorization-tenancy', 'ci-reproduce-first'].map((item) => `- [x] \`${item}\``).join('\n');
+  const codexBody = pullAt(610, { additions: 1, deletions: 0, changed_files: 1, body: `<!-- correction-owner: codex -->\n${checklist}\nReplaces: none` });
+  let current = codexBody;
+  const statusWrites = [];
+  let readyCalls = 0;
+  const stickies = [];
+  const finding = { id: 11, user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: head, original_commit_id: head, path: 'scripts/example.mjs', line: 3, body: '**P1** current-head finding without a status yet' };
+  const client = {
+    repository: 'JagPat/PMCvitan',
+    async commit() { return ownerCommit('codex'); },
+    async pullRequest() { return current; },
+    async pullRequestFiles() { return [{ filename: 'scripts/example.mjs', additions: 1, deletions: 0, changes: 1 }]; },
+    async replacementLineage() { return { requiredReplacements: [], replacementPullRequests: [] }; },
+    // Starts empty (a validation pending would be masked just as an empty history is): the finding
+    // has no status yet, exactly the interrupted-publisher case.
+    async statuses() { return statusWrites.map((value, index) => ({ id: 200 + index, context: 'codex-current-head', ...value })); },
+    async checkRuns() { return REQUIRED; },
+    async reviewComments() { return [finding]; },
+    async reviews() { return []; },
+    async reactions() { return []; },
+    async setStatus(_h, state, description) { statusWrites.unshift({ state, description }); },
+    async setDraft(_p, draft) { if (!draft) readyCalls += 1; current = { ...current, draft }; return current; },
+    async disableAutoMerge() {},
+    async updateStickyComment(_n, body) { stickies.push(body); },
+  };
+  await run({ context: { number: 610, expectedHead: head, ciConclusion: null }, client });
+  assert.equal(readyCalls, 0, 'a live current-head finding never promotes an ineligible head to READY');
+  assert.equal(statusWrites[0].state, 'failure', 'the latest status is the finding failure, not a masking pending');
+  assert.match(statusWrites[0].description, /^review:/u, 'the surfaced status is a review finding, routed the ordinary way');
+  assert.equal(statusWrites.some(({ state }) => state === 'pending'), false, 'no masking validation pending is written over the live finding');
+  assert.equal(stickies.some((body) => /changes/iu.test(body ?? '')), true, 'the ordinary correction-routing sticky is published for the finding');
 });
