@@ -157,6 +157,7 @@ export async function lockOrderProbe(o: {
   try {
     await invoke(o.holderReady).catch((error: unknown) => fail(`the holder failed before it was ready: ${reason(error)}`));
     contender = invoke(() => o.contenderStarted({ observed, proceed, signal: cancel.signal }));
+    contender.catch(() => undefined); // a contender that rejects promptly (e.g. before it can take the lock) is inspected later in settle(); never an unhandled rejection meanwhile
     const inspection = await invoke(o.inspectBlocked).then((blocked) => ({ blocked }), (error: unknown) => ({ failure: failureOf(error, 'inspection rejected') }));
     released = true;
     const releaseFailure = await invoke(o.release).then(() => undefined, (error: unknown) => failureOf(error, 'release rejected'));
