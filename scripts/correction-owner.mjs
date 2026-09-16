@@ -105,40 +105,25 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
   return { state: 'declared', owner, declared, detail: null };
 }
 
-// Immutable, commit-addressed correction ownership.
-//
-// The authoritative correction owner of an EXACT head is declared by a single
-// `Correction-Owner:` trailer line in THAT head commit's message. Because the message is
-// content-addressed by the commit SHA, this owner cannot change without a new commit — a new
-// head — and re-running every check. A pull-request BODY edit is descriptive only (routing,
-// notices, the scope gate) and never redefines it. Callers verify the server-returned commit
-// SHA equals the expected head before trusting the message, so a moved head is never read as
-// this head's owner, and resolve the SAME owner for the same head across fresh objects and
-// independently restarted runs.
-//
-// Fail closed: no trailer, more than one trailer (even the same owner twice), two different
-// owners, or an unknown owner all yield no authoritative owner.
-//
-// Ownership is read ONLY from the commit's terminal trailer block — the last paragraph, and
-// only when it is separated from the body by a blank line and consists entirely of Git trailer
-// lines (`Token: value` / `Token:value`, or a folded continuation). This matches how Git's own
-// trailer parser scopes trailers, so a `Correction-Owner:` line in the body or inside a fenced
-// code example never confers ownership, and a second declaration Git would honour — including
-// the no-space `Correction-Owner:codex` form — is SEEN here and rejected as conflicting rather
-// than silently dropped by a stricter whitespace rule. Anything malformed fails closed.
+// Immutable, commit-addressed correction ownership: the owner of an EXACT head is a single
+// `Correction-Owner:` trailer in that head commit's terminal trailer block. Content-addressed by
+// SHA, it cannot change without a new commit (a new head); the PR BODY is descriptive only. Read
+// Git-faithfully so a body/fenced example never confers ownership and a second declaration Git
+// would honour (including the no-space form) is rejected as conflicting rather than dropped. Fail
+// closed on no trailer, duplicate/conflicting owners, or an unknown/malformed value.
 
 // A Git trailer token is alphanumerics and '-', then ':'; the value (spaced or not) is optional.
 const TRAILER_LINE = /^[A-Za-z0-9][A-Za-z0-9-]*:/u;
 // A folded continuation of the previous trailer begins with whitespace.
 const TRAILER_CONTINUATION = /^[ \t]+\S/u;
-// A clean single-token owner value.
 const OWNER_VALUE = /^[A-Za-z][A-Za-z0-9_-]*$/u;
 
+// The terminal trailer block: the last paragraph, only when it is blank-line separated from the
+// body and every line is a trailer or a folded continuation. Null otherwise (fail closed).
 function terminalTrailerBlock(commitMessage) {
   const lines = String(commitMessage ?? '').replace(/\r\n?/gu, '\n').split('\n');
   while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
   if (lines.length === 0) return null;
-  // Walk up from the end while every line is a trailer or a folded continuation.
   let start = lines.length;
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     if (TRAILER_LINE.test(lines[index]) || TRAILER_CONTINUATION.test(lines[index])) {
@@ -147,10 +132,7 @@ function terminalTrailerBlock(commitMessage) {
     }
     break;
   }
-  if (start === lines.length) return null; // the message does not end in a trailer line
-  // The terminal trailer block must be a distinct paragraph: preceded by a blank line, never the
-  // whole message (which would have no subject/body) and never glued to body prose.
-  if (start === 0 || lines[start - 1].trim() !== '') return null;
+  if (start === lines.length || start === 0 || lines[start - 1].trim() !== '') return null;
   return lines.slice(start);
 }
 
@@ -159,10 +141,8 @@ export function parseCommitCorrectionOwner(commitMessage) {
   if (!block) {
     return { state: 'missing', owner: null, declared: [] };
   }
-  // Reconstruct trailers exactly as Git folds them: a whitespace-led continuation joins the
-  // previous trailer's value. A continuation attached to the owner trailer is therefore VALIDATED
-  // as part of the owner value (Git reads `claude\n codex` as the single value "claude codex"),
-  // never silently dropped so a multi-token declaration slips through as clean.
+  // Fold continuations into the previous trailer's value, as Git does, so a continuation on the
+  // owner trailer is validated as part of the value (`claude\n codex` is one value), not dropped.
   const trailers = [];
   for (const line of block) {
     if (TRAILER_CONTINUATION.test(line) && trailers.length > 0) {
@@ -176,16 +156,14 @@ export function parseCommitCorrectionOwner(commitMessage) {
       value: line.slice(separator + 1).replace(/^[ \t]+/u, ''),
     });
   }
-  // Git recognises trailer keys case-insensitively, so `correction-owner:` is the same key as
-  // `Correction-Owner:` — a second declaration in either spelling is a conflict, not ignorable.
+  // Git recognises trailer keys case-insensitively, so a second declaration in either spelling is
+  // a conflict, not ignorable; any duplicate/conflicting declaration fails closed.
   const declared = trailers
     .filter((trailer) => trailer.key.toLowerCase() === 'correction-owner')
     .map((trailer) => trailer.value.trim());
   if (declared.length === 0) {
     return { state: 'missing', owner: null, declared };
   }
-  // Any duplicate or conflicting declaration in the block fails closed — a real transfer is a
-  // new commit with a single clean declaration, never two competing lines on one head.
   if (declared.length > 1 || new Set(declared.map((value) => value.toLowerCase())).size > 1) {
     return { state: 'conflicting', owner: null, declared };
   }

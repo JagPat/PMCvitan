@@ -28,17 +28,13 @@ function automatedMergeEvidence(pullRequest) {
     async pullRequest() { return pullRequest; },
     async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
     async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
-    // Ownership is commit-addressed: authority lives in the exact head COMMIT's
-    // Correction-Owner trailer, verified against the server-returned SHA — never in
-    // the mutable PR body. A merge/promotion-eligible fixture declares a clean,
-    // non-Codex owner on THIS head.
+    // Ownership is the head COMMIT's Correction-Owner trailer (a clean non-Codex owner here).
     async commit(sha) { return ownerCommit(sha); },
     async disableAutoMerge() {},
   };
 }
 
-// A commit whose message carries a single authoritative, non-Codex Correction-Owner
-// trailer, addressed to the exact head SHA the resolver verifies against.
+// A commit carrying a single non-Codex Correction-Owner trailer, addressed to the exact head SHA.
 function ownerCommit(sha, owner = 'claude') {
   return {
     sha,
@@ -657,12 +653,9 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     async reviewComments() { return reviewComments; },
     async reviews() { return []; },
     async markReplacementRequired() {},
-    // A commit-addressed, cleanly declared, non-Codex owner of this exact head:
-    // ownership authority lives here, not in the PR body.
     async commit(sha) { return ownerCommit(sha); },
     async updateStickyComment() {},
-    // The validation stage completes only through the IMMEDIATE, exact-SHA merge —
-    // never by arming a future server auto-merge.
+    // Completion is only the immediate exact-SHA merge, never a future server auto-merge.
     async mergeExactHead(number, head) {
       merges.push([number, head]);
       return { merged: true, sha: 'b'.repeat(40) };
@@ -1537,8 +1530,7 @@ test('final admission revalidates live scope and the late review-round reset', a
     async reviewComments() { return []; },
     async reviews() { return []; },
     async markReplacementRequired() {},
-    // Commit-addressed ownership: a clean, non-Codex owner on this exact head, so
-    // final admission is gated on scope and convergence, not held on ownership.
+    // Eligible owner, so final admission is gated on scope/convergence, not held on ownership.
     async commit(sha) { return ownerCommit(sha); },
     async disableAutoMerge() {},
   };
@@ -1768,10 +1760,8 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
 });
 
 test('a reviewed head GitHub will not merge immediately is held fail-closed, never queued', async () => {
-  // Validation-stage contract: the ONLY owner-bound completion is the immediate,
-  // exact-SHA merge. A delayed/server auto-merge is deliberately never armed here —
-  // enable-time expectedHeadOid does not durably pin a later server merge, so a
-  // candidate GitHub will not merge now is held fail-closed rather than queued.
+  // The only owner-bound completion is the immediate exact-SHA merge; a candidate GitHub will not
+  // merge now is held fail-closed, not queued behind a server auto-merge that cannot be pinned.
   assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
   const expectedHead = 'a'.repeat(40);
   const pullRequest = {
@@ -1804,16 +1794,12 @@ test('a reviewed head GitHub will not merge immediately is held fail-closed, nev
     ),
     'held_for_gates',
   );
-  // The exact-SHA merge is attempted once; no auto-merge is armed and no handoff
-  // is dispatched for a merge that did not actually happen.
+  // One exact-SHA attempt; no auto-merge armed and no handoff for a merge that did not happen.
   assert.deepEqual(calls, [['merge', 230, expectedHead]]);
 });
 
 test('the exact-SHA merge is attempted once and never falls back to auto-merge', async () => {
-  // The prior design retried after an auto-merge-enable race; the validation stage
-  // has no such fallback. A single not-ready result holds fail-closed — it does not
-  // arm auto-merge and does not re-attempt behind a server merge that cannot be
-  // proven owner-bound.
+  // A single not-ready result holds fail-closed: no auto-merge, no retry behind a server merge.
   assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
   const expectedHead = 'a'.repeat(40);
   const pullRequest = {
@@ -1932,10 +1918,7 @@ test('terminal failures restore draft and CI failures run before recovery', asyn
     liveFindingGuard >= 0 && liveFindingGuard < terminalRecovery,
     'live Codex evidence must be checked before recovered success can return',
   );
-  // A currently-failing check writes a truthful `ci:` failure over any stale terminal
-  // success; when there is no effective failure, a `ci:` failure is still written only
-  // if the existing status is not already terminal. Either way the failure-truthful
-  // condition precedes the `ci:` write.
+  // The failure-truthful condition precedes the `ci:` write.
   assert.match(
     runBody,
     /effectiveCiFailure \|\| !isTerminalReviewStatus\(existingStatus\)\)[\s\S]*`ci:/,
@@ -2212,8 +2195,7 @@ test('a base retargeted INSIDE the setDraft window is refused on the post-mutati
   const client = {
     // The pre-mutation refresh sees `main`; the post-mutation refetch sees `release`.
     async pullRequest() { return onMain; },
-    // A commit-addressed, eligible owner on this exact head, so promotion clears the
-    // positive-eligibility guard and reaches the setDraft window this test exercises.
+    // Eligible owner, so promotion clears the guard and reaches the setDraft window under test.
     async commit(sha) { return ownerCommit(sha); },
     async disableAutoMerge() {},
     async setDraft(current, draft) {

@@ -1015,11 +1015,9 @@ async function resolveHeadBoundOwner(client, expectedHead) {
   return { owner: state === 'declared' ? owner : null, bound: true };
 }
 
-// Positive merge/promotion eligibility: a commit-addressed, cleanly declared, NON-Codex owner
-// of THIS exact head. Everything else — Codex, or a missing / malformed / conflicting / unknown
-// trailer, an unreachable commit, or a moved head — is INELIGIBLE and fails closed. Promotion,
-// success, recovery and merge require positive eligibility; "not Codex" is never sufficient,
-// because a missing or unresolvable owner must also be held.
+// Positive merge/promotion eligibility: a commit-addressed, non-Codex owner of THIS exact head.
+// Everything else (Codex, or an unresolvable/malformed/moved-head owner) is INELIGIBLE and fails
+// closed — "not Codex" is never sufficient, since a missing owner must also be held.
 async function headOwnerEligibility(client, expectedHead) {
   const { owner, bound } = await resolveHeadBoundOwner(client, expectedHead);
   return { owner, bound, eligible: bound && owner !== null && owner !== 'codex' };
@@ -1035,25 +1033,18 @@ function ineligibleHoldDetail(owner) {
     : 'validation: candidate held — this exact head has no authoritative Correction-Owner trailer';
 }
 
-// The PR BODY marker remains a descriptive routing signal (scope gate, correction notices);
-// it is NOT authoritative for merge/promotion, which use the commit-addressed resolver above.
+// The PR BODY marker is a descriptive routing signal only, not authoritative for merge/promotion.
 export function isValidationOnlyCodexOwner(pullRequest) {
   return correctionOwnerDeclaration(pullRequest).owner === 'codex';
 }
 
-// Reconcile the held head's LATEST routable status before every generic hold return, so a hold
-// never masks an effective current-head failure with a validation pending (or a stale success).
-//
-// Precedence, evaluated on the CURRENT head — never invoking Codex review or waiting on a
-// timeout, only reading statuses and required checks:
-//   1. An actionable failure (ci:/terminal review) is ALREADY the latest status → leave it; it is
-//      truthful and routes correction_stalled for a non-awakenable owner.
-//   2. Otherwise, a persistent current-head review finding buried below a later pending/success is
-//      reconciled forward as the latest failure — the finding, not the pending, is what routes.
-//   3. Otherwise, a currently-failing required check (which a `workflow_dispatch` run reaches here
-//      without ever having read, having no `ciConclusion`) is written as the latest ci: failure.
-//   4. Otherwise — a clean but ineligible candidate — the hold's own validation pending, which
-//      prevents promotion/merge without fabricating a failure while checks are still settling.
+// Reconcile the held head's LATEST routable status before every hold return, so a hold never masks
+// a current-head failure with a validation pending (or a stale success). Precedence, reading
+// statuses/checks/evidence once and never invoking a review or waiting: (1) an actionable failure
+// already latest is left; (2) a persistent review finding buried below is reconciled forward;
+// (3) a currently-failing required check (a workflow_dispatch run reaches here unread) is written
+// as ci: failure; (4) a live current-head finding with no status yet is surfaced and routed;
+// else (5) the clean ineligible candidate takes the validation pending.
 async function writeValidationHoldStatus(client, pullRequest, expectedHead, owner, statuses) {
   const live = statuses ?? await client.statuses(expectedHead);
   const latest = live.find((status) => status.context === STATUS_CONTEXT);
@@ -1087,11 +1078,8 @@ async function writeValidationHoldStatus(client, pullRequest, expectedHead, owne
     return;
   }
 
-  // Reconcile LIVE current-head review evidence before declaring a held head clean. A current-head
-  // Codex finding may carry no status yet (its publisher was interrupted or has not run), and a
-  // held candidate returns before `run()`'s own finding guard — so this surfaces and routes the
-  // finding here (a failing review status via the ordinary correction path), never a masking
-  // pending. This reads existing evidence once; it never invokes a review or waits on a timeout.
+  // Surface/route a LIVE current-head finding with no status yet: a held candidate returns
+  // before run()'s own finding guard would reach it.
   const liveFinding = await guardAgainstCurrentHeadFinding(client, pullRequest, expectedHead, null);
   if (liveFinding) return;
 
@@ -1099,11 +1087,7 @@ async function writeValidationHoldStatus(client, pullRequest, expectedHead, owne
 }
 
 // Hold (draft + auto-merge reconciled) any head that is NOT positively eligible for promotion or
-// merge — Codex-owned, or with missing/malformed/conflicting/unresolvable commit ownership. The
-// only way an ineligible head becomes promotable/mergeable is a NEW, eligible commit (a new
-// head); a body edit never changes it. Reconciling any armed auto-merge is defence in depth
-// beside the primary guarantee that the controller never arms auto-merge in this validation
-// stage.
+// merge. Only a new eligible commit (a new head) lifts the hold; a body edit never does.
 async function holdIneligibleOwner(client, pullRequest, expectedHead, statuses = null) {
   const { owner, eligible } = await headOwnerEligibility(client, expectedHead);
   if (eligible) return false;
@@ -1142,10 +1126,8 @@ export async function setDraftForCurrentHead(
   const pullRequest = await refreshCurrentHead(client, number, expectedHead);
   if (!pullRequest) return null;
   if (!draft) {
-    // Promotion to READY requires POSITIVE eligibility: a commit-addressed, cleanly declared,
-    // non-Codex owner of this exact head. Codex, or a missing/malformed/unresolvable owner, is
-    // held as a pending draft (auto-merge reconciled), never promoted — and a preexisting
-    // actionable failure is preserved, not overwritten with the validation pending.
+    // Promotion to READY requires POSITIVE eligibility (a commit-addressed, non-Codex owner of
+    // this exact head); anything else is held as a pending draft, never promoted.
     const { owner, eligible } = await headOwnerEligibility(client, expectedHead);
     if (!eligible) {
       await writeValidationHoldStatus(client, pullRequest, expectedHead, owner, null);
@@ -1241,10 +1223,8 @@ export async function ensureTerminalReviewState(
   if (!liveOwner) return true;
   if (status.state === 'success') {
     // A recovered clean result must not promote an ineligible candidate: hold it, and reconcile
-    // any effective current-head failure (a persistent finding buried below this recovered
-    // success, or a currently-failing check) into the latest routable status — the recovered
-    // SUCCESS must never remain latest over a real finding. The authoritative `statuses` are
-    // passed so the reconciliation sees the same evidence this recovery is judging.
+    // any effective current-head failure forward (`statuses` passed so the hold sees this
+    // recovery's evidence) — a recovered SUCCESS must never stay latest over a real finding.
     if (await holdIneligibleOwner(client, liveOwner, expectedHead, statuses)) return true;
     if (persistentReviewFailure(statuses)) {
       await client.setStatus(
@@ -1298,10 +1278,8 @@ export async function ensureTerminalReviewState(
       expectedHead,
     );
   } else {
-    // A terminal FAILURE stays a truthful failure for every owner, Codex included — it is
-    // never replaced with a validation-only pending status. Its correction_stalled routing
-    // for a non-awakenable owner is owed by the correction watchdog, which reads this
-    // failing head-bound status.
+    // A terminal FAILURE stays a truthful failure for every owner, never replaced with a
+    // validation pending; the correction watchdog routes it from this head-bound status.
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
     );
@@ -1766,9 +1744,8 @@ export async function run({ context: suppliedContext, client: suppliedClient } =
   pullRequest = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (!pullRequest) return;
 
-  // Failed CI is processed and routed FIRST, for every owner. A validation-only Codex
-  // candidate must still record a truthful failure and correction_stalled routing; the
-  // Codex hold below (green-CI path) must never replace an actionable failure with pending.
+  // Failed CI is processed and routed FIRST, for every owner, so the green-CI hold below never
+  // replaces an actionable failure with a validation pending.
   if (context.ciConclusion && context.ciConclusion !== 'success') {
     const ciSummary = summarizeRequiredChecks(
       await client.checkRuns(expectedHead),
@@ -1795,9 +1772,8 @@ export async function run({ context: suppliedContext, client: suppliedClient } =
         );
       }
     }
-    // A currently-failing required check always wins over a stale terminal success: draft and
-    // record the truthful `ci:` failure so a candidate can never merge on legacy green, and so
-    // the effective failure — not a masking pending — is what the watchdog routes.
+    // A currently-failing required check wins over a stale terminal success: draft and record the
+    // truthful `ci:` failure so a candidate never merges on legacy green.
     const effectiveCiFailure = ciSummary.failed.length > 0;
     pullRequest = (effectiveCiFailure || shouldDraftForCiFailure(existingStatus))
       ? await setDraftForCurrentHead(
@@ -1842,11 +1818,8 @@ export async function run({ context: suppliedContext, client: suppliedClient } =
     throw new Error(ciDetail);
   }
 
-  // Green (or non-failing) CI: hold any head that is not positively eligible for promotion —
-  // Codex-owned, or with missing/malformed/unresolvable commit ownership — in draft/pending so
-  // no existing or recovered success can promote or merge it. Any effective failure was already
-  // recorded and routed above; the hold preserves it (it never overwrites an actionable failure
-  // with the validation pending).
+  // Green (or non-failing) CI: hold any head that is not positively eligible, so no existing or
+  // recovered success promotes/merges it; the hold reconciles rather than masks any real failure.
   if (await holdIneligibleOwner(client, pullRequest, expectedHead, existingStatuses)) {
     console.log('Candidate is not a positively eligible owner of this exact head; held in draft. No review or merge authority is active.');
     return;
