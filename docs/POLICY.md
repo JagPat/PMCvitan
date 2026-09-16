@@ -152,8 +152,9 @@ checks do not prove every domain invariant.
 ### Database migrations
 
 - Deployed migrations are immutable. Never edit, reorder, or rewrite a migration
-  that has already shipped — new changes go in a new, additive migration. Flag any
-  diff that touches the bytes of an already-deployed migration.
+  that has already shipped — new changes go in a new, additive migration. CI verifies
+  every protected file's bytes against `migration-manifest.sha256.json` at the PR base
+  (`scripts/migration-manifest.mjs`); a new migration is recorded with `pnpm migrations:manifest`.
 - If a migration adds a column that an append-only trigger governs, the same
   migration must add that column to the trigger's frozen identity/evidence set.
   Flag a new column that an existing trigger's column list does not cover.
@@ -237,6 +238,7 @@ Reviewer output rules, the family probes and the dispute path live in
 | Current task and post-merge coherence | docs/STATUS.md / autonomous-status-state.mjs | autonomous-status-state.test.mjs; continuation tests |
 | Engineering invariants | Owning product module, SQL constraints and review | Relevant unit, PostgreSQL, migration and browser proofs |
 | Family probes (eight families) | apps/api/test/invariants/probes.ts | process-invariant-probes.test.ts |
+| Migration immutability | migration-manifest.mjs / CI `review-scope` job | migration-manifest.test.mjs |
 | Third-head stop and disputes | Correction owner, on the PR thread (no controller state) | policy-contract tests |
 
 ### Claude independent-review shadow boundary

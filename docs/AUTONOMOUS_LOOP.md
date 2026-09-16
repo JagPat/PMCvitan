@@ -28,6 +28,16 @@ Ownership errors and wake limitations are explained in POLICY: a declared Cursor
 owner is routed but not awakenable; an invalid declaration is correction_stalled.
 Use live PRs and STATUS for the current position; do not maintain a second timeline here.
 
+## The migration manifest
+
+`apps/api/prisma/migration-manifest.sha256.json` records, on one line, the SHA-256 of every
+migration in the tree (a conservative superset of the deployed inventory). `review-scope`
+fetches the PR's base and head commits and runs the BASE commit's copy of
+`scripts/migration-manifest.mjs verify`: the protected set is the base manifest plus any
+migration the base tree carries unrecorded; a protected file whose head bytes differ, a
+recorded entry the head drops or redefines, a phantom entry, and a new migration the head
+does not record each fail. `pnpm migrations:manifest` records the working tree. A base whose
+record contradicts its own tree is repaired on the trusted base, never by a head.
 
 ## Recovery
 
