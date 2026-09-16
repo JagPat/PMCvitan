@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import {
-  ASCII_WHITESPACE, type Bundle, COMPETITOR_MAXWAIT_MS, COMPETITOR_TX_MS, LOCK_PROBE_WORST_CASE_MS, ProbeFailure, REQUIRED_NEGATIVES, SETTLE_WINDOW_MS, lockOrderProbe, noOpUpdateProbe, pairingMatrix, rerunTwice, whitespaceCheckProbe,
+  ASCII_WHITESPACE, type Bundle, COMPETITOR_TX_MS, HOLDER_READY_MS, LOCK_PROBE_WORST_CASE_MS, PROBE_TX_MAXWAIT_MS, ProbeFailure, REQUIRED_NEGATIVES, SETTLE_WINDOW_MS, lockOrderProbe, noOpUpdateProbe, pairingMatrix, rerunTwice, whitespaceCheckProbe,
 } from '../invariants/probes';
 
 const a = new PrismaClient();
@@ -107,10 +107,16 @@ describe('rerunTwice', () => {
 
 describe('lockOrderProbe', () => {
   beforeEach(() => sql(a, "UPDATE _probe_lock SET status = 'open' WHERE id = 1"));
-  const TX = { timeout: 30_000, maxWait: 10_000 };
+  // every probe transaction caps its acquisition at PROBE_TX_MAXWAIT_MS so acquisition fits inside the observation
+  // and readiness budgets; the holder timeout stays a backstop below the per-test timeout (the probe releases or
+  // aborts it long before, and bounds readiness with its own deadline)
+  const TX = { timeout: 20_000, maxWait: PROBE_TX_MAXWAIT_MS };
   // the contender runs under a SHORT transaction timeout (below the probe's settle window): a guard that hangs
   // holding the lock is rolled back by PostgreSQL here, releasing the row without terminating any client
-  const CTX = { timeout: 6_000, maxWait: 10_000 };
+  const CTX = { timeout: 6_000, maxWait: PROBE_TX_MAXWAIT_MS };
+  // the lock-inspection poll window sits ABOVE the acquisition cap, so a contender still acquiring its slot is waited
+  // for rather than misread as "never blocked" (which would be reported as a spurious lock-after-read)
+  const INSPECT_WINDOW_MS = PROBE_TX_MAXWAIT_MS + 3_000;
   /** the holder: session A locks the row inside a transaction, CLOSES it, and holds the transaction open until released */
   const holder = (body: (t: Parameters<Parameters<PrismaClient['$transaction']>[0]>[0]) => Promise<void> = async () => undefined) => {
     let release!: () => void; let abort!: (error: Error) => void;
@@ -136,7 +142,7 @@ describe('lockOrderProbe', () => {
   };
   /** does another session currently wait on a lock over the probe table? polled from session A's pool */
   const inspectBlocked = async () => {
-    for (let i = 0; i < 60; i += 1) {
+    for (let i = 0; i < INSPECT_WINDOW_MS / 50; i += 1) {
       const waiting = await rows<{ n: bigint }>(a,
         `SELECT count(*) AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE '%_probe_lock%' AND pid <> pg_backend_pid()`);
       if (waiting[0]!.n > 0n) return true;
@@ -147,7 +153,7 @@ describe('lockOrderProbe', () => {
   /** the competing writer on a third session: BLOCKS on the row (no NOWAIT) and appends its mark when it lands. Its
    * transaction is bounded like the contender's (COMPETITOR_TX_MS, above CTX so it survives blocking behind a
    * rolled-back guard), so a competitor that acquires the row and hangs is rolled back by the database, not left. */
-  const competitor = async () => { await a.$transaction(async (t) => { await t.$executeRawUnsafe("UPDATE _probe_lock SET status = status || '+raced' WHERE id = 1"); }, { timeout: COMPETITOR_TX_MS, maxWait: COMPETITOR_MAXWAIT_MS }); };
+  const competitor = async () => { await a.$transaction(async (t) => { await t.$executeRawUnsafe("UPDATE _probe_lock SET status = status || '+raced' WHERE id = 1"); }, { timeout: COMPETITOR_TX_MS, maxWait: PROBE_TX_MAXWAIT_MS }); };
   /** the terminal ORDER witness: the holder closed the row, the guard mutated next, the competitor landed last */
   const verify = async () => { expect((await rows<{ status: string }>(a, 'SELECT status FROM _probe_lock WHERE id = 1'))[0]!.status).toBe('closed+guard+raced'); };
   const read = (suffix: string) => rows<{ status: string }>(b, `SELECT status FROM _probe_lock WHERE id = 1${suffix}`);
@@ -281,8 +287,17 @@ describe('lockOrderProbe', () => {
       competitor: () => a.$transaction(async (t) => {
         await t.$executeRawUnsafe("UPDATE _probe_lock SET status = status || '+raced' WHERE id = 1");
         await new Promise(() => undefined); // acquires the row, then hangs holding it until the transaction times out
-      }, { timeout: COMPETITOR_TX_MS, maxWait: COMPETITOR_MAXWAIT_MS }) }));
+      }, { timeout: COMPETITOR_TX_MS, maxWait: PROBE_TX_MAXWAIT_MS }) }));
     await assertFreeSoon();
+  });
+  it('bounds holder readiness by its own deadline and aborts the holder, instead of hanging until the test times out', async () => {
+    // a holder whose readiness never settles must not hang the probe until Vitest kills the test: the probe waits at
+    // most HOLDER_READY_MS, aborts the holder, and names it, so a ProbeFailure and cleanup happen within the budget
+    const h = holder();
+    await failsWith(/holder never became ready within \d+ms; it was aborted/u)(() => lockOrderProbe({ ...fixture(h),
+      holderReady: () => new Promise<void>(() => undefined), // never signals ready
+      contenderStarted: guardedContender }));
+    await h.abort(); await assertFreeSoon();
   });
   it('the default hung-guard budget stays under the integration test timeout, and the settle window exceeds the contender transaction timeout', () => {
     const config = readFileSync(new URL('../../vitest.integration.config.ts', import.meta.url), 'utf8');
@@ -292,7 +307,11 @@ describe('lockOrderProbe', () => {
     expect(CTX.timeout).toBeLessThan(SETTLE_WINDOW_MS); // a rolled-back guard's release is observed, not mistaken for a hang
     expect(CTX.timeout).toBeLessThan(COMPETITOR_TX_MS); // a competitor blocked behind a rolled-back contender still lands
     // the cleanup deadline waits out acquisition (maxWait) + the transaction timeout; the whole thing must fit the budget
-    expect(COMPETITOR_MAXWAIT_MS + COMPETITOR_TX_MS).toBeLessThan(timeout); // a late-acquiring hung competitor is still rolled back within the per-test budget
+    expect(PROBE_TX_MAXWAIT_MS + COMPETITOR_TX_MS).toBeLessThan(timeout); // a late-acquiring hung competitor is still rolled back within the per-test budget
+    expect(PROBE_TX_MAXWAIT_MS).toBeLessThan(INSPECT_WINDOW_MS); // a still-acquiring contender is waited for, never misread as never-blocked
+    expect(PROBE_TX_MAXWAIT_MS).toBeLessThan(HOLDER_READY_MS); // readiness allows for the acquisition window before it gives up
+    expect(HOLDER_READY_MS).toBeLessThan(timeout); // the holder-readiness deadline names a stuck holder before Vitest kills the test
+    expect(TX.timeout).toBeLessThan(timeout); // the holder's own transaction backstop is reclaimable before the test timeout
   });
   it('fails when the contender or the release throws after a correct wait: a crashed command is not evidence', async () => {
     // a guard that holds its lock correctly and then crashes inside its transaction: the crash, not the lock, is the verdict

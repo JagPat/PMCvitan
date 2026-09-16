@@ -84,9 +84,11 @@ const invoke = <T,>(fn: () => Promise<T>): Promise<T> => new Promise<T>((resolve
  * the database, and cleanup waits until that bound has elapsed since it started, so its lock never outlives the
  * probe either. The only worker that can outlast the probe is one that hangs in JS while holding NO lock (an
  * autocommit read that already returned, or a transaction the database has already rolled back) — it holds nothing,
- * so no lock outlives the probe. Every wait is bounded (`SETTLE_WINDOW_MS`/`contenderSettleMs`, and the competitor's
- * acquisition window plus its transaction timeout, `COMPETITOR_MAXWAIT_MS` + `COMPETITOR_TX_MS`) and the whole
- * hung-guard budget stays under the integration suite's per-test timeout. */
+ * so no lock outlives the probe. Every wait is bounded — holder readiness by `HOLDER_READY_MS`, the settle by
+ * `SETTLE_WINDOW_MS`/`contenderSettleMs`, the competitor by its acquisition window plus its transaction timeout
+ * (`PROBE_TX_MAXWAIT_MS` + `COMPETITOR_TX_MS`) — and every probe transaction caps its acquisition at
+ * `PROBE_TX_MAXWAIT_MS`, so the lock-inspection window (which sits above it) never misreads a still-acquiring worker
+ * as one that never blocked. The whole hung-guard budget stays under the integration suite's per-test timeout. */
 export const SETTLE_WINDOW_MS = 9_000;
 const GRACE_MS = 2_000;
 // The competitor is bounded the SAME way the contender is: it runs inside a transaction whose own timeout caps how
@@ -95,11 +97,17 @@ const GRACE_MS = 2_000;
 // this bound has elapsed since the competitor started, so no competitor lock outlives the probe, and it sits above
 // the contender transaction timeout so a competitor blocked behind a rolled-back contender still lands.
 export const COMPETITOR_TX_MS = 9_000;
-// A transaction's `timeout` clock starts only once it ACQUIRES a slot, up to `maxWait` after the call. The probe
-// records the competitor's start before invoking it, so its lock can outlive `COMPETITOR_TX_MS` by the acquisition
-// delay; the fixture MUST cap that delay at this bound, and the cleanup deadline and worst-case budget both add it,
-// so a competitor that acquires late, locks the row, and hangs is still rolled back before the probe returns.
-export const COMPETITOR_MAXWAIT_MS = 2_000;
+// A transaction's `timeout` clock starts only once it ACQUIRES a slot, up to `maxWait` after the call — until then it
+// has not reached the database, so its lock is neither taken (a contender not yet blocking reads as "not blocked")
+// nor bounded (a competitor's timeout has not started). EVERY probe transaction (holder, contender, competitor) MUST
+// cap its `maxWait` at this bound so acquisition fits inside the observation and cleanup budgets: the lock-inspection
+// poll window sits above it (a still-acquiring worker is waited for, not misread), and the competitor cleanup
+// deadline and worst-case budget both add it (a late-acquiring hung competitor is still rolled back in time).
+export const PROBE_TX_MAXWAIT_MS = 2_000;
+// The holder must become ready promptly; capped acquisition (above) plus a free row make readiness fast, so the probe
+// waits at most this long for it (well under the per-test timeout) and then aborts the holder and fails, rather than
+// hanging until Vitest kills the test with no ProbeFailure and no cleanup. It MUST exceed the acquisition cap.
+export const HOLDER_READY_MS = PROBE_TX_MAXWAIT_MS + SETTLE_WINDOW_MS;
 // The worst-case wall time for a hung guard on the default window: the lock-inspection poll ceiling, one settle
 // window plus a cancellation grace, and the bounded competitor waits (its acquisition window plus its transaction
 // timeout plus a grace). It MUST stay under the integration suite's 30s per-test timeout, or the probe times the
@@ -107,7 +115,7 @@ export const COMPETITOR_MAXWAIT_MS = 2_000;
 // window MUST also exceed the contender's transaction timeout, so a database-rolled-back guard's lock release is
 // observed rather than mistaken for an ignored signal.
 export const SETTLE_WINDOW_MS_MUST_EXCEED_CONTENDER_TX = true;
-export const LOCK_PROBE_WORST_CASE_MS = 3_000 + SETTLE_WINDOW_MS + COMPETITOR_MAXWAIT_MS + COMPETITOR_TX_MS + GRACE_MS * 2;
+export const LOCK_PROBE_WORST_CASE_MS = 3_000 + SETTLE_WINDOW_MS + PROBE_TX_MAXWAIT_MS + COMPETITOR_TX_MS + GRACE_MS * 2;
 export async function lockOrderProbe(o: {
   holderReady: () => Promise<void>;
   contenderStarted: (milestone: { observed: () => void; proceed: Promise<void>; signal: AbortSignal }) => Promise<unknown>;
@@ -173,7 +181,13 @@ export async function lockOrderProbe(o: {
   };
   let primary: unknown; let failed = false;
   try {
-    await invoke(o.holderReady).catch((error: unknown) => fail(`the holder failed before it was ready: ${reason(error)}`));
+    // readiness is bounded: a holder that never signals (stuck acquiring or in SQL) is aborted and named here,
+    // rather than hanging the probe until Vitest kills the test with no ProbeFailure and no cleanup
+    const readiness = await within(invoke(o.holderReady).then(() => 'ready' as const, (error: unknown) => ({ error })), HOLDER_READY_MS);
+    if (readiness !== 'ready') {
+      if ('stuck' in readiness) { await abortHolder(); fail(`the holder never became ready within ${HOLDER_READY_MS}ms; it was aborted rather than hang the test`); }
+      fail(`the holder failed before it was ready: ${reason(readiness.error)}`);
+    }
     contender = invoke(() => o.contenderStarted({ observed, proceed, signal: cancel.signal }));
     contender.catch(() => undefined); // a contender that rejects promptly (e.g. before it can take the lock) is inspected later in settle(); never an unhandled rejection meanwhile
     const inspection = await invoke(o.inspectBlocked).then((blocked) => ({ blocked }), (error: unknown) => ({ failure: failureOf(error, 'inspection rejected') }));
@@ -213,10 +227,10 @@ export async function lockOrderProbe(o: {
   await abortHolder();
   await settle();
   await window.catch(() => undefined);
-  // the competitor's transaction timeout starts only at acquisition (up to COMPETITOR_MAXWAIT_MS after it was
+  // the competitor's transaction timeout starts only at acquisition (up to PROBE_TX_MAXWAIT_MS after it was
   // invoked), so its lock can persist for the acquisition window plus the timeout since it started — wait out both
   const competitorLeft = competitorStartedAt === undefined ? graceMs
-    : Math.max(graceMs, COMPETITOR_MAXWAIT_MS + COMPETITOR_TX_MS + graceMs - (Date.now() - competitorStartedAt));
+    : Math.max(graceMs, PROBE_TX_MAXWAIT_MS + COMPETITOR_TX_MS + graceMs - (Date.now() - competitorStartedAt));
   await awaitCompetitor(competitorLeft);
   if (abortFailure !== undefined) {
     fail(`${failed ? `${reason(primary)}; then ` : ''}the holder's abort failed: ${reason(abortFailure)}: the row may remain locked and the contender blocked`);
