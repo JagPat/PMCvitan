@@ -116,3 +116,49 @@ undocumented endpoint, no lease, and no local process is added. Activation still
 requires observable GitHub evidence linking an automated trusted event to a new hosted
 Codex task and its pushed PR head; a task that only returns a diff or needs "Update
 branch" leaves unattended publication unproven.
+
+## Shadow evidence hardening (non-authoritative)
+
+This stage hardens the shadow evidence path only. It does not admit Codex as a correction
+owner, change correction routing, or grant any merge authority; the existing
+`codex-current-head` gate and branch protection remain authoritative. A separate, later,
+independently reviewed unit carries the ownership, protective-hold, and merge-recovery
+contract; nothing here anticipates it.
+
+Shadow review requires a server-associated CI merge-identity artifact binding the current target tip,
+candidate head, tested merge commit, and the uploading run attempt. The selector accepts only
+artifacts server-associated with the exact CI run/head and takes the highest unambiguous upload
+attempt no newer than the refreshed run (supporting full and partial reruns). The current target
+must also be the comparison merge base, PR-file and comparison-file sets must agree, and candidate
+changes to the CI workflow are refused. This remains non-authoritative shadow validation.
+
+The `shadow-merge-identity` CI job that uploads that artifact is auxiliary on BOTH axes: it carries
+job-level `continue-on-error`, so a failed or missing identity never turns the aggregate CI run red,
+and it is deliberately absent from the `quality-gate` required-status `needs`, so its result never
+reaches the quality verdict. Dropping the `needs` edge alone would leave a failed job reddening the
+aggregate run, which is why `continue-on-error` is also required. Non-authoritative is not permissive:
+shadow authorization is decided by querying the server-associated identity artifact by exact metadata,
+not by the job's reported conclusion. A missing, invalid, or conflicting binding denies shadow
+authorization — invisible to CI and to the merge gate, fatal to shadow clearance. A job that reports a
+failed upload response after the server has already recorded a correctly bound artifact does not, on
+that response alone, invalidate the confirmed artifact.
+
+### Private shadow failure diagnostics
+
+The Claude action keeps `show_full_output: false`. An `if: always()` trusted step reads only the
+bounded `$RUNNER_TEMP/claude-execution-output.json` file and emits a fixed categorical record
+(initialization, result/error/structured-output booleans, and an allowlisted SDK assistant error
+enum or `unclassified`) — never transcript content, messages, results, environment data, or
+unexpected fields. It distinguishes a bounded early inference failure from an authentication
+conclusion without exposing private output. Artifact digests accept only raw 64-hex or canonical
+`sha256:` form, normalize, and still require an exact server-associated metadata match.
+
+### Trusted workflow execution provenance
+
+Both shadow jobs run only when GitHub reports `refs/heads/main`. Authorization and publication
+require the exact `JagPat/PMCvitan/.github/workflows/claude-shadow-review.yml@refs/heads/main`
+workflow ref; the consumer independently verifies the server Actions run's workflow path, SHA,
+attempt, successful publisher job, artifact, repository, and `head_branch=main`. The trusted workflow
+SHA may be an earlier main commit but an off-main dispatch is never accepted. A source-controlled
+guard does not sandbox a principal who can replace workflows; repository administration and branch
+protection remain outside this mechanism.
