@@ -149,6 +149,18 @@ describe('lockOrderProbe', () => {
   /** the terminal ORDER witness: the holder closed the row, the guard mutated next, the competitor landed last */
   const verify = async () => { expect((await rows<{ status: string }>(a, 'SELECT status FROM _probe_lock WHERE id = 1'))[0]!.status).toBe('closed+guard+raced'); };
   const read = (suffix: string) => rows<{ status: string }>(b, `SELECT status FROM _probe_lock WHERE id = 1${suffix}`);
+  /** the row is lockable once any abandoned contender read drains: `Promise.race` leaves the LOSING
+   * `FOR UPDATE` query queued, and after the holder is freed that autocommit read can grab the row for
+   * microseconds before it releases. Poll past that transient; a row that stays locked is a real failure. */
+  const assertFreeSoon = async () => {
+    for (let i = 0; i < 60; i += 1) {
+      try { await read(' FOR UPDATE NOWAIT'); return; } catch (error) {
+        if (!/55P03|could not obtain lock/u.test(String((error as Error).message))) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    await read(' FOR UPDATE NOWAIT'); // a final attempt lets a genuinely stuck lock surface its error
+  };
   const guardMark = "UPDATE _probe_lock SET status = status || '+guard' WHERE id = 1";
   const fixture = (h = holder()) => ({ ...h, inspectBlocked, competitor, verify });
   /** the correct guard: ONE transaction locks the row, reads, reports, waits for the probe's window, then mutates on what it read */
@@ -187,11 +199,11 @@ describe('lockOrderProbe', () => {
     await failsWith(/holder failed before it was ready.*readiness monitor failed/u)(() => lockOrderProbe({ ...fixture(h),
       holderReady: async () => { await h.holderReady(); throw new Error('readiness monitor failed'); },
       contenderStarted: guardedContender }));
-    await read(' FOR UPDATE NOWAIT');
+    await assertFreeSoon();
     // #592 round-6 P2: the holder's own transaction dies before ready(); readiness rejects instead of hanging, and the row is free
     await failsWith(/holder failed before it was ready.*holder transaction died/u)(() => lockOrderProbe({ ...fixture(holder(async () => { throw new Error('holder transaction died'); })),
       contenderStarted: guardedContender }));
-    await read(' FOR UPDATE NOWAIT');
+    await assertFreeSoon();
   });
   it('names a holder abort that fails, whether it rejects or throws synchronously, instead of returning as if the row were free', async () => {
     const stalled = ({ observed, signal }: { observed: () => void; signal: AbortSignal }) => (async () => {
@@ -201,12 +213,12 @@ describe('lockOrderProbe', () => {
     const h1 = holder();
     await failsWith(/holder's abort failed.*abort connection lost/u)(() => lockOrderProbe({ ...fixture(h1), contenderSettleMs: 500,
       release: async () => { throw new Error('connection lost'); }, abort: async () => { throw new Error('abort connection lost'); }, contenderStarted: stalled }));
-    await h1.abort(); await read(' FOR UPDATE NOWAIT');
+    await h1.abort(); await assertFreeSoon();
     // #592 round-6 P2: a NON-async abort that throws before returning a promise is recorded all the same
     const h2 = holder();
     await failsWith(/holder's abort failed.*sync abort/u)(() => lockOrderProbe({ ...fixture(h2), contenderSettleMs: 500,
       release: async () => { throw new Error('connection lost'); }, abort: (() => { throw new Error('sync abort'); }) as unknown as () => Promise<void>, contenderStarted: stalled }));
-    await h2.abort(); await read(' FOR UPDATE NOWAIT');
+    await h2.abort(); await assertFreeSoon();
   });
   it('aborts a contender that hangs after reporting, and awaits its settlement; a contender that ignores the signal is named', async () => {
     let settled = false;
@@ -222,20 +234,20 @@ describe('lockOrderProbe', () => {
     expect(settled).toBe(true);
     await failsWith(/ignored its abort signal/u)(() => lockOrderProbe({ ...fixture(), contenderSettleMs: 300,
       contenderStarted: ({ observed }) => (async () => { await read(' FOR UPDATE'); observed(); await new Promise(() => undefined); })() }));
-    await read(' FOR UPDATE NOWAIT');
+    await assertFreeSoon();
   });
   it('fails, and still frees the row, when the lock inspection itself throws (every exit path aborts the holder)', async () => {
     await failsWith(/lock inspection failed.*connection reset/u)(() => lockOrderProbe({ ...fixture(),
       inspectBlocked: async () => { throw new Error('connection reset'); },
       contenderStarted: guardedContender }));
-    await read(' FOR UPDATE NOWAIT');
+    await assertFreeSoon();
   });
   it('fails, and still frees the row, when the release rejects BEFORE unlocking (no lock outlives the probe)', async () => {
     await failsWith(/holder's release failed.*connection lost/u)(() => lockOrderProbe({ ...fixture(),
       release: async () => { throw new Error('connection lost'); },
       contenderStarted: guardedContender }));
     // NOWAIT: the row must be free the moment the probe returns
-    await read(' FOR UPDATE NOWAIT');
+    await assertFreeSoon();
   });
   it('force-releases, via its bounded transaction timeout, a contender that holds its lock and ignores cancellation', async () => {
     // the worst broken guard: it takes the lock in a transaction and hangs forever, ignoring the abort signal.
@@ -248,7 +260,7 @@ describe('lockOrderProbe', () => {
       }, CTX) }));
     // the row is FREE once the probe returns: PostgreSQL rolled the contender's transaction back at CTX.timeout,
     // releasing its lock without terminating any client (verified: the lock lifts ~CTX.timeout after acquisition)
-    await read(' FOR UPDATE NOWAIT');
+    await assertFreeSoon();
   });
   it('the default hung-guard budget stays under the integration test timeout, and the settle window exceeds the contender transaction timeout', () => {
     const config = readFileSync(new URL('../../vitest.integration.config.ts', import.meta.url), 'utf8');
