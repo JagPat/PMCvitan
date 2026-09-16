@@ -19,11 +19,16 @@ test('Codex implementation ownership is refused until independent reviewer prove
   }
 });
 function cleanRun(overrides = {}) {
-  return { id: 7, name: 'claude-independent-review', head_sha: head, app: { slug: 'github-actions' }, external_id: `pmcvitan:claude-shadow:v1:repo-JagPat/PMCvitan:pr-600:base-${base}:head-${head}:run-123:attempt-2`, status: 'completed', conclusion: 'success', completed_at: '2026-09-14T12:00:00Z', output: { summary: JSON.stringify({ schema: 1, repository: 'JagPat/PMCvitan', pullRequest: 600, baseSha: base, headSha: head, runId: 123, runAttempt: 2, state: 'clear', findingCount: 0 }) }, ...overrides };
+  return { id: 7, name: 'claude-independent-review', head_sha: head, app: { slug: 'github-actions' }, external_id: `pmcvitan:claude-shadow:v1:repo-JagPat/PMCvitan:pr-600:base-${base}:head-${head}:run-123:attempt-2:publisher-456:publisher-attempt-1`, status: 'completed', conclusion: 'success', completed_at: '2026-09-14T12:00:00Z', output: { summary: JSON.stringify({ schema: 1, repository: 'JagPat/PMCvitan', pullRequest: 600, baseSha: base, headSha: head, runId: 123, runAttempt: 2, publisherRunId: 456, publisherRunAttempt: 1, workflowRef: 'JagPat/PMCvitan/.github/workflows/claude-shadow-review.yml@refs/heads/main', workflowSha: base, state: 'clear', findingCount: 0 }) }, ...overrides };
 }
 
 test('Claude shadow evidence is exact-head/app and fail-closed but non-authoritative', () => {
   const classify = (runs) => classifyClaudeShadowReview({ checkRuns: runs, expectedHead: head, expectedBase: base, pullRequestNumber: 600 });
+  const alteredSummary = (changes) => {
+    const run = cleanRun();
+    run.output.summary = JSON.stringify({ ...JSON.parse(run.output.summary), ...changes });
+    return run;
+  };
   assert.deepEqual(classify([cleanRun()]), { state: 'clear', authoritative: false, runId: 7 });
   assert.equal(classify([cleanRun({ head_sha: 'c'.repeat(40) })]).state, 'missing');
   assert.equal(classify([cleanRun({ app: { slug: 'wrong' } })]).state, 'missing');
@@ -31,7 +36,10 @@ test('Claude shadow evidence is exact-head/app and fail-closed but non-authorita
   assert.equal(classify([cleanRun({ conclusion: 'timed_out' })]).state, 'timed_out');
   assert.equal(classify([cleanRun({ conclusion: 'failure' })]).state, 'failure');
   assert.equal(classify([cleanRun({ output: { summary: '{}' } })]).state, 'replayed');
-  assert.equal(classify([cleanRun({ output: { summary: JSON.stringify({ schema: 1, repository: 'JagPat/PMCvitan', pullRequest: 600, baseSha: base, headSha: head, runId: 123, runAttempt: 2, state: 'changes_required', findingCount: 1 }) } })]).state, 'changes_required');
+  assert.equal(classify([alteredSummary({ publisherRunId: 999 })]).state, 'replayed');
+  assert.equal(classify([alteredSummary({ workflowRef: 'JagPat/PMCvitan/.github/workflows/other.yml@refs/heads/main' })]).state, 'replayed');
+  assert.equal(classify([alteredSummary({ workflowSha: 'c'.repeat(40) })]).state, 'replayed');
+  assert.equal(classify([cleanRun({ output: { summary: JSON.stringify({ schema: 1, repository: 'JagPat/PMCvitan', pullRequest: 600, baseSha: base, headSha: head, runId: 123, runAttempt: 2, publisherRunId: 456, publisherRunAttempt: 1, workflowRef: 'JagPat/PMCvitan/.github/workflows/claude-shadow-review.yml@refs/heads/main', workflowSha: base, state: 'changes_required', findingCount: 1 }) } })]).state, 'changes_required');
   assert.equal(classify([]).state, 'missing');
 });
 

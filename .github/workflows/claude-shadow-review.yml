@@ -4,10 +4,28 @@ on:
   workflow_run:
     workflows: [CI]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open same-repository pull request to review
+        required: true
+        type: number
+      head_sha:
+        description: Exact pull-request head that passed CI
+        required: true
+        type: string
+      ci_run_id:
+        description: Completed CI workflow run bound to that head
+        required: true
+        type: string
+      ci_run_attempt:
+        description: Attempt number of the completed CI workflow run
+        required: true
+        type: number
 
 jobs:
   review:
-    if: github.event.workflow_run.event == 'pull_request'
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'pull_request'
     permissions:
       actions: read
       contents: read
@@ -21,7 +39,7 @@ jobs:
       - name: Check out trusted publisher from the default branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
       - name: Authorize and bind the completed CI run
         id: bind
@@ -35,6 +53,11 @@ jobs:
           path: candidate
           fetch-depth: 0
           persist-credentials: false
+      - name: Materialize the exact diff without executing candidate code
+        env:
+          BASE_SHA: ${{ steps.bind.outputs.baseSha }}
+          HEAD_SHA: ${{ steps.bind.outputs.headSha }}
+        run: git -C candidate diff --no-ext-diff "$BASE_SHA" "$HEAD_SHA" > candidate.diff
       - name: Review exact candidate
         id: claude
         continue-on-error: true
@@ -47,14 +70,15 @@ jobs:
           prompt: |
             You are the independent review-only reviewer for PR #${{ steps.bind.outputs.pullRequest }}.
             Review candidate/ at immutable head ${{ steps.bind.outputs.headSha }} against base
-            ${{ steps.bind.outputs.baseSha }}. Read docs/POLICY.md and docs/REVIEW_RUBRIC.md from
+            ${{ steps.bind.outputs.baseSha }}; candidate.diff is the precomputed exact diff. Read
+            docs/POLICY.md and docs/REVIEW_RUBRIC.md from
             the trusted repository root. Audit the whole relevant files and sibling writer/reader
             paths, not only changed lines. Carry forward unresolved findings visible in the PR.
             Report correctness, security, data-integrity, concurrency, and lifecycle defects as
             P1/P2; do not report taste or style. Every finding needs a concrete failing example.
             Do not edit files, push, comment, approve, or merge. Return only the requested structure.
           claude_args: >-
-            --allowedTools "Read,Glob,Grep,Bash(git diff *),Bash(git show *)"
+            --allowedTools "Read,Glob,Grep"
             --json-schema '{"type":"object","additionalProperties":false,"properties":{"schema":{"const":1},"repository":{"const":"${{ steps.bind.outputs.repository }}"},"pullRequest":{"const":${{ steps.bind.outputs.pullRequest }}},"headSha":{"const":"${{ steps.bind.outputs.headSha }}"},"baseSha":{"const":"${{ steps.bind.outputs.baseSha }}"},"runId":{"const":${{ steps.bind.outputs.runId }}},"runAttempt":{"const":${{ steps.bind.outputs.runAttempt }}},"complete":{"const":true},"filesReviewed":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"properties":{"severity":{"enum":["P1","P2"]},"path":{"type":"string","minLength":1},"line":{"type":"integer","minimum":1},"rule":{"type":"string","minLength":1},"description":{"type":"string","minLength":1},"example":{"type":"string","minLength":1}},"required":["severity","path","line","rule","description","example"]}}},"required":["schema","repository","pullRequest","headSha","baseSha","runId","runAttempt","complete","filesReviewed","findings"]}'
   publish:
     needs: [review]
@@ -69,7 +93,7 @@ jobs:
       - name: Check out trusted publisher from the default branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
       - name: Publish deterministic shadow evidence
         env:

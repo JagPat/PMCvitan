@@ -42,7 +42,7 @@ export function validateClaudeReview(raw, expected) {
   };
 }
 
-export function externalId(binding) {
+export function externalId(binding, provenance = {}) {
   return [
     'pmcvitan:claude-shadow:v1',
     `repo-${binding.repository}`,
@@ -51,38 +51,70 @@ export function externalId(binding) {
     `head-${binding.headSha}`,
     `run-${binding.runId}`,
     `attempt-${binding.runAttempt}`,
+    ...(provenance.publisherRunId ? [
+      `publisher-${provenance.publisherRunId}`,
+      `publisher-attempt-${provenance.publisherRunAttempt}`,
+    ] : []),
   ].join(':');
 }
 
-export function authorizeShadowEvent(event, livePull) {
-  const pull = event?.workflow_run?.pull_requests?.[0];
-  const head = event?.workflow_run?.head_sha;
-  const repository = event?.repository?.full_name;
+export function authorizeShadowRequest({
+  repository,
+  pullRequestNumber,
+  expectedHead,
+  expectedRunAttempt,
+  trustedWorkflowSha,
+  sourceRun,
+  livePull,
+}) {
+  const pullNumbers = sourceRun?.pull_requests?.map((pull) => pull.number) ?? [];
   if (
-    event?.action !== 'completed'
-    || event?.workflow_run?.event !== 'pull_request'
-    || event?.workflow_run?.conclusion !== 'success'
-    || event.workflow_run.pull_requests.length !== 1
-    || !SHA.test(head ?? '')
-    || event?.workflow_run?.head_repository?.full_name !== repository
+    sourceRun?.name !== 'CI'
+    || sourceRun?.event !== 'pull_request'
+    || sourceRun?.status !== 'completed'
+    || sourceRun?.conclusion !== 'success'
+    || sourceRun?.head_sha !== expectedHead
+    || sourceRun?.head_repository?.full_name !== repository
+    || !pullNumbers.includes(pullRequestNumber)
+    || !Number.isInteger(sourceRun?.id)
+    || !Number.isInteger(sourceRun?.run_attempt)
+    || sourceRun.run_attempt !== (expectedRunAttempt ?? sourceRun.run_attempt)
+    || !SHA.test(expectedHead ?? '')
     || livePull?.state !== 'open'
-    || livePull?.head?.sha !== head
+    || livePull?.number !== pullRequestNumber
+    || livePull?.head?.sha !== expectedHead
     || livePull?.head?.repo?.full_name !== repository
     || livePull?.base?.ref !== LINEAGE_BASE_REF
     || livePull?.base?.repo?.full_name !== repository
     || !SHA.test(livePull?.base?.sha ?? '')
+    || (trustedWorkflowSha !== undefined && livePull.base.sha !== trustedWorkflowSha)
   ) return { allowed: false, state: 'unauthorized_or_stale' };
   return {
     allowed: true,
     binding: {
       repository,
-      pullRequest: pull.number,
-      headSha: head,
+      pullRequest: pullRequestNumber,
+      headSha: expectedHead,
       baseSha: livePull.base.sha,
-      runId: event.workflow_run.id,
-      runAttempt: event.workflow_run.run_attempt,
+      runId: sourceRun.id,
+      runAttempt: sourceRun.run_attempt,
     },
   };
+}
+
+export function authorizeShadowEvent(event, livePull) {
+  const sourceRun = event?.workflow_run;
+  if (event?.action !== 'completed' || sourceRun?.pull_requests?.length !== 1) {
+    return { allowed: false, state: 'unauthorized_or_stale' };
+  }
+  return authorizeShadowRequest({
+    repository: event?.repository?.full_name,
+    pullRequestNumber: sourceRun.pull_requests[0].number,
+    expectedHead: sourceRun.head_sha,
+    trustedWorkflowSha: event?.workflow_sha,
+    sourceRun,
+    livePull,
+  });
 }
 
 async function github(path, token, options = {}) {
@@ -105,12 +137,29 @@ async function main() {
   const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
   const summary = process.env.CLAUDE_STRUCTURED_OUTPUT ?? '';
   if (!token) throw new Error('GITHUB_TOKEN is required');
-  const hinted = event?.workflow_run?.pull_requests?.[0];
   const repository = event?.repository?.full_name;
-  const live = hinted
-    ? await github(`/repos/${repository}/pulls/${hinted.number}`, token)
+  const dispatch = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch';
+  const pullRequestNumber = dispatch
+    ? Number(event?.inputs?.pr_number)
+    : event?.workflow_run?.pull_requests?.[0]?.number;
+  const sourceRun = dispatch
+    ? await github(`/repos/${repository}/actions/runs/${event?.inputs?.ci_run_id}`, token)
+    : event?.workflow_run;
+  const live = Number.isInteger(pullRequestNumber)
+    ? await github(`/repos/${repository}/pulls/${pullRequestNumber}`, token)
     : null;
-  const authorization = authorizeShadowEvent(event, live);
+  const expectedHead = dispatch ? event?.inputs?.head_sha : sourceRun?.head_sha;
+  const authorization = dispatch
+    ? authorizeShadowRequest({
+      repository,
+      pullRequestNumber,
+      expectedHead,
+      expectedRunAttempt: Number(event?.inputs?.ci_run_attempt),
+      trustedWorkflowSha: process.env.GITHUB_WORKFLOW_SHA,
+      sourceRun,
+      livePull: live,
+    })
+    : authorizeShadowEvent({ ...event, workflow_sha: process.env.GITHUB_WORKFLOW_SHA }, live);
   if (!authorization.allowed) throw new Error(authorization.state);
   const binding = authorization.binding;
 
@@ -129,18 +178,37 @@ async function main() {
   const conclusion = result.state === 'clear' ? 'success' : 'failure';
   const findings = result.findings.slice(0, 20).map((finding) =>
     `${finding.severity} ${finding.path}:${finding.line} ${finding.description} (${finding.rule}; example: ${finding.example})`);
+  const provenance = {
+    publisherRunId: Number(process.env.GITHUB_RUN_ID),
+    publisherRunAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+    workflowRef: process.env.GITHUB_WORKFLOW_REF,
+    workflowSha: process.env.GITHUB_WORKFLOW_SHA,
+  };
+  if (
+    !Number.isInteger(provenance.publisherRunId)
+    || !Number.isInteger(provenance.publisherRunAttempt)
+    || !provenance.workflowRef?.includes('/.github/workflows/claude-shadow-review.yml@')
+    || !SHA.test(provenance.workflowSha ?? '')
+    || provenance.workflowSha !== binding.baseSha
+  ) throw new Error('Trusted publisher provenance is unavailable');
   await github(`/repos/${repository}/check-runs`, token, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       name: CLAUDE_SHADOW_CONTEXT,
       head_sha: binding.headSha,
-      external_id: externalId(binding),
+      external_id: externalId(binding, provenance),
       status: 'completed',
       conclusion,
       output: {
         title: `Claude shadow review: ${result.state}`,
-        summary: JSON.stringify({ schema: 1, ...binding, state: result.state, findingCount: result.findings.length }),
+        summary: JSON.stringify({
+          schema: 1,
+          ...binding,
+          ...provenance,
+          state: result.state,
+          findingCount: result.findings.length,
+        }),
         text: findings.join('\n') || 'No P1/P2 finding was reported. Shadow evidence is not a merge gate.',
       },
     }),

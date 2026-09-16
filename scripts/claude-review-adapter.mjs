@@ -38,7 +38,15 @@ export function classifyClaudeShadowReview({
     || result.pullRequest !== pullRequestNumber
     || !Number.isInteger(result.runId)
     || !Number.isInteger(result.runAttempt)
-    || !run.external_id.endsWith(`run-${result.runId}:attempt-${result.runAttempt}`)
+    || !Number.isInteger(result.publisherRunId)
+    || !Number.isInteger(result.publisherRunAttempt)
+    || typeof result.workflowRef !== 'string'
+    || !result.workflowRef.includes('/.github/workflows/claude-shadow-review.yml@')
+    || !/^[0-9a-f]{40}$/u.test(result.workflowSha ?? '')
+    || result.workflowSha !== expectedBase
+    || !run.external_id.endsWith(
+      `run-${result.runId}:attempt-${result.runAttempt}:publisher-${result.publisherRunId}:publisher-attempt-${result.publisherRunAttempt}`,
+    )
   ) {
     return { state: 'replayed', authoritative: false };
   }
