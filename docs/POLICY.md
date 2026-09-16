@@ -244,11 +244,15 @@ Reviewer output rules, the family probes and the dispute path live in
 The hosted shadow path in `claude-shadow-review.yml` uses the official Claude Code
 action with a subscription OAuth token. Trusted default-branch code validates its
 structured findings and publishes `claude-independent-review` with GitHub Actions
-provenance and immutable repository, PR, base, head, run and attempt bindings. A
+provenance and immutable repository, PR, base, head, run and attempt bindings. The
+consumer verifies the server-associated Actions run, trusted workflow path, publisher
+job and exact-name/digest artifact; the shared `github-actions` identity and check
+payload alone are never provenance. A
 comment, model-authored clearance word, action exit code, absence of output, skipped
 run or timeout cannot become green evidence. `claude-review-adapter.mjs` consumes
 that contract fail closed but remains non-authoritative until a real current-head
-shadow cycle proves it. It does not affect `codex-current-head`, merge eligibility
+shadow cycle proves it. A model-reported empty finding set is only `shadow_clear`,
+not positive gate clearance. It does not affect `codex-current-head`, merge eligibility
 or branch protection.
 
 Rollout is additive: merge this shadow path after required CI and independent

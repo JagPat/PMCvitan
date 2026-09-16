@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { authorizeShadowEvent, authorizeShadowRequest, externalId, validateClaudeReview } from './claude-shadow-review.mjs';
+import { authorizeShadowEvent, authorizeShadowRequest, evidenceArtifactName, externalId, requireChangedFileCoverage, validateClaudeReview } from './claude-shadow-review.mjs';
 
 const headSha = 'a'.repeat(40);
 const baseSha = 'b'.repeat(40);
@@ -22,6 +22,12 @@ test('structured interpretation derives clearance only from a valid bound empty 
   ]) assert.equal(validateClaudeReview(broken, binding).state, 'malformed');
 });
 
+test('an empty finding set is incomplete until every changed file was reviewed', () => {
+  const result = validateClaudeReview(JSON.stringify(review), binding);
+  assert.equal(requireChangedFileCoverage(result, ['a.js']).state, 'clear');
+  assert.equal(requireChangedFileCoverage(result, ['a.js', 'unreviewed.js']).state, 'incomplete');
+});
+
 test('workflow authorization refuses stale, fork, failed CI, wrong base, and closed PR', () => {
   const live = { number: 600, state: 'open', head: { sha: headSha, repo: { full_name: binding.repository } }, base: { ref: 'main', sha: baseSha, repo: { full_name: binding.repository } } };
   const event = { action: 'completed', workflow_sha: baseSha, repository: { full_name: binding.repository }, workflow_run: { id: 42, run_attempt: 2, name: 'CI', event: 'pull_request', status: 'completed', conclusion: 'success', head_sha: headSha, head_repository: { full_name: binding.repository }, pull_requests: [{ number: 600 }] } };
@@ -34,6 +40,12 @@ test('workflow authorization refuses stale, fork, failed CI, wrong base, and clo
     [event, { ...live, base: { ...live.base, ref: 'other' } }],
   ]) assert.equal(authorizeShadowEvent(changedEvent, changedLive).allowed, false);
   assert.equal(authorizeShadowEvent({ ...event, workflow_sha: 'd'.repeat(40) }, live).allowed, false);
+  assert.equal(authorizeShadowEvent({ action: 'completed', workflow_run: {} }, live).allowed, false);
+});
+
+test('artifact identity binds trusted run and interpreted outcome', () => {
+  const name = evidenceArtifactName(binding, { publisherRunId: 84, publisherRunAttempt: 3 }, { state: 'clear', findings: [] });
+  for (const value of [headSha, baseSha, 'publisher-84-3', 'state-clear', 'findings-0']) assert.match(name, new RegExp(value));
 });
 
 test('manual bootstrap dispatch uses the same live PR and completed CI authorization', () => {
@@ -64,8 +76,11 @@ test('hosted workflow is shadow-only, pinned, read-only, and publishes from trus
   assert.match(workflow, /contents: read/u);
   assert.doesNotMatch(workflow, /contents: write|pull-requests: write|statuses: write/u);
   assert.match(workflow, /publish:[\s\S]*checks: write/u);
+  assert.match(workflow, /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/u);
   assert.doesNotMatch(workflow.match(/review:[\s\S]*?\n  publish:/u)[0], /checks: write/u);
   assert.doesNotMatch(workflow, /Bash\(/u);
+  assert.match(workflow, /git -C candidate diff --no-ext-diff --no-textconv/u);
+  assert.match(workflow, /publish:[\s\S]*github\.event\.workflow_run\.event == 'pull_request'/u);
   assert.match(workflow, /ref: \$\{\{ github\.workflow_sha \}\}/u);
   assert.match(workflow, /node scripts\/claude-shadow-review\.mjs publish/u);
   assert.doesNotMatch(workflow, /node candidate\//u);

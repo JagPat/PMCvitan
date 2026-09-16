@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 
 import { CLAUDE_SHADOW_CONTEXT, LINEAGE_BASE_REF } from './review-policy.mjs';
 
@@ -23,8 +23,10 @@ export function validateClaudeReview(raw, expected) {
     || value.complete !== true
     || !Array.isArray(value.filesReviewed)
     || value.filesReviewed.length === 0
+    || value.filesReviewed.length > 1_000
     || !value.filesReviewed.every((path) => typeof path === 'string' && path.length > 0)
     || !Array.isArray(value.findings)
+    || value.findings.length > 100
   ) return { state: 'malformed', findings: [] };
 
   const validFinding = (finding) =>
@@ -42,6 +44,14 @@ export function validateClaudeReview(raw, expected) {
   };
 }
 
+export function requireChangedFileCoverage(result, changedFiles) {
+  if (result.state === 'malformed') return result;
+  const reviewed = new Set(result.filesReviewed);
+  return changedFiles.every((path) => reviewed.has(path))
+    ? result
+    : { state: 'incomplete', findings: result.findings, filesReviewed: result.filesReviewed };
+}
+
 export function externalId(binding, provenance = {}) {
   return [
     'pmcvitan:claude-shadow:v1',
@@ -56,6 +66,19 @@ export function externalId(binding, provenance = {}) {
       `publisher-attempt-${provenance.publisherRunAttempt}`,
     ] : []),
   ].join(':');
+}
+
+export function evidenceArtifactName(binding, provenance, result) {
+  return [
+    'claude-shadow-v1',
+    `pr-${binding.pullRequest}`,
+    `base-${binding.baseSha}`,
+    `head-${binding.headSha}`,
+    `ci-${binding.runId}-${binding.runAttempt}`,
+    `publisher-${provenance.publisherRunId}-${provenance.publisherRunAttempt}`,
+    `state-${result.state}`,
+    `findings-${result.findings.length}`,
+  ].join('-');
 }
 
 export function authorizeShadowRequest({
@@ -131,6 +154,18 @@ async function github(path, token, options = {}) {
   return response.json();
 }
 
+async function changedFiles(repository, pullRequestNumber, token) {
+  const paths = [];
+  for (let page = 1; ; page += 1) {
+    const batch = await github(
+      `/repos/${repository}/pulls/${pullRequestNumber}/files?per_page=100&page=${page}`,
+      token,
+    );
+    paths.push(...batch.map((file) => file.filename));
+    if (batch.length < 100) return paths;
+  }
+}
+
 async function main() {
   const [mode] = process.argv.slice(2);
   const token = process.env.GITHUB_TOKEN;
@@ -170,14 +205,8 @@ async function main() {
     appendFileSync(output, Object.entries(binding).map(([key, value]) => `${key}=${value}\n`).join(''));
     return;
   }
-  if (mode !== 'publish') throw new Error('Expected prepare or publish mode');
+  if (!['evaluate', 'publish'].includes(mode)) throw new Error('Expected prepare, evaluate or publish mode');
 
-  const result = process.env.CLAUDE_ACTION_OUTCOME === 'success'
-    ? validateClaudeReview(summary, binding)
-    : { state: 'reviewer_error', findings: [] };
-  const conclusion = result.state === 'clear' ? 'success' : 'failure';
-  const findings = result.findings.slice(0, 20).map((finding) =>
-    `${finding.severity} ${finding.path}:${finding.line} ${finding.description} (${finding.rule}; example: ${finding.example})`);
   const provenance = {
     publisherRunId: Number(process.env.GITHUB_RUN_ID),
     publisherRunAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
@@ -191,6 +220,46 @@ async function main() {
     || !SHA.test(provenance.workflowSha ?? '')
     || provenance.workflowSha !== binding.baseSha
   ) throw new Error('Trusted publisher provenance is unavailable');
+  if (mode === 'evaluate') {
+    const interpreted = process.env.CLAUDE_ACTION_OUTCOME === 'success'
+      ? validateClaudeReview(summary, binding)
+      : { state: 'reviewer_error', findings: [], filesReviewed: [] };
+    const result = requireChangedFileCoverage(
+      interpreted,
+      await changedFiles(repository, pullRequestNumber, token),
+    );
+    const artifactName = evidenceArtifactName(binding, provenance, result);
+    writeFileSync(
+      'claude-shadow-evidence.json',
+      `${JSON.stringify({
+        schema: 1,
+        ...binding,
+        ...provenance,
+        state: result.state,
+        findingCount: result.findings.length,
+        filesReviewed: result.filesReviewed,
+        findings: result.findings,
+      })}\n`,
+    );
+    if (!process.env.GITHUB_OUTPUT) throw new Error('GITHUB_OUTPUT is required');
+    appendFileSync(process.env.GITHUB_OUTPUT, `artifact_name=${artifactName}\n`);
+    return;
+  }
+
+  const evidence = JSON.parse(readFileSync('claude-shadow-evidence.json', 'utf8'));
+  const artifact = {
+    id: Number(process.env.CLAUDE_ARTIFACT_ID),
+    digest: process.env.CLAUDE_ARTIFACT_DIGEST,
+    name: evidenceArtifactName(binding, provenance, {
+      state: evidence.state,
+      findings: Array(evidence.findingCount).fill(null),
+    }),
+  };
+  if (!Number.isInteger(artifact.id) || !/^sha256:[0-9a-f]{64}$/u.test(artifact.digest ?? '')) {
+    throw new Error('Server-associated evidence artifact is unavailable');
+  }
+  const conclusion = evidence.state === 'clear' && evidence.findingCount === 0 ? 'success' : 'failure';
+  const { filesReviewed: _filesReviewed, findings: _findings, ...evidenceSummary } = evidence;
   await github(`/repos/${repository}/check-runs`, token, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -201,15 +270,12 @@ async function main() {
       status: 'completed',
       conclusion,
       output: {
-        title: `Claude shadow review: ${result.state}`,
+        title: `Claude shadow review: ${evidence.state}`,
         summary: JSON.stringify({
-          schema: 1,
-          ...binding,
-          ...provenance,
-          state: result.state,
-          findingCount: result.findings.length,
+          ...evidenceSummary,
+          artifact,
         }),
-        text: findings.join('\n') || 'No P1/P2 finding was reported. Shadow evidence is not a merge gate.',
+        text: 'Structured findings are retained in the server-associated evidence artifact. Shadow evidence is not a merge gate.',
       },
     }),
   });

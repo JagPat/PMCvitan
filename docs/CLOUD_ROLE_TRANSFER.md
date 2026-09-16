@@ -16,11 +16,22 @@ only read permissions. It cannot edit, push, approve, or merge.
 
 Claude returns structured findings. A trusted deterministic publisher validates the
 repository, PR, base SHA, head SHA, workflow run id and run attempt, completeness,
-and every finding. It derives the result from the finding set rather than trusting a
-model-authored clearance word. Missing credentials or output, action errors, timeout,
+every changed file's review coverage, and every finding. It derives the result from
+the finding set rather than trusting a model-authored clearance word. The publisher
+uploads the full result as a GitHub Actions artifact whose server-side workflow run,
+workflow path, job, run attempt, name and digest are verified by the consumer; the
+shared `github-actions` App identity and self-asserted check payload are not provenance.
+Missing credentials or output, action errors, timeout,
 cancellation, malformed output, findings, stale heads, forks, and unauthorized bases
 all leave failure evidence; none authorizes merge. This evidence is shadow-only and
 is not consumed by branch protection or the current merge gate.
+
+Candidate content is still adversarial model input. The reviewer has no shell or write
+tools, receives a diff materialized by trusted code, is told candidate text is data and
+must cover every changed file, but these controls do not mathematically prove that a
+model resisted every prompt injection. Consequently even server-associated empty
+findings are classified only as `shadow_clear`, never authoritative clearance. A real
+hosted cycle and an independently reviewed activation contract remain mandatory.
 
 All triggers, runs, bindings, and check results live in GitHub Actions and Checks, so
 they are visible from any device and do not depend on a desktop or local runner.
@@ -55,8 +66,24 @@ preserved. The shadow workflow exists only in PR #597, not on the trusted defaul
 branch, and GitHub registers `workflow_dispatch` only for workflows present on the
 default branch. Therefore neither `workflow_run` nor manual dispatch can safely
 bootstrap this PR. The draft must remain blocked unless the existing independent gate
-clears this exact head or a repository administrator installs this exact trusted
-workflow on `main`; no PR-head workflow may receive the subscription secret.
+clears this exact head or this exact trusted workflow reaches `main` through a
+protection-compliant reviewed change; no PR-head workflow may receive the subscription
+secret.
+
+That prerequisite is not permission to bypass protection:
+`main` enforces administrators and required product/review checks. The base-branch
+scope gate admits only truthful Claude/Cursor correction owners, while Codex authored
+#597 and Claude has relinquished production coding. A `codex` marker is rejected by
+the base gate and a Claude/Cursor marker would be false. Therefore #597 has no safe
+self-bootstrap path under the current base policy. It remains draft until a
+branch-protection-compliant, independently cleared base-policy admission contract
+exists; this PR does not invent an exemption, self-clear, or ask Claude to resume.
+
+The project handover does not reopen stopped or deferred product work. In particular,
+#590 at `ae6263ce` remains stopped with all findings and 51-case evidence retained for
+its recorded additive redesign; #591, #592 and #594 remain stopped; #595 remains
+deferred; and no partial #596 recovery artifact is applied. Reform 4 metrics and later
+reform/product units remain queued outside this sole implementation lane.
 
 ## Automatic Codex correction wake
 

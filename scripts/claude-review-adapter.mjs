@@ -1,16 +1,18 @@
 import { CLAUDE_SHADOW_CONTEXT } from './review-policy.mjs';
+import { evidenceArtifactName } from './claude-shadow-review.mjs';
 
 /**
  * Fail-closed consumer for the subscription-backed hosted shadow reviewer.
  * The trusted default-branch publisher creates this check; comments, the
  * Claude action's exit code, and candidate-authored checks are not accepted.
  */
-export function classifyClaudeShadowReview({
+export async function classifyClaudeShadowReview({
   checkRuns = [],
   expectedHead,
   expectedBase,
   pullRequestNumber,
   trustedAppSlug = 'github-actions',
+  verifyProducer,
 }) {
   const prefix = `pmcvitan:claude-shadow:v1:repo-JagPat/PMCvitan:pr-${pullRequestNumber}:base-${expectedBase}:head-${expectedHead}:run-`;
   const candidates = checkRuns.filter((run) =>
@@ -44,6 +46,16 @@ export function classifyClaudeShadowReview({
     || !result.workflowRef.includes('/.github/workflows/claude-shadow-review.yml@')
     || !/^[0-9a-f]{40}$/u.test(result.workflowSha ?? '')
     || result.workflowSha !== expectedBase
+    || !['clear', 'changes_required', 'incomplete', 'malformed', 'reviewer_error'].includes(result.state)
+    || !Number.isInteger(result.findingCount)
+    || result.findingCount < 0
+    || result.findingCount > 100
+    || !Number.isInteger(result.artifact?.id)
+    || !/^sha256:[0-9a-f]{64}$/u.test(result.artifact?.digest ?? '')
+    || result.artifact?.name !== evidenceArtifactName(result, result, {
+      state: result.state,
+      findings: Array.from({ length: result.findingCount }, () => null),
+    })
     || !run.external_id.endsWith(
       `run-${result.runId}:attempt-${result.runAttempt}:publisher-${result.publisherRunId}:publisher-attempt-${result.publisherRunAttempt}`,
     )
@@ -53,5 +65,8 @@ export function classifyClaudeShadowReview({
   if (result.state !== 'clear' || result.findingCount !== 0) {
     return { state: result.findingCount > 0 ? 'changes_required' : 'incomplete', authoritative: false };
   }
-  return { state: 'clear', authoritative: false, runId: run.id };
+  if (typeof verifyProducer !== 'function' || !await verifyProducer(run, result)) {
+    return { state: 'untrusted_producer', authoritative: false };
+  }
+  return { state: 'shadow_clear', authoritative: false, runId: run.id };
 }
