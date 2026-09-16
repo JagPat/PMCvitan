@@ -227,7 +227,11 @@ test('F2: shadow-merge-identity is non-authoritative on both CI axes yet fails s
   assert.ok(identityStart >= 0, 'the shadow-merge-identity job must exist');
   const identityJob = workflow.slice(identityStart, workflow.indexOf('# The ONE required status'));
   // Aggregate CI conclusion: a failed or missing identity job must not turn the whole run red.
-  assert.match(identityJob, /continue-on-error: true/u);
+  // The tolerance must sit at JOB level (4-space indent). Step-level `continue-on-error` would still
+  // let a failed materialization step redden the aggregate, so an unanchored match is not enough —
+  // assert the job key exactly, and assert it is NOT pushed down to a step (8-space indent).
+  assert.match(identityJob, /^ {4}continue-on-error: true$/mu);
+  assert.doesNotMatch(identityJob, /^ {6,}continue-on-error:/mu);
   // It still uploads a server-associated identity artifact whose absence denies shadow authorization.
   assert.match(identityJob, /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/u);
   assert.match(

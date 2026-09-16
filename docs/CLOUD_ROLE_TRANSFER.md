@@ -155,10 +155,19 @@ conclusion without exposing private output. Artifact digests accept only raw 64-
 
 ### Trusted workflow execution provenance
 
-Both shadow jobs run only when GitHub reports `refs/heads/main`. Authorization and publication
-require the exact `JagPat/PMCvitan/.github/workflows/claude-shadow-review.yml@refs/heads/main`
-workflow ref; the consumer independently verifies the server Actions run's workflow path, SHA,
-attempt, successful publisher job, artifact, repository, and `head_branch=main`. The trusted workflow
-SHA may be an earlier main commit but an off-main dispatch is never accepted. A source-controlled
-guard does not sandbox a principal who can replace workflows; repository administration and branch
-protection remain outside this mechanism.
+Both shadow jobs run only when GitHub reports `refs/heads/main`, and the A **producer's**
+authorization and publication require the exact
+`JagPat/PMCvitan/.github/workflows/claude-shadow-review.yml@refs/heads/main` workflow ref and a
+`refs/heads/main` execution ref. The producer independently verifies the server Actions run's
+workflow path, SHA, run attempt, successful publisher job, artifact name and digest, and repository
+before it treats a producer claim as trusted; the shared `github-actions` App identity and
+self-asserted check payload are not provenance. The producer's trusted workflow SHA may be an earlier
+`main` commit, but an off-`main` dispatch is never accepted.
+
+This unit does **not** change the consumer. The existing (D6) adapter that reads the published shadow
+check stays non-authoritative and unchanged: it binds evidence to the shadow-review workflow path and
+requires `workflowSha === baseSha`, with no `head_branch` check and no earlier-`main`-SHA allowance.
+Broadening consumer-side provenance and finding consumption — a `head_branch=main` check, accepting an
+earlier trusted `main` workflow SHA, and full finding admission — is deferred to the later unit. A
+source-controlled guard does not sandbox a principal who can replace workflows; repository
+administration and branch protection remain outside this mechanism.
