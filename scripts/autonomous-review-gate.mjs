@@ -7,6 +7,7 @@ import {
   POLL_INTERVAL_MS,
   REQUIRED_CHECKS,
   STATUS_CONTEXT,
+  LINEAGE_BASE_REF,
 } from './review-policy.mjs';
 export {
   requiredChecksForPullRequest,
@@ -493,6 +494,7 @@ export class GitHubClient {
       || run?.status !== 'completed'
       || run?.conclusion !== 'success'
       || run?.head_sha !== evidence.workflowSha
+      || run?.head_branch !== LINEAGE_BASE_REF
       || run?.repository?.full_name !== this.repository
     ) return false;
     const jobs = await this.actionRunItems(run.id, 'jobs', 'jobs', 'filter=all');
@@ -974,6 +976,18 @@ export function isValidationOnlyCodexOwner(pullRequest) {
   return correctionOwnerDeclaration(pullRequest).owner === 'codex';
 }
 
+async function holdValidationOnlyCodexOwner(client, pullRequest, expectedHead) {
+  if (!isValidationOnlyCodexOwner(pullRequest)) return false;
+  await client.setStatus(
+    expectedHead,
+    'pending',
+    'validation: Codex-owned candidate held for independent reviewer activation',
+    pullRequest.html_url,
+  );
+  await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
+  return true;
+}
+
 function isCurrentReviewUnit(pullRequest, expectedHead) {
   return Boolean(pullRequest)
     && pullRequest.state === 'open'
@@ -1002,6 +1016,16 @@ export async function setDraftForCurrentHead(
 ) {
   const pullRequest = await refreshCurrentHead(client, number, expectedHead);
   if (!pullRequest) return null;
+  if (!draft && isValidationOnlyCodexOwner(pullRequest)) {
+    await client.setStatus(
+      expectedHead,
+      'pending',
+      'validation: Codex-owned candidate held for independent reviewer activation',
+      pullRequest.html_url,
+    );
+    const held = await client.setDraft(pullRequest, true);
+    return isCurrentReviewUnit(held, expectedHead) ? held : null;
+  }
   // `client.setDraft` REFETCHES and returns the post-mutation pull request, so `updated` is
   // authoritative evidence about a moment AFTER the guard above ran — and a retarget inside
   // that window would otherwise be accepted. It is held to the identical verdict.
@@ -1014,35 +1038,27 @@ export async function completeReviewedPullRequest(
   pullRequest,
   expectedHead,
 ) {
-  const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead);
-  if (!authorization.allowed) {
-    return 'held_for_gates';
-  }
-  pullRequest = authorization.pullRequest;
-  const direct = await client.mergeExactHead(
-    pullRequest.number,
-    expectedHead,
-  );
+  const authorize = async () => {
+    const result = await authorizeExactHeadMerge(client, pullRequest, expectedHead);
+    if (result.allowed) pullRequest = result.pullRequest;
+    return result;
+  };
+  if (!(await authorize()).allowed) return 'held_for_gates';
+  const direct = await client.mergeExactHead(pullRequest.number, expectedHead);
   if (direct?.merged) {
     await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
     return 'merged';
   }
 
+  if (!(await authorize()).allowed) return 'held_for_gates';
   try {
     await client.enableAutoMerge(pullRequest, expectedHead);
     await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
     return 'queued';
   } catch (error) {
-    if (
-      !(error instanceof Error)
-      || !error.message.includes('is in clean status')
-    ) {
-      throw error;
-    }
-    const raced = await client.mergeExactHead(
-      pullRequest.number,
-      expectedHead,
-    );
+    if (!(error instanceof Error) || !error.message.includes('is in clean status')) throw error;
+    if (!(await authorize()).allowed) return 'held_for_gates';
+    const raced = await client.mergeExactHead(pullRequest.number, expectedHead);
     if (raced?.merged) {
       await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
       return 'merged';
@@ -1096,16 +1112,7 @@ export async function ensureTerminalReviewState(
   if (!isTerminalReviewStatus(status)) return false;
   const liveOwner = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (!liveOwner) return true;
-  if (isValidationOnlyCodexOwner(liveOwner)) {
-    await client.setStatus(
-      expectedHead,
-      'pending',
-      'validation: Codex-owned candidate held for independent reviewer activation',
-      liveOwner.html_url,
-    );
-    await setDraftForCurrentHead(client, liveOwner.number, expectedHead, true);
-    return true;
-  }
+  if (await holdValidationOnlyCodexOwner(client, liveOwner, expectedHead)) return true;
   if (status.state === 'success') {
     if (persistentReviewFailure(statuses)) {
       await client.setStatus(
@@ -1138,6 +1145,13 @@ export async function ensureTerminalReviewState(
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
     );
+    const successPolicy = await revalidateFinalReviewPolicy(
+      client,
+      pullRequest.number,
+      expectedHead,
+    );
+    if (successPolicy.superseded || !successPolicy.allowed) return true;
+    pullRequest = successPolicy.pullRequest;
     if (String(latestStatus?.id) !== String(status.id)) {
       await client.setStatus(
         expectedHead,
@@ -1269,6 +1283,9 @@ export async function revalidateFinalReviewPolicy(
   if (!pullRequest) {
     return { state: 'superseded', allowed: false, superseded: true };
   }
+  if (await holdValidationOnlyCodexOwner(client, pullRequest, expectedHead)) {
+    return { state: 'validation_only_codex_owner', allowed: false, superseded: false };
+  }
 
   // And at final admission, so a clean head is also measured — after the head is
   // confirmed current, so a superseded one is never reported on.
@@ -1292,11 +1309,18 @@ export async function revalidateFinalReviewPolicy(
   if (finding) {
     return { state: 'changes_required', allowed: false, detail: finding };
   }
+  const finalPullRequest = await refreshCurrentHead(client, number, expectedHead);
+  if (!finalPullRequest) {
+    return { state: 'superseded', allowed: false, superseded: true };
+  }
+  if (await holdValidationOnlyCodexOwner(client, finalPullRequest, expectedHead)) {
+    return { state: 'validation_only_codex_owner', allowed: false, superseded: false };
+  }
 
-  return { state: 'allowed', allowed: true, pullRequest };
+  return { state: 'allowed', allowed: true, pullRequest: finalPullRequest };
 }
 
-async function reviewAttempt(
+export async function reviewAttempt(
   client,
   pullRequest,
   expectedHead,
@@ -1310,6 +1334,9 @@ async function reviewAttempt(
     expectedHead,
   );
   if (!live) return { state: 'superseded' };
+  if (await holdValidationOnlyCodexOwner(client, live, expectedHead)) {
+    return { state: 'validation_only_codex_owner' };
+  }
 
   live = await setDraftForCurrentHead(
     client,
@@ -1318,6 +1345,9 @@ async function reviewAttempt(
     true,
   );
   if (!live) return { state: 'superseded' };
+  if (await holdValidationOnlyCodexOwner(client, live, expectedHead)) {
+    return { state: 'validation_only_codex_owner' };
+  }
   live = await setDraftForCurrentHead(
     client,
     pullRequest.number,
@@ -1325,6 +1355,9 @@ async function reviewAttempt(
     false,
   );
   if (!live) return { state: 'superseded' };
+  if (await holdValidationOnlyCodexOwner(client, live, expectedHead)) {
+    return { state: 'validation_only_codex_owner' };
+  }
   const deadline = new Date(Date.now() + REVIEW_TIMEOUT_MS).toISOString();
 
   await client.updateStickyComment(
@@ -1346,6 +1379,9 @@ async function reviewAttempt(
       expectedHead,
     );
     if (!live) return { state: 'superseded' };
+    if (await holdValidationOnlyCodexOwner(client, live, expectedHead)) {
+      return { state: 'validation_only_codex_owner' };
+    }
 
     const [reviews, comments, reactions] = await Promise.all([
       client.reviews(pullRequest.number),
@@ -1534,15 +1570,15 @@ async function eventContext() {
   return contextForEvent(eventName, event, process.env.PR_NUMBER);
 }
 
-export async function run() {
-  const context = await eventContext();
+export async function run({ context: suppliedContext, client: suppliedClient } = {}) {
+  const context = suppliedContext ?? await eventContext();
   if (!context?.number) {
     console.log('No pull request is associated with this workflow event.');
     return;
   }
 
-  const repository = requiredEnvironment('GITHUB_REPOSITORY');
-  const client = new GitHubClient({
+  const repository = suppliedClient?.repository ?? requiredEnvironment('GITHUB_REPOSITORY');
+  const client = suppliedClient ?? new GitHubClient({
     repository,
     token: requiredEnvironment('GITHUB_TOKEN'),
   });
@@ -1595,14 +1631,7 @@ export async function run() {
   // consumption is activated, no existing/recovered Codex result may promote or merge it.
   pullRequest = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (!pullRequest) return;
-  if (isValidationOnlyCodexOwner(pullRequest)) {
-    await client.setStatus(
-      expectedHead,
-      'pending',
-      'validation: Codex-owned candidate held for independent reviewer activation',
-      pullRequest.html_url,
-    );
-    await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
+  if (await holdValidationOnlyCodexOwner(client, pullRequest, expectedHead)) {
     console.log('Codex-owned candidate validated and held in draft; no review or merge authority is active.');
     return;
   }
@@ -1792,6 +1821,10 @@ export async function run() {
       advisory,
     );
     if (result.state === 'superseded') return;
+    if (result.state === 'validation_only_codex_owner') {
+      console.log('Codex-owned candidate became validation-only during review; held pending in draft.');
+      return;
+    }
 
     if (result.state === 'changes_required') {
       const published = await publishCurrentHeadFinding(
@@ -1952,6 +1985,16 @@ export async function run() {
         throw new Error(`Final review policy changed: ${finalPolicy.state}`);
       }
       pullRequest = finalPolicy.pullRequest;
+      const successPolicy = await revalidateFinalReviewPolicy(
+        client,
+        pullRequest.number,
+        expectedHead,
+      );
+      if (successPolicy.superseded) return;
+      if (!successPolicy.allowed) {
+        throw new Error(`Success authorization changed: ${successPolicy.state}`);
+      }
+      pullRequest = successPolicy.pullRequest;
       // One run polls one Codex invocation to its mutually exclusive terminal
       // result: finding-bearing evidence or the clean reaction. Review webhooks
       // never enter this orchestrator, so no second writer can race admission.

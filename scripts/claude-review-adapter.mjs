@@ -1,4 +1,4 @@
-import { CLAUDE_SHADOW_CONTEXT } from './review-policy.mjs';
+import { CLAUDE_SHADOW_CONTEXT, LINEAGE_BASE_REF } from './review-policy.mjs';
 import { evidenceArtifactName } from './claude-shadow-review.mjs';
 
 /**
@@ -42,10 +42,20 @@ export async function classifyClaudeShadowReview({
     || !Number.isInteger(result.runAttempt)
     || !Number.isInteger(result.publisherRunId)
     || !Number.isInteger(result.publisherRunAttempt)
-    || typeof result.workflowRef !== 'string'
-    || !result.workflowRef.includes('/.github/workflows/claude-shadow-review.yml@')
+    || result.workflowRef !== `JagPat/PMCvitan/.github/workflows/claude-shadow-review.yml@refs/heads/${LINEAGE_BASE_REF}`
+    || result.workflowExecutionRef !== `refs/heads/${LINEAGE_BASE_REF}`
+    || result.trustedWorkflowRef !== `JagPat/PMCvitan/.github/workflows/claude-shadow-review.yml@refs/heads/${LINEAGE_BASE_REF}`
+    || result.trustedExecutionRef !== `refs/heads/${LINEAGE_BASE_REF}`
     || !/^[0-9a-f]{40}$/u.test(result.workflowSha ?? '')
-    || result.workflowSha !== expectedBase
+    || !/^[0-9a-f]{40}$/u.test(result.trustedWorkflowSha ?? '')
+    || result.workflowSha !== result.trustedWorkflowSha
+    || result.targetTipSha !== expectedBase
+    || result.testedBaseSha !== expectedBase
+    || !/^[0-9a-f]{40}$/u.test(result.testedMergeSha ?? '')
+    || !Number.isInteger(result.identityRunAttempt)
+    || result.identityRunAttempt < 1
+    || result.identityRunAttempt > result.runAttempt
+    || !Number.isInteger(result.ciIdentityArtifactId)
     || !['clear', 'changes_required', 'incomplete', 'malformed', 'reviewer_error'].includes(result.state)
     || !Number.isInteger(result.findingCount)
     || result.findingCount < 0

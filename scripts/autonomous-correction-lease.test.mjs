@@ -326,7 +326,7 @@ test('L6: the watchdog changes no gate state and watches only trusted heads', as
 
 test('L7: the handoff run loop drives the watchdog and cannot report green without it', () => {
   const source = readFileSync(new URL('./autonomous-handoff.mjs', import.meta.url), 'utf8');
-  const runLoop = source.slice(source.indexOf('export async function run()'));
+  const runLoop = source.slice(source.indexOf('export async function run('));
   assert.match(runLoop, /handOffCorrectionLease\(/u, 'the scheduled job drives the watchdog');
   assert.match(
     runLoop,

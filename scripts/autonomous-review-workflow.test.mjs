@@ -1894,7 +1894,7 @@ test('terminal failures restore draft and CI failures run before recovery', asyn
   );
   assert.match(terminalHelper, /setDraftForCurrentHead[\s\S]*true/);
 
-  const runBody = gate.slice(gate.indexOf('export async function run()'));
+  const runBody = gate.slice(gate.indexOf('export async function run('));
   const ciFailure = runBody.indexOf(
     "context.ciConclusion && context.ciConclusion !== 'success'",
   );
