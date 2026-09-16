@@ -1017,46 +1017,57 @@ export function isValidationOnlyCodexOwner(pullRequest) {
   return correctionOwnerDeclaration(pullRequest).owner === 'codex';
 }
 
-async function writeValidationHoldStatus(client, pullRequest, expectedHead, eligibility, statuses) {
-  const { owner, consistent } = eligibility;
+// Reconcile the head's latest routable status before a scope explanation, so a scope status never
+// masks a more-actionable reason. Returns true (leave/route that reason; do not write scope) for an
+// actionable ci:/terminal failure already latest, a persistent review failure, a failing required
+// check, or a live current-head finding; else false. Reads evidence once, invokes no review.
+async function reconcileActionableBeforeScope(client, pullRequest, expectedHead, statuses) {
   const live = statuses ?? await client.statuses(expectedHead);
   const latest = live.find((status) => status.context === STATUS_CONTEXT);
-  const latestActionableFailure = latest
-    && latest.state === 'failure'
-    && (latest.description?.startsWith('ci:') || isTerminalReviewStatus(latest));
-  if (latestActionableFailure) return;
+  if (latest && latest.state === 'failure'
+    && (latest.description?.startsWith('ci:') || isTerminalReviewStatus(latest))) return true;
   const reviewFailure = persistentReviewFailure(live);
   if (reviewFailure) {
-    await client.setStatus(
-      expectedHead,
-      'failure',
-      reviewFailure.description ?? 'review: current-head Codex finding latched',
-      pullRequest.html_url,
-    );
-    return;
+    await client.setStatus(expectedHead, 'failure',
+      reviewFailure.description ?? 'review: current-head Codex finding latched', pullRequest.html_url);
+    return true;
   }
   const required = summarizeRequiredChecks(
     await client.checkRuns(expectedHead),
     requiredChecksForPullRequest(pullRequest.number),
   );
   if (required.state === 'failure') {
-    await client.setStatus(
-      expectedHead,
-      'failure',
-      `ci: Failed checks: ${required.failed.join(', ')}`,
-      pullRequest.html_url,
-    );
-    return;
+    await client.setStatus(expectedHead, 'failure',
+      `ci: Failed checks: ${required.failed.join(', ')}`, pullRequest.html_url);
+    return true;
   }
-  const liveFinding = await guardAgainstCurrentHeadFinding(client, pullRequest, expectedHead, null);
-  if (liveFinding) return;
+  return Boolean(await guardAgainstCurrentHeadFinding(client, pullRequest, expectedHead, null));
+}
+
+// Write a `scope:` failure only when it is not already the latest status (GitHub truncates the
+// description to 140 chars, so compare the persisted form). Suppressing an unchanged failure keeps
+// its occurrence/marker stable so a repeated controller+watchdog cycle mints no new occurrence or
+// wake; a genuinely reintroduced failure (latest is something else now) mints a fresh one. Returns
+// whether a status was written, so a caller refreshes its sticky only on a real occurrence.
+async function writeIdempotentScopeFailure(client, pullRequest, expectedHead, statuses, detail) {
+  const description = `scope: ${detail}`;
+  const latest = statuses.find((status) => status.context === STATUS_CONTEXT);
+  if (latest?.state === 'failure' && latest.description === description.slice(0, 140)) return false;
+  await client.setStatus(expectedHead, 'failure', description, pullRequest.html_url);
+  return true;
+}
+
+async function writeValidationHoldStatus(client, pullRequest, expectedHead, eligibility, statuses) {
+  const { owner, consistent } = eligibility;
+  const live = statuses ?? await client.statuses(expectedHead);
+  if (await reconcileActionableBeforeScope(client, pullRequest, expectedHead, live)) return;
   if (owner === 'codex' && consistent) {
     await client.setStatus(expectedHead, 'pending', ineligibleHoldDetail(owner), pullRequest.html_url);
     return;
   }
   const detail = 'unresolved or inconsistent correction ownership — this exact head needs a single '
     + 'valid Correction-Owner commit trailer matching the PR body marker';
-  await client.setStatus(expectedHead, 'failure', `scope: ${detail}`, pullRequest.html_url);
+  if (!(await writeIdempotentScopeFailure(client, pullRequest, expectedHead, live, detail))) return;
   const notice = correctionNotice(pullRequest, { detail, reason: 'scope' });
   await client.updateStickyComment(
     pullRequest.number,
@@ -1349,35 +1360,41 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
   });
   if (result.allowed) return result;
 
-  const live = await setDraftForCurrentHead(
-    client,
-    pullRequest.number,
-    expectedHead,
-    true,
-  );
+  // Re-read the head BEFORE any write (an already-replaced head stops here, taking no old-scope
+  // write), then run the same independent-attempt protections as holdIneligibleOwner and reconcile a
+  // genuine CI/review reason first so the scope explanation never masks a real actionable failure.
+  const preLive = await refreshCurrentHead(client, pullRequest.number, expectedHead);
+  if (!preLive) return { ...result, superseded: true };
+  const statuses = await client.statuses(expectedHead);
+  let live = null;
+  let scopeWritten = false;
+  await attemptProtectiveHold([
+    async () => {
+      if (!(await reconcileActionableBeforeScope(client, preLive, expectedHead, statuses))) {
+        scopeWritten = await writeIdempotentScopeFailure(
+          client, preLive, expectedHead, statuses, result.detail,
+        );
+      }
+    },
+    () => client.disableAutoMerge(preLive),
+    async () => { live = await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true); },
+  ]);
   if (!live) return { ...result, superseded: true };
-  await client.setStatus(
-    expectedHead,
-    'failure',
-    `scope: ${result.detail}`,
-    pullRequest.html_url,
-  );
-  const notice = correctionNotice(live, {
-    detail: result.detail,
-    reason: 'scope',
-  });
-  await client.updateStickyComment(
-    pullRequest.number,
-    statusBody({
-      state: 'scope_required',
-      head: expectedHead,
-      detail: result.detail,
-      attempt: 0,
-      owner: notice.owner ?? 'undeclared',
-      correctionState: noticeState(notice),
-      next: notice.instruction,
-    }),
-  );
+  if (scopeWritten) {
+    const notice = correctionNotice(live, { detail: result.detail, reason: 'scope' });
+    await client.updateStickyComment(
+      pullRequest.number,
+      statusBody({
+        state: 'scope_required',
+        head: expectedHead,
+        detail: result.detail,
+        attempt: 0,
+        owner: notice.owner ?? 'undeclared',
+        correctionState: noticeState(notice),
+        next: notice.instruction,
+      }),
+    );
+  }
   return result;
 }
 

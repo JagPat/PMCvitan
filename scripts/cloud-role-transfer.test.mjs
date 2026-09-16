@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import { parseCorrectionOwner, parseCommitCorrectionOwner, correctionRouting, correctionOwnerProblem } from './correction-owner.mjs';
-import { authorizeExactHeadMerge, completeReviewedPullRequest, ensureTerminalReviewState, GitHubClient, REQUIRED_CHECKS, revalidateFinalReviewPolicy, reviewAttempt, run, setDraftForCurrentHead } from './autonomous-review-gate.mjs';
+import { authorizeExactHeadMerge, completeReviewedPullRequest, enforceReviewScope, ensureTerminalReviewState, GitHubClient, REQUIRED_CHECKS, revalidateFinalReviewPolicy, reviewAttempt, run, setDraftForCurrentHead } from './autonomous-review-gate.mjs';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -436,4 +436,82 @@ test('a READY mutation returning the same SHA with an inconsistent body is compe
   assert.equal(result, null, 'a same-SHA READY object with an inconsistent body is not accepted');
   assert.deepEqual(draftCalls, [false, true],
     'the promotion is attempted, then compensated back to draft on the observed inconsistent pair');
+});
+
+// --- Residual P1/P2: scope-route protective ordering, fresh-head, CI/finding precedence, idempotency.
+const largePull = (number, overrides = {}) => pullAt(number, {
+  additions: 2000, deletions: 0, changed_files: 24, body: '<!-- correction-owner: claude -->', ...overrides,
+});
+const scopeClient = (pull, over = {}) => ({
+  repository: 'JagPat/PMCvitan',
+  async pullRequest() { return over.live ?? pull; },
+  async pullRequestFiles() { return []; },
+  async replacementLineage() { return { requiredReplacements: [], replacementPullRequests: [] }; },
+  async statuses() { return over.statuses ?? []; },
+  async checkRuns() { return over.checkRuns ?? REQUIRED; },
+  async reviews() { return []; },
+  async reviewComments() { return []; },
+  async setStatus(_h, state, description) { (over.statusWrites ??= []).push({ state, description }); },
+  async disableAutoMerge() { over.disabled = (over.disabled ?? 0) + 1; },
+  async setDraft(current, draft) { if (over.draftThrows) throw new Error('draft failed'); return { ...current, draft }; },
+  async updateStickyComment(_n, body) { (over.stickies ??= []).push(body); },
+});
+
+test('P1: a scope rejection disables auto-merge and writes the scope failure even when draft conversion throws', async () => {
+  const pull = largePull(640);
+  const over = { draftThrows: true };
+  await assert.rejects(() => enforceReviewScope(scopeClient(pull, over), pull, head),
+    (error) => error instanceof AggregateError);
+  assert.equal(over.disabled, 1, 'auto-merge is disabled though draft conversion threw');
+  assert.equal((over.statusWrites ?? []).some((s) => s.state === 'failure' && /^scope:/u.test(s.description)), true,
+    'the scope failure is written though draft conversion threw');
+});
+
+test('P1: a scope rejection on an already-replaced head stops without old-scope writes', async () => {
+  const pull = largePull(641);
+  const replaced = largePull(641, { head: { sha: 'e'.repeat(40), ref: 'codex/unit', repo: { full_name: 'JagPat/PMCvitan' } } });
+  const over = { live: replaced };
+  const result = await enforceReviewScope(scopeClient(pull, over), pull, head);
+  assert.equal(result.superseded, true);
+  assert.deepEqual(over.statusWrites ?? [], [], 'no old-scope status is written on a replaced head');
+  assert.equal(over.disabled ?? 0, 0, 'no auto-merge disable on a replaced head');
+});
+
+test('P1: a scope rejection preserves a genuine CI reason instead of masking it with scope', async () => {
+  const pull = largePull(642);
+  // A currently-failing required check is reconciled forward; the scope explanation never overwrites it.
+  const failingChecks = REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: name === REQUIRED_CHECKS[0] ? 'failure' : 'success' }));
+  const over = { checkRuns: failingChecks };
+  await enforceReviewScope(scopeClient(pull, over), pull, head);
+  const writes = over.statusWrites ?? [];
+  assert.equal(writes.some((s) => /^ci:/u.test(s.description)), true, 'the CI failure is preserved');
+  assert.equal(writes.some((s) => /^scope:/u.test(s.description)), false, 'scope does not mask the CI failure');
+});
+
+test('P2: an unchanged scope failure is not re-published across repeated runs, but a reintroduction is', async () => {
+  const pull = largePull(643);
+  // GitHub truncates a status description to 140 chars, so the stored form is the persisted one.
+  const statuses = [];
+  const over = {
+    statuses,
+    setStatus() {},
+    disableAutoMerge() {},
+  };
+  const client = {
+    ...scopeClient(pull, over),
+    async statuses() { return statuses; },
+    async setStatus(_h, state, description) {
+      statuses.unshift({ id: statuses.length + 1, context: 'codex-current-head', state, description: description.slice(0, 140) });
+    },
+  };
+  await enforceReviewScope(client, pull, head);
+  const afterFirst = statuses.filter((s) => /^scope:/u.test(s.description)).length;
+  await enforceReviewScope(client, pull, head);
+  const afterSecond = statuses.filter((s) => /^scope:/u.test(s.description)).length;
+  assert.equal(afterFirst, 1, 'the first run publishes the scope failure once');
+  assert.equal(afterSecond, 1, 'the unchanged failure is not re-published on the repeat run');
+  // A genuine reintroduction (latest is something else now) mints a fresh occurrence.
+  statuses.unshift({ id: 999, context: 'codex-current-head', state: 'success', description: 'clear' });
+  await enforceReviewScope(client, pull, head);
+  assert.equal(statuses.filter((s) => /^scope:/u.test(s.description)).length, 2, 'a reintroduced failure is published again');
 });

@@ -1442,6 +1442,11 @@ test('trusted scope enforcement rejects a spoofed green preflight', async () => 
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
     async markReplacementRequired() {},
+    async disableAutoMerge() {},
+    async statuses() { return []; },
+    async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
+    async reviews() { return []; },
+    async reviewComments() { return []; },
     async updateStickyComment(...args) { sticky.push(args); },
   };
 
@@ -1494,6 +1499,11 @@ test('trusted scope enforcement reads the cumulative file list and rejects a mig
     },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
+    async disableAutoMerge() {},
+    async statuses() { return []; },
+    async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
+    async reviews() { return []; },
+    async reviewComments() { return []; },
     async updateStickyComment() {},
   };
 
@@ -1523,6 +1533,8 @@ test('final admission revalidates live scope and the late review-round reset', a
     async pullRequest() { return pullRequest; },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
+    async statuses() { return []; },
+    async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
     async updateStickyComment(...args) { sticky.push(args); },
     async reviewComments() { return []; },
     async reviews() { return []; },
