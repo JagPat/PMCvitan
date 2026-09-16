@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import {
-  ASCII_WHITESPACE, type Bundle, COMPETITOR_TX_MS, LOCK_PROBE_WORST_CASE_MS, ProbeFailure, REQUIRED_NEGATIVES, SETTLE_WINDOW_MS, lockOrderProbe, noOpUpdateProbe, pairingMatrix, rerunTwice, whitespaceCheckProbe,
+  ASCII_WHITESPACE, type Bundle, COMPETITOR_MAXWAIT_MS, COMPETITOR_TX_MS, LOCK_PROBE_WORST_CASE_MS, ProbeFailure, REQUIRED_NEGATIVES, SETTLE_WINDOW_MS, lockOrderProbe, noOpUpdateProbe, pairingMatrix, rerunTwice, whitespaceCheckProbe,
 } from '../invariants/probes';
 
 const a = new PrismaClient();
@@ -147,7 +147,7 @@ describe('lockOrderProbe', () => {
   /** the competing writer on a third session: BLOCKS on the row (no NOWAIT) and appends its mark when it lands. Its
    * transaction is bounded like the contender's (COMPETITOR_TX_MS, above CTX so it survives blocking behind a
    * rolled-back guard), so a competitor that acquires the row and hangs is rolled back by the database, not left. */
-  const competitor = async () => { await a.$transaction(async (t) => { await t.$executeRawUnsafe("UPDATE _probe_lock SET status = status || '+raced' WHERE id = 1"); }, { timeout: COMPETITOR_TX_MS, maxWait: 10_000 }); };
+  const competitor = async () => { await a.$transaction(async (t) => { await t.$executeRawUnsafe("UPDATE _probe_lock SET status = status || '+raced' WHERE id = 1"); }, { timeout: COMPETITOR_TX_MS, maxWait: COMPETITOR_MAXWAIT_MS }); };
   /** the terminal ORDER witness: the holder closed the row, the guard mutated next, the competitor landed last */
   const verify = async () => { expect((await rows<{ status: string }>(a, 'SELECT status FROM _probe_lock WHERE id = 1'))[0]!.status).toBe('closed+guard+raced'); };
   const read = (suffix: string) => rows<{ status: string }>(b, `SELECT status FROM _probe_lock WHERE id = 1${suffix}`);
@@ -281,7 +281,7 @@ describe('lockOrderProbe', () => {
       competitor: () => a.$transaction(async (t) => {
         await t.$executeRawUnsafe("UPDATE _probe_lock SET status = status || '+raced' WHERE id = 1");
         await new Promise(() => undefined); // acquires the row, then hangs holding it until the transaction times out
-      }, { timeout: COMPETITOR_TX_MS, maxWait: 10_000 }) }));
+      }, { timeout: COMPETITOR_TX_MS, maxWait: COMPETITOR_MAXWAIT_MS }) }));
     await assertFreeSoon();
   });
   it('the default hung-guard budget stays under the integration test timeout, and the settle window exceeds the contender transaction timeout', () => {
@@ -291,7 +291,8 @@ describe('lockOrderProbe', () => {
     expect(LOCK_PROBE_WORST_CASE_MS).toBeLessThan(timeout);
     expect(CTX.timeout).toBeLessThan(SETTLE_WINDOW_MS); // a rolled-back guard's release is observed, not mistaken for a hang
     expect(CTX.timeout).toBeLessThan(COMPETITOR_TX_MS); // a competitor blocked behind a rolled-back contender still lands
-    expect(COMPETITOR_TX_MS).toBeLessThan(timeout); // a hung competitor is rolled back well within the per-test budget
+    // the cleanup deadline waits out acquisition (maxWait) + the transaction timeout; the whole thing must fit the budget
+    expect(COMPETITOR_MAXWAIT_MS + COMPETITOR_TX_MS).toBeLessThan(timeout); // a late-acquiring hung competitor is still rolled back within the per-test budget
   });
   it('fails when the contender or the release throws after a correct wait: a crashed command is not evidence', async () => {
     // a guard that holds its lock correctly and then crashes inside its transaction: the crash, not the lock, is the verdict

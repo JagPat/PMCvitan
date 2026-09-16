@@ -84,8 +84,9 @@ const invoke = <T,>(fn: () => Promise<T>): Promise<T> => new Promise<T>((resolve
  * the database, and cleanup waits until that bound has elapsed since it started, so its lock never outlives the
  * probe either. The only worker that can outlast the probe is one that hangs in JS while holding NO lock (an
  * autocommit read that already returned, or a transaction the database has already rolled back) — it holds nothing,
- * so no lock outlives the probe. Every wait is bounded (`SETTLE_WINDOW_MS`/`contenderSettleMs`, `COMPETITOR_TX_MS`)
- * and the whole hung-guard budget stays under the integration suite's per-test timeout. */
+ * so no lock outlives the probe. Every wait is bounded (`SETTLE_WINDOW_MS`/`contenderSettleMs`, and the competitor's
+ * acquisition window plus its transaction timeout, `COMPETITOR_MAXWAIT_MS` + `COMPETITOR_TX_MS`) and the whole
+ * hung-guard budget stays under the integration suite's per-test timeout. */
 export const SETTLE_WINDOW_MS = 9_000;
 const GRACE_MS = 2_000;
 // The competitor is bounded the SAME way the contender is: it runs inside a transaction whose own timeout caps how
@@ -94,14 +95,19 @@ const GRACE_MS = 2_000;
 // this bound has elapsed since the competitor started, so no competitor lock outlives the probe, and it sits above
 // the contender transaction timeout so a competitor blocked behind a rolled-back contender still lands.
 export const COMPETITOR_TX_MS = 9_000;
+// A transaction's `timeout` clock starts only once it ACQUIRES a slot, up to `maxWait` after the call. The probe
+// records the competitor's start before invoking it, so its lock can outlive `COMPETITOR_TX_MS` by the acquisition
+// delay; the fixture MUST cap that delay at this bound, and the cleanup deadline and worst-case budget both add it,
+// so a competitor that acquires late, locks the row, and hangs is still rolled back before the probe returns.
+export const COMPETITOR_MAXWAIT_MS = 2_000;
 // The worst-case wall time for a hung guard on the default window: the lock-inspection poll ceiling, one settle
-// window plus a cancellation grace, and the bounded competitor waits (its own transaction timeout plus a grace). It
-// MUST stay under the integration suite's 30s per-test timeout, or the probe times the test out before it can name
-// the very hung-guard case it exists to diagnose (asserted in the suite). The settle window MUST also exceed the
-// contender's transaction timeout, so a database-rolled-back guard's lock release is observed rather than mistaken
-// for an ignored signal.
+// window plus a cancellation grace, and the bounded competitor waits (its acquisition window plus its transaction
+// timeout plus a grace). It MUST stay under the integration suite's 30s per-test timeout, or the probe times the
+// test out before it can name the very hung-guard case it exists to diagnose (asserted in the suite). The settle
+// window MUST also exceed the contender's transaction timeout, so a database-rolled-back guard's lock release is
+// observed rather than mistaken for an ignored signal.
 export const SETTLE_WINDOW_MS_MUST_EXCEED_CONTENDER_TX = true;
-export const LOCK_PROBE_WORST_CASE_MS = 3_000 + SETTLE_WINDOW_MS + COMPETITOR_TX_MS + GRACE_MS * 3;
+export const LOCK_PROBE_WORST_CASE_MS = 3_000 + SETTLE_WINDOW_MS + COMPETITOR_MAXWAIT_MS + COMPETITOR_TX_MS + GRACE_MS * 2;
 export async function lockOrderProbe(o: {
   holderReady: () => Promise<void>;
   contenderStarted: (milestone: { observed: () => void; proceed: Promise<void>; signal: AbortSignal }) => Promise<unknown>;
@@ -207,8 +213,10 @@ export async function lockOrderProbe(o: {
   await abortHolder();
   await settle();
   await window.catch(() => undefined);
+  // the competitor's transaction timeout starts only at acquisition (up to COMPETITOR_MAXWAIT_MS after it was
+  // invoked), so its lock can persist for the acquisition window plus the timeout since it started — wait out both
   const competitorLeft = competitorStartedAt === undefined ? graceMs
-    : Math.max(graceMs, COMPETITOR_TX_MS + graceMs - (Date.now() - competitorStartedAt));
+    : Math.max(graceMs, COMPETITOR_MAXWAIT_MS + COMPETITOR_TX_MS + graceMs - (Date.now() - competitorStartedAt));
   await awaitCompetitor(competitorLeft);
   if (abortFailure !== undefined) {
     fail(`${failed ? `${reason(primary)}; then ` : ''}the holder's abort failed: ${reason(abortFailure)}: the row may remain locked and the contender blocked`);
