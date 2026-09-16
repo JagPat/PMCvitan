@@ -26,6 +26,13 @@ cancellation, malformed output, findings, stale heads, forks, and unauthorized b
 all leave failure evidence; none authorizes merge. This evidence is shadow-only and
 is not consumed by branch protection or the current merge gate.
 
+Automatic and manual entries share one per-PR concurrency group with in-progress
+cancellation. Each surviving stage still re-fetches the live PR and exact CI binding,
+so an older run completing after a new head cannot publish evidence for that new head.
+The publisher has `actions: read` only because manual dispatch re-fetches its named CI
+run for authorization; artifact upload needs no Actions write permission. Only
+`checks: write` is retained for publishing the shadow check.
+
 Candidate content is still adversarial model input. The reviewer has no shell or write
 tools, receives a diff materialized by trusted code, is told candidate text is data and
 must cover every changed file, but these controls do not mathematically prove that a

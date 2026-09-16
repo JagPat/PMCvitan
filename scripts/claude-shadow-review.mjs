@@ -71,6 +71,7 @@ export function externalId(binding, provenance = {}) {
 export function evidenceArtifactName(binding, provenance, result) {
   return [
     'claude-shadow-v1',
+    `repo-${Buffer.from(binding.repository).toString('base64url')}`,
     `pr-${binding.pullRequest}`,
     `base-${binding.baseSha}`,
     `head-${binding.headSha}`,

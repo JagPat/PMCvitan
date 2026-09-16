@@ -45,7 +45,25 @@ test('workflow authorization refuses stale, fork, failed CI, wrong base, and clo
 
 test('artifact identity binds trusted run and interpreted outcome', () => {
   const name = evidenceArtifactName(binding, { publisherRunId: 84, publisherRunAttempt: 3 }, { state: 'clear', findings: [] });
-  for (const value of [headSha, baseSha, 'publisher-84-3', 'state-clear', 'findings-0']) assert.match(name, new RegExp(value));
+  for (const value of [Buffer.from(binding.repository).toString('base64url'), 'pr-600', headSha, baseSha, 'ci-42-2', 'publisher-84-3', 'state-clear', 'findings-0']) assert.match(name, new RegExp(value));
+});
+
+test('an older overlapping completion cannot authorize after the live head advances', async () => {
+  let releaseOld;
+  const oldBlocked = new Promise((resolve) => { releaseOld = resolve; });
+  let livePull = { number: 600, state: 'open', head: { sha: headSha, repo: { full_name: binding.repository } }, base: { ref: 'main', sha: baseSha, repo: { full_name: binding.repository } } };
+  const sourceRun = (head, id) => ({ id, run_attempt: 1, name: 'CI', event: 'pull_request', status: 'completed', conclusion: 'success', head_sha: head, head_repository: { full_name: binding.repository }, pull_requests: [{ number: 600 }] });
+  const authorizeAfter = async (barrier, expectedHead, run) => {
+    await barrier;
+    return authorizeShadowRequest({ repository: binding.repository, pullRequestNumber: 600, expectedHead, trustedWorkflowSha: baseSha, sourceRun: run, livePull });
+  };
+  const oldCompletion = authorizeAfter(oldBlocked, headSha, sourceRun(headSha, 41));
+  const latestHead = 'c'.repeat(40);
+  livePull = { ...livePull, head: { ...livePull.head, sha: latestHead } };
+  const latestCompletion = await authorizeAfter(Promise.resolve(), latestHead, sourceRun(latestHead, 42));
+  releaseOld();
+  assert.equal(latestCompletion.allowed, true);
+  assert.deepEqual(await oldCompletion, { allowed: false, state: 'unauthorized_or_stale' });
 });
 
 test('manual bootstrap dispatch uses the same live PR and completed CI authorization', () => {
@@ -71,10 +89,14 @@ test('hosted workflow is shadow-only, pinned, read-only, and publishes from trus
   const workflow = readFileSync('.github/workflows/claude-shadow-review.yml', 'utf8');
   assert.match(workflow, /workflow_run:/u);
   assert.match(workflow, /workflow_dispatch:/u);
+  assert.match(workflow, /group: claude-shadow-review-pr-\$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.pr_number \|\| github\.event\.workflow_run\.pull_requests\[0\]\.number \|\| github\.run_id \}\}/u);
+  assert.match(workflow, /cancel-in-progress: true/u);
   assert.match(workflow, /anthropics\/claude-code-action@7b0b255830a1fab6e602658672acad11c12d841d/u);
   assert.match(workflow, /claude_code_oauth_token: \$\{\{ secrets\.CLAUDE_CODE_OAUTH_TOKEN \}\}/u);
   assert.match(workflow, /contents: read/u);
   assert.doesNotMatch(workflow, /contents: write|pull-requests: write|statuses: write/u);
+  assert.match(workflow.match(/publish:[\s\S]*/u)[0], /actions: read/u);
+  assert.doesNotMatch(workflow, /actions: write/u);
   assert.match(workflow, /publish:[\s\S]*checks: write/u);
   assert.match(workflow, /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/u);
   assert.doesNotMatch(workflow.match(/review:[\s\S]*?\n  publish:/u)[0], /checks: write/u);
