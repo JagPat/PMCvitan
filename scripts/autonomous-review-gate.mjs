@@ -1838,8 +1838,8 @@ export async function run() {
       const shadow = classifyClaudeShadowReview({
         checkRuns: await client.checkRuns(expectedHead),
         expectedHead,
+        expectedBase: pullRequest.base.sha,
         pullRequestNumber: pullRequest.number,
-        trustedAppSlug: process.env.CLAUDE_REVIEW_APP_SLUG ?? '',
       });
       console.log(
         `Claude independent-review shadow: ${shadow.state}; non-authoritative`,

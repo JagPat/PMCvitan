@@ -1,18 +1,18 @@
 import { CLAUDE_SHADOW_CONTEXT } from './review-policy.mjs';
 
 /**
- * Fail-closed boundary for a future subscription-backed Claude reviewer.
- * GitHub comments and action exit codes are deliberately not accepted. The
- * service must create a GitHub Check Run, as its own installed GitHub App, with
- * an immutable external id binding the PR and SHA and structured output.
+ * Fail-closed consumer for the subscription-backed hosted shadow reviewer.
+ * The trusted default-branch publisher creates this check; comments, the
+ * Claude action's exit code, and candidate-authored checks are not accepted.
  */
 export function classifyClaudeShadowReview({
   checkRuns = [],
   expectedHead,
+  expectedBase,
   pullRequestNumber,
-  trustedAppSlug,
+  trustedAppSlug = 'github-actions',
 }) {
-  const prefix = `pmcvitan:claude-review:v1:pr-${pullRequestNumber}:sha-${expectedHead}:`;
+  const prefix = `pmcvitan:claude-shadow:v1:repo-JagPat/PMCvitan:pr-${pullRequestNumber}:base-${expectedBase}:head-${expectedHead}:run-`;
   const candidates = checkRuns.filter((run) =>
     run?.name === CLAUDE_SHADOW_CONTEXT
     && run?.head_sha === expectedHead
@@ -30,11 +30,20 @@ export function classifyClaudeShadowReview({
   } catch {
     return { state: 'malformed', authoritative: false };
   }
-  if (result.schema !== 1 || result.headSha !== expectedHead || result.pullRequest !== pullRequestNumber) {
+  if (
+    result.schema !== 1
+    || result.repository !== 'JagPat/PMCvitan'
+    || result.headSha !== expectedHead
+    || result.baseSha !== expectedBase
+    || result.pullRequest !== pullRequestNumber
+    || !Number.isInteger(result.runId)
+    || !Number.isInteger(result.runAttempt)
+    || !run.external_id.endsWith(`run-${result.runId}:attempt-${result.runAttempt}`)
+  ) {
     return { state: 'replayed', authoritative: false };
   }
-  if (result.outcome !== 'clear' || result.openFindings !== 0 || result.complete !== true) {
-    return { state: result.openFindings > 0 ? 'changes_required' : 'incomplete', authoritative: false };
+  if (result.state !== 'clear' || result.findingCount !== 0) {
+    return { state: result.findingCount > 0 ? 'changes_required' : 'incomplete', authoritative: false };
   }
   return { state: 'clear', authoritative: false, runId: run.id };
 }

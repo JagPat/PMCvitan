@@ -1,0 +1,79 @@
+name: Claude independent review shadow
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+jobs:
+  review:
+    if: github.event.workflow_run.event == 'pull_request'
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      structured_output: ${{ steps.claude.outputs.structured_output }}
+      action_outcome: ${{ steps.claude.outcome }}
+    steps:
+      - name: Check out trusted publisher from the default branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Authorize and bind the completed CI run
+        id: bind
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/claude-shadow-review.mjs prepare
+      - name: Check out the immutable candidate without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ steps.bind.outputs.headSha }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Review exact candidate
+        id: claude
+        continue-on-error: true
+        uses: anthropics/claude-code-action@7b0b255830a1fab6e602658672acad11c12d841d # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          display_report: false
+          show_full_output: false
+          prompt: |
+            You are the independent review-only reviewer for PR #${{ steps.bind.outputs.pullRequest }}.
+            Review candidate/ at immutable head ${{ steps.bind.outputs.headSha }} against base
+            ${{ steps.bind.outputs.baseSha }}. Read docs/POLICY.md and docs/REVIEW_RUBRIC.md from
+            the trusted repository root. Audit the whole relevant files and sibling writer/reader
+            paths, not only changed lines. Carry forward unresolved findings visible in the PR.
+            Report correctness, security, data-integrity, concurrency, and lifecycle defects as
+            P1/P2; do not report taste or style. Every finding needs a concrete failing example.
+            Do not edit files, push, comment, approve, or merge. Return only the requested structure.
+          claude_args: >-
+            --allowedTools "Read,Glob,Grep,Bash(git diff *),Bash(git show *)"
+            --json-schema '{"type":"object","additionalProperties":false,"properties":{"schema":{"const":1},"repository":{"const":"${{ steps.bind.outputs.repository }}"},"pullRequest":{"const":${{ steps.bind.outputs.pullRequest }}},"headSha":{"const":"${{ steps.bind.outputs.headSha }}"},"baseSha":{"const":"${{ steps.bind.outputs.baseSha }}"},"runId":{"const":${{ steps.bind.outputs.runId }}},"runAttempt":{"const":${{ steps.bind.outputs.runAttempt }}},"complete":{"const":true},"filesReviewed":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"properties":{"severity":{"enum":["P1","P2"]},"path":{"type":"string","minLength":1},"line":{"type":"integer","minimum":1},"rule":{"type":"string","minLength":1},"description":{"type":"string","minLength":1},"example":{"type":"string","minLength":1}},"required":["severity","path","line","rule","description","example"]}}},"required":["schema","repository","pullRequest","headSha","baseSha","runId","runAttempt","complete","filesReviewed","findings"]}'
+  publish:
+    needs: [review]
+    if: always()
+    permissions:
+      checks: write
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out trusted publisher from the default branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Publish deterministic shadow evidence
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLAUDE_ACTION_OUTCOME: ${{ needs.review.outputs.action_outcome }}
+          CLAUDE_STRUCTURED_OUTPUT: ${{ needs.review.outputs.structured_output }}
+        run: node scripts/claude-shadow-review.mjs publish

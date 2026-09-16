@@ -19,11 +19,11 @@ test('Codex implementation ownership is refused until independent reviewer prove
   }
 });
 function cleanRun(overrides = {}) {
-  return { id: 7, name: 'claude-independent-review', head_sha: head, app: { slug: 'claude-review-service' }, external_id: `pmcvitan:claude-review:v1:pr-600:sha-${head}:nonce`, status: 'completed', conclusion: 'success', completed_at: '2026-09-14T12:00:00Z', output: { summary: JSON.stringify({ schema: 1, pullRequest: 600, headSha: head, outcome: 'clear', openFindings: 0, complete: true }) }, ...overrides };
+  return { id: 7, name: 'claude-independent-review', head_sha: head, app: { slug: 'github-actions' }, external_id: `pmcvitan:claude-shadow:v1:repo-JagPat/PMCvitan:pr-600:base-${base}:head-${head}:run-123:attempt-2`, status: 'completed', conclusion: 'success', completed_at: '2026-09-14T12:00:00Z', output: { summary: JSON.stringify({ schema: 1, repository: 'JagPat/PMCvitan', pullRequest: 600, baseSha: base, headSha: head, runId: 123, runAttempt: 2, state: 'clear', findingCount: 0 }) }, ...overrides };
 }
 
 test('Claude shadow evidence is exact-head/app and fail-closed but non-authoritative', () => {
-  const classify = (runs) => classifyClaudeShadowReview({ checkRuns: runs, expectedHead: head, pullRequestNumber: 600, trustedAppSlug: 'claude-review-service' });
+  const classify = (runs) => classifyClaudeShadowReview({ checkRuns: runs, expectedHead: head, expectedBase: base, pullRequestNumber: 600 });
   assert.deepEqual(classify([cleanRun()]), { state: 'clear', authoritative: false, runId: 7 });
   assert.equal(classify([cleanRun({ head_sha: 'c'.repeat(40) })]).state, 'missing');
   assert.equal(classify([cleanRun({ app: { slug: 'wrong' } })]).state, 'missing');
@@ -31,7 +31,7 @@ test('Claude shadow evidence is exact-head/app and fail-closed but non-authorita
   assert.equal(classify([cleanRun({ conclusion: 'timed_out' })]).state, 'timed_out');
   assert.equal(classify([cleanRun({ conclusion: 'failure' })]).state, 'failure');
   assert.equal(classify([cleanRun({ output: { summary: '{}' } })]).state, 'replayed');
-  assert.equal(classify([cleanRun({ output: { summary: JSON.stringify({ schema: 1, pullRequest: 600, headSha: head, outcome: 'changes_required', openFindings: 1, complete: true }) } })]).state, 'changes_required');
+  assert.equal(classify([cleanRun({ output: { summary: JSON.stringify({ schema: 1, repository: 'JagPat/PMCvitan', pullRequest: 600, baseSha: base, headSha: head, runId: 123, runAttempt: 2, state: 'changes_required', findingCount: 1 }) } })]).state, 'changes_required');
   assert.equal(classify([]).state, 'missing');
 });
 
@@ -39,7 +39,7 @@ test('a newer pending Claude rerun supersedes an older clear completion', () => 
   for (const status of ['queued', 'in_progress']) {
     const newer = cleanRun({ id: 8, status, conclusion: null, completed_at: null });
     for (const runs of [[cleanRun(), newer], [newer, cleanRun()]]) {
-      assert.equal(classifyClaudeShadowReview({ checkRuns: runs, expectedHead: head, pullRequestNumber: 600, trustedAppSlug: 'claude-review-service' }).state, 'partial');
+      assert.equal(classifyClaudeShadowReview({ checkRuns: runs, expectedHead: head, expectedBase: base, pullRequestNumber: 600 }).state, 'partial');
     }
   }
 });

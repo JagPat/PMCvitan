@@ -241,19 +241,17 @@ Reviewer output rules, the family probes and the dispute path live in
 
 ### Claude independent-review shadow boundary
 
-The existing Claude subscription integration responds to GitHub PR conversation
-and can author corrections, but the repository has no documented, tested contract
-that exposes an immutable reviewer completion, actor and exact SHA. A comment,
-mention response, workflow exit code, absence of findings, skipped run or timeout
-therefore cannot become green review evidence. `claude-review-adapter.mjs` is a
-non-authoritative fail-closed boundary only. Activation requires the subscription
-provider to document and verify a GitHub App Check Run named
-`claude-independent-review`, emitted by a dedicated configured App identity, with
-an external id binding PR and SHA and the v1 structured summary validated by the
-adapter. Until a real current-head shadow run proves that contract, the adapter
-does not affect `codex-current-head`, merge eligibility or branch protection.
+The hosted shadow path in `claude-shadow-review.yml` uses the official Claude Code
+action with a subscription OAuth token. Trusted default-branch code validates its
+structured findings and publishes `claude-independent-review` with GitHub Actions
+provenance and immutable repository, PR, base, head, run and attempt bindings. A
+comment, model-authored clearance word, action exit code, absence of output, skipped
+run or timeout cannot become green evidence. `claude-review-adapter.mjs` consumes
+that contract fail closed but remains non-authoritative until a real current-head
+shadow cycle proves it. It does not affect `codex-current-head`, merge eligibility
+or branch protection.
 
-Rollout is additive: merge this controller after required CI and independent
+Rollout is additive: merge this shadow path after required CI and independent
 Codex review; verify real Claude shadow evidence on a current SHA; then install a new required gate before retiring
 `codex-current-head`. Roll back by leaving or removing the future Claude required
 gate while retaining `codex-current-head`; never create an interval with neither
