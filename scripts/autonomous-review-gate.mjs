@@ -481,6 +481,46 @@ export class GitHubClient {
     }
   }
 
+  async verifyClaudeShadowProducer(checkRun, evidence) {
+    const run = await this.request(
+      `/repos/${this.repository}/actions/runs/${evidence.publisherRunId}`,
+    );
+    if (
+      run?.id !== evidence.publisherRunId
+      || run?.run_attempt !== evidence.publisherRunAttempt
+      || run?.path !== '.github/workflows/claude-shadow-review.yml'
+      || !['workflow_run', 'workflow_dispatch'].includes(run?.event)
+      || run?.status !== 'completed'
+      || run?.conclusion !== 'success'
+      || run?.head_sha !== evidence.workflowSha
+      || run?.repository?.full_name !== this.repository
+    ) return false;
+    const jobs = await this.actionRunItems(run.id, 'jobs', 'jobs', 'filter=all');
+    if (!jobs.some((job) =>
+      job?.name === 'publish'
+      && job?.status === 'completed'
+      && job?.conclusion === 'success')) return false;
+    const artifacts = await this.actionRunItems(run.id, 'artifacts', 'artifacts');
+    return artifacts.some((artifact) =>
+      artifact?.id === evidence.artifact.id
+      && artifact?.name === evidence.artifact.name
+      && artifact?.digest === evidence.artifact.digest
+      && artifact?.expired === false);
+  }
+
+  async actionRunItems(runId, endpoint, property, query = '') {
+    const items = [];
+    for (let page = 1; ; page += 1) {
+      const suffix = query ? `${query}&` : '';
+      const payload = await this.request(
+        `/repos/${this.repository}/actions/runs/${runId}/${endpoint}?${suffix}per_page=100&page=${page}`,
+      );
+      const batch = payload?.[property] ?? [];
+      items.push(...batch);
+      if (batch.length < 100) return items;
+    }
+  }
+
   rerunFailedJobs(runId) {
     return this.request(
       `/repos/${this.repository}/actions/runs/${runId}/rerun-failed-jobs`,
@@ -1835,11 +1875,12 @@ export async function run() {
         );
         throw new Error(detail);
       }
-      const shadow = classifyClaudeShadowReview({
+      const shadow = await classifyClaudeShadowReview({
         checkRuns: await client.checkRuns(expectedHead),
         expectedHead,
+        expectedBase: pullRequest.base.sha,
         pullRequestNumber: pullRequest.number,
-        trustedAppSlug: process.env.CLAUDE_REVIEW_APP_SLUG ?? '',
+        verifyProducer: (run, evidence) => client.verifyClaudeShadowProducer(run, evidence),
       });
       console.log(
         `Claude independent-review shadow: ${shadow.state}; non-authoritative`,
