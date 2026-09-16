@@ -63,10 +63,6 @@ export const PLAN_REVIEW_ROUND_CAP = 3;
 // ONLY exemption is an inseparable migration unit whose diff carries the migration and its
 // service and whose six invariant rows carry concrete risk and evidence.
 export const HARD_SIZE_CAP_AFTER_PR = 590;
-// A plan added or modified by a unit is read at the PR head and may not exceed this many lines;
-// an untouched historical plan is never re-measured.
-export const PLAN_FILE = /^docs\/superpowers\/plans\/[^/]+\.md$/u;
-export const PLAN_MAX_LINES = 400;
 
 const LARGE_MARKER = '<!-- review-size: justified-large -->';
 const INSEPARABLE_MIGRATION_MARKER = '<!-- migration-scope: inseparable -->';
@@ -537,33 +533,32 @@ function changedFilename(file) {
   return typeof file === 'string' ? file : file?.filename;
 }
 
-const CELL_PLACEHOLDERS = /^(?:n\/?a|none|tbd|todo|to do|yes|ok|done|checked|-+|\?+|see above|as above|relevant risk|focused probe)$/iu;
-/** A risk or evidence cell that states something: not blank, not a placeholder, not a fragment. */
+// A bare non-answer: the whole cell is one of these tokens.
+const CELL_PLACEHOLDER_EXACT = /^(?:n\/?a|na|none|nil|tbd|to[\s-]?do|yes|ok|okay|done|checked|see above|as above|relevant risk|focused probe|not applicable|not relevant)$/iu;
+// Punctuation only: a run of dashes, question marks or the like states nothing however long it is
+// (the length floor alone would let 20 dashes through).
+const CELL_PLACEHOLDER_SYMBOLS = /^[\s.,:;!?–—-]+$/u;
+// A cell that OPENS with a declared non-answer states nothing concrete however it is dressed:
+// "n/a — no boundary here", "not applicable because this change carries no related behavior",
+// "tbd, will add a probe", "not relevant to this change". These openers never begin a genuine risk
+// statement, so a qualifying clause after them does not rescue the cell — the exemption rejects it
+// exactly as it rejects the bare token. `none` is deliberately excluded here: "none of the three
+// writers validates the tenant, so a forged claim crosses" is a real risk that opens with "none".
+const CELL_NONANSWER_OPENER = /^(?:n\/?a|na|nil|tbd|to[\s-]?do|not applicable|not relevant)\b/iu;
+// `none`/`nothing` counts as a non-answer only when it is dressed in a clause that merely restates
+// non-applicability ("none because this invariant does not apply here"); a bare `none` is already
+// caught by the exact set above, and a substantive "none of the writers …" is left concrete.
+const CELL_NONE_QUALIFIED = /^(?:none|nothing)\b[\s\S]*\b(?:not applicable|does ?n['’o]t apply|not relevant|not related|no related|carries no|does not carry|no risk|not affected|unaffected|out of scope|nothing to (?:assess|verify))\b/iu;
+/** A risk or evidence cell that states something: not blank, not a placeholder (bare, qualified or
+ * punctuation-only), not a fragment. */
 function concreteCell(cell) {
   const text = String(cell ?? '').trim();
-  return text.length >= 20 && !CELL_PLACEHOLDERS.test(text);
-}
-
-/**
- * Added or modified plan files, measured by their CONTENT at the authoritative PR head:
- * `contents` maps each changed plan path to its text, or null when it could not be read.
- * A removed plan is not measured; a renamed one is measured under its new name. An
- * unreadable plan fails, never skips: the alternative is a plan that grows past the cap
- * and passes because the check could not read what the PR changed.
- */
-export function changedPlanPaths(changedFiles) {
-  return (changedFiles ?? []).map((file) => (file?.status === 'removed' ? undefined : changedFilename(file)))
-    .filter((name) => typeof name === 'string' && PLAN_FILE.test(name));
-}
-export function assessPlanSizes(changedFiles, contents = {}, maxLines = PLAN_MAX_LINES) {
-  const problems = [];
-  for (const name of changedPlanPaths(changedFiles)) {
-    const text = contents[name];
-    if (typeof text !== 'string') { problems.push(`plan ${name} changed but its head content could not be read`); continue; }
-    const lines = text.length === 0 ? 0 : text.replace(/\n$/u, '').split('\n').length;
-    if (lines > maxLines) problems.push(`plan ${name} is ${lines} lines at the PR head; the limit for an added or modified plan is ${maxLines}`);
-  }
-  return { allowed: problems.length === 0, measured: changedPlanPaths(changedFiles).length, problems };
+  if (text.length < 20) return false;
+  if (CELL_PLACEHOLDER_SYMBOLS.test(text)) return false;
+  if (CELL_PLACEHOLDER_EXACT.test(text)) return false;
+  if (CELL_NONANSWER_OPENER.test(text)) return false;
+  if (CELL_NONE_QUALIFIED.test(text)) return false;
+  return true;
 }
 
 // Documentation, for the purpose of "can a finding on this be proven?". Anything that

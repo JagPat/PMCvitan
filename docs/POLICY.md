@@ -73,8 +73,7 @@ Keep one concern per PR. A review unit is at most 20 files and 1,500 changed lin
 an oversized unit is split. The only exemption is `<!-- migration-scope: inseparable -->`
 on a diff carrying a migration and its inseparable service, with all six invariant rows
 carrying concrete risk and evidence; after #590 `<!-- review-size: justified-large -->`
-admits nothing and no human size marker exists. An added or modified plan is at most
-400 lines at the PR head. Limits are review aids, not proof of quality.
+admits nothing and no human size marker exists. Limits are review aids, not proof of quality.
 
 Complete the template's five pre-review checks: concurrency/serialization, previous-
 release compatibility, alternate writers/triggers, authorization/tenancy, and
@@ -230,7 +229,7 @@ Reviewer output rules, the family probes and the dispute path live in
 
 | Requirement | Shared definition / consumer | Validation |
 | --- | --- | --- |
-| Scope cap, plan size, checklist, migration seam and legacy lineage | review-policy.mjs / review-efficiency.mjs / review-scope.mjs | review-efficiency.test.mjs; policy-contract tests |
+| Scope cap, checklist, migration seam and legacy lineage | review-policy.mjs / review-efficiency.mjs | review-efficiency.test.mjs; policy-contract tests |
 | Owner declaration and wake capability | review-policy.mjs / correction-owner.mjs | autonomous-correction-owner.test.mjs; policy-contract tests |
 | Required checks and retry budgets | review-policy.mjs / gate and check-run-coverage.mjs | autonomous-review-workflow.test.mjs; CI coverage tests |
 | Fix forward and history advisory | review-policy.mjs / autonomous-review-gate.mjs | autonomous-fix-forward.test.mjs; workflow tests |

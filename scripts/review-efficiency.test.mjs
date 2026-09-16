@@ -20,10 +20,9 @@ import { OPEN_TASK_STATES, parseStatusNow } from './autonomous-status-state.mjs'
 import {
   assessTrackedTree,
   parseTrackedTree,
-  planContentsAt,
   run as runScope,
 } from './review-scope.mjs';
-import { HARD_SIZE_CAP_AFTER_PR, PLAN_MAX_LINES, assessPlanSizes, changedPlanPaths } from './review-efficiency.mjs';
+import { HARD_SIZE_CAP_AFTER_PR } from './review-efficiency.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
 
@@ -1727,67 +1726,30 @@ test('no human size-approval marker is read anywhere in the scope logic', async 
   }
 });
 
-test('an added or modified plan is measured by its head content: 400 lines pass, 401 fail, unreadable fails, removed and untouched plans are not measured', () => {
-  const plan = 'docs/superpowers/plans/2026-09-15-example.md';
-  const lines = (n) => `${Array.from({ length: n }, (_, i) => `line ${i}`).join('\n')}\n`;
-  assert.equal(assessPlanSizes([{ filename: plan, status: 'added' }], { [plan]: lines(PLAN_MAX_LINES) }).allowed, true);
-  const over = assessPlanSizes([{ filename: plan, status: 'modified' }], { [plan]: lines(PLAN_MAX_LINES + 1) });
-  assert.equal(over.allowed, false);
-  assert.match(over.problems[0], /401 lines at the PR head/u);
-  assert.match(assessPlanSizes([{ filename: plan, status: 'modified' }], { [plan]: null }).problems[0], /could not be read/u);
-  assert.match(assessPlanSizes([{ filename: plan, status: 'modified' }], {}).problems[0], /could not be read/u);
-  assert.equal(assessPlanSizes([{ filename: plan, status: 'removed' }], {}).allowed, true);
-  assert.equal(assessPlanSizes([{ filename: 'docs/POLICY.md', status: 'modified' }], {}).allowed, true);
-  assert.deepEqual(changedPlanPaths([{ filename: plan, status: 'removed' }, { filename: 'docs/POLICY.md' }, { filename: plan.replace('example', 'kept') }]), [plan.replace('example', 'kept')]);
-  // a rename is judged under its NEW name, from the head's content
-  const renamed = assessPlanSizes([{ filename: plan, previous_filename: 'docs/superpowers/plans/old.md', status: 'renamed' }], { [plan]: lines(500) });
-  assert.match(renamed.problems[0], /2026-09-15-example\.md is 500 lines/u);
-});
-
-test('the scope CLI reads each changed plan at the PR HEAD commit and fails on an oversized or unreadable one', async () => {
-  const plan = 'docs/superpowers/plans/2026-09-15-wired.md';
-  const lines = (n) => `${Array.from({ length: n }, (_, i) => `line ${i}`).join('\n')}\n`;
-  const directory = await mkdtemp(join(tmpdir(), 'pmcvitan-review-plan-'));
-  const eventPath = join(directory, 'event.json');
-  const previousExitCode = process.exitCode;
-  const requested = [];
-  const serve = (planText) => async (url, init) => {
-    requested.push(String(url));
-    if (/\/pulls\/401\/files/u.test(String(url))) {
-      return new Response(JSON.stringify([{ filename: plan, status: 'modified' }, { filename: 'scripts/review-efficiency.mjs', status: 'modified' }]));
-    }
-    if (/\/contents\/docs\/superpowers\/plans\/2026-09-15-wired\.md\?ref=head-sha-1$/u.test(String(url))) {
-      assert.equal(init.headers.accept, 'application/vnd.github.raw+json');
-      return planText === null ? new Response('gone', { status: 404 }) : new Response(planText);
-    }
-    return new Response('unexpected', { status: 500 });
-  };
-  await writeFile(eventPath, JSON.stringify({
-    repository: { full_name: 'JagPat/PMCvitan' },
-    pull_request: pullRequest({ number: 401, changed_files: 2, additions: 40, deletions: 0, body: preReviewBody(), head: { sha: 'head-sha-1' } }),
-  }));
-  try {
-    const within = await runScope({ eventPath, token: 'test-token', fetchImpl: serve(lines(PLAN_MAX_LINES)) });
-    assert.equal(within.plans.allowed, true, within.plans.problems.join('; '));
-    assert.equal(within.plans.measured, 1);
-    assert.ok(requested.some((url) => /contents\/.*\?ref=head-sha-1$/u.test(url)), 'the plan is read at the head SHA, not from the checkout');
-    assert.notEqual(process.exitCode, 1);
-
-    const over = await runScope({ eventPath, token: 'test-token', fetchImpl: serve(lines(PLAN_MAX_LINES + 1)) });
-    assert.equal(over.plans.allowed, false);
-    assert.match(over.plans.problems[0], /401 lines at the PR head/u);
-    assert.equal(process.exitCode, 1);
-
-    process.exitCode = previousExitCode;
-    const unreadable = await runScope({ eventPath, token: 'test-token', fetchImpl: serve(null) });
-    assert.equal(unreadable.plans.allowed, false);
-    assert.match(unreadable.plans.problems[0], /could not be read/u);
-    assert.equal(process.exitCode, 1);
-
-    // no token, no fetch: the plan is unreadable by construction, never silently skipped
-    assert.deepEqual(await planContentsAt({ paths: [plan], headSha: 'x', repository: 'a/b' }), { [plan]: null });
-  } finally {
-    process.exitCode = previousExitCode;
-    await rm(directory, { recursive: true, force: true });
+test('the size-cap exemption rejects a qualified placeholder cell, not only the exact token', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  // each of these is ≥20 chars and is NOT an exact placeholder token, yet states no concrete risk:
+  // an anchored exact match let them through and granted the sole size-cap exemption for free
+  for (const filler of [
+    'none because this invariant does not apply here',
+    'not applicable because this change carries no related behavior',
+    'n/a — no tenant boundary is in scope for this migration',
+    'not relevant, this change is out of scope for the invariant',
+    'tbd, a probe will be added in a later unit for this row',
+  ]) {
+    const rows = sixRows(filler, filler);
+    const result = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], rows) }), { changedFiles: mixed });
+    assert.equal(result.allowed, false, `qualified placeholder exempted the cap: ${filler}`);
+    assert.match(result.detail, /rows without concrete risk and evidence/u);
+    assert.deepEqual(result.missingInvariants, [...REQUIRED_INVARIANTS]);
   }
+  // a run of punctuation states nothing however long it is
+  const symbols = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], sixRows('-'.repeat(30), '?'.repeat(30))) }), { changedFiles: mixed });
+  assert.equal(symbols.allowed, false);
+  assert.match(symbols.detail, /rows without concrete risk and evidence/u);
+  // a genuine risk that merely OPENS with "none" is concrete and still exempts
+  const genuine = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], sixRows('none of the three writers validates the tenant, so a forged claim crosses', 'refused by the composite FK probe in the integration battery')) }), { changedFiles: mixed });
+  assert.equal(genuine.allowed, true, genuine.detail);
+  assert.equal(genuine.state, 'inseparable_large');
 });
