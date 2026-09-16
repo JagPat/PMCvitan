@@ -26,20 +26,22 @@ statement, invariant matrix and review packet required by the active plan. A tas
 not complete until its focused tests and required `pnpm check` pass.
 
 Every PR declares exactly one correction owner in its leading marker block:
-`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`.
-A `claude/**` branch must declare Claude. The marker selects an agent type,
+`<!-- correction-owner: claude -->`, `<!-- correction-owner: cursor -->`, or
+`<!-- correction-owner: codex -->`. Branch names are historical source locations and do not
+override that truthful declaration. The marker selects an agent type,
 not a unique session: coordinate one producer on each branch before editing.
 Only the declared owner handles normal correction handoff; do not start a competing
 producer. Conflict handoffs re-read the owner and current head before publication;
 invalid or non-awakenable ownership is reported without waking a different agent.
 
-Codex implementation ownership is currently inadmissible: GitHub implementation
-tasks and reviews share the Codex bot identity, and a fresh reaction does not prove
-a separate reviewer supplied it. A transfer marker cannot bypass this restriction.
-Enabling that role requires reviewer-specific provenance first. User-requested Codex
-assistance does not itself change the configured normal correction owner.
+Codex implementation ownership is admitted for candidate-side scope and product validation only.
+Until independently authenticated Claude verdict consumption is installed, every Codex-owned
+candidate stays draft with the required exact-head status pending: no Codex self-review, recovered
+Codex success, direct merge or queued merge can promote it. This admission is not wake or merge
+authority, and a transfer marker cannot bypass the validation hold.
 
-This repository currently enables only the Claude correction wake integration.
+This repository currently enables only the Claude correction wake integration. Codex remains
+absent from `AWAKENABLE_FROM_GITHUB`; the dedicated manual probe credential does not change that.
 Codex supports GitHub task mentions such as `@codex fix the CI failures` through its
 [GitHub integration](https://learn.chatgpt.com/docs/third-party/github); independent
 reviewer provenance, account permissions and acceptance of watchdog-generated
@@ -120,7 +122,7 @@ This consolidation does not reverse that decision or authorize a production acti
 Naming an owner does not prove a running session. Claude is awakenable through the
 configured subscription integration. Cursor is routed but has no enabled correction
 wake integration in this repository; report that configuration limit without claiming
-no session is running. Codex and other inadmissible owner declarations report
+no session is running. Codex, Cursor, and other non-awakenable owner declarations report
 `correction_stalled` with the exact corrective action.
 
 The correction watchdog identifies an owed failure from the gate's review/scope/CI
@@ -241,19 +243,21 @@ Reviewer output rules, the family probes and the dispute path live in
 
 ### Claude independent-review shadow boundary
 
-The existing Claude subscription integration responds to GitHub PR conversation
-and can author corrections, but the repository has no documented, tested contract
-that exposes an immutable reviewer completion, actor and exact SHA. A comment,
-mention response, workflow exit code, absence of findings, skipped run or timeout
-therefore cannot become green review evidence. `claude-review-adapter.mjs` is a
-non-authoritative fail-closed boundary only. Activation requires the subscription
-provider to document and verify a GitHub App Check Run named
-`claude-independent-review`, emitted by a dedicated configured App identity, with
-an external id binding PR and SHA and the v1 structured summary validated by the
-adapter. Until a real current-head shadow run proves that contract, the adapter
-does not affect `codex-current-head`, merge eligibility or branch protection.
+The hosted shadow path in `claude-shadow-review.yml` uses the official Claude Code
+action with a subscription OAuth token. Trusted default-branch code validates its
+structured findings and publishes `claude-independent-review` with GitHub Actions
+provenance and immutable repository, PR, base, head, run and attempt bindings. The
+consumer verifies the server-associated Actions run, trusted workflow path, publisher
+job and exact-name/digest artifact; the shared `github-actions` identity and check
+payload alone are never provenance. A
+comment, model-authored clearance word, action exit code, absence of output, skipped
+run or timeout cannot become green evidence. `claude-review-adapter.mjs` consumes
+that contract fail closed but remains non-authoritative until a real current-head
+shadow cycle proves it. A model-reported empty finding set is only `shadow_clear`,
+not positive gate clearance. It does not affect `codex-current-head`, merge eligibility
+or branch protection.
 
-Rollout is additive: merge this controller after required CI and independent
+Rollout is additive: merge this shadow path after required CI and independent
 Codex review; verify real Claude shadow evidence on a current SHA; then install a new required gate before retiring
 `codex-current-head`. Roll back by leaving or removing the future Claude required
 gate while retaining `codex-current-head`; never create an interval with neither

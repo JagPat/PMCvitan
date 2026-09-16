@@ -7,11 +7,9 @@ export { CORRECTION_OWNERS, AWAKENABLE_FROM_GITHUB, CORRECTION_STALLED } from '.
 // inferred from a PR author or branch name; docs/POLICY.md states that contract.
 
 const DECLARATION = /<!--\s*correction-owner:\s*([A-Za-z][A-Za-z0-9_-]*)\s*-->/gu;
-// docs/POLICY.md reserves this prefix for Claude-authored work, so a
-// branch under it declaring another owner contradicts itself. No other prefix
-// implies anything — #349 and #350 are both loop PRs on `codex/**`.
-const CLAUDE_BRANCH_PREFIX = 'claude/';
-const MARKER_HELP = '`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`';
+// Branch names are historical source locations, not authorship assertions. The explicit
+// declaration is authoritative, including for retained claude/** branches.
+const MARKER_HELP = '`<!-- correction-owner: claude -->`, `<!-- correction-owner: cursor -->`, or `<!-- correction-owner: codex -->`';
 
 // A body DECLARES in its marker block and DESCRIBES everywhere else.
 //
@@ -104,17 +102,6 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
     };
   }
 
-  const ref = typeof headRef === 'string' ? headRef : '';
-  if (ref.startsWith(CLAUDE_BRANCH_PREFIX) && owner !== 'claude') {
-    return {
-      state: 'contradictory',
-      owner: null,
-      declared,
-      detail: `branch \`${ref}\` is reserved for Claude-authored work but the body declares `
-        + `correction owner "${owner}"`,
-    };
-  }
-
   return { state: 'declared', owner, declared, detail: null };
 }
 
@@ -168,8 +155,10 @@ export function correctionOwnerProblem(pullRequest) {
 
 function ownerLabel(owner) {
   if (owner === 'claude') return 'Claude Code web Auto-fix';
+  if (owner === 'codex') return 'The Codex coding owner on this branch';
   return 'The Cursor agent on this branch';
 }
+
 
 // What the loop asks the declared owner to do, per reason. The OWNER decision is
 // made once, above; these only phrase it.

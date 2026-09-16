@@ -148,7 +148,7 @@ test('D2: the controller cannot distinguish correction owners', async () => {
 test('O1: the declaration is machine-readable, and every failure mode is named', async () => {
   const { parseCorrectionOwner, CORRECTION_OWNERS } = await ownerModule();
 
-  assert.deepEqual(CORRECTION_OWNERS, ['claude', 'cursor']);
+  assert.deepEqual(CORRECTION_OWNERS, ['claude', 'cursor', 'codex']);
 
   const claude = parseCorrectionOwner('<!-- correction-owner: claude -->');
   assert.equal(claude.state, 'declared');
@@ -214,14 +214,11 @@ test('O1: the declaration is machine-readable, and every failure mode is named',
   assert.equal(buried.state, 'missing');
   assert.match(buried.detail, /top of the PR body/u);
 
-  // The branch prefix is not the authority — #349 and #350 are both Claude-loop
-  // PRs on `codex/**` branches — but `claude/**` IS reserved by
-  // docs/AUTONOMOUS_LOOP.md for Claude-authored work, so a `claude/**` branch
-  // declaring another owner contradicts itself.
+  // Historical branch prefixes do not override the truthful declaration.
   const branchConflict = parseCorrectionOwner('<!-- correction-owner: cursor -->', {
     headRef: 'claude/some-task',
   });
-  assert.equal(branchConflict.state, 'contradictory');
+  assert.equal(branchConflict.state, 'declared');
   assert.equal(
     parseCorrectionOwner('<!-- correction-owner: cursor -->', {
       headRef: 'codex/cloud-agent-env-replacement',
@@ -278,8 +275,8 @@ test('O2: review-scope rejects undeclared ownership before any expensive job', (
   const branchConflict = scoped({ declaration: '<!-- correction-owner: cursor -->' });
   assert.equal(
     branchConflict.allowed,
-    false,
-    'a `claude/**` branch declaring another owner contradicts itself',
+    true,
+    'a retained `claude/**` branch accepts its truthful declared owner',
   );
 
   // review-scope is the first job and everything expensive depends on it, so a
@@ -556,7 +553,6 @@ test('C5: a malformed declaration is told to REPLACE the marker, not add one', a
   for (const [label, body, headRef] of [
     ['unknown agent', '<!-- correction-owner: unknown -->', 'codex/x'],
     ['two owners', '<!-- correction-owner: claude -->\n<!-- correction-owner: cursor -->', 'codex/x'],
-    ['branch conflict', '<!-- correction-owner: cursor -->', 'claude/x'],
   ]) {
     const routed = correctionRouting({
       declaration: parseCorrectionOwner(body, { headRef }), head: HEAD,

@@ -481,6 +481,46 @@ export class GitHubClient {
     }
   }
 
+  async verifyClaudeShadowProducer(checkRun, evidence) {
+    const run = await this.request(
+      `/repos/${this.repository}/actions/runs/${evidence.publisherRunId}`,
+    );
+    if (
+      run?.id !== evidence.publisherRunId
+      || run?.run_attempt !== evidence.publisherRunAttempt
+      || run?.path !== '.github/workflows/claude-shadow-review.yml'
+      || !['workflow_run', 'workflow_dispatch'].includes(run?.event)
+      || run?.status !== 'completed'
+      || run?.conclusion !== 'success'
+      || run?.head_sha !== evidence.workflowSha
+      || run?.repository?.full_name !== this.repository
+    ) return false;
+    const jobs = await this.actionRunItems(run.id, 'jobs', 'jobs', 'filter=all');
+    if (!jobs.some((job) =>
+      job?.name === 'publish'
+      && job?.status === 'completed'
+      && job?.conclusion === 'success')) return false;
+    const artifacts = await this.actionRunItems(run.id, 'artifacts', 'artifacts');
+    return artifacts.some((artifact) =>
+      artifact?.id === evidence.artifact.id
+      && artifact?.name === evidence.artifact.name
+      && artifact?.digest === evidence.artifact.digest
+      && artifact?.expired === false);
+  }
+
+  async actionRunItems(runId, endpoint, property, query = '') {
+    const items = [];
+    for (let page = 1; ; page += 1) {
+      const suffix = query ? `${query}&` : '';
+      const payload = await this.request(
+        `/repos/${this.repository}/actions/runs/${runId}/${endpoint}?${suffix}per_page=100&page=${page}`,
+      );
+      const batch = payload?.[property] ?? [];
+      items.push(...batch);
+      if (batch.length < 100) return items;
+    }
+  }
+
   rerunFailedJobs(runId) {
     return this.request(
       `/repos/${this.repository}/actions/runs/${runId}/rerun-failed-jobs`,
@@ -930,6 +970,10 @@ export async function settleRecoveryRequest(
  * merge breaks the relation a second way, so an ancestry test refuses ordinary valid work.
  * This reads `base.ref` and nothing else.
  */
+export function isValidationOnlyCodexOwner(pullRequest) {
+  return correctionOwnerDeclaration(pullRequest).owner === 'codex';
+}
+
 function isCurrentReviewUnit(pullRequest, expectedHead) {
   return Boolean(pullRequest)
     && pullRequest.state === 'open'
@@ -1013,6 +1057,9 @@ export async function completeReviewedPullRequest(
 /** The common mandatory guard for both direct merge and auto-merge entrypoints. */
 export async function authorizeExactHeadMerge(client, pullRequest, expectedHead) {
   const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
+  if (live && isValidationOnlyCodexOwner(live)) {
+    return { allowed: false, state: 'validation_only_codex_owner' };
+  }
   if (!live || live.draft || !live.base?.sha) {
     return { allowed: false, state: live?.draft ? 'draft' : 'superseded' };
   }
@@ -1028,7 +1075,12 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead)
   // Re-read after remote evidence. A push, base update, retarget or draft
   // transition during validation fails closed.
   const finalLive = await refreshCurrentHead(client, live.number, expectedHead);
-  if (!finalLive || finalLive.draft || finalLive.base?.sha !== live.base.sha) {
+  if (
+    !finalLive
+    || finalLive.draft
+    || finalLive.base?.sha !== live.base.sha
+    || isValidationOnlyCodexOwner(finalLive)
+  ) {
     return { allowed: false, state: 'changed_during_validation' };
   }
   return { allowed: true, state: 'authorized', pullRequest: finalLive };
@@ -1042,6 +1094,18 @@ export async function ensureTerminalReviewState(
   statuses,
 ) {
   if (!isTerminalReviewStatus(status)) return false;
+  const liveOwner = await refreshCurrentHead(client, pullRequest.number, expectedHead);
+  if (!liveOwner) return true;
+  if (isValidationOnlyCodexOwner(liveOwner)) {
+    await client.setStatus(
+      expectedHead,
+      'pending',
+      'validation: Codex-owned candidate held for independent reviewer activation',
+      liveOwner.html_url,
+    );
+    await setDraftForCurrentHead(client, liveOwner.number, expectedHead, true);
+    return true;
+  }
   if (status.state === 'success') {
     if (persistentReviewFailure(statuses)) {
       await client.setStatus(
@@ -1527,6 +1591,22 @@ export async function run() {
   if (scope.superseded) return;
   if (!scope.allowed) throw new Error(scope.detail);
 
+  // Codex ownership is admitted to candidate CI only. Until independent Claude verdict
+  // consumption is activated, no existing/recovered Codex result may promote or merge it.
+  pullRequest = await refreshCurrentHead(client, pullRequest.number, expectedHead);
+  if (!pullRequest) return;
+  if (isValidationOnlyCodexOwner(pullRequest)) {
+    await client.setStatus(
+      expectedHead,
+      'pending',
+      'validation: Codex-owned candidate held for independent reviewer activation',
+      pullRequest.html_url,
+    );
+    await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
+    console.log('Codex-owned candidate validated and held in draft; no review or merge authority is active.');
+    return;
+  }
+
   if (context.ciConclusion && context.ciConclusion !== 'success') {
     const ciSummary = summarizeRequiredChecks(
       await client.checkRuns(expectedHead),
@@ -1835,11 +1915,12 @@ export async function run() {
         );
         throw new Error(detail);
       }
-      const shadow = classifyClaudeShadowReview({
+      const shadow = await classifyClaudeShadowReview({
         checkRuns: await client.checkRuns(expectedHead),
         expectedHead,
+        expectedBase: pullRequest.base.sha,
         pullRequestNumber: pullRequest.number,
-        trustedAppSlug: process.env.CLAUDE_REVIEW_APP_SLUG ?? '',
+        verifyProducer: (run, evidence) => client.verifyClaudeShadowProducer(run, evidence),
       });
       console.log(
         `Claude independent-review shadow: ${shadow.state}; non-authoritative`,

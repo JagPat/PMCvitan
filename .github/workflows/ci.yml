@@ -362,6 +362,26 @@ jobs:
         timeout-minutes: 25
         run: bash apps/api/scripts/phase6-4c-iiir-production-runner-proof.sh
 
+  # Server-associated identity for the exact pull-request merge tree exercised by this CI run.
+  # The trusted shadow publisher accepts it only when this workflow file is unchanged from the
+  # current target tip; candidate workflow edits therefore fail closed.
+  shadow-merge-identity:
+    needs: [review-scope]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Materialize immutable CI merge identity
+        run: mkdir ci-merge-identity && printf '%s\n' '${{ github.sha }}' > ci-merge-identity/merge-sha
+      - name: Upload server-associated CI merge identity
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ci-merge-v1-base-${{ github.event.pull_request.base.sha }}-head-${{ github.event.pull_request.head.sha }}-merge-${{ github.sha }}
+          path: ci-merge-identity/merge-sha
+          if-no-files-found: error
+          retention-days: 30
+
   # The ONE required status.
   #
   # `always()` is load-bearing: without it a failing job would SKIP this gate,
@@ -380,6 +400,7 @@ jobs:
       - api
       - api-e2e
       - upgrade-proof
+      - shadow-merge-identity
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

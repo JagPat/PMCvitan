@@ -1,0 +1,61 @@
+name: Codex correction-boundary probe (manual, disabled by default)
+
+# workflow_dispatch only: this never runs on its own. An operator arms it for ONE chosen PR/head
+# by supplying the exact head and an authorization string bound to that PR/head. It posts exactly
+# one `@codex fix` request through the dedicated consenting-account credential, to test whether
+# that starts a Codex cloud task
+# that pushes a corrective commit. It is dispatch evidence only and holds no merge or status power.
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open same-repository pull request (targeting main) to probe
+        required: true
+        type: number
+      head_sha:
+        description: Exact current PR head the probe binds to
+        required: true
+        type: string
+      finding_comment_id:
+        description: Codex review-comment id of the genuine unresolved finding on that head
+        required: true
+        type: string
+      authorization:
+        description: Must equal arm-pr-<pr_number>-head-<head_sha> to confirm this single PR/head
+        required: true
+        type: string
+
+# No permissions by default; GITHUB_TOKEN only reads state. The dedicated secret is used solely
+# for the final comment POST.
+permissions: {}
+
+# Non-cancelling per-PR group: two dispatches for the same PR run one-at-a-time (never in parallel and
+# never cancelling an in-flight post), so the second sees the first's comment and the script dedups it.
+concurrency:
+  group: codex-fix-probe-pr-${{ github.event.inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    # Trusted default branch only: a dispatch from any other ref is refused before it can post.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out trusted probe code from this workflow's commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Dispatch one bounded @codex fix request
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CODEX_WAKE_GITHUB_TOKEN: ${{ secrets.CODEX_WAKE_GITHUB_TOKEN }}
+          PROBE_PR_NUMBER: ${{ inputs.pr_number }}
+          PROBE_HEAD_SHA: ${{ inputs.head_sha }}
+          PROBE_FINDING_COMMENT_ID: ${{ inputs.finding_comment_id }}
+          PROBE_AUTHORIZATION: ${{ inputs.authorization }}
+        run: node scripts/codex-fix-probe.mjs dispatch
