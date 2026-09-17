@@ -117,6 +117,34 @@ function codexFinding(head) {
   return { user: { login: CODEX }, commit_id: head, body: '**P1** something is wrong' };
 }
 
+test('finding r4034779605: an unreadable head on the FINAL ownership reread defers instead of waking the body owner', async () => {
+  // The initial ownership reread reads the commit cleanly — a consistent claude head, so the notice
+  // would route @claude. The FINAL reread (inside the publish guard) then fails transiently. That
+  // `unknown` verdict must DEFER, exactly like the initial reread does, not collapse to
+  // `ownershipInconsistent: false` and publish an @claude wake with no HEAD confirmation.
+  const pull = pullRequest();
+  const posted = [];
+  let commitReads = 0;
+  const client = {
+    combinedStatus: async () => ({ statuses: [status('review: 1 current-head Codex finding')] }),
+    comments: async () => [],
+    reviews: async () => [],
+    reviewComments: async () => [codexFinding(HEAD)],
+    pullRequest: async () => pull,
+    comment: async (number, body) => { posted.push({ number, body }); return { id: 1 }; },
+    dispatchRecovery: async () => {},
+    commit: async (sha) => {
+      commitReads += 1;
+      if (commitReads >= 2) throw new Error('transient commit read failure on the final reread');
+      return commitTrailerFor(undefined, pull, sha);
+    },
+  };
+  const assessment = await handOffCorrectionLease(client, pull, REPOSITORY, 'main', { now: DUE });
+  assert.equal(posted.length, 0, 'no @claude wake is published when the final head read is unreadable');
+  assert.equal(assessment.state, 'superseded');
+  assert.ok(commitReads >= 2, 'the final ownership reread was attempted');
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // L1 — the reproduction (requirement 7). Before this unit the hourly handoff job
 // drained conflicts, merge continuation and status drift, and reported green

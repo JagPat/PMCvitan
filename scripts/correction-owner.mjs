@@ -124,14 +124,16 @@ function terminalTrailerBlock(commitMessage) {
   const dropTrailingBlanks = () => {
     while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
   };
+  // `git interpret-trailers --parse` parses trailers only from the message BEFORE the patch: a line
+  // that is exactly `---` is `git`'s patch separator (format-patch), so the trailer block precedes it
+  // and EVERYTHING from that divider onward is the patch, whether it is the final line (an empty patch)
+  // or is followed by the diff (`---\ndiff --git …`). Cut at the FIRST bare divider — mirroring git's
+  // `find_patch_start`, which scans from the top — so a Git-valid owner is not stalled by the normal
+  // patch tail rather than only by a divider that happens to be the last physical line
+  // (findings r4032740248 / r4034779634).
+  const dividerIndex = lines.findIndex((line) => line.trim() === '---');
+  if (dividerIndex >= 0) lines.length = dividerIndex;
   dropTrailingBlanks();
-  // `git interpret-trailers --parse` ignores a trailing patch divider (`---`) and reads the trailer
-  // block before it — so a Git-valid owner must not be stalled just because the physical final line is
-  // a divider (finding r4032740248). Drop trailing `---` dividers (and the blanks around them).
-  while (lines.length > 0 && lines[lines.length - 1].trim() === '---') {
-    lines.pop();
-    dropTrailingBlanks();
-  }
   if (lines.length === 0) return null;
   let start = lines.length;
   for (let index = lines.length - 1; index >= 0; index -= 1) {

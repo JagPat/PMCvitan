@@ -683,24 +683,10 @@ export class GitHubClient {
     return this.pullRequest(pullRequest.number);
   }
 
-  async enableAutoMerge(pullRequest, expectedHead) {
-    if (pullRequest.auto_merge) return;
-    await this.graphql(
-      `mutation($id: ID!, $expectedHead: GitObjectID!) {
-        enablePullRequestAutoMerge(
-          input: {
-            pullRequestId: $id
-            expectedHeadOid: $expectedHead
-            mergeMethod: SQUASH
-          }
-        ) {
-          pullRequest { id autoMergeRequest { enabledAt } }
-        }
-      }`,
-      { id: pullRequest.node_id, expectedHead },
-    );
-  }
-
+  // GitHub native auto-merge is NEVER armed by this controller (see completeReviewedPullRequest): a
+  // queued native merge honours only per-SHA required statuses, so a PR-body owner edit that disagrees
+  // with the immutable trailer could merge a now-ineligible head (finding r4034779639). Only the
+  // disable side remains — a defensive teardown for any auto-merge armed outside this controller.
   async disableAutoMerge(pullRequest) {
     if (!pullRequest.auto_merge) return;
     await this.graphql(
@@ -1115,7 +1101,28 @@ async function writeValidationHoldStatus(client, pullRequest, expectedHead, elig
     return;
   }
   if (owner === 'codex' && consistent) {
+    // A consistent Codex candidate is admitted for VALIDATION ONLY, never merged — there is no
+    // independent-reviewer provenance yet. The hold is a PENDING status (not a failure), so the
+    // correction watchdog, which acts only on FAILING statuses, never publishes a handoff for it; left
+    // silent, the PR sits draft+pending indefinitely with no actionable next step. Publish the sticky
+    // here so a reader sees the `correction_stalled` state and the exact activation action, exactly as
+    // the readable-inconsistent branch below does for its own hold (finding r4034779643).
     await client.setStatus(expectedHead, 'pending', ineligibleHoldDetail(owner), pullRequest.html_url);
+    await client.updateStickyComment(
+      pullRequest.number,
+      statusBody({
+        state: 'changes_required',
+        advisory: await freshAdvisory(client, pullRequest),
+        head: expectedHead,
+        detail: ineligibleHoldDetail(owner).replace(/^\s*[a-z]+:\s*/u, ''),
+        attempt: 0,
+        owner,
+        correctionState: CORRECTION_STALLED,
+        next: 'Codex is an admitted candidate, not merge-eligible: activate an independent reviewer for '
+          + 'this repository to resume. No head or body change clears this hold — it needs '
+          + 'independent-reviewer provenance before this exact head can merge.',
+      }),
+    );
     return;
   }
   // Split the readable ineligibility (finding r4032740244): a VALID head trailer whose only problem is
@@ -1204,49 +1211,53 @@ export async function setDraftForCurrentHead(
   return isCurrentReviewUnit(updated, expectedHead) ? updated : null;
 }
 
+// Bounded settle for the CONTROLLER-DRIVEN merge. When `authorizeExactHeadMerge` reports every gate
+// green but `mergeExactHead` still refuses (GitHub's mergeable_state momentarily `unknown` right after
+// the ready flip), re-attempt a few times a short interval apart. This replaces GitHub native
+// auto-merge, so the window is measured in seconds; a head that will not settle is HELD for the next
+// gate tick rather than queued.
+const MERGE_SETTLE_ATTEMPTS = 6;
+const MERGE_SETTLE_DELAY_MS = 5_000;
+
 export async function completeReviewedPullRequest(
   client,
   pullRequest,
   expectedHead,
+  {
+    mergeSettleAttempts = MERGE_SETTLE_ATTEMPTS,
+    mergeSettleDelayMs = MERGE_SETTLE_DELAY_MS,
+  } = {},
 ) {
-  const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead);
-  if (!authorization.allowed) {
-    return 'held_for_gates';
-  }
-  pullRequest = authorization.pullRequest;
-  const direct = await client.mergeExactHead(
-    pullRequest.number,
-    expectedHead,
-  );
-  if (direct?.merged) {
-    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-    return 'merged';
-  }
-
-  try {
-    await client.enableAutoMerge(pullRequest, expectedHead);
-    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-    return 'queued';
-  } catch (error) {
-    if (
-      !(error instanceof Error)
-      || !error.message.includes('is in clean status')
-    ) {
-      throw error;
+  // The merge is CONTROLLER-DRIVEN and RE-AUTHORIZED on every attempt; GitHub native auto-merge is
+  // never armed here. Native auto-merge, once queued, merges the exact SHA whenever its per-SHA required
+  // statuses are green — but a PR-body `Correction-Owner` edit that disagrees with the immutable commit
+  // trailer changes no per-SHA status, so native auto-merge would merge a now-ineligible head before the
+  // edited-event run could disable it (finding r4034779639). Running `authorizeExactHeadMerge` (a fresh
+  // HEAD-bound eligibility read) immediately before each `mergeExactHead` binds every merge to a
+  // just-verified predicate with no async window GitHub can slip a merge through: a body edit between
+  // attempts fails closed on the next `authorizeExactHeadMerge`. An authorized-but-not-yet-mergeable
+  // head is re-attempted a bounded number of times, then HELD for the next tick — never delegated.
+  const attempts = Math.max(1, mergeSettleAttempts);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead);
+    if (!authorization.allowed) return 'held_for_gates';
+    pullRequest = authorization.pullRequest;
+    let merged;
+    try {
+      merged = await client.mergeExactHead(pullRequest.number, expectedHead);
+    } catch (error) {
+      // GitHub's own "is in clean status" race: the PR flipped clean between authorization and the PUT.
+      // Fall through to another re-authorized attempt rather than throwing; any other error is real.
+      if (!(error instanceof Error) || !error.message.includes('is in clean status')) throw error;
+      merged = null;
     }
-    const raced = await client.mergeExactHead(
-      pullRequest.number,
-      expectedHead,
-    );
-    if (raced?.merged) {
+    if (merged?.merged) {
       await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
       return 'merged';
     }
-    throw new Error(
-      `GitHub reported a clean pull request but refused the exact-head merge: ${raced?.message ?? 'unknown reason'}`,
-      { cause: error },
-    );
+    if (attempt + 1 < attempts) await sleep(mergeSettleDelayMs);
   }
+  return 'held_for_gates';
 }
 
 /** The common mandatory guard for both direct merge and auto-merge entrypoints. */
@@ -2199,9 +2210,9 @@ export async function run() {
           attempt,
           next: completion === 'merged'
             ? 'GitHub squash-merged this exact reviewed head.'
-            : completion === 'queued'
-              ? 'GitHub auto-merge is queued behind branch protection.'
-              : 'Merge is held because the current head, base, readiness or required gates changed during validation.',
+            : 'Merge is held for the next gate tick — the current head, base, readiness or required gates '
+              + 'were not both authorized and mergeable in this run (the merge is re-authorized each attempt, '
+              + 'never delegated to native auto-merge).',
         }),
       );
       return;

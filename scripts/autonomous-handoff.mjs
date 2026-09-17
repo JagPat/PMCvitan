@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import {
   buildDriftHandoff,
   buildPostMergeContinuation,
+  isAutonomousBranchRef,
   isAutonomousPullRequest,
   selectAutonomousOpenPullRequests,
 } from './runner-continuation.mjs';
@@ -462,7 +463,12 @@ async function handOffMergedPullRequest(
     pullRequest?.head?.repo?.full_name !== repository ||
     pullRequest?.base?.repo?.full_name !== repository ||
     pullRequest?.base?.ref !== defaultBranch ||
-    !pullRequest?.head?.ref?.startsWith('claude/')
+    // Admit every owner family (claude/, cursor/, codex/), not `claude/` alone. `isAutonomousPullRequest`
+    // now classifies cursor/** and codex/** as autonomous, so a Claude-only merged filter would skip the
+    // continuation for a merge-eligible task on one of those families while the caller still advances the
+    // durable cursor — stranding that merge permanently (finding r4034779620). The merged PR is closed,
+    // so this asks the ref alone rather than the open-state `isAutonomousPullRequest`.
+    !isAutonomousBranchRef(pullRequest?.head?.ref)
   ) return;
 
   const combinedStatus = await client.combinedStatus(pullRequest.head.sha);
@@ -679,6 +685,20 @@ export async function handOffCorrectionLease(
       };
     }
     const freshOwed = owedCorrectionStatus(freshStatuses);
+    // The FINAL ownership reread is THREE-VALUED, exactly like the initial one above. An unreadable head
+    // here is the same retryable infrastructure that the initial reread defers on — collapsing `unknown`
+    // into `ownershipInconsistent: false` would let a transient commit-read failure publish an @claude
+    // wake with no HEAD confirmation, the very thing the initial `deferred` guard prevents
+    // (finding r4034779605). Defer instead of forcing the ordinary-routing path.
+    const freshVerdict = freshOwed ? await headOwnershipVerdict(client, live, head) : null;
+    if (freshVerdict === 'unknown') {
+      return {
+        ...assessment,
+        state: 'superseded',
+        body: null,
+        reason: 'the exact head commit was unreadable on the final reread; the next tick re-reads it',
+      };
+    }
     const fresh = freshOwed
       ? assessCorrectionLease({
         pullRequest: live,
@@ -690,8 +710,8 @@ export async function handOffCorrectionLease(
         occurrence: freshOwed.id ?? null,
         now,
         comments,
-        // Re-derived on the live object; an unreadable head defers (never forces the stall or a wake).
-        ownershipInconsistent: (await headOwnershipVerdict(client, live, head)) === 'inconsistent',
+        // Re-derived on the live object; `unknown` was already deferred above, so this is definitive.
+        ownershipInconsistent: freshVerdict === 'inconsistent',
       })
       : null;
     // The RAW BODY too, not only the notice it renders. A checklist item ticked

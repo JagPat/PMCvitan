@@ -632,7 +632,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
   };
   const draftTransitions = [];
   const statusWrites = [];
-  let autoMergeDraft = null;
+  let mergedDraft = null;
   let reviewComments = [];
   const client = {
     ...automatedMergeEvidence(pullRequest),
@@ -654,11 +654,13 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
       return { ...ownerCommit('claude', sha), files: [] };
     },
     async updateStickyComment() {},
-    async mergeExactHead() {
-      return { merged: false, message: 'Not ready to merge' };
+    async mergeExactHead(number, head) {
+      // The controller merges the exact head directly and re-authorized — native auto-merge is gone.
+      mergedDraft = pullRequest.draft;
+      return { merged: true, sha: 'b'.repeat(40), head };
     },
-    async enableAutoMerge(current) {
-      autoMergeDraft = current.draft;
+    async enableAutoMerge() {
+      assert.fail('native auto-merge must never be armed');
     },
     async dispatchHandoff(ref, number) {
       assert.equal(ref, 'main');
@@ -677,7 +679,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     false,
   );
   assert.deepEqual(draftTransitions, []);
-  assert.equal(autoMergeDraft, null);
+  assert.equal(mergedDraft, null, 'a buried clean verdict never merges a draft');
   assert.deepEqual(statusWrites, []);
 
   pullRequest.draft = false;
@@ -692,12 +694,12 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     true,
   );
   assert.deepEqual(draftTransitions, []);
-  assert.equal(autoMergeDraft, false, 'clean review and CI queue merge automatically');
+  assert.equal(mergedDraft, false, 'a clean review on a ready head merges the exact head directly');
   assert.equal(statusWrites[0].state, 'success');
   assert.match(statusWrites[0].description, /recovered prior clean/u);
 
   pullRequest.draft = false;
-  autoMergeDraft = null;
+  mergedDraft = null;
   reviewComments = [
     { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'b'.repeat(40) },
     { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'c'.repeat(40) },
@@ -712,7 +714,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     ),
     true,
   );
-  assert.equal(autoMergeDraft, false, 'stale findings do not prevent automatic merge');
+  assert.equal(mergedDraft, false, 'stale findings do not prevent the controller-driven merge');
   assert.equal(pullRequest.draft, false);
   assert.equal(statusWrites.at(-1).state, 'success');
 });
@@ -1770,26 +1772,35 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
   ]);
 });
 
-test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
+test('finding r4034779639: a body-marker edit between merge attempts fails closed — native auto-merge is never armed', async () => {
   assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
   const expectedHead = 'a'.repeat(40);
-  const pullRequest = {
+  const consistent = {
     number: 230,
     state: 'open',
     draft: false,
+    // Body agrees with the immutable `claude` head trailer (automatedMergeEvidence) at first.
     body: '<!-- correction-owner: claude -->',
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
     base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
+  // After the first not-ready merge, the editable body marker is edited to DISAGREE with the immutable
+  // `claude` head trailer. The controller must re-authorize before the next attempt and refuse — it must
+  // never delegate to GitHub native auto-merge, which would merge the exact SHA regardless of the edit.
+  const edited = { ...consistent, body: '<!-- correction-owner: cursor -->' };
+  let reads = 0;
   const calls = [];
   const client = {
-    ...automatedMergeEvidence(pullRequest),
+    ...automatedMergeEvidence(consistent),
+    // The first authorization reads the consistent PR twice (live + final re-read); the second
+    // authorization reads the edited PR and stops on `owner_not_merge_eligible`.
+    async pullRequest() { reads += 1; return reads <= 2 ? consistent : edited; },
     async mergeExactHead(number, head) {
       calls.push(['merge', number, head]);
       return { merged: false, message: 'Not ready to merge' };
     },
-    async enableAutoMerge(current, head) {
-      calls.push(['auto-merge', current.number, head]);
+    async enableAutoMerge() {
+      assert.fail('native auto-merge must never be armed under a body-mutable predicate');
     },
     async dispatchHandoff(ref, number) {
       calls.push(['handoff', ref, number]);
@@ -1799,19 +1810,18 @@ test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
   assert.equal(
     await reviewGate.completeReviewedPullRequest(
       client,
-      pullRequest,
+      consistent,
       expectedHead,
+      { mergeSettleAttempts: 3, mergeSettleDelayMs: 0 },
     ),
-    'queued',
+    'held_for_gates',
   );
-  assert.deepEqual(calls, [
-    ['merge', 230, expectedHead],
-    ['auto-merge', 230, expectedHead],
-    ['handoff', 'main', 230],
-  ]);
+  // Only the first (authorized) merge was attempted; the body edit then made re-authorization
+  // ineligible, so there is no second merge and no handoff — and above all no auto-merge queued.
+  assert.deepEqual(calls, [['merge', 230, expectedHead]]);
 });
 
-test('a clean-state auto-merge race retries the exact-SHA merge once', async () => {
+test('an authorized head not yet mergeable settles on a re-authorized retry, not native auto-merge', async () => {
   assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
   const expectedHead = 'a'.repeat(40);
   const pullRequest = {
@@ -1829,14 +1839,13 @@ test('a clean-state auto-merge race retries the exact-SHA merge once', async () 
       assert.equal(number, 230);
       assert.equal(head, expectedHead);
       mergeAttempts += 1;
+      // GitHub's mergeable_state is momentarily unsettled on the first attempt, then clears.
       return mergeAttempts === 1
         ? { merged: false, message: 'Not ready to merge' }
         : { merged: true, sha: 'b'.repeat(40) };
     },
     async enableAutoMerge() {
-      throw new Error(
-        'GitHub GraphQL failed: Pull request Pull request is in clean status',
-      );
+      assert.fail('native auto-merge must never be armed; the merge is controller-driven');
     },
     async dispatchHandoff(ref, number) {
       assert.equal(ref, 'main');
@@ -1849,6 +1858,7 @@ test('a clean-state auto-merge race retries the exact-SHA merge once', async () 
       client,
       pullRequest,
       expectedHead,
+      { mergeSettleAttempts: 3, mergeSettleDelayMs: 0 },
     ),
     'merged',
   );
@@ -1863,17 +1873,57 @@ test('review cycles are serialized by pull request and exact head', async () => 
   assert.match(workflow, /cancel-in-progress:\s*false/);
 });
 
-test('the auto-merge fallback sends GitHub the reviewed head OID', async () => {
+test('finding r4034779643: a consistent Codex-owned hold publishes correction_stalled and the activation action', async () => {
+  const expectedHead = 'a'.repeat(40);
+  const pullRequest = {
+    number: 240,
+    state: 'open',
+    draft: false,
+    // Body agrees with the immutable `codex` head trailer — a consistent Codex candidate, admitted for
+    // validation only and never merged. The hold must still tell a reader what resumes it.
+    body: '<!-- correction-owner: codex -->',
+    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/240',
+  };
+  const stickies = [];
+  const statusWrites = [];
+  const draftWrites = [];
+  const client = {
+    ...automatedMergeEvidence(pullRequest, 'codex'),
+    async pullRequest() { return pullRequest; },
+    async setStatus(head, state, description) { statusWrites.push({ state, description }); },
+    async updateStickyComment(number, body) { stickies.push(body); },
+    async setDraft(current, draft) { draftWrites.push(draft); current.draft = draft; return current; },
+    async reviewComments() { return []; },
+    async reviews() { return []; },
+  };
+
+  const held = await reviewGate.setDraftForCurrentHead(client, 240, expectedHead, false);
+  assert.equal(held?.draft, true, 'a Codex-owned head is never promoted to ready — it is held draft');
+  assert.deepEqual(draftWrites, [true], 'it is re-drafted (the protective direction)');
+  // The hold status is PENDING (not a failure — the candidate is admitted for validation) ...
+  assert.equal(statusWrites.at(-1).state, 'pending');
+  // ... but the sticky now carries the stalled state and the exact activation action, so the PR is not
+  // left draft+pending indefinitely with no actionable next step (the watchdog only acts on failures).
+  assert.equal(stickies.length, 1);
+  assert.match(stickies[0], /correction_stalled/u);
+  assert.match(stickies[0], /independent reviewer/u);
+  assert.match(stickies[0], /activate/iu);
+});
+
+test('the controller never arms GitHub native auto-merge', async () => {
+  // The exact-head merge is controller-driven and re-authorized on every attempt, so a body-marker edit
+  // cannot slip a now-ineligible head through a queued native merge (finding r4034779639). The enable
+  // side of native auto-merge is removed entirely; only the defensive disable teardown remains.
   const gate = await readFile(
     new URL('./autonomous-review-gate.mjs', import.meta.url),
     'utf8',
   );
-  const autoMergeMethod = gate.slice(
-    gate.indexOf('async enableAutoMerge'),
-    gate.indexOf('async mergeExactHead'),
-  );
-  assert.match(autoMergeMethod, /expectedHeadOid:\s*\$expectedHead/);
-  assert.match(autoMergeMethod, /\{ id: pullRequest\.node_id, expectedHead \}/);
+  assert.doesNotMatch(gate, /enablePullRequestAutoMerge/);
+  assert.doesNotMatch(gate, /async enableAutoMerge/);
+  assert.doesNotMatch(gate, /client\.enableAutoMerge|this\.enableAutoMerge/);
+  assert.match(gate, /disablePullRequestAutoMerge/);
 });
 
 test('failure-latch status history is fully paginated', async () => {

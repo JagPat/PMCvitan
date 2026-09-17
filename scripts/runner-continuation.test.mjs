@@ -7,9 +7,21 @@ import {
   detectStatusDrift,
   detectStatusDriftAcrossHeads,
   formatOpenPullRequestList,
+  isAutonomousBranchRef,
   isAutonomousPullRequest,
   selectAutonomousOpenPullRequests,
 } from './runner-continuation.mjs';
+
+test('finding r4034779620: isAutonomousBranchRef classifies every owner family from the ref alone', () => {
+  // A merged (closed) PR is not `isAutonomousPullRequest` (that requires open state), so the merged
+  // handoff path needs a ref-only owner-family test that admits cursor/** and codex/**, not claude/ only.
+  for (const ref of ['claude/x', 'cursor/task', 'codex/ownership-recovery']) {
+    assert.equal(isAutonomousBranchRef(ref), true, ref);
+  }
+  for (const ref of ['chore/bump', 'feature/x', 'main', '', null, undefined]) {
+    assert.equal(isAutonomousBranchRef(ref), false, String(ref));
+  }
+});
 
 test('finding 4032740385: a maintenance head is not suggested as the open_pr task pointer', () => {
   // Even on an owner-family branch, a maintenance PR (editsStatus === false — its diff does not

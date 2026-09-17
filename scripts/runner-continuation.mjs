@@ -10,6 +10,13 @@ const NONE = 'none';
 // non-owner-family branch out of the task pointer's population.
 const AUTONOMOUS_BRANCH_PREFIXES = CORRECTION_OWNERS.map((owner) => `${owner}/`);
 
+// Whether a branch ref belongs to an owner family (claude/, cursor/, codex/). Unlike
+// `isAutonomousPullRequest`, this asks ONLY about the ref, so it also classifies a merged (closed) PR —
+// the merged-handoff path admits every admitted owner family, not just `claude/` (finding r4034779620).
+export function isAutonomousBranchRef(ref) {
+  return AUTONOMOUS_BRANCH_PREFIXES.some((prefix) => String(ref ?? '').startsWith(prefix));
+}
+
 export function isAutonomousPullRequest(
   pullRequest,
   repository,
@@ -27,8 +34,7 @@ export function isAutonomousPullRequest(
   // codex/) — NOT the correction-owner body marker, which every PR now carries and so cannot
   // discriminate task PRs from maintenance PRs (finding r4032740385). This still tracks a `codex/**`
   // unit (finding r4032903012) without pulling an unrelated marked maintenance PR into the task pointer.
-  const ref = pullRequest?.head?.ref ?? '';
-  return AUTONOMOUS_BRANCH_PREFIXES.some((prefix) => ref.startsWith(prefix));
+  return isAutonomousBranchRef(pullRequest?.head?.ref);
 }
 
 function isNone(value) {

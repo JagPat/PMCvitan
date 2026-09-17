@@ -78,6 +78,25 @@ test('the commit-owner trailer is read only from the terminal trailer block, Git
   // reads the trailer block before it, so a Git-valid owner must not be stalled by the divider.
   assert.equal(parseCommitCorrectionOwner('subject\n\nCorrection-Owner: claude\n---\n').owner, 'claude');
   assert.equal(parseCommitCorrectionOwner('subject\n\nCorrection-Owner: claude\n---').owner, 'claude');
+  // finding r4034779634: the divider need not be the FINAL line — git reads the trailer block before the
+  // FIRST `---` and treats everything after (the diff) as the patch, so the normal `---\n<diff>` tail
+  // must not stall a Git-valid owner either.
+  assert.equal(
+    parseCommitCorrectionOwner('subject\n\nCorrection-Owner: claude\n---\ndiff --git a/a b/a\n').owner,
+    'claude',
+  );
+  assert.equal(
+    parseCommitCorrectionOwner(
+      'subject\n\nCorrection-Owner: cursor\n---\n a | 1 +\n 1 file changed\ndiff --git a/a b/a\n',
+    ).owner,
+    'cursor',
+  );
+  // A `---` divider before the trailer is git's patch boundary too: the "trailer" after it is patch
+  // content, so it confers no owner — matching git's top-down `find_patch_start`.
+  assert.equal(
+    parseCommitCorrectionOwner('subject\n\n---\n\nCorrection-Owner: claude\n').state,
+    'missing',
+  );
 });
 
 test('an inconsistent-ownership notice names the remedy that actually fixes it (finding r4032740244)', () => {
