@@ -33,15 +33,15 @@ editing. Only the declared owner handles normal correction handoff; do not start
 producer. Conflict handoffs re-read the owner and current head before publication; invalid
 or non-awakenable ownership is reported without waking a different agent.
 
-Merge authority is HEAD-bound: the exact HEAD commit's single terminal `Correction-Owner:`
-trailer authorizes an automatic merge, never the mutable body marker (so a later body edit
-cannot make a per-SHA queued merge unsafe); a head whose trailer is missing, invalid, names a
-non-merge-eligible owner, or could not be read is not merged, and an unreadable commit is a
-retryable infrastructure hold, not an ownership fault. Codex is admitted as a truthful
-CANDIDATE owner — a head may declare `codex` and be tracked in-flight — but is NOT awakenable
-and NOT merge-eligible: task and reviewer share one Codex bot identity, so a candidate stays
-held pending independent reviewer activation, no transfer marker bypasses that hold, and
-user-requested Codex assistance does not change the configured normal correction owner.
+Merge authority is HEAD-bound: the exact HEAD commit's single terminal `Correction-Owner:` trailer
+authorizes an automatic merge, never the mutable body marker (so a later body edit cannot make a
+per-SHA queued merge unsafe). The mandatory body marker must AGREE with that trailer: an ineligible
+head — a missing/invalid/non-merge-eligible trailer, a body/trailer disagreement, or an unreadable
+commit — is held at PROMOTION (re-drafted, any armed auto-merge disabled, a non-green status), never
+promoted, armed, or given a green required status; an unreadable commit is a retryable infra hold,
+not a fault. Codex is a truthful CANDIDATE owner (a head may declare `codex`, tracked in-flight) but
+is NOT awakenable and NOT merge-eligible: task and reviewer share one Codex bot identity, so it stays
+held pending reviewer activation; no transfer marker or user `@codex` bypasses that hold or changes the configured correction owner.
 
 This repository currently enables only the Claude correction wake integration.
 Codex supports GitHub task mentions such as `@codex fix the CI failures` through its

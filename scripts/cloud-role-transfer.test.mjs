@@ -11,10 +11,16 @@ import {
 import {
   authorizeExactHeadMerge,
   completeReviewedPullRequest,
+  setDraftForCurrentHead,
+  isValidationOnlyCodexOwner,
   GitHubClient,
   REQUIRED_CHECKS,
 } from './autonomous-review-gate.mjs';
-import { OWNERSHIP_READ_RETRY, isRetryableReviewFailureDescription } from './review-policy.mjs';
+import {
+  OWNERSHIP_READ_RETRY,
+  OWNERSHIP_INCONSISTENT_SCOPE,
+  isRetryableReviewFailureDescription,
+} from './review-policy.mjs';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -22,6 +28,35 @@ const base = 'b'.repeat(40);
 // The exact HEAD commit the gate reads to resolve merge authority: its terminal Correction-Owner trailer.
 const ownerCommit = (owner, sha = head) => ({ sha, commit: { message: `chore: unit\n\nCorrection-Owner: ${owner}\n` } });
 const noOwnerCommit = (sha = head) => ({ sha, commit: { message: 'chore: unit with no trailer\n' } });
+// A message whose trailer output overflows git's parse buffer, so the git-faithful primitive returns its
+// `unreadable` state (finding 4041980997): an infrastructure read failure, distinct from a missing trailer.
+const unreadableCommit = (sha = head) => ({ sha, commit: { message: `subject\n\nX-Pad: ${'a'.repeat(9 * 1024 * 1024)}` } });
+
+// A client that records the protective-hold effects `setDraftForCurrentHead`'s promotion guard applies.
+function holdClient({ body = '<!-- correction-owner: claude -->', commit = ownerCommit('claude'), draft = true, ref = 'claude/x' } = {}) {
+  const effects = { statusWrites: [], draftWrites: [], autoMergeDisabled: 0, sticky: [] };
+  const pull = {
+    number: 600, node_id: 'PR_x', state: 'open', draft, body, auto_merge: { enabledAt: 'x' },
+    html_url: 'https://pr',
+    head: { sha: head, ref, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } },
+  };
+  const client = {
+    repository: 'JagPat/PMCvitan',
+    async pullRequest() { return { ...pull }; },
+    async commit(sha) {
+      if (commit === 'throw') throw new Error('unreadable commit fetch');
+      return typeof commit === 'function' ? commit(sha) : { ...commit, sha: commit.sha ?? sha };
+    },
+    async setDraft(current, d) { effects.draftWrites.push(d); return { ...current, draft: d }; },
+    async setStatus(sha, state, description) { effects.statusWrites.push({ state, description }); },
+    async updateStickyComment(number, b) { effects.sticky.push(b); },
+    async disableAutoMerge() { effects.autoMergeDisabled += 1; },
+    async reviews() { return []; },
+    async reviewComments() { return []; },
+  };
+  return { client, effects };
+}
 
 test('Codex is admitted as a truthful candidate correction owner, but is never merge-eligible', () => {
   // Admitting `codex` tracks a Codex-owned corrective head as an in-flight unit; it is NOT awakenable and
@@ -41,6 +76,97 @@ test('Codex is admitted as a truthful candidate correction owner, but is never m
   // The exact HEAD commit trailer also resolves codex (the merge gate reads the trailer, not the body).
   assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: codex\n').state, 'declared');
   assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: codex\n').owner, 'codex');
+});
+
+// ── Promotion-side ownership hold: an ineligible head is never promoted, armed, or given a green status ──
+// These reproduce the three convergent P1s Codex raised on #603 head e6853535: the merge-authorization
+// gate alone (trailer-only, and only AFTER the green status is published) could not keep an ineligible head
+// out of a mergeable state. The fix enforces body/trailer AGREEMENT and the retryable/terminal split at
+// PROMOTION, before the green publish — so the trailer-only merge gate is safe because an inconsistent head
+// can never reach it as a ready PR. On the pre-fix code (no promotion guard) each of these PROMOTED the head.
+
+test('finding 4041980995 — a body/trailer OWNER disagreement is held at promotion, never promoted', async () => {
+  // Body declares codex (validation-only) but the immutable trailer names claude: the pre-fix merge gate
+  // read only the trailer (eligible claude) and merged, so the body-declared codex candidate was disguised.
+  const { client, effects } = holdClient({ body: '<!-- correction-owner: codex -->', commit: ownerCommit('claude') });
+  const result = await setDraftForCurrentHead(client, 600, head, false);
+  assert.equal(result.draft, true, 'a disagreeing head is re-drafted, never promoted to ready');
+  const scope = effects.statusWrites.find((w) => w.description.startsWith('scope:'));
+  assert.ok(scope, 'a scope failure is written so the required status is never green for this head');
+  assert.equal(scope.state, 'failure');
+  assert.ok(scope.description.includes(OWNERSHIP_INCONSISTENT_SCOPE));
+  assert.equal(isRetryableReviewFailureDescription(scope.description), false, 'an ownership fault is not retryable infra');
+  assert.equal(effects.autoMergeDisabled, 1, 'any armed auto-merge is cancelled for the ineligible head');
+  assert.ok(effects.sticky.length >= 1, 'the stalled correction is explained on the sticky comment');
+});
+
+test('finding 4041980984/4041980991 — a consistent Codex candidate is held pending, never promoted', async () => {
+  // A codex candidate lives on a codex branch (a claude/** branch would make the codex marker a
+  // branch-reservation contradiction, i.e. a scope fault, not the consistent-codex pending hold).
+  const { client, effects } = holdClient({ body: '<!-- correction-owner: codex -->', commit: ownerCommit('codex'), ref: 'codex/x' });
+  assert.equal(isValidationOnlyCodexOwner({ body: '<!-- correction-owner: codex -->' }), true);
+  const result = await setDraftForCurrentHead(client, 600, head, false);
+  assert.equal(result.draft, true);
+  assert.equal(effects.statusWrites.length, 1);
+  assert.equal(effects.statusWrites[0].state, 'pending', 'a codex candidate never publishes a green status');
+  assert.match(effects.statusWrites[0].description, /Codex-owned candidate held/u);
+  assert.equal(effects.autoMergeDisabled, 1);
+});
+
+test('finding 4041980997 — an unreadable-PARSE head is held RETRYABLE, not a terminal ineligibility', async () => {
+  // The commit FETCH succeeds, but the git-faithful primitive returns `unreadable` (its output overflows the
+  // parse buffer). The pre-fix resolver collapsed that to readable:true/owner:null — a terminal ineligibility
+  // — stranding an otherwise-valid head. It must instead publish the RETRYABLE ownership-read status so the
+  // watchdog re-dispatches and re-reads the commit.
+  const { client, effects } = holdClient({ body: '<!-- correction-owner: claude -->', commit: unreadableCommit() });
+  const result = await setDraftForCurrentHead(client, 600, head, false);
+  assert.equal(result.draft, true, 'an unreadable head is re-drafted, never promoted');
+  const retry = effects.statusWrites.find((w) => w.description === OWNERSHIP_READ_RETRY);
+  assert.ok(retry, 'the retryable ownership-read status is written');
+  assert.equal(retry.state, 'failure');
+  assert.equal(isRetryableReviewFailureDescription(retry.description), true);
+  assert.equal(
+    effects.statusWrites.some((w) => w.description.startsWith('scope:')),
+    false,
+    'an unreadable read is infra, never an ownership scope accusation',
+  );
+  assert.equal(effects.autoMergeDisabled, 1);
+});
+
+test('regression — an eligible claude head IS promoted, with no hold', async () => {
+  const { client, effects } = holdClient({ body: '<!-- correction-owner: claude -->', commit: ownerCommit('claude'), draft: true });
+  const result = await setDraftForCurrentHead(client, 600, head, false);
+  assert.ok(result);
+  assert.equal(result.draft, false, 'the eligible head is promoted to ready');
+  assert.deepEqual(effects.draftWrites, [false]);
+  assert.equal(effects.statusWrites.length, 0, 'no hold status is written for an eligible owner');
+  assert.equal(effects.autoMergeDisabled, 0);
+});
+
+test('finding 4041980997 (merge gate) — an unreadable-PARSE merge reread is retryable, not terminal', async () => {
+  // The same one-line resolver fix on the merge path: an unreadable parse must map to owner_read_retry
+  // (retryable infra), never owner_not_merge_eligible (terminal). Body and trailer both consistent-claude
+  // in shape; only the parse is unreadable.
+  const pull = {
+    number: 600, node_id: 'PR_x', state: 'open', draft: false, body: '<!-- correction-owner: claude -->',
+    html_url: 'https://pr',
+    head: { sha: head, ref: 'claude/x', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } },
+  };
+  const client = {
+    repository: 'JagPat/PMCvitan',
+    async pullRequest() { return pull; },
+    async commit(sha) { return { ...unreadableCommit(sha), sha }; },
+    async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
+    async checkRuns() { return REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' })); },
+    async setStatus() {}, async mergeExactHead() { throw new Error('must not merge'); },
+    async enableAutoMerge() { throw new Error('must not arm'); }, async dispatchHandoff() {},
+  };
+  const auth = await authorizeExactHeadMerge(client, pull, head);
+  assert.equal(auth.allowed, false);
+  assert.equal(auth.state, 'owner_read_retry');
+  assert.equal(auth.retryable, true);
+  assert.equal(await completeReviewedPullRequest(client, pull, head), 'held_for_read_retry');
 });
 function cleanRun(overrides = {}) {
   const artifact = { id: 789, digest: `sha256:${'d'.repeat(64)}`, name: `claude-shadow-v1-repo-${Buffer.from('JagPat/PMCvitan').toString('base64url')}-pr-600-base-${base}-head-${head}-ci-123-2-publisher-456-1-state-clear-findings-0` };
