@@ -23,10 +23,12 @@ or a code fence. `scripts/correction-owner.mjs` exposes:
     determined; a consumer must fail closed and grant no merge authority.
   - `declared` (the array) always carries the raw trailer value(s) found, so a later consumer can inspect
     a value this loop does not route to.
-- `headBoundOwnerAgreement(commitMessage, body)` → `{ headOwner, bodyOwner, consistent, trailerState }`,
+- `headBoundOwnerAgreement(commitMessage, body, { headRef })` → `{ headOwner, bodyOwner, consistent, trailerState }`,
   a resolution helper for the later gate/handoff/watchdog consumers. `consistent` is true only when
   the HEAD trailer names a valid owner that agrees with the PR body marker; it fails closed for a
-  missing/invalid/disagreeing trailer or an `unreadable` commit.
+  missing/invalid/disagreeing trailer or an `unreadable` commit. `headRef` is passed through to the body
+  parse so a `claude/**` branch declaring another owner reads as `contradictory` (the branch-reservation
+  rule the scope gate applies) rather than being accepted.
 
 ## Git fidelity
 
@@ -34,7 +36,11 @@ Terminal-trailer extraction is **delegated to real `git interpret-trailers --par
 reimplemented: the primitive feeds the commit message to git on stdin (never as an argument, so no content
 is read as a flag) and reads back git's own `Key: value` lines, with folded continuations already joined.
 The primitive is therefore git itself for the extraction step, and cannot diverge from git as further edge
-cases surface. On top of git's output it applies only this loop's own admission logic: it filters for the
+cases surface. The subprocess **pins the ambient config that changes `--parse` output** — `trailer.separators`
+(which decides both the accepted separators and the output separator, so a runner configured with e.g. `=:`
+would otherwise emit `Correction-Owner= claude`) and `core.commentChar` (which decides which comment lines
+`--parse` strips) — with command-line `-c`, which overrides global, local, and env config, so the read is
+deterministic on any runner. On top of git's output it applies only this loop's own admission logic: it filters for the
 `Correction-Owner` key (case-insensitive), ASCII-trims the value (git preserves non-ASCII whitespace in the
 value, so an NBSP/VT/em-space-padded value stays malformed and fails validation), and maps to the states
 above. If git cannot be run the primitive returns `unreadable` rather than reading the commit as owning

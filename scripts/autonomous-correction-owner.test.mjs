@@ -810,7 +810,13 @@ test('C11: a non-awakenable owner is told what GitHub cannot do, not that nothin
 // The raw terminal Correction-Owner trailer value(s) git recognises, isolated from this loop's owner
 // admission (git does not know `CORRECTION_OWNERS`). `--unfold` joins folded continuations as git does.
 function gitCorrectionOwnerValues(message) {
-  const out = execFileSync('git', ['interpret-trailers', '--parse', '--unfold'], { input: message }).toString();
+  // Pin the same ambient config the primitive pins, so the oracle is `git parsing under our fixed config`
+  // rather than under whatever the runner happens to set (see the ambient-config regression test below).
+  const out = execFileSync('git', [
+    '-c', 'trailer.separators=:',
+    '-c', 'core.commentChar=#',
+    'interpret-trailers', '--parse', '--unfold',
+  ], { input: message }).toString();
   return out.split('\n')
     .filter((line) => /^correction-owner[ \t]*:/iu.test(line))
     // ASCII-trim only, so git's non-ASCII whitespace in the value is preserved for a faithful comparison.
@@ -915,6 +921,47 @@ test('headBoundOwnerAgreement is a pure fail-closed resolution primitive', () =>
     headBoundOwnerAgreement(null, marker('claude')),
     { headOwner: null, bodyOwner: 'claude', consistent: false, trailerState: 'missing' },
   );
+  // The branch reservation is consulted via headRef: a `claude/**` branch declaring another owner is
+  // contradictory even when the head trailer and body marker agree, so agreement must fail closed. Omitting
+  // headRef here (the earlier gap) accepted a head+body owner the branch contract forbids.
+  assert.equal(
+    headBoundOwnerAgreement('x\n\nCorrection-Owner: cursor\n', marker('cursor'), { headRef: 'claude/task' }).consistent,
+    false,
+  );
+  // Any other branch prefix imposes nothing, so the same head+body agrees.
+  assert.equal(
+    headBoundOwnerAgreement('x\n\nCorrection-Owner: cursor\n', marker('cursor'), { headRef: 'codex/task' }).consistent,
+    true,
+  );
+});
+
+test('the trailer read is independent of the runner\'s ambient git config', () => {
+  // The subprocess pins `trailer.separators` and `core.commentChar`, so a runner that configures another
+  // separator — which makes git emit `Correction-Owner= claude`, and a colon-only search miss it — cannot
+  // change the verdict. Command-line `-c` overrides global, local, and env config; GIT_CONFIG_* here
+  // simulates a hostile runner. Env is restored in finally; top-level tests in this file run sequentially.
+  const saved = {
+    count: process.env.GIT_CONFIG_COUNT,
+    key: process.env.GIT_CONFIG_KEY_0,
+    value: process.env.GIT_CONFIG_VALUE_0,
+  };
+  try {
+    process.env.GIT_CONFIG_COUNT = '1';
+    process.env.GIT_CONFIG_KEY_0 = 'trailer.separators';
+    process.env.GIT_CONFIG_VALUE_0 = '=:';
+    const result = parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\n');
+    assert.equal(result.state, 'declared');
+    assert.equal(result.owner, 'claude');
+  } finally {
+    for (const [key, value] of [
+      ['GIT_CONFIG_COUNT', saved.count],
+      ['GIT_CONFIG_KEY_0', saved.key],
+      ['GIT_CONFIG_VALUE_0', saved.value],
+    ]) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test('an unreadable git fails closed to `unreadable`, never to an owner', () => {

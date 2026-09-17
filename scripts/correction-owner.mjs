@@ -145,7 +145,15 @@ const asciiTrim = (value) => value.replace(/^[ \t]+|[ \t]+$/gu, '');
 function gitParsedTrailers(commitMessage) {
   let out;
   try {
-    out = execFileSync('git', ['interpret-trailers', '--parse', '--unfold'], {
+    // Pin the ambient config that changes `--parse` output so the read is deterministic on any runner:
+    // `trailer.separators` decides both which separators are accepted AND the output separator (its first
+    // configured character), so a runner with e.g. `=:` would emit `Correction-Owner= claude`; `core.commentChar`
+    // decides which comment lines `--parse` strips. Command-line `-c` overrides global, local, and env config.
+    out = execFileSync('git', [
+      '-c', 'trailer.separators=:',
+      '-c', 'core.commentChar=#',
+      'interpret-trailers', '--parse', '--unfold',
+    ], {
       input: String(commitMessage ?? ''),
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'ignore'],
@@ -202,17 +210,19 @@ export function parseCommitCorrectionOwner(commitMessage) {
 }
 
 /**
- * HEAD-bound owner agreement — a pure resolution primitive for the later consumers (review gate, conflict
+ * HEAD-bound owner agreement — a resolution primitive for the later consumers (review gate, conflict
  * handoff, watchdog) that will hold a fetched commit. The exact commit's single terminal `Correction-Owner:`
  * trailer must name a valid owner AND agree with the PR body marker; `consistent` is false for a
- * missing/invalid/disagreeing trailer or an `unreadable` commit (git could not be run). No consumer in
- * this unit calls it; it fails closed so a later caller never wakes a body owner the immutable head does
- * not confirm.
+ * missing/invalid/disagreeing trailer or an `unreadable` commit (git could not be run). `headRef` is passed
+ * through to the body parse so a `claude/**` branch that declares another owner reads as `contradictory`
+ * (bodyOwner null → not consistent), the same branch-reservation rule the scope gate applies; omitting it
+ * would accept a head+body owner the branch contract forbids. No consumer in this unit calls it; it fails
+ * closed so a later caller never wakes a body owner the immutable head does not confirm.
  */
-export function headBoundOwnerAgreement(commitMessage, body) {
+export function headBoundOwnerAgreement(commitMessage, body, { headRef } = {}) {
   const trailer = parseCommitCorrectionOwner(commitMessage);
   const headOwner = trailer.state === 'declared' ? trailer.owner : null;
-  const bodyDeclaration = parseCorrectionOwner(body);
+  const bodyDeclaration = parseCorrectionOwner(body, { headRef });
   const bodyOwner = bodyDeclaration.state === 'declared' ? bodyDeclaration.owner : null;
   const consistent = headOwner !== null && bodyOwner !== null && headOwner === bodyOwner;
   return { headOwner, bodyOwner, consistent, trailerState: trailer.state };
