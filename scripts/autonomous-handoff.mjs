@@ -172,11 +172,10 @@ export class GitHubClient {
     return this.request(`/repos/${this.repository}/commits/${head}/status`);
   }
 
-  // The exact HEAD commit, for HEAD-bound owner resolution in the conflict-handoff and correction
-  // watchdog paths. This client is SEPARATE from the review gate's GitHubClient (which has its own
-  // commit reader); the handoff's `run()` instantiates THIS class, so the method must exist here or
-  // every headBoundOwnerAgreement read throws and the paths silently defer (finding r4032740211,
-  // operator-verified on 40833e87). Returns the REST commit object: `{ sha, commit: { message }, … }`.
+  // The exact HEAD commit, for HEAD-bound owner resolution in the conflict/watchdog paths. This client is
+  // SEPARATE from the review gate's GitHubClient, and the handoff's `run()` instantiates THIS class, so the
+  // method must exist here or every headBoundOwnerAgreement read throws and the paths silently defer
+  // (finding r4032740211, operator-verified on 40833e87). Returns `{ sha, commit: { message }, … }`.
   commit(head) {
     return this.request(`/repos/${this.repository}/commits/${head}`);
   }
@@ -251,15 +250,11 @@ export async function waitForTerminalPullRequest(client, number) {
   return pullRequest.state === 'open' ? null : pullRequest;
 }
 
-// Resolve, from the exact HEAD commit, a THREE-VALUED ownership verdict for the watchdog/conflict
-// paths — mirroring the gate's readable/inconsistent/unreadable distinction rather than collapsing it
-// to a boolean (findings r4032740407 / r4032740219 / r4032740224):
-//   'inconsistent' — the commit read cleanly and its trailer is missing/invalid/disagrees with the
-//                    body owner: a real ownership fault, force the stall and wake nobody.
-//   'unknown'      — the commit could not be read: retryable INFRASTRUCTURE, never an authored fault.
-//                    Callers DEFER (no wake, and no malformed-trailer accusation) to the next tick.
-//   'consistent'   — the head trailer confirms the body owner (or there is no body owner to wake):
-//                    ordinary routing applies.
+// Resolve, from the exact HEAD commit, a THREE-VALUED ownership verdict for the watchdog/conflict paths,
+// mirroring the gate (findings r4032740407 / r4032740219 / r4032740224): 'inconsistent' (clean read, but
+// the trailer is missing/invalid/disagrees with the body owner — a real fault, stall and wake nobody);
+// 'unknown' (the commit could not be read — retryable infra, callers DEFER, no wake, no accusation);
+// 'consistent' (the head trailer confirms the body owner, or there is none — ordinary routing).
 async function headOwnershipVerdict(client, pullRequest, head) {
   let commit;
   try {
@@ -285,11 +280,9 @@ export async function handOffConflict(
 
   const declaration = correctionOwnerDeclaration(live);
   const routing = correctionRouting({ declaration, head: live.head.sha });
-  // The editable body marker alone cannot authorize a conflict-handoff wake: the immutable HEAD
-  // `Correction-Owner:` trailer must agree with it (finding r4032740389). Read the exact commit; a
-  // clean read gives a readable/inconsistent verdict, an UNREADABLE read is retryable infrastructure
-  // — defer the conflict notice to the next tick rather than fabricating a malformed-trailer accusation
-  // no trailer evidence supports (finding r4032740224).
+  // The editable body marker alone cannot authorize a conflict-handoff wake: the immutable HEAD trailer
+  // must agree with it (finding r4032740389). An UNREADABLE read is retryable infra — defer the notice to
+  // the next tick rather than fabricating a malformed-trailer accusation no evidence supports (r4032740224).
   let agreement = null;
   try {
     const commit = await client.commit(live.head.sha);
@@ -463,11 +456,9 @@ async function handOffMergedPullRequest(
     pullRequest?.head?.repo?.full_name !== repository ||
     pullRequest?.base?.repo?.full_name !== repository ||
     pullRequest?.base?.ref !== defaultBranch ||
-    // Admit every owner family (claude/, cursor/, codex/), not `claude/` alone. `isAutonomousPullRequest`
-    // now classifies cursor/** and codex/** as autonomous, so a Claude-only merged filter would skip the
-    // continuation for a merge-eligible task on one of those families while the caller still advances the
-    // durable cursor — stranding that merge permanently (finding r4034779620). The merged PR is closed,
-    // so this asks the ref alone rather than the open-state `isAutonomousPullRequest`.
+    // Admit every owner family (claude/, cursor/, codex/), not `claude/` alone: a Claude-only filter would
+    // skip the continuation for a merge-eligible cursor/codex task while the caller advances the durable
+    // cursor — a permanent stall (finding r4034779620). The merged PR is closed, so ask the ref alone.
     !isAutonomousBranchRef(pullRequest?.head?.ref)
   ) return;
 
@@ -631,9 +622,8 @@ export async function handOffCorrectionLease(
   // pull request to see it.
   const assessed = await client.pullRequest(pullRequest.number);
 
-  // An UNREADABLE head is retryable infrastructure, not an authored fault: defer this tick rather than
-  // waking the body owner without HEAD confirmation or accusing a trailer nobody could read
-  // (finding r4032740219). Only a readable INCONSISTENT verdict forces the stall.
+  // An UNREADABLE head is retryable infra, not an authored fault: defer rather than wake the body owner
+  // without HEAD confirmation (finding r4032740219). Only a readable INCONSISTENT verdict forces the stall.
   const assessedVerdict = await headOwnershipVerdict(client, assessed, head);
   if (assessedVerdict === 'unknown') {
     return { state: 'deferred', body: null, reason: 'the exact head commit was unreadable; the next tick re-reads it' };
@@ -685,11 +675,9 @@ export async function handOffCorrectionLease(
       };
     }
     const freshOwed = owedCorrectionStatus(freshStatuses);
-    // The FINAL ownership reread is THREE-VALUED, exactly like the initial one above. An unreadable head
-    // here is the same retryable infrastructure that the initial reread defers on — collapsing `unknown`
-    // into `ownershipInconsistent: false` would let a transient commit-read failure publish an @claude
-    // wake with no HEAD confirmation, the very thing the initial `deferred` guard prevents
-    // (finding r4034779605). Defer instead of forcing the ordinary-routing path.
+    // The FINAL ownership reread is THREE-VALUED like the initial one: collapsing an unreadable `unknown`
+    // into `ownershipInconsistent: false` would let a transient read failure publish an @claude wake with
+    // no HEAD confirmation, the very thing the initial `deferred` guard prevents (finding r4034779605).
     const freshVerdict = freshOwed ? await headOwnershipVerdict(client, live, head) : null;
     if (freshVerdict === 'unknown') {
       return {

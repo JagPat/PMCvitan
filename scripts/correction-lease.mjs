@@ -1,5 +1,6 @@
 import {
   CORRECTION_LEASE_GRACE_MS,
+  isBodyOnlyOwnershipRecoveryDetail,
   isOwnershipInconsistentScopeDetail,
   isRetryableReviewFailureDescription,
   STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT,
@@ -267,6 +268,10 @@ export function assessCorrectionLease({
   // stalled scope fault, when that is the visible status).
   const ownershipInconsistent = ownershipInconsistentFromHead
     || isOwnershipInconsistentScopeDetail(effectiveReason, detail);
+  // Body-only recovery (finding r4036040042): the gate's persisted detail says the trailer is already VALID
+  // and only the body marker is missing/mismatched — a body edit suffices, so ask for that, not a new head.
+  const bodyOnlyRecoverable = ownershipInconsistent
+    && isBodyOnlyOwnershipRecoveryDetail(effectiveReason, detail);
   // The rendered INSTRUCTION must also stop naming the body owner it just rejected: an inconsistent
   // routing yields the trailer-fix remedy instead of "the declared owner corrects this head", so the
   // one published comment never both labels the owner unresolved AND assigns the correction to the body
@@ -335,10 +340,15 @@ export function assessCorrectionLease({
   const resumeAction = reportedState !== CORRECTION_STALLED
     ? null
     : ownershipInconsistent
-      ? '**Required resume action:** the exact head\'s ownership is unresolved — its '
-        + '`Correction-Owner:` commit trailer is missing, invalid, or disagrees with the PR body '
-        + 'marker. Push a new head whose single terminal `Correction-Owner:` trailer matches the body '
-        + 'marker; no GitHub wake can fix a head that mislabels its own owner.'
+      ? bodyOnlyRecoverable
+        ? '**Required resume action:** the exact head\'s `Correction-Owner:` trailer is already valid; '
+          + 'only the PR body marker is missing or does not match. Set exactly one body marker to agree '
+          + 'with the head trailer — the unchanged head becomes eligible on the next `edited` run; no new '
+          + 'head is required.'
+        : '**Required resume action:** the exact head\'s ownership is unresolved — its '
+          + '`Correction-Owner:` commit trailer is missing, invalid, or disagrees with the PR body '
+          + 'marker. Push a new head whose single terminal `Correction-Owner:` trailer matches the body '
+          + 'marker; no GitHub wake can fix a head that mislabels its own owner.'
       : routing.owner
         ? `**Required resume action:** if no \`${routing.owner}\` session is already running on `
           + `branch \`${pullRequest?.head?.ref}\`, start one and have it correct head `
@@ -361,7 +371,9 @@ export function assessCorrectionLease({
       pullRequestNumber: pullRequest?.number,
       head: expected,
       ownerLabel: ownershipInconsistent
-        ? '`unresolved` (head trailer disagrees with the body marker)'
+        ? (bodyOnlyRecoverable
+          ? '`unresolved` (PR body marker does not match the valid head trailer)'
+          : '`unresolved` (head trailer disagrees with the body marker)')
         : routing.owner ? `\`${routing.owner}\`` : '`undeclared`',
       detail,
       stalledMinutes,

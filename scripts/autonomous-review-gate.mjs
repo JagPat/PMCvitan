@@ -8,7 +8,7 @@ import {
   REQUIRED_CHECKS,
   STATUS_CONTEXT,
   OWNERSHIP_READ_RETRY,
-  OWNERSHIP_INCONSISTENT_SCOPE,
+  ownershipInconsistentScopeDetail,
 } from './review-policy.mjs';
 export {
   requiredChecksForPullRequest,
@@ -193,11 +193,10 @@ export function isTerminalReviewStatus(status) {
     || description.includes('Codex submitted a current-head review')
     || description.includes('Codex review timed out')
     || description.includes('Codex evidence changed')
-    // A retryable review/validation failure (e.g. OWNERSHIP_READ_RETRY, whose `validation:` prefix
-    // matches none of the above) is a terminal review outcome pending re-dispatch. Recognising it here
-    // lets recoverableTerminalReviewStatus/authorizeRecoveryDispatch authorize its gate recovery so the
-    // gate re-reads the commit, instead of rejecting the exact status id (finding r4032740380). It
-    // stays non-persistent: persistentReviewFailure excludes retryable failures.
+    // A retryable review/validation failure (e.g. OWNERSHIP_READ_RETRY) is a terminal review outcome
+    // pending re-dispatch; recognising it here lets authorizeRecoveryDispatch authorize its gate recovery
+    // so the gate re-reads the commit rather than rejecting the exact status id (finding r4032740380). It
+    // stays non-persistent (persistentReviewFailure excludes retryable failures).
     || isRetryableReviewFailureDescription(description);
 }
 
@@ -683,9 +682,8 @@ export class GitHubClient {
     return this.pullRequest(pullRequest.number);
   }
 
-  // Armed with `expectedHeadOid` bound to the EXACT reviewed SHA (a new push cancels it), waiting on the
-  // per-SHA gates. Merge authority is the immutable HEAD trailer, which a body edit cannot change, so a
-  // queued merge is never made unsafe by mutable metadata (finding r4034779639).
+  // Armed with `expectedHeadOid` bound to the EXACT reviewed SHA (a new push cancels it). Merge authority
+  // is the immutable HEAD trailer a body edit cannot change, so the queue is never made unsafe (r4034779639).
   async enableAutoMerge(pullRequest, expectedHead) {
     if (pullRequest.auto_merge) return;
     await this.graphql(
@@ -887,10 +885,9 @@ export async function reportReviewLifecycle(client, pullRequest, log = console.l
 // each said "Claude Auto-fix handles the review comments" unconditionally, and
 // said it to a Cursor-owned PR. See scripts/correction-owner.mjs.
 function correctionNotice(pullRequest, { detail = null, reason = 'review', stalled = false, remedy = 'head' } = {}) {
-  // A HEAD-bound ownership inconsistency — the editable body marker disagreeing with the immutable
-  // commit trailer — is unroutable to any producer: no wake can resolve it, only a human/owner fixing
-  // the trailer or body. `stalled` forces a stalled notice so no wake is ever addressed to the (wrong)
-  // body owner (finding r4032903006, gate side).
+  // A HEAD-bound ownership inconsistency (editable body marker vs. immutable trailer) is unroutable: no
+  // wake resolves it, only a human/owner fixing the trailer or body. `stalled` forces a stalled notice so
+  // no wake is ever addressed to the (wrong) body owner (finding r4032903006, gate side).
   const declaration = stalled
     ? { state: 'inconsistent', owner: null, detail, remedy }
     : correctionOwnerDeclaration(pullRequest);
@@ -1022,12 +1019,9 @@ async function refreshCurrentHead(client, number, expectedHead) {
 }
 
 // HEAD-bound owner resolution. Authority is the exact server-verified HEAD commit's terminal
-// `Correction-Owner:` trailer — never an ancestor trailer or a branch name. The read is three-valued
-// so every caller can distinguish the cases instead of collapsing them to a lone boolean:
-//   readable:true,  bound:true,  owner:<x>  — the trailer names <x>
-//   readable:true,  bound:true,  owner:null — the commit read cleanly but carries no valid trailer
-//   readable:true,  bound:false            — the API returned a different commit (superseded)
-//   readable:false                         — the commit read ITSELF failed: retryable infrastructure
+// `Correction-Owner:` trailer — never an ancestor trailer or branch name. Three-valued so callers never
+// collapse the cases: bound+owner<x> (trailer names <x>); bound+owner:null (clean read, no trailer);
+// !bound (superseded — different commit); !readable (the commit read itself failed — retryable infra).
 async function resolveHeadBoundOwner(client, expectedHead) {
   if (typeof expectedHead !== 'string' || expectedHead.length === 0) {
     return { owner: null, bound: false, readable: true };
@@ -1043,11 +1037,10 @@ async function resolveHeadBoundOwner(client, expectedHead) {
   return { owner: state === 'declared' ? owner : null, bound: true, readable: true };
 }
 
-// The three-valued ownership verdict, threaded by every caller. `eligible` (consistent, non-codex)
-// may promote and merge; a consistent `codex` candidate is held pending independent reviewer
-// activation; a readable-but-inconsistent owner is a genuine scope fault; an unreadable commit is
-// retryable infrastructure. `readable` and `consistent` are surfaced so callers never conflate the
-// last two — an unreadable read must not be treated as a definitive ownership fault.
+// The three-valued ownership verdict, threaded by every caller. `eligible` (consistent, non-codex) may
+// promote and merge; a consistent `codex` candidate is held pending reviewer activation; a readable
+// inconsistency is a scope fault; an unreadable commit is retryable infra. `readable`/`consistent` are
+// surfaced so callers never conflate the last two.
 async function headOwnerEligibility(client, pullRequest, expectedHead) {
   const { owner, bound, readable } = await resolveHeadBoundOwner(client, expectedHead);
   const declaration = correctionOwnerDeclaration(pullRequest);
@@ -1067,10 +1060,9 @@ export function isValidationOnlyCodexOwner(pullRequest) {
   return correctionOwnerDeclaration(pullRequest).owner === 'codex';
 }
 
-// Reconcile the head's latest routable status before a scope/ownership explanation, so it never masks
-// a genuine one. A latest ci:/terminal review failure or a live current-head finding is more
-// actionable and short-circuits. A RETRYABLE placeholder marker (an infra/timeout retry) is NOT
-// allowed to mask a freshly detected ownership fault (finding r4032902998), so it falls through.
+// Reconcile the head's latest routable status before a scope/ownership explanation so it never masks a
+// genuine one: a latest ci:/terminal review failure or a live current-head finding is more actionable and
+// short-circuits, while a RETRYABLE placeholder must not mask a fresh ownership fault (finding r4032902998).
 async function reconcileActionableBeforeScope(client, pullRequest, expectedHead, statuses) {
   const live = statuses ?? await client.statuses(expectedHead);
   const latest = live.find((status) => status.context === STATUS_CONTEXT);
@@ -1095,9 +1087,8 @@ async function reconcileActionableBeforeScope(client, pullRequest, expectedHead,
   return Boolean(await guardAgainstCurrentHeadFinding(client, pullRequest, expectedHead, null));
 }
 
-// Write a `scope:` failure only when it is not already the latest status (GitHub truncates to 140
-// chars). Suppressing an unchanged failure keeps its occurrence stable; a reintroduced failure mints
-// a fresh one. Returns whether a status was written.
+// Write a `scope:` failure only when it is not already the latest status: suppressing an unchanged failure
+// keeps its occurrence stable, a reintroduced one mints a fresh occurrence. Returns whether one was written.
 async function writeIdempotentScopeFailure(client, pullRequest, expectedHead, statuses, detail) {
   const description = `scope: ${detail}`;
   const latest = statuses.find((status) => status.context === STATUS_CONTEXT);
@@ -1111,19 +1102,16 @@ async function writeValidationHoldStatus(client, pullRequest, expectedHead, elig
   const live = statuses ?? await client.statuses(expectedHead);
   if (await reconcileActionableBeforeScope(client, pullRequest, expectedHead, live)) return;
   if (readable === false) {
-    // Unreadable head commit: a retryable INFRASTRUCTURE failure the watchdog re-dispatches (which
-    // re-reads the commit next cycle), never a scope fault accusing a possibly-valid trailer
-    // (findings r4032309588 / r4032902990). OWNERSHIP_READ_RETRY is on the retryable list.
+    // Unreadable head commit: a retryable INFRASTRUCTURE failure the watchdog re-dispatches (re-reading the
+    // commit next cycle), never a scope fault accusing a possibly-valid trailer (r4032309588 / r4032902990).
     await client.setStatus(expectedHead, 'failure', OWNERSHIP_READ_RETRY, pullRequest.html_url);
     return;
   }
   if (owner === 'codex' && consistent) {
-    // A consistent Codex candidate is admitted for VALIDATION ONLY, never merged — there is no
-    // independent-reviewer provenance yet. The hold is a PENDING status (not a failure), so the
-    // correction watchdog, which acts only on FAILING statuses, never publishes a handoff for it; left
-    // silent, the PR sits draft+pending indefinitely with no actionable next step. Publish the sticky
-    // here so a reader sees the `correction_stalled` state and the exact activation action, exactly as
-    // the readable-inconsistent branch below does for its own hold (finding r4034779643).
+    // A consistent Codex candidate is validation-only, never merged (no independent-reviewer provenance
+    // yet). The hold is a PENDING status, which the watchdog (acting only on FAILING statuses) never
+    // surfaces, so publish the sticky here — the `correction_stalled` state + exact activation action —
+    // exactly as the readable-inconsistent branch below does (finding r4034779643).
     await client.setStatus(expectedHead, 'pending', ineligibleHoldDetail(owner), pullRequest.html_url);
     await client.updateStickyComment(
       pullRequest.number,
@@ -1142,21 +1130,14 @@ async function writeValidationHoldStatus(client, pullRequest, expectedHead, elig
     );
     return;
   }
-  // Split the readable ineligibility (finding r4032740244): a VALID head trailer whose only problem is
-  // a missing/mismatched BODY marker is a body-edit fix (the unchanged head becomes eligible on the
-  // next `edited` run); a missing/invalid/disagreeing TRAILER needs a new head. Both lead with
-  // OWNERSHIP_INCONSISTENT_SCOPE so the watchdog still recognises the fault and reports it STALLED.
-  const trailerValid = owner !== null; // the exact head commit already carries a valid Correction-Owner
-  const remedy = trailerValid ? 'body' : 'head';
-  const detail = trailerValid
-    ? `${OWNERSHIP_INCONSISTENT_SCOPE} — this head's Correction-Owner trailer (${owner}) is valid but the `
-      + 'PR body marker is missing or does not match; set exactly one body marker to ' + owner
-    : `${OWNERSHIP_INCONSISTENT_SCOPE} — this exact head needs a single `
-      + 'valid Correction-Owner commit trailer matching the PR body marker';
-  // Status idempotence and sticky reconciliation are INDEPENDENT halves of this hold: the status write
-  // no longer gates the sticky, so a rerun after a transient sticky failure still reconciles the
-  // actionable stalled explanation (updateStickyComment is content-idempotent) instead of skipping it
-  // forever (finding r4035335260).
+  // Split the readable ineligibility (findings r4032740244 / r4036040042): a VALID trailer with only a
+  // missing/mismatched BODY marker is a body-edit fix; a missing/invalid/disagreeing TRAILER needs a new
+  // head. The shared producer keeps both wordings — and the watchdog's classifier of them — in one place.
+  const remedy = owner !== null ? 'body' : 'head'; // owner !== null ⇒ the head already carries a valid trailer
+  const detail = ownershipInconsistentScopeDetail(remedy, owner);
+  // Status idempotence and sticky reconciliation are INDEPENDENT: the status write no longer gates the
+  // sticky, so a rerun after a transient sticky failure still reconciles the actionable stalled
+  // explanation (updateStickyComment is content-idempotent) instead of skipping it forever (r4035335260).
   await writeIdempotentScopeFailure(client, pullRequest, expectedHead, live, detail);
   const notice = correctionNotice(pullRequest, { detail, reason: 'scope', stalled: true, remedy });
   await client.updateStickyComment(
@@ -1189,8 +1170,8 @@ async function attemptProtectiveHold(attempts) {
 }
 
 // Hold a head whose HEAD-bound owner is not merge-eligible: publish the validation status, disable any
-// armed auto-merge, and restore the protective draft — each attempted independently so one failure
-// cannot skip the others. Returns whether a hold was applied (true = the caller stops here).
+// armed auto-merge, restore the protective draft — each attempted independently. Returns whether a hold
+// was applied (true = the caller stops here).
 async function holdIneligibleOwner(client, pullRequest, expectedHead, statuses = null) {
   const eligibility = await headOwnerEligibility(client, pullRequest, expectedHead);
   if (eligibility.eligible) return false;
@@ -1210,9 +1191,8 @@ export async function setDraftForCurrentHead(
 ) {
   const pullRequest = await refreshCurrentHead(client, number, expectedHead);
   if (!pullRequest) return null;
-  // Never PROMOTE an ineligible-owner head to ready: a codex candidate, a body/trailer mismatch, a
-  // missing trailer or an unreadable commit stays draft. (Re-drafting — draft:true — is always
-  // allowed; it is the protective direction.)
+  // Never PROMOTE an ineligible-owner head to ready (codex candidate, body/trailer mismatch, missing
+  // trailer, unreadable commit); re-drafting (draft:true) is always allowed — the protective direction.
   if (!draft) {
     const eligibility = await headOwnerEligibility(client, pullRequest, expectedHead);
     if (!eligibility.eligible) {
@@ -1238,8 +1218,7 @@ export async function completeReviewedPullRequest(
   expectedHead,
 ) {
   // Merge authority is the IMMUTABLE HEAD trailer, so GitHub native auto-merge is the durable re-trigger
-  // for an authorized-but-not-yet-mergeable head; a later body edit cannot make that queued merge unsafe
-  // (finding r4034779639; durable merge-recovery hardening is Successor 2, not this unit).
+  // for an authorized-but-not-yet-mergeable head (finding r4034779639; deeper hardening is Successor 2).
   const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead);
   if (!authorization.allowed) {
     return 'held_for_gates';
@@ -1272,14 +1251,11 @@ export async function completeReviewedPullRequest(
 }
 
 /** The common mandatory guard for both direct merge and auto-merge entrypoints. */
-// Merge authority is the IMMUTABLE HEAD trailer, never the mutable PR-body marker: a readable trailer
-// naming a merge-eligible owner (not codex). Body/trailer consistency is enforced at PROMOTION, so a
-// native-auto-merge queue riding the per-SHA gate cannot be made unsafe by a later body edit it cannot
-// see — the fix for finding r4034779639.
+// Merge authority is the IMMUTABLE HEAD trailer (a readable, merge-eligible non-codex owner), never the
+// mutable body marker; consistency is enforced at PROMOTION, so a per-SHA auto-merge queue cannot be made
+// unsafe by a later body edit it cannot see — the fix for finding r4034779639.
 function mergeAuthorizedByTrailer(eligibility) {
-  return eligibility.readable !== false
-    && eligibility.owner !== null
-    && eligibility.owner !== 'codex';
+  return eligibility.readable !== false && eligibility.owner !== null && eligibility.owner !== 'codex';
 }
 
 export async function authorizeExactHeadMerge(client, pullRequest, expectedHead) {
@@ -1287,8 +1263,7 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead)
   const eligibility = live
     ? await headOwnerEligibility(client, live, expectedHead)
     : { owner: null, readable: true };
-  // A consistent Codex candidate is admitted for validation only — never merged (no independent
-  // reviewer provenance yet). Any other ineligible owner (missing/mismatched/unreadable) is held.
+  // A consistent Codex candidate is validation-only, never merged; any other ineligible owner is held.
   if (live && eligibility.owner === 'codex') {
     return { allowed: false, state: 'validation_only_codex_owner' };
   }
@@ -1491,8 +1466,7 @@ export async function revalidateFinalReviewPolicy(
     return { state: 'superseded', allowed: false, superseded: true };
   }
 
-  // Positive ownership eligibility is required at final admission: a Codex candidate, a body/trailer
-  // mismatch, a missing trailer or an unreadable commit is held, never merged.
+  // Positive ownership eligibility is required at final admission; anything ineligible is held, not merged.
   if (await holdIneligibleOwner(client, pullRequest, expectedHead)) {
     return { state: 'held_ineligible_owner', allowed: false };
   }
@@ -1674,25 +1648,17 @@ export async function publishCurrentHeadFinding(
   // an owner marker edited during it would otherwise be ignored: a PR that now
   // declares `cursor` would still be told Claude will fix it, which is the
   // original defect returning through a stale read.
-  //
-  // And re-derive HEAD-bound eligibility on that same live object (finding r4032740234): a body marker
-  // edited during the poll so it no longer agrees with the immutable trailer makes the head unroutable,
-  // so the notice must report the ownership STALLED rather than name the (edited) body owner. A readable
-  // inconsistency stalls; a valid trailer with a bad body points at a body edit, a bad trailer at a new
-  // head. A consistent owner (including a codex candidate) routes normally.
+  // And re-derive HEAD-bound eligibility on that same live object (findings r4032740234 / r4035335245): a
+  // body marker edited during the poll to disagree with the immutable trailer, OR an unreadable post-poll
+  // commit, makes the head unroutable, so the notice STALLS rather than name the (edited/unconfirmed) body
+  // owner. Not consistent → not routed. The `review:` status stands; the watchdog re-reads next tick.
   const eligibility = await headOwnerEligibility(client, live, expectedHead);
-  // Not consistent → the finding is NOT routed to the (editable) body owner. This covers BOTH a readable
-  // inconsistency AND an UNREADABLE head: if the post-poll commit read failed (`readable === false`),
-  // the exact HEAD owner is unknown, so the notice must stall rather than name the body owner on an
-  // unconfirmed head (finding r4035335245). The `review:` finding status still stands; the watchdog
-  // re-reads the head next tick (it defers on an unknown verdict) and routes it once the owner resolves.
   const ownershipStalled = !eligibility.consistent;
   const notice = correctionNotice(live, {
     detail,
     reason: 'review',
     stalled: ownershipStalled,
-    // A readable valid trailer with a bad body points at a body edit; a missing/unreadable trailer needs
-    // a new (re-readable) head.
+    // Valid trailer + bad body ⇒ body edit; missing/unreadable trailer ⇒ a new (re-readable) head.
     remedy: eligibility.owner !== null ? 'body' : 'head',
   });
   await client.updateStickyComment(
@@ -1839,9 +1805,8 @@ export async function run() {
     return;
   }
 
-  // Positive ownership eligibility gates the whole orchestration: a Codex candidate, a body/trailer
-  // mismatch, a missing trailer or an unreadable commit is held (status + disable auto-merge + draft)
-  // before any review or promotion is attempted, so an ineligible head never reaches merge.
+  // Positive ownership eligibility gates the whole orchestration: an ineligible head is held (status +
+  // disable auto-merge + draft) before any review or promotion, so it never reaches merge.
   if (await holdIneligibleOwner(client, pullRequest, expectedHead, existingStatuses)) {
     console.log('Head owner is not merge-eligible; held for validation.');
     return;
@@ -2037,10 +2002,9 @@ export async function run() {
     );
     if (result.state === 'superseded') return;
 
-    // A review attempt that applied an ownership hold has already published the protective status
-    // (OWNERSHIP_READ_RETRY / scope+stalled / codex pending) and re-drafted the head. Return so the
-    // loop does not retry it as an inconclusive Codex attempt and overwrite that status with a
-    // "review: Codex review timed out after two attempts" verdict (finding r4032740396).
+    // A review attempt that applied an ownership hold already published the protective status and re-drafted
+    // the head; return so the loop does not retry it and overwrite that status with a "Codex review timed
+    // out" verdict (finding r4032740396).
     if (result.state === 'held_ineligible_owner') return;
 
     if (result.state === 'changes_required') {
@@ -2238,9 +2202,13 @@ export async function run() {
           attempt,
           next: completion === 'merged'
             ? 'GitHub squash-merged this exact reviewed head.'
-            : 'Merge is held for the next gate tick — the current head, base, readiness or required gates '
-              + 'were not both authorized and mergeable in this run (the merge is re-authorized each attempt, '
-              + 'never delegated to native auto-merge).',
+            : completion === 'queued'
+              ? 'GitHub native auto-merge is armed on this exact reviewed head (bound to its SHA): it '
+                + 'squash-merges once the required gates settle behind branch protection, and a new push '
+                + 'cancels the queue. No further gate tick is owed (finding r4036040046).'
+              : 'Merge is held for the next gate tick — the current head, base, readiness or required gates '
+                + 'were not both authorized and mergeable in this run (the merge is re-authorized each attempt, '
+                + 'never delegated to native auto-merge).',
         }),
       );
       return;

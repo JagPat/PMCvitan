@@ -3,16 +3,14 @@ import { CORRECTION_OWNERS } from './review-policy.mjs';
 
 const NONE = 'none';
 
-// The autonomous OWNER-FAMILY branch prefixes (claude/, cursor/, codex/). These, not the PR body's
-// correction-owner marker, discriminate an in-flight autonomous task unit — every PR now carries that
-// marker by canonical policy, so it cannot single out task PRs (finding r4032740385). The prefix set
-// still tracks a declaring `codex/**` unit (finding r4032903012) while leaving a maintenance PR on a
-// non-owner-family branch out of the task pointer's population.
+// The autonomous OWNER-FAMILY branch prefixes (claude/, cursor/, codex/). These, not the body's
+// correction-owner marker (which every PR now carries, so it cannot single out task PRs, finding
+// r4032740385), discriminate an in-flight task unit — and still track a `codex/**` unit (r4032903012).
 const AUTONOMOUS_BRANCH_PREFIXES = CORRECTION_OWNERS.map((owner) => `${owner}/`);
 
-// Whether a branch ref belongs to an owner family (claude/, cursor/, codex/). Unlike
-// `isAutonomousPullRequest`, this asks ONLY about the ref, so it also classifies a merged (closed) PR —
-// the merged-handoff path admits every admitted owner family, not just `claude/` (finding r4034779620).
+// Whether a branch ref belongs to an owner family. Unlike `isAutonomousPullRequest`, this asks ONLY about
+// the ref, so it also classifies a merged (closed) PR — the merged-handoff path admits every owner family,
+// not just `claude/` (finding r4034779620).
 export function isAutonomousBranchRef(ref) {
   return AUTONOMOUS_BRANCH_PREFIXES.some((prefix) => String(ref ?? '').startsWith(prefix));
 }
@@ -30,10 +28,8 @@ export function isAutonomousPullRequest(
   ) {
     return false;
   }
-  // An in-flight autonomous unit is identified by its owner-family branch prefix (claude/, cursor/,
-  // codex/) — NOT the correction-owner body marker, which every PR now carries and so cannot
-  // discriminate task PRs from maintenance PRs (finding r4032740385). This still tracks a `codex/**`
-  // unit (finding r4032903012) without pulling an unrelated marked maintenance PR into the task pointer.
+  // Identified by owner-family branch prefix — NOT the body marker every PR now carries (finding
+  // r4032740385) — still tracking a `codex/**` unit (finding r4032903012).
   return isAutonomousBranchRef(pullRequest?.head?.ref);
 }
 
@@ -301,12 +297,10 @@ export function detectStatusDriftAcrossHeads({
     };
   }
 
-  // The open_pr TASK POINTER is discriminated by `editsStatus` (does the head's diff PROPOSE STATUS),
-  // never by the owner-family branch prefix or the now-mandatory body marker, which cannot tell a task
-  // PR from a maintenance PR that merely carries the owner marker on an owner-family branch
-  // (finding r4032740385). Drift DETECTION is unchanged; only the SUGGESTION is corrected: never point
-  // open_pr at a maintenance head (`editsStatus === false`). `editsStatus` unknown counts as
-  // task-bearing (fail toward shepherding). If no task-bearing PR remains, suggest `none`.
+  // The open_pr TASK POINTER is discriminated by `editsStatus` (does the head's diff PROPOSE STATUS), not
+  // the branch prefix or the mandatory body marker (finding r4032740385). DETECTION is unchanged; only the
+  // SUGGESTION is corrected: never point open_pr at a maintenance head (`editsStatus === false`); unknown
+  // counts as task-bearing; no task-bearing PR ⇒ `none`.
   if (defaultBranchDrift.drift) {
     const maintenanceNumbers = new Set(
       (headStatuses ?? [])

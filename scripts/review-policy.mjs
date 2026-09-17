@@ -58,6 +58,21 @@ export function isOwnershipInconsistentScopeDetail(reason, detail) {
   return reason === 'scope'
     && String(detail ?? '').trimStart().startsWith(OWNERSHIP_INCONSISTENT_SCOPE);
 }
+// The two remedies for a readable ownership fault, produced by the gate and read back by the watchdog
+// (which sees only the persisted detail). A VALID trailer with only a missing/mismatched BODY marker is
+// body-edit recoverable; a missing/invalid/disagreeing TRAILER needs a new head. Both lead with the
+// signature above, and the `body` variant carries the fixed `is valid` phrase inside GitHub's 140-char
+// truncation so the watchdog tells them apart without a second read (findings r4032740244 / r4036040042).
+export function ownershipInconsistentScopeDetail(remedy, owner) {
+  return remedy === 'body'
+    ? `${OWNERSHIP_INCONSISTENT_SCOPE} — this head's Correction-Owner trailer (${owner}) is valid but the `
+      + `PR body marker is missing or does not match; set exactly one body marker to ${owner}`
+    : `${OWNERSHIP_INCONSISTENT_SCOPE} — this exact head needs a single `
+      + 'valid Correction-Owner commit trailer matching the PR body marker';
+}
+export function isBodyOnlyOwnershipRecoveryDetail(reason, detail) {
+  return isOwnershipInconsistentScopeDetail(reason, detail) && /\bis valid\b/u.test(String(detail ?? ''));
+}
 export const CORRECTION_STALLED = 'correction_stalled';
 // An hourly watchdog reports an unchanged correction after 45-105 minutes.
 export const CORRECTION_LEASE_GRACE_MS = Number(

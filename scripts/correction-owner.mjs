@@ -108,34 +108,27 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
   return { state: 'declared', owner, declared, detail: null };
 }
 
-// The HEAD-bound owner. Authority is the exact commit's SINGLE terminal
-// `Correction-Owner:` trailer — the immutable anchor a body marker (editable
-// after the fact) must agree with. A parent/ancestor trailer or a branch name
-// never authorizes the HEAD; missing, duplicate, malformed or unknown ownership
-// fails closed. `git interpret-trailers` semantics: the block is the final run of
-// `Key: value` (and continuation) lines after a blank line, and a continuation
+// The HEAD-bound owner. Authority is the exact commit's SINGLE terminal `Correction-Owner:` trailer — the
+// immutable anchor an editable body marker must agree with; an ancestor trailer or a branch name never
+// authorizes, and missing/duplicate/malformed/unknown fails closed. `git interpret-trailers` semantics:
+// the block is the final run of `Key: value` (+ continuation) lines after a blank line; a continuation
 // before the first trailer voids the block.
 const TRAILER_LINE = /^[A-Za-z0-9][A-Za-z0-9-]*:/u;
 const TRAILER_CONTINUATION = /^[ \t]+\S/u;
 const OWNER_VALUE = /^[A-Za-z][A-Za-z0-9_-]*$/u;
 
 function terminalTrailerBlock(commitMessage) {
-  // `git` strips comment lines before parsing trailers — the default `core.commentChar` is `#`, matched
-  // at COLUMN 0 — so a Git-valid terminal owner followed by a generated `# …` comment line (e.g. from a
-  // comment-preserving cleanup or an API commit) must not be read as `missing` (finding r4035335233).
-  // Drop them first, mirroring that cleanup.
+  // `git` strips `#` comment lines (default `core.commentChar`, at COLUMN 0) before parsing trailers, so a
+  // valid terminal owner followed by a generated `# …` line must not read as `missing` (finding r4035335233).
   const lines = String(commitMessage ?? '').replace(/\r\n?/gu, '\n').split('\n')
     .filter((line) => !line.startsWith('#'));
   const dropTrailingBlanks = () => {
     while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
   };
-  // `git interpret-trailers --parse` parses trailers only from the message BEFORE the patch: a line that
-  // is EXACTLY `---` is `git`'s patch separator (format-patch), so the trailer block precedes it and
-  // EVERYTHING from that divider onward is the patch, whether it is the final line (an empty patch) or is
-  // followed by the diff (`---\ndiff --git …`). Cut at the FIRST bare divider — mirroring git's
-  // `find_patch_start`, which scans from the top. The match is EXACT, never trimmed: an INDENTED ` ---`
-  // is ordinary text to git, not a divider, so trimming would wrongly treat it as one and accept a
-  // non-terminal pseudo-trailer before it (findings r4032740248 / r4034779634 / r4035335223).
+  // `git interpret-trailers --parse` reads trailers only from the message BEFORE the patch: a line EXACTLY
+  // `---` is git's patch separator, so cut at the FIRST bare divider (mirroring git's top-down
+  // `find_patch_start`) and drop everything after, diff or not. EXACT match, never trimmed: an INDENTED
+  // ` ---` is ordinary text, not a divider (findings r4032740248 / r4034779634 / r4035335223).
   const dividerIndex = lines.findIndex((line) => line === '---');
   if (dividerIndex >= 0) lines.length = dividerIndex;
   dropTrailingBlanks();
@@ -315,18 +308,15 @@ function declaredInstruction(owner, { reason, detail }) {
 // action that resolves it, and it resolves to no agent — least of all to Claude
 // by default, which is the assumption this whole module exists to remove.
 function undeclaredInstruction(declaration) {
-  // A HEAD-bound ownership inconsistency (`inconsistent`) is NOT a body-marker problem: the exact
-  // commit's `Correction-Owner:` trailer is missing, invalid, or disagrees with the body marker, and
-  // the body is the half that may be lying. Editing the body marker cannot fix it — only a new head
-  // whose single terminal trailer matches the marker can. So it carries the passed ownership-fault
-  // detail (never `undefined`) and names the trailer remedy, not a body edit (finding r4032740402).
+  // A HEAD-bound ownership inconsistency (`inconsistent`) is NOT (only) a body-marker problem: the trailer
+  // is missing/invalid/disagreeing and the body may be the lying half. It carries the passed ownership
+  // detail (never `undefined`) and names the trailer/body remedy, not a bare body edit (finding r4032740402).
   if (declaration.state === 'inconsistent') {
     const opening = `Correction ownership is unresolved on this exact head: ${declaration.detail ?? 'the '
       + 'HEAD commit\'s Correction-Owner trailer is missing, invalid, or disagrees with the PR body '
       + 'marker'}. No agent is routed and no wake is addressed to the body owner.`;
-    // A VALID head trailer whose only problem is a missing/mismatched BODY marker is fixed by a body
-    // edit — the unchanged head becomes eligible on the next `edited` run — NOT by a new head
-    // (finding r4032740244). Only a missing/invalid/disagreeing TRAILER needs a new head.
+    // A VALID trailer with only a missing/mismatched BODY marker is a body edit (the unchanged head becomes
+    // eligible next run), NOT a new head (finding r4032740244); only a bad TRAILER needs a new head.
     const resume = declaration.remedy === 'body'
       ? 'Resume action: set exactly one `<!-- correction-owner: … -->` body marker matching this head\'s '
         + 'valid `Correction-Owner:` commit trailer; the unchanged head becomes eligible on the next run.'

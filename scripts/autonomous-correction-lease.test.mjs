@@ -22,7 +22,7 @@ import {
   owedFailureId,
 } from './correction-lease.mjs';
 import { isCorrectionEligiblePullRequest } from './correction-owner.mjs';
-import { OWNERSHIP_INCONSISTENT_SCOPE } from './review-policy.mjs';
+import { OWNERSHIP_INCONSISTENT_SCOPE, ownershipInconsistentScopeDetail } from './review-policy.mjs';
 
 const REPOSITORY = 'JagPat/PMCvitan';
 const HEAD = 'dc54a78e0f2b4c1d9a3e5f60718293a4b5c6d7e8';
@@ -342,6 +342,22 @@ test('L5b: an ownership-inconsistency scope fault is stalled and wakes nobody, d
   assert.match(published, /Required resume action/u);
   assert.equal(calls.posted.length, 1);
   assert.deepEqual(calls.forbidden, [], 'no gate state is touched');
+});
+
+// L5d — finding r4036040042 (watchdog side, sibling of the gate's r4032740244). A valid trailer with only
+// a disagreeing body marker must ask for a BODY edit, not a new head (which would waste exact-head evidence).
+test('L5d: a body-only-recoverable ownership fault asks for a body edit, not a new head', async () => {
+  const { published } = await watch({
+    pull: pullRequest({ body: '<!-- correction-owner: cursor -->', ref: 'claude/task' }),
+    statuses: [status(`scope: ${ownershipInconsistentScopeDetail('body', 'claude')}`)],
+    commitOwner: 'claude', // the exact head's trailer is valid claude; only the body marker disagrees
+  });
+  assert.ok(published, 'the fault is still reported');
+  assert.match(published, /correction_stalled/u);
+  assert.match(published, /body marker/u, 'the remedy names the body marker');
+  assert.match(published, /no new head is required/u, 'and states no new head is needed');
+  assert.doesNotMatch(published, /Push a new head/u, 'it does NOT demand a new head for a valid-trailer fault');
+  assert.doesNotMatch(published, /@claude/u, 'and nobody is woken');
 });
 
 // L5c — finding r4032740407. When ownership is inconsistent AND another failure (a `ci:` failure) is

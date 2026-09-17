@@ -1732,6 +1732,25 @@ test('the clean verdict is published while the PR is still open', async () => {
   assert.ok(clearUpdate > publishedClean);
 });
 
+test('finding r4036040046: a queued native auto-merge is reported distinctly, not as a held gate tick', async () => {
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  const clearBranch = gate.slice(
+    gate.indexOf("if (result.state === 'clear')"),
+    gate.indexOf('if (attempt < MAX_REVIEW_ATTEMPTS)'),
+  );
+  // completeReviewedPullRequest returns 'merged' | 'queued' | 'held_for_gates'. A 'queued' result WAS
+  // delegated to native auto-merge, so the clear-state `next` must render it distinctly, NOT as "held for
+  // the next gate tick" — the opposite of the live state, which would prompt unnecessary recovery.
+  assert.match(clearBranch, /completion === 'queued'/, 'the queued completion is rendered distinctly');
+  const queuedIdx = clearBranch.indexOf("completion === 'queued'");
+  const queuedMsg = clearBranch.slice(queuedIdx, clearBranch.indexOf('Merge is held for the next gate tick', queuedIdx));
+  assert.match(queuedMsg, /native auto-merge is armed/i, 'the queued message names native auto-merge');
+  assert.doesNotMatch(queuedMsg, /held for the next gate tick/, 'and does not mislabel it as held');
+});
+
 test('a clean reviewed head is squash-merged directly with exact SHA', async () => {
   assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
   const expectedHead = 'a'.repeat(40);
