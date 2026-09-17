@@ -174,3 +174,48 @@ Broadening consumer-side provenance and finding consumption — a `head_branch=m
 earlier trusted `main` workflow SHA, and full finding admission — is deferred to the later unit. A
 source-controlled guard does not sandbox a principal who can replace workflows; repository
 administration and branch protection remain outside this mechanism.
+
+## Codex candidate ownership and corrective-HEAD authority
+
+This unit admits Codex as a truthful **candidate** correction owner (still not GitHub-awakenable and
+with no merge authority) and enforces HEAD-bound ownership. Authority is resolved from the exact
+server-verified HEAD commit's single terminal `Correction-Owner:` trailer, consistent with the single
+leading PR-body owner marker, per the canonical rule in
+[docs/POLICY.md](https://github.com/JagPat/PMCvitan/blob/main/docs/POLICY.md). A parent/ancestor
+trailer and the branch name never authorize the HEAD; missing, duplicate, malformed, mismatched or
+body-inconsistent ownership fails closed. (The bounded Codex probe requiring a corrective HEAD to
+carry a terminal `Correction-Owner: codex` and preserve its leading body marker is the isolated later
+probe-credential unit.) An ownerless HEAD from a plain GitHub base-sync ("Update branch") merge is an
+ownership **scope failure** — the status fails and the draft is restored — not the Codex
+pending-validation state; non-authoritative shadow review may still run on it with full CI and
+provenance, and the separate no-wake hold on a stopped candidate is unaffected.
+
+### Merge-recovery
+
+An exact-head merge on a fully authorized head that GitHub does not confirm merged leaves a
+recoverable obligation — never a stranded clean-reviewed head or a thrown run. Two cases mint it, and
+the terminology is deliberate:
+
+- **Confirmed readable-405 refusal.** GitHub returns a readable `405` with `merged: false` while the
+  controller's gates are green (for example, branch protection cannot complete the merge immediately).
+  This is a *confirmed* refusal, not an uncertain outcome. The selected contract for this unit is a
+  **durable, freshly authorized exact-SHA direct retry**:
+  [docs/POLICY.md](https://github.com/JagPat/PMCvitan/blob/main/docs/POLICY.md) permits a direct
+  automatic merge **or** GitHub auto-merge and does not mandate queueing a 405, so the still-open exact
+  head is owed the retry rather than queued. (`EnablePullRequestAutoMergeInput.expectedHeadOid` exists
+  and could gate a queue, but restoring that call alone would not establish the immutable-owner /
+  current-body contract for every later queue event, so it is not the chosen repair.)
+- **Genuinely uncertain outcome.** Transport loss, a `5xx`/`408`/`429`, or an unreadable confirming
+  read leaves completion unknown; the same owed retry applies.
+
+In both cases the controller publishes the retryable `MERGE_RECOVERY_OWED` status and restores the
+protective draft, and the recovery lane re-authorizes the exact head/base/owner/findings/CI and
+retries — re-confirming the merge before any second attempt. Each owed occurrence is dispatched once
+and attempts one PUT; the retry converges (a later attempt merges once branch protection clears, or a
+fresh finding/head/base/owner change denies the PUT). A definitive HTTP refusal (`401`/`403`/`409`
+conflict/`422`), and any re-read showing a superseded head/base/owner or a closed PR, is **held**, not
+owed, so recovery is never written to an obsolete SHA (nor its sticky clobbered). A merge that landed
+is reconciled — by the raw pull-request read and the merged backlog — to exactly one handoff, and a
+lost confirming read retains the backlog cursor so a later drain settles it once. Genuine findings are
+never reinterpreted as clearance (a clean success buried behind an intervening finding never clears
+recovery), and the shadow consumer stays non-authoritative.

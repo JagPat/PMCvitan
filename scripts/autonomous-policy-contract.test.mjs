@@ -55,7 +55,7 @@ test('the rubric and POLICY stay within their line budgets and name the executab
   const contract = await readFile(new URL('../docs/POLICY.md', import.meta.url), 'utf8');
   assert.ok(lines(rubric) <= 120, `REVIEW_RUBRIC.md is ${lines(rubric)} lines; the cap is 120`);
   assert.ok(lines(contract) <= 275, `POLICY.md is ${lines(contract)} lines; the reform may not grow the contract past its 275-line base`);
-  for (const rule of [/REVIEW_RUBRIC\.md/u, /THIRD distinct/u, /mints no\s+obligation from the count/u, /no label or gate state reads a dispute/u]) assert.match(contract, rule);
+  for (const rule of [/REVIEW_RUBRIC\.md/u, /THIRD distinct/u, /mints no\s+obligation from the count/u, /no label or gate state reads a dispute/u, /Authority is HEAD-bound/u, /ownerless base-sync HEAD is an ownership scope failure/u]) assert.match(contract, rule);
   // no machinery reads a dispute label, so neither document may promise one; deployed-byte immutability is never claimed for rerunTwice
   for (const text of [contract, rubric]) assert.doesNotMatch(text, /disputed-finding/u);
   assert.match(rubric, /git diff --name-only <base>\.\.\.HEAD -- apps\/api\/prisma\/migrations\//u);

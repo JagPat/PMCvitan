@@ -1,4 +1,4 @@
-import { STATUS_CONTEXT } from './review-policy.mjs';
+import { STATUS_CONTEXT, MERGE_RECOVERY_OWED, priorCleanReviewEvidence } from './review-policy.mjs';
 
 export { isAutonomousPullRequest } from './runner-continuation.mjs';
 
@@ -168,6 +168,19 @@ class GitHubClient {
 
   combinedStatus(head) {
     return this.request(`/repos/${this.repository}/commits/${head}/status`);
+  }
+
+  // Full status history (newest first), paginated. Reconciling a merged head whose latest status is
+  // MERGE_RECOVERY_OWED needs the history to find the prior exact-head clean success.
+  async statuses(head) {
+    const statuses = [];
+    for (let page = 1; ; page += 1) {
+      const batch = await this.request(
+        `/repos/${this.repository}/commits/${head}/statuses?per_page=100&page=${page}`,
+      );
+      statuses.push(...batch);
+      if (batch.length < 100) return statuses;
+    }
   }
 
   async comments(number) {
@@ -392,7 +405,7 @@ export async function maintenanceQueueAtCommit(client, ref) {
   }
 }
 
-async function handOffMergedPullRequest(
+export async function handOffMergedPullRequest(
   client,
   pullRequest,
   repository,
@@ -412,10 +425,27 @@ async function handOffMergedPullRequest(
     (status) => status.context === STATUS_CONTEXT,
   );
   if (exactHeadStatus?.state !== 'success') {
-    console.warn(
-      `Skipping continuation for PR #${pullRequest.number}: exact-head Codex status was not successful`,
+    // F1 lost-merge reconciliation, and ONLY that: GitHub merged this exact head, but the latest
+    // status is the retryable MERGE_RECOVERY_OWED (the merge response was lost after the squash).
+    const owedRecovery =
+      exactHeadStatus?.state === 'failure'
+      && exactHeadStatus.description === MERGE_RECOVERY_OWED;
+    // Reconcile ONLY on real prior clean evidence: skip consecutive leading owed markers, then the
+    // NEXT current-context status must itself be a clean success (shared `priorCleanReviewEvidence`).
+    // Pending review, an error, or a buried finding between the clean success and the owed marker
+    // therefore denies clearance — an owed obligation is never revived to old clean across it.
+    const priorCleanEvidence = owedRecovery
+      && priorCleanReviewEvidence(await client.statuses(pullRequest.head.sha));
+    if (!priorCleanEvidence) {
+      console.warn(
+        `Skipping continuation for PR #${pullRequest.number}: exact-head Codex status was not successful`,
+      );
+      return;
+    }
+    console.log(
+      `Reconciling continuation for PR #${pullRequest.number}: merged with recovery owed on a `
+        + 'prior-clean exact head.',
     );
-    return;
   }
 
   const marker = `${MERGE_MARKER}${pullRequest.merge_commit_sha} -->`;
@@ -684,16 +714,27 @@ export async function run() {
     left.number - right.number
   );
   for (const mergedPullRequest of mergedBacklog) {
-    const liveMergedPullRequest = await client.pullRequest(
-      mergedPullRequest.number,
-    );
-    await handOffMergedPullRequest(
-      client,
-      liveMergedPullRequest,
-      repository,
-      defaultBranch,
-      continuationContext,
-    );
+    try {
+      const liveMergedPullRequest = await client.pullRequest(
+        mergedPullRequest.number,
+      );
+      await handOffMergedPullRequest(
+        client,
+        liveMergedPullRequest,
+        repository,
+        defaultBranch,
+        continuationContext,
+      );
+    } catch (error) {
+      // A lost confirming read (or a transient handoff failure) leaves this merge UNRESOLVED. Do not
+      // advance the cursor past it: the ordered backlog is retained so a later drain reconciles it
+      // exactly once — idempotently, since the merge-marker comment guards a second continuation.
+      console.warn(
+        `Merged-backlog reconciliation deferred for PR #${mergedPullRequest.number}; cursor `
+          + `retained for retry: ${error.message}`,
+      );
+      break;
+    }
     await client.setRunnerCursor(
       mergedPullRequest.merged_at,
       mergedPullRequest.number,

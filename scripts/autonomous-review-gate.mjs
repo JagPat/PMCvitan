@@ -7,6 +7,8 @@ import {
   POLL_INTERVAL_MS,
   REQUIRED_CHECKS,
   STATUS_CONTEXT,
+  MERGE_RECOVERY_OWED,
+  priorCleanReviewEvidence,
 } from './review-policy.mjs';
 export {
   requiredChecksForPullRequest,
@@ -30,6 +32,7 @@ import {
   CORRECTION_STALLED,
   correctionOwnerDeclaration,
   correctionRouting,
+  parseCommitCorrectionOwner,
 } from './correction-owner.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import {
@@ -692,6 +695,17 @@ export class GitHubClient {
     );
   }
 
+  async disableAutoMerge(pullRequest) {
+    if (!pullRequest?.auto_merge) return;
+    await this.graphql(
+      `mutation($id: ID!) {
+        disablePullRequestAutoMerge(input: { pullRequestId: $id }) {
+          pullRequest { id }
+        }
+      }`,
+      { id: pullRequest.node_id },
+    );
+  }
   async mergeExactHead(number, expectedHead) {
     const response = await fetch(
       `${API_ROOT}/repos/${this.repository}/pulls/${number}/merge`,
@@ -718,9 +732,13 @@ export class GitHubClient {
       };
     }
     if (!response.ok) {
-      throw new Error(
+      const error = new Error(
         `GitHub PUT exact-head merge failed (${response.status}): ${text}`,
       );
+      // Carry the HTTP status so the caller can classify a DEFINITIVE refusal (409/422/404/403)
+      // apart from an UNCERTAIN transport/5xx failure, rather than parsing the message text.
+      error.status = response.status;
+      throw error;
     }
     return payload;
   }
@@ -970,6 +988,141 @@ export async function settleRecoveryRequest(
  * merge breaks the relation a second way, so an ancestry test refuses ordinary valid work.
  * This reads `base.ref` and nothing else.
  */
+async function resolveHeadBoundOwner(client, expectedHead) {
+  if (typeof expectedHead !== 'string' || expectedHead.length === 0) {
+    return { owner: null, bound: false };
+  }
+  let commit;
+  try {
+    commit = await client.commit(expectedHead);
+  } catch {
+    // The commit read ITSELF failed (transport loss, a 5xx). The Correction-Owner trailer may be
+    // perfectly valid — we simply could not read it — so this is a retryable infrastructure
+    // condition, never an ownership fault to blame on the owner. `readable: false` routes it to a
+    // pending infra hold that re-reads next cycle, instead of a scope failure demanding a "fix".
+    return { owner: null, bound: false, readable: false };
+  }
+  if (!commit || commit.sha !== expectedHead) return { owner: null, bound: false, readable: true };
+  const { state, owner } = parseCommitCorrectionOwner(commit.commit?.message);
+  return { owner: state === 'declared' ? owner : null, bound: true, readable: true };
+}
+
+async function headOwnerEligibility(client, pullRequest, expectedHead) {
+  const { owner, bound, readable } = await resolveHeadBoundOwner(client, expectedHead);
+  const declaration = correctionOwnerDeclaration(pullRequest);
+  const bodyOwner = declaration.state === 'declared' ? declaration.owner : null;
+  const consistent = bound && owner !== null && bodyOwner !== null && bodyOwner === owner;
+  return { owner, bound, readable, bodyOwner, consistent, eligible: consistent && owner !== 'codex' };
+}
+
+// A retryable infrastructure hold, NOT a scope fault: the head commit could not be read, so the
+// trailer's validity is unknown and no correction is owed. A pending status keeps the merge blocked
+// while the next controller cycle re-reads the commit (the retry).
+const OWNERSHIP_READ_RETRY = 'validation: head commit ownership temporarily unreadable — retrying';
+
+function ineligibleHoldDetail(owner) {
+  return owner === 'codex'
+    ? 'validation: Codex-owned candidate held for independent reviewer activation'
+    : 'validation: candidate held pending a resolvable Correction-Owner trailer';
+}
+
+export function isValidationOnlyCodexOwner(pullRequest) {
+  return correctionOwnerDeclaration(pullRequest).owner === 'codex';
+}
+
+// Reconcile the head's latest routable status before a scope explanation, so scope never masks it.
+// True (route it, no scope) for a latest ci:/terminal or review failure, a required check, a finding.
+async function reconcileActionableBeforeScope(client, pullRequest, expectedHead, statuses) {
+  const live = statuses ?? await client.statuses(expectedHead);
+  const latest = live.find((status) => status.context === STATUS_CONTEXT);
+  if (latest && latest.state === 'failure'
+    && (latest.description?.startsWith('ci:') || isTerminalReviewStatus(latest))) return true;
+  const reviewFailure = persistentReviewFailure(live);
+  if (reviewFailure) {
+    await client.setStatus(expectedHead, 'failure',
+      reviewFailure.description ?? 'review: current-head Codex finding latched', pullRequest.html_url);
+    return true;
+  }
+  const required = summarizeRequiredChecks(
+    await client.checkRuns(expectedHead),
+    requiredChecksForPullRequest(pullRequest.number),
+  );
+  if (required.state === 'failure') {
+    await client.setStatus(expectedHead, 'failure',
+      `ci: Failed checks: ${required.failed.join(', ')}`, pullRequest.html_url);
+    return true;
+  }
+  return Boolean(await guardAgainstCurrentHeadFinding(client, pullRequest, expectedHead, null));
+}
+
+// Write a `scope:` failure only when it is not already the latest status (compare the persisted form
+// — GitHub truncates to 140 chars). Suppressing an unchanged failure keeps its occurrence stable (no
+// new wake per cycle); a reintroduced failure mints a fresh one. Returns whether a status was written.
+async function writeIdempotentScopeFailure(client, pullRequest, expectedHead, statuses, detail) {
+  const description = `scope: ${detail}`;
+  const latest = statuses.find((status) => status.context === STATUS_CONTEXT);
+  if (latest?.state === 'failure' && latest.description === description.slice(0, 140)) return false;
+  await client.setStatus(expectedHead, 'failure', description, pullRequest.html_url);
+  return true;
+}
+
+async function writeValidationHoldStatus(client, pullRequest, expectedHead, eligibility, statuses) {
+  const { owner, consistent, readable } = eligibility;
+  const live = statuses ?? await client.statuses(expectedHead);
+  if (await reconcileActionableBeforeScope(client, pullRequest, expectedHead, live)) return;
+  if (readable === false) {
+    // Unreadable head commit: retry the infrastructure, never accuse a possibly-valid trailer.
+    await client.setStatus(expectedHead, 'pending', OWNERSHIP_READ_RETRY, pullRequest.html_url);
+    return;
+  }
+  if (owner === 'codex' && consistent) {
+    await client.setStatus(expectedHead, 'pending', ineligibleHoldDetail(owner), pullRequest.html_url);
+    return;
+  }
+  const detail = 'unresolved or inconsistent correction ownership — this exact head needs a single '
+    + 'valid Correction-Owner commit trailer matching the PR body marker';
+  if (!(await writeIdempotentScopeFailure(client, pullRequest, expectedHead, live, detail))) return;
+  const notice = correctionNotice(pullRequest, { detail, reason: 'scope' });
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: 'changes_required',
+      advisory: await freshAdvisory(client, pullRequest),
+      head: expectedHead,
+      detail,
+      attempt: 0,
+      owner: notice.owner ?? 'undeclared',
+      correctionState: noticeState(notice),
+      next: notice.instruction,
+    }),
+  );
+}
+
+async function attemptProtectiveHold(attempts) {
+  const failures = [];
+  for (const attempt of attempts) {
+    try {
+      await attempt();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'ineligible-owner hold could not be fully reconciled');
+  }
+}
+
+async function holdIneligibleOwner(client, pullRequest, expectedHead, statuses = null) {
+  const eligibility = await headOwnerEligibility(client, pullRequest, expectedHead);
+  if (eligibility.eligible) return false;
+  await attemptProtectiveHold([
+    () => writeValidationHoldStatus(client, pullRequest, expectedHead, eligibility, statuses),
+    () => client.disableAutoMerge(pullRequest),
+    () => setDraftForCurrentHead(client, pullRequest.number, expectedHead, true),
+  ]);
+  return true;
+}
+
 function isCurrentReviewUnit(pullRequest, expectedHead) {
   return Boolean(pullRequest)
     && pullRequest.state === 'open'
@@ -998,63 +1151,138 @@ export async function setDraftForCurrentHead(
 ) {
   const pullRequest = await refreshCurrentHead(client, number, expectedHead);
   if (!pullRequest) return null;
-  // `client.setDraft` REFETCHES and returns the post-mutation pull request, so `updated` is
-  // authoritative evidence about a moment AFTER the guard above ran — and a retarget inside
-  // that window would otherwise be accepted. It is held to the identical verdict.
+  if (!draft) {
+    const eligibility = await headOwnerEligibility(client, pullRequest, expectedHead);
+    if (!eligibility.eligible) {
+      let held = null;
+      await attemptProtectiveHold([
+        () => writeValidationHoldStatus(client, pullRequest, expectedHead, eligibility, null),
+        () => client.disableAutoMerge(pullRequest),
+        async () => { held = await client.setDraft(pullRequest, true); },
+      ]);
+      return isCurrentReviewUnit(held, expectedHead) ? held : null;
+    }
+  }
   const updated = await client.setDraft(pullRequest, draft);
-  return isCurrentReviewUnit(updated, expectedHead) ? updated : null;
+  if (!isCurrentReviewUnit(updated, expectedHead)) {
+    if (!draft && updated && updated.state === 'open' && updated.draft === false) {
+      await client.setDraft(updated, true);
+    }
+    return null;
+  }
+  if (!draft && !(await headOwnerEligibility(client, updated, expectedHead)).eligible) {
+    await client.setDraft(updated, true);
+    return null;
+  }
+  return updated;
 }
 
+// Reconcile a merge whose outcome GitHub did not confirm, via a RAW pull-request read (not
+// `refreshCurrentHead`): raw `merged` on this exact head/base is a completed merge; else RECOVERABLE.
+// A merge that threw with no HTTP status is a transport failure (fetch rejected before a response):
+// the PUT may still have reached GitHub, so it is UNCERTAIN. A 5xx / 408 / 429 is a server-side
+// failure and equally uncertain. Any other definitive HTTP refusal (409 conflict, 422 unmergeable,
+// 404 gone, 401/403 permission) is NOT an owed obligation — retrying the identical merge cannot clear
+// it, and the ordinary gates surface the real reason — so it must never mint a MERGE_RECOVERY_OWED
+// sticky. (A readable 405 does not throw; it is classified as a confirmed refusal in the caller.)
+export function isUncertainMergeError(error) {
+  const status = error?.status;
+  if (typeof status !== 'number') return true;
+  return status >= 500 || status === 408 || status === 429;
+}
+
+// Re-read the FRESH raw head/base/state before any recovery or sticky write, then decide. A raw
+// re-read that confirms the exact-head merge finishes the handoff. Otherwise the owed retry is minted
+// only when the caller judged the failure RECOVERABLE *and* the exact unit is still current: a head,
+// base, owner-repo, or open-state that no longer matches is SUPERSEDED, so it is held for the newer
+// head's own cycle rather than handed a stale obligation (and a stale sticky). A definitive refusal
+// (recoverable=false) is likewise held for the ordinary gates.
+export async function reconcileUncertainMerge(client, pullRequest, expectedHead, recoverable = true) {
+  let raw;
+  try {
+    raw = await client.pullRequest(pullRequest.number);
+  } catch {
+    // The confirmation re-read itself failed. A DEFINITIVE refusal (recoverable=false) is already
+    // known non-recoverable, so it stays held even without the confirming read — retrying an operation
+    // whose outcome is settled would be wrong. Only a genuinely uncertain failure remains recoverable
+    // when the merged state is unseen.
+    return recoverable ? 'merge_recovery_owed' : 'held_for_gates';
+  }
+  const unitMatches = raw?.head?.sha === expectedHead
+    && raw?.base?.ref === pullRequest.base.ref
+    && raw?.head?.repo?.full_name === pullRequest.head?.repo?.full_name;
+  if (raw?.merged === true && unitMatches) {
+    // dispatchHandoff is idempotent: the PR merge-marker comment guards a second continuation.
+    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
+    return 'merged';
+  }
+  // Ownership can be superseded without a head/base/repo change: a PR-body owner marker edited after
+  // merge authorization no longer matches the immutable HEAD trailer. Such a unit is held for the
+  // ownership correction, never minted a stale merge-recovery obligation the watchdog would re-retry
+  // (and whose sticky would clobber the newer owner's). Verified on the FRESH raw PR read.
+  const ownershipCurrent = unitMatches
+    && (await headOwnerEligibility(client, raw, expectedHead)).eligible;
+  const stillCurrent = raw?.state === 'open' && ownershipCurrent;
+  return (recoverable && stillCurrent) ? 'merge_recovery_owed' : 'held_for_gates';
+}
+
+// The ONE central outcome handler for completing a clean-reviewed exact head: 'held_for_gates' (not
+// merge-eligible now, a definitive refusal, or a superseded unit), 'merged' (confirmed, or a raw
+// re-read confirmed it), or 'merge_recovery_owed' (a still-current head owed a durable, freshly
+// authorized exact-SHA DIRECT RETRY — a confirmed readable-405 refusal by branch protection while the
+// gates are green, transport loss, a 5xx, or an unreadable confirming read). A non-`merged` body is
+// re-authorized once; a thrown request reconciles against the raw PR, never stranding a clean head.
+// The caller persists MERGE_RECOVERY_OWED so the lane retries (merge re-confirmed first).
 export async function completeReviewedPullRequest(
   client,
   pullRequest,
   expectedHead,
 ) {
-  const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead);
-  if (!authorization.allowed) {
-    return 'held_for_gates';
+  const authorize = async () => {
+    const result = await authorizeExactHeadMerge(client, pullRequest, expectedHead);
+    if (result.allowed) pullRequest = result.pullRequest;
+    return result;
+  };
+  if (!(await authorize()).allowed) return 'held_for_gates';
+
+  let response;
+  try {
+    response = await client.mergeExactHead(pullRequest.number, expectedHead);
+  } catch (error) {
+    return await reconcileUncertainMerge(
+      client, pullRequest, expectedHead, isUncertainMergeError(error),
+    );
   }
-  pullRequest = authorization.pullRequest;
-  const direct = await client.mergeExactHead(
-    pullRequest.number,
-    expectedHead,
-  );
-  if (direct?.merged) {
+  if (response?.merged) {
     await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
     return 'merged';
   }
-
-  try {
-    await client.enableAutoMerge(pullRequest, expectedHead);
-    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-    return 'queued';
-  } catch (error) {
-    if (
-      !(error instanceof Error)
-      || !error.message.includes('is in clean status')
-    ) {
-      throw error;
-    }
-    const raced = await client.mergeExactHead(
-      pullRequest.number,
-      expectedHead,
-    );
-    if (raced?.merged) {
-      await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-      return 'merged';
-    }
-    throw new Error(
-      `GitHub reported a clean pull request but refused the exact-head merge: ${raced?.message ?? 'unknown reason'}`,
-      { cause: error },
-    );
-  }
+  // A readable 405 (merged:false, no throw) is a CONFIRMED refusal by branch protection, distinct from
+  // transport loss or an unreadable confirming read (neither of those proves completion). It is a plain
+  // gate hold when the gates are no longer green. Otherwise the selected B contract is a durable,
+  // freshly authorized exact-SHA DIRECT RETRY: POLICY.md permits a direct automatic merge OR GitHub
+  // auto-merge and does not mandate queueing a 405, so the still-open exact head is owed the retry
+  // (recoverable), which re-authorizes fresh head/base/owner/finding/CI evidence before each new PUT.
+  if (!(await authorize()).allowed) return 'held_for_gates';
+  return await reconcileUncertainMerge(client, pullRequest, expectedHead, true);
 }
 
-/** The common mandatory guard for both direct merge and auto-merge entrypoints. */
-export async function authorizeExactHeadMerge(client, pullRequest, expectedHead) {
+// The common mandatory guard for both direct merge and auto-merge entrypoints. `recovering` tolerates
+// the protective draft of a MERGE_RECOVERY_OWED head: recovery restores readiness itself, immediately
+// after this validation and BEFORE the single PUT, so it must not be rejected as `draft` here.
+export async function authorizeExactHeadMerge(client, pullRequest, expectedHead, { recovering = false } = {}) {
   const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
-  if (!live || live.draft || !live.base?.sha) {
+  const { owner, consistent } = live
+    ? await headOwnerEligibility(client, live, expectedHead)
+    : { owner: null, consistent: false };
+  if (live && owner === 'codex') {
+    return { allowed: false, state: 'validation_only_codex_owner' };
+  }
+  if (!live || (!recovering && live.draft) || !live.base?.sha) {
     return { allowed: false, state: live?.draft ? 'draft' : 'superseded' };
+  }
+  if (!(consistent && owner !== 'codex')) {
+    return { allowed: false, state: 'owner_not_merge_eligible' };
   }
   const [statuses, checks] = await Promise.all([
     client.statuses(expectedHead),
@@ -1062,16 +1290,68 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead)
   ]);
   const latestReview = statuses.find((status) => status.context === STATUS_CONTEXT);
   const required = summarizeRequiredChecks(checks, requiredChecksForPullRequest(live.number));
-  if (latestReview?.state !== 'success' || required.state !== 'success') {
+  // Review clearance is a live success OR a MERGE_RECOVERY_OWED head backed by real prior clean
+  // evidence: an unconfirmed merge left the owed marker as the latest status, so requiring a live
+  // success would strand the recovery forever (the marker is never itself a success). The prior-clean
+  // rule refuses a buried finding or a pending review, so this never invents clearance or overrides a
+  // new finding; the fresh required-CI gate below is still demanded on every path.
+  const reviewCleared = latestReview?.state === 'success'
+    || (latestReview?.state === 'failure'
+      && latestReview.description === MERGE_RECOVERY_OWED
+      && priorCleanReviewEvidence(statuses));
+  if (!reviewCleared || required.state !== 'success') {
     return { allowed: false, state: 'gates_not_green' };
   }
-  // Re-read after remote evidence. A push, base update, retarget or draft
-  // transition during validation fails closed.
   const finalLive = await refreshCurrentHead(client, live.number, expectedHead);
-  if (!finalLive || finalLive.draft || finalLive.base?.sha !== live.base.sha) {
+  if (
+    !finalLive
+    || (!recovering && finalLive.draft)
+    || finalLive.base?.sha !== live.base.sha
+  ) {
     return { allowed: false, state: 'changed_during_validation' };
   }
+  if (!(await headOwnerEligibility(client, finalLive, expectedHead)).eligible) {
+    return { allowed: false, state: 'owner_not_merge_eligible' };
+  }
   return { allowed: true, state: 'authorized', pullRequest: finalLive };
+}
+
+// Re-protect a head whose merge came back UNCONFIRMED: publish the retryable owed failure and restore
+// the protective draft, so branch protection (required success AND a ready PR) blocks any merge until
+// a re-confirmed retry. No self-persisted request, so it stays dispatchable to the recovery lane.
+export async function protectUnconfirmedMerge(client, pullRequest, expectedHead) {
+  await client.setStatus(expectedHead, 'failure', MERGE_RECOVERY_OWED, pullRequest.html_url);
+  await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
+}
+
+// Retry a MERGE_RECOVERY_OWED head's merge from REAL prior clean evidence. The JS authorizer alone
+// cannot make the server merge — GitHub requires the codex-current-head SUCCESS and a READY PR before
+// its PUT — so revalidate the fresh guards + prior clean evidence via authorizeExactHeadMerge, RESTORE
+// the withheld success and readiness, then PUT via completeReviewedPullRequest. Re-protect on refusal.
+export async function recoverExactHeadMerge(client, pullRequest, expectedHead) {
+  const guard = await authorizeExactHeadMerge(client, pullRequest, expectedHead, { recovering: true });
+  if (!guard.allowed) return 'held_for_gates';
+  await client.setStatus(
+    expectedHead,
+    'success',
+    'review: recovered prior clean Codex result on this exact head',
+    guard.pullRequest.html_url,
+  );
+  const ready = await setDraftForCurrentHead(client, guard.pullRequest.number, expectedHead, false);
+  if (!ready) return 'held_for_gates';
+  // A live review/inline finding can arrive AFTER authorization (which samples only status/CI, and
+  // review webhooks do not mirror a fresh finding into the codex-current-head status) but before this
+  // PUT. Re-run the live finding guard on the ready head immediately before merging: if it finds one,
+  // publishCurrentHeadFinding re-drafts the head and publishes the finding, so recovery is aborted and
+  // can never merge a finding-bearing head.
+  if (await guardAgainstCurrentHeadFinding(client, ready, expectedHead, null)) {
+    return 'held_for_gates';
+  }
+  const completion = await completeReviewedPullRequest(client, ready, expectedHead);
+  if (completion === 'merge_recovery_owed') {
+    await protectUnconfirmedMerge(client, ready, expectedHead);
+  }
+  return completion;
 }
 
 export async function ensureTerminalReviewState(
@@ -1082,7 +1362,17 @@ export async function ensureTerminalReviewState(
   statuses,
 ) {
   if (!isTerminalReviewStatus(status)) return false;
+  const liveOwner = await refreshCurrentHead(client, pullRequest.number, expectedHead);
+  if (!liveOwner) return true;
+  // A MERGE_RECOVERY_OWED head is clean-reviewed with its merge UNCONFIRMED: retry the merge, never
+  // re-review. recoverExactHeadMerge restores the required success + readiness from real prior clean
+  // evidence before the single PUT, and re-protects (draft + fresh owed) on refusal.
+  if (status.description === MERGE_RECOVERY_OWED) {
+    await recoverExactHeadMerge(client, liveOwner, expectedHead);
+    return true;
+  }
   if (status.state === 'success') {
+    if (await holdIneligibleOwner(client, liveOwner, expectedHead, statuses)) return true;
     if (persistentReviewFailure(statuses)) {
       await client.setStatus(
         expectedHead,
@@ -1114,6 +1404,13 @@ export async function ensureTerminalReviewState(
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
     );
+    const successPolicy = await revalidateFinalReviewPolicy(
+      client,
+      pullRequest.number,
+      expectedHead,
+    );
+    if (successPolicy.superseded || !successPolicy.allowed) return true;
+    pullRequest = successPolicy.pullRequest;
     if (String(latestStatus?.id) !== String(status.id)) {
       await client.setStatus(
         expectedHead,
@@ -1122,11 +1419,18 @@ export async function ensureTerminalReviewState(
         pullRequest.html_url,
       );
     }
-    await completeReviewedPullRequest(
+    const completion = await completeReviewedPullRequest(
       client,
       finalPolicy.pullRequest,
       expectedHead,
     );
+    // The unconfirmed-merge obligation is persisted on THIS real completion path too: a terminal
+    // success replayed here whose merge GitHub does not confirm must not leave the prior success, a
+    // ready PR and no owed obligation. Re-protect (retryable owed failure + restored draft) so branch
+    // protection blocks the merge; the new occurrence stays dispatchable (no self-request).
+    if (completion === 'merge_recovery_owed') {
+      await protectUnconfirmedMerge(client, finalPolicy.pullRequest, expectedHead);
+    }
   } else {
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
@@ -1204,35 +1508,40 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
   });
   if (result.allowed) return result;
 
-  const live = await setDraftForCurrentHead(
-    client,
-    pullRequest.number,
-    expectedHead,
-    true,
-  );
+  // Re-read the head BEFORE any write (an already-replaced head stops here, no old-scope write), run
+  // holdIneligibleOwner's protections, and reconcile a genuine CI/review reason before any scope write.
+  const preLive = await refreshCurrentHead(client, pullRequest.number, expectedHead);
+  if (!preLive) return { ...result, superseded: true };
+  const statuses = await client.statuses(expectedHead);
+  let live = null;
+  let scopeWritten = false;
+  await attemptProtectiveHold([
+    async () => {
+      if (!(await reconcileActionableBeforeScope(client, preLive, expectedHead, statuses))) {
+        scopeWritten = await writeIdempotentScopeFailure(
+          client, preLive, expectedHead, statuses, result.detail,
+        );
+      }
+    },
+    () => client.disableAutoMerge(preLive),
+    async () => { live = await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true); },
+  ]);
   if (!live) return { ...result, superseded: true };
-  await client.setStatus(
-    expectedHead,
-    'failure',
-    `scope: ${result.detail}`,
-    pullRequest.html_url,
-  );
-  const notice = correctionNotice(live, {
-    detail: result.detail,
-    reason: 'scope',
-  });
-  await client.updateStickyComment(
-    pullRequest.number,
-    statusBody({
-      state: 'scope_required',
-      head: expectedHead,
-      detail: result.detail,
-      attempt: 0,
-      owner: notice.owner ?? 'undeclared',
-      correctionState: noticeState(notice),
-      next: notice.instruction,
-    }),
-  );
+  if (scopeWritten) {
+    const notice = correctionNotice(live, { detail: result.detail, reason: 'scope' });
+    await client.updateStickyComment(
+      pullRequest.number,
+      statusBody({
+        state: 'scope_required',
+        head: expectedHead,
+        detail: result.detail,
+        attempt: 0,
+        owner: notice.owner ?? 'undeclared',
+        correctionState: noticeState(notice),
+        next: notice.instruction,
+      }),
+    );
+  }
   return result;
 }
 
@@ -1244,6 +1553,9 @@ export async function revalidateFinalReviewPolicy(
   const pullRequest = await refreshCurrentHead(client, number, expectedHead);
   if (!pullRequest) {
     return { state: 'superseded', allowed: false, superseded: true };
+  }
+  if (await holdIneligibleOwner(client, pullRequest, expectedHead)) {
+    return { state: 'held_ineligible_owner', allowed: false, superseded: false };
   }
 
   // And at final admission, so a clean head is also measured — after the head is
@@ -1268,11 +1580,18 @@ export async function revalidateFinalReviewPolicy(
   if (finding) {
     return { state: 'changes_required', allowed: false, detail: finding };
   }
+  const finalPullRequest = await refreshCurrentHead(client, number, expectedHead);
+  if (!finalPullRequest) {
+    return { state: 'superseded', allowed: false, superseded: true };
+  }
+  if (await holdIneligibleOwner(client, finalPullRequest, expectedHead)) {
+    return { state: 'held_ineligible_owner', allowed: false, superseded: false };
+  }
 
-  return { state: 'allowed', allowed: true, pullRequest };
+  return { state: 'allowed', allowed: true, pullRequest: finalPullRequest };
 }
 
-async function reviewAttempt(
+export async function reviewAttempt(
   client,
   pullRequest,
   expectedHead,
@@ -1286,6 +1605,9 @@ async function reviewAttempt(
     expectedHead,
   );
   if (!live) return { state: 'superseded' };
+  if (await holdIneligibleOwner(client, live, expectedHead)) {
+    return { state: 'held_ineligible_owner' };
+  }
 
   live = await setDraftForCurrentHead(
     client,
@@ -1294,6 +1616,9 @@ async function reviewAttempt(
     true,
   );
   if (!live) return { state: 'superseded' };
+  if (await holdIneligibleOwner(client, live, expectedHead)) {
+    return { state: 'held_ineligible_owner' };
+  }
   live = await setDraftForCurrentHead(
     client,
     pullRequest.number,
@@ -1301,6 +1626,9 @@ async function reviewAttempt(
     false,
   );
   if (!live) return { state: 'superseded' };
+  if (await holdIneligibleOwner(client, live, expectedHead)) {
+    return { state: 'held_ineligible_owner' };
+  }
   const deadline = new Date(Date.now() + REVIEW_TIMEOUT_MS).toISOString();
 
   await client.updateStickyComment(
@@ -1322,6 +1650,9 @@ async function reviewAttempt(
       expectedHead,
     );
     if (!live) return { state: 'superseded' };
+    if (await holdIneligibleOwner(client, live, expectedHead)) {
+      return { state: 'held_ineligible_owner' };
+    }
 
     const [reviews, comments, reactions] = await Promise.all([
       client.reviews(pullRequest.number),
@@ -1510,15 +1841,15 @@ async function eventContext() {
   return contextForEvent(eventName, event, process.env.PR_NUMBER);
 }
 
-export async function run() {
-  const context = await eventContext();
+export async function run({ context: suppliedContext, client: suppliedClient } = {}) {
+  const context = suppliedContext ?? await eventContext();
   if (!context?.number) {
     console.log('No pull request is associated with this workflow event.');
     return;
   }
 
-  const repository = requiredEnvironment('GITHUB_REPOSITORY');
-  const client = new GitHubClient({
+  const repository = suppliedClient?.repository ?? requiredEnvironment('GITHUB_REPOSITORY');
+  const client = suppliedClient ?? new GitHubClient({
     repository,
     token: requiredEnvironment('GITHUB_TOKEN'),
   });
@@ -1567,6 +1898,8 @@ export async function run() {
   if (scope.superseded) return;
   if (!scope.allowed) throw new Error(scope.detail);
 
+  pullRequest = await refreshCurrentHead(client, pullRequest.number, expectedHead);
+  if (!pullRequest) return;
   if (context.ciConclusion && context.ciConclusion !== 'success') {
     const ciSummary = summarizeRequiredChecks(
       await client.checkRuns(expectedHead),
@@ -1593,7 +1926,8 @@ export async function run() {
         );
       }
     }
-    pullRequest = shouldDraftForCiFailure(existingStatus)
+    const effectiveCiFailure = ciSummary.failed.length > 0;
+    pullRequest = (effectiveCiFailure || shouldDraftForCiFailure(existingStatus))
       ? await setDraftForCurrentHead(
           client,
           pullRequest.number,
@@ -1606,10 +1940,10 @@ export async function run() {
           expectedHead,
         );
     if (!pullRequest) return;
-    const ciDetail = ciSummary.failed.length > 0
+    const ciDetail = effectiveCiFailure
       ? `Failed checks: ${ciSummary.failed.join(', ')}`
       : `CI workflow concluded ${context.ciConclusion}`;
-    if (!isTerminalReviewStatus(existingStatus)) {
+    if (effectiveCiFailure || !isTerminalReviewStatus(existingStatus)) {
       await client.setStatus(
         expectedHead,
         'failure',
@@ -1636,6 +1970,10 @@ export async function run() {
     throw new Error(ciDetail);
   }
 
+  if (await holdIneligibleOwner(client, pullRequest, expectedHead, existingStatuses)) {
+    console.log('Candidate is not a positively eligible owner of this exact head; held in draft. No review or merge authority is active.');
+    return;
+  }
   const terminalStatus = recoverableTerminalReviewStatus(existingStatuses);
   let recoveryRequest = pendingRecoveryRequest(existingStatuses);
   const requestedTerminalStatus = recoveryRequestTerminal(
@@ -1665,6 +2003,21 @@ export async function run() {
     recoveryRequest,
   );
   if (existingFinding) throw new Error(existingFinding);
+
+  // An ACCEPTED recovery request for a MERGE_RECOVERY_OWED terminal is a MERGE retry, not a
+  // re-review: consume the real prior clean evidence and retry the exact-head merge here — restoring
+  // the required success + readiness before the single PUT — rather than falling through to a fresh
+  // review_pending that waits for a fabricated new head. On refusal recoverExactHeadMerge mints a
+  // FRESH owed occurrence (dispatchable), and we settle ONLY the old accepted request. The
+  // current-head finding guard above already fails a head that grew a real finding.
+  if (
+    requestedTerminalStatus?.state === 'failure'
+    && requestedTerminalStatus.description === MERGE_RECOVERY_OWED
+  ) {
+    await recoverExactHeadMerge(client, pullRequest, expectedHead);
+    await settleRecoveryRequest(client, expectedHead, pullRequest, recoveryRequest, 'merge recovery retry');
+    return;
+  }
 
   if (!requestedTerminalStatus && terminalStatus) {
     if (
@@ -1752,6 +2105,10 @@ export async function run() {
       advisory,
     );
     if (result.state === 'superseded') return;
+    if (result.state === 'held_ineligible_owner') {
+      console.log('Codex-owned candidate became validation-only during review; held pending in draft.');
+      return;
+    }
 
     if (result.state === 'changes_required') {
       const published = await publishCurrentHeadFinding(
@@ -1912,6 +2269,16 @@ export async function run() {
         throw new Error(`Final review policy changed: ${finalPolicy.state}`);
       }
       pullRequest = finalPolicy.pullRequest;
+      const successPolicy = await revalidateFinalReviewPolicy(
+        client,
+        pullRequest.number,
+        expectedHead,
+      );
+      if (successPolicy.superseded) return;
+      if (!successPolicy.allowed) {
+        throw new Error(`Success authorization changed: ${successPolicy.state}`);
+      }
+      pullRequest = successPolicy.pullRequest;
       // One run polls one Codex invocation to its mutually exclusive terminal
       // result: finding-bearing evidence or the clean reaction. Review webhooks
       // never enter this orchestrator, so no second writer can race admission.
@@ -1939,6 +2306,15 @@ export async function run() {
         pullRequest,
         expectedHead,
       );
+      if (completion === 'merge_recovery_owed') {
+        // Clean review, unconfirmed merge: re-protect (retryable owed failure + restored draft) so
+        // branch protection blocks the merge until a re-confirmed retry. Do NOT persist a recovery
+        // request here — that context marks a request already accepted and suppresses
+        // `gateRecoveryStatus`, so the new owed occurrence would never be dispatched. The prior
+        // worker's request is already settled above; this occurrence stays dispatchable, and the
+        // `request-recovery` acceptance path is the one place that persists a request.
+        await protectUnconfirmedMerge(client, pullRequest, expectedHead);
+      }
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({
@@ -1948,9 +2324,9 @@ export async function run() {
           attempt,
           next: completion === 'merged'
             ? 'GitHub squash-merged this exact reviewed head.'
-            : completion === 'queued'
-              ? 'GitHub auto-merge is queued behind branch protection.'
-              : 'Merge is held because the current head, base, readiness or required gates changed during validation.',
+            : completion === 'merge_recovery_owed'
+              ? 'The exact-head merge was authorized but its outcome is unconfirmed; a recovery is owed and will retry the merge on a re-confirmed head. No second merge runs against a head already merged.'
+              : 'Merge is held: in this validation stage only the immediate exact-head merge completes; a delayed queued merge is not armed. It is held because the current head, base, readiness, required gates or head-bound ownership are not both green and eligible now.',
         }),
       );
       return;

@@ -204,3 +204,193 @@ test('an open queued-merge wait drains durable work before it reschedules', asyn
     /dispatchRetry|\breturn;/,
   );
 });
+
+// --- F1 merged-backlog reconciliation (Unit B) ---------------------------------------------------
+import { handOffMergedPullRequest } from './autonomous-handoff.mjs';
+import { MERGE_RECOVERY_OWED, STATUS_CONTEXT } from './review-policy.mjs';
+
+const mergeSha = 'm'.repeat(40);
+const mergedPr = () => ({
+  number: 700,
+  merged: true,
+  merge_commit_sha: mergeSha,
+  head: { ref: 'claude/task', sha: 'a'.repeat(40), repo: { full_name: repository } },
+  base: { ref: 'main', repo: { full_name: repository } },
+});
+const continuation = () => ({
+  defaultBranchNow: { open_pr: 'none', task_state: 'merged' },
+  maintenanceQueue: [],
+  openPullRequests: [],
+  headStatuses: [],
+});
+function mergedClient({ latest, history = [], comments = [] } = {}) {
+  const posted = [];
+  return {
+    posted,
+    async combinedStatus() { return { statuses: latest ? [{ context: STATUS_CONTEXT, ...latest }] : [] }; },
+    async statuses() { return history; },
+    async comments() { return comments; },
+    async comment(number, body) { posted.push({ number, body }); },
+    async fileContent() { return null; },
+  };
+}
+
+// Merged-backlog reconciliation cases as a table (all five retained as distinct tests). `owed`/`clean`
+// are current-context history entries; a lost-response merge reconciles ONLY on real prior clean
+// evidence, never on an owed-only history, a genuine finding, or when a merge marker already exists.
+const owedH = { context: STATUS_CONTEXT, state: 'failure', description: MERGE_RECOVERY_OWED };
+const cleanH = { context: STATUS_CONTEXT, state: 'success', description: 'review: clean' };
+for (const { name, opts, posts } of [
+  { name: 'a clean success head hands off exactly one continuation', opts: { latest: { state: 'success' } }, posts: 1 },
+  { name: 'MERGE_RECOVERY_OWED with prior exact-head clean evidence reconciles to one handoff', opts: { latest: owedH, history: [owedH, cleanH] }, posts: 1 },
+  { name: 'MERGE_RECOVERY_OWED without prior clean evidence is never reinterpreted as clearance', opts: { latest: owedH, history: [owedH] }, posts: 0 },
+  { name: 'a genuine finding failure never hands off', opts: { latest: { state: 'failure', description: 'review: current-head Codex finding' }, history: [cleanH] }, posts: 0 },
+  { name: 'an existing merge marker blocks a second handoff (idempotent)', opts: { latest: owedH, history: [cleanH], comments: [{ user: { login: 'github-actions[bot]' }, body: `<!-- autonomous-post-merge:${mergeSha} -->` }] }, posts: 0 },
+]) {
+  test(`merged-backlog: ${name}`, async () => {
+    const client = mergedClient(opts);
+    await handOffMergedPullRequest(client, mergedPr(), repository, 'main', continuation());
+    assert.equal(client.posted.length, posts, name);
+    if (posts === 1) assert.match(client.posted[0].body, new RegExp(`autonomous-post-merge:${mergeSha}`, 'u'));
+  });
+}
+
+test('run() drain: a lost-read merge retains the cursor and blocks later items; a later run reconciles once, never repeating', async () => {
+  // Executable liveness boundary: drive the ACTUAL exported run() with a bounded global fetch mock.
+  // Backlog (after cursor, by merged_at): #700 recovery-owed on a prior-clean head, #701 clean
+  // success, #702 a genuine current-head finding, #703 recovery-owed with a finding BURIED between
+  // its older clean success and the owed marker. #700's confirming read fails on the first run.
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { run } = await import('./autonomous-handoff.mjs');
+
+  const eventPath = join(mkdtempSync(join(tmpdir(), 'handoff-run-')), 'event.json');
+  writeFileSync(eventPath, JSON.stringify({ repository: { default_branch: 'main' } }));
+  const savedFetch = globalThis.fetch;
+  const savedEnv = { ...process.env };
+  process.env.GITHUB_EVENT_NAME = 'workflow_run';
+  process.env.GITHUB_EVENT_PATH = eventPath;
+  process.env.GITHUB_REPOSITORY = repository;
+  process.env.GITHUB_TOKEN = 'test-token';
+
+  const CURSOR_CTX = '<!-- autonomous-runner-state -->';
+  let cursor = { at: '2026-09-01T00:00:00Z', number: 0 };
+  let pr700Readable = false;
+  const posted = { 700: 0, 701: 0, 702: 0, 703: 0, 704: 0 };
+  const hasMarker = { 700: false, 701: false, 702: false, 703: false, 704: false };
+  const backlog = [
+    { number: 700, merged_at: '2026-09-17T00:01:00Z', updated_at: '2026-09-17T00:01:00Z' },
+    { number: 701, merged_at: '2026-09-17T00:02:00Z', updated_at: '2026-09-17T00:02:00Z' },
+    { number: 702, merged_at: '2026-09-17T00:03:00Z', updated_at: '2026-09-17T00:03:00Z' },
+    { number: 703, merged_at: '2026-09-17T00:04:00Z', updated_at: '2026-09-17T00:04:00Z' },
+    { number: 704, merged_at: '2026-09-17T00:05:00Z', updated_at: '2026-09-17T00:05:00Z' },
+  ];
+  const heads = { 700: 'a'.repeat(40), 701: 'b'.repeat(40), 702: 'c'.repeat(40), 703: 'd'.repeat(40), 704: 'f'.repeat(40) };
+  const mergeShas = { 700: '7'.repeat(40), 701: '8'.repeat(40), 702: '9'.repeat(40), 703: 'e'.repeat(40), 704: '1'.repeat(40) };
+  const prBody = (n) => ({
+    number: n, merged: true, merge_commit_sha: mergeShas[n],
+    head: { ref: 'claude/task', sha: heads[n], repo: { full_name: repository } },
+    base: { ref: 'main', repo: { full_name: repository } },
+  });
+  const combined = {
+    [heads[700]]: { state: 'failure', description: MERGE_RECOVERY_OWED },
+    [heads[701]]: { state: 'success', description: 'review: clean' },
+    [heads[702]]: { state: 'failure', description: 'review: current-head Codex finding' },
+    [heads[703]]: { state: 'failure', description: MERGE_RECOVERY_OWED },
+    [heads[704]]: { state: 'failure', description: MERGE_RECOVERY_OWED },
+  };
+  const history = {
+    [heads[700]]: [
+      { context: STATUS_CONTEXT, state: 'failure', description: MERGE_RECOVERY_OWED },
+      { context: STATUS_CONTEXT, state: 'success', description: 'review: clean' },
+    ],
+    [heads[701]]: [{ context: STATUS_CONTEXT, state: 'success', description: 'review: clean' }],
+    [heads[702]]: [{ context: STATUS_CONTEXT, state: 'failure', description: 'review: finding' }],
+    [heads[703]]: [
+      { context: STATUS_CONTEXT, state: 'failure', description: MERGE_RECOVERY_OWED },
+      { context: STATUS_CONTEXT, state: 'failure', description: 'review: current-head Codex finding' },
+      { context: STATUS_CONTEXT, state: 'success', description: 'review: clean' },
+    ],
+    // Owed marker over a PENDING review over the clean success: the review is unsettled, so the owed
+    // obligation is never revived to old clean.
+    [heads[704]]: [
+      { context: STATUS_CONTEXT, state: 'failure', description: MERGE_RECOVERY_OWED },
+      { context: STATUS_CONTEXT, state: 'pending', description: 'review: pending required CI and current-head Codex review' },
+      { context: STATUS_CONTEXT, state: 'success', description: 'review: clean' },
+    ],
+  };
+  const ok = (value) => ({ ok: true, status: 200, text: async () => JSON.stringify(value) });
+
+  globalThis.fetch = async (urlString, options = {}) => {
+    const url = new URL(urlString);
+    const path = url.pathname;
+    const method = options.method ?? 'GET';
+    const page = url.searchParams.get('page') ?? '1';
+    if (path.endsWith('/issues/235') && method === 'GET') {
+      return ok({ body: `${CURSOR_CTX}\nLast processed merge: \`${cursor.at}\` (#${cursor.number})` });
+    }
+    if (path.endsWith('/issues/235') && method === 'PATCH') {
+      const m = JSON.parse(options.body).body.match(/Last processed merge: `([^`]+)` \(#(\d+)\)/);
+      cursor = { at: m[1], number: Number(m[2]) };
+      return ok({});
+    }
+    if (path.endsWith('/pulls') && url.searchParams.get('state') === 'open') return ok([]);
+    if (path.endsWith('/pulls') && url.searchParams.get('state') === 'closed') {
+      if (page !== '1') return ok([]);
+      const cursorAt = Date.parse(cursor.at);
+      return ok(backlog.filter((p) => Date.parse(p.merged_at) >= cursorAt).map((p) => ({ ...p, ...prBody(p.number) })));
+    }
+    const prMatch = path.match(/\/pulls\/(\d+)$/);
+    if (prMatch && method === 'GET') {
+      const n = Number(prMatch[1]);
+      if (n === 700 && !pr700Readable) return { ok: false, status: 502, text: async () => 'bad gateway' };
+      return ok(prBody(n));
+    }
+    const statusMatch = path.match(/\/commits\/([0-9a-f]+)\/status$/);
+    if (statusMatch) return ok({ statuses: [{ context: STATUS_CONTEXT, ...combined[statusMatch[1]] }] });
+    // Finding 4032674940: the status HISTORY listing is GitHub's `GET /repos/{repo}/commits/{ref}/statuses`
+    // (plural), NOT the `/statuses/{sha}` create route. Serving only the real listing route here proves
+    // the client calls it — the old create-route URL now falls through to the unexpected-path throw.
+    const histMatch = path.match(/\/commits\/([0-9a-f]+)\/statuses$/);
+    if (histMatch) return page === '1' ? ok(history[histMatch[1]] ?? []) : ok([]);
+    const commentsGet = path.match(/\/issues\/(\d+)\/comments$/);
+    if (commentsGet && method === 'GET') {
+      const n = Number(commentsGet[1]);
+      if (page !== '1') return ok([]);
+      return ok(hasMarker[n]
+        ? [{ user: { login: 'github-actions[bot]' }, body: `<!-- autonomous-post-merge:${mergeShas[n]} -->` }]
+        : []);
+    }
+    if (commentsGet && method === 'POST') {
+      const n = Number(commentsGet[1]);
+      posted[n] += 1;
+      hasMarker[n] = true;
+      return ok({ id: 1 });
+    }
+    throw new Error(`unexpected ${method} ${path}`);
+  };
+
+  try {
+    await run(); // Run 1: #700 read fails → loop breaks, cursor unchanged, nothing handed off.
+    assert.deepEqual(posted, { 700: 0, 701: 0, 702: 0, 703: 0, 704: 0 }, 'no handoff while the first merge is unresolved');
+    assert.equal(cursor.number, 0, 'the cursor is not advanced past the unresolved gap');
+
+    // Run 2: #700 now readable → reconcile+handoff; #701 clean → handoff; #702 finding → skip;
+    // #703 owed over a buried finding → skip; #704 owed over a pending review → skip.
+    pr700Readable = true;
+    await run();
+    assert.equal(posted[700], 1, 'recovery-owed head with prior clean evidence reconciles to one handoff');
+    assert.equal(posted[701], 1, 'the clean success head hands off');
+    assert.equal(posted[702], 0, 'a genuine finding is never reinterpreted as clearance');
+    assert.equal(posted[703], 0, 'a clean success across an intervening finding never clears recovery');
+    assert.equal(posted[704], 0, 'a clean success across a pending review never clears recovery');
+    assert.equal(cursor.number, 704, 'the cursor advances to the last resolved merge');
+
+    await run(); // nothing repeats — the merge markers dedup, no second handoff.
+    assert.deepEqual(posted, { 700: 1, 701: 1, 702: 0, 703: 0, 704: 0 }, 'a completed handoff never repeats');
+  } finally {
+    globalThis.fetch = savedFetch;
+    process.env = savedEnv;
+  }
+});
