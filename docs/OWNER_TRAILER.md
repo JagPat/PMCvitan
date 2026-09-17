@@ -36,5 +36,13 @@ lines (leading and trailing), the bare `---` and emailed-patch `--- a/file` divi
 `---foo`, an indented ` ---` (text, not a divider), a divider before the trailer (patch content),
 duplicate and conflicting trailers, a continuation before the first trailer (voids the block), and
 "blank" separator lines that are ASCII whitespace (git-blank) versus vertical-tab / form-feed / NBSP /
-em-space (NOT git-blank). Keeping the primitive proven against git directly is what lets later units
-consume one authoritative owner verdict instead of re-deriving it.
+em-space (NOT git-blank).
+
+Block detection follows git's last-paragraph rule: the block is git's last paragraph (preceded by a blank
+line — a whole-message single paragraph is never trailers), which qualifies when **(i)** every line is a
+trailer or continuation and its first line is a trailer, **or (ii)** it contains a git-recognized trailer
+(`Signed-off-by`, the only default-recognized token) and at least a quarter of its lines are trailers,
+with interspersed non-trailer lines tolerated and dropped. The value keeps git's non-ASCII whitespace
+(only ASCII padding is trimmed, so an NBSP-padded value stays malformed), and a lone `CR` is an ordinary
+byte (only `CRLF` pairs are line breaks). Keeping the primitive proven against git directly is what lets
+later units consume one authoritative owner verdict instead of re-deriving it.

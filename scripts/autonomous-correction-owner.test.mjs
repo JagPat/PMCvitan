@@ -810,13 +810,15 @@ function gitCorrectionOwnerValues(message) {
   const out = execFileSync('git', ['interpret-trailers', '--parse', '--unfold'], { input: message }).toString();
   return out.split('\n')
     .filter((line) => /^correction-owner[ \t]*:/iu.test(line))
-    .map((line) => line.slice(line.indexOf(':') + 1).trim());
+    // ASCII-trim only, so git's non-ASCII whitespace in the value is preserved for a faithful comparison.
+    .map((line) => line.slice(line.indexOf(':') + 1).replace(/^[ \t]+|[ \t]+$/gu, ''));
 }
 
 const VT = String.fromCharCode(0x0B); // vertical tab
 const FF = String.fromCharCode(0x0C); // form feed
 const NBSP = String.fromCharCode(0x00A0); // no-break space
 const EMSP = String.fromCharCode(0x2003); // em space
+const CR = String.fromCharCode(0x0D); // carriage return
 
 test('the commit-trailer parser agrees with real `git interpret-trailers --parse` over an adversarial matrix', () => {
   const cases = [
@@ -843,6 +845,22 @@ test('the commit-trailer parser agrees with real `git interpret-trailers --parse
     `subject\n${EMSP}\nCorrection-Owner: claude`,       // em-space "blank" line - NOT git-blank
     'subject\n   \nCorrection-Owner: cursor\n',         // ASCII-space blank line IS git-blank
     'subject\n\t\nCorrection-Owner: claude\n',          // ASCII-tab blank line IS git-blank
+    // finding r4039009534 — git PRESERVES non-ASCII whitespace in the value (only ASCII padding is trimmed)
+    `subject\n\nCorrection-Owner: ${NBSP}claude\n`,     // leading NBSP kept in value (stays malformed)
+    `subject\n\nCorrection-Owner: claude${NBSP}\n`,     // trailing NBSP kept in value
+    // finding r4039009546 — git rule (ii): a `Signed-off-by` block tolerates non-trailer lines at >=25% trailers
+    'subject\n\nSigned-off-by: A <a@x>\nplain\nCorrection-Owner: claude\n', // SoB present -> block, plain dropped
+    'subject\n\nplain\nSigned-off-by: A <a@x>\nCorrection-Owner: claude\n', // non-trailer FIRST, SoB present -> block
+    'subject\n\nSigned-off-by: A <a@x>\nCorrection-Owner: claude\nplain\n', // trailing non-trailer dropped
+    'subject\n\nplain\nCorrection-Owner: claude\n',     // no recognized trailer -> NOT a block
+    'subject\n\nplain line\nCorrection-Owner: claude\nCo-Authored-By: c <c@x>\n', // no SoB, 2 trailers -> NOT a block
+    'subject\n\nSigned-off-by: A <a@x>\np1\np2\np3\np4\np5\np6\np7\nCorrection-Owner: claude\n', // <25% -> NOT a block
+    'Signed-off-by: A <a@x>\nCorrection-Owner: claude\n', // whole-message paragraph (no blank before) -> NOT a block
+    'Correction-Owner: claude\n',                        // single-line whole message -> NOT a block
+    'subject\n\nSigned-off-by: A <a@x>\nCorrection-Owner: claude\n more\n', // indented continuation folds with space
+    // finding r4039009540 — a LONE CR is an ordinary byte to git, not a line break
+    `subject${CR}${CR}Correction-Owner: claude${CR}`,   // lone CRs -> one line -> NOT a block
+    `subject${CR}\n${CR}\nCorrection-Owner: claude${CR}\n`, // CRLF pairs -> trailer block
   ];
   for (const message of cases) {
     const git = gitCorrectionOwnerValues(message);

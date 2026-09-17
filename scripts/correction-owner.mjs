@@ -138,33 +138,41 @@ const PATCH_DIVIDER = /^---(?:[ \t].*)?$/u;
 // git treats a line blank only when empty or ASCII horizontal whitespace; a vertical tab / NBSP / other
 // Unicode space is NOT blank, so `.trim()` over-accepts and could admit a "trailer" git never recognises.
 const isGitBlankLine = (line) => /^[ \t]*$/u.test(line);
+// git's only DEFAULT git-recognized trailer for block detection is `Signed-off-by` (Acked-by, Reviewed-by,
+// Co-authored-by and the cherry-pick line do NOT count without config); it enables the 25% rule below.
+const RECOGNIZED_TRAILER = /^signed-off-by[ \t]*:/iu;
+// Strip only git's ASCII horizontal padding (never Unicode whitespace, which git preserves in the value).
+const asciiTrim = (value) => value.replace(/^[ \t]+|[ \t]+$/gu, '');
 
 function terminalTrailerBlock(commitMessage) {
-  // `git` strips `#` comment lines (default `core.commentChar`, at COLUMN 0) before parsing, so a valid
-  // terminal owner followed by a generated `# …` line must not read as `missing`.
-  const lines = String(commitMessage ?? '').replace(/\r\n?/gu, '\n').split('\n')
+  // git strips `#` comment lines (default `core.commentChar`, COLUMN 0) before parsing; it collapses a
+  // CRLF pair but treats a LONE CR as an ordinary byte, so split on `\n` after removing only `\r\n`.
+  const lines = String(commitMessage ?? '').replace(/\r\n/gu, '\n').split('\n')
     .filter((line) => !line.startsWith('#'));
-  const dropTrailingBlanks = () => {
-    while (lines.length > 0 && isGitBlankLine(lines[lines.length - 1])) lines.pop();
-  };
   // Cut at the FIRST git patch divider (mirroring git's top-down `find_patch_start`) and drop everything
-  // after it, diff or not.
+  // after it, diff or not, then drop trailing blank lines.
   const dividerIndex = lines.findIndex((line) => PATCH_DIVIDER.test(line));
   if (dividerIndex >= 0) lines.length = dividerIndex;
-  dropTrailingBlanks();
+  while (lines.length > 0 && isGitBlankLine(lines[lines.length - 1])) lines.pop();
   if (lines.length === 0) return null;
+  // The trailer block is git's LAST paragraph: the run of non-blank lines back to the preceding blank
+  // line. git requires that blank line, so a whole-message single paragraph is never a trailer block.
   let start = lines.length;
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (TRAILER_LINE.test(lines[index]) || TRAILER_CONTINUATION.test(lines[index])) {
-      start = index;
-      continue;
-    }
-    break;
-  }
-  if (start === lines.length || start === 0 || !isGitBlankLine(lines[start - 1])) return null;
-  // A continuation before the first trailer is not a valid block, so it confers no owner.
-  if (!TRAILER_LINE.test(lines[start])) return null;
-  return lines.slice(start);
+  while (start > 0 && !isGitBlankLine(lines[start - 1])) start -= 1;
+  if (start === 0) return null;
+  const paragraph = lines.slice(start);
+  const trailerCount = paragraph.filter((line) => TRAILER_LINE.test(line)).length;
+  if (trailerCount === 0) return null;
+  const nonTrailerLines = paragraph.filter(
+    (line) => !TRAILER_LINE.test(line) && !TRAILER_CONTINUATION.test(line),
+  ).length;
+  // git treats the paragraph as trailers when (i) every line is a trailer or continuation AND the FIRST
+  // line is a trailer (a leading continuation, with no trailer to attach to, voids the block), OR (ii) it
+  // holds a git-recognized trailer (Signed-off-by) AND at least a quarter of its lines are trailers;
+  // interspersed non-trailer lines are then tolerated (and dropped at extraction).
+  const qualifies = (nonTrailerLines === 0 && TRAILER_LINE.test(paragraph[0]))
+    || (paragraph.some((line) => RECOGNIZED_TRAILER.test(line)) && trailerCount * 4 >= paragraph.length);
+  return qualifies ? paragraph : null;
 }
 
 /**
@@ -183,21 +191,22 @@ export function parseCommitCorrectionOwner(commitMessage) {
   const trailers = [];
   for (const line of block) {
     if (TRAILER_CONTINUATION.test(line) && trailers.length > 0) {
-      // git folds a continuation into the value joined by a single space (its `--unfold` form); a value
-      // with a continuation is never a valid owner, but match git so the raw value is faithful.
-      trailers[trailers.length - 1].value += ` ${line.trim()}`;
+      // git folds a continuation into the value joined by a single space (its `--unfold` form).
+      trailers[trailers.length - 1].value += ` ${asciiTrim(line)}`;
       continue;
     }
     const separator = line.indexOf(':');
-    if (separator < 0) continue; // defensive; the block admits only trailer/continuation lines
+    if (separator < 0) continue; // a non-trailer line inside a qualifying block is dropped, as git does
     trailers.push({
-      key: line.slice(0, separator).replace(/[ \t]+$/u, ''),
-      value: line.slice(separator + 1).replace(/^[ \t]+/u, ''),
+      key: asciiTrim(line.slice(0, separator)),
+      value: line.slice(separator + 1),
     });
   }
+  // ASCII-trim only: git preserves non-ASCII whitespace (vertical tab, NBSP, em-space) IN the value, so a
+  // value padded with it stays malformed and fails `OWNER_VALUE` rather than being silently accepted.
   const declared = trailers
     .filter((trailer) => trailer.key.toLowerCase() === 'correction-owner')
-    .map((trailer) => trailer.value.trim());
+    .map((trailer) => asciiTrim(trailer.value));
   if (declared.length === 0) {
     return { state: 'missing', owner: null, declared };
   }
