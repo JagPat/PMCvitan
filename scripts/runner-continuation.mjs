@@ -295,6 +295,33 @@ export function detectStatusDriftAcrossHeads({
     };
   }
 
+  // The open_pr TASK POINTER is discriminated by `editsStatus` (does the head's diff PROPOSE STATUS),
+  // never by the owner-family branch prefix or the now-mandatory body marker, which cannot tell a task
+  // PR from a maintenance PR that merely carries the owner marker on an owner-family branch
+  // (finding r4032740385). Drift DETECTION is unchanged; only the SUGGESTION is corrected: never point
+  // open_pr at a maintenance head (`editsStatus === false`). `editsStatus` unknown counts as
+  // task-bearing (fail toward shepherding). If no task-bearing PR remains, suggest `none`.
+  if (defaultBranchDrift.drift) {
+    const maintenanceNumbers = new Set(
+      (headStatuses ?? [])
+        .filter((entry) => entry?.editsStatus === false)
+        .map((entry) => String(entry.number)),
+    );
+    if (maintenanceNumbers.has(String(defaultBranchDrift.suggestedOpenPr))) {
+      const taskBearing = (openPullRequests ?? []).filter(
+        (pullRequest) => !maintenanceNumbers.has(String(pullRequest.number)),
+      );
+      const replacement = taskBearing.length > 0
+        ? taskBearing[taskBearing.length - 1]
+        : null;
+      return {
+        ...defaultBranchDrift,
+        suggestedOpenPr: replacement ? String(replacement.number) : 'none',
+        primaryPullRequest: replacement ?? null,
+      };
+    }
+  }
+
   return defaultBranchDrift;
 }
 

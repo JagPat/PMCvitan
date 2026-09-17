@@ -74,6 +74,30 @@ test('the commit-owner trailer is read only from the terminal trailer block, Git
   assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\n codex\n').state, 'invalid');
   // A continuation before the first trailer voids the block.
   assert.equal(parseCommitCorrectionOwner('x\n\n leading continuation\nCorrection-Owner: claude\n').state, 'missing');
+  // finding r4032740248: `git interpret-trailers --parse` ignores a trailing `---` patch divider and
+  // reads the trailer block before it, so a Git-valid owner must not be stalled by the divider.
+  assert.equal(parseCommitCorrectionOwner('subject\n\nCorrection-Owner: claude\n---\n').owner, 'claude');
+  assert.equal(parseCommitCorrectionOwner('subject\n\nCorrection-Owner: claude\n---').owner, 'claude');
+});
+
+test('an inconsistent-ownership notice names the remedy that actually fixes it (finding r4032740244)', () => {
+  // A valid HEAD trailer whose only problem is a missing/mismatched BODY marker is a body-edit fix;
+  // a missing/invalid/disagreeing TRAILER needs a new head. The stalled instruction must say which.
+  const bodyFix = correctionRouting({
+    declaration: { state: 'inconsistent', owner: null, detail: 'trailer valid; body marker missing', remedy: 'body' },
+    head,
+  });
+  assert.equal(bodyFix.state, 'correction_stalled');
+  assert.equal(bodyFix.awakenable, false);
+  assert.match(bodyFix.instruction, /body marker/u);
+  assert.doesNotMatch(bodyFix.instruction, /push a new head/u, 'a valid trailer is not fixed by a new head');
+
+  const headFix = correctionRouting({
+    declaration: { state: 'inconsistent', owner: null, detail: 'trailer disagrees with body', remedy: 'head' },
+    head,
+  });
+  assert.match(headFix.instruction, /push a new head/u);
+  assert.match(headFix.instruction, /Correction-Owner/u);
 });
 function cleanRun(overrides = {}) {
   const artifact = { id: 789, digest: `sha256:${'d'.repeat(64)}`, name: `claude-shadow-v1-repo-${Buffer.from('JagPat/PMCvitan').toString('base64url')}-pr-600-base-${base}-head-${head}-ci-123-2-publisher-456-1-state-clear-findings-0` };

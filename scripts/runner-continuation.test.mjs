@@ -5,10 +5,40 @@ import {
   buildDriftHandoff,
   buildPostMergeContinuation,
   detectStatusDrift,
+  detectStatusDriftAcrossHeads,
   formatOpenPullRequestList,
   isAutonomousPullRequest,
   selectAutonomousOpenPullRequests,
 } from './runner-continuation.mjs';
+
+test('finding 4032740385: a maintenance head is not suggested as the open_pr task pointer', () => {
+  // Even on an owner-family branch, a maintenance PR (editsStatus === false — its diff does not
+  // PROPOSE STATUS) must not be selected as the task pointer. The task-bearing signal is editsStatus,
+  // not the branch prefix or the mandatory owner marker.
+  const maintenance = { number: 900, headRefName: 'claude/maintenance', isDraft: true };
+  const task = { number: 850, headRefName: 'claude/feature', isDraft: true };
+
+  // Only a maintenance PR open, STATUS.open_pr none: drift is still reported, but the pointer
+  // suggestion is `none` — a maintenance head is never the task pointer.
+  const onlyMaintenance = detectStatusDriftAcrossHeads({
+    defaultBranchNow: { open_pr: 'none' },
+    openPullRequests: [maintenance],
+    headStatuses: [{ number: 900, now: { open_pr: 'none' }, editsStatus: false }],
+  });
+  assert.equal(onlyMaintenance.suggestedOpenPr, 'none', 'a lone maintenance PR is never suggested as open_pr');
+
+  // A task PR and a higher-numbered maintenance PR: the suggestion is the TASK PR, not the maintenance.
+  const withTask = detectStatusDriftAcrossHeads({
+    defaultBranchNow: { open_pr: 'none' },
+    openPullRequests: [task, maintenance],
+    headStatuses: [
+      { number: 850, now: { open_pr: 'none' }, editsStatus: true },
+      { number: 900, now: { open_pr: 'none' }, editsStatus: false },
+    ],
+  });
+  assert.equal(withTask.drift, true);
+  assert.equal(withTask.suggestedOpenPr, '850', 'the maintenance PR is excluded from the pointer suggestion');
+});
 
 const repository = 'JagPat/PMCvitan';
 
