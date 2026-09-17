@@ -1,4 +1,5 @@
 import { DIRECTIVE_STATES, assessRunnerState, isNoneValue } from './autonomous-status-state.mjs';
+import { parseCorrectionOwner } from './correction-owner.mjs';
 
 const NONE = 'none';
 
@@ -7,13 +8,24 @@ export function isAutonomousPullRequest(
   repository,
   defaultBranch,
 ) {
-  return (
-    pullRequest?.state === 'open' &&
-    pullRequest?.head?.repo?.full_name === repository &&
-    pullRequest?.base?.repo?.full_name === repository &&
-    pullRequest?.base?.ref === defaultBranch &&
-    pullRequest?.head?.ref?.startsWith('claude/')
-  );
+  if (
+    pullRequest?.state !== 'open' ||
+    pullRequest?.head?.repo?.full_name !== repository ||
+    pullRequest?.base?.repo?.full_name !== repository ||
+    pullRequest?.base?.ref !== defaultBranch
+  ) {
+    return false;
+  }
+  // An in-flight autonomous unit is identified by its DECLARED correction owner, not the historical
+  // `claude/` branch prefix (finding r4032903012). Admitting codex/cursor candidates means a
+  // `codex/**` branch that declares a valid owner is a tracked unit; continuation must not treat it as
+  // absent and start a parallel `claude/**` runner. The branch prefix remains a fallback for a
+  // legacy claude/** unit whose body carries no marker.
+  const declared = parseCorrectionOwner(
+    pullRequest?.body,
+    { headRef: pullRequest?.head?.ref },
+  ).state === 'declared';
+  return declared || Boolean(pullRequest?.head?.ref?.startsWith('claude/'));
 }
 
 function isNone(value) {

@@ -7,11 +7,12 @@ export { CORRECTION_OWNERS, AWAKENABLE_FROM_GITHUB, CORRECTION_STALLED } from '.
 // inferred from a PR author or branch name; docs/POLICY.md states that contract.
 
 const DECLARATION = /<!--\s*correction-owner:\s*([A-Za-z][A-Za-z0-9_-]*)\s*-->/gu;
-// docs/POLICY.md reserves this prefix for Claude-authored work, so a
-// branch under it declaring another owner contradicts itself. No other prefix
-// implies anything — #349 and #350 are both loop PRs on `codex/**`.
-const CLAUDE_BRANCH_PREFIX = 'claude/';
-const MARKER_HELP = '`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`';
+// Branch names never authorize ownership: `claude/**` is a historical source
+// location, not a grant, and admitting a truthful `codex` candidate means a
+// `codex/**` branch is ordinary. Authority is the exact HEAD commit's terminal
+// trailer, consistent with this body marker (parseCommitCorrectionOwner below).
+const MARKER_HELP = '`<!-- correction-owner: claude -->`, `<!-- correction-owner: cursor -->`, '
+  + 'or `<!-- correction-owner: codex -->`';
 
 // A body DECLARES in its marker block and DESCRIBES everywhere else.
 //
@@ -104,18 +105,75 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
     };
   }
 
-  const ref = typeof headRef === 'string' ? headRef : '';
-  if (ref.startsWith(CLAUDE_BRANCH_PREFIX) && owner !== 'claude') {
-    return {
-      state: 'contradictory',
-      owner: null,
-      declared,
-      detail: `branch \`${ref}\` is reserved for Claude-authored work but the body declares `
-        + `correction owner "${owner}"`,
-    };
-  }
-
   return { state: 'declared', owner, declared, detail: null };
+}
+
+// The HEAD-bound owner. Authority is the exact commit's SINGLE terminal
+// `Correction-Owner:` trailer — the immutable anchor a body marker (editable
+// after the fact) must agree with. A parent/ancestor trailer or a branch name
+// never authorizes the HEAD; missing, duplicate, malformed or unknown ownership
+// fails closed. `git interpret-trailers` semantics: the block is the final run of
+// `Key: value` (and continuation) lines after a blank line, and a continuation
+// before the first trailer voids the block.
+const TRAILER_LINE = /^[A-Za-z0-9][A-Za-z0-9-]*:/u;
+const TRAILER_CONTINUATION = /^[ \t]+\S/u;
+const OWNER_VALUE = /^[A-Za-z][A-Za-z0-9_-]*$/u;
+
+function terminalTrailerBlock(commitMessage) {
+  const lines = String(commitMessage ?? '').replace(/\r\n?/gu, '\n').split('\n');
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+  if (lines.length === 0) return null;
+  let start = lines.length;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (TRAILER_LINE.test(lines[index]) || TRAILER_CONTINUATION.test(lines[index])) {
+      start = index;
+      continue;
+    }
+    break;
+  }
+  if (start === lines.length || start === 0 || lines[start - 1].trim() !== '') return null;
+  // A continuation before the first trailer is not a valid block, so it confers no
+  // owner rather than skipping the leading continuation to accept a later trailer.
+  if (!TRAILER_LINE.test(lines[start])) return null;
+  return lines.slice(start);
+}
+
+export function parseCommitCorrectionOwner(commitMessage) {
+  const block = terminalTrailerBlock(commitMessage);
+  if (!block) {
+    return { state: 'missing', owner: null, declared: [] };
+  }
+  const trailers = [];
+  for (const line of block) {
+    if (TRAILER_CONTINUATION.test(line) && trailers.length > 0) {
+      trailers[trailers.length - 1].value += `\n${line.trim()}`;
+      continue;
+    }
+    const separator = line.indexOf(':');
+    if (separator < 0) continue; // defensive; the block admits only trailer/continuation lines
+    trailers.push({
+      key: line.slice(0, separator),
+      value: line.slice(separator + 1).replace(/^[ \t]+/u, ''),
+    });
+  }
+  const declared = trailers
+    .filter((trailer) => trailer.key.toLowerCase() === 'correction-owner')
+    .map((trailer) => trailer.value.trim());
+  if (declared.length === 0) {
+    return { state: 'missing', owner: null, declared };
+  }
+  if (declared.length > 1 || new Set(declared.map((value) => value.toLowerCase())).size > 1) {
+    return { state: 'conflicting', owner: null, declared };
+  }
+  const [raw] = declared;
+  if (!OWNER_VALUE.test(raw)) {
+    return { state: 'invalid', owner: null, declared };
+  }
+  const owner = raw.toLowerCase();
+  if (!CORRECTION_OWNERS.includes(owner)) {
+    return { state: 'invalid', owner: null, declared };
+  }
+  return { state: 'declared', owner, declared };
 }
 
 /**
@@ -168,6 +226,7 @@ export function correctionOwnerProblem(pullRequest) {
 
 function ownerLabel(owner) {
   if (owner === 'claude') return 'Claude Code web Auto-fix';
+  if (owner === 'codex') return 'The Codex coding owner on this branch';
   return 'The Cursor agent on this branch';
 }
 

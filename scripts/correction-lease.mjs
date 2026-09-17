@@ -1,5 +1,6 @@
 import {
   CORRECTION_LEASE_GRACE_MS,
+  isOwnershipInconsistentScopeDetail,
   isRetryableReviewFailureDescription,
   STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT,
 } from './review-policy.mjs';
@@ -249,14 +250,22 @@ export function assessCorrectionLease({
     pullRequestNumber: pullRequest?.number,
   });
 
-  const owner = routing.owner ?? 'undeclared';
+  // An ownership-inconsistency scope fault (finding r4032903006) is a special routing case: the PR
+  // BODY may declare a wakeable owner (`claude`), but the HEAD commit's trailer is missing, invalid or
+  // disagrees with it — and the body is the half that may be lying. Waking the body-declared owner
+  // would let a mislabelled head keep re-waking a session that cannot fix "your own trailer is wrong"
+  // by pushing more code. It is STALLED: a new head carrying one agreeing trailer is owed, from a human
+  // or a re-dispatch, never a GitHub wake. This mirrors the gate's own {stalled:true} declaration.
+  const ownershipInconsistent = isOwnershipInconsistentScopeDetail(effectiveReason, detail);
+  const awakenable = routing.awakenable && !ownershipInconsistent;
+  const owner = ownershipInconsistent ? 'undeclared' : (routing.owner ?? 'undeclared');
   const marker = correctionLeaseMarker({
     number: pullRequest?.number,
     head: expected,
     owner,
     kind: `correction:${owedFailureId(effectiveReason, detail, occurrence)}`,
   });
-  const reportedState = routing.awakenable
+  const reportedState = awakenable
     ? 'correction_recovery'
     : CORRECTION_STALLED;
 
@@ -296,18 +305,25 @@ export function assessCorrectionLease({
   }
 
   // `correction_stalled` is a dead end unless the notice says how to leave it.
-  // A declared owner GitHub cannot wake needs a human to start that session; an
-  // undeclared one needs the marker, which the routed instruction already names.
+  // An ownership-inconsistency fault is left ONLY by a new head whose single Correction-Owner trailer
+  // agrees with the body marker — not by starting the body-declared owner's session, because the head,
+  // not the session, is what disagrees. A declared owner GitHub cannot wake needs a human to start that
+  // session; an undeclared one needs the marker, which the routed instruction already names.
   const resumeAction = reportedState !== CORRECTION_STALLED
     ? null
-    : routing.owner
-      ? `**Required resume action:** if no \`${routing.owner}\` session is already running on `
-        + `branch \`${pullRequest?.head?.ref}\`, start one and have it correct head `
-        + `\`${expected}\`. The configured GitHub loop can neither start that session nor observe whether one is `
-        + 'already running, so check before starting: a second session on the same branch is a '
-        + 'real risk of this notice, not a hypothetical one.'
-      : '**Required resume action:** declare the correction owner in the PR body, then the '
-        + 'declared owner corrects this head.';
+    : ownershipInconsistent
+      ? '**Required resume action:** the exact head\'s ownership is unresolved — its '
+        + '`Correction-Owner:` commit trailer is missing, invalid, or disagrees with the PR body '
+        + 'marker. Push a new head whose single terminal `Correction-Owner:` trailer matches the body '
+        + 'marker; no GitHub wake can fix a head that mislabels its own owner.'
+      : routing.owner
+        ? `**Required resume action:** if no \`${routing.owner}\` session is already running on `
+          + `branch \`${pullRequest?.head?.ref}\`, start one and have it correct head `
+          + `\`${expected}\`. The configured GitHub loop can neither start that session nor observe whether one is `
+          + 'already running, so check before starting: a second session on the same branch is a '
+          + 'real risk of this notice, not a hypothetical one.'
+        : '**Required resume action:** declare the correction owner in the PR body, then the '
+          + 'declared owner corrects this head.';
 
   return {
     ...base,
@@ -317,11 +333,13 @@ export function assessCorrectionLease({
     body: leaseBody({
       resumeAction,
       marker,
-      mention: awakeningMention(routing.owner),
+      mention: awakenable ? awakeningMention(routing.owner) : null,
       reportedState,
       pullRequestNumber: pullRequest?.number,
       head: expected,
-      ownerLabel: routing.owner ? `\`${routing.owner}\`` : '`undeclared`',
+      ownerLabel: ownershipInconsistent
+        ? '`unresolved` (head trailer disagrees with the body marker)'
+        : routing.owner ? `\`${routing.owner}\`` : '`undeclared`',
       detail,
       stalledMinutes,
       instruction: routing.instruction,

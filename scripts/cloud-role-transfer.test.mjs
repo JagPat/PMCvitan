@@ -1,22 +1,79 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
-import { parseCorrectionOwner, correctionRouting, correctionOwnerProblem } from './correction-owner.mjs';
-import { authorizeExactHeadMerge, GitHubClient, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
+import { parseCorrectionOwner, parseCommitCorrectionOwner, correctionRouting, correctionOwnerProblem } from './correction-owner.mjs';
+import { authorizeExactHeadMerge, isValidationOnlyCodexOwner, setDraftForCurrentHead, revalidateFinalReviewPolicy, reviewAttempt, GitHubClient, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
+import { CORRECTION_OWNERS, OWNERSHIP_READ_RETRY, OWNERSHIP_INCONSISTENT_SCOPE, isRetryableReviewFailureDescription } from './review-policy.mjs';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
+const ownerCommit = (owner, sha = head) => ({ sha, commit: { message: `chore: unit\n\nCorrection-Owner: ${owner}\n` } });
+const noOwnerCommit = (sha = head) => ({ sha, commit: { message: 'chore: unit with no trailer\n' } });
 
-test('Codex implementation ownership is refused until independent reviewer provenance exists', () => {
+// A client that records every protective-hold effect, so a hold's OBSERVABLE consequences
+// (the status written, auto-merge disabled, the redraft) can be asserted. `commit` decides the
+// HEAD-bound owner; `body` decides the body marker; the two together drive eligibility.
+function holdClient({ body = '<!-- correction-owner: claude -->', commit = ownerCommit('claude'), draft = false } = {}) {
+  const pull = {
+    number: 600, state: 'open', draft, body,
+    head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/600',
+  };
+  const effects = { statusWrites: [], draftWrites: [], autoMergeDisabled: 0, sticky: [] };
+  const client = {
+    repository: 'JagPat/PMCvitan',
+    async pullRequest() { return pull; },
+    async commit(sha) { if (commit === 'throw') throw new Error('unreadable'); return typeof commit === 'function' ? commit(sha) : commit; },
+    async statuses() { return []; },
+    async checkRuns() { return REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' })); },
+    async reviews() { return []; },
+    async reviewComments() { return []; },
+    async comments() { return []; },
+    async setStatus(sha, state, description) { effects.statusWrites.push({ sha, state, description }); },
+    async setDraft(current, next) { effects.draftWrites.push(next); return { ...current, draft: next }; },
+    async disableAutoMerge() { effects.autoMergeDisabled += 1; },
+    async updateStickyComment(number, sticky) { effects.sticky.push(sticky); },
+  };
+  return { client, pull, effects };
+}
+
+test('Codex is admitted as a truthful candidate correction owner, on any branch, but is not awakenable', () => {
+  // Admission: a body may declare codex, on a codex/** OR a claude/** branch (branch names are
+  // historical, never authority). It routes but is NOT awakenable from GitHub — a candidate held
+  // pending independent reviewer activation, not wake or merge authority.
   for (const ref of ['codex/maintenance', 'claude/product']) {
-    const body = '<!-- correction-owner: codex -->\n<!-- correction-transfer: claude->codex -->';
+    const body = '<!-- correction-owner: codex -->';
     const declaration = parseCorrectionOwner(body, { headRef: ref });
-    assert.equal(declaration.state, 'invalid');
-    assert.ok(correctionOwnerProblem({ body, head: { ref } }));
+    assert.equal(declaration.state, 'declared');
+    assert.equal(declaration.owner, 'codex');
+    assert.equal(correctionOwnerProblem({ body, head: { ref } }), null);
     const route = correctionRouting({ declaration, head });
-    assert.equal(route.owner, null);
+    assert.equal(route.owner, 'codex');
     assert.equal(route.awakenable, false);
   }
+  assert.deepEqual([...CORRECTION_OWNERS], ['claude', 'cursor', 'codex']);
+});
+
+test('the commit-owner trailer is read only from the terminal trailer block, Git-faithfully', () => {
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\n').owner, 'claude');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: codex').owner, 'codex');
+  assert.equal(parseCommitCorrectionOwner('x\n\ncorrection-owner: cursor\n').owner, 'cursor');
+  assert.equal(parseCommitCorrectionOwner(
+    'fix: x\n\nbody\n\nCorrection-Owner: claude\nCo-Authored-By: Claude <noreply@anthropic.com>\n',
+  ).owner, 'claude');
+  assert.equal(parseCommitCorrectionOwner('no trailer here').state, 'missing');
+  assert.equal(parseCommitCorrectionOwner('subject only\n').state, 'missing');
+  // A marker inside a code fence or prose is not a terminal trailer.
+  assert.equal(parseCommitCorrectionOwner('doc\n\n```\nCorrection-Owner: claude\n```\n').state, 'missing');
+  assert.equal(parseCommitCorrectionOwner('doc\n\nUse Correction-Owner: claude\n\nMore prose.\n').state, 'missing');
+  // Duplicate / conflicting / unknown / malformed all fail closed.
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\nCorrection-Owner: claude\n').state, 'conflicting');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\nCorrection-Owner: cursor\n').state, 'conflicting');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: nobody\n').state, 'invalid');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\n codex\n').state, 'invalid');
+  // A continuation before the first trailer voids the block.
+  assert.equal(parseCommitCorrectionOwner('x\n\n leading continuation\nCorrection-Owner: claude\n').state, 'missing');
 });
 function cleanRun(overrides = {}) {
   const artifact = { id: 789, digest: `sha256:${'d'.repeat(64)}`, name: `claude-shadow-v1-repo-${Buffer.from('JagPat/PMCvitan').toString('base64url')}-pr-600-base-${base}-head-${head}-ci-123-2-publisher-456-1-state-clear-findings-0` };
@@ -74,11 +131,13 @@ test('server-side workflow run and artifact association rejects forged producer 
   assert.equal(await makeClient({ artifacts: [{ ...artifact, digest: `sha256:${'e'.repeat(64)}` }] }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
 });
 
-test('automatic merge needs CI and exact-head review, with no human authorization', async () => {
-  const pull = { number: 600, state: 'open', draft: false, head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } }, base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } } };
+test('automatic merge needs an eligible commit owner, CI and exact-head review, with no human authorization', async () => {
+  const body = '<!-- correction-owner: claude -->';
+  const pull = { number: 600, state: 'open', draft: false, body, head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } }, base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } } };
   const checks = REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
-  const makeClient = ({ pulls = [pull, pull], statuses = [{ context: 'codex-current-head', state: 'success' }], runs = checks } = {}) => ({
+  const makeClient = ({ pulls = [pull, pull], statuses = [{ context: 'codex-current-head', state: 'success' }], runs = checks, commit = ownerCommit('claude') } = {}) => ({
     repository: 'JagPat/PMCvitan',
+    async commit() { return commit; },
     async pullRequest() { return pulls.shift() ?? pull; },
     async statuses() { return statuses; },
     async checkRuns() { return runs; },
@@ -96,4 +155,66 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   for (const name of REQUIRED_CHECKS) {
     assert.equal((await authorizeExactHeadMerge(makeClient({ runs: checks.map(run => run.name === name ? { ...run, conclusion: 'failure' } : run) }), pull, head)).state, 'gates_not_green');
   }
+  // A consistent Codex candidate is admitted for validation only, never merged.
+  assert.equal((await authorizeExactHeadMerge(makeClient({ commit: ownerCommit('codex'), pulls: [{ ...pull, body: '<!-- correction-owner: codex -->' }, { ...pull, body: '<!-- correction-owner: codex -->' }] }), pull, head)).state, 'validation_only_codex_owner');
+  // A body/trailer disagreement (commit says cursor, body says claude) is not merge-eligible.
+  assert.equal((await authorizeExactHeadMerge(makeClient({ commit: ownerCommit('cursor') }), pull, head)).state, 'owner_not_merge_eligible');
+  // A missing trailer is not merge-eligible.
+  assert.equal((await authorizeExactHeadMerge(makeClient({ commit: noOwnerCommit() }), pull, head)).state, 'owner_not_merge_eligible');
+});
+
+test('finding 990 — an unreadable HEAD commit holds RETRYABLE, so the watchdog re-dispatches', async () => {
+  // The commit read fails (unreadable, not an author fault). Promoting the head must be refused,
+  // and the status written must be OWNERSHIP_READ_RETRY — which the SHARED retryable classifier
+  // recognises, so the watchdog re-dispatches the gate (which re-reads the commit) instead of
+  // stranding a pending status nobody clears.
+  const { client, effects } = holdClient({ commit: 'throw', draft: false });
+  const result = await setDraftForCurrentHead(client, 600, head, false);
+  assert.equal(result.draft, true, 'the head is re-drafted, never promoted, while ownership is unreadable');
+  const retry = effects.statusWrites.find((w) => w.description === OWNERSHIP_READ_RETRY);
+  assert.ok(retry, 'the retryable ownership-read status is written');
+  assert.equal(retry.state, 'failure');
+  assert.equal(isRetryableReviewFailureDescription(retry.description), true);
+  assert.equal(effects.autoMergeDisabled, 1);
+});
+
+test('finding — a consistent Codex candidate is HELD pending (never a scope fault, never merged)', async () => {
+  // Body and HEAD trailer agree on codex: an admitted candidate. It is held with a PENDING status
+  // (awaiting independent reviewer activation), not a failure — a truthful in-flight unit is not a
+  // fault — and it is never promoted.
+  const { client, effects } = holdClient({ body: '<!-- correction-owner: codex -->', commit: ownerCommit('codex') });
+  const result = await setDraftForCurrentHead(client, 600, head, false);
+  assert.equal(result.draft, true);
+  assert.equal(effects.statusWrites.length, 1);
+  assert.equal(effects.statusWrites[0].state, 'pending');
+  assert.match(effects.statusWrites[0].description, /Codex-owned candidate held/u);
+  assert.equal(effects.autoMergeDisabled, 1);
+});
+
+test('finding 3006 (gate side) — a body/trailer disagreement is a STALLED scope fault', async () => {
+  // The body declares claude but the HEAD trailer says cursor: a readable ownership inconsistency.
+  // The gate writes a `scope:` failure whose detail LEADS with the shared signature the watchdog
+  // keys off, and the sticky comment declares the correction stalled — the body is the half that
+  // may be lying, so no owner is woken.
+  const { client, effects } = holdClient({ body: '<!-- correction-owner: claude -->', commit: ownerCommit('cursor') });
+  const result = await setDraftForCurrentHead(client, 600, head, false);
+  assert.equal(result.draft, true);
+  const scope = effects.statusWrites.find((w) => w.description.startsWith('scope:'));
+  assert.ok(scope, 'a scope failure is written');
+  assert.equal(scope.state, 'failure');
+  assert.ok(scope.description.includes(OWNERSHIP_INCONSISTENT_SCOPE));
+  assert.equal(isRetryableReviewFailureDescription(scope.description), false, 'an ownership fault is not retryable infra');
+  assert.ok(effects.sticky.length >= 1, 'the stalled correction is explained on the sticky comment');
+});
+
+test('finding — an eligible claude head is PROMOTED, not held', async () => {
+  // The complement: body and HEAD trailer agree on claude, so the promotion proceeds and returns the
+  // ready pull request. This proves the hold is specific to ineligibility, not a blanket refusal.
+  const { client, effects } = holdClient({ body: '<!-- correction-owner: claude -->', commit: ownerCommit('claude'), draft: true });
+  const result = await setDraftForCurrentHead(client, 600, head, false);
+  assert.ok(result);
+  assert.equal(result.draft, false, 'the eligible head is promoted to ready');
+  assert.deepEqual(effects.draftWrites, [false]);
+  assert.equal(effects.statusWrites.length, 0, 'no hold status is written for an eligible owner');
+  assert.equal(effects.autoMergeDisabled, 0);
 });

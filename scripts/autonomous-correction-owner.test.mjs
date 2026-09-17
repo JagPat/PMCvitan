@@ -148,7 +148,12 @@ test('D2: the controller cannot distinguish correction owners', async () => {
 test('O1: the declaration is machine-readable, and every failure mode is named', async () => {
   const { parseCorrectionOwner, CORRECTION_OWNERS } = await ownerModule();
 
-  assert.deepEqual(CORRECTION_OWNERS, ['claude', 'cursor']);
+  assert.deepEqual(CORRECTION_OWNERS, ['claude', 'cursor', 'codex']);
+
+  // Codex is admitted as a truthful candidate owner (not awakenable; held pending reviewer activation).
+  const codex = parseCorrectionOwner('<!-- correction-owner: codex -->');
+  assert.equal(codex.state, 'declared');
+  assert.equal(codex.owner, 'codex');
 
   const claude = parseCorrectionOwner('<!-- correction-owner: claude -->');
   assert.equal(claude.state, 'declared');
@@ -214,20 +219,19 @@ test('O1: the declaration is machine-readable, and every failure mode is named',
   assert.equal(buried.state, 'missing');
   assert.match(buried.detail, /top of the PR body/u);
 
-  // The branch prefix is not the authority — #349 and #350 are both Claude-loop
-  // PRs on `codex/**` branches — but `claude/**` IS reserved by
-  // docs/AUTONOMOUS_LOOP.md for Claude-authored work, so a `claude/**` branch
-  // declaring another owner contradicts itself.
-  const branchConflict = parseCorrectionOwner('<!-- correction-owner: cursor -->', {
-    headRef: 'claude/some-task',
-  });
-  assert.equal(branchConflict.state, 'contradictory');
+  // The branch prefix is never the authority: a body declaration is read on its own terms on ANY
+  // branch (HEAD-bound trailer/body agreement is enforced at the gate, not here). A `claude/**`
+  // branch may truthfully declare another owner, and a `codex/**` branch is ordinary.
   assert.equal(
-    parseCorrectionOwner('<!-- correction-owner: cursor -->', {
+    parseCorrectionOwner('<!-- correction-owner: cursor -->', { headRef: 'claude/some-task' }).state,
+    'declared',
+  );
+  assert.equal(
+    parseCorrectionOwner('<!-- correction-owner: codex -->', {
       headRef: 'codex/cloud-agent-env-replacement',
     }).state,
     'declared',
-    'any other prefix imposes nothing',
+    'any prefix imposes nothing',
   );
 });
 
@@ -275,12 +279,13 @@ test('O2: review-scope rejects undeclared ownership before any expensive job', (
   });
   assert.equal(contradictory.allowed, false, 'two different declared owners are refused');
 
-  const branchConflict = scoped({ declaration: '<!-- correction-owner: cursor -->' });
-  assert.equal(
-    branchConflict.allowed,
-    false,
-    'a `claude/**` branch declaring another owner contradicts itself',
-  );
+  // Branch names are historical, never authority: a `claude/**` branch may truthfully declare a
+  // different owner. HEAD-bound trailer/body agreement is enforced at the gate, not by the body-only
+  // scope preflight, so scope admits the declared owner regardless of the branch prefix.
+  const otherOwnerOnClaudeBranch = scoped({ declaration: '<!-- correction-owner: cursor -->' });
+  assert.equal(otherOwnerOnClaudeBranch.allowed, true, 'a declared owner passes on any branch');
+  const codexOnCodexBranch = scoped({ declaration: '<!-- correction-owner: codex -->', ref: 'codex/x' });
+  assert.equal(codexOnCodexBranch.allowed, true, 'an admitted codex candidate passes scope');
 
   // review-scope is the first job and everything expensive depends on it, so a
   // refusal here costs no product battery and no Codex invocation.
@@ -553,10 +558,11 @@ test('C5: a malformed declaration is told to REPLACE the marker, not add one', a
   const missing = correctionRouting({ declaration: parseCorrectionOwner(''), head: HEAD });
   assert.match(missing.instruction, /\badd\b/iu, 'nothing there yet: add one');
 
+  // Branch names no longer contradict a declaration (a `claude/**` branch may declare another owner),
+  // so only genuinely malformed markers — unknown agent, or two different owners — must say "replace".
   for (const [label, body, headRef] of [
     ['unknown agent', '<!-- correction-owner: unknown -->', 'codex/x'],
     ['two owners', '<!-- correction-owner: claude -->\n<!-- correction-owner: cursor -->', 'codex/x'],
-    ['branch conflict', '<!-- correction-owner: cursor -->', 'claude/x'],
   ]) {
     const routed = correctionRouting({
       declaration: parseCorrectionOwner(body, { headRef }), head: HEAD,

@@ -174,3 +174,54 @@ Broadening consumer-side provenance and finding consumption — a `head_branch=m
 earlier trusted `main` workflow SHA, and full finding admission — is deferred to the later unit. A
 source-controlled guard does not sandbox a principal who can replace workflows; repository
 administration and branch protection remain outside this mechanism.
+
+## Ownership admission and routing foundation (non-authoritative)
+
+This stage installs the ownership-resolution foundation the eventual transfer needs, WITHOUT changing
+what is authoritative: the existing `codex-current-head` gate and branch protection still decide every
+merge, and no owner routing is switched on. It is the first of two sequential additive successors to
+the stopped `codex/**` recovery unit; the second — merge recovery and backlog reconciliation — is not
+published until this one protected-merges, and every finding from that stopped unit maps to exactly
+one of the two.
+
+**HEAD-bound owner resolution is three-valued.** Authority is the exact, server-verified HEAD commit's
+single terminal `Correction-Owner:` trailer (read Git-faithfully from the terminal `git
+interpret-trailers` block — a marker in prose or a code fence is not a trailer), which must AGREE with
+the leading PR-body marker. Branch names never authorize. The read distinguishes three cases instead
+of collapsing them to one boolean, so every consumer (gate, continuation, watchdog) can act on the
+distinction:
+
+- **eligible** — the head trailer names a merge-eligible owner and the body marker agrees. Only this
+  case may promote a draft to ready or merge.
+- **readable-inconsistent** — the commit read cleanly but the trailer is missing, invalid, or
+  disagrees with the body marker. This is a genuine, author-fixable ownership fault: the gate writes a
+  `scope:` failure whose detail LEADS with a shared signature, redrafts the head, disables any armed
+  auto-merge, and declares the correction STALLED (the body is the half that may be lying, so no owner
+  is woken). A new head carrying one agreeing trailer is owed.
+- **unreadable-infra** — the commit could not be read at all. This is retryable INFRASTRUCTURE, never
+  an author fault: the gate writes a retryable placeholder status that the watchdog re-dispatches
+  (the gate then re-reads the commit next cycle), rather than accusing a possibly-valid trailer or
+  stranding a pending status.
+
+**Codex is admitted as a truthful candidate**, alongside `claude` and `cursor`. A corrective head may
+declare `codex` and be tracked as an in-flight unit, but Codex is NOT awakenable from GitHub (its
+implementation task and reviewer share one bot identity) and NOT merge-eligible — a consistent Codex
+head is held with a PENDING status pending independent reviewer activation, and no transfer marker
+bypasses that hold. Admission is not wake or merge authority.
+
+**Continuation selects by declared owner, not branch prefix.** An in-flight autonomous unit is
+identified by its declared correction owner, so a same-repository `codex/**` branch that declares a
+valid owner is a tracked unit and continuation must not treat it as absent and start a parallel
+`claude/**` runner. The `claude/` prefix remains only a fallback for a legacy unit whose body carries
+no marker.
+
+**Ownership-fault precedence.** Ownership is a precondition of every scope assessment: an ineligible
+owner is held before a review attempt is spent, before scope enforcement, and again at final
+admission — but a genuinely more actionable, non-retryable current-head failure (a CI failure or a
+live current-head finding) still short-circuits first, and a retryable placeholder never masks a
+freshly detected ownership fault.
+
+This stage changes no authoritative consumer, grants no merge authority, and does not switch owner
+routing. Merge recovery (uncertain-vs-definitive outcomes, durable owed occurrences, a fresh
+authorization/finding check before every merge PUT, exact-head reconciliation, backlog and
+exactly-once handoff) is the deferred second successor; nothing here anticipates it.

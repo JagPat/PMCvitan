@@ -22,6 +22,7 @@ import {
   owedFailureId,
 } from './correction-lease.mjs';
 import { isCorrectionEligiblePullRequest } from './correction-owner.mjs';
+import { OWNERSHIP_INCONSISTENT_SCOPE } from './review-policy.mjs';
 
 const REPOSITORY = 'JagPat/PMCvitan';
 const HEAD = 'dc54a78e0f2b4c1d9a3e5f60718293a4b5c6d7e8';
@@ -275,6 +276,26 @@ test('L5: an owner GitHub cannot start is published as correction_stalled with a
   assert.match(undeclared.published, /undeclared/u);
   assert.match(undeclared.published, /correction-owner/u, 'the marker that fixes it');
   assert.doesNotMatch(undeclared.published, /@claude/u, 'and nobody is woken by default');
+});
+
+// L5b — finding r4032903006 (watchdog side). An ownership-INCONSISTENCY scope fault names a body
+// owner GitHub can wake (`claude`), but the HEAD trailer disagrees with it. Waking the body owner
+// would loop a session that cannot fix "your own head's trailer is wrong" by pushing more code, so
+// the watchdog reports it correction_stalled and wakes nobody — even though the body says claude.
+test('L5b: an ownership-inconsistency scope fault is stalled and wakes nobody, despite a claude body', async () => {
+  const detail = `${OWNERSHIP_INCONSISTENT_SCOPE} — this exact head needs a single `
+    + 'valid Correction-Owner commit trailer matching the PR body marker';
+  const { published, calls } = await watch({
+    pull: pullRequest({ body: '<!-- correction-owner: claude -->', ref: 'claude/task' }),
+    statuses: [status(`scope: ${detail}`)],
+  });
+  assert.ok(published, 'the fault is still reported — silence is the failure this unit removes');
+  assert.match(published, /correction_stalled/u, 'reported stalled, not a wakeable recovery');
+  assert.doesNotMatch(published, /@claude/u, 'the body owner is NOT woken — the head, not the session, disagrees');
+  assert.match(published, /Correction-Owner/u, 'and it names the trailer that must be fixed');
+  assert.match(published, /Required resume action/u);
+  assert.equal(calls.posted.length, 1);
+  assert.deepEqual(calls.forbidden, [], 'no gate state is touched');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

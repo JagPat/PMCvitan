@@ -22,12 +22,21 @@ function checkRun(name, conclusion = 'success', status = 'completed') {
   return { name, conclusion, status };
 }
 
-function automatedMergeEvidence(pullRequest) {
+// A HEAD commit that carries the terminal Correction-Owner trailer the ownership
+// gate now requires. Ownership is a precondition of every promotion/merge, so the
+// automated-merge fixtures declare a resolvable claude owner on the exact head.
+function ownerCommit(owner, sha) {
+  return { sha, commit: { message: `chore: reviewed head\n\nCorrection-Owner: ${owner}\n` } };
+}
+
+function automatedMergeEvidence(pullRequest, owner = 'claude') {
   return {
     repository: 'JagPat/PMCvitan',
     async pullRequest() { return pullRequest; },
     async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
     async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
+    async commit(sha) { return ownerCommit(owner, sha); },
+    async disableAutoMerge() {},
   };
 }
 
@@ -640,8 +649,8 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     async reviewComments() { return reviewComments; },
     async reviews() { return []; },
     async markReplacementRequired() {},
-    async commit() {
-      return { commit: { message: 'fix: ordinary head' }, files: [] };
+    async commit(sha) {
+      return { ...ownerCommit('claude', sha), files: [] };
     },
     async updateStickyComment() {},
     async mergeExactHead() {
@@ -1499,7 +1508,7 @@ test('final admission revalidates live scope and the late review-round reset', a
     additions: 2_000,
     deletions: 0,
     changed_files: 24,
-    body: '<!-- review-size: standard -->',
+    body: '<!-- review-size: standard -->\n<!-- correction-owner: claude -->',
     state: 'open',
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
@@ -1516,7 +1525,8 @@ test('final admission revalidates live scope and the late review-round reset', a
     async reviewComments() { return []; },
     async reviews() { return []; },
     async markReplacementRequired() {},
-    async commit() { return { commit: { message: 'fix: no convergence' }, files: [] }; },
+    async commit(sha) { return { ...ownerCommit('claude', sha), files: [] }; },
+    async disableAutoMerge() {},
   };
 
   const invalidScope = await reviewGate.revalidateFinalReviewPolicy(
@@ -1711,6 +1721,7 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
     number: 230,
     state: 'open',
     draft: false,
+    body: '<!-- correction-owner: claude -->',
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
     base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
@@ -1750,6 +1761,7 @@ test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
     number: 230,
     state: 'open',
     draft: false,
+    body: '<!-- correction-owner: claude -->',
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
     base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
@@ -1790,6 +1802,7 @@ test('a clean-state auto-merge race retries the exact-SHA merge once', async () 
     number: 230,
     state: 'open',
     draft: false,
+    body: '<!-- correction-owner: claude -->',
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
     base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
@@ -2178,6 +2191,7 @@ test('a base retargeted INSIDE the setDraft window is refused on the post-mutati
   const client = {
     // The pre-mutation refresh sees `main`; the post-mutation refetch sees `release`.
     async pullRequest() { return onMain; },
+    async commit(sha) { return ownerCommit('claude', sha); },
     async setDraft(current, draft) {
       setDraftCalls += 1;
       return {
@@ -2210,6 +2224,7 @@ test('the post-mutation check does not disturb a unit that stayed on main', asyn
   };
   const client = {
     async pullRequest() { return onMain; },
+    async commit(sha) { return ownerCommit('claude', sha); },
     async setDraft(current, draft) { return { ...current, draft }; },
   };
 

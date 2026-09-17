@@ -6,6 +6,7 @@ import {
   buildPostMergeContinuation,
   detectStatusDrift,
   formatOpenPullRequestList,
+  isAutonomousPullRequest,
   selectAutonomousOpenPullRequests,
 } from './runner-continuation.mjs';
 
@@ -34,6 +35,35 @@ test('selectAutonomousOpenPullRequests keeps only open same-repo claude branches
     'main',
   );
   assert.deepEqual(selected.map((pr) => pr.number), [252]);
+});
+
+test('finding 3012 — a declared-owner unit is selected by its marker, not its branch prefix', () => {
+  // An in-flight unit is identified by its DECLARED correction owner. A codex/** branch that declares
+  // a valid owner is a tracked unit — continuation must NOT treat it as absent and start a parallel
+  // claude/** runner. A branch with neither a marker nor the claude/ prefix is still not autonomous.
+  const declaredOnCodexBranch = pullRequest({
+    number: 610,
+    body: '<!-- correction-owner: codex -->',
+    head: { ref: 'codex/ownership-recovery', repo: { full_name: repository } },
+  });
+  const legacyClaudeNoMarker = pullRequest({
+    number: 611,
+    body: '## Objective only',
+    head: { ref: 'claude/legacy', repo: { full_name: repository } },
+  });
+  const neitherMarkerNorPrefix = pullRequest({
+    number: 612,
+    body: '## Objective only',
+    head: { ref: 'feature/x', repo: { full_name: repository } },
+  });
+  const selected = selectAutonomousOpenPullRequests(
+    [declaredOnCodexBranch, legacyClaudeNoMarker, neitherMarkerNorPrefix],
+    repository,
+    'main',
+  );
+  assert.deepEqual(selected.map((pr) => pr.number), [610, 611],
+    'the declared codex/** unit and the legacy claude/** fallback are both tracked; the bare feature branch is not');
+  assert.equal(isAutonomousPullRequest(neitherMarkerNorPrefix, repository, 'main'), false);
 });
 
 test('detectStatusDrift flags open_pr none with live autonomous PRs', () => {

@@ -33,11 +33,31 @@ export const MAX_REVIEW_ATTEMPTS = 2;
 export const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 40 * 60_000);
 export const REVIEW_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS ?? 25 * 60_000);
 export const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 15_000);
-// The Codex GitHub implementation task and reviewer share one bot identity.
-// Keep implementation ownership inadmissible until review evidence distinguishes them.
-export const CORRECTION_OWNERS = ['claude', 'cursor'];
+// Codex is admitted as a truthful CANDIDATE correction owner: a corrective HEAD may
+// declare `codex` and be tracked as an in-flight unit. It is NOT awakenable from
+// GitHub (the implementation task and reviewer share one bot identity, and a
+// candidate stays held pending independent reviewer activation), so admission here
+// is not wake or merge authority — see AWAKENABLE_FROM_GITHUB and docs/POLICY.md.
+export const CORRECTION_OWNERS = ['claude', 'cursor', 'codex'];
 // Wake integrations enabled in this repository, not a product capability inventory.
 export const AWAKENABLE_FROM_GITHUB = new Set(['claude']);
+// A retryable INFRASTRUCTURE failure, not an ownership fault: the exact HEAD commit
+// could not be read, so the trailer's validity is unknown and no correction is owed.
+// It is in the retryable set below so the watchdog re-dispatches the gate (which
+// re-reads the commit) rather than leaving an un-dispatched pending status stranded.
+export const OWNERSHIP_READ_RETRY = 'validation: head commit ownership temporarily unreadable — retrying';
+// A READABLE ownership fault: the exact head's Correction-Owner trailer is missing,
+// invalid, or disagrees with the PR body marker. The gate writes it as the leading
+// text of a `scope:` failure detail, and the watchdog recognises it by this leading
+// signature (GitHub truncates the status to 140 chars, so only the head is reliable)
+// to force the correction STALLED — a new head with a single agreeing trailer is
+// owed, and waking the body-declared owner would be wrong because the body is the
+// half that may be lying. See headOwnerEligibility and assessCorrectionLease.
+export const OWNERSHIP_INCONSISTENT_SCOPE = 'unresolved or inconsistent correction ownership';
+export function isOwnershipInconsistentScopeDetail(reason, detail) {
+  return reason === 'scope'
+    && String(detail ?? '').trimStart().startsWith(OWNERSHIP_INCONSISTENT_SCOPE);
+}
 export const CORRECTION_STALLED = 'correction_stalled';
 // An hourly watchdog reports an unchanged correction after 45-105 minutes.
 export const CORRECTION_LEASE_GRACE_MS = Number(
@@ -87,6 +107,9 @@ const RETRYABLE_REVIEW_FAILURES = [
   'Codex evidence changed during final verification',
   'review: Required CI changed during current-head Codex review',
   'review: bootstrap exact-head review requested',
+  // An unreadable HEAD commit is infrastructure, not an author fault: the watchdog
+  // re-dispatches so the gate re-reads the commit, instead of stranding a pending status.
+  OWNERSHIP_READ_RETRY,
 ];
 
 export function isRetryableReviewFailureDescription(description) {
