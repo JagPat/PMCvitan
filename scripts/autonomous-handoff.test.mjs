@@ -2,9 +2,37 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-import { isAutonomousPullRequest, handOffConflict } from './autonomous-handoff.mjs';
+import { isAutonomousPullRequest, handOffConflict, GitHubClient } from './autonomous-handoff.mjs';
 
 const repository = 'JagPat/PMCvitan';
+
+test('finding r4032740211: the handoff client\'s own commit() reads the exact commit via its HTTP adapter', async () => {
+  // The handoff instantiates THIS GitHubClient (separate from the review gate's), so its commit()
+  // must exist and hit the REST commit endpoint — otherwise every headBoundOwnerAgreement read throws
+  // and the conflict/watchdog paths silently defer. Exercise the real adapter, not an injected client.
+  const head = 'a'.repeat(40);
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), method: options?.method ?? 'GET' });
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ sha: head, commit: { message: 'x\n\nCorrection-Owner: claude\n' } }),
+    };
+  };
+  try {
+    const client = new GitHubClient({ repository, token: 'test-token' });
+    const commit = await client.commit(head);
+    assert.equal(commit.sha, head);
+    assert.match(commit.commit.message, /Correction-Owner: claude/u);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, new RegExp(`/repos/${repository}/commits/${head}$`, 'u'));
+    assert.equal(calls[0].method, 'GET');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 function pullRequest(overrides = {}) {
   return {

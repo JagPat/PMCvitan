@@ -54,7 +54,7 @@ function requiredEnvironment(name) {
   return value;
 }
 
-class GitHubClient {
+export class GitHubClient {
   constructor({ repository, token }) {
     this.repository = repository;
     this.token = token;
@@ -169,6 +169,15 @@ class GitHubClient {
 
   combinedStatus(head) {
     return this.request(`/repos/${this.repository}/commits/${head}/status`);
+  }
+
+  // The exact HEAD commit, for HEAD-bound owner resolution in the conflict-handoff and correction
+  // watchdog paths. This client is SEPARATE from the review gate's GitHubClient (which has its own
+  // commit reader); the handoff's `run()` instantiates THIS class, so the method must exist here or
+  // every headBoundOwnerAgreement read throws and the paths silently defer (finding r4032740211,
+  // operator-verified on 40833e87). Returns the REST commit object: `{ sha, commit: { message }, … }`.
+  commit(head) {
+    return this.request(`/repos/${this.repository}/commits/${head}`);
   }
 
   async comments(number) {
