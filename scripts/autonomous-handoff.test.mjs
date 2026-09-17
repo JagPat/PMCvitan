@@ -349,7 +349,10 @@ test('run() drain: a lost-read merge retains the cursor and blocks later items; 
     }
     const statusMatch = path.match(/\/commits\/([0-9a-f]+)\/status$/);
     if (statusMatch) return ok({ statuses: [{ context: STATUS_CONTEXT, ...combined[statusMatch[1]] }] });
-    const histMatch = path.match(/\/statuses\/([0-9a-f]+)$/);
+    // Finding 4032674940: the status HISTORY listing is GitHub's `GET /repos/{repo}/commits/{ref}/statuses`
+    // (plural), NOT the `/statuses/{sha}` create route. Serving only the real listing route here proves
+    // the client calls it — the old create-route URL now falls through to the unexpected-path throw.
+    const histMatch = path.match(/\/commits\/([0-9a-f]+)\/statuses$/);
     if (histMatch) return page === '1' ? ok(history[histMatch[1]] ?? []) : ok([]);
     const commentsGet = path.match(/\/issues\/(\d+)\/comments$/);
     if (commentsGet && method === 'GET') {

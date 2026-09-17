@@ -176,7 +176,7 @@ class GitHubClient {
     const statuses = [];
     for (let page = 1; ; page += 1) {
       const batch = await this.request(
-        `/repos/${this.repository}/statuses/${head}?per_page=100&page=${page}`,
+        `/repos/${this.repository}/commits/${head}/statuses?per_page=100&page=${page}`,
       );
       statuses.push(...batch);
       if (batch.length < 100) return statuses;

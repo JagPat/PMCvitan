@@ -1202,9 +1202,11 @@ export async function reconcileUncertainMerge(client, pullRequest, expectedHead,
   try {
     raw = await client.pullRequest(pullRequest.number);
   } catch {
-    // The confirmation re-read itself failed: the merged state is unseen, so the obligation is
-    // genuinely uncertain and remains recoverable regardless of the original error class.
-    return 'merge_recovery_owed';
+    // The confirmation re-read itself failed. A DEFINITIVE refusal (recoverable=false) is already
+    // known non-recoverable, so it stays held even without the confirming read — retrying an operation
+    // whose outcome is settled would be wrong. Only a genuinely uncertain failure remains recoverable
+    // when the merged state is unseen.
+    return recoverable ? 'merge_recovery_owed' : 'held_for_gates';
   }
   const unitMatches = raw?.head?.sha === expectedHead
     && raw?.base?.ref === pullRequest.base.ref
@@ -1214,7 +1216,13 @@ export async function reconcileUncertainMerge(client, pullRequest, expectedHead,
     await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
     return 'merged';
   }
-  const stillCurrent = raw?.state === 'open' && unitMatches;
+  // Ownership can be superseded without a head/base/repo change: a PR-body owner marker edited after
+  // merge authorization no longer matches the immutable HEAD trailer. Such a unit is held for the
+  // ownership correction, never minted a stale merge-recovery obligation the watchdog would re-retry
+  // (and whose sticky would clobber the newer owner's). Verified on the FRESH raw PR read.
+  const ownershipCurrent = unitMatches
+    && (await headOwnerEligibility(client, raw, expectedHead)).eligible;
+  const stillCurrent = raw?.state === 'open' && ownershipCurrent;
   return (recoverable && stillCurrent) ? 'merge_recovery_owed' : 'held_for_gates';
 }
 
@@ -1331,6 +1339,14 @@ export async function recoverExactHeadMerge(client, pullRequest, expectedHead) {
   );
   const ready = await setDraftForCurrentHead(client, guard.pullRequest.number, expectedHead, false);
   if (!ready) return 'held_for_gates';
+  // A live review/inline finding can arrive AFTER authorization (which samples only status/CI, and
+  // review webhooks do not mirror a fresh finding into the codex-current-head status) but before this
+  // PUT. Re-run the live finding guard on the ready head immediately before merging: if it finds one,
+  // publishCurrentHeadFinding re-drafts the head and publishes the finding, so recovery is aborted and
+  // can never merge a finding-bearing head.
+  if (await guardAgainstCurrentHeadFinding(client, ready, expectedHead, null)) {
+    return 'held_for_gates';
+  }
   const completion = await completeReviewedPullRequest(client, ready, expectedHead);
   if (completion === 'merge_recovery_owed') {
     await protectUnconfirmedMerge(client, ready, expectedHead);

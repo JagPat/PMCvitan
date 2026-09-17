@@ -428,6 +428,29 @@ test('completeReviewedPullRequest: merged, recoverable, or held fail-closed — 
     async mergeExactHead() { put405 = true; return { merged: false, message: 'not ready' }; },
     async pullRequest() { return put405 ? { ...pull, head: { ...pull.head, sha: H2 } } : pull; },
   }), pull, head), 'held_for_gates', 'a confirmed 405 on a superseded head is held, never owed');
+
+  // Finding 4032674931: a DEFINITIVE refusal whose confirming re-read ALSO fails must stay held —
+  // retrying an operation whose outcome is already settled would be wrong. (Was: owed unconditionally.)
+  let defPhase = false;
+  assert.equal(await completeReviewedPullRequest(baseClient({
+    async mergeExactHead() { defPhase = true; throw withStatus(409); },
+    async pullRequest() { if (defPhase) throw new Error('confirming read failed'); return pull; },
+  }), pull, head), 'held_for_gates', 'a definitive 409 stays held even when the confirming read fails');
+  // An UNCERTAIN error whose confirming read fails is still recoverable (unchanged).
+  let uncPhase = false;
+  assert.equal(await completeReviewedPullRequest(baseClient({
+    async mergeExactHead() { uncPhase = true; throw withStatus(502); },
+    async pullRequest() { if (uncPhase) throw new Error('confirming read failed'); return pull; },
+  }), pull, head), 'merge_recovery_owed', 'an uncertain 502 with a failed confirming read stays recoverable');
+
+  // Finding 4032674936: ownership superseded — the PR body owner marker is edited after authorization
+  // to no longer match the immutable HEAD trailer (commit still `claude`, body now `cursor`). The unit
+  // is held for the ownership correction, never minted as a recovery obligation on the superseded owner.
+  let ownPhase = false;
+  assert.equal(await completeReviewedPullRequest(baseClient({
+    async mergeExactHead() { ownPhase = true; throw withStatus(502); },
+    async pullRequest() { return ownPhase ? pullAt(603, { body: '<!-- correction-owner: cursor -->' }) : pull; },
+  }), pull, head), 'held_for_gates', 'a superseded body owner is held, never owed (finding 4032674936)');
 });
 
 test('the real GitHubClient draft seam never emits READY for a Codex commit owner', async () => {
@@ -665,6 +688,43 @@ test('finding 4032309586: the direct exact-SHA retry CONVERGES — two confirmed
   const before = puts;
   assert.equal(await recoverExactHeadMerge(client, pull(), head), 'held_for_gates');
   assert.equal(puts, before, 'a fresh finding denies the retry before any PUT');
+});
+
+test('finding 4032674927: recovery re-runs the live finding guard on the ready head before the PUT, and never merges a finding-bearing head', async () => {
+  // A live review/inline finding can arrive AFTER authorization (which samples only status/CI) but
+  // before the recovery PUT; review webhooks do not mirror it into the codex-current-head status. The
+  // recovery must re-run the live finding guard on the ready head immediately before merging.
+  const finding = { id: 11, user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: head, original_commit_id: head, path: 'scripts/example.mjs', line: 3, body: '**P1** a live finding that landed after authorization' };
+  let draft = true;
+  let merges = 0;
+  const statuses = [
+    { id: 2, context: 'codex-current-head', state: 'failure', description: MERGE_RECOVERY_OWED },
+    { id: 1, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head' },
+  ];
+  const pull = () => pullAt(615, { draft, additions: 1, deletions: 0, changed_files: 1, body: `<!-- correction-owner: claude -->\n${checklist}\nReplaces: none` });
+  const client = {
+    repository: 'JagPat/PMCvitan',
+    async commit() { return ownerCommit('claude'); },
+    async pullRequest() { return pull(); },
+    async pullRequestFiles() { return [{ filename: 'scripts/example.mjs', additions: 1, deletions: 0, changes: 1 }]; },
+    async replacementLineage() { return { requiredReplacements: [], replacementPullRequests: [] }; },
+    async statuses() { return statuses.map((s) => ({ ...s })); },
+    async checkRuns() { return REQUIRED; },
+    async reviews() { return []; },
+    async reviewComments() { return [finding]; },
+    async reactions() { return []; },
+    async setStatus(_h, state, description) { statuses.unshift({ id: 100 + statuses.length, context: 'codex-current-head', state, description }); },
+    async setDraft(_p, value) { draft = value; return { ...pull(), draft }; },
+    async disableAutoMerge() {},
+    async updateStickyComment() {},
+    async mergeExactHead() { merges += 1; return { merged: true }; },
+    async dispatchHandoff() {},
+  };
+  assert.equal(await recoverExactHeadMerge(client, pull(), head), 'held_for_gates');
+  assert.equal(merges, 0, 'a finding-bearing head is never merged during recovery');
+  assert.equal(draft, true, 'the live finding re-drafts the head');
+  assert.equal(statuses[0].state, 'failure', 'the live finding is surfaced as the latest status');
+  assert.match(statuses[0].description, /^review:/u, 'a review finding, routed the ordinary way');
 });
 
 test('a promotion hold attempts every protective operation independently, even when one throws', async () => {
