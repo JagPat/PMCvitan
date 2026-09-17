@@ -28,6 +28,16 @@ function automatedMergeEvidence(pullRequest) {
     async pullRequest() { return pullRequest; },
     async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
     async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
+    async commit(sha) { return ownerCommit(sha); },
+    async disableAutoMerge() {},
+  };
+}
+
+function ownerCommit(sha, owner = 'claude') {
+  return {
+    sha,
+    commit: { message: `fix: eligible candidate\n\nCorrection-Owner: ${owner}\n` },
+    files: [],
   };
 }
 
@@ -622,7 +632,8 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
   };
   const draftTransitions = [];
   const statusWrites = [];
-  let autoMergeDraft = null;
+  const merges = [];
+  const handoffs = [];
   let reviewComments = [];
   const client = {
     ...automatedMergeEvidence(pullRequest),
@@ -640,19 +651,15 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     async reviewComments() { return reviewComments; },
     async reviews() { return []; },
     async markReplacementRequired() {},
-    async commit() {
-      return { commit: { message: 'fix: ordinary head' }, files: [] };
-    },
+    async commit(sha) { return ownerCommit(sha); },
     async updateStickyComment() {},
-    async mergeExactHead() {
-      return { merged: false, message: 'Not ready to merge' };
+    async mergeExactHead(number, head) {
+      merges.push([number, head]);
+      return { merged: true, sha: 'b'.repeat(40) };
     },
-    async enableAutoMerge(current) {
-      autoMergeDraft = current.draft;
-    },
+    async disableAutoMerge() {},
     async dispatchHandoff(ref, number) {
-      assert.equal(ref, 'main');
-      assert.equal(number, 230);
+      handoffs.push([ref, number]);
     },
   };
 
@@ -667,7 +674,8 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     false,
   );
   assert.deepEqual(draftTransitions, []);
-  assert.equal(autoMergeDraft, null);
+  assert.deepEqual(merges, [], 'a buried clean verdict does not merge a draft');
+  assert.deepEqual(handoffs, []);
   assert.deepEqual(statusWrites, []);
 
   pullRequest.draft = false;
@@ -682,12 +690,15 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     true,
   );
   assert.deepEqual(draftTransitions, []);
-  assert.equal(autoMergeDraft, false, 'clean review and CI queue merge automatically');
+  assert.deepEqual(merges, [[230, expectedHead]],
+    'a recovered clean head completes through the exact-SHA merge');
+  assert.deepEqual(handoffs, [['main', 230]]);
   assert.equal(statusWrites[0].state, 'success');
   assert.match(statusWrites[0].description, /recovered prior clean/u);
 
   pullRequest.draft = false;
-  autoMergeDraft = null;
+  merges.length = 0;
+  handoffs.length = 0;
   reviewComments = [
     { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'b'.repeat(40) },
     { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'c'.repeat(40) },
@@ -702,7 +713,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     ),
     true,
   );
-  assert.equal(autoMergeDraft, false, 'stale findings do not prevent automatic merge');
+  assert.deepEqual(merges, [[230, expectedHead]], 'stale findings do not prevent the merge');
   assert.equal(pullRequest.draft, false);
   assert.equal(statusWrites.at(-1).state, 'success');
 });
@@ -1431,6 +1442,11 @@ test('trusted scope enforcement rejects a spoofed green preflight', async () => 
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
     async markReplacementRequired() {},
+    async disableAutoMerge() {},
+    async statuses() { return []; },
+    async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
+    async reviews() { return []; },
+    async reviewComments() { return []; },
     async updateStickyComment(...args) { sticky.push(args); },
   };
 
@@ -1483,6 +1499,11 @@ test('trusted scope enforcement reads the cumulative file list and rejects a mig
     },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
+    async disableAutoMerge() {},
+    async statuses() { return []; },
+    async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
+    async reviews() { return []; },
+    async reviewComments() { return []; },
     async updateStickyComment() {},
   };
 
@@ -1499,7 +1520,7 @@ test('final admission revalidates live scope and the late review-round reset', a
     additions: 2_000,
     deletions: 0,
     changed_files: 24,
-    body: '<!-- review-size: standard -->',
+    body: '<!-- review-size: standard -->\n<!-- correction-owner: claude -->',
     state: 'open',
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
@@ -1512,11 +1533,14 @@ test('final admission revalidates live scope and the late review-round reset', a
     async pullRequest() { return pullRequest; },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
+    async statuses() { return []; },
+    async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
     async updateStickyComment(...args) { sticky.push(args); },
     async reviewComments() { return []; },
     async reviews() { return []; },
     async markReplacementRequired() {},
-    async commit() { return { commit: { message: 'fix: no convergence' }, files: [] }; },
+    async commit(sha) { return ownerCommit(sha); },
+    async disableAutoMerge() {},
   };
 
   const invalidScope = await reviewGate.revalidateFinalReviewPolicy(
@@ -1711,6 +1735,7 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
     number: 230,
     state: 'open',
     draft: false,
+    body: '<!-- correction-owner: claude -->',
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
     base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
@@ -1743,13 +1768,17 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
   ]);
 });
 
-test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
+test('an eligible reviewed head GitHub 405-refuses is a recoverable merge, never queued', async () => {
+  // F1: a 405/non-merged response on a still-green head is NOT a silent hold — it is the racy-refusal
+  // recoverable case. completeReviewedPullRequest re-authorizes once, reconciles against the raw PR
+  // (still open here) → recoverable 'merge_recovery_owed', never arming auto-merge or a handoff.
   assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
   const expectedHead = 'a'.repeat(40);
   const pullRequest = {
     number: 230,
     state: 'open',
     draft: false,
+    body: '<!-- correction-owner: claude -->',
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
     base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
@@ -1774,56 +1803,51 @@ test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
       pullRequest,
       expectedHead,
     ),
-    'queued',
+    'merge_recovery_owed',
   );
-  assert.deepEqual(calls, [
-    ['merge', 230, expectedHead],
-    ['auto-merge', 230, expectedHead],
-    ['handoff', 'main', 230],
-  ]);
+  assert.deepEqual(calls, [['merge', 230, expectedHead]]);
 });
 
-test('a clean-state auto-merge race retries the exact-SHA merge once', async () => {
+test('the exact-SHA merge is attempted once and never falls back to auto-merge', async () => {
   assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
   const expectedHead = 'a'.repeat(40);
   const pullRequest = {
     number: 230,
     state: 'open',
     draft: false,
+    body: '<!-- correction-owner: claude -->',
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
     base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
   let mergeAttempts = 0;
+  let autoMergeArmed = false;
   const client = {
     ...automatedMergeEvidence(pullRequest),
     async mergeExactHead(number, head) {
       assert.equal(number, 230);
       assert.equal(head, expectedHead);
       mergeAttempts += 1;
-      return mergeAttempts === 1
-        ? { merged: false, message: 'Not ready to merge' }
-        : { merged: true, sha: 'b'.repeat(40) };
+      return { merged: false, message: 'Not ready to merge' };
     },
     async enableAutoMerge() {
-      throw new Error(
-        'GitHub GraphQL failed: Pull request Pull request is in clean status',
-      );
+      autoMergeArmed = true;
     },
-    async dispatchHandoff(ref, number) {
-      assert.equal(ref, 'main');
-      assert.equal(number, 230);
+    async dispatchHandoff() {
+      throw new Error('an unmerged candidate must not dispatch a handoff');
     },
   };
 
+  // F1: recoverable, not merged, not queued. The single exact-SHA attempt stands; no auto-merge.
   assert.equal(
     await reviewGate.completeReviewedPullRequest(
       client,
       pullRequest,
       expectedHead,
     ),
-    'merged',
+    'merge_recovery_owed',
   );
-  assert.equal(mergeAttempts, 2);
+  assert.equal(mergeAttempts, 1, 'exactly one exact-SHA attempt, no retry loop');
+  assert.equal(autoMergeArmed, false, 'no delayed/server auto-merge is armed in this stage');
 });
 
 test('review cycles are serialized by pull request and exact head', async () => {
@@ -1884,17 +1908,21 @@ test('terminal failures restore draft and CI failures run before recovery', asyn
   assert.match(terminalHelper, /status\.state === 'success'/);
   assert.match(terminalHelper, /recovered prior clean Codex result/);
   assert.match(terminalHelper, /persistentReviewFailure/);
+  // F1 adds an earlier merge-recovery branch (a clean-reviewed head with an unconfirmed merge) that
+  // retries the merge rather than re-reviewing. The success-recovery ordering invariant still holds
+  // for the SUCCESS-path completion (the later call), so anchor on it with lastIndexOf.
+  assert.match(terminalHelper, /status\.description === MERGE_RECOVERY_OWED/);
   assert.ok(
     terminalHelper.indexOf('persistentReviewFailure')
-      < terminalHelper.indexOf('completeReviewedPullRequest'),
+      < terminalHelper.lastIndexOf('completeReviewedPullRequest'),
   );
   assert.ok(
     terminalHelper.indexOf('recovered prior clean Codex result')
-      < terminalHelper.indexOf('completeReviewedPullRequest'),
+      < terminalHelper.lastIndexOf('completeReviewedPullRequest'),
   );
   assert.match(terminalHelper, /setDraftForCurrentHead[\s\S]*true/);
 
-  const runBody = gate.slice(gate.indexOf('export async function run()'));
+  const runBody = gate.slice(gate.indexOf('export async function run('));
   const ciFailure = runBody.indexOf(
     "context.ciConclusion && context.ciConclusion !== 'success'",
   );
@@ -1905,7 +1933,10 @@ test('terminal failures restore draft and CI failures run before recovery', asyn
     liveFindingGuard >= 0 && liveFindingGuard < terminalRecovery,
     'live Codex evidence must be checked before recovered success can return',
   );
-  assert.match(runBody, /if \(!isTerminalReviewStatus\(existingStatus\)\)[\s\S]*`ci:/);
+  assert.match(
+    runBody,
+    /effectiveCiFailure \|\| !isTerminalReviewStatus\(existingStatus\)\)[\s\S]*`ci:/,
+  );
 });
 
 test('workflow has no AI action or AI credential dependency', async () => {
@@ -2178,6 +2209,8 @@ test('a base retargeted INSIDE the setDraft window is refused on the post-mutati
   const client = {
     // The pre-mutation refresh sees `main`; the post-mutation refetch sees `release`.
     async pullRequest() { return onMain; },
+    async commit(sha) { return ownerCommit(sha); },
+    async disableAutoMerge() {},
     async setDraft(current, draft) {
       setDraftCalls += 1;
       return {
@@ -2190,7 +2223,9 @@ test('a base retargeted INSIDE the setDraft window is refused on the post-mutati
 
   const result = await reviewGate.setDraftForCurrentHead(client, 700, expectedHead, false);
 
-  assert.equal(setDraftCalls, 1, 'the mutation really was attempted — this is not a no-op');
+  assert.equal(setDraftCalls, 2,
+    'the promotion is attempted, then the off-main object that came back READY is compensated '
+    + 'back to draft so no non-current unit is left ready');
   assert.equal(result, null,
     'the post-mutation object must be refused, so no caller proceeds with an off-main unit');
 });
@@ -2210,6 +2245,8 @@ test('the post-mutation check does not disturb a unit that stayed on main', asyn
   };
   const client = {
     async pullRequest() { return onMain; },
+    async commit(sha) { return ownerCommit(sha); },
+    async disableAutoMerge() {},
     async setDraft(current, draft) { return { ...current, draft }; },
   };
 

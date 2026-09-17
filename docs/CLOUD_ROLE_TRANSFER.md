@@ -174,3 +174,29 @@ Broadening consumer-side provenance and finding consumption — a `head_branch=m
 earlier trusted `main` workflow SHA, and full finding admission — is deferred to the later unit. A
 source-controlled guard does not sandbox a principal who can replace workflows; repository
 administration and branch protection remain outside this mechanism.
+
+## Codex candidate ownership and corrective-HEAD authority
+
+This unit admits Codex as a truthful **candidate** correction owner (still not GitHub-awakenable and
+with no merge authority) and enforces HEAD-bound ownership. Authority is resolved from the exact
+server-verified HEAD commit's single terminal `Correction-Owner:` trailer, consistent with the single
+leading PR-body owner marker, per the canonical rule in
+[docs/POLICY.md](https://github.com/JagPat/PMCvitan/blob/main/docs/POLICY.md). A parent/ancestor
+trailer and the branch name never authorize the HEAD; missing, duplicate, malformed, mismatched or
+body-inconsistent ownership fails closed. (The bounded Codex probe requiring a corrective HEAD to
+carry a terminal `Correction-Owner: codex` and preserve its leading body marker is the isolated later
+probe-credential unit.) An ownerless HEAD from a plain GitHub base-sync ("Update branch") merge is an
+ownership **scope failure** — the status fails and the draft is restored — not the Codex
+pending-validation state; non-authoritative shadow review may still run on it with full CI and
+provenance, and the separate no-wake hold on a stopped candidate is unaffected.
+
+### Merge-recovery
+
+An exact-head merge that GitHub neither confirms nor refuses for a gate reason (a racy 405 with green
+gates, transport loss, an unreadable read) leaves a recoverable obligation, never a stranded
+clean-reviewed head or a thrown run: the controller publishes the retryable `MERGE_RECOVERY_OWED`
+status and the recovery lane re-authorizes and retries, re-confirming the merge before any second
+attempt. A merge that actually landed is reconciled — by the raw pull-request read and by the merged
+backlog — to exactly one handoff, and a lost confirming read retains the backlog cursor so a later
+drain settles it once. Genuine findings are never reinterpreted as clearance (a clean success buried
+behind an intervening finding never clears recovery), and the shadow consumer stays non-authoritative.

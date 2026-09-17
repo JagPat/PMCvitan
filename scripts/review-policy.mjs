@@ -33,9 +33,7 @@ export const MAX_REVIEW_ATTEMPTS = 2;
 export const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 40 * 60_000);
 export const REVIEW_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS ?? 25 * 60_000);
 export const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 15_000);
-// The Codex GitHub implementation task and reviewer share one bot identity.
-// Keep implementation ownership inadmissible until review evidence distinguishes them.
-export const CORRECTION_OWNERS = ['claude', 'cursor'];
+export const CORRECTION_OWNERS = ['claude', 'cursor', 'codex'];
 // Wake integrations enabled in this repository, not a product capability inventory.
 export const AWAKENABLE_FROM_GITHUB = new Set(['claude']);
 export const CORRECTION_STALLED = 'correction_stalled';
@@ -82,11 +80,21 @@ export function reviewHistoryPolicy(findingHeads) {
   };
 }
 
+// A merge attempted on a fully authorized exact head that GitHub neither confirmed merged nor
+// refused for a gate reason (transport loss, a 5xx, or an unreadable/racy 405 while the gates are
+// green) leaves a RECOVERABLE obligation, not a terminal review failure. The next dispatch
+// re-authorizes the exact head/owner/CI/findings and retries the merge through the existing
+// gate-recovery lane; it is fail-safe because the merge is re-confirmed before any second attempt.
+// A single stable marker keeps the recovery idempotent: a repeated unchanged failure re-uses this
+// exact description (no new occurrence), while a fresh failure after a completed recovery mints one.
+export const MERGE_RECOVERY_OWED = 'review: exact-head merge unconfirmed — recovery owed';
+
 const RETRYABLE_REVIEW_FAILURES = [
   'Codex review timed out',
   'Codex evidence changed during final verification',
   'review: Required CI changed during current-head Codex review',
   'review: bootstrap exact-head review requested',
+  MERGE_RECOVERY_OWED,
 ];
 
 export function isRetryableReviewFailureDescription(description) {

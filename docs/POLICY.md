@@ -26,20 +26,20 @@ statement, invariant matrix and review packet required by the active plan. A tas
 not complete until its focused tests and required `pnpm check` pass.
 
 Every PR declares exactly one correction owner in its leading marker block:
-`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`.
-A `claude/**` branch must declare Claude. The marker selects an agent type,
-not a unique session: coordinate one producer on each branch before editing.
-Only the declared owner handles normal correction handoff; do not start a competing
-producer. Conflict handoffs re-read the owner and current head before publication;
-invalid or non-awakenable ownership is reported without waking a different agent.
+`<!-- correction-owner: claude -->`, `<!-- correction-owner: cursor -->`, or
+`<!-- correction-owner: codex -->`. Branch names are historical source locations and do not
+override that truthful declaration. The marker selects an agent type, not a unique session: coordinate
+one producer on each branch before editing. Only the declared owner handles normal correction handoff;
+conflict handoffs re-read the owner and current head before publication, and invalid or non-awakenable ownership is reported without waking a different agent. Authority is HEAD-bound: every corrective HEAD carries exactly one `Correction-Owner:<owner>` in a complete terminal trailer block (blank line, then contiguous `Key: value` trailers) consistent with the leading marker; ancestor trailers and branch names never authorize it, and missing, duplicate, mismatched or inconsistent HEAD ownership fails closed. An ownerless base-sync HEAD is an ownership scope failure (status fails, draft restored), not the Codex pending state; shadow may still run non-authoritatively, and a stopped candidate's no-wake hold is separate.
 
-Codex implementation ownership is currently inadmissible: GitHub implementation
-tasks and reviews share the Codex bot identity, and a fresh reaction does not prove
-a separate reviewer supplied it. A transfer marker cannot bypass this restriction.
-Enabling that role requires reviewer-specific provenance first. User-requested Codex
-assistance does not itself change the configured normal correction owner.
+Codex implementation ownership is admitted for candidate-side scope and product validation only.
+Until independently authenticated Claude verdict consumption is installed, every Codex-owned
+candidate stays draft with the required exact-head status pending: no Codex self-review, recovered
+Codex success, direct merge or queued merge can promote it. This admission is not wake or merge
+authority, and a transfer marker cannot bypass the validation hold.
 
-This repository currently enables only the Claude correction wake integration.
+This repository currently enables only the Claude correction wake integration. Codex remains
+absent from `AWAKENABLE_FROM_GITHUB`; the dedicated manual probe credential does not change that.
 Codex supports GitHub task mentions such as `@codex fix the CI failures` through its
 [GitHub integration](https://learn.chatgpt.com/docs/third-party/github); independent
 reviewer provenance, account permissions and acceptance of watchdog-generated
@@ -120,7 +120,7 @@ This consolidation does not reverse that decision or authorize a production acti
 Naming an owner does not prove a running session. Claude is awakenable through the
 configured subscription integration. Cursor is routed but has no enabled correction
 wake integration in this repository; report that configuration limit without claiming
-no session is running. Codex and other inadmissible owner declarations report
+no session is running. Codex, Cursor, and other non-awakenable owner declarations report
 `correction_stalled` with the exact corrective action.
 
 The correction watchdog identifies an owed failure from the gate's review/scope/CI
