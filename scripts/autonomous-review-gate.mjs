@@ -7,6 +7,7 @@ import {
   POLL_INTERVAL_MS,
   REQUIRED_CHECKS,
   STATUS_CONTEXT,
+  OWNERSHIP_READ_RETRY,
 } from './review-policy.mjs';
 export {
   requiredChecksForPullRequest,
@@ -30,6 +31,7 @@ import {
   CORRECTION_STALLED,
   correctionOwnerDeclaration,
   correctionRouting,
+  parseCommitCorrectionOwner,
 } from './correction-owner.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import {
@@ -1005,6 +1007,46 @@ export async function setDraftForCurrentHead(
   return isCurrentReviewUnit(updated, expectedHead) ? updated : null;
 }
 
+// ── HEAD-bound ownership admission for merge authorization (owner-primitive split, unit 2) ──────────────
+// Merge authority is the exact HEAD commit's IMMUTABLE `Correction-Owner:` trailer — a readable, admitted,
+// non-`codex` owner — never the mutable PR body marker (so a later body edit cannot make a per-SHA queued
+// merge unsafe). Consuming the merged git-faithful primitive `parseCommitCorrectionOwner`, the gate refuses
+// at merge time any head whose trailer is missing/invalid, names the validation-only `codex` candidate, or
+// could not be read. An unreadable commit is a RETRYABLE infrastructure hold, never an ownership accusation.
+// Body/trailer promotion consistency and the validation-hold sticky are a later split unit; the merge gate
+// here already refuses every ineligible head, so it stands alone. See docs/POLICY.md.
+
+// The exact HEAD commit's terminal Correction-Owner trailer, three-valued: readable+owner, readable+null
+// (missing/invalid/superseded commit), or unreadable (the commit read itself failed — infra, not a fault).
+async function resolveHeadBoundOwner(client, expectedHead) {
+  if (typeof expectedHead !== 'string' || expectedHead.length === 0) {
+    return { owner: null, bound: false, readable: true };
+  }
+  let commit;
+  try {
+    commit = await client.commit(expectedHead);
+  } catch {
+    return { owner: null, bound: false, readable: false };
+  }
+  if (!commit || commit.sha !== expectedHead) return { owner: null, bound: false, readable: true };
+  const { state, owner } = parseCommitCorrectionOwner(commit.commit?.message);
+  return { owner: state === 'declared' ? owner : null, bound: true, readable: true };
+}
+
+// Merge authority is the IMMUTABLE HEAD trailer: a readable, admitted, non-codex owner.
+function mergeAuthorizedByTrailer(eligibility) {
+  return eligibility.readable !== false && eligibility.owner !== null && eligibility.owner !== 'codex';
+}
+
+// An unauthorized eligibility is two things: an UNREADABLE commit (readable === false) is retryable infra
+// (re-read, don't accuse); a readable missing/invalid/codex trailer is terminal. Collapsing the first into
+// the second would strand a green head on a transient read.
+function unauthorizedMergeResult(eligibility) {
+  return eligibility.readable === false
+    ? { allowed: false, state: 'owner_read_retry', retryable: true }
+    : { allowed: false, state: 'owner_not_merge_eligible' };
+}
+
 export async function completeReviewedPullRequest(
   client,
   pullRequest,
@@ -1012,6 +1054,13 @@ export async function completeReviewedPullRequest(
 ) {
   const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead);
   if (!authorization.allowed) {
+    if (authorization.retryable) {
+      // An unreadable post-gate reread is transient infrastructure: a plain `held_for_gates` would strand a
+      // green PR (recovery considers only FAILING statuses), so publish the retryable OWNERSHIP_READ_RETRY
+      // status and let the watchdog re-dispatch the gate, which re-reads the commit and re-authorizes.
+      await client.setStatus(expectedHead, 'failure', OWNERSHIP_READ_RETRY, pullRequest.html_url);
+      return 'held_for_read_retry';
+    }
     return 'held_for_gates';
   }
   pullRequest = authorization.pullRequest;
@@ -1053,8 +1102,19 @@ export async function completeReviewedPullRequest(
 /** The common mandatory guard for both direct merge and auto-merge entrypoints. */
 export async function authorizeExactHeadMerge(client, pullRequest, expectedHead) {
   const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
+  const eligibility = live
+    ? await resolveHeadBoundOwner(client, expectedHead)
+    : { owner: null, readable: true };
+  // A Codex candidate head is validation-only, never merged; report it distinctly from a generic ineligible
+  // trailer so the later validation-hold unit can surface the reviewer-activation action.
+  if (live && eligibility.owner === 'codex') {
+    return { allowed: false, state: 'validation_only_codex_owner' };
+  }
   if (!live || live.draft || !live.base?.sha) {
     return { allowed: false, state: live?.draft ? 'draft' : 'superseded' };
+  }
+  if (!mergeAuthorizedByTrailer(eligibility)) {
+    return unauthorizedMergeResult(eligibility);
   }
   const [statuses, checks] = await Promise.all([
     client.statuses(expectedHead),
@@ -1065,11 +1125,15 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead)
   if (latestReview?.state !== 'success' || required.state !== 'success') {
     return { allowed: false, state: 'gates_not_green' };
   }
-  // Re-read after remote evidence. A push, base update, retarget or draft
-  // transition during validation fails closed.
+  // Re-read after remote evidence. A push, base update, retarget, draft transition, or HEAD-trailer owner
+  // change during validation fails closed (a body-only edit does not — the trailer is the authority).
   const finalLive = await refreshCurrentHead(client, live.number, expectedHead);
   if (!finalLive || finalLive.draft || finalLive.base?.sha !== live.base.sha) {
     return { allowed: false, state: 'changed_during_validation' };
+  }
+  const finalEligibility = await resolveHeadBoundOwner(client, expectedHead);
+  if (!mergeAuthorizedByTrailer(finalEligibility)) {
+    return unauthorizedMergeResult(finalEligibility);
   }
   return { allowed: true, state: 'authorized', pullRequest: finalLive };
 }
@@ -1950,7 +2014,9 @@ export async function run() {
             ? 'GitHub squash-merged this exact reviewed head.'
             : completion === 'queued'
               ? 'GitHub auto-merge is queued behind branch protection.'
-              : 'Merge is held because the current head, base, readiness or required gates changed during validation.',
+              : completion === 'held_for_read_retry'
+                ? 'Merge authorization could not re-read this exact head (transient infrastructure); a retryable ownership-read status is published so the watchdog re-dispatches and re-authorizes.'
+                : 'Merge is held because the current head, base, readiness, required gates or HEAD-bound owner eligibility changed during validation.',
         }),
       );
       return;

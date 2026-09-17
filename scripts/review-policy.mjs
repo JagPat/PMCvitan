@@ -33,12 +33,21 @@ export const MAX_REVIEW_ATTEMPTS = 2;
 export const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 40 * 60_000);
 export const REVIEW_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS ?? 25 * 60_000);
 export const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 15_000);
-// The Codex GitHub implementation task and reviewer share one bot identity.
-// Keep implementation ownership inadmissible until review evidence distinguishes them.
-export const CORRECTION_OWNERS = ['claude', 'cursor'];
+// Codex is admitted as a truthful CANDIDATE correction owner: a corrective HEAD may
+// declare `codex` and be tracked as an in-flight unit. It is NOT awakenable from
+// GitHub (the implementation task and reviewer share one bot identity, and a
+// candidate stays held pending independent reviewer activation), so admission here
+// is not wake or merge authority — see AWAKENABLE_FROM_GITHUB, the gate's
+// merge-authorization eligibility, and docs/POLICY.md.
+export const CORRECTION_OWNERS = ['claude', 'cursor', 'codex'];
 // Wake integrations enabled in this repository, not a product capability inventory.
 export const AWAKENABLE_FROM_GITHUB = new Set(['claude']);
 export const CORRECTION_STALLED = 'correction_stalled';
+// A retryable INFRASTRUCTURE failure, not an ownership fault: the exact HEAD commit
+// could not be read, so the trailer's validity is unknown and no correction is owed.
+// It joins the retryable set below so the watchdog re-dispatches the gate (which
+// re-reads the commit) rather than leaving an un-dispatched pending status stranded.
+export const OWNERSHIP_READ_RETRY = 'validation: head commit ownership temporarily unreadable — retrying';
 // An hourly watchdog reports an unchanged correction after 45-105 minutes.
 export const CORRECTION_LEASE_GRACE_MS = Number(
   process.env.CORRECTION_LEASE_GRACE_MS ?? 45 * 60_000,
@@ -87,6 +96,9 @@ const RETRYABLE_REVIEW_FAILURES = [
   'Codex evidence changed during final verification',
   'review: Required CI changed during current-head Codex review',
   'review: bootstrap exact-head review requested',
+  // An unreadable HEAD commit is infrastructure, not an author fault: the watchdog
+  // re-dispatches so the gate re-reads the commit, instead of stranding a pending status.
+  OWNERSHIP_READ_RETRY,
 ];
 
 export function isRetryableReviewFailureDescription(description) {

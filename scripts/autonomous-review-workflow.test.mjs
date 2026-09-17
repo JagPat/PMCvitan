@@ -22,10 +22,13 @@ function checkRun(name, conclusion = 'success', status = 'completed') {
   return { name, conclusion, status };
 }
 
-function automatedMergeEvidence(pullRequest) {
+function automatedMergeEvidence(pullRequest, owner = 'claude') {
   return {
     repository: 'JagPat/PMCvitan',
     async pullRequest() { return pullRequest; },
+    // Merge authorization now reads the exact HEAD commit's Correction-Owner trailer; supply an eligible
+    // (readable, non-codex) owner bound to the reviewed head so these merge/queue cases stay authorized.
+    async commit(sha) { return { sha, commit: { message: `chore: unit\n\nCorrection-Owner: ${owner}\n` } }; },
     async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
     async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
   };
@@ -640,8 +643,8 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     async reviewComments() { return reviewComments; },
     async reviews() { return []; },
     async markReplacementRequired() {},
-    async commit() {
-      return { commit: { message: 'fix: ordinary head' }, files: [] };
+    async commit(sha) {
+      return { sha, commit: { message: 'fix: ordinary head\n\nCorrection-Owner: claude\n' }, files: [] };
     },
     async updateStickyComment() {},
     async mergeExactHead() {

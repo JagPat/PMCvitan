@@ -15,7 +15,8 @@ const DECLARATION = /<!--\s*correction-owner:\s*([A-Za-z][A-Za-z0-9_-]*)\s*-->/g
 // branch under it declaring another owner contradicts itself. No other prefix
 // implies anything — #349 and #350 are both loop PRs on `codex/**`.
 const CLAUDE_BRANCH_PREFIX = 'claude/';
-const MARKER_HELP = '`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`';
+const MARKER_HELP = '`<!-- correction-owner: claude -->`, `<!-- correction-owner: cursor -->`, '
+  + 'or `<!-- correction-owner: codex -->`';
 
 // A body DECLARES in its marker block and DESCRIBES everywhere else.
 //
@@ -313,6 +314,7 @@ export function correctionOwnerProblem(pullRequest) {
 
 function ownerLabel(owner) {
   if (owner === 'claude') return 'Claude Code web Auto-fix';
+  if (owner === 'codex') return 'The Codex coding owner on this branch';
   return 'The Cursor agent on this branch';
 }
 
