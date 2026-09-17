@@ -1,3 +1,7 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { CORRECTION_OWNERS, AWAKENABLE_FROM_GITHUB, CORRECTION_STALLED } from './review-policy.mjs';
 export { CORRECTION_OWNERS, AWAKENABLE_FROM_GITHUB, CORRECTION_STALLED } from './review-policy.mjs';
 
@@ -116,6 +120,147 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
   }
 
   return { state: 'declared', owner, declared, detail: null };
+}
+
+// ── HEAD-bound owner parsing/resolution primitives (Owner primitive unit) ────────────────────────────
+// Read the exact HEAD commit's terminal `Correction-Owner:` trailer as authority. These primitives change
+// NO gate, wake, merge, handoff, watchdog, continuation, or authoritative consumer — no caller in this unit
+// routes on them. Admission (three-valued holds, codex candidacy) and exact-head merge authorization are
+// later units that will consume the merged primitive; here it only parses and resolves.
+//
+// Trailer extraction is DELEGATED to real `git interpret-trailers --parse --unfold`, not reimplemented. A
+// hand-rolled reproduction of git's trailer grammar repeatedly diverged from git on adversarial input — the
+// comment/continuation interaction, the exact recognized-token spelling (`Signed-off-by` only, and not when
+// space-padded), the `(cherry picked from commit …)` provenance suffix, the trailer-token grammar (`-X:` is
+// a valid token), and continuation reset after a dropped non-trailer line. Delegating makes the primitive
+// git itself for the extraction step, so it cannot diverge as further git edge cases surface. It fails
+// CLOSED: a missing or erroring git yields `unreadable` and never an owner, which a later consumer must
+// treat as no merge authority.
+const OWNER_VALUE = /^[A-Za-z][A-Za-z0-9_-]*$/u;
+// Strip only git's ASCII horizontal padding (never Unicode whitespace, which git preserves in the value).
+const asciiTrim = (value) => value.replace(/^[ \t]+|[ \t]+$/gu, '');
+
+// The terminal trailers of a commit message, exactly as `git interpret-trailers --parse --unfold` emits
+// them: `Key: value` lines with folded continuations already joined. The message is fed on STDIN, never as
+// an argument, so no content can be read as a flag. Returns null when git cannot be run at all (binary
+// missing or non-zero exit), so the caller fails closed rather than reading an unreadable commit as owning
+// nothing.
+// A single empty directory pointed at by `GIT_DIR`, so git uses it AS the repository and never discovers
+// the ambient one from the working directory. It stays empty (`--parse` reads config, writes nothing), so
+// it holds no local config; created lazily and reused. Discovery matters because a repository's local
+// config — including a `trailer.<name>.key` that changes block recognition — would otherwise be read, and
+// `GIT_DIR`/`GIT_WORK_TREE`/a repo-inside-`TMPDIR` are all repository-selection inputs that no
+// `GIT_CEILING_DIRECTORIES` reliably fences once the cwd is inside a repo.
+let cleanGitDir;
+function isolatedGitDir() {
+  if (!cleanGitDir) cleanGitDir = mkdtempSync(join(tmpdir(), 'owner-trailer-gitdir-'));
+  return cleanGitDir;
+}
+
+// The environment that ISOLATES git from every external config source, so `--parse` depends only on the
+// config this module pins and never on the runner. Every inherited `GIT_*` variable is dropped (config
+// sources AND repository-selection inputs — `GIT_DIR`, `GIT_WORK_TREE`, `GIT_CONFIG*`, …); global
+// (`~/.gitconfig`) and system (`/etc/gitconfig`) are redirected to `/dev/null` with `GIT_CONFIG_NOSYSTEM`;
+// and `GIT_DIR` is set to the empty directory above so git reads no local repository config. The remaining
+// config comes only from the command-line `-c` flags this module passes.
+function isolatedGitEnv() {
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith('GIT_')) continue;
+    env[key] = value;
+  }
+  env.GIT_DIR = isolatedGitDir();
+  env.GIT_CONFIG_GLOBAL = '/dev/null';
+  env.GIT_CONFIG_SYSTEM = '/dev/null';
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  return env;
+}
+
+function gitParsedTrailers(commitMessage) {
+  let out;
+  try {
+    // Pin the two config keys that still shape `--parse` output under the isolated environment above:
+    // `trailer.separators` decides the accepted AND output separator (its first character), and
+    // `core.commentChar` decides which comment lines `--parse` strips.
+    out = execFileSync('git', [
+      '-c', 'trailer.separators=:',
+      '-c', 'core.commentChar=#',
+      'interpret-trailers', '--parse', '--unfold',
+    ], {
+      input: String(commitMessage ?? ''),
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+      maxBuffer: 8 * 1024 * 1024,
+      cwd: isolatedGitDir(),
+      env: isolatedGitEnv(),
+    });
+  } catch {
+    return null;
+  }
+  const trailers = [];
+  for (const line of out.split('\n')) {
+    if (line.length === 0) continue;
+    const separator = line.indexOf(':');
+    if (separator < 0) continue;
+    trailers.push({ key: asciiTrim(line.slice(0, separator)), value: line.slice(separator + 1) });
+  }
+  return trailers;
+}
+
+/**
+ * The HEAD-bound owner from the exact commit message's terminal trailer block, read AS
+ * `git interpret-trailers --parse` reads it (extraction delegated to git). Named states: `declared`
+ * (exactly one terminal `Correction-Owner:` trailer naming a known owner), `missing` (no terminal trailer
+ * block, or none named), `conflicting` (more than one, or disagreeing values), `invalid` (a malformed
+ * value, or one no correction owner), and `unreadable` (git could not be run, so the commit's owner cannot
+ * be determined and a consumer must fail closed). `declared` (the array) always carries the raw trailer
+ * value(s) found, so a later consumer can see a value this loop does not route to. Owner admission is
+ * unchanged from `CORRECTION_OWNERS`.
+ */
+export function parseCommitCorrectionOwner(commitMessage) {
+  const trailers = gitParsedTrailers(commitMessage);
+  if (trailers === null) {
+    return { state: 'unreadable', owner: null, declared: [] };
+  }
+  // ASCII-trim only: git preserves non-ASCII whitespace (vertical tab, NBSP, em-space) IN the value, so a
+  // value padded with it stays malformed and fails `OWNER_VALUE` rather than being silently accepted.
+  const declared = trailers
+    .filter((trailer) => trailer.key.toLowerCase() === 'correction-owner')
+    .map((trailer) => asciiTrim(trailer.value));
+  if (declared.length === 0) {
+    return { state: 'missing', owner: null, declared };
+  }
+  if (declared.length > 1 || new Set(declared.map((value) => value.toLowerCase())).size > 1) {
+    return { state: 'conflicting', owner: null, declared };
+  }
+  const [raw] = declared;
+  if (!OWNER_VALUE.test(raw)) {
+    return { state: 'invalid', owner: null, declared };
+  }
+  const owner = raw.toLowerCase();
+  if (!CORRECTION_OWNERS.includes(owner)) {
+    return { state: 'invalid', owner: null, declared };
+  }
+  return { state: 'declared', owner, declared };
+}
+
+/**
+ * HEAD-bound owner agreement — a resolution primitive for the later consumers (review gate, conflict
+ * handoff, watchdog) that will hold a fetched commit. The exact commit's single terminal `Correction-Owner:`
+ * trailer must name a valid owner AND agree with the PR body marker; `consistent` is false for a
+ * missing/invalid/disagreeing trailer or an `unreadable` commit (git could not be run). `headRef` is passed
+ * through to the body parse so a `claude/**` branch that declares another owner reads as `contradictory`
+ * (bodyOwner null → not consistent), the same branch-reservation rule the scope gate applies; omitting it
+ * would accept a head+body owner the branch contract forbids. No consumer in this unit calls it; it fails
+ * closed so a later caller never wakes a body owner the immutable head does not confirm.
+ */
+export function headBoundOwnerAgreement(commitMessage, body, { headRef } = {}) {
+  const trailer = parseCommitCorrectionOwner(commitMessage);
+  const headOwner = trailer.state === 'declared' ? trailer.owner : null;
+  const bodyDeclaration = parseCorrectionOwner(body, { headRef });
+  const bodyOwner = bodyDeclaration.state === 'declared' ? bodyDeclaration.owner : null;
+  const consistent = headOwner !== null && bodyOwner !== null && headOwner === bodyOwner;
+  return { headOwner, bodyOwner, consistent, trailerState: trailer.state };
 }
 
 /**
