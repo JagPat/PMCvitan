@@ -26,18 +26,22 @@ statement, invariant matrix and review packet required by the active plan. A tas
 not complete until its focused tests and required `pnpm check` pass.
 
 Every PR declares exactly one correction owner in its leading marker block:
-`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`.
-A `claude/**` branch must declare Claude. The marker selects an agent type,
-not a unique session: coordinate one producer on each branch before editing.
-Only the declared owner handles normal correction handoff; do not start a competing
-producer. Conflict handoffs re-read the owner and current head before publication;
-invalid or non-awakenable ownership is reported without waking a different agent.
+`<!-- correction-owner: claude -->`, `<!-- correction-owner: cursor -->`, or
+`<!-- correction-owner: codex -->`. A `claude/**` branch must declare Claude. The marker
+selects an agent type, not a unique session: coordinate one producer on each branch before
+editing. Only the declared owner handles normal correction handoff; do not start a competing
+producer. Conflict handoffs re-read the owner and current head before publication; invalid
+or non-awakenable ownership is reported without waking a different agent.
 
-Codex implementation ownership is currently inadmissible: GitHub implementation
-tasks and reviews share the Codex bot identity, and a fresh reaction does not prove
-a separate reviewer supplied it. A transfer marker cannot bypass this restriction.
-Enabling that role requires reviewer-specific provenance first. User-requested Codex
-assistance does not itself change the configured normal correction owner.
+Merge authority is HEAD-bound: the exact HEAD commit's single terminal `Correction-Owner:` trailer
+authorizes an automatic merge, never the mutable body marker (so a later body edit cannot make a
+per-SHA queued merge unsafe). The mandatory body marker must AGREE with that trailer: an ineligible
+head — a missing/invalid/non-merge-eligible trailer, a body/trailer disagreement, or an unreadable
+commit — is held at PROMOTION (re-drafted, any armed auto-merge disabled, a non-green status), never
+promoted, armed, or given a green required status; an unreadable commit is a retryable infra hold,
+not a fault. Codex is a truthful CANDIDATE owner (a head may declare `codex`, tracked in-flight) but
+is NOT awakenable and NOT merge-eligible: task and reviewer share one Codex bot identity, so it stays
+held pending reviewer activation; no transfer marker or user `@codex` bypasses that hold or changes the configured correction owner.
 
 This repository currently enables only the Claude correction wake integration.
 Codex supports GitHub task mentions such as `@codex fix the CI failures` through its
@@ -117,11 +121,10 @@ This consolidation does not reverse that decision or authorize a production acti
 
 ## Correction routing and recovery
 
-Naming an owner does not prove a running session. Claude is awakenable through the
-configured subscription integration. Cursor is routed but has no enabled correction
-wake integration in this repository; report that configuration limit without claiming
-no session is running. Codex and other inadmissible owner declarations report
-`correction_stalled` with the exact corrective action.
+Naming an owner does not prove a running session. Claude is awakenable through the configured
+subscription integration. Cursor and Codex are routed but have no enabled correction wake
+integration here; report that limit without claiming no session is running. An unresolvable or
+invalid owner declaration reports `correction_stalled` with the exact corrective action.
 
 The correction watchdog identifies an owed failure from the gate's review/scope/CI
 classification, rechecks live owner/head/status before publishing, and sends at most

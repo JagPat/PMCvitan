@@ -22,10 +22,13 @@ function checkRun(name, conclusion = 'success', status = 'completed') {
   return { name, conclusion, status };
 }
 
-function automatedMergeEvidence(pullRequest) {
+function automatedMergeEvidence(pullRequest, owner = 'claude') {
   return {
     repository: 'JagPat/PMCvitan',
     async pullRequest() { return pullRequest; },
+    // Merge authorization now reads the exact HEAD commit's Correction-Owner trailer; supply an eligible
+    // (readable, non-codex) owner bound to the reviewed head so these merge/queue cases stay authorized.
+    async commit(sha) { return { sha, commit: { message: `chore: unit\n\nCorrection-Owner: ${owner}\n` } }; },
     async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
     async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
   };
@@ -640,8 +643,8 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     async reviewComments() { return reviewComments; },
     async reviews() { return []; },
     async markReplacementRequired() {},
-    async commit() {
-      return { commit: { message: 'fix: ordinary head' }, files: [] };
+    async commit(sha) {
+      return { sha, commit: { message: 'fix: ordinary head\n\nCorrection-Owner: claude\n' }, files: [] };
     },
     async updateStickyComment() {},
     async mergeExactHead() {
@@ -1516,7 +1519,9 @@ test('final admission revalidates live scope and the late review-round reset', a
     async reviewComments() { return []; },
     async reviews() { return []; },
     async markReplacementRequired() {},
-    async commit() { return { commit: { message: 'fix: no convergence' }, files: [] }; },
+    // Eligible claude head (readable, non-codex, body-consistent) bound to the reviewed SHA, so the
+    // final-admission ownership hold passes once scope clears and the phase assertions below hold.
+    async commit(sha) { return { sha, commit: { message: 'fix: no convergence\n\nCorrection-Owner: claude\n' }, files: [] }; },
   };
 
   const invalidScope = await reviewGate.revalidateFinalReviewPolicy(
@@ -2178,6 +2183,9 @@ test('a base retargeted INSIDE the setDraft window is refused on the post-mutati
   const client = {
     // The pre-mutation refresh sees `main`; the post-mutation refetch sees `release`.
     async pullRequest() { return onMain; },
+    // The promotion guard reads the exact head's Correction-Owner trailer; supply an eligible
+    // (readable, claude, body-consistent) head so the guard passes and the retarget is the only refusal.
+    async commit(sha) { return { sha, commit: { message: 'chore: unit\n\nCorrection-Owner: claude\n' } }; },
     async setDraft(current, draft) {
       setDraftCalls += 1;
       return {
@@ -2210,6 +2218,7 @@ test('the post-mutation check does not disturb a unit that stayed on main', asyn
   };
   const client = {
     async pullRequest() { return onMain; },
+    async commit(sha) { return { sha, commit: { message: 'chore: unit\n\nCorrection-Owner: claude\n' } }; },
     async setDraft(current, draft) { return { ...current, draft }; },
   };
 

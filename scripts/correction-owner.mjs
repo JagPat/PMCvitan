@@ -15,7 +15,8 @@ const DECLARATION = /<!--\s*correction-owner:\s*([A-Za-z][A-Za-z0-9_-]*)\s*-->/g
 // branch under it declaring another owner contradicts itself. No other prefix
 // implies anything — #349 and #350 are both loop PRs on `codex/**`.
 const CLAUDE_BRANCH_PREFIX = 'claude/';
-const MARKER_HELP = '`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`';
+const MARKER_HELP = '`<!-- correction-owner: claude -->`, `<!-- correction-owner: cursor -->`, '
+  + 'or `<!-- correction-owner: codex -->`';
 
 // A body DECLARES in its marker block and DESCRIBES everywhere else.
 //
@@ -313,6 +314,7 @@ export function correctionOwnerProblem(pullRequest) {
 
 function ownerLabel(owner) {
   if (owner === 'claude') return 'Claude Code web Auto-fix';
+  if (owner === 'codex') return 'The Codex coding owner on this branch';
   return 'The Cursor agent on this branch';
 }
 
@@ -367,6 +369,23 @@ function declaredInstruction(owner, { reason, detail }) {
 // action that resolves it, and it resolves to no agent — least of all to Claude
 // by default, which is the assumption this whole module exists to remove.
 function undeclaredInstruction(declaration) {
+  // A HEAD-bound ownership inconsistency (the editable body marker vs. the immutable
+  // commit trailer) is unroutable: no wake is ever addressed to the body owner, because
+  // the body is the half that may be lying. The remedy names which side to fix.
+  if (declaration.state === 'inconsistent') {
+    const opening = `Correction ownership is unresolved on this exact head: `
+      + `${declaration.detail ?? 'the HEAD commit\'s Correction-Owner trailer is missing, invalid, or disagrees with the PR body marker'}. `
+      + 'No agent is routed and no wake is addressed to the body owner.';
+    const resume = declaration.remedy === 'infra'
+      ? 'Resume action: none — the exact HEAD commit could not be read (a transient infrastructure '
+        + 'condition, not an ownership fault); the watchdog re-reads it on the next tick.'
+      : declaration.remedy === 'body'
+        ? 'Resume action: set exactly one `<!-- correction-owner: … -->` body marker matching this '
+          + 'head\'s valid `Correction-Owner:` commit trailer; the unchanged head becomes eligible on the next run.'
+        : 'Resume action: push a new head whose single terminal `Correction-Owner:` commit trailer '
+          + 'matches the PR body marker; no body edit alone can clear a head that mislabels its own owner.';
+    return `${opening} ${resume}`;
+  }
   const opening = `Correction ownership is not established on this PR: ${declaration.detail}. `
     + 'No agent is routed and no correction is in flight.';
   // ADD only when the block is empty. Told to a body that already carries a
