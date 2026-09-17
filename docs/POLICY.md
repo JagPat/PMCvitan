@@ -33,15 +33,15 @@ marker selects an agent type, not a session: coordinate one producer per branch.
 the declared owner handles normal handoff; conflict handoffs re-read the owner and
 head first, and invalid or non-awakenable ownership is reported without waking a
 different agent. Authority is HEAD-bound: the exact HEAD commit's single terminal
-`Correction-Owner:` trailer is the immutable anchor and must agree with the body
-marker; an ancestor trailer or branch name never authorizes it, and missing, duplicate,
-malformed, unknown or body-inconsistent ownership fails closed. A body marker
-disagreeing with the readable HEAD trailer is unroutable — it reports stalled, never
-woken to the body owner — and an unreadable HEAD commit is a retryable infrastructure
-hold, not an author fault. Codex is admitted as a truthful **candidate** owner (tracked
-in-flight, CI-validated) but is NOT awakenable and NOT merge-eligible — its task and
-reviewer share one bot identity, so it stays held pending reviewer activation and no
-transfer marker bypasses that hold.
+`Correction-Owner:` trailer is the immutable anchor; the leading body marker is mandatory
+and must AGREE with the trailer for admission, promotion and correction routing. An ancestor
+trailer or branch name never authorizes, and missing, malformed, unknown or body-inconsistent
+ownership fails closed — a disagreeing body is unroutable (stalled, never woken to the body
+owner) and an unreadable HEAD commit is a retryable infrastructure hold, not an author fault.
+That exact-head trailer is ALSO the immutable queued-merge credential: native auto-merge binds
+the exact SHA (a head change invalidates the queue), so a later body-only edit cannot redefine
+the authorization already granted to that queued SHA. Codex is a truthful **candidate** owner
+(tracked in-flight, CI-validated) but NOT awakenable and NOT merge-eligible — task and reviewer share one bot identity, held pending reviewer activation, no transfer marker bypasses that hold.
 
 This repository currently enables only the Claude correction wake integration. Codex
 supports GitHub task mentions (`@codex …`) through its GitHub integration, but reviewer

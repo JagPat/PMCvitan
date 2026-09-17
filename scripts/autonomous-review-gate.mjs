@@ -1153,12 +1153,10 @@ async function writeValidationHoldStatus(client, pullRequest, expectedHead, elig
       + 'PR body marker is missing or does not match; set exactly one body marker to ' + owner
     : `${OWNERSHIP_INCONSISTENT_SCOPE} — this exact head needs a single `
       + 'valid Correction-Owner commit trailer matching the PR body marker';
-  // Status idempotence and sticky reconciliation are INDEPENDENT halves of this hold. Writing the
-  // `scope:` status only when it changed keeps its occurrence stable, but a rerun after a transient
-  // sticky failure would find the status already present and — if that early-returned — skip the sticky
-  // forever, leaving a protective hold with no actionable stalled explanation (finding r4035335260). So
-  // the status write no longer gates the sticky: the sticky is always reconciled (updateStickyComment is
-  // itself content-idempotent), so a rerun repairs either half of a partially completed hold.
+  // Status idempotence and sticky reconciliation are INDEPENDENT halves of this hold: the status write
+  // no longer gates the sticky, so a rerun after a transient sticky failure still reconciles the
+  // actionable stalled explanation (updateStickyComment is content-idempotent) instead of skipping it
+  // forever (finding r4035335260).
   await writeIdempotentScopeFailure(client, pullRequest, expectedHead, live, detail);
   const notice = correctionNotice(pullRequest, { detail, reason: 'scope', stalled: true, remedy });
   await client.updateStickyComment(

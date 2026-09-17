@@ -1953,6 +1953,9 @@ test('native auto-merge is armed with the reviewed head OID', async () => {
   assert.match(autoMergeMethod, /\{ id: pullRequest\.node_id, expectedHead \}/);
   // Merge authority is the immutable HEAD trailer, not the mutable body-consistency predicate.
   assert.match(gate, /function mergeAuthorizedByTrailer/);
+  // Durability is GitHub's native auto-merge, NOT a custom settle/poll/dispatch-on-exhaust retry loop
+  // (that hardening is Successor 2) — the round-4 replacement must not have returned.
+  assert.doesNotMatch(gate, /MERGE_SETTLE|mergeSettleAttempts|dispatch.*exhaust/i);
 });
 
 test('failure-latch status history is fully paginated', async () => {
