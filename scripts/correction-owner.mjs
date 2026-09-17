@@ -108,16 +108,20 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
   return { state: 'declared', owner, declared, detail: null };
 }
 
-// The HEAD-bound owner. Authority is the exact commit's SINGLE terminal `Correction-Owner:` trailer — the
-// immutable anchor an editable body marker must agree with; an ancestor trailer or a branch name never
-// authorizes, and missing/duplicate/malformed/unknown fails closed. `git interpret-trailers` semantics:
-// the block is the final run of `Key: value` (+ continuation) lines after a blank line; a continuation
-// before the first trailer voids the block.
-// git accepts horizontal whitespace between the token and the separator (`Correction-Owner : claude`
-// parses as a trailer), so admit it here and normalise the key at extraction (finding r4036658904).
+// The HEAD-bound owner. Authority is the exact commit's SINGLE terminal `Correction-Owner:` trailer (an
+// ancestor trailer or branch name never authorizes; missing/duplicate/malformed/unknown fails closed).
+// `git interpret-trailers` semantics: the block is the final run of `Key: value` (+ continuation) lines
+// after a blank line; a continuation before the first trailer voids it. git accepts horizontal whitespace
+// before the separator (`Correction-Owner : claude`), so admit it and normalise the key (finding r4036658904).
 const TRAILER_LINE = /^[A-Za-z0-9][A-Za-z0-9-]*[ \t]*:/u;
 const TRAILER_CONTINUATION = /^[ \t]+\S/u;
 const OWNER_VALUE = /^[A-Za-z][A-Za-z0-9_-]*$/u;
+// git's patch divider: an UNINDENTED `---` at EOL or followed by horizontal whitespace+text (an emailed
+// `--- a/file` header too); an INDENTED ` ---` or `---foo` is not one (finding r4038153775).
+const PATCH_DIVIDER = /^---(?:[ \t].*)?$/u;
+// git treats a line blank only when empty or ASCII horizontal whitespace; a vertical tab/NBSP/other Unicode
+// space is NOT blank, so `.trim()` over-accepts and could admit a "trailer" git never sees (r4038153786).
+const isGitBlankLine = (line) => /^[ \t]*$/u.test(line);
 
 function terminalTrailerBlock(commitMessage) {
   // `git` strips `#` comment lines (default `core.commentChar`, at COLUMN 0) before parsing trailers, so a
@@ -125,13 +129,12 @@ function terminalTrailerBlock(commitMessage) {
   const lines = String(commitMessage ?? '').replace(/\r\n?/gu, '\n').split('\n')
     .filter((line) => !line.startsWith('#'));
   const dropTrailingBlanks = () => {
-    while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+    while (lines.length > 0 && isGitBlankLine(lines[lines.length - 1])) lines.pop();
   };
-  // `git interpret-trailers --parse` reads trailers only from the message BEFORE the patch: a line EXACTLY
-  // `---` is git's patch separator, so cut at the FIRST bare divider (mirroring git's top-down
-  // `find_patch_start`) and drop everything after, diff or not. EXACT match, never trimmed: an INDENTED
-  // ` ---` is ordinary text, not a divider (findings r4032740248 / r4034779634 / r4035335223).
-  const dividerIndex = lines.findIndex((line) => line === '---');
+  // `git interpret-trailers --parse` reads trailers only from the message BEFORE the patch: cut at the FIRST
+  // git patch divider (mirroring git's top-down `find_patch_start`) and drop everything after, diff or not
+  // (findings r4032740248 / r4034779634 / r4035335223 / r4038153775).
+  const dividerIndex = lines.findIndex((line) => PATCH_DIVIDER.test(line));
   if (dividerIndex >= 0) lines.length = dividerIndex;
   dropTrailingBlanks();
   if (lines.length === 0) return null;
@@ -143,7 +146,7 @@ function terminalTrailerBlock(commitMessage) {
     }
     break;
   }
-  if (start === lines.length || start === 0 || lines[start - 1].trim() !== '') return null;
+  if (start === lines.length || start === 0 || !isGitBlankLine(lines[start - 1])) return null;
   // A continuation before the first trailer is not a valid block, so it confers no
   // owner rather than skipping the leading continuation to accept a later trailer.
   if (!TRAILER_LINE.test(lines[start])) return null;
@@ -216,12 +219,10 @@ export function correctionOwnerDeclaration(pullRequest) {
 }
 
 /**
- * HEAD-bound owner agreement for consumers that already hold a fetched commit — the conflict-handoff
- * and correction-watchdog paths, which run without the review gate. It mirrors the gate's
- * `headOwnerEligibility`: the exact commit's single terminal `Correction-Owner:` trailer must name a
- * valid owner AND agree with the PR body marker. Callers fail closed when `consistent` is false — a
- * missing/invalid/disagreeing trailer, or (passing a null message for) an unreadable commit — so no
- * wake is ever addressed to a body owner the immutable head does not confirm.
+ * HEAD-bound owner agreement for consumers holding a fetched commit (conflict-handoff and watchdog paths,
+ * which run without the review gate). Mirrors the gate's `headOwnerEligibility`: the exact commit's single
+ * terminal `Correction-Owner:` trailer must name a valid owner AND agree with the PR body marker. Callers
+ * fail closed when `consistent` is false, so no wake is addressed to a body owner the head does not confirm.
  */
 export function headBoundOwnerAgreement(commitMessage, body) {
   const trailer = parseCommitCorrectionOwner(commitMessage);
@@ -314,21 +315,16 @@ function undeclaredInstruction(declaration) {
   // is missing/invalid/disagreeing and the body may be the lying half. It carries the passed ownership
   // detail (never `undefined`) and names the trailer/body remedy, not a bare body edit (finding r4032740402).
   if (declaration.state === 'inconsistent') {
-    const opening = `Correction ownership is unresolved on this exact head: ${declaration.detail ?? 'the '
-      + 'HEAD commit\'s Correction-Owner trailer is missing, invalid, or disagrees with the PR body '
-      + 'marker'}. No agent is routed and no wake is addressed to the body owner.`;
+    const opening = `Correction ownership is unresolved on this exact head: ${declaration.detail ?? 'the HEAD commit\'s Correction-Owner trailer is missing, invalid, or disagrees with the PR body marker'}. No agent is routed and no wake is addressed to the body owner.`;
     // A VALID trailer with only a missing/mismatched BODY marker is a body edit (the unchanged head becomes
     // eligible next run), NOT a new head (finding r4032740244); only a bad TRAILER needs a new head. An
     // UNREADABLE head is neither — it is a transient infrastructure condition, so prescribe no commit or
     // body edit; the watchdog re-reads it (finding r4036658899).
     const resume = declaration.remedy === 'infra'
-      ? 'Resume action: none — the exact HEAD commit could not be read (a transient infrastructure '
-        + 'condition, not an ownership fault); the watchdog re-reads it on the next tick.'
+      ? 'Resume action: none — the exact HEAD commit could not be read (a transient infrastructure condition, not an ownership fault); the watchdog re-reads it on the next tick.'
       : declaration.remedy === 'body'
-        ? 'Resume action: set exactly one `<!-- correction-owner: … -->` body marker matching this head\'s '
-          + 'valid `Correction-Owner:` commit trailer; the unchanged head becomes eligible on the next run.'
-        : 'Resume action: push a new head whose single terminal `Correction-Owner:` commit trailer matches '
-          + 'the PR body marker; no body edit alone can clear a head that mislabels its own owner.';
+        ? 'Resume action: set exactly one `<!-- correction-owner: … -->` body marker matching this head\'s valid `Correction-Owner:` commit trailer; the unchanged head becomes eligible on the next run.'
+        : 'Resume action: push a new head whose single terminal `Correction-Owner:` commit trailer matches the PR body marker; no body edit alone can clear a head that mislabels its own owner.';
     return `${opening} ${resume}`;
   }
   const opening = `Correction ownership is not established on this PR: ${declaration.detail}. `
