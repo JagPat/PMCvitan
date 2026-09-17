@@ -1221,6 +1221,17 @@ export async function completeReviewedPullRequest(
   // for an authorized-but-not-yet-mergeable head (finding r4034779639; deeper hardening is Successor 2).
   const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead);
   if (!authorization.allowed) {
+    if (authorization.retryable) {
+      // The merge-authorization HEAD reread failed transiently (unreadable) AFTER the gate had already
+      // published its success status. Left as a plain `held_for_gates`, a green, ready PR has no next
+      // trigger — ordinary gate runs need CI or an authorized dispatch, and correction recovery only
+      // considers FAILING statuses — so one API read error strands it unmerged forever. Publish the
+      // retryable OWNERSHIP_READ_RETRY status (the SAME recovery class the review/hold paths use) so the
+      // scheduled watchdog re-dispatches the gate, which re-reads the commit next tick (finding
+      // r4037382875). It is non-persistent, so it never latches; a body/trailer fault is NOT routed here.
+      await client.setStatus(expectedHead, 'failure', OWNERSHIP_READ_RETRY, pullRequest.html_url);
+      return 'held_for_read_retry';
+    }
     return 'held_for_gates';
   }
   pullRequest = authorization.pullRequest;
@@ -1258,6 +1269,16 @@ function mergeAuthorizedByTrailer(eligibility) {
   return eligibility.readable !== false && eligibility.owner !== null && eligibility.owner !== 'codex';
 }
 
+// An unauthorized eligibility is one of two very different things, per this unit's own three-valued model:
+// an UNREADABLE commit (readable === false) is retryable infrastructure — the merge path must re-read, not
+// accuse — whereas a readable missing/mismatched/codex trailer is a terminal author-fixable ineligibility.
+// Collapsing the first into the second is what stranded a green head on a transient read (finding r4037382875).
+function unauthorizedMergeResult(eligibility) {
+  return eligibility.readable === false
+    ? { allowed: false, state: 'owner_read_retry', retryable: true }
+    : { allowed: false, state: 'owner_not_merge_eligible' };
+}
+
 export async function authorizeExactHeadMerge(client, pullRequest, expectedHead) {
   const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   const eligibility = live
@@ -1271,7 +1292,7 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead)
     return { allowed: false, state: live?.draft ? 'draft' : 'superseded' };
   }
   if (!mergeAuthorizedByTrailer(eligibility)) {
-    return { allowed: false, state: 'owner_not_merge_eligible' };
+    return unauthorizedMergeResult(eligibility);
   }
   const [statuses, checks] = await Promise.all([
     client.statuses(expectedHead),
@@ -1288,8 +1309,9 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead)
   if (!finalLive || finalLive.draft || finalLive.base?.sha !== live.base.sha) {
     return { allowed: false, state: 'changed_during_validation' };
   }
-  if (!mergeAuthorizedByTrailer(await headOwnerEligibility(client, finalLive, expectedHead))) {
-    return { allowed: false, state: 'owner_not_merge_eligible' };
+  const finalEligibility = await headOwnerEligibility(client, finalLive, expectedHead);
+  if (!mergeAuthorizedByTrailer(finalEligibility)) {
+    return unauthorizedMergeResult(finalEligibility);
   }
   return { allowed: true, state: 'authorized', pullRequest: finalLive };
 }
@@ -2208,9 +2230,14 @@ export async function run() {
               ? 'GitHub native auto-merge is armed on this exact reviewed head (bound to its SHA): it '
                 + 'squash-merges once the required gates settle behind branch protection, and a new push '
                 + 'cancels the queue. No further gate tick is owed (finding r4036040046).'
-              : 'Merge is held for the next gate tick — the current head, base, readiness or required gates '
-                + 'were not both authorized and mergeable in this run (the merge is re-authorized each attempt, '
-                + 'never delegated to native auto-merge).',
+              : completion === 'held_for_read_retry'
+                ? 'Merge authorization could not re-read this exact head (a transient infrastructure '
+                  + 'condition, not an ownership fault); a retryable ownership-read status is published so '
+                  + 'the scheduled watchdog re-dispatches the gate to re-read the commit and re-authorize '
+                  + 'on the next tick (finding r4037382875).'
+                : 'Merge is held for the next gate tick — the current head, base, readiness or required gates '
+                  + 'were not both authorized and mergeable in this run (the merge is re-authorized each attempt, '
+                  + 'never delegated to native auto-merge).',
         }),
       );
       return;

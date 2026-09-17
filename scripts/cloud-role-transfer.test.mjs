@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import { parseCorrectionOwner, parseCommitCorrectionOwner, correctionRouting, correctionOwnerProblem } from './correction-owner.mjs';
-import { authorizeExactHeadMerge, isValidationOnlyCodexOwner, setDraftForCurrentHead, revalidateFinalReviewPolicy, reviewAttempt, GitHubClient, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
+import { authorizeExactHeadMerge, completeReviewedPullRequest, isValidationOnlyCodexOwner, setDraftForCurrentHead, revalidateFinalReviewPolicy, reviewAttempt, GitHubClient, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
 import { CORRECTION_OWNERS, OWNERSHIP_READ_RETRY, OWNERSHIP_INCONSISTENT_SCOPE, isRetryableReviewFailureDescription } from './review-policy.mjs';
 
 const head = 'a'.repeat(40);
@@ -239,6 +239,76 @@ test('automatic merge needs an eligible commit owner, CI and exact-head review, 
   assert.equal((await authorizeExactHeadMerge(makeClient({ commit: ownerCommit('cursor') }), pull, head)).allowed, true);
   // A missing trailer confers no owner, so it is not merge-eligible.
   assert.equal((await authorizeExactHeadMerge(makeClient({ commit: noOwnerCommit() }), pull, head)).state, 'owner_not_merge_eligible');
+});
+
+test('finding r4037382875 — an unreadable MERGE-authorization reread is retryable, never a stranding hold', async () => {
+  // The gate has already published success and the review is clean; completeReviewedPullRequest runs the
+  // final merge authorization. If the HEAD-commit read fails transiently there, the previous code returned
+  // `owner_not_merge_eligible` → `held_for_gates` and published NOTHING, so a green ready PR had no next
+  // trigger (ordinary runs need CI/dispatch; correction recovery only considers FAILING statuses) and stayed
+  // unmerged forever after one API read error. The unreadable verdict must be RETRYABLE and publish
+  // OWNERSHIP_READ_RETRY so the scheduled watchdog re-dispatches the gate to re-read the commit.
+  const body = '<!-- correction-owner: claude -->';
+  const pull = { number: 600, node_id: 'PR_x', state: 'open', draft: false, body, html_url: 'https://pr', head: { sha: head, ref: 'claude/x', repo: { full_name: 'JagPat/PMCvitan' } }, base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } } };
+  const checks = REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
+  // `throwOn` is which commit() call (1-indexed) throws: 1 = the pre-gate eligibility read; 2 = the final
+  // post-gate reread. Both must fail closed to RETRYABLE, never to a terminal ineligibility.
+  const makeClient = (throwOn) => {
+    let calls = 0;
+    const statusWrites = [];
+    let merged = 0; let armed = 0;
+    const client = {
+      repository: 'JagPat/PMCvitan', statusWrites,
+      get merged() { return merged; }, get armed() { return armed; },
+      async commit() { calls += 1; if (calls === throwOn) throw new Error('transient read failure'); return ownerCommit('claude'); },
+      async pullRequest() { return pull; },
+      async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
+      async checkRuns() { return checks; },
+      async setStatus(sha, state, description, url) { statusWrites.push({ sha, state, description, url }); },
+      async mergeExactHead() { merged += 1; return { merged: true }; },
+      async enableAutoMerge() { armed += 1; },
+      async dispatchHandoff() {},
+      async paginated() { return []; },
+    };
+    return client;
+  };
+  for (const throwOn of [1, 2]) {
+    const auth = await authorizeExactHeadMerge(makeClient(throwOn), pull, head);
+    assert.equal(auth.allowed, false);
+    assert.equal(auth.state, 'owner_read_retry', `commit() #${throwOn} unreadable is a retryable read, not an ineligibility`);
+    assert.equal(auth.retryable, true);
+
+    const client = makeClient(throwOn);
+    const completion = await completeReviewedPullRequest(client, pull, head);
+    assert.equal(completion, 'held_for_read_retry');
+    assert.equal(client.merged, 0, 'an unreadable head is never merged');
+    assert.equal(client.armed, 0, 'an unreadable head never arms native auto-merge');
+    const retry = client.statusWrites.find((w) => w.description === OWNERSHIP_READ_RETRY);
+    assert.ok(retry, 'the retryable ownership-read status is published so the watchdog re-dispatches');
+    assert.equal(retry.state, 'failure');
+    assert.equal(isRetryableReviewFailureDescription(retry.description), true);
+  }
+  // Regression guard: a READABLE head with no owner trailer is a genuine, terminal ineligibility — it must
+  // NOT be reclassified as retryable, and completeReviewedPullRequest must NOT publish OWNERSHIP_READ_RETRY.
+  const readableIneligible = {
+    repository: 'JagPat/PMCvitan',
+    async commit() { return noOwnerCommit(); },
+    async pullRequest() { return pull; },
+    async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
+    async checkRuns() { return checks; },
+    statusWrites: [],
+    async setStatus(sha, state, description, url) { this.statusWrites.push({ description }); },
+    async mergeExactHead() { throw new Error('must not merge an ineligible head'); },
+    async enableAutoMerge() { throw new Error('must not arm an ineligible head'); },
+    async dispatchHandoff() {},
+    async paginated() { return []; },
+  };
+  const eligAuth = await authorizeExactHeadMerge(readableIneligible, pull, head);
+  assert.equal(eligAuth.state, 'owner_not_merge_eligible');
+  assert.notEqual(eligAuth.retryable, true);
+  assert.equal(await completeReviewedPullRequest(readableIneligible, pull, head), 'held_for_gates');
+  assert.equal(readableIneligible.statusWrites.find((w) => w.description === OWNERSHIP_READ_RETRY), undefined,
+    'a readable ineligibility is not routed through the retryable read path');
 });
 
 test('finding 990 — an unreadable HEAD commit holds RETRYABLE, so the watchdog re-dispatches', async () => {
