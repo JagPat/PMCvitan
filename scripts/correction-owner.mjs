@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { CORRECTION_OWNERS, AWAKENABLE_FROM_GITHUB, CORRECTION_STALLED } from './review-policy.mjs';
 export { CORRECTION_OWNERS, AWAKENABLE_FROM_GITHUB, CORRECTION_STALLED } from './review-policy.mjs';
 
@@ -143,20 +145,31 @@ const asciiTrim = (value) => value.replace(/^[ \t]+|[ \t]+$/gu, '');
 // an argument, so no content can be read as a flag. Returns null when git cannot be run at all (binary
 // missing or non-zero exit), so the caller fails closed rather than reading an unreadable commit as owning
 // nothing.
+// A single empty directory pointed at by `GIT_DIR`, so git uses it AS the repository and never discovers
+// the ambient one from the working directory. It stays empty (`--parse` reads config, writes nothing), so
+// it holds no local config; created lazily and reused. Discovery matters because a repository's local
+// config — including a `trailer.<name>.key` that changes block recognition — would otherwise be read, and
+// `GIT_DIR`/`GIT_WORK_TREE`/a repo-inside-`TMPDIR` are all repository-selection inputs that no
+// `GIT_CEILING_DIRECTORIES` reliably fences once the cwd is inside a repo.
+let cleanGitDir;
+function isolatedGitDir() {
+  if (!cleanGitDir) cleanGitDir = mkdtempSync(join(tmpdir(), 'owner-trailer-gitdir-'));
+  return cleanGitDir;
+}
+
 // The environment that ISOLATES git from every external config source, so `--parse` depends only on the
-// config this module pins and never on the runner. Global (`~/.gitconfig`) and system (`/etc/gitconfig`)
-// are redirected to `/dev/null`; `GIT_CONFIG_NOSYSTEM` is belt-and-suspenders for system config; every
-// `GIT_CONFIG*` variable is dropped so an injected `-c`/`GIT_CONFIG_*` cannot reach the child; and the
-// child runs from `tmpdir()` (outside any repository) so no local `.git/config` is read. This matters
-// because a configured trailer key (`trailer.<name>.key`) — not only the separator — changes whether git
-// recognises a paragraph as a trailer block, so pinning individual keys is not enough; the config sources
-// are enumerable and all closed here.
+// config this module pins and never on the runner. Every inherited `GIT_*` variable is dropped (config
+// sources AND repository-selection inputs — `GIT_DIR`, `GIT_WORK_TREE`, `GIT_CONFIG*`, …); global
+// (`~/.gitconfig`) and system (`/etc/gitconfig`) are redirected to `/dev/null` with `GIT_CONFIG_NOSYSTEM`;
+// and `GIT_DIR` is set to the empty directory above so git reads no local repository config. The remaining
+// config comes only from the command-line `-c` flags this module passes.
 function isolatedGitEnv() {
   const env = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith('GIT_CONFIG')) continue;
+    if (key.startsWith('GIT_')) continue;
     env[key] = value;
   }
+  env.GIT_DIR = isolatedGitDir();
   env.GIT_CONFIG_GLOBAL = '/dev/null';
   env.GIT_CONFIG_SYSTEM = '/dev/null';
   env.GIT_CONFIG_NOSYSTEM = '1';
@@ -178,7 +191,7 @@ function gitParsedTrailers(commitMessage) {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'ignore'],
       maxBuffer: 8 * 1024 * 1024,
-      cwd: tmpdir(),
+      cwd: isolatedGitDir(),
       env: isolatedGitEnv(),
     });
   } catch {

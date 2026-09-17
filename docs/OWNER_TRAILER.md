@@ -38,14 +38,17 @@ is read as a flag) and reads back git's own `Key: value` lines, with folded cont
 The primitive is therefore git itself for the extraction step, and cannot diverge from git as further edge
 cases surface. The subprocess is **isolated from every external git config source** so the parse depends only
 on the config this module pins, never on the runner: global (`~/.gitconfig`) and system (`/etc/gitconfig`)
-are redirected to `/dev/null` (plus `GIT_CONFIG_NOSYSTEM`), every `GIT_CONFIG*` variable is dropped from the
-child's environment, and the child runs from a temp directory outside any repository so no local
-`.git/config` is read. On top of that clean base it pins the two keys that still shape `--parse` output —
-`trailer.separators` (which decides both the accepted separators and the output separator, so a runner
-configured with e.g. `=:` would otherwise emit `Correction-Owner= claude`) and `core.commentChar` (which
-decides which comment lines `--parse` strips). Isolation is required rather than key-by-key pinning because a
-configured trailer key (`trailer.<name>.key`) also changes whether git recognises a paragraph as a trailer
-block, and such keys cannot be enumerated in advance; the config *sources*, however, are closed. On top of git's output it applies only this loop's own admission logic: it filters for the
+are redirected to `/dev/null` (plus `GIT_CONFIG_NOSYSTEM`); every inherited `GIT_*` variable is dropped from
+the child's environment (config sources *and* repository-selection inputs alike); and `GIT_DIR` is pointed at
+an empty directory the module owns, so git uses that as its repository and **never discovers the ambient
+one** — closing local `.git/config`, an inherited `GIT_DIR`/`GIT_WORK_TREE`, and a `TMPDIR` that happens to
+sit inside a repository (which `GIT_CEILING_DIRECTORIES` does not reliably fence once the cwd is inside the
+repo). On that clean base it pins the two keys that still shape `--parse` output — `trailer.separators`
+(which decides both the accepted separators and the output separator, so a runner configured with e.g. `=:`
+would otherwise emit `Correction-Owner= claude`) and `core.commentChar` (which decides which comment lines
+`--parse` strips). Full isolation is required rather than key-by-key pinning because a configured trailer key
+(`trailer.<name>.key`) also changes whether git recognises a paragraph as a trailer block, and such keys
+cannot be enumerated in advance; the config *sources*, however, are enumerable and all closed. On top of git's output it applies only this loop's own admission logic: it filters for the
 `Correction-Owner` key (case-insensitive), ASCII-trims the value (git preserves non-ASCII whitespace in the
 value, so an NBSP/VT/em-space-padded value stays malformed and fails validation), and maps to the states
 above. If git cannot be run the primitive returns `unreadable` rather than reading the commit as owning

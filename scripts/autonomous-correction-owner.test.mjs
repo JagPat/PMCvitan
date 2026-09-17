@@ -22,9 +22,10 @@
 // discipline, the same-repository restriction, or the two-finding-head
 // replacement policy — O7 pins that.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { guardAgainstCurrentHeadFinding, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
@@ -810,14 +811,20 @@ test('C11: a non-awakenable owner is told what GitHub cannot do, not that nothin
 
 // The raw terminal Correction-Owner trailer value(s) git recognises, isolated from this loop's owner
 // admission (git does not know `CORRECTION_OWNERS`). `--unfold` joins folded continuations as git does.
-// The same config isolation the primitive applies: no global/system/local/env config reaches git, only the
-// two pinned keys, so the oracle is `git parsing under our fixed config` — not under whatever the runner sets.
+// The same config isolation the primitive applies: no global/system/local/env config or discovered
+// repository reaches git, only the two pinned keys, so the oracle is `git parsing under our fixed config`.
+let oracleGitDir;
+function isolatedOracleDir() {
+  if (!oracleGitDir) oracleGitDir = mkdtempSync(join(tmpdir(), 'owner-trailer-oracle-'));
+  return oracleGitDir;
+}
 function isolatedGitEnv() {
   const env = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith('GIT_CONFIG')) continue;
+    if (key.startsWith('GIT_')) continue;
     env[key] = value;
   }
+  env.GIT_DIR = isolatedOracleDir();
   env.GIT_CONFIG_GLOBAL = '/dev/null';
   env.GIT_CONFIG_SYSTEM = '/dev/null';
   env.GIT_CONFIG_NOSYSTEM = '1';
@@ -829,7 +836,7 @@ function gitCorrectionOwnerValues(message) {
     '-c', 'trailer.separators=:',
     '-c', 'core.commentChar=#',
     'interpret-trailers', '--parse', '--unfold',
-  ], { input: message, cwd: tmpdir(), env: isolatedGitEnv() }).toString();
+  ], { input: message, cwd: isolatedOracleDir(), env: isolatedGitEnv() }).toString();
   return out.split('\n')
     .filter((line) => /^correction-owner[ \t]*:/iu.test(line))
     // ASCII-trim only, so git's non-ASCII whitespace in the value is preserved for a faithful comparison.
@@ -993,6 +1000,45 @@ test('the trailer read is independent of the runner\'s ambient git config', () =
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+  }
+});
+
+test('the trailer read ignores a repository selected via GIT_DIR / GIT_WORK_TREE / TMPDIR', () => {
+  // A runner that inherits `GIT_DIR`/`GIT_WORK_TREE`, or whose `TMPDIR` is inside a repository, must not let
+  // `interpret-trailers` discover that repository and read its local config — e.g. a `trailer.<name>.key`
+  // that fabricates a trailer block out of a plain paragraph. `GIT_CEILING_DIRECTORIES` does NOT fence this
+  // once the cwd is inside the repo, so the primitive strips every `GIT_*` variable and points `GIT_DIR` at
+  // its own empty directory; the ambient repo is never discovered. Build such a repo with the hostile key,
+  // point the discovery vars at it, and assert the parser is unaffected. Env restored in finally.
+  const hostRepo = mkdtempSync(join(tmpdir(), 'owner-trailer-hostrepo-'));
+  execFileSync('git', ['init', '-q', hostRepo]);
+  execFileSync('git', ['-C', hostRepo, 'config', 'trailer.correction-owner.key', 'Correction-Owner']);
+  const saved = {
+    dir: process.env.GIT_DIR,
+    work: process.env.GIT_WORK_TREE,
+    tmp: process.env.TMPDIR,
+  };
+  try {
+    process.env.GIT_DIR = join(hostRepo, '.git');
+    process.env.GIT_WORK_TREE = hostRepo;
+    process.env.TMPDIR = hostRepo;
+    // The repository's configured trailer key must NOT fabricate a block…
+    assert.equal(
+      parseCommitCorrectionOwner('subject\n\nplain\nCorrection-Owner: claude\n').state,
+      'missing',
+    );
+    // …and a real terminal trailer still resolves under the isolation.
+    assert.equal(parseCommitCorrectionOwner('subject\n\nCorrection-Owner: claude\n').owner, 'claude');
+  } finally {
+    for (const [key, value] of [
+      ['GIT_DIR', saved.dir],
+      ['GIT_WORK_TREE', saved.work],
+      ['TMPDIR', saved.tmp],
+    ]) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(hostRepo, { recursive: true, force: true });
   }
 });
 
