@@ -1,22 +1,150 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
-import { parseCorrectionOwner, correctionRouting, correctionOwnerProblem } from './correction-owner.mjs';
-import { authorizeExactHeadMerge, GitHubClient, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
+import {
+  parseCorrectionOwner,
+  parseCommitCorrectionOwner,
+  correctionRouting,
+  correctionOwnerProblem,
+  CORRECTION_OWNERS,
+} from './correction-owner.mjs';
+import {
+  authorizeExactHeadMerge,
+  setDraftForCurrentHead,
+  isValidationOnlyCodexOwner,
+  GitHubClient,
+  REQUIRED_CHECKS,
+} from './autonomous-review-gate.mjs';
+import {
+  OWNERSHIP_READ_RETRY,
+  OWNERSHIP_INCONSISTENT_SCOPE,
+  isRetryableReviewFailureDescription,
+} from './review-policy.mjs';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
 
-test('Codex implementation ownership is refused until independent reviewer provenance exists', () => {
-  for (const ref of ['codex/maintenance', 'claude/product']) {
+// The exact HEAD commit the promotion hold reads to resolve ownership: its terminal Correction-Owner trailer.
+const ownerCommit = (owner, sha = head) => ({ sha, commit: { message: `chore: unit\n\nCorrection-Owner: ${owner}\n` } });
+// A message whose trailer output overflows git's parse buffer, so the git-faithful primitive returns its
+// `unreadable` state (finding 4041980997): an infrastructure read failure, distinct from a missing trailer.
+const unreadableCommit = (sha = head) => ({ sha, commit: { message: `subject\n\nX-Pad: ${'a'.repeat(9 * 1024 * 1024)}` } });
+
+// A client that records the protective-hold effects `setDraftForCurrentHead`'s promotion guard applies.
+function holdClient({ body = '<!-- correction-owner: claude -->', commit = ownerCommit('claude'), draft = true, ref = 'claude/x' } = {}) {
+  const effects = { statusWrites: [], draftWrites: [], autoMergeDisabled: 0, sticky: [] };
+  const pull = {
+    number: 600, node_id: 'PR_x', state: 'open', draft, body, auto_merge: { enabledAt: 'x' },
+    html_url: 'https://pr',
+    head: { sha: head, ref, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } },
+  };
+  const client = {
+    repository: 'JagPat/PMCvitan',
+    async pullRequest() { return { ...pull }; },
+    async commit(sha) {
+      if (commit === 'throw') throw new Error('unreadable commit fetch');
+      return typeof commit === 'function' ? commit(sha) : { ...commit, sha: commit.sha ?? sha };
+    },
+    async setDraft(current, d) { effects.draftWrites.push(d); return { ...current, draft: d }; },
+    async setStatus(sha, state, description) { effects.statusWrites.push({ state, description }); },
+    async updateStickyComment(number, b) { effects.sticky.push(b); },
+    async disableAutoMerge() { effects.autoMergeDisabled += 1; },
+    async reviews() { return []; },
+    async reviewComments() { return []; },
+  };
+  return { client, effects };
+}
+
+test('Codex is admitted as a truthful candidate correction owner, but is never merge-eligible', () => {
+  // Admitting `codex` tracks a Codex-owned corrective head as an in-flight unit; it is NOT awakenable and NOT
+  // merge-eligible — the implementation task and reviewer share one bot identity, held pending independent
+  // reviewer activation (docs/POLICY.md). Its non-eligibility is enforced by the pre-publication hold below.
+  assert.deepEqual([...CORRECTION_OWNERS], ['claude', 'cursor', 'codex']);
+  for (const ref of ['codex/maintenance', 'codex/product']) {
     const body = '<!-- correction-owner: codex -->\n<!-- correction-transfer: claude->codex -->';
     const declaration = parseCorrectionOwner(body, { headRef: ref });
-    assert.equal(declaration.state, 'invalid');
-    assert.ok(correctionOwnerProblem({ body, head: { ref } }));
+    assert.equal(declaration.state, 'declared');
+    assert.equal(declaration.owner, 'codex');
+    assert.equal(correctionOwnerProblem({ body, head: { ref } }), null, 'an admitted candidate passes scope');
     const route = correctionRouting({ declaration, head });
-    assert.equal(route.owner, null);
-    assert.equal(route.awakenable, false);
+    assert.equal(route.owner, 'codex');
+    assert.equal(route.awakenable, false, 'codex is admitted but not GitHub-awakenable');
   }
+  // The exact HEAD commit trailer also resolves codex (the hold reads the trailer, not only the body).
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: codex\n').state, 'declared');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: codex\n').owner, 'codex');
+});
+
+// ── Pre-publication ownership hold: an ineligible head is never promoted, armed, or given a green status ──
+// These reproduce the convergent P1s Codex raised on #603 (findings 4041980984/991/995/997): the merge gate
+// alone could not keep an ineligible head out of a mergeable state. This unit (2A) enforces body/trailer
+// AGREEMENT and the retryable/terminal split at PROMOTION, before any green status — so no ineligible head
+// ever becomes a ready PR. On the pre-change gate (no promotion guard) each of these PROMOTED the head.
+
+test('finding 4041980995 — a body/trailer OWNER disagreement is held at promotion, never promoted', async () => {
+  // Body declares codex (validation-only) but the immutable trailer names claude: the body-declared codex
+  // candidate must not be disguised by a mismatched trailer and slipped through as eligible.
+  const { client, effects } = holdClient({ body: '<!-- correction-owner: codex -->', commit: ownerCommit('claude') });
+  const result = await setDraftForCurrentHead(client, 600, head, false);
+  assert.equal(result.draft, true, 'a disagreeing head is re-drafted, never promoted to ready');
+  const scope = effects.statusWrites.find((w) => w.description.startsWith('scope:'));
+  assert.ok(scope, 'a scope failure is written so the required status is never green for this head');
+  assert.equal(scope.state, 'failure');
+  assert.ok(scope.description.includes(OWNERSHIP_INCONSISTENT_SCOPE));
+  assert.equal(isRetryableReviewFailureDescription(scope.description), false, 'an ownership fault is not retryable infra');
+  assert.equal(effects.autoMergeDisabled, 1, 'any armed auto-merge is cancelled for the ineligible head');
+  assert.ok(effects.sticky.length >= 1, 'the stalled correction is explained on the sticky comment');
+});
+
+test('finding 4041980984/4041980991 — a consistent Codex candidate is held pending, never promoted', async () => {
+  // A codex candidate lives on a codex branch (a claude/** branch would make the codex marker a
+  // branch-reservation contradiction, i.e. a scope fault, not the consistent-codex pending hold).
+  const { client, effects } = holdClient({ body: '<!-- correction-owner: codex -->', commit: ownerCommit('codex'), ref: 'codex/x' });
+  assert.equal(isValidationOnlyCodexOwner({ body: '<!-- correction-owner: codex -->' }), true);
+  const result = await setDraftForCurrentHead(client, 600, head, false);
+  assert.equal(result.draft, true);
+  assert.equal(effects.statusWrites.length, 1);
+  assert.equal(effects.statusWrites[0].state, 'pending', 'a codex candidate never publishes a green status');
+  assert.match(effects.statusWrites[0].description, /Codex-owned candidate held/u);
+  assert.equal(effects.autoMergeDisabled, 1);
+});
+
+test('finding 4041980997 — an unreadable-PARSE head is held RETRYABLE, not a terminal ineligibility', async () => {
+  // The commit FETCH succeeds, but the git-faithful primitive returns `unreadable` (its output overflows the
+  // parse buffer). That must publish the RETRYABLE ownership-read status so the watchdog re-dispatches — not a
+  // terminal scope fault that strands an otherwise-valid head.
+  const { client, effects } = holdClient({ body: '<!-- correction-owner: claude -->', commit: unreadableCommit() });
+  const result = await setDraftForCurrentHead(client, 600, head, false);
+  assert.equal(result.draft, true, 'an unreadable head is re-drafted, never promoted');
+  const retry = effects.statusWrites.find((w) => w.description === OWNERSHIP_READ_RETRY);
+  assert.ok(retry, 'the retryable ownership-read status is written');
+  assert.equal(retry.state, 'failure');
+  assert.equal(isRetryableReviewFailureDescription(retry.description), true);
+  assert.equal(
+    effects.statusWrites.some((w) => w.description.startsWith('scope:')),
+    false,
+    'an unreadable read is infra, never an ownership scope accusation',
+  );
+  assert.equal(effects.autoMergeDisabled, 1);
+});
+
+test('finding 4041980997 (fetch throw) — an unreadable commit FETCH is also held RETRYABLE', async () => {
+  const { client, effects } = holdClient({ body: '<!-- correction-owner: claude -->', commit: 'throw' });
+  const result = await setDraftForCurrentHead(client, 600, head, false);
+  assert.equal(result.draft, true);
+  assert.ok(effects.statusWrites.find((w) => w.description === OWNERSHIP_READ_RETRY));
+  assert.equal(effects.autoMergeDisabled, 1);
+});
+
+test('regression — an eligible claude head IS promoted, with no hold', async () => {
+  const { client, effects } = holdClient({ body: '<!-- correction-owner: claude -->', commit: ownerCommit('claude'), draft: true });
+  const result = await setDraftForCurrentHead(client, 600, head, false);
+  assert.ok(result);
+  assert.equal(result.draft, false, 'the eligible head is promoted to ready');
+  assert.deepEqual(effects.draftWrites, [false]);
+  assert.equal(effects.statusWrites.length, 0, 'no hold status is written for an eligible owner');
+  assert.equal(effects.autoMergeDisabled, 0);
 });
 function cleanRun(overrides = {}) {
   const artifact = { id: 789, digest: `sha256:${'d'.repeat(64)}`, name: `claude-shadow-v1-repo-${Buffer.from('JagPat/PMCvitan').toString('base64url')}-pr-600-base-${base}-head-${head}-ci-123-2-publisher-456-1-state-clear-findings-0` };

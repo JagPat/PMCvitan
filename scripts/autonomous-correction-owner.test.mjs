@@ -152,7 +152,13 @@ test('D2: the controller cannot distinguish correction owners', async () => {
 test('O1: the declaration is machine-readable, and every failure mode is named', async () => {
   const { parseCorrectionOwner, CORRECTION_OWNERS } = await ownerModule();
 
-  assert.deepEqual(CORRECTION_OWNERS, ['claude', 'cursor']);
+  assert.deepEqual(CORRECTION_OWNERS, ['claude', 'cursor', 'codex']);
+
+  // Codex is admitted as a truthful CANDIDATE owner: declared and parseable (tracked in-flight),
+  // though not awakenable and not merge-eligible — the pre-publication hold refuses to promote it.
+  const codex = parseCorrectionOwner('<!-- correction-owner: codex -->', { headRef: 'codex/x' });
+  assert.equal(codex.state, 'declared');
+  assert.equal(codex.owner, 'codex');
 
   const claude = parseCorrectionOwner('<!-- correction-owner: claude -->');
   assert.equal(claude.state, 'declared');
@@ -916,12 +922,14 @@ test('the commit-trailer parser agrees with real `git interpret-trailers --parse
 
 test('owner resolution is applied on top of git-faithful parsing', () => {
   // A git-recognised trailer naming an admitted owner resolves; a git-recognised value that is NOT an
-  // admitted owner is `invalid` (not routed) - admission is unchanged and codex is not added in this unit.
+  // admitted owner is `invalid` (not routed). This unit admits `codex` as a candidate owner, so a codex
+  // trailer now resolves `declared` (its non-merge-eligibility is enforced by the pre-publication hold).
   const claude = parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\n');
   assert.equal(claude.state, 'declared');
   assert.equal(claude.owner, 'claude');
   assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: cursor\n').owner, 'cursor');
-  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: codex\n').state, 'invalid');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: codex\n').state, 'declared');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: codex\n').owner, 'codex');
   assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: nobody\n').state, 'invalid');
   assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\nCorrection-Owner: cursor\n').state, 'conflicting');
   assert.equal(parseCommitCorrectionOwner('no trailer').state, 'missing');
