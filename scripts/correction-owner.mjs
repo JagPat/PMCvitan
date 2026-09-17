@@ -118,6 +118,120 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
   return { state: 'declared', owner, declared, detail: null };
 }
 
+// ── HEAD-bound owner parsing/resolution primitives (Owner primitive unit) ────────────────────────────
+// Pure, git-faithful parsing of the exact HEAD commit's terminal `Correction-Owner:` trailer, with a
+// differential test against real `git interpret-trailers --parse`. These primitives change NO gate, wake,
+// merge, handoff, watchdog, continuation, or authoritative consumer — no caller in this unit routes on
+// them. Admission (three-valued holds, codex candidacy) and exact-head merge authorization are later units
+// that will consume the merged primitive; here it only parses and resolves.
+//
+// `git interpret-trailers` semantics: the trailer block is the final run of `Key: value` (+ indented
+// continuation) lines after a blank line, read only from the message BEFORE the patch; a continuation
+// before the first trailer voids the block. git accepts horizontal whitespace before the separator
+// (`Correction-Owner : claude`), so admit it and normalise the key on read.
+const TRAILER_LINE = /^[A-Za-z0-9][A-Za-z0-9-]*[ \t]*:/u;
+const TRAILER_CONTINUATION = /^[ \t]+\S/u;
+const OWNER_VALUE = /^[A-Za-z][A-Za-z0-9_-]*$/u;
+// git's patch divider: an UNINDENTED `---` at EOL or followed by horizontal whitespace+text (an emailed
+// `--- a/file` header too); an INDENTED ` ---` or `---foo` is not one.
+const PATCH_DIVIDER = /^---(?:[ \t].*)?$/u;
+// git treats a line blank only when empty or ASCII horizontal whitespace; a vertical tab / NBSP / other
+// Unicode space is NOT blank, so `.trim()` over-accepts and could admit a "trailer" git never recognises.
+const isGitBlankLine = (line) => /^[ \t]*$/u.test(line);
+
+function terminalTrailerBlock(commitMessage) {
+  // `git` strips `#` comment lines (default `core.commentChar`, at COLUMN 0) before parsing, so a valid
+  // terminal owner followed by a generated `# …` line must not read as `missing`.
+  const lines = String(commitMessage ?? '').replace(/\r\n?/gu, '\n').split('\n')
+    .filter((line) => !line.startsWith('#'));
+  const dropTrailingBlanks = () => {
+    while (lines.length > 0 && isGitBlankLine(lines[lines.length - 1])) lines.pop();
+  };
+  // Cut at the FIRST git patch divider (mirroring git's top-down `find_patch_start`) and drop everything
+  // after it, diff or not.
+  const dividerIndex = lines.findIndex((line) => PATCH_DIVIDER.test(line));
+  if (dividerIndex >= 0) lines.length = dividerIndex;
+  dropTrailingBlanks();
+  if (lines.length === 0) return null;
+  let start = lines.length;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (TRAILER_LINE.test(lines[index]) || TRAILER_CONTINUATION.test(lines[index])) {
+      start = index;
+      continue;
+    }
+    break;
+  }
+  if (start === lines.length || start === 0 || !isGitBlankLine(lines[start - 1])) return null;
+  // A continuation before the first trailer is not a valid block, so it confers no owner.
+  if (!TRAILER_LINE.test(lines[start])) return null;
+  return lines.slice(start);
+}
+
+/**
+ * The HEAD-bound owner from the exact commit message's terminal trailer block, reproducing
+ * `git interpret-trailers --parse` faithfully. Four named states: `declared` (exactly one terminal
+ * `Correction-Owner:` trailer naming a known owner), `missing` (no terminal trailer block, or none named),
+ * `conflicting` (more than one, or disagreeing values), `invalid` (a malformed value, or one no correction
+ * owner). `declared` (the array) always carries the raw trailer values found, so a later consumer can see
+ * a value this loop does not route to. Owner admission is unchanged from `CORRECTION_OWNERS`.
+ */
+export function parseCommitCorrectionOwner(commitMessage) {
+  const block = terminalTrailerBlock(commitMessage);
+  if (!block) {
+    return { state: 'missing', owner: null, declared: [] };
+  }
+  const trailers = [];
+  for (const line of block) {
+    if (TRAILER_CONTINUATION.test(line) && trailers.length > 0) {
+      // git folds a continuation into the value joined by a single space (its `--unfold` form); a value
+      // with a continuation is never a valid owner, but match git so the raw value is faithful.
+      trailers[trailers.length - 1].value += ` ${line.trim()}`;
+      continue;
+    }
+    const separator = line.indexOf(':');
+    if (separator < 0) continue; // defensive; the block admits only trailer/continuation lines
+    trailers.push({
+      key: line.slice(0, separator).replace(/[ \t]+$/u, ''),
+      value: line.slice(separator + 1).replace(/^[ \t]+/u, ''),
+    });
+  }
+  const declared = trailers
+    .filter((trailer) => trailer.key.toLowerCase() === 'correction-owner')
+    .map((trailer) => trailer.value.trim());
+  if (declared.length === 0) {
+    return { state: 'missing', owner: null, declared };
+  }
+  if (declared.length > 1 || new Set(declared.map((value) => value.toLowerCase())).size > 1) {
+    return { state: 'conflicting', owner: null, declared };
+  }
+  const [raw] = declared;
+  if (!OWNER_VALUE.test(raw)) {
+    return { state: 'invalid', owner: null, declared };
+  }
+  const owner = raw.toLowerCase();
+  if (!CORRECTION_OWNERS.includes(owner)) {
+    return { state: 'invalid', owner: null, declared };
+  }
+  return { state: 'declared', owner, declared };
+}
+
+/**
+ * HEAD-bound owner agreement — a pure resolution primitive for the later consumers (review gate, conflict
+ * handoff, watchdog) that will hold a fetched commit. The exact commit's single terminal `Correction-Owner:`
+ * trailer must name a valid owner AND agree with the PR body marker; `consistent` is false for a
+ * missing/invalid/disagreeing trailer or (passing a null message for) an unreadable commit. No consumer in
+ * this unit calls it; it fails closed so a later caller never wakes a body owner the immutable head does
+ * not confirm.
+ */
+export function headBoundOwnerAgreement(commitMessage, body) {
+  const trailer = parseCommitCorrectionOwner(commitMessage);
+  const headOwner = trailer.state === 'declared' ? trailer.owner : null;
+  const bodyDeclaration = parseCorrectionOwner(body);
+  const bodyOwner = bodyDeclaration.state === 'declared' ? bodyDeclaration.owner : null;
+  const consistent = headOwner !== null && bodyOwner !== null && headOwner === bodyOwner;
+  return { headOwner, bodyOwner, consistent, trailerState: trailer.state };
+}
+
 /**
  * Whether a pull request is inside the correction watchdog's remit.
  *

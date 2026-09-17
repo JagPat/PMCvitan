@@ -23,9 +23,11 @@
 // replacement policy — O7 pins that.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 
 import { guardAgainstCurrentHeadFinding, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
+import { parseCommitCorrectionOwner, headBoundOwnerAgreement } from './correction-owner.mjs';
 import { assessReviewScope } from './review-efficiency.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
@@ -795,4 +797,87 @@ test('C11: a non-awakenable owner is told what GitHub cannot do, not that nothin
     ref: 'claude/x',
   });
   assert.doesNotMatch(nextLine(claude.body), /cannot (start|observe)|neither start/iu);
+});
+
+// ── Owner primitive unit: git-faithful commit-trailer parsing ────────────────────────────────────────
+// `parseCommitCorrectionOwner` reproduces `git interpret-trailers --parse` for the terminal
+// `Correction-Owner:` trailer. The primitive is proven against REAL git over an adversarial matrix
+// (differential test), so it cannot silently diverge as git edge cases surface.
+
+// The raw terminal Correction-Owner trailer value(s) git recognises, isolated from this loop's owner
+// admission (git does not know `CORRECTION_OWNERS`). `--unfold` joins folded continuations as git does.
+function gitCorrectionOwnerValues(message) {
+  const out = execFileSync('git', ['interpret-trailers', '--parse', '--unfold'], { input: message }).toString();
+  return out.split('\n')
+    .filter((line) => /^correction-owner[ \t]*:/iu.test(line))
+    .map((line) => line.slice(line.indexOf(':') + 1).trim());
+}
+
+const VT = String.fromCharCode(0x0B); // vertical tab
+const FF = String.fromCharCode(0x0C); // form feed
+const NBSP = String.fromCharCode(0x00A0); // no-break space
+const EMSP = String.fromCharCode(0x2003); // em space
+
+test('the commit-trailer parser agrees with real `git interpret-trailers --parse` over an adversarial matrix', () => {
+  const cases = [
+    'subject\n\nCorrection-Owner: claude\n',            // plain terminal trailer
+    'subject\n\nCorrection-Owner: cursor',              // no trailing newline
+    'subject\n\ncorrection-owner: claude\n',            // case-insensitive key
+    'fix: x\n\nbody\n\nCorrection-Owner: claude\nCo-Authored-By: C <c@x>\n', // trailer among others
+    'subject\n\nCorrection-Owner : claude\n',           // horizontal whitespace before separator
+    'subject\n\nCorrection-Owner\t: cursor\n',          // tab before separator
+    'subject\n\nCorrection-Owner: claude\n# generated\n', // trailing git comment line
+    'subject\n\n# leading comment\nCorrection-Owner: cursor\n', // leading git comment line
+    'subject\n\nCorrection-Owner: claude\n---\n',       // bare patch divider after trailer
+    'subject\n\nCorrection-Owner: claude\n--- a/f\n+++ b/f\n', // emailed-patch divider
+    'subject\n\nCorrection-Owner: claude\n---foo\n',    // NOT a divider - breaks the terminal block
+    'subject\n\nCorrection-Owner: claude\n ---\n',      // indented ` ---` is text/continuation, not a divider
+    'subject\n\n---\n\nCorrection-Owner: claude\n',     // divider BEFORE the trailer - it is patch content
+    'subject\n\nCorrection-Owner: claude\nCorrection-Owner: claude\n', // duplicate
+    'subject\n\nCorrection-Owner: claude\nCorrection-Owner: cursor\n', // conflicting
+    'subject\n\n leading continuation\nCorrection-Owner: claude\n', // continuation before first trailer voids block
+    'subject only\n',                                   // no trailer
+    `subject\n${VT}\nCorrection-Owner: claude`,         // vertical-tab "blank" line - NOT git-blank
+    `subject\n${FF}\nCorrection-Owner: claude`,         // form-feed "blank" line - NOT git-blank
+    `subject\n${NBSP}\nCorrection-Owner: claude`,       // NBSP "blank" line - NOT git-blank
+    `subject\n${EMSP}\nCorrection-Owner: claude`,       // em-space "blank" line - NOT git-blank
+    'subject\n   \nCorrection-Owner: cursor\n',         // ASCII-space blank line IS git-blank
+    'subject\n\t\nCorrection-Owner: claude\n',          // ASCII-tab blank line IS git-blank
+  ];
+  for (const message of cases) {
+    const git = gitCorrectionOwnerValues(message);
+    const mine = parseCommitCorrectionOwner(message);
+    // Structural fidelity: the raw terminal Correction-Owner value(s) the parser finds equal git's,
+    // independent of this loop's owner admission.
+    assert.deepEqual(mine.declared, git, `raw trailer values must match git for ${JSON.stringify(message)}`);
+  }
+});
+
+test('owner resolution is applied on top of git-faithful parsing', () => {
+  // A git-recognised trailer naming an admitted owner resolves; a git-recognised value that is NOT an
+  // admitted owner is `invalid` (not routed) - admission is unchanged and codex is not added in this unit.
+  const claude = parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\n');
+  assert.equal(claude.state, 'declared');
+  assert.equal(claude.owner, 'claude');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: cursor\n').owner, 'cursor');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: codex\n').state, 'invalid');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: nobody\n').state, 'invalid');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\nCorrection-Owner: cursor\n').state, 'conflicting');
+  assert.equal(parseCommitCorrectionOwner('no trailer').state, 'missing');
+  // A marker in prose or a code fence is not a terminal trailer.
+  assert.equal(parseCommitCorrectionOwner('doc\n\n```\nCorrection-Owner: claude\n```\n').state, 'missing');
+});
+
+test('headBoundOwnerAgreement is a pure fail-closed resolution primitive', () => {
+  const marker = (owner) => `<!-- correction-owner: ${owner} -->`;
+  assert.deepEqual(
+    headBoundOwnerAgreement('x\n\nCorrection-Owner: claude\n', marker('claude')),
+    { headOwner: 'claude', bodyOwner: 'claude', consistent: true, trailerState: 'declared' },
+  );
+  assert.equal(headBoundOwnerAgreement('x\n\nCorrection-Owner: cursor\n', marker('claude')).consistent, false);
+  assert.equal(headBoundOwnerAgreement('x\n\nCorrection-Owner: claude\n', 'no marker').consistent, false);
+  assert.deepEqual(
+    headBoundOwnerAgreement(null, marker('claude')),
+    { headOwner: null, bodyOwner: 'claude', consistent: false, trailerState: 'missing' },
+  );
 });
