@@ -97,6 +97,23 @@ test('the commit-owner trailer is read only from the terminal trailer block, Git
     parseCommitCorrectionOwner('subject\n\n---\n\nCorrection-Owner: claude\n').state,
     'missing',
   );
+  // finding r4035335223: git's patch separator is a line of EXACTLY `---`; an INDENTED ` ---` is
+  // ordinary text, not a divider. Trimming it would treat the indented rule as a divider and accept the
+  // non-terminal pseudo-trailer before it, so an exact match is required — here git emits no trailer.
+  assert.equal(
+    parseCommitCorrectionOwner('subject\n\nCorrection-Owner: claude\n ---\nprose\n').state,
+    'missing',
+  );
+  // finding r4035335233: git strips `#` comment lines (default core.commentChar) before parsing, so a
+  // Git-valid terminal owner followed by a generated comment line still resolves.
+  assert.equal(
+    parseCommitCorrectionOwner('subject\n\nCorrection-Owner: claude\n# generated comment\n').owner,
+    'claude',
+  );
+  assert.equal(
+    parseCommitCorrectionOwner('subject\n\n# leading comment\nCorrection-Owner: cursor\n').owner,
+    'cursor',
+  );
 });
 
 test('an inconsistent-ownership notice names the remedy that actually fixes it (finding r4032740244)', () => {

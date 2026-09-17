@@ -66,12 +66,25 @@ function pullRequest({
   };
 }
 
-function fakeGateClient(live, { comments = findingComments(), reviews = [] } = {}) {
+// The exact HEAD commit the finding path reads to resolve the owner. By default the trailer AGREES with
+// the PR body marker (the healthy case), so the notice routes to the resolved owner. `commitOwner`
+// overrides it (a disagreeing trailer, or null for a missing/unreadable trailer) to drive the stalled
+// path; `commitOwner: 'unreadable'` makes the read throw (readable === false).
+const BODY_OWNER_RE = /<!--\s*correction-owner:\s*([a-z]+)\s*-->/u;
+function fakeGateClient(live, { comments = findingComments(), reviews = [], commitOwner } = {}) {
   const calls = { statuses: [], drafts: [], stickies: [] };
   const client = {
     reviews: async () => reviews,
     reviewComments: async () => comments,
     pullRequest: async () => live,
+    commit: async (sha) => {
+      if (commitOwner === 'unreadable') throw new Error('commit read failed');
+      const owner = commitOwner === undefined
+        ? BODY_OWNER_RE.exec(live?.body ?? '')?.[1] ?? null
+        : commitOwner;
+      const message = owner ? `chore: unit\n\nCorrection-Owner: ${owner}\n` : 'chore: unit with no trailer\n';
+      return { sha: sha ?? live?.head?.sha, commit: { message } };
+    },
     setDraft: async (target, draft) => {
       calls.drafts.push(draft);
       return { ...target, draft };
@@ -143,6 +156,29 @@ test('D2: the controller cannot distinguish correction owners', async () => {
   );
   assert.match(nextLine(claude.body), /claude/iu);
   assert.doesNotMatch(nextLine(cursor.body), /claude/iu);
+});
+
+test('finding r4035335245: an unreadable HEAD on the finding path stalls, never routes the body owner', async () => {
+  // The exact commit read fails transiently, so `headOwnerEligibility` returns readable:false — the
+  // HEAD owner is UNKNOWN. The finding notice must stall rather than assign the finding to the editable
+  // body marker on an unconfirmed head; the watchdog re-reads the head next tick.
+  const live = pullRequest({
+    number: 349,
+    body: '<!-- correction-owner: claude -->',
+    ref: 'claude/task',
+  });
+  const { client, calls } = fakeGateClient(live, {
+    comments: findingComments(live.head.sha, 1),
+    commitOwner: 'unreadable',
+  });
+  await guardAgainstCurrentHeadFinding(client, live, live.head.sha, null);
+  assert.equal(calls.stickies.length, 1);
+  assert.match(calls.stickies[0], /correction_stalled/u, 'the notice stalls on an unreadable head');
+  assert.doesNotMatch(
+    nextLine(calls.stickies[0]),
+    /Claude Code web Auto-fix owns this correction/u,
+    'the body owner is never told it owns a correction on an unconfirmed head',
+  );
 });
 
 test('O1: the declaration is machine-readable, and every failure mode is named', async () => {

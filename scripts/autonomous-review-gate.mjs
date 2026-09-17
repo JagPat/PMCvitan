@@ -1136,7 +1136,13 @@ async function writeValidationHoldStatus(client, pullRequest, expectedHead, elig
       + 'PR body marker is missing or does not match; set exactly one body marker to ' + owner
     : `${OWNERSHIP_INCONSISTENT_SCOPE} — this exact head needs a single `
       + 'valid Correction-Owner commit trailer matching the PR body marker';
-  if (!(await writeIdempotentScopeFailure(client, pullRequest, expectedHead, live, detail))) return;
+  // Status idempotence and sticky reconciliation are INDEPENDENT halves of this hold. Writing the
+  // `scope:` status only when it changed keeps its occurrence stable, but a rerun after a transient
+  // sticky failure would find the status already present and — if that early-returned — skip the sticky
+  // forever, leaving a protective hold with no actionable stalled explanation (finding r4035335260). So
+  // the status write no longer gates the sticky: the sticky is always reconciled (updateStickyComment is
+  // itself content-idempotent), so a rerun repairs either half of a partially completed hold.
+  await writeIdempotentScopeFailure(client, pullRequest, expectedHead, live, detail);
   const notice = correctionNotice(pullRequest, { detail, reason: 'scope', stalled: true, remedy });
   await client.updateStickyComment(
     pullRequest.number,
@@ -1660,11 +1666,18 @@ export async function publishCurrentHeadFinding(
   // inconsistency stalls; a valid trailer with a bad body points at a body edit, a bad trailer at a new
   // head. A consistent owner (including a codex candidate) routes normally.
   const eligibility = await headOwnerEligibility(client, live, expectedHead);
-  const ownershipStalled = eligibility.readable !== false && !eligibility.consistent;
+  // Not consistent → the finding is NOT routed to the (editable) body owner. This covers BOTH a readable
+  // inconsistency AND an UNREADABLE head: if the post-poll commit read failed (`readable === false`),
+  // the exact HEAD owner is unknown, so the notice must stall rather than name the body owner on an
+  // unconfirmed head (finding r4035335245). The `review:` finding status still stands; the watchdog
+  // re-reads the head next tick (it defers on an unknown verdict) and routes it once the owner resolves.
+  const ownershipStalled = !eligibility.consistent;
   const notice = correctionNotice(live, {
     detail,
     reason: 'review',
     stalled: ownershipStalled,
+    // A readable valid trailer with a bad body points at a body edit; a missing/unreadable trailer needs
+    // a new (re-readable) head.
     remedy: eligibility.owner !== null ? 'body' : 'head',
   });
   await client.updateStickyComment(

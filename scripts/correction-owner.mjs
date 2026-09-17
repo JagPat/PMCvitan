@@ -120,18 +120,23 @@ const TRAILER_CONTINUATION = /^[ \t]+\S/u;
 const OWNER_VALUE = /^[A-Za-z][A-Za-z0-9_-]*$/u;
 
 function terminalTrailerBlock(commitMessage) {
-  const lines = String(commitMessage ?? '').replace(/\r\n?/gu, '\n').split('\n');
+  // `git` strips comment lines before parsing trailers — the default `core.commentChar` is `#`, matched
+  // at COLUMN 0 — so a Git-valid terminal owner followed by a generated `# …` comment line (e.g. from a
+  // comment-preserving cleanup or an API commit) must not be read as `missing` (finding r4035335233).
+  // Drop them first, mirroring that cleanup.
+  const lines = String(commitMessage ?? '').replace(/\r\n?/gu, '\n').split('\n')
+    .filter((line) => !line.startsWith('#'));
   const dropTrailingBlanks = () => {
     while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
   };
-  // `git interpret-trailers --parse` parses trailers only from the message BEFORE the patch: a line
-  // that is exactly `---` is `git`'s patch separator (format-patch), so the trailer block precedes it
-  // and EVERYTHING from that divider onward is the patch, whether it is the final line (an empty patch)
-  // or is followed by the diff (`---\ndiff --git …`). Cut at the FIRST bare divider — mirroring git's
-  // `find_patch_start`, which scans from the top — so a Git-valid owner is not stalled by the normal
-  // patch tail rather than only by a divider that happens to be the last physical line
-  // (findings r4032740248 / r4034779634).
-  const dividerIndex = lines.findIndex((line) => line.trim() === '---');
+  // `git interpret-trailers --parse` parses trailers only from the message BEFORE the patch: a line that
+  // is EXACTLY `---` is `git`'s patch separator (format-patch), so the trailer block precedes it and
+  // EVERYTHING from that divider onward is the patch, whether it is the final line (an empty patch) or is
+  // followed by the diff (`---\ndiff --git …`). Cut at the FIRST bare divider — mirroring git's
+  // `find_patch_start`, which scans from the top. The match is EXACT, never trimmed: an INDENTED ` ---`
+  // is ordinary text to git, not a divider, so trimming would wrongly treat it as one and accept a
+  // non-terminal pseudo-trailer before it (findings r4032740248 / r4034779634 / r4035335223).
+  const dividerIndex = lines.findIndex((line) => line === '---');
   if (dividerIndex >= 0) lines.length = dividerIndex;
   dropTrailingBlanks();
   if (lines.length === 0) return null;
