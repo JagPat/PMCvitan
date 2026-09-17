@@ -883,13 +883,13 @@ export async function reportReviewLifecycle(client, pullRequest, log = console.l
 // asserted by a string literal at the call site. Before this, three call sites
 // each said "Claude Auto-fix handles the review comments" unconditionally, and
 // said it to a Cursor-owned PR. See scripts/correction-owner.mjs.
-function correctionNotice(pullRequest, { detail = null, reason = 'review', stalled = false } = {}) {
+function correctionNotice(pullRequest, { detail = null, reason = 'review', stalled = false, remedy = 'head' } = {}) {
   // A HEAD-bound ownership inconsistency — the editable body marker disagreeing with the immutable
   // commit trailer — is unroutable to any producer: no wake can resolve it, only a human/owner fixing
   // the trailer or body. `stalled` forces a stalled notice so no wake is ever addressed to the (wrong)
   // body owner (finding r4032903006, gate side).
   const declaration = stalled
-    ? { state: 'inconsistent', owner: null, detail }
+    ? { state: 'inconsistent', owner: null, detail, remedy }
     : correctionOwnerDeclaration(pullRequest);
   return correctionRouting({
     declaration,
@@ -1118,12 +1118,19 @@ async function writeValidationHoldStatus(client, pullRequest, expectedHead, elig
     await client.setStatus(expectedHead, 'pending', ineligibleHoldDetail(owner), pullRequest.html_url);
     return;
   }
-  // Leads with OWNERSHIP_INCONSISTENT_SCOPE so the watchdog recognises this exact fault (even after
-  // GitHub truncates the status to 140 chars) and reports it STALLED rather than waking the body owner.
-  const detail = `${OWNERSHIP_INCONSISTENT_SCOPE} — this exact head needs a single `
-    + 'valid Correction-Owner commit trailer matching the PR body marker';
+  // Split the readable ineligibility (finding r4032740244): a VALID head trailer whose only problem is
+  // a missing/mismatched BODY marker is a body-edit fix (the unchanged head becomes eligible on the
+  // next `edited` run); a missing/invalid/disagreeing TRAILER needs a new head. Both lead with
+  // OWNERSHIP_INCONSISTENT_SCOPE so the watchdog still recognises the fault and reports it STALLED.
+  const trailerValid = owner !== null; // the exact head commit already carries a valid Correction-Owner
+  const remedy = trailerValid ? 'body' : 'head';
+  const detail = trailerValid
+    ? `${OWNERSHIP_INCONSISTENT_SCOPE} — this head's Correction-Owner trailer (${owner}) is valid but the `
+      + 'PR body marker is missing or does not match; set exactly one body marker to ' + owner
+    : `${OWNERSHIP_INCONSISTENT_SCOPE} — this exact head needs a single `
+      + 'valid Correction-Owner commit trailer matching the PR body marker';
   if (!(await writeIdempotentScopeFailure(client, pullRequest, expectedHead, live, detail))) return;
-  const notice = correctionNotice(pullRequest, { detail, reason: 'scope', stalled: true });
+  const notice = correctionNotice(pullRequest, { detail, reason: 'scope', stalled: true, remedy });
   await client.updateStickyComment(
     pullRequest.number,
     statusBody({
@@ -1635,7 +1642,20 @@ export async function publishCurrentHeadFinding(
   // an owner marker edited during it would otherwise be ignored: a PR that now
   // declares `cursor` would still be told Claude will fix it, which is the
   // original defect returning through a stale read.
-  const notice = correctionNotice(live, { detail, reason: 'review' });
+  //
+  // And re-derive HEAD-bound eligibility on that same live object (finding r4032740234): a body marker
+  // edited during the poll so it no longer agrees with the immutable trailer makes the head unroutable,
+  // so the notice must report the ownership STALLED rather than name the (edited) body owner. A readable
+  // inconsistency stalls; a valid trailer with a bad body points at a body edit, a bad trailer at a new
+  // head. A consistent owner (including a codex candidate) routes normally.
+  const eligibility = await headOwnerEligibility(client, live, expectedHead);
+  const ownershipStalled = eligibility.readable !== false && !eligibility.consistent;
+  const notice = correctionNotice(live, {
+    detail,
+    reason: 'review',
+    stalled: ownershipStalled,
+    remedy: eligibility.owner !== null ? 'body' : 'head',
+  });
   await client.updateStickyComment(
     pullRequest.number,
     statusBody({

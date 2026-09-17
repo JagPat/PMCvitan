@@ -121,7 +121,17 @@ const OWNER_VALUE = /^[A-Za-z][A-Za-z0-9_-]*$/u;
 
 function terminalTrailerBlock(commitMessage) {
   const lines = String(commitMessage ?? '').replace(/\r\n?/gu, '\n').split('\n');
-  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+  const dropTrailingBlanks = () => {
+    while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+  };
+  dropTrailingBlanks();
+  // `git interpret-trailers --parse` ignores a trailing patch divider (`---`) and reads the trailer
+  // block before it — so a Git-valid owner must not be stalled just because the physical final line is
+  // a divider (finding r4032740248). Drop trailing `---` dividers (and the blanks around them).
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '---') {
+    lines.pop();
+    dropTrailingBlanks();
+  }
   if (lines.length === 0) return null;
   let start = lines.length;
   for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -304,11 +314,18 @@ function undeclaredInstruction(declaration) {
   // whose single terminal trailer matches the marker can. So it carries the passed ownership-fault
   // detail (never `undefined`) and names the trailer remedy, not a body edit (finding r4032740402).
   if (declaration.state === 'inconsistent') {
-    return `Correction ownership is unresolved on this exact head: ${declaration.detail ?? 'the '
+    const opening = `Correction ownership is unresolved on this exact head: ${declaration.detail ?? 'the '
       + 'HEAD commit\'s Correction-Owner trailer is missing, invalid, or disagrees with the PR body '
-      + 'marker'}. No agent is routed and no wake is addressed to the body owner. Resume action: push a `
-      + 'new head whose single terminal `Correction-Owner:` commit trailer matches the PR body marker; '
-      + 'no body edit alone can clear a head that mislabels its own owner.';
+      + 'marker'}. No agent is routed and no wake is addressed to the body owner.`;
+    // A VALID head trailer whose only problem is a missing/mismatched BODY marker is fixed by a body
+    // edit — the unchanged head becomes eligible on the next `edited` run — NOT by a new head
+    // (finding r4032740244). Only a missing/invalid/disagreeing TRAILER needs a new head.
+    const resume = declaration.remedy === 'body'
+      ? 'Resume action: set exactly one `<!-- correction-owner: … -->` body marker matching this head\'s '
+        + 'valid `Correction-Owner:` commit trailer; the unchanged head becomes eligible on the next run.'
+      : 'Resume action: push a new head whose single terminal `Correction-Owner:` commit trailer matches '
+        + 'the PR body marker; no body edit alone can clear a head that mislabels its own owner.';
+    return `${opening} ${resume}`;
   }
   const opening = `Correction ownership is not established on this PR: ${declaration.detail}. `
     + 'No agent is routed and no correction is in flight.';

@@ -241,22 +241,25 @@ export async function waitForTerminalPullRequest(client, number) {
   return pullRequest.state === 'open' ? null : pullRequest;
 }
 
-// Resolve, from the exact HEAD commit, whether the body-declared owner is UNCONFIRMED by the immutable
-// trailer — the watchdog's trailer-based ownership verdict. It is authoritative over the failing
-// status's description: a `ci:` failure omits the ownership signature, so without this the watchdog
-// would wake the body owner on a head whose trailer disagrees (finding r4032740407). Only POSITIVE
-// readable evidence forces the stall; an unreadable commit returns false (the gate writes
-// OWNERSHIP_READ_RETRY for a truly unreadable head, which owes no correction) so a transient read blip
-// does not strand a legitimate correction.
-async function headOwnershipInconsistent(client, pullRequest, head) {
+// Resolve, from the exact HEAD commit, a THREE-VALUED ownership verdict for the watchdog/conflict
+// paths — mirroring the gate's readable/inconsistent/unreadable distinction rather than collapsing it
+// to a boolean (findings r4032740407 / r4032740219 / r4032740224):
+//   'inconsistent' — the commit read cleanly and its trailer is missing/invalid/disagrees with the
+//                    body owner: a real ownership fault, force the stall and wake nobody.
+//   'unknown'      — the commit could not be read: retryable INFRASTRUCTURE, never an authored fault.
+//                    Callers DEFER (no wake, and no malformed-trailer accusation) to the next tick.
+//   'consistent'   — the head trailer confirms the body owner (or there is no body owner to wake):
+//                    ordinary routing applies.
+async function headOwnershipVerdict(client, pullRequest, head) {
+  let commit;
   try {
-    const commit = await client.commit(head);
-    if (!commit || commit.sha !== head) return false;
-    const agreement = headBoundOwnerAgreement(commit.commit?.message, pullRequest?.body);
-    return agreement.bodyOwner !== null && !agreement.consistent;
+    commit = await client.commit(head);
   } catch {
-    return false;
+    return 'unknown';
   }
+  if (!commit || commit.sha !== head) return 'unknown';
+  const agreement = headBoundOwnerAgreement(commit.commit?.message, pullRequest?.body);
+  return agreement.bodyOwner !== null && !agreement.consistent ? 'inconsistent' : 'consistent';
 }
 
 export async function handOffConflict(
@@ -273,18 +276,20 @@ export async function handOffConflict(
   const declaration = correctionOwnerDeclaration(live);
   const routing = correctionRouting({ declaration, head: live.head.sha });
   // The editable body marker alone cannot authorize a conflict-handoff wake: the immutable HEAD
-  // `Correction-Owner:` trailer must agree with it (finding r4032740389). Read the exact commit and
-  // fail closed — a missing/invalid/disagreeing trailer, or an unreadable commit, is head-inconsistent,
-  // so no @mention is ever addressed to the (possibly wrong) body owner.
-  let agreement = { consistent: false, bodyOwner: routing.owner ?? null };
+  // `Correction-Owner:` trailer must agree with it (finding r4032740389). Read the exact commit; a
+  // clean read gives a readable/inconsistent verdict, an UNREADABLE read is retryable infrastructure
+  // — defer the conflict notice to the next tick rather than fabricating a malformed-trailer accusation
+  // no trailer evidence supports (finding r4032740224).
+  let agreement = null;
   try {
     const commit = await client.commit(live.head.sha);
     if (commit && commit.sha === live.head.sha) {
       agreement = headBoundOwnerAgreement(commit.commit?.message, live.body);
     }
   } catch {
-    agreement = { consistent: false, bodyOwner: routing.owner ?? null };
+    agreement = null;
   }
+  if (!agreement) return; // unreadable head: defer, do not accuse or wake
   const ownerToken = agreement.consistent
     ? routing.owner
     : agreement.bodyOwner
@@ -611,6 +616,14 @@ export async function handOffCorrectionLease(
   // pull request to see it.
   const assessed = await client.pullRequest(pullRequest.number);
 
+  // An UNREADABLE head is retryable infrastructure, not an authored fault: defer this tick rather than
+  // waking the body owner without HEAD confirmation or accusing a trailer nobody could read
+  // (finding r4032740219). Only a readable INCONSISTENT verdict forces the stall.
+  const assessedVerdict = await headOwnershipVerdict(client, assessed, head);
+  if (assessedVerdict === 'unknown') {
+    return { state: 'deferred', body: null, reason: 'the exact head commit was unreadable; the next tick re-reads it' };
+  }
+
   const assessment = assessCorrectionLease({
     pullRequest: assessed,
     head,
@@ -621,7 +634,7 @@ export async function handOffCorrectionLease(
     occurrence: owed.id ?? null,
     now,
     comments,
-    ownershipInconsistent: await headOwnershipInconsistent(client, assessed, head),
+    ownershipInconsistent: assessedVerdict === 'inconsistent',
   });
 
   if (assessment.state === 'notify') {
@@ -668,7 +681,8 @@ export async function handOffCorrectionLease(
         occurrence: freshOwed.id ?? null,
         now,
         comments,
-        ownershipInconsistent: await headOwnershipInconsistent(client, live, head),
+        // Re-derived on the live object; an unreadable head defers (never forces the stall or a wake).
+        ownershipInconsistent: (await headOwnershipVerdict(client, live, head)) === 'inconsistent',
       })
       : null;
     // The RAW BODY too, not only the notice it renders. A checklist item ticked

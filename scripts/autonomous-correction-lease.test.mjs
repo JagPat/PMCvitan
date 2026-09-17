@@ -453,6 +453,7 @@ test('L15: only a notice a fresh read still produces is published', async () => 
         calls.prReads += 1;
         return calls.prReads === 1 ? pull : (overrides.livePull ?? pull);
       },
+      commit: async (sha) => commitTrailerFor(undefined, overrides.livePull ?? pull, sha),
       comment: async (number, body) => { calls.posted.push({ number, body }); },
     };
     return { client, calls, pull };
@@ -571,6 +572,7 @@ test('L25: a pull request closed while the watchdog was reading is never notifie
     reviews: async () => [],
     reviewComments: async () => [codexFinding(HEAD)],
     pullRequest: async () => pullRequest({ state: 'closed' }),
+    commit: async (sha) => commitTrailerFor(undefined, snapshot, sha),
     comment: async (number, body) => { calls.posted.push({ number, body }); },
   };
 
@@ -597,6 +599,7 @@ test('L26: the finding history is refreshed before the notice is published', asy
         : [codexFinding('aaaa111'), codexFinding(HEAD)];
     },
     pullRequest: async () => pull,
+    commit: async (sha) => commitTrailerFor(undefined, pull, sha),
     comment: async (number, body) => { calls.posted.push({ number, body }); },
   };
 
@@ -653,6 +656,7 @@ test('L28: a body edited while the watchdog reads defers to the next tick', asyn
         ? snapshot
         : { ...snapshot, body: `${snapshot.body}\n\n- [x] checklist item now ticked` };
     },
+    commit: async (sha) => commitTrailerFor(undefined, snapshot, sha),
     comment: async (number, body) => { calls.posted.push({ number, body }); },
   };
 
@@ -705,6 +709,7 @@ test('L30: a failure the gate recovers from is dispatched, not merely excluded',
     reviews: async () => [],
     reviewComments: async () => [],
     pullRequest: async () => pull,
+    commit: async (sha) => commitTrailerFor(undefined, pull, sha),
     comment: async (number, body) => { calls.posted.push({ number, body }); },
     dispatchRecovery: async (ref, inputs) => { calls.dispatched.push({ ref, inputs }); },
   };

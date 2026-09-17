@@ -267,7 +267,20 @@ export function assessCorrectionLease({
   // stalled scope fault, when that is the visible status).
   const ownershipInconsistent = ownershipInconsistentFromHead
     || isOwnershipInconsistentScopeDetail(effectiveReason, detail);
-  const awakenable = routing.awakenable && !ownershipInconsistent;
+  // The rendered INSTRUCTION must also stop naming the body owner it just rejected: an inconsistent
+  // routing yields the trailer-fix remedy instead of "the declared owner corrects this head", so the
+  // one published comment never both labels the owner unresolved AND assigns the correction to the body
+  // owner (finding r4032740237). Mirrors the gate's {stalled:true} correctionNotice.
+  const effectiveRouting = ownershipInconsistent
+    ? correctionRouting({
+      declaration: { state: 'inconsistent', owner: null, detail },
+      head: expected,
+      detail,
+      reason: effectiveReason,
+      pullRequestNumber: pullRequest?.number,
+    })
+    : routing;
+  const awakenable = effectiveRouting.awakenable && !ownershipInconsistent;
   const owner = ownershipInconsistent ? 'undeclared' : (routing.owner ?? 'undeclared');
   const marker = correctionLeaseMarker({
     number: pullRequest?.number,
@@ -352,7 +365,7 @@ export function assessCorrectionLease({
         : routing.owner ? `\`${routing.owner}\`` : '`undeclared`',
       detail,
       stalledMinutes,
-      instruction: routing.instruction,
+      instruction: effectiveRouting.instruction,
     }),
   };
 }

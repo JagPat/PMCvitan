@@ -41,6 +41,7 @@ test('conflict handoff uses the refreshed owner instead of waking the branch-pre
     const comments = [];
     await handOffConflict({
       pullRequest: async () => live,
+      commit: async () => commitFor(live),
       comments: async () => [],
       comment: async (number, body) => comments.push(body),
     }, conflict(), repository, 'main');
