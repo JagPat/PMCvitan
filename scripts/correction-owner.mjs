@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { CORRECTION_OWNERS, AWAKENABLE_FROM_GITHUB, CORRECTION_STALLED } from './review-policy.mjs';
 export { CORRECTION_OWNERS, AWAKENABLE_FROM_GITHUB, CORRECTION_STALLED } from './review-policy.mjs';
 
@@ -119,88 +120,64 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
 }
 
 // ── HEAD-bound owner parsing/resolution primitives (Owner primitive unit) ────────────────────────────
-// Pure, git-faithful parsing of the exact HEAD commit's terminal `Correction-Owner:` trailer, with a
-// differential test against real `git interpret-trailers --parse`. These primitives change NO gate, wake,
-// merge, handoff, watchdog, continuation, or authoritative consumer — no caller in this unit routes on
-// them. Admission (three-valued holds, codex candidacy) and exact-head merge authorization are later units
-// that will consume the merged primitive; here it only parses and resolves.
+// Read the exact HEAD commit's terminal `Correction-Owner:` trailer as authority. These primitives change
+// NO gate, wake, merge, handoff, watchdog, continuation, or authoritative consumer — no caller in this unit
+// routes on them. Admission (three-valued holds, codex candidacy) and exact-head merge authorization are
+// later units that will consume the merged primitive; here it only parses and resolves.
 //
-// `git interpret-trailers` semantics: the trailer block is the final run of `Key: value` (+ indented
-// continuation) lines after a blank line, read only from the message BEFORE the patch; a continuation
-// before the first trailer voids the block. git accepts horizontal whitespace before the separator
-// (`Correction-Owner : claude`), so admit it and normalise the key on read.
-const TRAILER_LINE = /^[A-Za-z0-9][A-Za-z0-9-]*[ \t]*:/u;
-const TRAILER_CONTINUATION = /^[ \t]+\S/u;
+// Trailer extraction is DELEGATED to real `git interpret-trailers --parse --unfold`, not reimplemented. A
+// hand-rolled reproduction of git's trailer grammar repeatedly diverged from git on adversarial input — the
+// comment/continuation interaction, the exact recognized-token spelling (`Signed-off-by` only, and not when
+// space-padded), the `(cherry picked from commit …)` provenance suffix, the trailer-token grammar (`-X:` is
+// a valid token), and continuation reset after a dropped non-trailer line. Delegating makes the primitive
+// git itself for the extraction step, so it cannot diverge as further git edge cases surface. It fails
+// CLOSED: a missing or erroring git yields `unreadable` and never an owner, which a later consumer must
+// treat as no merge authority.
 const OWNER_VALUE = /^[A-Za-z][A-Za-z0-9_-]*$/u;
-// git's patch divider: an UNINDENTED `---` at EOL or followed by horizontal whitespace+text (an emailed
-// `--- a/file` header too); an INDENTED ` ---` or `---foo` is not one.
-const PATCH_DIVIDER = /^---(?:[ \t].*)?$/u;
-// git treats a line blank only when empty or ASCII horizontal whitespace; a vertical tab / NBSP / other
-// Unicode space is NOT blank, so `.trim()` over-accepts and could admit a "trailer" git never recognises.
-const isGitBlankLine = (line) => /^[ \t]*$/u.test(line);
-// git's only DEFAULT git-recognized trailer for block detection is `Signed-off-by` (Acked-by, Reviewed-by,
-// Co-authored-by and the cherry-pick line do NOT count without config); it enables the 25% rule below.
-const RECOGNIZED_TRAILER = /^signed-off-by[ \t]*:/iu;
 // Strip only git's ASCII horizontal padding (never Unicode whitespace, which git preserves in the value).
 const asciiTrim = (value) => value.replace(/^[ \t]+|[ \t]+$/gu, '');
 
-function terminalTrailerBlock(commitMessage) {
-  // git strips `#` comment lines (default `core.commentChar`, COLUMN 0) before parsing; it collapses a
-  // CRLF pair but treats a LONE CR as an ordinary byte, so split on `\n` after removing only `\r\n`.
-  const lines = String(commitMessage ?? '').replace(/\r\n/gu, '\n').split('\n')
-    .filter((line) => !line.startsWith('#'));
-  // Cut at the FIRST git patch divider (mirroring git's top-down `find_patch_start`) and drop everything
-  // after it, diff or not, then drop trailing blank lines.
-  const dividerIndex = lines.findIndex((line) => PATCH_DIVIDER.test(line));
-  if (dividerIndex >= 0) lines.length = dividerIndex;
-  while (lines.length > 0 && isGitBlankLine(lines[lines.length - 1])) lines.pop();
-  if (lines.length === 0) return null;
-  // The trailer block is git's LAST paragraph: the run of non-blank lines back to the preceding blank
-  // line. git requires that blank line, so a whole-message single paragraph is never a trailer block.
-  let start = lines.length;
-  while (start > 0 && !isGitBlankLine(lines[start - 1])) start -= 1;
-  if (start === 0) return null;
-  const paragraph = lines.slice(start);
-  const trailerCount = paragraph.filter((line) => TRAILER_LINE.test(line)).length;
-  if (trailerCount === 0) return null;
-  const nonTrailerLines = paragraph.filter(
-    (line) => !TRAILER_LINE.test(line) && !TRAILER_CONTINUATION.test(line),
-  ).length;
-  // git treats the paragraph as trailers when (i) every line is a trailer or continuation AND the FIRST
-  // line is a trailer (a leading continuation, with no trailer to attach to, voids the block), OR (ii) it
-  // holds a git-recognized trailer (Signed-off-by) AND at least a quarter of its lines are trailers;
-  // interspersed non-trailer lines are then tolerated (and dropped at extraction).
-  const qualifies = (nonTrailerLines === 0 && TRAILER_LINE.test(paragraph[0]))
-    || (paragraph.some((line) => RECOGNIZED_TRAILER.test(line)) && trailerCount * 4 >= paragraph.length);
-  return qualifies ? paragraph : null;
+// The terminal trailers of a commit message, exactly as `git interpret-trailers --parse --unfold` emits
+// them: `Key: value` lines with folded continuations already joined. The message is fed on STDIN, never as
+// an argument, so no content can be read as a flag. Returns null when git cannot be run at all (binary
+// missing or non-zero exit), so the caller fails closed rather than reading an unreadable commit as owning
+// nothing.
+function gitParsedTrailers(commitMessage) {
+  let out;
+  try {
+    out = execFileSync('git', ['interpret-trailers', '--parse', '--unfold'], {
+      input: String(commitMessage ?? ''),
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+      maxBuffer: 8 * 1024 * 1024,
+    });
+  } catch {
+    return null;
+  }
+  const trailers = [];
+  for (const line of out.split('\n')) {
+    if (line.length === 0) continue;
+    const separator = line.indexOf(':');
+    if (separator < 0) continue;
+    trailers.push({ key: asciiTrim(line.slice(0, separator)), value: line.slice(separator + 1) });
+  }
+  return trailers;
 }
 
 /**
- * The HEAD-bound owner from the exact commit message's terminal trailer block, reproducing
- * `git interpret-trailers --parse` faithfully. Four named states: `declared` (exactly one terminal
- * `Correction-Owner:` trailer naming a known owner), `missing` (no terminal trailer block, or none named),
- * `conflicting` (more than one, or disagreeing values), `invalid` (a malformed value, or one no correction
- * owner). `declared` (the array) always carries the raw trailer values found, so a later consumer can see
- * a value this loop does not route to. Owner admission is unchanged from `CORRECTION_OWNERS`.
+ * The HEAD-bound owner from the exact commit message's terminal trailer block, read AS
+ * `git interpret-trailers --parse` reads it (extraction delegated to git). Named states: `declared`
+ * (exactly one terminal `Correction-Owner:` trailer naming a known owner), `missing` (no terminal trailer
+ * block, or none named), `conflicting` (more than one, or disagreeing values), `invalid` (a malformed
+ * value, or one no correction owner), and `unreadable` (git could not be run, so the commit's owner cannot
+ * be determined and a consumer must fail closed). `declared` (the array) always carries the raw trailer
+ * value(s) found, so a later consumer can see a value this loop does not route to. Owner admission is
+ * unchanged from `CORRECTION_OWNERS`.
  */
 export function parseCommitCorrectionOwner(commitMessage) {
-  const block = terminalTrailerBlock(commitMessage);
-  if (!block) {
-    return { state: 'missing', owner: null, declared: [] };
-  }
-  const trailers = [];
-  for (const line of block) {
-    if (TRAILER_CONTINUATION.test(line) && trailers.length > 0) {
-      // git folds a continuation into the value joined by a single space (its `--unfold` form).
-      trailers[trailers.length - 1].value += ` ${asciiTrim(line)}`;
-      continue;
-    }
-    const separator = line.indexOf(':');
-    if (separator < 0) continue; // a non-trailer line inside a qualifying block is dropped, as git does
-    trailers.push({
-      key: asciiTrim(line.slice(0, separator)),
-      value: line.slice(separator + 1),
-    });
+  const trailers = gitParsedTrailers(commitMessage);
+  if (trailers === null) {
+    return { state: 'unreadable', owner: null, declared: [] };
   }
   // ASCII-trim only: git preserves non-ASCII whitespace (vertical tab, NBSP, em-space) IN the value, so a
   // value padded with it stays malformed and fails `OWNER_VALUE` rather than being silently accepted.
@@ -228,7 +205,7 @@ export function parseCommitCorrectionOwner(commitMessage) {
  * HEAD-bound owner agreement — a pure resolution primitive for the later consumers (review gate, conflict
  * handoff, watchdog) that will hold a fetched commit. The exact commit's single terminal `Correction-Owner:`
  * trailer must name a valid owner AND agree with the PR body marker; `consistent` is false for a
- * missing/invalid/disagreeing trailer or (passing a null message for) an unreadable commit. No consumer in
+ * missing/invalid/disagreeing trailer or an `unreadable` commit (git could not be run). No consumer in
  * this unit calls it; it fails closed so a later caller never wakes a body owner the immutable head does
  * not confirm.
  */

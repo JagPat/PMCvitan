@@ -800,9 +800,12 @@ test('C11: a non-awakenable owner is told what GitHub cannot do, not that nothin
 });
 
 // ── Owner primitive unit: git-faithful commit-trailer parsing ────────────────────────────────────────
-// `parseCommitCorrectionOwner` reproduces `git interpret-trailers --parse` for the terminal
-// `Correction-Owner:` trailer. The primitive is proven against REAL git over an adversarial matrix
-// (differential test), so it cannot silently diverge as git edge cases surface.
+// `parseCommitCorrectionOwner` reads the terminal `Correction-Owner:` trailer AS git reads it: extraction
+// is DELEGATED to real `git interpret-trailers --parse --unfold` rather than reimplemented, after a
+// hand-rolled grammar repeatedly diverged from git on adversarial input. This differential matrix is the
+// regression guard: it runs real git as the oracle and asserts the extraction/resolution mapping agrees,
+// and it keeps every adversarial case that a previous reimplementation got wrong so a future refactor
+// cannot silently reintroduce the divergence.
 
 // The raw terminal Correction-Owner trailer value(s) git recognises, isolated from this loop's owner
 // admission (git does not know `CORRECTION_OWNERS`). `--unfold` joins folded continuations as git does.
@@ -861,6 +864,20 @@ test('the commit-trailer parser agrees with real `git interpret-trailers --parse
     // finding r4039009540 — a LONE CR is an ordinary byte to git, not a line break
     `subject${CR}${CR}Correction-Owner: claude${CR}`,   // lone CRs -> one line -> NOT a block
     `subject${CR}\n${CR}\nCorrection-Owner: claude${CR}\n`, // CRLF pairs -> trailer block
+    // r4039545854 — a `#` comment separates a trailer from a continuation; git emits NO trailers, so a
+    // parser that strips comments before parsing (joining the continuation) must not over-accept.
+    'subject\n\nCorrection-Owner: claude\nFoo: x\n# comment\n continuation\n',
+    // r4039545847 — a SPACE-padded `Signed-off-by ` does NOT activate git's recognized-trailer rule, so the
+    // paragraph with a plain line is not a block; git emits nothing.
+    'subject\n\nCorrection-Owner: claude\nSigned-off-by : A\nplain\n',
+    // r4039545882 — git treats the `(cherry picked from commit …)` provenance suffix as part of the block;
+    // git emits `Correction-Owner: claude`.
+    'subject\n\nCorrection-Owner: claude\n(cherry picked from commit 0123456789012345678901234567890123456789)\n',
+    // r4039545863 — `-X:` is a valid git trailer token; git emits both trailers, so the block is not broken.
+    'subject\n\nCorrection-Owner: claude\n-X: z\n',
+    // r4039545874 — a dropped non-trailer line must reset continuation attachment; git drops `plain` and its
+    // indented follower and emits `Correction-Owner: claude` + `Signed-off-by: A`.
+    'subject\n\nCorrection-Owner: claude\nplain\n continuation\nSigned-off-by: A\n',
   ];
   for (const message of cases) {
     const git = gitCorrectionOwnerValues(message);
@@ -898,4 +915,29 @@ test('headBoundOwnerAgreement is a pure fail-closed resolution primitive', () =>
     headBoundOwnerAgreement(null, marker('claude')),
     { headOwner: null, bodyOwner: 'claude', consistent: false, trailerState: 'missing' },
   );
+});
+
+test('an unreadable git fails closed to `unreadable`, never to an owner', () => {
+  // Extraction is delegated to git; when git cannot be run the commit's owner is unknown, so the primitive
+  // must report `unreadable` (a consumer then fails closed) rather than reading it as owning nothing — which
+  // would silently drop merge authority on infra failure. PATH is cleared for the call and restored; the
+  // top-level tests in this file run sequentially, so no concurrent git-using case is affected.
+  const savedPath = process.env.PATH;
+  try {
+    process.env.PATH = '/nonexistent-git-dir';
+    const result = parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\n');
+    assert.equal(result.state, 'unreadable');
+    assert.equal(result.owner, null);
+    assert.deepEqual(result.declared, []);
+    // The resolution helper fails closed on an unreadable head, never confirming the body owner.
+    const agreement = headBoundOwnerAgreement(
+      'x\n\nCorrection-Owner: claude\n',
+      '<!-- correction-owner: claude -->',
+    );
+    assert.equal(agreement.consistent, false);
+    assert.equal(agreement.headOwner, null);
+    assert.equal(agreement.trailerState, 'unreadable');
+  } finally {
+    process.env.PATH = savedPath;
+  }
 });
