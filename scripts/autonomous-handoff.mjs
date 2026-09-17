@@ -1,4 +1,4 @@
-import { STATUS_CONTEXT, MERGE_RECOVERY_OWED } from './review-policy.mjs';
+import { STATUS_CONTEXT, MERGE_RECOVERY_OWED, priorCleanReviewEvidence } from './review-policy.mjs';
 
 export { isAutonomousPullRequest } from './runner-continuation.mjs';
 
@@ -430,20 +430,12 @@ export async function handOffMergedPullRequest(
     const owedRecovery =
       exactHeadStatus?.state === 'failure'
       && exactHeadStatus.description === MERGE_RECOVERY_OWED;
-    // Reconcile ONLY on real prior clean evidence: the terminal status IMMEDIATELY before the owed
-    // marker(s). /statuses is newest-first, so skip the leading owed run and require the next terminal
-    // (success|failure) to be a success — a finding buried before the owed marker denies clearance.
-    let priorCleanEvidence = false;
-    if (owedRecovery) {
-      const terminal = (await client.statuses(pullRequest.head.sha)).filter(
-        (status) => status.context === STATUS_CONTEXT
-          && (status.state === 'success' || status.state === 'failure'),
-      );
-      const priorTerminal = terminal.find(
-        (status) => !(status.state === 'failure' && status.description === MERGE_RECOVERY_OWED),
-      );
-      priorCleanEvidence = priorTerminal?.state === 'success';
-    }
+    // Reconcile ONLY on real prior clean evidence: skip consecutive leading owed markers, then the
+    // NEXT current-context status must itself be a clean success (shared `priorCleanReviewEvidence`).
+    // Pending review, an error, or a buried finding between the clean success and the owed marker
+    // therefore denies clearance — an owed obligation is never revived to old clean across it.
+    const priorCleanEvidence = owedRecovery
+      && priorCleanReviewEvidence(await client.statuses(pullRequest.head.sha));
     if (!priorCleanEvidence) {
       console.warn(
         `Skipping continuation for PR #${pullRequest.number}: exact-head Codex status was not successful`,

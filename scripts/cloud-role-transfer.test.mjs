@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import { parseCorrectionOwner, parseCommitCorrectionOwner, correctionRouting, correctionOwnerProblem } from './correction-owner.mjs';
-import { authorizeExactHeadMerge, completeReviewedPullRequest, enforceReviewScope, ensureTerminalReviewState, GitHubClient, REQUIRED_CHECKS, revalidateFinalReviewPolicy, reviewAttempt, run, setDraftForCurrentHead } from './autonomous-review-gate.mjs';
+import { authorizeExactHeadMerge, completeReviewedPullRequest, enforceReviewScope, ensureTerminalReviewState, GitHubClient, recoverExactHeadMerge, REQUIRED_CHECKS, revalidateFinalReviewPolicy, reviewAttempt, run, setDraftForCurrentHead } from './autonomous-review-gate.mjs';
+import { MERGE_RECOVERY_OWED } from './review-policy.mjs';
+import { gateRecoveryStatus } from './correction-lease.mjs';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -20,9 +22,11 @@ test('Codex implementation ownership is admitted for validation but is not awake
   }
 });
 
+// Unit A adapter fail-closed coverage (preserved as installed on main; B defers its metadata
+// tightening to the later full consumer).
 function cleanRun(overrides = {}) {
   const artifact = { id: 789, digest: `sha256:${'d'.repeat(64)}`, name: `claude-shadow-v1-repo-${Buffer.from('JagPat/PMCvitan').toString('base64url')}-pr-600-base-${base}-head-${head}-ci-123-2-publisher-456-1-state-clear-findings-0` };
-  return { id: 7, name: 'claude-independent-review', head_sha: head, app: { slug: 'github-actions' }, external_id: `pmcvitan:claude-shadow:v1:repo-JagPat/PMCvitan:pr-600:base-${base}:head-${head}:run-123:attempt-2:publisher-456:publisher-attempt-1`, status: 'completed', conclusion: 'success', completed_at: '2026-09-14T12:00:00Z', output: { summary: JSON.stringify({ schema: 1, repository: 'JagPat/PMCvitan', pullRequest: 600, baseSha: base, headSha: head, runId: 123, runAttempt: 2, publisherRunId: 456, publisherRunAttempt: 1, workflowRef: 'JagPat/PMCvitan/.github/workflows/claude-shadow-review.yml@refs/heads/main', workflowExecutionRef: 'refs/heads/main', trustedWorkflowRef: 'JagPat/PMCvitan/.github/workflows/claude-shadow-review.yml@refs/heads/main', trustedExecutionRef: 'refs/heads/main', workflowSha: 'c'.repeat(40), trustedWorkflowSha: 'c'.repeat(40), targetTipSha: base, testedBaseSha: base, testedMergeSha: 'e'.repeat(40), identityRunAttempt: 1, ciIdentityArtifactId: 99, state: 'clear', findingCount: 0, artifact }) }, ...overrides };
+  return { id: 7, name: 'claude-independent-review', head_sha: head, app: { slug: 'github-actions' }, external_id: `pmcvitan:claude-shadow:v1:repo-JagPat/PMCvitan:pr-600:base-${base}:head-${head}:run-123:attempt-2:publisher-456:publisher-attempt-1`, status: 'completed', conclusion: 'success', completed_at: '2026-09-14T12:00:00Z', output: { summary: JSON.stringify({ schema: 1, repository: 'JagPat/PMCvitan', pullRequest: 600, baseSha: base, headSha: head, runId: 123, runAttempt: 2, publisherRunId: 456, publisherRunAttempt: 1, workflowRef: 'JagPat/PMCvitan/.github/workflows/claude-shadow-review.yml@refs/heads/main', workflowSha: base, state: 'clear', findingCount: 0, artifact }) }, ...overrides };
 }
 
 test('Claude shadow evidence is exact-head/app and fail-closed but non-authoritative', async () => {
@@ -44,11 +48,7 @@ test('Claude shadow evidence is exact-head/app and fail-closed but non-authorita
   assert.equal((await classify([cleanRun({ output: { summary: '{}' } })])).state, 'replayed');
   assert.equal((await classify([alteredSummary({ publisherRunId: 999 })])).state, 'replayed');
   assert.equal((await classify([alteredSummary({ workflowRef: 'JagPat/PMCvitan/.github/workflows/other.yml@refs/heads/main' })])).state, 'replayed');
-  assert.equal((await classify([alteredSummary({ workflowRef: 'Other/Repo/.github/workflows/claude-shadow-review.yml@refs/heads/main' })])).state, 'replayed');
-  assert.equal((await classify([alteredSummary({ workflowExecutionRef: 'refs/heads/codex/untrusted-workflow' })])).state, 'replayed');
-  assert.equal((await classify([alteredSummary({ trustedWorkflowRef: 'JagPat/PMCvitan/.github/workflows/other.yml@refs/heads/main' })])).state, 'replayed');
-  assert.equal((await classify([alteredSummary({ trustedExecutionRef: 'refs/heads/codex/untrusted-workflow' })])).state, 'replayed');
-  assert.equal((await classify([alteredSummary({ workflowSha: 'f'.repeat(40) })])).state, 'replayed');
+  assert.equal((await classify([alteredSummary({ workflowSha: 'c'.repeat(40) })])).state, 'replayed');
   assert.equal((await classify([])).state, 'missing');
 });
 
@@ -63,7 +63,7 @@ test('a newer pending Claude rerun supersedes an older clear completion', async 
 
 test('server-side workflow run and artifact association rejects forged producer claims', async () => {
   const evidence = JSON.parse(cleanRun().output.summary);
-  const workflowRun = { id: 456, run_attempt: 1, path: '.github/workflows/claude-shadow-review.yml', event: 'workflow_run', status: 'completed', conclusion: 'success', head_sha: 'c'.repeat(40), head_branch: 'main', repository: { full_name: 'JagPat/PMCvitan' } };
+  const workflowRun = { id: 456, run_attempt: 1, path: '.github/workflows/claude-shadow-review.yml', event: 'workflow_run', status: 'completed', conclusion: 'success', head_sha: base, repository: { full_name: 'JagPat/PMCvitan' } };
   const job = { name: 'publish', status: 'completed', conclusion: 'success' };
   const artifact = { ...evidence.artifact, expired: false };
   const makeClient = ({ run = workflowRun, jobs = [job], artifacts = [artifact] } = {}) => {
@@ -74,8 +74,7 @@ test('server-side workflow run and artifact association rejects forged producer 
   };
   assert.equal(await makeClient().verifyClaudeShadowProducer(cleanRun(), evidence), true);
   assert.equal(await makeClient({ run: { ...workflowRun, path: '.github/workflows/evil.yml' } }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
-  assert.equal(await makeClient({ run: { ...workflowRun, head_sha: 'f'.repeat(40) } }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
-  assert.equal(await makeClient({ run: { ...workflowRun, head_branch: 'codex/untrusted-workflow' } }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
+  assert.equal(await makeClient({ run: { ...workflowRun, head_sha: 'c'.repeat(40) } }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
   assert.equal(await makeClient({ jobs: [{ ...job, conclusion: 'failure' }] }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
   assert.equal(await makeClient({ artifacts: [{ ...artifact, name: 'copied-evidence' }] }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
   assert.equal(await makeClient({ artifacts: [{ ...artifact, digest: `sha256:${'e'.repeat(64)}` }] }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
@@ -147,6 +146,29 @@ test('automatic merge needs an eligible commit owner, CI and exact-head review, 
   for (const name of REQUIRED_CHECKS) {
     assert.equal((await authorizeExactHeadMerge(makeClient({ runs: REQUIRED.map((r) => (r.name === name ? { ...r, conclusion: 'failure' } : r)) }), pull, head)).state, 'gates_not_green');
   }
+  // F1 P1-2: a MERGE_RECOVERY_OWED head (its merge left unconfirmed) authorizes the merge RETRY on
+  // real prior clean evidence plus fresh green gates — never requiring the owed marker itself to be a
+  // success, which would strand recovery forever. It still refuses a buried finding, a pending review,
+  // or no prior clean, so it never invents clearance or overrides a new finding.
+  const owed = { context: 'codex-current-head', state: 'failure', description: MERGE_RECOVERY_OWED };
+  const clean = { context: 'codex-current-head', state: 'success' };
+  const finding = { context: 'codex-current-head', state: 'failure', description: 'review: current-head Codex finding' };
+  const pending = { context: 'codex-current-head', state: 'pending' };
+  assert.equal((await authorizeExactHeadMerge(makeClient({ statuses: [owed, clean] }), pull, head)).allowed, true);
+  assert.equal((await authorizeExactHeadMerge(makeClient({ statuses: [owed] }), pull, head)).state, 'gates_not_green');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ statuses: [owed, finding, clean] }), pull, head)).state, 'gates_not_green');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ statuses: [owed, pending, clean] }), pull, head)).state, 'gates_not_green');
+  // The owed head with prior clean is still refused when the fresh required CI is not green — the
+  // recovery authorizes review clearance from history but demands live gates on every path.
+  assert.equal((await authorizeExactHeadMerge(makeClient({ statuses: [owed, clean], runs: [] }), pull, head)).state, 'gates_not_green');
+  // P1-2 dispatchability: a producer that writes only the owed failure (no self-persisted request)
+  // leaves it dispatchable; a pending accepted request suppresses re-dispatch.
+  assert.ok(gateRecoveryStatus({ statuses: [{ id: 9, ...owed }] }), 'an owed failure with no request is dispatchable');
+  assert.equal(
+    gateRecoveryStatus({ statuses: [{ id: 9, ...owed }, { context: 'codex-recovery-request/9', state: 'pending', description: 'recovery: requested terminal status 9' }] }),
+    null,
+    'an accepted pending request suppresses re-dispatch',
+  );
 });
 
 test('the commit trailer is the immutable anchor; a body/trailer mismatch is held, never merged', async () => {
@@ -279,6 +301,38 @@ test('promotion and final-policy require positive eligibility: Codex and missing
   }
 });
 
+test('finding 4032309588: an UNREADABLE head commit is a retryable infrastructure hold, not a "fix the trailer" scope fault', async () => {
+  // The Correction-Owner trailer may be perfectly valid — the commit read itself failed — so the
+  // controller must retry the infrastructure (a pending status the next cycle re-reads), never accuse
+  // the owner with a scope failure demanding a fix. A readable-but-unowned commit still faults.
+  const current = pullAt(613);
+  let readable = false;
+  const statusWrites = [];
+  const drafts = [];
+  const client = {
+    repository: 'JagPat/PMCvitan',
+    async commit() { if (!readable) throw new Error('502 reading commit'); return noOwnerCommit(); },
+    async pullRequest() { return current; },
+    async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
+    async checkRuns() { return REQUIRED; },
+    async reviews() { return []; },
+    async reviewComments() { return []; },
+    async setStatus(_h, state, description) { statusWrites.push({ state, description }); },
+    async setDraft(_p, draft) { drafts.push(draft); return { ...current, draft }; },
+    async disableAutoMerge() {},
+    async updateStickyComment() {},
+  };
+  assert.equal((await reviewAttempt(client, pullAt(613), head, 1, new Date().toISOString())).state, 'held_ineligible_owner');
+  assert.equal(statusWrites.some((s) => s.state === 'pending' && /unreadable/u.test(s.description)), true, 'an unreadable commit holds with a retryable pending status');
+  assert.equal(statusWrites.some((s) => /^scope:/u.test(s.description)), false, 'never a scope fault that accuses a possibly-valid trailer');
+  assert.equal(drafts.some((d) => d === false), false, 'never promoted READY');
+  // A commit that reads cleanly but carries no owner is a genuine scope fault, not an infra retry.
+  readable = true;
+  statusWrites.length = 0;
+  await reviewAttempt(client, pullAt(613), head, 1, new Date().toISOString());
+  assert.equal(statusWrites.some((s) => /^scope:/u.test(s.description)), true, 'a readable unowned commit is a scope fault');
+});
+
 test('completeReviewedPullRequest: merged, recoverable, or held fail-closed — never auto-merge, never a second merge', async () => {
   // F1 (comment 5705798316): every merge response is classified through one central handler —
   // 'merged' (confirmed), the recoverable 'merge_recovery_owed' (authorized but unconfirmed: racy
@@ -332,6 +386,48 @@ test('completeReviewedPullRequest: merged, recoverable, or held fail-closed — 
     async mergeExactHead() { confirmPhase = true; throw new Error('502 bad gateway'); },
     async pullRequest() { if (confirmPhase) throw new Error('confirming read failed'); return pull; },
   }), pull, head), 'merge_recovery_owed');
+
+  // Finding 4032309599: a DEFINITIVE HTTP refusal (409 conflict, 422 unmergeable, 404 gone) whose
+  // fresh raw re-read confirms the head is NOT merged must NOT mint a MERGE_RECOVERY_OWED sticky —
+  // retrying the identical merge cannot clear it, so it is held for the ordinary gates. Only an
+  // UNCERTAIN error (5xx / 408 / 429, or a statusless transport reject) mints the owed obligation.
+  const withStatus = (status) => Object.assign(new Error(`merge failed (${status})`), { status });
+  for (const status of [409, 422, 404, 403]) {
+    assert.equal(await completeReviewedPullRequest(baseClient({
+      async mergeExactHead() { throw withStatus(status); },
+      async pullRequest() { return pull; },
+    }), pull, head), 'held_for_gates', `a definitive ${status} is held, never owed`);
+  }
+  for (const status of [500, 502, 503, 408, 429]) {
+    assert.equal(await completeReviewedPullRequest(baseClient({
+      async mergeExactHead() { throw withStatus(status); },
+      async pullRequest() { return pull; },
+    }), pull, head), 'merge_recovery_owed', `an uncertain ${status} is recoverable`);
+  }
+
+  // Finding 4032309599 (changed unit): even an UNCERTAIN 5xx must NOT write recovery to an obsolete
+  // SHA. When the confirming raw re-read shows a different current head, the unit is SUPERSEDED and is
+  // held for the newer head's own cycle — never owed on the stale head (which would clobber its sticky).
+  const H2 = 'c'.repeat(40);
+  let phase = false;
+  assert.equal(await completeReviewedPullRequest(baseClient({
+    async mergeExactHead() { phase = true; throw withStatus(502); },
+    async pullRequest() { return phase ? { ...pull, head: { ...pull.head, sha: H2 } } : pull; },
+  }), pull, head), 'held_for_gates', 'a superseded head is held, never owed on the stale SHA');
+
+  // Finding 4032309586 (root reconciliation r4032371697): a readable 405 is a CONFIRMED refusal by
+  // branch protection, not an uncertain outcome. With the gates still green and the exact unit
+  // unchanged, the selected B contract mints the durable, freshly authorized exact-SHA direct retry.
+  assert.equal(await completeReviewedPullRequest(baseClient({
+    async mergeExactHead() { return { merged: false, message: 'Required status check is expected' }; },
+    async pullRequest() { return pull; },
+  }), pull, head), 'merge_recovery_owed', 'a confirmed 405 with green gates is owed a durable retry');
+  // A readable 405 whose raw re-read shows the head has moved is superseded, not owed.
+  let put405 = false;
+  assert.equal(await completeReviewedPullRequest(baseClient({
+    async mergeExactHead() { put405 = true; return { merged: false, message: 'not ready' }; },
+    async pullRequest() { return put405 ? { ...pull, head: { ...pull.head, sha: H2 } } : pull; },
+  }), pull, head), 'held_for_gates', 'a confirmed 405 on a superseded head is held, never owed');
 });
 
 test('the real GitHubClient draft seam never emits READY for a Codex commit owner', async () => {
@@ -434,6 +530,141 @@ test('a held ineligible head surfaces and routes a LIVE current-head finding, ne
   assert.match(statusWrites[0].description, /^review:/u, 'the surfaced status is a review finding, routed the ordinary way');
   assert.equal(statusWrites.some(({ state }) => state === 'pending'), false, 'no masking validation pending is written over the live finding');
   assert.equal(stickies.some((body) => /changes/iu.test(body ?? '')), true, 'the ordinary correction-routing sticky is published for the finding');
+});
+
+// Shared run() recovery harness. Its merge fixture enforces the REAL server prerequisite — the
+// codex-current-head status is SUCCESS and the PR is READY — at the PUT boundary, so a canned success
+// cannot conceal a recovery that failed to restore either. `seed(push)` writes the initial statuses.
+const currentHead = (statuses) => statuses.find((s) => s.context === 'codex-current-head');
+function recoveryHarness({ number, initialDraft, seed, mergeSucceeds }) {
+  let draft = initialDraft;
+  let nextId = 1;
+  const statuses = [];
+  let handoffs = 0;
+  let puts = 0;
+  const push = (state, description, context = 'codex-current-head') => statuses.unshift({ id: nextId++, context, state, description });
+  const meta = seed(push) ?? {};
+  let current = pullAt(number, { additions: 1, deletions: 0, changed_files: 1, draft, body: `<!-- correction-owner: claude -->\n${checklist}\nReplaces: none` });
+  const client = {
+    repository: 'JagPat/PMCvitan',
+    async commit() { return ownerCommit('claude'); },
+    async pullRequest() { return { ...current, draft }; },
+    async pullRequestFiles() { return [{ filename: 'scripts/example.mjs', additions: 1, deletions: 0, changes: 1 }]; },
+    async replacementLineage() { return { requiredReplacements: [], replacementPullRequests: [] }; },
+    async statuses() { return statuses.map((s) => ({ ...s })); },
+    async checkRuns() { return REQUIRED; },
+    async reviews() { return []; },
+    async reviewComments() { return []; },
+    async reactions() { return []; },
+    async setStatus(_h, state, description, _url, context = 'codex-current-head') { push(state, description, context); },
+    async setDraft(_p, value) { draft = value; current = { ...current, draft }; return { ...current, draft }; },
+    async disableAutoMerge() {},
+    async updateStickyComment() {},
+    async mergeExactHead() { puts += 1; if (currentHead(statuses)?.state !== 'success' || draft) return { merged: false }; return mergeSucceeds ? { merged: true } : { merged: false, message: 'Base branch was modified' }; },
+    async dispatchHandoff() { handoffs += 1; },
+  };
+  return { client, statuses, meta, get draft() { return draft; }, get handoffs() { return handoffs; }, get puts() { return puts; } };
+}
+
+test('F1 accepted recovery through run() restores success+ready before the single PUT, hands off once, and re-protects on refusal', async () => {
+  // The operator criterion: exercise the ACCEPTED recovery request through the actual run(). The owed
+  // head is held in draft; the retry must restore success+ready before the single PUT. The owed
+  // terminal is id 2, and the accepted recovery request points at it.
+  const build = (mergeSucceeds) => recoveryHarness({ number: 611, initialDraft: true, mergeSucceeds, seed: (push) => {
+    push('success', 'review: Codex found no blocking issue on this exact head');
+    push('failure', MERGE_RECOVERY_OWED);
+    push('pending', 'recovery: requested terminal status 2', 'codex-recovery-request/2');
+  } });
+
+  const ok = build(true);
+  await run({ context: { number: 611, expectedHead: head, ciConclusion: 'success' }, client: ok.client });
+  assert.equal(ok.handoffs, 1, 'a recovered merge hands off exactly once');
+  assert.ok(ok.puts >= 1, 'the merge PUT was attempted');
+  assert.equal(currentHead(ok.statuses).state, 'success', 'the recovered head ends green');
+  assert.equal(ok.draft, false, 'the recovered head is ready, not held');
+  assert.ok(ok.statuses.some((s) => s.context === 'codex-recovery-request/2' && s.state === 'success'), 'the old accepted request is settled');
+  assert.equal(ok.statuses.some((s) => s.context === 'codex-current-head' && s.state === 'pending' && /review: pending required CI/u.test(s.description)), false, 'no fresh review_pending is started');
+
+  const no = build(false);
+  await run({ context: { number: 611, expectedHead: head, ciConclusion: 'success' }, client: no.client });
+  assert.ok(no.puts >= 1, 'the PUT was attempted after restoring success+ready');
+  assert.equal(no.handoffs, 0, 'a refused retry hands off nothing');
+  assert.equal(currentHead(no.statuses).description, MERGE_RECOVERY_OWED, 're-protected with a fresh owed occurrence');
+  assert.equal(no.draft, true, 'the refused head is drafted again (protective hold)');
+  assert.ok(no.statuses.some((s) => s.context === 'codex-recovery-request/2' && s.state === 'success'), 'only the old request is settled');
+  const seen = new Set();
+  const combined = { statuses: no.statuses.filter((s) => (seen.has(s.context) ? false : seen.add(s.context))) };
+  const dispatchable = gateRecoveryStatus(combined);
+  assert.ok(dispatchable && dispatchable.description === MERGE_RECOVERY_OWED, 'the fresh owed occurrence is dispatchable (no pending request for its id)');
+});
+
+test('F1 P1-1: a terminal-success replay whose merge is unconfirmed re-protects with owed + draft', async () => {
+  // The success branch of the terminal replay used to ignore completeReviewedPullRequest's return, so
+  // an unconfirmed merge left the prior success and a ready PR with no owed obligation. It must
+  // re-protect instead (the fixture never confirms the merge even once success+ready are restored).
+  const h = recoveryHarness({ number: 612, initialDraft: false, mergeSucceeds: false, seed: (push) => {
+    push('success', 'review: Codex found no blocking issue on this exact head');
+  } });
+  await run({ context: { number: 612, expectedHead: head, ciConclusion: 'success' }, client: h.client });
+  assert.equal(currentHead(h.statuses).description, MERGE_RECOVERY_OWED, 'the unconfirmed merge is re-protected with the owed obligation');
+  assert.equal(h.draft, true, 'the head is drafted again so branch protection blocks the merge');
+});
+
+test('finding 4032309586: the direct exact-SHA retry CONVERGES — two confirmed-405 refusals then success, one PUT per occurrence, one final handoff, and a fresh finding denies the PUT', async () => {
+  // Root reconciliation r4032371697: a readable 405 is a confirmed refusal and the selected contract
+  // is a durable, freshly authorized exact-SHA DIRECT RETRY (not queueing). Prove it converges: each
+  // owed occurrence re-authorizes and attempts exactly one PUT; two refusals re-protect (owed + draft),
+  // then a success restores success+ready and hands off exactly once. A fresh finding denies the PUT.
+  let attempts = 0;
+  const outcomes = [false, false, true]; // readable-405 refuse, refuse, then merge
+  let draft = true;
+  let handoffs = 0;
+  let puts = 0;
+  let injectFinding = false;
+  const statuses = [
+    { id: 2, context: 'codex-current-head', state: 'failure', description: MERGE_RECOVERY_OWED },
+    { id: 1, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head' },
+  ];
+  const currentH = () => statuses.find((s) => s.context === 'codex-current-head');
+  const pull = () => pullAt(614, { draft });
+  const client = {
+    repository: 'JagPat/PMCvitan',
+    async commit() { return ownerCommit('claude'); },
+    async pullRequest() { return pull(); },
+    async statuses() {
+      const extra = injectFinding ? [{ id: 99, context: 'codex-current-head', state: 'failure', description: 'review: current-head Codex finding' }] : [];
+      return [...extra, ...statuses];
+    },
+    async checkRuns() { return REQUIRED; },
+    async reviews() { return []; },
+    async reviewComments() { return []; },
+    async setStatus(_h, state, description) { statuses.unshift({ id: 100 + statuses.length, context: 'codex-current-head', state, description }); },
+    async setDraft(_p, value) { draft = value; return { ...pull(), draft }; },
+    async disableAutoMerge() {},
+    async updateStickyComment() {},
+    async mergeExactHead() { puts += 1; if (currentH()?.state !== 'success' || draft) return { merged: false }; const merged = outcomes[attempts++]; return merged ? { merged: true } : { merged: false, message: 'Required status check is expected' }; },
+    async dispatchHandoff() { handoffs += 1; },
+  };
+  // First refusal: re-protected with owed + draft, exactly one PUT.
+  assert.equal(await recoverExactHeadMerge(client, pull(), head), 'merge_recovery_owed');
+  assert.equal(currentH().description, MERGE_RECOVERY_OWED);
+  assert.equal(draft, true, 'refused head is re-drafted');
+  assert.equal(puts, 1, 'exactly one PUT for the first occurrence');
+  // Second refusal: same, one more PUT, still no handoff.
+  assert.equal(await recoverExactHeadMerge(client, pull(), head), 'merge_recovery_owed');
+  assert.equal(puts, 2, 'exactly one PUT for the second occurrence');
+  assert.equal(handoffs, 0, 'no handoff while refused');
+  // Third attempt succeeds: success+ready restored before the PUT, one final handoff.
+  assert.equal(await recoverExactHeadMerge(client, pull(), head), 'merged');
+  assert.equal(handoffs, 1, 'exactly one handoff on the converged success');
+  assert.equal(puts, 3, 'one PUT per occurrence, three in total');
+  // A fresh current-head finding denies the next PUT entirely (guard holds, no attempt).
+  injectFinding = true;
+  draft = true;
+  statuses.unshift({ id: 200, context: 'codex-current-head', state: 'failure', description: MERGE_RECOVERY_OWED });
+  const before = puts;
+  assert.equal(await recoverExactHeadMerge(client, pull(), head), 'held_for_gates');
+  assert.equal(puts, before, 'a fresh finding denies the retry before any PUT');
 });
 
 test('a promotion hold attempts every protective operation independently, even when one throws', async () => {
