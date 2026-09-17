@@ -26,18 +26,21 @@ statement, invariant matrix and review packet required by the active plan. A tas
 not complete until its focused tests and required `pnpm check` pass.
 
 Every PR declares exactly one correction owner in its leading marker block:
-`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`.
-A `claude/**` branch must declare Claude. The marker selects an agent type,
-not a unique session: coordinate one producer on each branch before editing.
-Only the declared owner handles normal correction handoff; do not start a competing
-producer. Conflict handoffs re-read the owner and current head before publication;
-invalid or non-awakenable ownership is reported without waking a different agent.
+`<!-- correction-owner: claude -->`, `<!-- correction-owner: cursor -->`, or
+`<!-- correction-owner: codex -->`. A `claude/**` branch must declare Claude. The
+marker selects an agent type, not a unique session: coordinate one producer on each
+branch. Only the declared owner handles normal correction handoff; do not start a
+competing producer. Conflict handoffs re-read the owner and current head before
+publication; invalid or non-awakenable ownership is reported without waking a different agent.
 
-Codex implementation ownership is currently inadmissible: GitHub implementation
-tasks and reviews share the Codex bot identity, and a fresh reaction does not prove
-a separate reviewer supplied it. A transfer marker cannot bypass this restriction.
-Enabling that role requires reviewer-specific provenance first. User-requested Codex
-assistance does not itself change the configured normal correction owner.
+Admission is HEAD-bound: the exact HEAD commit's single terminal `Correction-Owner:` trailer is the
+immutable anchor, and the mandatory body marker must AGREE with it. An ineligible head — a missing or
+invalid trailer, a body/trailer disagreement, the validation-only `codex` candidate, or an unreadable
+commit — is held BEFORE any green required status (re-drafted, any armed auto-merge disabled, a non-green
+hold published), never promoted, armed, or given a green status; a disagreeing body is unroutable and an
+unreadable commit is a retryable infra hold, not a fault. Codex is a truthful CANDIDATE owner but is NOT
+awakenable and NOT merge-eligible: task and reviewer share one Codex identity, so it stays held pending
+reviewer activation; no transfer marker or user `@codex` bypasses it. Merge authorization is a later unit.
 
 This repository currently enables only the Claude correction wake integration.
 Codex supports GitHub task mentions such as `@codex fix the CI failures` through its
