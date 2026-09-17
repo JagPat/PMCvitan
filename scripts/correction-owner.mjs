@@ -113,7 +113,9 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
 // authorizes, and missing/duplicate/malformed/unknown fails closed. `git interpret-trailers` semantics:
 // the block is the final run of `Key: value` (+ continuation) lines after a blank line; a continuation
 // before the first trailer voids the block.
-const TRAILER_LINE = /^[A-Za-z0-9][A-Za-z0-9-]*:/u;
+// git accepts horizontal whitespace between the token and the separator (`Correction-Owner : claude`
+// parses as a trailer), so admit it here and normalise the key at extraction (finding r4036658904).
+const TRAILER_LINE = /^[A-Za-z0-9][A-Za-z0-9-]*[ \t]*:/u;
 const TRAILER_CONTINUATION = /^[ \t]+\S/u;
 const OWNER_VALUE = /^[A-Za-z][A-Za-z0-9_-]*$/u;
 
@@ -162,7 +164,7 @@ export function parseCommitCorrectionOwner(commitMessage) {
     const separator = line.indexOf(':');
     if (separator < 0) continue; // defensive; the block admits only trailer/continuation lines
     trailers.push({
-      key: line.slice(0, separator),
+      key: line.slice(0, separator).replace(/[ \t]+$/u, ''),
       value: line.slice(separator + 1).replace(/^[ \t]+/u, ''),
     });
   }
@@ -316,12 +318,17 @@ function undeclaredInstruction(declaration) {
       + 'HEAD commit\'s Correction-Owner trailer is missing, invalid, or disagrees with the PR body '
       + 'marker'}. No agent is routed and no wake is addressed to the body owner.`;
     // A VALID trailer with only a missing/mismatched BODY marker is a body edit (the unchanged head becomes
-    // eligible next run), NOT a new head (finding r4032740244); only a bad TRAILER needs a new head.
-    const resume = declaration.remedy === 'body'
-      ? 'Resume action: set exactly one `<!-- correction-owner: … -->` body marker matching this head\'s '
-        + 'valid `Correction-Owner:` commit trailer; the unchanged head becomes eligible on the next run.'
-      : 'Resume action: push a new head whose single terminal `Correction-Owner:` commit trailer matches '
-        + 'the PR body marker; no body edit alone can clear a head that mislabels its own owner.';
+    // eligible next run), NOT a new head (finding r4032740244); only a bad TRAILER needs a new head. An
+    // UNREADABLE head is neither — it is a transient infrastructure condition, so prescribe no commit or
+    // body edit; the watchdog re-reads it (finding r4036658899).
+    const resume = declaration.remedy === 'infra'
+      ? 'Resume action: none — the exact HEAD commit could not be read (a transient infrastructure '
+        + 'condition, not an ownership fault); the watchdog re-reads it on the next tick.'
+      : declaration.remedy === 'body'
+        ? 'Resume action: set exactly one `<!-- correction-owner: … -->` body marker matching this head\'s '
+          + 'valid `Correction-Owner:` commit trailer; the unchanged head becomes eligible on the next run.'
+        : 'Resume action: push a new head whose single terminal `Correction-Owner:` commit trailer matches '
+          + 'the PR body marker; no body edit alone can clear a head that mislabels its own owner.';
     return `${opening} ${resume}`;
   }
   const opening = `Correction ownership is not established on this PR: ${declaration.detail}. `

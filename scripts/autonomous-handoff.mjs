@@ -8,7 +8,6 @@ import { pathToFileURL } from 'node:url';
 import {
   buildDriftHandoff,
   buildPostMergeContinuation,
-  isAutonomousBranchRef,
   isAutonomousPullRequest,
   selectAutonomousOpenPullRequests,
 } from './runner-continuation.mjs';
@@ -456,10 +455,7 @@ async function handOffMergedPullRequest(
     pullRequest?.head?.repo?.full_name !== repository ||
     pullRequest?.base?.repo?.full_name !== repository ||
     pullRequest?.base?.ref !== defaultBranch ||
-    // Admit every owner family (claude/, cursor/, codex/), not `claude/` alone: a Claude-only filter would
-    // skip the continuation for a merge-eligible cursor/codex task while the caller advances the durable
-    // cursor — a permanent stall (finding r4034779620). The merged PR is closed, so ask the ref alone.
-    !isAutonomousBranchRef(pullRequest?.head?.ref)
+    !pullRequest?.head?.ref?.startsWith('claude/')
   ) return;
 
   const combinedStatus = await client.combinedStatus(pullRequest.head.sha);

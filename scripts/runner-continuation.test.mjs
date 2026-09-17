@@ -5,52 +5,9 @@ import {
   buildDriftHandoff,
   buildPostMergeContinuation,
   detectStatusDrift,
-  detectStatusDriftAcrossHeads,
   formatOpenPullRequestList,
-  isAutonomousBranchRef,
-  isAutonomousPullRequest,
   selectAutonomousOpenPullRequests,
 } from './runner-continuation.mjs';
-
-test('finding r4034779620: isAutonomousBranchRef classifies every owner family from the ref alone', () => {
-  // A merged (closed) PR is not `isAutonomousPullRequest` (that requires open state), so the merged
-  // handoff path needs a ref-only owner-family test that admits cursor/** and codex/**, not claude/ only.
-  for (const ref of ['claude/x', 'cursor/task', 'codex/ownership-recovery']) {
-    assert.equal(isAutonomousBranchRef(ref), true, ref);
-  }
-  for (const ref of ['chore/bump', 'feature/x', 'main', '', null, undefined]) {
-    assert.equal(isAutonomousBranchRef(ref), false, String(ref));
-  }
-});
-
-test('finding 4032740385: a maintenance head is not suggested as the open_pr task pointer', () => {
-  // Even on an owner-family branch, a maintenance PR (editsStatus === false — its diff does not
-  // PROPOSE STATUS) must not be selected as the task pointer. The task-bearing signal is editsStatus,
-  // not the branch prefix or the mandatory owner marker.
-  const maintenance = { number: 900, headRefName: 'claude/maintenance', isDraft: true };
-  const task = { number: 850, headRefName: 'claude/feature', isDraft: true };
-
-  // Only a maintenance PR open, STATUS.open_pr none: drift is still reported, but the pointer
-  // suggestion is `none` — a maintenance head is never the task pointer.
-  const onlyMaintenance = detectStatusDriftAcrossHeads({
-    defaultBranchNow: { open_pr: 'none' },
-    openPullRequests: [maintenance],
-    headStatuses: [{ number: 900, now: { open_pr: 'none' }, editsStatus: false }],
-  });
-  assert.equal(onlyMaintenance.suggestedOpenPr, 'none', 'a lone maintenance PR is never suggested as open_pr');
-
-  // A task PR and a higher-numbered maintenance PR: the suggestion is the TASK PR, not the maintenance.
-  const withTask = detectStatusDriftAcrossHeads({
-    defaultBranchNow: { open_pr: 'none' },
-    openPullRequests: [task, maintenance],
-    headStatuses: [
-      { number: 850, now: { open_pr: 'none' }, editsStatus: true },
-      { number: 900, now: { open_pr: 'none' }, editsStatus: false },
-    ],
-  });
-  assert.equal(withTask.drift, true);
-  assert.equal(withTask.suggestedOpenPr, '850', 'the maintenance PR is excluded from the pointer suggestion');
-});
 
 const repository = 'JagPat/PMCvitan';
 
@@ -77,38 +34,6 @@ test('selectAutonomousOpenPullRequests keeps only open same-repo claude branches
     'main',
   );
   assert.deepEqual(selected.map((pr) => pr.number), [252]);
-});
-
-test('findings 3012 + 4032740385 — autonomous units are the owner-family branches, not every marked PR', () => {
-  // An in-flight task unit is discriminated by its OWNER-FAMILY branch prefix (claude/, cursor/,
-  // codex/), not by the correction-owner body marker. A codex/** unit is tracked (3012) without a
-  // parallel claude/** runner, while an unrelated maintenance PR that merely carries the now-mandatory
-  // marker on a non-owner-family branch is NOT pulled into the task pointer's population (4032740385).
-  const codexUnit = pullRequest({
-    number: 610,
-    body: '<!-- correction-owner: codex -->',
-    head: { ref: 'codex/ownership-recovery', repo: { full_name: repository } },
-  });
-  const cursorUnit = pullRequest({
-    number: 611,
-    body: '<!-- correction-owner: cursor -->',
-    head: { ref: 'cursor/task', repo: { full_name: repository } },
-  });
-  // The regression: a maintenance PR carrying the mandatory claude marker on a chore/ branch.
-  const markedMaintenancePr = pullRequest({
-    number: 612,
-    body: '<!-- correction-owner: claude -->\n\n## Bump deps',
-    head: { ref: 'chore/bump-deps', repo: { full_name: repository } },
-  });
-  const selected = selectAutonomousOpenPullRequests(
-    [codexUnit, cursorUnit, markedMaintenancePr],
-    repository,
-    'main',
-  );
-  assert.deepEqual(selected.map((pr) => pr.number), [610, 611],
-    'the codex/** and cursor/** units are tracked; the marked chore/ maintenance PR is not');
-  assert.equal(isAutonomousPullRequest(markedMaintenancePr, repository, 'main'), false,
-    'the mandatory owner marker does not make a non-owner-family branch an autonomous task unit');
 });
 
 test('detectStatusDrift flags open_pr none with live autonomous PRs', () => {

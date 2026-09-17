@@ -114,6 +114,10 @@ test('the commit-owner trailer is read only from the terminal trailer block, Git
     parseCommitCorrectionOwner('subject\n\n# leading comment\nCorrection-Owner: cursor\n').owner,
     'cursor',
   );
+  // finding r4036658904: git accepts horizontal whitespace before the trailer separator, so
+  // `Correction-Owner : claude` parses as a trailer (the token is normalised on read).
+  assert.equal(parseCommitCorrectionOwner('subject\n\nCorrection-Owner : claude\n').owner, 'claude');
+  assert.equal(parseCommitCorrectionOwner('subject\n\nCorrection-Owner\t: cursor\n').owner, 'cursor');
 });
 
 test('an inconsistent-ownership notice names the remedy that actually fixes it (finding r4032740244)', () => {
@@ -134,6 +138,16 @@ test('an inconsistent-ownership notice names the remedy that actually fixes it (
   });
   assert.match(headFix.instruction, /push a new head/u);
   assert.match(headFix.instruction, /Correction-Owner/u);
+
+  // finding r4036658899: an UNREADABLE head is retryable infrastructure, not an author-fixable trailer —
+  // the notice prescribes no commit and names the watchdog re-read, never "push a new head".
+  const infra = correctionRouting({
+    declaration: { state: 'inconsistent', owner: null, detail: '2 current-head Codex findings', remedy: 'infra' },
+    head,
+  });
+  assert.equal(infra.state, 'correction_stalled');
+  assert.match(infra.instruction, /could not be read|re-reads/u);
+  assert.doesNotMatch(infra.instruction, /push a new head/u, 'an unreadable head is not fixed by a new commit');
 });
 function cleanRun(overrides = {}) {
   const artifact = { id: 789, digest: `sha256:${'d'.repeat(64)}`, name: `claude-shadow-v1-repo-${Buffer.from('JagPat/PMCvitan').toString('base64url')}-pr-600-base-${base}-head-${head}-ci-123-2-publisher-456-1-state-clear-findings-0` };

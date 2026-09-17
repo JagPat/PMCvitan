@@ -177,10 +177,11 @@ administration and branch protection remain outside this mechanism.
 
 ## Ownership admission and routing foundation (non-authoritative)
 
-Successor 1 of 2 to the stopped `codex/**` recovery unit (the second, merge recovery and backlog
-reconciliation, is published only after this protected-merges). It installs ownership resolution
-WITHOUT changing what is authoritative: the `codex-current-head` gate and branch protection still
-decide every merge, and no owner routing is switched on.
+The first sequential successor to the stopped `codex/**` recovery unit. It installs ownership resolution
+WITHOUT changing what is authoritative: the `codex-current-head` gate and branch protection still decide
+every merge, and no owner routing is switched on. Two units follow, published only after this
+protected-merges: task classification and continuation shepherding, then merge recovery and backlog
+reconciliation.
 
 **HEAD-bound owner resolution is three-valued.** Authority is the exact server-verified HEAD commit's
 single terminal `Correction-Owner:` trailer (read Git-faithfully; a marker in prose or a code fence is
@@ -194,9 +195,12 @@ the watchdog re-dispatches, never an author accusation).
 
 **Codex is a truthful candidate** alongside `claude`/`cursor`: trackable as an in-flight unit but NOT
 awakenable (task and reviewer share one bot identity) and NOT merge-eligible — a consistent Codex head
-is held PENDING independent reviewer activation. **Continuation selects by owner family** (`claude/`,
-`cursor/`, `codex/` prefix), not the now-mandatory body marker, so a `codex/**` unit is tracked without
-a parallel `claude/**` runner. **Ownership is a precondition of scope** at every entry (review attempt,
-enforcement, final admission), but a more actionable non-retryable CI/current-head failure
-short-circuits first, and a retryable placeholder never masks a fresh ownership fault. Merge recovery
-is the deferred second successor; nothing here anticipates it.
+is held PENDING independent reviewer activation. **Ownership is a precondition of scope** at every entry
+(review attempt, enforcement, final admission), but a more actionable non-retryable CI/current-head
+failure short-circuits first, and a retryable placeholder never masks a fresh ownership fault.
+
+This unit does **not** activate unattended role reversal and does **not** change continuation/drift
+selection: continuation still selects Claude PRs exactly as before, and task classification — distinguishing
+autonomous product/correction PRs from maintenance PRs at pointer selection AND at every `openPullRequests`
+consumer (`buildDriftHandoff`, `buildPostMergeContinuation`) — is the deferred next successor, with merge
+recovery and backlog reconciliation after it. Nothing here anticipates either.

@@ -1435,6 +1435,9 @@ test('the trusted owner observes review history after CI without requiring repla
     3,
     'every finding-result path must re-evaluate the reset before directing another push',
   );
+  // finding r4036658899: an unreadable post-poll reread (readable === false) maps to the retryable
+  // `infra` remedy, never an author-fixable `head`, so the notice does not prescribe a new commit.
+  assert.match(gate, /eligibility\.readable === false \? 'infra'/u);
 });
 
 test('trusted scope enforcement rejects a spoofed green preflight', async () => {

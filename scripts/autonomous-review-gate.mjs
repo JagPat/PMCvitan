@@ -1658,8 +1658,10 @@ export async function publishCurrentHeadFinding(
     detail,
     reason: 'review',
     stalled: ownershipStalled,
-    // Valid trailer + bad body ⇒ body edit; missing/unreadable trailer ⇒ a new (re-readable) head.
-    remedy: eligibility.owner !== null ? 'body' : 'head',
+    // Valid trailer + bad body ⇒ body edit; missing trailer ⇒ a new head; an UNREADABLE post-poll reread
+    // (readable === false) ⇒ a retryable infrastructure hold, never an author "push a new head" — the exact
+    // owner is unknown, so the watchdog re-reads it rather than prescribing a commit (finding r4036658899).
+    remedy: eligibility.readable === false ? 'infra' : (eligibility.owner !== null ? 'body' : 'head'),
   });
   await client.updateStickyComment(
     pullRequest.number,

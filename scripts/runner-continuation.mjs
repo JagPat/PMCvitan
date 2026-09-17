@@ -1,36 +1,19 @@
 import { DIRECTIVE_STATES, assessRunnerState, isNoneValue } from './autonomous-status-state.mjs';
-import { CORRECTION_OWNERS } from './review-policy.mjs';
 
 const NONE = 'none';
-
-// The autonomous OWNER-FAMILY branch prefixes (claude/, cursor/, codex/). These, not the body's
-// correction-owner marker (which every PR now carries, so it cannot single out task PRs, finding
-// r4032740385), discriminate an in-flight task unit — and still track a `codex/**` unit (r4032903012).
-const AUTONOMOUS_BRANCH_PREFIXES = CORRECTION_OWNERS.map((owner) => `${owner}/`);
-
-// Whether a branch ref belongs to an owner family. Unlike `isAutonomousPullRequest`, this asks ONLY about
-// the ref, so it also classifies a merged (closed) PR — the merged-handoff path admits every owner family,
-// not just `claude/` (finding r4034779620).
-export function isAutonomousBranchRef(ref) {
-  return AUTONOMOUS_BRANCH_PREFIXES.some((prefix) => String(ref ?? '').startsWith(prefix));
-}
 
 export function isAutonomousPullRequest(
   pullRequest,
   repository,
   defaultBranch,
 ) {
-  if (
-    pullRequest?.state !== 'open' ||
-    pullRequest?.head?.repo?.full_name !== repository ||
-    pullRequest?.base?.repo?.full_name !== repository ||
-    pullRequest?.base?.ref !== defaultBranch
-  ) {
-    return false;
-  }
-  // Identified by owner-family branch prefix — NOT the body marker every PR now carries (finding
-  // r4032740385) — still tracking a `codex/**` unit (finding r4032903012).
-  return isAutonomousBranchRef(pullRequest?.head?.ref);
+  return (
+    pullRequest?.state === 'open' &&
+    pullRequest?.head?.repo?.full_name === repository &&
+    pullRequest?.base?.repo?.full_name === repository &&
+    pullRequest?.base?.ref === defaultBranch &&
+    pullRequest?.head?.ref?.startsWith('claude/')
+  );
 }
 
 function isNone(value) {
@@ -295,31 +278,6 @@ export function detectStatusDriftAcrossHeads({
       // warning and sent the runner to the wrong branch after merge.
       suggestedOpenPr: String(correctingHead.now?.open_pr ?? '').trim() || 'none',
     };
-  }
-
-  // The open_pr TASK POINTER is discriminated by `editsStatus` (does the head's diff PROPOSE STATUS), not
-  // the branch prefix or the mandatory body marker (finding r4032740385). DETECTION is unchanged; only the
-  // SUGGESTION is corrected: never point open_pr at a maintenance head (`editsStatus === false`); unknown
-  // counts as task-bearing; no task-bearing PR ⇒ `none`.
-  if (defaultBranchDrift.drift) {
-    const maintenanceNumbers = new Set(
-      (headStatuses ?? [])
-        .filter((entry) => entry?.editsStatus === false)
-        .map((entry) => String(entry.number)),
-    );
-    if (maintenanceNumbers.has(String(defaultBranchDrift.suggestedOpenPr))) {
-      const taskBearing = (openPullRequests ?? []).filter(
-        (pullRequest) => !maintenanceNumbers.has(String(pullRequest.number)),
-      );
-      const replacement = taskBearing.length > 0
-        ? taskBearing[taskBearing.length - 1]
-        : null;
-      return {
-        ...defaultBranchDrift,
-        suggestedOpenPr: replacement ? String(replacement.number) : 'none',
-        primaryPullRequest: replacement ?? null,
-      };
-    }
   }
 
   return defaultBranchDrift;
