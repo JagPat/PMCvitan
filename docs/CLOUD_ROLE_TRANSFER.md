@@ -177,51 +177,26 @@ administration and branch protection remain outside this mechanism.
 
 ## Ownership admission and routing foundation (non-authoritative)
 
-This stage installs the ownership-resolution foundation the eventual transfer needs, WITHOUT changing
-what is authoritative: the existing `codex-current-head` gate and branch protection still decide every
-merge, and no owner routing is switched on. It is the first of two sequential additive successors to
-the stopped `codex/**` recovery unit; the second — merge recovery and backlog reconciliation — is not
-published until this one protected-merges, and every finding from that stopped unit maps to exactly
-one of the two.
+Successor 1 of 2 to the stopped `codex/**` recovery unit (the second, merge recovery and backlog
+reconciliation, is published only after this protected-merges). It installs ownership resolution
+WITHOUT changing what is authoritative: the `codex-current-head` gate and branch protection still
+decide every merge, and no owner routing is switched on.
 
-**HEAD-bound owner resolution is three-valued.** Authority is the exact, server-verified HEAD commit's
-single terminal `Correction-Owner:` trailer (read Git-faithfully from the terminal `git
-interpret-trailers` block — a marker in prose or a code fence is not a trailer), which must AGREE with
-the leading PR-body marker. Branch names never authorize. The read distinguishes three cases instead
-of collapsing them to one boolean, so every consumer (gate, continuation, watchdog) can act on the
-distinction:
+**HEAD-bound owner resolution is three-valued.** Authority is the exact server-verified HEAD commit's
+single terminal `Correction-Owner:` trailer (read Git-faithfully; a marker in prose or a code fence is
+not a trailer), which must AGREE with the leading PR-body marker; branch names never authorize. The
+three cases each consumer acts on: **eligible** (trailer names a merge-eligible owner, body agrees —
+only this may promote/merge); **readable-inconsistent** (a clean read with a missing/invalid/
+disagreeing trailer — an author-fixable fault: a `scope:` failure leading with a shared signature,
+redraft, auto-merge disabled, correction STALLED so no owner is woken, a new agreeing head owed); and
+**unreadable-infra** (the commit could not be read — retryable infrastructure: a retryable placeholder
+the watchdog re-dispatches, never an author accusation).
 
-- **eligible** — the head trailer names a merge-eligible owner and the body marker agrees. Only this
-  case may promote a draft to ready or merge.
-- **readable-inconsistent** — the commit read cleanly but the trailer is missing, invalid, or
-  disagrees with the body marker. This is a genuine, author-fixable ownership fault: the gate writes a
-  `scope:` failure whose detail LEADS with a shared signature, redrafts the head, disables any armed
-  auto-merge, and declares the correction STALLED (the body is the half that may be lying, so no owner
-  is woken). A new head carrying one agreeing trailer is owed.
-- **unreadable-infra** — the commit could not be read at all. This is retryable INFRASTRUCTURE, never
-  an author fault: the gate writes a retryable placeholder status that the watchdog re-dispatches
-  (the gate then re-reads the commit next cycle), rather than accusing a possibly-valid trailer or
-  stranding a pending status.
-
-**Codex is admitted as a truthful candidate**, alongside `claude` and `cursor`. A corrective head may
-declare `codex` and be tracked as an in-flight unit, but Codex is NOT awakenable from GitHub (its
-implementation task and reviewer share one bot identity) and NOT merge-eligible — a consistent Codex
-head is held with a PENDING status pending independent reviewer activation, and no transfer marker
-bypasses that hold. Admission is not wake or merge authority.
-
-**Continuation selects by declared owner, not branch prefix.** An in-flight autonomous unit is
-identified by its declared correction owner, so a same-repository `codex/**` branch that declares a
-valid owner is a tracked unit and continuation must not treat it as absent and start a parallel
-`claude/**` runner. The `claude/` prefix remains only a fallback for a legacy unit whose body carries
-no marker.
-
-**Ownership-fault precedence.** Ownership is a precondition of every scope assessment: an ineligible
-owner is held before a review attempt is spent, before scope enforcement, and again at final
-admission — but a genuinely more actionable, non-retryable current-head failure (a CI failure or a
-live current-head finding) still short-circuits first, and a retryable placeholder never masks a
-freshly detected ownership fault.
-
-This stage changes no authoritative consumer, grants no merge authority, and does not switch owner
-routing. Merge recovery (uncertain-vs-definitive outcomes, durable owed occurrences, a fresh
-authorization/finding check before every merge PUT, exact-head reconciliation, backlog and
-exactly-once handoff) is the deferred second successor; nothing here anticipates it.
+**Codex is a truthful candidate** alongside `claude`/`cursor`: trackable as an in-flight unit but NOT
+awakenable (task and reviewer share one bot identity) and NOT merge-eligible — a consistent Codex head
+is held PENDING independent reviewer activation. **Continuation selects by owner family** (`claude/`,
+`cursor/`, `codex/` prefix), not the now-mandatory body marker, so a `codex/**` unit is tracked without
+a parallel `claude/**` runner. **Ownership is a precondition of scope** at every entry (review attempt,
+enforcement, final admission), but a more actionable non-retryable CI/current-head failure
+short-circuits first, and a retryable placeholder never masks a fresh ownership fault. Merge recovery
+is the deferred second successor; nothing here anticipates it.

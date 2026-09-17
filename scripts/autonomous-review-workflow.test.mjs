@@ -1772,35 +1772,26 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
   ]);
 });
 
-test('finding r4034779639: a body-marker edit between merge attempts fails closed — native auto-merge is never armed', async () => {
+test('a reviewed head still waiting on GitHub queues native auto-merge', async () => {
   assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
   const expectedHead = 'a'.repeat(40);
-  const consistent = {
+  const pullRequest = {
     number: 230,
     state: 'open',
     draft: false,
-    // Body agrees with the immutable `claude` head trailer (automatedMergeEvidence) at first.
     body: '<!-- correction-owner: claude -->',
     head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
     base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
-  // After the first not-ready merge, the editable body marker is edited to DISAGREE with the immutable
-  // `claude` head trailer. The controller must re-authorize before the next attempt and refuse — it must
-  // never delegate to GitHub native auto-merge, which would merge the exact SHA regardless of the edit.
-  const edited = { ...consistent, body: '<!-- correction-owner: cursor -->' };
-  let reads = 0;
   const calls = [];
   const client = {
-    ...automatedMergeEvidence(consistent),
-    // The first authorization reads the consistent PR twice (live + final re-read); the second
-    // authorization reads the edited PR and stops on `owner_not_merge_eligible`.
-    async pullRequest() { reads += 1; return reads <= 2 ? consistent : edited; },
+    ...automatedMergeEvidence(pullRequest),
     async mergeExactHead(number, head) {
       calls.push(['merge', number, head]);
       return { merged: false, message: 'Not ready to merge' };
     },
-    async enableAutoMerge() {
-      assert.fail('native auto-merge must never be armed under a body-mutable predicate');
+    async enableAutoMerge(current, head) {
+      calls.push(['auto-merge', current.number, head]);
     },
     async dispatchHandoff(ref, number) {
       calls.push(['handoff', ref, number]);
@@ -1808,20 +1799,59 @@ test('finding r4034779639: a body-marker edit between merge attempts fails close
   };
 
   assert.equal(
-    await reviewGate.completeReviewedPullRequest(
-      client,
-      consistent,
-      expectedHead,
-      { mergeSettleAttempts: 3, mergeSettleDelayMs: 0 },
-    ),
-    'held_for_gates',
+    await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead),
+    'queued',
   );
-  // Only the first (authorized) merge was attempted; the body edit then made re-authorization
-  // ineligible, so there is no second merge and no handoff — and above all no auto-merge queued.
-  assert.deepEqual(calls, [['merge', 230, expectedHead]]);
+  assert.deepEqual(calls, [
+    ['merge', 230, expectedHead],
+    ['auto-merge', 230, expectedHead],
+    ['handoff', 'main', 230],
+  ]);
 });
 
-test('an authorized head not yet mergeable settles on a re-authorized retry, not native auto-merge', async () => {
+test('finding r4034779639: merge authority is the immutable HEAD trailer, so a disagreeing body marker does not make a queued merge unsafe', async () => {
+  assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
+  const expectedHead = 'a'.repeat(40);
+  // The PR body marker has been edited to `cursor`, but the IMMUTABLE head trailer names `claude` (an
+  // eligible owner). Merge authority is the trailer — a native-auto-merge queue rides the per-SHA gate
+  // that a body edit cannot flip — so the reviewed head still merges; body/trailer consistency is
+  // enforced at promotion, never re-litigated at merge. This is what makes native auto-merge safe.
+  const pullRequest = {
+    number: 231,
+    state: 'open',
+    draft: false,
+    body: '<!-- correction-owner: cursor -->',
+    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
+  };
+  const calls = [];
+  const client = {
+    ...automatedMergeEvidence(pullRequest, 'claude'),
+    async mergeExactHead(number, head) { calls.push(['merge', number, head]); return { merged: true, sha: 'b'.repeat(40) }; },
+    async enableAutoMerge() { assert.fail('the direct merge succeeded; no queue was needed'); },
+    async dispatchHandoff(ref, number) { calls.push(['handoff', ref, number]); },
+  };
+
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead),
+    'merged',
+  );
+  assert.deepEqual(calls, [['merge', 231, expectedHead], ['handoff', 'main', 231]]);
+
+  // A codex TRAILER, by contrast, is never merged (validation-only), regardless of the body.
+  const codexClient = {
+    ...automatedMergeEvidence(pullRequest, 'codex'),
+    async mergeExactHead() { assert.fail('a codex-trailer head must never merge'); },
+    async enableAutoMerge() { assert.fail('a codex-trailer head must never queue'); },
+    async dispatchHandoff() {},
+  };
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(codexClient, pullRequest, expectedHead),
+    'held_for_gates',
+  );
+});
+
+test('a clean-state auto-merge race retries the exact-SHA merge once', async () => {
   assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
   const expectedHead = 'a'.repeat(40);
   const pullRequest = {
@@ -1839,13 +1869,12 @@ test('an authorized head not yet mergeable settles on a re-authorized retry, not
       assert.equal(number, 230);
       assert.equal(head, expectedHead);
       mergeAttempts += 1;
-      // GitHub's mergeable_state is momentarily unsettled on the first attempt, then clears.
       return mergeAttempts === 1
         ? { merged: false, message: 'Not ready to merge' }
         : { merged: true, sha: 'b'.repeat(40) };
     },
     async enableAutoMerge() {
-      assert.fail('native auto-merge must never be armed; the merge is controller-driven');
+      throw new Error('GitHub GraphQL failed: Pull request Pull request is in clean status');
     },
     async dispatchHandoff(ref, number) {
       assert.equal(ref, 'main');
@@ -1854,12 +1883,7 @@ test('an authorized head not yet mergeable settles on a re-authorized retry, not
   };
 
   assert.equal(
-    await reviewGate.completeReviewedPullRequest(
-      client,
-      pullRequest,
-      expectedHead,
-      { mergeSettleAttempts: 3, mergeSettleDelayMs: 0 },
-    ),
+    await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead),
     'merged',
   );
   assert.equal(mergeAttempts, 2);
@@ -1912,18 +1936,23 @@ test('finding r4034779643: a consistent Codex-owned hold publishes correction_st
   assert.match(stickies[0], /activate/iu);
 });
 
-test('the controller never arms GitHub native auto-merge', async () => {
-  // The exact-head merge is controller-driven and re-authorized on every attempt, so a body-marker edit
-  // cannot slip a now-ineligible head through a queued native merge (finding r4034779639). The enable
-  // side of native auto-merge is removed entirely; only the defensive disable teardown remains.
+test('native auto-merge is armed with the reviewed head OID', async () => {
+  // Native auto-merge is the durable re-trigger for an authorized-but-not-yet-mergeable head, bound to
+  // the exact reviewed SHA so it merges only that immutable head. Merge authority is the immutable
+  // trailer (authorizeExactHeadMerge / mergeAuthorizedByTrailer), so a later body edit cannot make the
+  // queued merge unsafe (finding r4034779639).
   const gate = await readFile(
     new URL('./autonomous-review-gate.mjs', import.meta.url),
     'utf8',
   );
-  assert.doesNotMatch(gate, /enablePullRequestAutoMerge/);
-  assert.doesNotMatch(gate, /async enableAutoMerge/);
-  assert.doesNotMatch(gate, /client\.enableAutoMerge|this\.enableAutoMerge/);
-  assert.match(gate, /disablePullRequestAutoMerge/);
+  const autoMergeMethod = gate.slice(
+    gate.indexOf('async enableAutoMerge'),
+    gate.indexOf('async disableAutoMerge'),
+  );
+  assert.match(autoMergeMethod, /expectedHeadOid:\s*\$expectedHead/);
+  assert.match(autoMergeMethod, /\{ id: pullRequest\.node_id, expectedHead \}/);
+  // Merge authority is the immutable HEAD trailer, not the mutable body-consistency predicate.
+  assert.match(gate, /function mergeAuthorizedByTrailer/);
 });
 
 test('failure-latch status history is fully paginated', async () => {

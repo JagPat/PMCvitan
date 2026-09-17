@@ -683,10 +683,27 @@ export class GitHubClient {
     return this.pullRequest(pullRequest.number);
   }
 
-  // GitHub native auto-merge is NEVER armed by this controller (see completeReviewedPullRequest): a
-  // queued native merge honours only per-SHA required statuses, so a PR-body owner edit that disagrees
-  // with the immutable trailer could merge a now-ineligible head (finding r4034779639). Only the
-  // disable side remains — a defensive teardown for any auto-merge armed outside this controller.
+  // Armed with `expectedHeadOid` bound to the EXACT reviewed SHA (a new push cancels it), waiting on the
+  // per-SHA gates. Merge authority is the immutable HEAD trailer, which a body edit cannot change, so a
+  // queued merge is never made unsafe by mutable metadata (finding r4034779639).
+  async enableAutoMerge(pullRequest, expectedHead) {
+    if (pullRequest.auto_merge) return;
+    await this.graphql(
+      `mutation($id: ID!, $expectedHead: GitObjectID!) {
+        enablePullRequestAutoMerge(
+          input: {
+            pullRequestId: $id
+            expectedHeadOid: $expectedHead
+            mergeMethod: SQUASH
+          }
+        ) {
+          pullRequest { id autoMergeRequest { enabledAt } }
+        }
+      }`,
+      { id: pullRequest.node_id, expectedHead },
+    );
+  }
+
   async disableAutoMerge(pullRequest) {
     if (!pullRequest.auto_merge) return;
     await this.graphql(
@@ -1217,70 +1234,70 @@ export async function setDraftForCurrentHead(
   return isCurrentReviewUnit(updated, expectedHead) ? updated : null;
 }
 
-// Bounded settle for the CONTROLLER-DRIVEN merge. When `authorizeExactHeadMerge` reports every gate
-// green but `mergeExactHead` still refuses (GitHub's mergeable_state momentarily `unknown` right after
-// the ready flip), re-attempt a few times a short interval apart. This replaces GitHub native
-// auto-merge, so the window is measured in seconds; a head that will not settle is HELD for the next
-// gate tick rather than queued.
-const MERGE_SETTLE_ATTEMPTS = 6;
-const MERGE_SETTLE_DELAY_MS = 5_000;
-
 export async function completeReviewedPullRequest(
   client,
   pullRequest,
   expectedHead,
-  {
-    mergeSettleAttempts = MERGE_SETTLE_ATTEMPTS,
-    mergeSettleDelayMs = MERGE_SETTLE_DELAY_MS,
-  } = {},
 ) {
-  // The merge is CONTROLLER-DRIVEN and RE-AUTHORIZED on every attempt; GitHub native auto-merge is
-  // never armed here. Native auto-merge, once queued, merges the exact SHA whenever its per-SHA required
-  // statuses are green — but a PR-body `Correction-Owner` edit that disagrees with the immutable commit
-  // trailer changes no per-SHA status, so native auto-merge would merge a now-ineligible head before the
-  // edited-event run could disable it (finding r4034779639). Running `authorizeExactHeadMerge` (a fresh
-  // HEAD-bound eligibility read) immediately before each `mergeExactHead` binds every merge to a
-  // just-verified predicate with no async window GitHub can slip a merge through: a body edit between
-  // attempts fails closed on the next `authorizeExactHeadMerge`. An authorized-but-not-yet-mergeable
-  // head is re-attempted a bounded number of times, then HELD for the next tick — never delegated.
-  const attempts = Math.max(1, mergeSettleAttempts);
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead);
-    if (!authorization.allowed) return 'held_for_gates';
-    pullRequest = authorization.pullRequest;
-    let merged;
-    try {
-      merged = await client.mergeExactHead(pullRequest.number, expectedHead);
-    } catch (error) {
-      // GitHub's own "is in clean status" race: the PR flipped clean between authorization and the PUT.
-      // Fall through to another re-authorized attempt rather than throwing; any other error is real.
-      if (!(error instanceof Error) || !error.message.includes('is in clean status')) throw error;
-      merged = null;
+  // Merge authority is the IMMUTABLE HEAD trailer, so GitHub native auto-merge is the durable re-trigger
+  // for an authorized-but-not-yet-mergeable head; a later body edit cannot make that queued merge unsafe
+  // (finding r4034779639; durable merge-recovery hardening is Successor 2, not this unit).
+  const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead);
+  if (!authorization.allowed) {
+    return 'held_for_gates';
+  }
+  pullRequest = authorization.pullRequest;
+  const direct = await client.mergeExactHead(pullRequest.number, expectedHead);
+  if (direct?.merged) {
+    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
+    return 'merged';
+  }
+
+  try {
+    await client.enableAutoMerge(pullRequest, expectedHead);
+    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
+    return 'queued';
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('is in clean status')) {
+      throw error;
     }
-    if (merged?.merged) {
+    const raced = await client.mergeExactHead(pullRequest.number, expectedHead);
+    if (raced?.merged) {
       await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
       return 'merged';
     }
-    if (attempt + 1 < attempts) await sleep(mergeSettleDelayMs);
+    throw new Error(
+      `GitHub reported a clean pull request but refused the exact-head merge: ${raced?.message ?? 'unknown reason'}`,
+      { cause: error },
+    );
   }
-  return 'held_for_gates';
 }
 
 /** The common mandatory guard for both direct merge and auto-merge entrypoints. */
+// Merge authority is the IMMUTABLE HEAD trailer, never the mutable PR-body marker: a readable trailer
+// naming a merge-eligible owner (not codex). Body/trailer consistency is enforced at PROMOTION, so a
+// native-auto-merge queue riding the per-SHA gate cannot be made unsafe by a later body edit it cannot
+// see — the fix for finding r4034779639.
+function mergeAuthorizedByTrailer(eligibility) {
+  return eligibility.readable !== false
+    && eligibility.owner !== null
+    && eligibility.owner !== 'codex';
+}
+
 export async function authorizeExactHeadMerge(client, pullRequest, expectedHead) {
   const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
-  const { owner, consistent } = live
+  const eligibility = live
     ? await headOwnerEligibility(client, live, expectedHead)
-    : { owner: null, consistent: false };
+    : { owner: null, readable: true };
   // A consistent Codex candidate is admitted for validation only — never merged (no independent
   // reviewer provenance yet). Any other ineligible owner (missing/mismatched/unreadable) is held.
-  if (live && owner === 'codex') {
+  if (live && eligibility.owner === 'codex') {
     return { allowed: false, state: 'validation_only_codex_owner' };
   }
   if (!live || live.draft || !live.base?.sha) {
     return { allowed: false, state: live?.draft ? 'draft' : 'superseded' };
   }
-  if (!(consistent && owner !== 'codex')) {
+  if (!mergeAuthorizedByTrailer(eligibility)) {
     return { allowed: false, state: 'owner_not_merge_eligible' };
   }
   const [statuses, checks] = await Promise.all([
@@ -1292,13 +1309,13 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead)
   if (latestReview?.state !== 'success' || required.state !== 'success') {
     return { allowed: false, state: 'gates_not_green' };
   }
-  // Re-read after remote evidence. A push, base update, retarget, draft transition, or an
-  // owner change during validation fails closed.
+  // Re-read after remote evidence: a push, base update, retarget, draft transition, or HEAD-trailer
+  // owner change during validation fails closed (a body-only edit does not — the trailer is authority).
   const finalLive = await refreshCurrentHead(client, live.number, expectedHead);
   if (!finalLive || finalLive.draft || finalLive.base?.sha !== live.base.sha) {
     return { allowed: false, state: 'changed_during_validation' };
   }
-  if (!(await headOwnerEligibility(client, finalLive, expectedHead)).eligible) {
+  if (!mergeAuthorizedByTrailer(await headOwnerEligibility(client, finalLive, expectedHead))) {
     return { allowed: false, state: 'owner_not_merge_eligible' };
   }
   return { allowed: true, state: 'authorized', pullRequest: finalLive };

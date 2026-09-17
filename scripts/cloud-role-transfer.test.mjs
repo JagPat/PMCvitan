@@ -217,9 +217,13 @@ test('automatic merge needs an eligible commit owner, CI and exact-head review, 
   }
   // A consistent Codex candidate is admitted for validation only, never merged.
   assert.equal((await authorizeExactHeadMerge(makeClient({ commit: ownerCommit('codex'), pulls: [{ ...pull, body: '<!-- correction-owner: codex -->' }, { ...pull, body: '<!-- correction-owner: codex -->' }] }), pull, head)).state, 'validation_only_codex_owner');
-  // A body/trailer disagreement (commit says cursor, body says claude) is not merge-eligible.
-  assert.equal((await authorizeExactHeadMerge(makeClient({ commit: ownerCommit('cursor') }), pull, head)).state, 'owner_not_merge_eligible');
-  // A missing trailer is not merge-eligible.
+  // Merge authority is the IMMUTABLE HEAD trailer, not the mutable body marker: a head whose trailer
+  // names an eligible owner (cursor) is merge-eligible even if the body marker disagrees. Body/trailer
+  // consistency is enforced at PROMOTION (the stalled-scope hold below), never re-litigated at merge, so
+  // a native-auto-merge queue riding the per-SHA gate cannot be made unsafe by a later body edit
+  // (finding r4034779639).
+  assert.equal((await authorizeExactHeadMerge(makeClient({ commit: ownerCommit('cursor') }), pull, head)).allowed, true);
+  // A missing trailer confers no owner, so it is not merge-eligible.
   assert.equal((await authorizeExactHeadMerge(makeClient({ commit: noOwnerCommit() }), pull, head)).state, 'owner_not_merge_eligible');
 });
 
