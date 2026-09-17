@@ -36,11 +36,16 @@ Terminal-trailer extraction is **delegated to real `git interpret-trailers --par
 reimplemented: the primitive feeds the commit message to git on stdin (never as an argument, so no content
 is read as a flag) and reads back git's own `Key: value` lines, with folded continuations already joined.
 The primitive is therefore git itself for the extraction step, and cannot diverge from git as further edge
-cases surface. The subprocess **pins the ambient config that changes `--parse` output** — `trailer.separators`
-(which decides both the accepted separators and the output separator, so a runner configured with e.g. `=:`
-would otherwise emit `Correction-Owner= claude`) and `core.commentChar` (which decides which comment lines
-`--parse` strips) — with command-line `-c`, which overrides global, local, and env config, so the read is
-deterministic on any runner. On top of git's output it applies only this loop's own admission logic: it filters for the
+cases surface. The subprocess is **isolated from every external git config source** so the parse depends only
+on the config this module pins, never on the runner: global (`~/.gitconfig`) and system (`/etc/gitconfig`)
+are redirected to `/dev/null` (plus `GIT_CONFIG_NOSYSTEM`), every `GIT_CONFIG*` variable is dropped from the
+child's environment, and the child runs from a temp directory outside any repository so no local
+`.git/config` is read. On top of that clean base it pins the two keys that still shape `--parse` output —
+`trailer.separators` (which decides both the accepted separators and the output separator, so a runner
+configured with e.g. `=:` would otherwise emit `Correction-Owner= claude`) and `core.commentChar` (which
+decides which comment lines `--parse` strips). Isolation is required rather than key-by-key pinning because a
+configured trailer key (`trailer.<name>.key`) also changes whether git recognises a paragraph as a trailer
+block, and such keys cannot be enumerated in advance; the config *sources*, however, are closed. On top of git's output it applies only this loop's own admission logic: it filters for the
 `Correction-Owner` key (case-insensitive), ASCII-trims the value (git preserves non-ASCII whitespace in the
 value, so an NBSP/VT/em-space-padded value stays malformed and fails validation), and maps to the states
 above. If git cannot be run the primitive returns `unreadable` rather than reading the commit as owning

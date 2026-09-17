@@ -24,6 +24,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import test from 'node:test';
 
 import { guardAgainstCurrentHeadFinding, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
@@ -809,14 +810,26 @@ test('C11: a non-awakenable owner is told what GitHub cannot do, not that nothin
 
 // The raw terminal Correction-Owner trailer value(s) git recognises, isolated from this loop's owner
 // admission (git does not know `CORRECTION_OWNERS`). `--unfold` joins folded continuations as git does.
+// The same config isolation the primitive applies: no global/system/local/env config reaches git, only the
+// two pinned keys, so the oracle is `git parsing under our fixed config` — not under whatever the runner sets.
+function isolatedGitEnv() {
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith('GIT_CONFIG')) continue;
+    env[key] = value;
+  }
+  env.GIT_CONFIG_GLOBAL = '/dev/null';
+  env.GIT_CONFIG_SYSTEM = '/dev/null';
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  return env;
+}
+
 function gitCorrectionOwnerValues(message) {
-  // Pin the same ambient config the primitive pins, so the oracle is `git parsing under our fixed config`
-  // rather than under whatever the runner happens to set (see the ambient-config regression test below).
   const out = execFileSync('git', [
     '-c', 'trailer.separators=:',
     '-c', 'core.commentChar=#',
     'interpret-trailers', '--parse', '--unfold',
-  ], { input: message }).toString();
+  ], { input: message, cwd: tmpdir(), env: isolatedGitEnv() }).toString();
   return out.split('\n')
     .filter((line) => /^correction-owner[ \t]*:/iu.test(line))
     // ASCII-trim only, so git's non-ASCII whitespace in the value is preserved for a faithful comparison.
@@ -936,27 +949,46 @@ test('headBoundOwnerAgreement is a pure fail-closed resolution primitive', () =>
 });
 
 test('the trailer read is independent of the runner\'s ambient git config', () => {
-  // The subprocess pins `trailer.separators` and `core.commentChar`, so a runner that configures another
-  // separator — which makes git emit `Correction-Owner= claude`, and a colon-only search miss it — cannot
-  // change the verdict. Command-line `-c` overrides global, local, and env config; GIT_CONFIG_* here
-  // simulates a hostile runner. Env is restored in finally; top-level tests in this file run sequentially.
+  // The subprocess isolates git from every external config source (global/system/local/env) and pins only
+  // the two config keys it needs, so a hostile runner cannot change the verdict — neither by configuring
+  // another separator (which would make git emit `Correction-Owner= claude` and a colon search miss it) nor
+  // by configuring a trailer key (`trailer.<name>.key`, which would make git recognise a paragraph as a
+  // trailer block and OVER-accept). GIT_CONFIG_* here simulates the hostile runner. Env is restored in
+  // finally; top-level tests in this file run sequentially, so no concurrent git-using case is affected.
   const saved = {
     count: process.env.GIT_CONFIG_COUNT,
-    key: process.env.GIT_CONFIG_KEY_0,
-    value: process.env.GIT_CONFIG_VALUE_0,
+    key0: process.env.GIT_CONFIG_KEY_0,
+    value0: process.env.GIT_CONFIG_VALUE_0,
+    key1: process.env.GIT_CONFIG_KEY_1,
+    value1: process.env.GIT_CONFIG_VALUE_1,
   };
   try {
-    process.env.GIT_CONFIG_COUNT = '1';
+    // Two hostile config keys at once: a separator that would drop the trailer, and a trailer-key
+    // definition that would fabricate a block out of a plain paragraph.
+    process.env.GIT_CONFIG_COUNT = '2';
     process.env.GIT_CONFIG_KEY_0 = 'trailer.separators';
     process.env.GIT_CONFIG_VALUE_0 = '=:';
-    const result = parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\n');
-    assert.equal(result.state, 'declared');
-    assert.equal(result.owner, 'claude');
+    process.env.GIT_CONFIG_KEY_1 = 'trailer.correction-owner.key';
+    process.env.GIT_CONFIG_VALUE_1 = 'Correction-Owner';
+
+    // A real terminal trailer still resolves despite the hostile separator config.
+    const declared = parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\n');
+    assert.equal(declared.state, 'declared');
+    assert.equal(declared.owner, 'claude');
+
+    // And a non-block paragraph (a plain line before the trailer, no recognised trailer) stays `missing`:
+    // the configured trailer key must NOT fabricate a block, or a later consumer would accept a malformed
+    // HEAD solely because of the runner's config.
+    const notABlock = parseCommitCorrectionOwner('subject\n\nplain\nCorrection-Owner: claude\n');
+    assert.equal(notABlock.state, 'missing');
+    assert.deepEqual(notABlock.declared, []);
   } finally {
     for (const [key, value] of [
       ['GIT_CONFIG_COUNT', saved.count],
-      ['GIT_CONFIG_KEY_0', saved.key],
-      ['GIT_CONFIG_VALUE_0', saved.value],
+      ['GIT_CONFIG_KEY_0', saved.key0],
+      ['GIT_CONFIG_VALUE_0', saved.value0],
+      ['GIT_CONFIG_KEY_1', saved.key1],
+      ['GIT_CONFIG_VALUE_1', saved.value1],
     ]) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;

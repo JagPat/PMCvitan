@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { CORRECTION_OWNERS, AWAKENABLE_FROM_GITHUB, CORRECTION_STALLED } from './review-policy.mjs';
 export { CORRECTION_OWNERS, AWAKENABLE_FROM_GITHUB, CORRECTION_STALLED } from './review-policy.mjs';
 
@@ -142,13 +143,32 @@ const asciiTrim = (value) => value.replace(/^[ \t]+|[ \t]+$/gu, '');
 // an argument, so no content can be read as a flag. Returns null when git cannot be run at all (binary
 // missing or non-zero exit), so the caller fails closed rather than reading an unreadable commit as owning
 // nothing.
+// The environment that ISOLATES git from every external config source, so `--parse` depends only on the
+// config this module pins and never on the runner. Global (`~/.gitconfig`) and system (`/etc/gitconfig`)
+// are redirected to `/dev/null`; `GIT_CONFIG_NOSYSTEM` is belt-and-suspenders for system config; every
+// `GIT_CONFIG*` variable is dropped so an injected `-c`/`GIT_CONFIG_*` cannot reach the child; and the
+// child runs from `tmpdir()` (outside any repository) so no local `.git/config` is read. This matters
+// because a configured trailer key (`trailer.<name>.key`) — not only the separator — changes whether git
+// recognises a paragraph as a trailer block, so pinning individual keys is not enough; the config sources
+// are enumerable and all closed here.
+function isolatedGitEnv() {
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith('GIT_CONFIG')) continue;
+    env[key] = value;
+  }
+  env.GIT_CONFIG_GLOBAL = '/dev/null';
+  env.GIT_CONFIG_SYSTEM = '/dev/null';
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  return env;
+}
+
 function gitParsedTrailers(commitMessage) {
   let out;
   try {
-    // Pin the ambient config that changes `--parse` output so the read is deterministic on any runner:
-    // `trailer.separators` decides both which separators are accepted AND the output separator (its first
-    // configured character), so a runner with e.g. `=:` would emit `Correction-Owner= claude`; `core.commentChar`
-    // decides which comment lines `--parse` strips. Command-line `-c` overrides global, local, and env config.
+    // Pin the two config keys that still shape `--parse` output under the isolated environment above:
+    // `trailer.separators` decides the accepted AND output separator (its first character), and
+    // `core.commentChar` decides which comment lines `--parse` strips.
     out = execFileSync('git', [
       '-c', 'trailer.separators=:',
       '-c', 'core.commentChar=#',
@@ -158,6 +178,8 @@ function gitParsedTrailers(commitMessage) {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'ignore'],
       maxBuffer: 8 * 1024 * 1024,
+      cwd: tmpdir(),
+      env: isolatedGitEnv(),
     });
   } catch {
     return null;
