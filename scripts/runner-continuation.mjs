@@ -1,7 +1,14 @@
 import { DIRECTIVE_STATES, assessRunnerState, isNoneValue } from './autonomous-status-state.mjs';
-import { parseCorrectionOwner } from './correction-owner.mjs';
+import { CORRECTION_OWNERS } from './review-policy.mjs';
 
 const NONE = 'none';
+
+// The autonomous OWNER-FAMILY branch prefixes (claude/, cursor/, codex/). These, not the PR body's
+// correction-owner marker, discriminate an in-flight autonomous task unit — every PR now carries that
+// marker by canonical policy, so it cannot single out task PRs (finding r4032740385). The prefix set
+// still tracks a declaring `codex/**` unit (finding r4032903012) while leaving a maintenance PR on a
+// non-owner-family branch out of the task pointer's population.
+const AUTONOMOUS_BRANCH_PREFIXES = CORRECTION_OWNERS.map((owner) => `${owner}/`);
 
 export function isAutonomousPullRequest(
   pullRequest,
@@ -16,16 +23,12 @@ export function isAutonomousPullRequest(
   ) {
     return false;
   }
-  // An in-flight autonomous unit is identified by its DECLARED correction owner, not the historical
-  // `claude/` branch prefix (finding r4032903012). Admitting codex/cursor candidates means a
-  // `codex/**` branch that declares a valid owner is a tracked unit; continuation must not treat it as
-  // absent and start a parallel `claude/**` runner. The branch prefix remains a fallback for a
-  // legacy claude/** unit whose body carries no marker.
-  const declared = parseCorrectionOwner(
-    pullRequest?.body,
-    { headRef: pullRequest?.head?.ref },
-  ).state === 'declared';
-  return declared || Boolean(pullRequest?.head?.ref?.startsWith('claude/'));
+  // An in-flight autonomous unit is identified by its owner-family branch prefix (claude/, cursor/,
+  // codex/) — NOT the correction-owner body marker, which every PR now carries and so cannot
+  // discriminate task PRs from maintenance PRs (finding r4032740385). This still tracks a `codex/**`
+  // unit (finding r4032903012) without pulling an unrelated marked maintenance PR into the task pointer.
+  const ref = pullRequest?.head?.ref ?? '';
+  return AUTONOMOUS_BRANCH_PREFIXES.some((prefix) => ref.startsWith(prefix));
 }
 
 function isNone(value) {

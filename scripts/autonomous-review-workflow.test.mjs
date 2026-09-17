@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 
 import * as reviewGate from './autonomous-review-gate.mjs';
+import { OWNERSHIP_READ_RETRY } from './review-policy.mjs';
 
 const {
   hasTerminalReviewFailureAfterPending,
@@ -907,6 +908,21 @@ test('recovery requires an exact retryable failure or active pending status', ()
       '987654328',
     ),
     null,
+  );
+
+  // finding r4032740380: an unreadable-ownership retry (OWNERSHIP_READ_RETRY) is a retryable terminal
+  // review failure, so its exact status id must be AUTHORIZED for gate recovery — otherwise the
+  // dispatched workflow rejects it instead of re-reading the commit, stranding a draft after a one-off
+  // GitHub read error.
+  const ownershipRetry = {
+    ...failed,
+    id: 987654330,
+    description: OWNERSHIP_READ_RETRY,
+  };
+  assert.equal(
+    reviewGate.authorizeRecoveryDispatch([ownershipRetry], '987654330'),
+    ownershipRetry,
+    'the ownership-read retry is an authorized recovery class end-to-end',
   );
 });
 

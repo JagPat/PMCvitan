@@ -15,6 +15,15 @@ function pullRequest(overrides = {}) {
   };
 }
 
+// The exact HEAD commit the conflict handoff reads to confirm the body owner before waking one
+// (finding r4032740389). By default the trailer agrees with the PR body marker (the healthy case).
+const BODY_OWNER_RE = /<!--\s*correction-owner:\s*([a-z]+)\s*-->/u;
+function commitFor(pull) {
+  const owner = BODY_OWNER_RE.exec(pull?.body ?? '')?.[1];
+  const message = owner ? `chore: unit\n\nCorrection-Owner: ${owner}\n` : 'chore: unit with no trailer\n';
+  return { sha: pull?.head?.sha, commit: { message } };
+}
+
 function conflict(overrides = {}) {
   return pullRequest({
     number: 600,
@@ -46,11 +55,30 @@ test('a valid Claude owner is awakened for a conflict on a non-Claude branch', a
   const comments = [];
   await handOffConflict({
     pullRequest: async () => live,
+    commit: async () => commitFor(live),
     comments: async () => [],
     comment: async (number, body) => comments.push(body),
   }, live, repository, 'main');
   assert.equal(comments.length, 1);
   assert.match(comments[0], /@claude/u);
+});
+
+test('a conflict wake is withheld when the head trailer disagrees with a claude body', async () => {
+  // finding r4032740389: the editable body marker cannot authorize a wake on its own. Here the body
+  // declares claude but the immutable head trailer names cursor — the head is not routable, so no
+  // @claude wake is posted; the notice is stalled and names the trailer remedy.
+  const live = conflict();
+  const comments = [];
+  await handOffConflict({
+    pullRequest: async () => live,
+    commit: async () => ({ sha: live.head.sha, commit: { message: 'x\n\nCorrection-Owner: cursor\n' } }),
+    comments: async () => [],
+    comment: async (number, body) => comments.push(body),
+  }, live, repository, 'main');
+  assert.equal(comments.length, 1);
+  assert.doesNotMatch(comments[0], /@claude/u, 'the body owner is not woken on a disagreeing head');
+  assert.match(comments[0], /correction_stalled/u);
+  assert.match(comments[0], /Correction-Owner/u, 'and it names the trailer that must be pushed');
 });
 
 test('conflict publication stops if the owner changes during the comments read', async () => {
@@ -70,6 +98,7 @@ test('conflict notices are idempotent per head and owner, and an owner fix can r
   const comments = [];
   const client = {
     pullRequest: async () => live,
+    commit: async () => commitFor(live),
     comments: async () => comments,
     comment: async (number, body) => comments.push({ user: { login: 'github-actions[bot]' }, body }),
   };

@@ -204,6 +204,23 @@ export function correctionOwnerDeclaration(pullRequest) {
 }
 
 /**
+ * HEAD-bound owner agreement for consumers that already hold a fetched commit — the conflict-handoff
+ * and correction-watchdog paths, which run without the review gate. It mirrors the gate's
+ * `headOwnerEligibility`: the exact commit's single terminal `Correction-Owner:` trailer must name a
+ * valid owner AND agree with the PR body marker. Callers fail closed when `consistent` is false — a
+ * missing/invalid/disagreeing trailer, or (passing a null message for) an unreadable commit — so no
+ * wake is ever addressed to a body owner the immutable head does not confirm.
+ */
+export function headBoundOwnerAgreement(commitMessage, body) {
+  const trailer = parseCommitCorrectionOwner(commitMessage);
+  const headOwner = trailer.state === 'declared' ? trailer.owner : null;
+  const bodyDeclaration = parseCorrectionOwner(body);
+  const bodyOwner = bodyDeclaration.state === 'declared' ? bodyDeclaration.owner : null;
+  const consistent = headOwner !== null && bodyOwner !== null && headOwner === bodyOwner;
+  return { headOwner, bodyOwner, consistent, trailerState: trailer.state };
+}
+
+/**
  * The scope-gate verdict: the detail string to refuse with, or null.
  *
  * Deliberately evaluated in `assessReviewScope`, which both the PR-side
@@ -281,6 +298,18 @@ function declaredInstruction(owner, { reason, detail }) {
 // action that resolves it, and it resolves to no agent — least of all to Claude
 // by default, which is the assumption this whole module exists to remove.
 function undeclaredInstruction(declaration) {
+  // A HEAD-bound ownership inconsistency (`inconsistent`) is NOT a body-marker problem: the exact
+  // commit's `Correction-Owner:` trailer is missing, invalid, or disagrees with the body marker, and
+  // the body is the half that may be lying. Editing the body marker cannot fix it — only a new head
+  // whose single terminal trailer matches the marker can. So it carries the passed ownership-fault
+  // detail (never `undefined`) and names the trailer remedy, not a body edit (finding r4032740402).
+  if (declaration.state === 'inconsistent') {
+    return `Correction ownership is unresolved on this exact head: ${declaration.detail ?? 'the '
+      + 'HEAD commit\'s Correction-Owner trailer is missing, invalid, or disagrees with the PR body '
+      + 'marker'}. No agent is routed and no wake is addressed to the body owner. Resume action: push a `
+      + 'new head whose single terminal `Correction-Owner:` commit trailer matches the PR body marker; '
+      + 'no body edit alone can clear a head that mislabels its own owner.';
+  }
   const opening = `Correction ownership is not established on this PR: ${declaration.detail}. `
     + 'No agent is routed and no correction is in flight.';
   // ADD only when the block is empty. Told to a body that already carries a

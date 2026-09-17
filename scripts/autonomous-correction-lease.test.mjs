@@ -57,6 +57,18 @@ function status(description, state = 'failure') {
 // setStatus, draft changes, merges, sticky edits — is trapped and recorded, so a
 // probe can prove the watchdog touched no gate state instead of asserting it in
 // prose.
+// The exact HEAD commit the watchdog reads to confirm ownership. `commitOwner` overrides the trailer
+// (e.g. 'cursor' on a claude-body PR to model a head/body disagreement, or null for a missing trailer);
+// by default it mirrors the PR body's declared owner so the head AGREES.
+const BODY_OWNER_RE = /<!--\s*correction-owner:\s*([a-z]+)\s*-->/u;
+function commitTrailerFor(commitOwner, pull, sha) {
+  const owner = commitOwner === undefined
+    ? BODY_OWNER_RE.exec(pull?.body ?? '')?.[1] ?? null
+    : commitOwner;
+  const message = owner ? `chore: unit\n\nCorrection-Owner: ${owner}\n` : 'chore: unit with no trailer\n';
+  return { sha: sha ?? pull?.head?.sha, commit: { message } };
+}
+
 function fakeClient({
   pull,
   live,
@@ -64,6 +76,7 @@ function fakeClient({
   comments = [],
   reviews = [],
   reviewComments = [],
+  commitOwner,
 }) {
   const calls = { posted: [], forbidden: [], dispatched: [] };
   const allowed = {
@@ -73,6 +86,11 @@ function fakeClient({
     reviewComments: async () => reviewComments,
     pullRequest: async () => live ?? pull,
     comment: async (number, body) => { calls.posted.push({ number, body }); return { id: 1 }; },
+    // A benign READ, like pullRequest/combinedStatus: the watchdog resolves the exact HEAD commit's
+    // Correction-Owner trailer to confirm the body owner before waking one (findings r4032740389 /
+    // r4032740407). By default the head trailer AGREES with the body marker (the healthy case), so the
+    // existing wake behaviour is preserved unless a test overrides `commitOwner`.
+    commit: async (sha) => commitTrailerFor(commitOwner, live ?? pull, sha),
     dispatchRecovery: async (ref, inputs) => { calls.dispatched.push({ ref, inputs }); },
   };
   const client = new Proxy(allowed, {
@@ -296,6 +314,33 @@ test('L5b: an ownership-inconsistency scope fault is stalled and wakes nobody, d
   assert.match(published, /Required resume action/u);
   assert.equal(calls.posted.length, 1);
   assert.deepEqual(calls.forbidden, [], 'no gate state is touched');
+});
+
+// L5c — finding r4032740407. When ownership is inconsistent AND another failure (a `ci:` failure) is
+// the visible status, the gate publishes only the `ci:` failure — WITHOUT the ownership signature. The
+// watchdog must therefore resolve the exact HEAD trailer itself and still stall: here the body declares
+// claude but the head trailer names cursor, so no @claude wake is posted despite the `ci:` reason.
+test('L5c: a ci failure does not erase the ownership stall when the head trailer disagrees', async () => {
+  const { published } = await watch({
+    pull: pullRequest({ body: '<!-- correction-owner: claude -->', ref: 'claude/task' }),
+    statuses: [status('ci: api-e2e failed')],
+    commitOwner: 'cursor',
+  });
+  assert.ok(published, 'the fault is still reported');
+  assert.match(published, /correction_stalled/u, 'stalled on the trailer disagreement, not a wakeable ci correction');
+  assert.doesNotMatch(published, /@claude/u, 'the body owner is not woken — the head trailer names a different owner');
+  assert.match(published, /Correction-Owner/u, 'and it names the trailer that must be pushed');
+});
+
+// A healthy ci failure — head trailer AGREES with the claude body — still wakes the owner as before,
+// proving the L5c stall is specific to the disagreement, not a blanket suppression of ci corrections.
+test('L5d: a ci failure on a consistent claude head still wakes the owner', async () => {
+  const { published } = await watch({
+    pull: pullRequest({ body: '<!-- correction-owner: claude -->', ref: 'claude/task' }),
+    statuses: [status('ci: api-e2e failed')],
+    commitOwner: 'claude',
+  });
+  assert.match(published, /@claude/u, 'a consistent head still routes the ci correction to its owner');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

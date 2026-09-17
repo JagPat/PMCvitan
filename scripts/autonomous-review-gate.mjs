@@ -192,7 +192,13 @@ export function isTerminalReviewStatus(status) {
     || description.includes('current-head Codex finding')
     || description.includes('Codex submitted a current-head review')
     || description.includes('Codex review timed out')
-    || description.includes('Codex evidence changed');
+    || description.includes('Codex evidence changed')
+    // A retryable review/validation failure (e.g. OWNERSHIP_READ_RETRY, whose `validation:` prefix
+    // matches none of the above) is a terminal review outcome pending re-dispatch. Recognising it here
+    // lets recoverableTerminalReviewStatus/authorizeRecoveryDispatch authorize its gate recovery so the
+    // gate re-reads the commit, instead of rejecting the exact status id (finding r4032740380). It
+    // stays non-persistent: persistentReviewFailure excludes retryable failures.
+    || isRetryableReviewFailureDescription(description);
 }
 
 export function shouldDraftForCiFailure(status) {
@@ -883,7 +889,7 @@ function correctionNotice(pullRequest, { detail = null, reason = 'review', stall
   // the trailer or body. `stalled` forces a stalled notice so no wake is ever addressed to the (wrong)
   // body owner (finding r4032903006, gate side).
   const declaration = stalled
-    ? { state: 'inconsistent', owner: null }
+    ? { state: 'inconsistent', owner: null, detail }
     : correctionOwnerDeclaration(pullRequest);
   return correctionRouting({
     declaration,
@@ -1971,6 +1977,12 @@ export async function run() {
       advisory,
     );
     if (result.state === 'superseded') return;
+
+    // A review attempt that applied an ownership hold has already published the protective status
+    // (OWNERSHIP_READ_RETRY / scope+stalled / codex pending) and re-drafted the head. Return so the
+    // loop does not retry it as an inconclusive Codex attempt and overwrite that status with a
+    // "review: Codex review timed out after two attempts" verdict (finding r4032740396).
+    if (result.state === 'held_ineligible_owner') return;
 
     if (result.state === 'changes_required') {
       const published = await publishCurrentHeadFinding(

@@ -37,33 +37,36 @@ test('selectAutonomousOpenPullRequests keeps only open same-repo claude branches
   assert.deepEqual(selected.map((pr) => pr.number), [252]);
 });
 
-test('finding 3012 — a declared-owner unit is selected by its marker, not its branch prefix', () => {
-  // An in-flight unit is identified by its DECLARED correction owner. A codex/** branch that declares
-  // a valid owner is a tracked unit — continuation must NOT treat it as absent and start a parallel
-  // claude/** runner. A branch with neither a marker nor the claude/ prefix is still not autonomous.
-  const declaredOnCodexBranch = pullRequest({
+test('findings 3012 + 4032740385 — autonomous units are the owner-family branches, not every marked PR', () => {
+  // An in-flight task unit is discriminated by its OWNER-FAMILY branch prefix (claude/, cursor/,
+  // codex/), not by the correction-owner body marker. A codex/** unit is tracked (3012) without a
+  // parallel claude/** runner, while an unrelated maintenance PR that merely carries the now-mandatory
+  // marker on a non-owner-family branch is NOT pulled into the task pointer's population (4032740385).
+  const codexUnit = pullRequest({
     number: 610,
     body: '<!-- correction-owner: codex -->',
     head: { ref: 'codex/ownership-recovery', repo: { full_name: repository } },
   });
-  const legacyClaudeNoMarker = pullRequest({
+  const cursorUnit = pullRequest({
     number: 611,
-    body: '## Objective only',
-    head: { ref: 'claude/legacy', repo: { full_name: repository } },
+    body: '<!-- correction-owner: cursor -->',
+    head: { ref: 'cursor/task', repo: { full_name: repository } },
   });
-  const neitherMarkerNorPrefix = pullRequest({
+  // The regression: a maintenance PR carrying the mandatory claude marker on a chore/ branch.
+  const markedMaintenancePr = pullRequest({
     number: 612,
-    body: '## Objective only',
-    head: { ref: 'feature/x', repo: { full_name: repository } },
+    body: '<!-- correction-owner: claude -->\n\n## Bump deps',
+    head: { ref: 'chore/bump-deps', repo: { full_name: repository } },
   });
   const selected = selectAutonomousOpenPullRequests(
-    [declaredOnCodexBranch, legacyClaudeNoMarker, neitherMarkerNorPrefix],
+    [codexUnit, cursorUnit, markedMaintenancePr],
     repository,
     'main',
   );
   assert.deepEqual(selected.map((pr) => pr.number), [610, 611],
-    'the declared codex/** unit and the legacy claude/** fallback are both tracked; the bare feature branch is not');
-  assert.equal(isAutonomousPullRequest(neitherMarkerNorPrefix, repository, 'main'), false);
+    'the codex/** and cursor/** units are tracked; the marked chore/ maintenance PR is not');
+  assert.equal(isAutonomousPullRequest(markedMaintenancePr, repository, 'main'), false,
+    'the mandatory owner marker does not make a non-owner-family branch an autonomous task unit');
 });
 
 test('detectStatusDrift flags open_pr none with live autonomous PRs', () => {

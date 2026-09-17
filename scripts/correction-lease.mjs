@@ -221,6 +221,12 @@ export function assessCorrectionLease({
   now,
   comments = [],
   graceMs = CORRECTION_LEASE_GRACE_MS,
+  // Trailer-derived ownership verdict, resolved by the caller from the exact HEAD commit. It is
+  // authoritative over the status description: a `ci:` failure (more actionable) is published without
+  // the ownership signature, so the string signal alone would miss it and the watchdog would wake the
+  // body owner on a head whose trailer disagrees (finding r4032740407). True here forces the stall
+  // regardless of the failing status's reason.
+  ownershipInconsistent: ownershipInconsistentFromHead = false,
 }) {
   const expected = typeof head === 'string' && head.length > 0 ? head : null;
   if (!expected) {
@@ -256,7 +262,11 @@ export function assessCorrectionLease({
   // would let a mislabelled head keep re-waking a session that cannot fix "your own trailer is wrong"
   // by pushing more code. It is STALLED: a new head carrying one agreeing trailer is owed, from a human
   // or a re-dispatch, never a GitHub wake. This mirrors the gate's own {stalled:true} declaration.
-  const ownershipInconsistent = isOwnershipInconsistentScopeDetail(effectiveReason, detail);
+  // Either signal is sufficient: the caller's trailer-based verdict (robust across any failing status,
+  // including a `ci:` failure that omits the signature) OR the scope-detail signature (the gate's own
+  // stalled scope fault, when that is the visible status).
+  const ownershipInconsistent = ownershipInconsistentFromHead
+    || isOwnershipInconsistentScopeDetail(effectiveReason, detail);
   const awakenable = routing.awakenable && !ownershipInconsistent;
   const owner = ownershipInconsistent ? 'undeclared' : (routing.owner ?? 'undeclared');
   const marker = correctionLeaseMarker({

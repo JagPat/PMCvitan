@@ -16,6 +16,7 @@ import {
   isCorrectionEligiblePullRequest,
   correctionOwnerDeclaration,
   correctionRouting,
+  headBoundOwnerAgreement,
 } from './correction-owner.mjs';
 import {
   assessCorrectionLease,
@@ -240,6 +241,24 @@ export async function waitForTerminalPullRequest(client, number) {
   return pullRequest.state === 'open' ? null : pullRequest;
 }
 
+// Resolve, from the exact HEAD commit, whether the body-declared owner is UNCONFIRMED by the immutable
+// trailer — the watchdog's trailer-based ownership verdict. It is authoritative over the failing
+// status's description: a `ci:` failure omits the ownership signature, so without this the watchdog
+// would wake the body owner on a head whose trailer disagrees (finding r4032740407). Only POSITIVE
+// readable evidence forces the stall; an unreadable commit returns false (the gate writes
+// OWNERSHIP_READ_RETRY for a truly unreadable head, which owes no correction) so a transient read blip
+// does not strand a legitimate correction.
+async function headOwnershipInconsistent(client, pullRequest, head) {
+  try {
+    const commit = await client.commit(head);
+    if (!commit || commit.sha !== head) return false;
+    const agreement = headBoundOwnerAgreement(commit.commit?.message, pullRequest?.body);
+    return agreement.bodyOwner !== null && !agreement.consistent;
+  } catch {
+    return false;
+  }
+}
+
 export async function handOffConflict(
   client,
   pullRequest,
@@ -253,7 +272,25 @@ export async function handOffConflict(
 
   const declaration = correctionOwnerDeclaration(live);
   const routing = correctionRouting({ declaration, head: live.head.sha });
-  const marker = `${CONFLICT_MARKER}${live.head.sha}:owner=${routing.owner ?? declaration.state} -->`;
+  // The editable body marker alone cannot authorize a conflict-handoff wake: the immutable HEAD
+  // `Correction-Owner:` trailer must agree with it (finding r4032740389). Read the exact commit and
+  // fail closed — a missing/invalid/disagreeing trailer, or an unreadable commit, is head-inconsistent,
+  // so no @mention is ever addressed to the (possibly wrong) body owner.
+  let agreement = { consistent: false, bodyOwner: routing.owner ?? null };
+  try {
+    const commit = await client.commit(live.head.sha);
+    if (commit && commit.sha === live.head.sha) {
+      agreement = headBoundOwnerAgreement(commit.commit?.message, live.body);
+    }
+  } catch {
+    agreement = { consistent: false, bodyOwner: routing.owner ?? null };
+  }
+  const ownerToken = agreement.consistent
+    ? routing.owner
+    : agreement.bodyOwner
+      ? 'head-inconsistent'
+      : declaration.state;
+  const marker = `${CONFLICT_MARKER}${live.head.sha}:owner=${ownerToken} -->`;
   const comments = await client.comments(live.number);
   if (comments.some((comment) =>
     comment.user?.login === ACTIONS_BOT_LOGIN && comment.body?.includes(marker)
@@ -271,13 +308,20 @@ export async function handOffConflict(
     || (current.mergeable !== false && current.mergeable_state !== 'behind')
   ) return;
 
-  const instruction = routing.awakenable
+  const instruction = (routing.awakenable && agreement.consistent)
     ? `@${routing.owner} This PR is behind or conflicts with the current base branch.`
-    : routing.owner
+    : (agreement.consistent && routing.owner)
       ? `**correction_stalled:** This PR is behind or conflicts with its base. The declared `
         + `owner is \`${routing.owner}\`, whose GitHub wake integration is not enabled here. `
         + 'Resume that owner on this branch if its session is not already running.'
-      : `**correction_stalled:** ${routing.instruction}`;
+      : agreement.bodyOwner
+        // Body declares an owner the immutable head does not confirm: a HEAD-bound inconsistency.
+        // No wake is addressed to the body owner; the head itself must be corrected.
+        ? '**correction_stalled:** This PR is behind or conflicts with its base, and its exact head\'s '
+          + '`Correction-Owner:` trailer is missing, invalid, or disagrees with the PR body marker, so '
+          + 'no wake is addressed to the body owner. Push a new head whose single terminal '
+          + '`Correction-Owner:` trailer matches the body marker, then resolve the base merge below.'
+        : `**correction_stalled:** ${routing.instruction}`;
   await client.comment(
     live.number,
     [
@@ -577,6 +621,7 @@ export async function handOffCorrectionLease(
     occurrence: owed.id ?? null,
     now,
     comments,
+    ownershipInconsistent: await headOwnershipInconsistent(client, assessed, head),
   });
 
   if (assessment.state === 'notify') {
@@ -623,6 +668,7 @@ export async function handOffCorrectionLease(
         occurrence: freshOwed.id ?? null,
         now,
         comments,
+        ownershipInconsistent: await headOwnershipInconsistent(client, live, head),
       })
       : null;
     // The RAW BODY too, not only the notice it renders. A checklist item ticked
