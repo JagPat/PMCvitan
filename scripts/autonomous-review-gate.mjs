@@ -7,6 +7,8 @@ import {
   POLL_INTERVAL_MS,
   REQUIRED_CHECKS,
   STATUS_CONTEXT,
+  OWNERSHIP_READ_RETRY,
+  isOwnershipInconsistentScopeDetail,
 } from './review-policy.mjs';
 export {
   requiredChecksForPullRequest,
@@ -186,6 +188,10 @@ export function isTerminalReviewStatus(status) {
 
   const description = status.description ?? '';
   return description.startsWith('review:')
+    // Ownership-verdict lifecycle (unit 2A2): an `unreadable` head is published as this `validation:`-prefixed
+    // status. It is a TERMINAL review failure so the recovery authorizer can classify it — and it is in the
+    // shared retryable set, so it resolves as retryable (gate recovers) rather than persistent (owed).
+    || description.startsWith(OWNERSHIP_READ_RETRY)
     || description.includes('current-head Codex finding')
     || description.includes('Codex submitted a current-head review')
     || description.includes('Codex review timed out')
@@ -692,6 +698,22 @@ export class GitHubClient {
     );
   }
 
+  // Withdraw a PR-wide native auto-merge (ownership-verdict lifecycle, unit 2A2). Idempotent by intent: a
+  // caller that already re-read the PR passes one whose `auto_merge` is set, but GitHub still rejects the
+  // mutation if another actor cancelled it in the meantime, so `reconcileAutoMergeForOwnership` treats that
+  // rejection as the reconciled outcome rather than a failure.
+  async disableAutoMerge(pullRequest) {
+    if (!pullRequest.auto_merge) return;
+    await this.graphql(
+      `mutation($id: ID!) {
+        disablePullRequestAutoMerge(input: { pullRequestId: $id }) {
+          pullRequest { id autoMergeRequest { enabledAt } }
+        }
+      }`,
+      { id: pullRequest.node_id },
+    );
+  }
+
   async mergeExactHead(number, expectedHead) {
     const response = await fetch(
       `${API_ROOT}/repos/${this.repository}/pulls/${number}/merge`,
@@ -988,6 +1010,47 @@ async function refreshCurrentHead(client, number, expectedHead) {
     return null;
   }
   return pullRequest;
+}
+
+// Ownership-verdict lifecycle (unit 2A2): whether the latest required review status WITHHOLDS a PR-wide
+// auto-merge because the exact head's ownership is not confirmed. Two vocabulary cases, both of which mean
+// the immutable head is not confirmed merge-eligible:
+//   - a readable ownership INCONSISTENCY (`scope:` failure whose detail is the ownership-inconsistent
+//     signature): the head trailer and body marker disagree, so no owner is confirmed; and
+//   - a temporarily UNREADABLE head (`validation:` read-retry): the trailer could not be read at all.
+// This only READS the vocabulary; publishing these statuses is a later unit. Cancelling an already-armed
+// auto-merge removes authority and grants none, so it is in this unit's scope while promotion activation and
+// merge authorization are not.
+export function ownershipStatusWithholdsAutoMerge(status) {
+  if (status?.context !== STATUS_CONTEXT || status?.state !== 'failure') return false;
+  const description = String(status?.description ?? '');
+  return description.startsWith(OWNERSHIP_READ_RETRY)
+    || isOwnershipInconsistentScopeDetail('scope', description.replace(/^\s*scope:\s*/u, ''));
+}
+
+// Reconcile a PR-wide native auto-merge against the ownership verdict: when the latest required status
+// withholds merge for ownership, any auto-merge armed on an earlier (confirmed) state must be withdrawn so a
+// later green does not merge a head whose ownership is not confirmed. Serialized by re-reading the LIVE pull
+// request and acting only on the confirmed current head, and reconciled by treating an already-absent
+// auto-merge — or GitHub's rejection of disabling one another actor just cancelled — as success, so
+// concurrent watchdog and event runs converge on the same withdrawn state instead of racing. It never arms,
+// merges, or drafts; cancellation only.
+export async function reconcileAutoMergeForOwnership(client, number, expectedHead, status) {
+  if (!ownershipStatusWithholdsAutoMerge(status)) return { state: 'not_applicable' };
+  const live = await refreshCurrentHead(client, number, expectedHead);
+  if (!live) return { state: 'superseded' };
+  if (!live.auto_merge) return { state: 'already_cancelled' };
+  try {
+    await client.disableAutoMerge(live);
+    return { state: 'cancelled' };
+  } catch (error) {
+    // Another actor withdrew it between the re-read and the mutation. GitHub rejects disabling an auto-merge
+    // that is no longer enabled; that is the reconciled outcome this consumer wants, not a failure to raise.
+    if (error instanceof Error && /auto[- ]?merge/iu.test(error.message)) {
+      return { state: 'already_cancelled' };
+    }
+    throw error;
+  }
 }
 
 export async function setDraftForCurrentHead(
@@ -1539,6 +1602,21 @@ export async function run() {
   const existingStatus = existingStatuses.find(
     (status) => status.context === STATUS_CONTEXT,
   ) ?? null;
+
+  // Ownership-verdict lifecycle (unit 2A2): withdraw any PR-wide auto-merge armed on an earlier state as
+  // soon as the latest required status stops confirming the head's ownership, before any other handling.
+  // A no-op unless such a status is present and an auto-merge is armed; it only cancels, never arms or merges.
+  const autoMergeReconciliation = await reconcileAutoMergeForOwnership(
+    client,
+    pullRequest.number,
+    expectedHead,
+    existingStatus,
+  );
+  if (autoMergeReconciliation.state === 'cancelled') {
+    console.log(
+      `Withdrew PR #${pullRequest.number} auto-merge: the exact head's ownership is no longer confirmed.`,
+    );
+  }
 
   if (mode === 'request-recovery') {
     const authorizedStatus = authorizeRecoveryDispatch(
