@@ -1831,10 +1831,17 @@ test('a clean-state auto-merge race retries the exact-SHA merge once', async () 
   assert.equal(mergeAttempts, 2);
 });
 
-test('review cycles are serialized by pull request and exact head', async () => {
+test('controller runs are serialized per pull request, not per head', async () => {
+  // Unit 2A3: the concurrency group is keyed by PR number ONLY (no head_sha). This is the load-bearing
+  // guarantee for the ownership auto-merge cancellation: because `disablePullRequestAutoMerge` is not
+  // head-scoped, a per-head group would let an old-head run and a new-head run mutate concurrently and let the
+  // stale run cancel the new head's freshly-armed auto-merge. Per-PR grouping + cancel-in-progress:false makes
+  // a newer head's run wait for every older-head run to finish, so no stale run can meet a newer head's queue.
   const workflow = await readFile(workflowPath, 'utf8');
-  assert.match(workflow, /github\.event\.workflow_run\.head_sha/);
-  assert.match(workflow, /inputs\.head_sha/);
+  const groupLine = /^\s*group:\s*(autonomous-review-owner-.*)$/mu.exec(workflow)[1];
+  assert.match(groupLine, /pull_requests\[0\]\.number/);
+  assert.doesNotMatch(groupLine, /head_sha/, 'the concurrency group must be per-PR, not per-head');
+  assert.doesNotMatch(workflow, /workflow_run\.head_sha/, 'workflow_run.head_sha keyed only the removed per-head group');
   assert.doesNotMatch(workflow, /github\.event\.pull_request/);
   assert.match(workflow, /cancel-in-progress:\s*false/);
 });
@@ -1927,8 +1934,11 @@ test('workflow recovery is exact-head serialized and has terminal time budget', 
     readFile(workflowPath, 'utf8'),
     readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8'),
   ]);
-  assert.match(workflow, /head_sha:/);
-  assert.match(workflow, /inputs\.head_sha/);
+  assert.match(workflow, /head_sha:/); // the exact-head recovery input is still declared
+  // Exact-head targeting lives in the gate (it reads the head from the dispatch event payload), not in a
+  // concurrency key: unit 2A3 made the concurrency group per-PR, so `inputs.head_sha` no longer appears in the
+  // workflow YAML, but recovery still dispatches and acts on the EXACT head via `event.inputs.head_sha`.
+  assert.match(gate, /event\.inputs\?\.head_sha/);
   assert.match(workflow, /terminal_status_id:/);
   assert.match(gate, /event\.inputs\?\.terminal_status_id/);
   assert.match(workflow, /needs:\s*\[request-recovery\]/);
@@ -2433,4 +2443,95 @@ test('2A2-ii: GitHubClient.graphql attaches the structured error entries to the 
   // A response with no errors returns its data unchanged and carries nothing extra.
   client.request = async () => ({ data: { ok: true } });
   assert.deepEqual(await client.graphql('query Q { x }', {}), { ok: true });
+});
+
+test('2A3: reconcileAutoMergeForOwnership cancels only the confirmed head and never swallows a genuine error', async () => {
+  const head = 'a'.repeat(40);
+  const withhold = { context: 'codex-current-head', state: 'failure', description: OWNERSHIP_CANDIDATE_HELD };
+  const green = { context: 'codex-current-head', state: 'success', description: 'review: clean' };
+
+  const livePR = (over = {}) => ({
+    number: 9, state: 'open', draft: false, node_id: 'N',
+    head: { sha: head, ref: 'claude/x', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+    auto_merge: { enabledAt: 'x' }, ...over,
+  });
+  const graphqlError = (entries) => {
+    const error = new Error(`GitHub GraphQL failed: ${JSON.stringify(entries)}`);
+    error.graphqlErrors = entries;
+    return error;
+  };
+  const makeClient = (over = {}) => {
+    const calls = { disabled: 0 };
+    return {
+      calls,
+      pullRequest: async () => over.pull ?? livePR(),
+      disableAutoMerge: async () => { calls.disabled += 1; if (over.disableError) throw over.disableError; },
+    };
+  };
+
+  // Withholding status + confirmed live head + armed auto-merge → cancels once.
+  let client = makeClient();
+  assert.deepEqual(await reviewGate.reconcileAutoMergeForOwnership(client, 9, head, withhold), { state: 'cancelled' });
+  assert.equal(client.calls.disabled, 1);
+
+  // A non-withholding (green) status never touches auto-merge.
+  client = makeClient();
+  assert.deepEqual(await reviewGate.reconcileAutoMergeForOwnership(client, 9, head, green), { state: 'not_applicable' });
+  assert.equal(client.calls.disabled, 0);
+
+  // Nothing armed → already cancelled, no mutation.
+  client = makeClient({ pull: livePR({ auto_merge: null }) });
+  assert.deepEqual(await reviewGate.reconcileAutoMergeForOwnership(client, 9, head, withhold), { state: 'already_cancelled' });
+  assert.equal(client.calls.disabled, 0);
+
+  // Superseded head → no cross-head cancellation: a stale run whose confirmed head no longer matches never
+  // disables. Serialization is what prevents the newer head from being armed concurrently; this guard is the
+  // second line — the run makes no mutation against a head it does not confirm.
+  client = makeClient({ pull: livePR({ head: { sha: 'b'.repeat(40), ref: 'claude/x', repo: { full_name: 'JagPat/PMCvitan' } } }) });
+  assert.deepEqual(await reviewGate.reconcileAutoMergeForOwnership(client, 9, head, withhold), { state: 'superseded' });
+  assert.equal(client.calls.disabled, 0);
+
+  // GitHub rejects the disable because the auto-merge is not enabled → reconciled as already_cancelled, matched
+  // from the STRUCTURED entry message.
+  client = makeClient({ disableError: graphqlError([{ message: 'Auto merge is not enabled for this pull request', path: ['disablePullRequestAutoMerge'] }]) });
+  assert.deepEqual(await reviewGate.reconcileAutoMergeForOwnership(client, 9, head, withhold), { state: 'already_cancelled' });
+
+  // A genuine failure (the wrapper string always contains the mutation path, so matching must be per-entry) must
+  // PROPAGATE, never be swallowed as already-cancelled.
+  const genuine = graphqlError([{ message: 'API rate limit exceeded', path: ['disablePullRequestAutoMerge'] }]);
+  client = makeClient({ disableError: genuine });
+  await assert.rejects(
+    () => reviewGate.reconcileAutoMergeForOwnership(client, 9, head, withhold),
+    (error) => error === genuine,
+  );
+});
+
+test('2A3: the cancellation is head-guarded, cancels only, and delegates re-arm; run() reconciles first', async () => {
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+
+  // The disable mutation is unavoidably PR-wide — `disablePullRequestAutoMerge` accepts NO expectedHeadOid — so
+  // per-PR run serialization (asserted separately in the workflow test) is the mandatory cross-head guard.
+  const disable = gate.slice(gate.indexOf('async disableAutoMerge'), gate.indexOf('async mergeExactHead'));
+  assert.match(disable, /disablePullRequestAutoMerge/);
+  assert.doesNotMatch(disable, /expectedHeadOid/);
+
+  // The reconciler cancels only: it never arms, merges, or drafts (re-arm is delegated to the newer head's own
+  // serialized run via completeReviewedPullRequest), and its head guard precedes the mutation.
+  const reconcile = gate.slice(
+    gate.indexOf('export async function reconcileAutoMergeForOwnership'),
+    gate.indexOf('export async function setDraftForCurrentHead'),
+  );
+  assert.doesNotMatch(reconcile, /enableAutoMerge|mergeExactHead|setDraft/);
+  assert.ok(
+    reconcile.indexOf('refreshCurrentHead') < reconcile.indexOf('disableAutoMerge'),
+    'the confirmed-head read must precede the cancellation mutation',
+  );
+
+  // run() withdraws a stale-ownership auto-merge before any other handling.
+  const runBody = gate.slice(gate.indexOf('export async function run()'));
+  assert.ok(
+    runBody.indexOf('reconcileAutoMergeForOwnership(') < runBody.indexOf("mode === 'request-recovery'"),
+    'reconciliation runs before the request-recovery branch',
+  );
 });

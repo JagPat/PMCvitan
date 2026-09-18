@@ -721,6 +721,25 @@ export class GitHubClient {
     );
   }
 
+  // Withdraw a PR-wide native auto-merge (ownership-verdict lifecycle, unit 2A3). Idempotent by intent: a
+  // caller that already re-read the PR passes one whose `auto_merge` is set, but GitHub still rejects the
+  // mutation if the auto-merge was cancelled in the meantime, so `reconcileAutoMergeForOwnership` treats that
+  // one specific rejection as the reconciled outcome rather than a failure. This mutation is unavoidably
+  // PR-wide — `disablePullRequestAutoMerge` accepts NO expectedHeadOid — which is exactly why controller runs
+  // are serialized per pull request (see `.github/workflows/auto-merge.yml` concurrency): a stale run must
+  // never cancel a newer head's queue, and serialization guarantees a newer head's run has not armed one yet.
+  async disableAutoMerge(pullRequest) {
+    if (!pullRequest.auto_merge) return;
+    await this.graphql(
+      `mutation($id: ID!) {
+        disablePullRequestAutoMerge(input: { pullRequestId: $id }) {
+          pullRequest { id autoMergeRequest { enabledAt } }
+        }
+      }`,
+      { id: pullRequest.node_id },
+    );
+  }
+
   async mergeExactHead(number, expectedHead) {
     const response = await fetch(
       `${API_ROOT}/repos/${this.repository}/pulls/${number}/merge`,
@@ -1019,24 +1038,75 @@ async function refreshCurrentHead(client, number, expectedHead) {
   return pullRequest;
 }
 
-// Ownership-verdict lifecycle prerequisite (owner-verdict split): whether the latest required review status
-// WITHHOLDS a PR-wide auto-merge because the exact head's ownership is not confirmed merge-eligible. Three
-// vocabulary cases:
+// Ownership-verdict lifecycle (unit 2A3): whether the latest required review status WITHHOLDS a PR-wide
+// auto-merge because the exact head's ownership is not confirmed merge-eligible. Three vocabulary cases:
 //   - a readable ownership INCONSISTENCY (`scope:` failure whose detail is the ownership-inconsistent
 //     signature): the head trailer and body marker disagree, so no owner is confirmed;
 //   - a temporarily UNREADABLE head (`validation:` read-retry): the trailer could not be read at all; and
 //   - a CANDIDATE head held for independent-reviewer activation (`validation:` candidate-held): a recognised
 //     but never-merge-eligible owner.
-// This is a PURE predicate over the shared vocabulary and has NO consumer in this unit: it only classifies a
-// status. The auto-merge cancellation/reconciliation that consumes it — including the cross-head serialization
-// a non-head-scoped `disablePullRequestAutoMerge` requires — is deferred to the 2A3 activation unit, where the
-// matching re-arm/requeue behaviour can be designed together. Defining the predicate here grants no behaviour.
+// A pure predicate over the shared vocabulary. `reconcileAutoMergeForOwnership` consumes it. No unit publishes
+// these statuses yet, so in production it is `false` on every current status — the cancellation stays a
+// guarded no-op until a later unit publishes the ownership verdict (the "consumed ahead of publication"
+// pattern from the 2A1 vocabulary). This unit grants no promotion activation and no merge authority.
 export function ownershipStatusWithholdsAutoMerge(status) {
   if (status?.context !== STATUS_CONTEXT || status?.state !== 'failure') return false;
   const description = String(status?.description ?? '');
   return description.startsWith(OWNERSHIP_READ_RETRY)
     || description.startsWith(OWNERSHIP_CANDIDATE_HELD)
     || isOwnershipInconsistentScopeDetail('scope', description.replace(/^\s*scope:\s*/u, ''));
+}
+
+// GitHub rejects `disablePullRequestAutoMerge` on a PR whose auto-merge is not enabled; that rejection is the
+// reconciled outcome, not a failure to raise. Recognise it from the STRUCTURED GraphQL error entries' own
+// `message` text only — never the wrapper string or an entry's `path`, which literally contains
+// `disablePullRequestAutoMerge` and would match a naive "auto merge" test against EVERY GraphQL error. A
+// genuine failure (auth, rate limit, unresolved node, or a non-GraphQL transport error with no `graphqlErrors`)
+// carries no such message and propagates.
+function autoMergeAlreadyDisabledError(error) {
+  const entries = error?.graphqlErrors;
+  if (!Array.isArray(entries) || entries.length === 0) return false;
+  return entries.some(
+    (entry) => /auto[- ]?merge is not enabled/iu.test(String(entry?.message ?? '')),
+  );
+}
+
+// Reconcile a PR-wide native auto-merge against the ownership verdict: when the latest required status
+// withholds merge for ownership, an auto-merge armed on an earlier (confirmed) state must be withdrawn so a
+// later green does not merge a head whose ownership is not confirmed. Cancellation only — it never arms,
+// merges, or drafts; re-arming a superseded head is delegated to that head's OWN serialized controller run via
+// the ordinary `completeReviewedPullRequest` path.
+//
+// Cross-head safety rests on TWO things, in this order:
+//   1. Per-PR serialization of controller runs (`.github/workflows/auto-merge.yml` concurrency, one group per
+//      pull request, cancel-in-progress:false): a newer head's run cannot start — and so cannot arm its
+//      auto-merge — until every older-head run has finished. So a stale run's PR-wide disable can only ever
+//      meet its own head's (already head-changed, GitHub-auto-cancelled) queue, never a newer head's.
+//   2. The pre-disable `refreshCurrentHead` guard: acting only on the confirmed live current head.
+// The post-mutation re-read below is a fail-safe, not the guarantee: if serialization were ever misconfigured
+// it refuses to CLAIM a cancel over a head this run no longer confirms, but it cannot itself prevent the race —
+// serialization does.
+export async function reconcileAutoMergeForOwnership(client, number, expectedHead, status) {
+  if (!ownershipStatusWithholdsAutoMerge(status)) return { state: 'not_applicable' };
+  const live = await refreshCurrentHead(client, number, expectedHead);
+  if (!live) return { state: 'superseded' };
+  if (!live.auto_merge) return { state: 'already_cancelled' };
+  try {
+    await client.disableAutoMerge(live);
+  } catch (error) {
+    // The auto-merge was already gone when the mutation ran (e.g. GitHub auto-cancelled it on a head change).
+    // That one specific GitHub rejection is the reconciled outcome; any other error is genuine and re-raised.
+    if (autoMergeAlreadyDisabledError(error)) {
+      return { state: 'already_cancelled' };
+    }
+    throw error;
+  }
+  // Fail-safe (see the header): report `superseded` rather than a cancel if the head moved during the window,
+  // so a stale verdict never claims authority over a head it no longer confirms. Serialization is what makes
+  // the cancel safe; this only keeps the reported state honest.
+  const afterMutation = await refreshCurrentHead(client, number, expectedHead);
+  if (!afterMutation) return { state: 'superseded' };
+  return { state: 'cancelled' };
 }
 
 export async function setDraftForCurrentHead(
@@ -1588,6 +1658,22 @@ export async function run() {
   const existingStatus = existingStatuses.find(
     (status) => status.context === STATUS_CONTEXT,
   ) ?? null;
+
+  // Ownership-verdict lifecycle (unit 2A3): withdraw any PR-wide auto-merge armed on an earlier state as soon
+  // as the latest required status stops confirming the head's ownership, before any other handling. Head-guarded
+  // and cancellation-only (never arms or merges); a guarded no-op unless such a status is present and an
+  // auto-merge is armed. Cross-head safety comes from per-PR run serialization (see the function header).
+  const autoMergeReconciliation = await reconcileAutoMergeForOwnership(
+    client,
+    pullRequest.number,
+    expectedHead,
+    existingStatus,
+  );
+  if (autoMergeReconciliation.state === 'cancelled') {
+    console.log(
+      `Withdrew PR #${pullRequest.number} auto-merge: the exact head's ownership is no longer confirmed.`,
+    );
+  }
 
   if (mode === 'request-recovery') {
     const authorizedStatus = authorizeRecoveryDispatch(
