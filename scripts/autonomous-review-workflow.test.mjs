@@ -1780,6 +1780,136 @@ test('a head whose exact commit trailer is not merge-eligible is held, never mer
   assert.deepEqual(calls, []);
 });
 
+test('the required codex-current-head success is gated on the exact-head ownership verdict', async () => {
+  // Reproduce-first for the #611 ruling: publishing `codex-current-head: success` is a
+  // merge-capable transition when native auto-merge is already armed, so an ineligible /
+  // candidate / unreadable head must never reach it. The pre-publication gate is exercised
+  // directly (run() has no end-to-end harness); mergeExactHead/enableAutoMerge are fail spies.
+  const head = 'a'.repeat(40);
+  const base = 'b'.repeat(40);
+  const trailer = (owner) => `feat: change\n\nCorrection-Owner: ${owner}\n`;
+  const marker = (owner) => `<!-- correction-owner: ${owner} -->`;
+  const livePull = ({ ref = 'claude/product', body = marker('claude'), sha = head } = {}) => ({
+    number: 230, state: 'open', draft: false, body,
+    head: { sha, ref, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
+  });
+  const makeClient = ({ live, commitMessage, setDraftResult } = {}) => {
+    const calls = { setStatus: [], setDraft: [], sticky: [] };
+    const client = {
+      repository: 'JagPat/PMCvitan',
+      async pullRequest() { return live; },
+      async commitMessage() { return typeof commitMessage === 'function' ? commitMessage() : commitMessage; },
+      async setDraft(current, draft) {
+        calls.setDraft.push(draft);
+        return setDraftResult === undefined ? { ...current, draft } : setDraftResult;
+      },
+      async setStatus(h, state, description, _url, context) {
+        calls.setStatus.push({ head: h, state, description, context });
+      },
+      async updateStickyComment(number, body) { calls.sticky.push({ number, body }); },
+      async mergeExactHead() { assert.fail('the pre-publication gate must never merge'); },
+      async enableAutoMerge() { assert.fail('the pre-publication gate must never arm auto-merge'); },
+    };
+    return { client, calls };
+  };
+  const authorize = (opts) => {
+    const { client, calls } = makeClient(opts);
+    return reviewGate.authorizeExactHeadOwnershipBeforePublication(
+      client, 230, head, { recoveryRequest: null, attempt: 1 },
+    ).then((result) => ({ result, calls }));
+  };
+  const requiredHeadStatus = 'codex-current-head';
+  const successes = (calls) => calls.setStatus.filter(
+    (s) => s.state === 'success' && (s.context === undefined || s.context === requiredHeadStatus),
+  );
+
+  // 7(a) missing / candidate / conflicting ownership → the required success is NEVER published.
+  const missing = await authorize({ live: livePull(), commitMessage: 'feat: change\n\nno trailer here\n' });
+  assert.equal(missing.result.decision, 'withheld');
+  assert.equal(successes(missing.calls).length, 0);
+  assert.deepEqual(missing.calls.setDraft, [true]);
+  assert.equal(missing.calls.sticky.length, 1);
+  const missingFailure = missing.calls.setStatus.find((s) => s.state === 'failure');
+  assert.ok(missingFailure.description.startsWith('scope: '));
+  assert.equal(
+    reviewGate.ownershipStatusWithholdsAutoMerge({ context: requiredHeadStatus, state: 'failure', description: missingFailure.description }),
+    true,
+  );
+
+  const candidate = await authorize({
+    live: livePull({ ref: 'codex/maintenance', body: marker('codex') }),
+    commitMessage: trailer('codex'),
+  });
+  assert.equal(candidate.result.decision, 'withheld');
+  assert.equal(successes(candidate.calls).length, 0);
+  const candidateFailure = candidate.calls.setStatus.find((s) => s.state === 'failure');
+  assert.equal(candidateFailure.description, OWNERSHIP_CANDIDATE_HELD);
+  // A candidate hold, as the newest review status, is never re-dispatched by recovery.
+  assert.equal(
+    reviewGate.recoverableTerminalReviewStatus([{ context: requiredHeadStatus, state: 'failure', description: OWNERSHIP_CANDIDATE_HELD, id: 900 }]),
+    null,
+  );
+
+  const conflicting = await authorize({ live: livePull(), commitMessage: trailer('cursor') });
+  assert.equal(conflicting.result.decision, 'withheld');
+  assert.equal(successes(conflicting.calls).length, 0);
+  assert.ok(conflicting.calls.setStatus.find((s) => s.state === 'failure').description.startsWith('scope: '));
+
+  // 7(b) a transient/unreadable commit read → retryable failure published, recovery scheduled.
+  const transient = await authorize({ live: livePull(), commitMessage: () => { throw new Error('transport'); } });
+  assert.equal(transient.result.decision, 'withheld');
+  assert.equal(successes(transient.calls).length, 0);
+  const retryFailure = transient.calls.setStatus.find((s) => s.state === 'failure');
+  assert.equal(retryFailure.description, OWNERSHIP_READ_RETRY);
+  // The published retryable failure is what the existing recovery watchdog re-dispatches.
+  const retryStatus = { context: requiredHeadStatus, state: 'failure', description: OWNERSHIP_READ_RETRY, id: 901 };
+  assert.equal(reviewGate.recoverableTerminalReviewStatus([retryStatus]), retryStatus);
+
+  // 7(c) an eligible owner alone reaches success: the gate publishes nothing and lets the caller proceed.
+  const eligible = await authorize({ live: livePull(), commitMessage: trailer('claude') });
+  assert.equal(eligible.result.decision, 'eligible');
+  assert.equal(eligible.result.pullRequest.head.sha, head);
+  assert.deepEqual(eligible.calls.setStatus, []);
+  assert.deepEqual(eligible.calls.setDraft, []);
+  assert.deepEqual(eligible.calls.sticky, []);
+
+  // 7(d) a moved/superseded head publishes and authorizes nothing.
+  const moved = await authorize({ live: livePull({ sha: 'c'.repeat(40) }), commitMessage: trailer('claude') });
+  assert.equal(moved.result.decision, 'superseded');
+  assert.deepEqual(moved.calls.setStatus, []);
+  assert.deepEqual(moved.calls.setDraft, []);
+  assert.deepEqual(moved.calls.sticky, []);
+
+  // supersession INSIDE the draft-revert window (retarget mid-draft) also publishes nothing:
+  // the draft revert precedes the failure publish, so a lost head never gets a status.
+  const retargeted = await authorize({
+    live: livePull(), commitMessage: 'feat: change\n\nno trailer here\n',
+    setDraftResult: { ...livePull({ sha: 'c'.repeat(40) }), draft: true },
+  });
+  assert.equal(retargeted.result.decision, 'superseded');
+  assert.deepEqual(retargeted.calls.setStatus, []);
+  assert.deepEqual(retargeted.calls.sticky, []);
+});
+
+test('the ownership gate runs before the required success publish in run()', async () => {
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  const gateCall = gate.indexOf('authorizeExactHeadOwnershipBeforePublication(\n        client');
+  const finalPolicy = gate.indexOf('await revalidateFinalReviewPolicy');
+  const successPublish = gate.indexOf("'review: Codex found no blocking issue on this exact head'");
+  assert.ok(finalPolicy >= 0 && gateCall >= 0 && successPublish >= 0);
+  // The verdict is resolved AFTER the final policy revalidation and BEFORE the success publish,
+  // and a withheld verdict throws rather than falling through to the publish.
+  assert.ok(gateCall > finalPolicy);
+  assert.ok(gateCall < successPublish);
+  assert.match(gate, /if \(ownership\.decision === 'withheld'\) throw new Error\(ownership\.description\);/u);
+  assert.match(gate, /if \(ownership\.decision === 'superseded'\) return;/u);
+});
+
 test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
   assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
   const expectedHead = 'a'.repeat(40);

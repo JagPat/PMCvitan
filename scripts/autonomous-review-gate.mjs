@@ -34,6 +34,7 @@ import {
   correctionOwnerDeclaration,
   correctionRouting,
   headOwnerVerdict,
+  ownershipStatus,
 } from './correction-owner.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import {
@@ -1353,6 +1354,100 @@ export async function revalidateFinalReviewPolicy(
   return { state: 'allowed', allowed: true, pullRequest };
 }
 
+/**
+ * The exact-head ownership gate that runs BEFORE the required `codex-current-head`
+ * success is published (unit 2B, with ownership-status withholding folded in per the
+ * #611 coordinator ruling). Publishing that required success is itself a merge-capable
+ * transition whenever native auto-merge is already armed — auto-merge persists across
+ * head pushes — so the immutable HEAD commit's Correction-Owner trailer must gate the
+ * publication, not only the later merge call. The scope gate judges the PR body marker
+ * and branch; only this reads the exact HEAD commit trailer, the real merge authority.
+ *
+ * Fail-closed, mirroring the scope/CI failure branches. An ineligible, candidate, or
+ * inconsistent verdict publishes the canonical ownership-withholding FAILURE and reverts
+ * the head to draft — two independent blocks on an already-armed auto-merge — and never
+ * reaches the merge-completion path. A transient/unreadable commit read publishes the
+ * retryable `OWNERSHIP_READ_RETRY` failure so the existing recovery watchdog re-dispatches
+ * this exact head, never a green required status. A superseded head publishes and
+ * authorizes nothing. Only an eligible verdict lets the caller publish success;
+ * `authorizeExactHeadMerge` still re-reads the immutable trailer as the fail-closed final
+ * authorization, so this is a pre-publication gate, not a replacement for it.
+ */
+export async function authorizeExactHeadOwnershipBeforePublication(
+  client,
+  number,
+  expectedHead,
+  { recoveryRequest, attempt } = {},
+) {
+  // Requirement: the final exact-head revalidation immediately before publication. A
+  // moved/superseded head returns null so the caller publishes and authorizes nothing.
+  const live = await refreshCurrentHead(client, number, expectedHead);
+  if (!live) return { decision: 'superseded' };
+
+  // The immutable HEAD commit trailer is the merge authority. A THROW is an unreadable
+  // head (retryable infrastructure); a null/empty message is a readable missing trailer
+  // (inconsistent) — headOwnerVerdict maps that without throwing.
+  let status;
+  try {
+    const message = await client.commitMessage(expectedHead);
+    status = ownershipStatus(headOwnerVerdict(message, live.body, { headRef: live.head?.ref }));
+  } catch {
+    status = ownershipStatus({ readable: false });
+  }
+  if (status.outcome === 'eligible') {
+    return { decision: 'eligible', pullRequest: live };
+  }
+
+  // Withhold: revert to draft FIRST (a supersession inside the window then makes us do
+  // nothing), publish the canonical failure, settle any in-flight recovery request, and
+  // record the guaranteed-delivery sticky. The retryable OWNERSHIP_READ_RETRY failure is
+  // re-dispatched by the existing recovery watchdog; the candidate/inconsistent failures
+  // are terminal holds (a candidate hold, as newest status, suppresses re-dispatch).
+  const reverted = await setDraftForCurrentHead(client, number, expectedHead, true);
+  if (!reverted) return { decision: 'superseded' };
+  const description = status.outcome === 'inconsistent'
+    ? `scope: ${status.detail}`
+    : status.reason;
+  await client.setStatus(expectedHead, 'failure', description, reverted.html_url);
+  await settleRecoveryRequest(
+    client,
+    expectedHead,
+    reverted,
+    recoveryRequest,
+    `ownership ${status.outcome}`,
+  );
+  await client.updateStickyComment(
+    reverted.number,
+    ownershipWithholdingStickyBody(status, reverted, expectedHead, attempt),
+  );
+  return { decision: 'withheld', description };
+}
+
+function ownershipWithholdingStickyBody(status, pullRequest, expectedHead, attempt) {
+  if (status.outcome === 'inconsistent') {
+    const notice = correctionNotice(pullRequest, { detail: status.detail, reason: 'scope' });
+    return statusBody({
+      state: 'scope_required',
+      head: expectedHead,
+      detail: status.detail,
+      attempt,
+      owner: notice.owner ?? 'undeclared',
+      correctionState: noticeState(notice),
+      next: notice.instruction,
+    });
+  }
+  const next = status.outcome === 'held'
+    ? 'A candidate owner is held pending independent reviewer activation and is never merged.'
+    : 'Head commit ownership was temporarily unreadable; recovery will retry this exact head.';
+  return statusBody({
+    state: 'blocked',
+    head: expectedHead,
+    detail: status.detail,
+    attempt,
+    next,
+  });
+}
+
 async function reviewAttempt(
   client,
   pullRequest,
@@ -1993,6 +2088,21 @@ export async function run() {
         throw new Error(`Final review policy changed: ${finalPolicy.state}`);
       }
       pullRequest = finalPolicy.pullRequest;
+      // The immutable exact-head ownership verdict gates the required success below:
+      // publishing `codex-current-head: success` is itself a merge-capable transition
+      // when native auto-merge is already armed, so an ineligible, candidate, or
+      // unreadable head must never reach it (unit 2B with ownership-status withholding
+      // folded in per the #611 ruling). A withheld head has already published its
+      // canonical failure and reverted to draft; a superseded one did nothing.
+      const ownership = await authorizeExactHeadOwnershipBeforePublication(
+        client,
+        pullRequest.number,
+        expectedHead,
+        { recoveryRequest, attempt },
+      );
+      if (ownership.decision === 'superseded') return;
+      if (ownership.decision === 'withheld') throw new Error(ownership.description);
+      pullRequest = ownership.pullRequest;
       // One run polls one Codex invocation to its mutually exclusive terminal
       // result: finding-bearing evidence or the clean reaction. Review webhooks
       // never enter this orchestrator, so no second writer can race admission.

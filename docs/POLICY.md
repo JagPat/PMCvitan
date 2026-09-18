@@ -39,8 +39,8 @@ inconsistent, cleared by a body edit or, when the trailer is unusable or the bra
 it, a new head; or temporarily unreadable and retryable) in one canonical status vocabulary.
 Codex is a recognised CANDIDATE owner the verdict tracks in-flight but never merges and never
 wakes, held pending independent reviewer activation because implementation tasks and reviews
-share the Codex bot identity; a transfer marker cannot promote it. Later units consume the
-verdict for promotion and exact-head merge authorization; alone it mutates nothing.
+share the Codex bot identity; a transfer marker cannot promote it. The controller gates the
+required current-head success on this verdict, and re-checks it at exact-head merge authorization.
 
 This repository currently enables only the Claude correction wake integration.
 Codex supports GitHub task mentions such as `@codex fix the CI failures` through its
