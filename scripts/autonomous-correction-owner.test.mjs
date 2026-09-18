@@ -29,7 +29,19 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { guardAgainstCurrentHeadFinding, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
-import { parseCommitCorrectionOwner, headBoundOwnerAgreement } from './correction-owner.mjs';
+import {
+  parseCommitCorrectionOwner,
+  headBoundOwnerAgreement,
+  headOwnerVerdict,
+  ownershipStatus,
+} from './correction-owner.mjs';
+import {
+  OWNERSHIP_READ_RETRY,
+  OWNERSHIP_CANDIDATE_HELD,
+  OWNERSHIP_INCONSISTENT_SCOPE,
+  isOwnershipInconsistentScopeDetail,
+  isBodyOnlyOwnershipRecoveryDetail,
+} from './review-policy.mjs';
 import { assessReviewScope } from './review-efficiency.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
@@ -915,13 +927,16 @@ test('the commit-trailer parser agrees with real `git interpret-trailers --parse
 });
 
 test('owner resolution is applied on top of git-faithful parsing', () => {
-  // A git-recognised trailer naming an admitted owner resolves; a git-recognised value that is NOT an
-  // admitted owner is `invalid` (not routed) - admission is unchanged and codex is not added in this unit.
+  // A git-recognised trailer naming a merge-eligible owner resolves as `declared`; a recognised in-flight
+  // CANDIDATE owner (codex) resolves as the first-class `candidate` state — tracked but never merge-eligible,
+  // since no consumer treats `candidate` as `declared`; any other value is `invalid` (not routed).
   const claude = parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\n');
   assert.equal(claude.state, 'declared');
   assert.equal(claude.owner, 'claude');
   assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: cursor\n').owner, 'cursor');
-  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: codex\n').state, 'invalid');
+  const codex = parseCommitCorrectionOwner('x\n\nCorrection-Owner: codex\n');
+  assert.equal(codex.state, 'candidate');
+  assert.equal(codex.owner, 'codex');
   assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: nobody\n').state, 'invalid');
   assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\nCorrection-Owner: cursor\n').state, 'conflicting');
   assert.equal(parseCommitCorrectionOwner('no trailer').state, 'missing');
@@ -953,6 +968,88 @@ test('headBoundOwnerAgreement is a pure fail-closed resolution primitive', () =>
     headBoundOwnerAgreement('x\n\nCorrection-Owner: cursor\n', marker('cursor'), { headRef: 'codex/task' }).consistent,
     true,
   );
+});
+
+test('headOwnerVerdict is the pure three-valued read outcome with a clearable remedy', () => {
+  const marker = (owner) => `<!-- correction-owner: ${owner} -->`;
+
+  // ELIGIBLE: a merge-eligible head trailer agreeing with the body marker. The single promotable outcome.
+  const eligible = headOwnerVerdict('x\n\nCorrection-Owner: claude\n', marker('claude'));
+  assert.deepEqual(eligible, {
+    trailerOwner: 'claude', bodyOwner: 'claude', trailerState: 'declared',
+    readable: true, consistent: true, candidate: false, eligible: true, remedy: null,
+  });
+
+  // CANDIDATE HELD: a consistent candidate (codex) is readable and consistent but never eligible, with no
+  // remedy — it is held, not faulted. No consumer in this unit promotes or wakes it.
+  const held = headOwnerVerdict('x\n\nCorrection-Owner: codex\n', marker('codex'), { headRef: 'codex/task' });
+  assert.deepEqual(held, {
+    trailerOwner: 'codex', bodyOwner: 'codex', trailerState: 'candidate',
+    readable: true, consistent: true, candidate: true, eligible: false, remedy: null,
+  });
+
+  // BODY-recoverable fault: a valid head trailer the branch permits as a marker, but the body marker is
+  // missing or disagrees — a body edit reconciles it, no new head required.
+  for (const body of ['no marker', marker('cursor')]) {
+    const v = headOwnerVerdict('x\n\nCorrection-Owner: claude\n', body);
+    assert.equal(v.readable, true);
+    assert.equal(v.consistent, false);
+    assert.equal(v.eligible, false);
+    assert.equal(v.remedy, 'body');
+  }
+
+  // HEAD-required fault: no valid head trailer (missing/invalid/conflicting), so no body edit can reconcile
+  // it — a new head is required.
+  for (const message of ['no trailer', 'x\n\nCorrection-Owner: nobody\n', 'x\n\nCorrection-Owner: claude\nCorrection-Owner: cursor\n']) {
+    const v = headOwnerVerdict(message, marker('claude'));
+    assert.equal(v.trailerOwner, null);
+    assert.equal(v.eligible, false);
+    assert.equal(v.remedy, 'head');
+  }
+
+  // BRANCH-contradiction head remedy: a VALID head trailer whose owner a `claude/**` branch forbids as a
+  // marker needs a NEW head, never a body edit — the remedy is 'head' even though the trailer itself parses.
+  const contradicted = headOwnerVerdict('x\n\nCorrection-Owner: cursor\n', marker('cursor'), { headRef: 'claude/task' });
+  assert.equal(contradicted.trailerOwner, 'cursor');
+  assert.equal(contradicted.consistent, false);
+  assert.equal(contradicted.remedy, 'head');
+});
+
+test('ownershipStatus maps a verdict onto the one canonical status vocabulary', () => {
+  const marker = (owner) => `<!-- correction-owner: ${owner} -->`;
+
+  // Eligible → no status reason.
+  assert.deepEqual(
+    ownershipStatus(headOwnerVerdict('x\n\nCorrection-Owner: claude\n', marker('claude'))),
+    { outcome: 'eligible', reason: null, detail: null, remedy: null },
+  );
+
+  // Candidate held → the fixed OWNERSHIP_CANDIDATE_HELD reason, never a scope fault.
+  const held = ownershipStatus(headOwnerVerdict('x\n\nCorrection-Owner: codex\n', marker('codex'), { headRef: 'codex/task' }));
+  assert.equal(held.outcome, 'held');
+  assert.equal(held.reason, OWNERSHIP_CANDIDATE_HELD);
+
+  // Body-recoverable fault → a `scope:` detail a reader can tell apart as body-only recoverable.
+  const bodyFault = ownershipStatus(headOwnerVerdict('x\n\nCorrection-Owner: claude\n', 'no marker'));
+  assert.equal(bodyFault.outcome, 'inconsistent');
+  assert.equal(bodyFault.reason, 'scope');
+  assert.ok(bodyFault.detail.startsWith(OWNERSHIP_INCONSISTENT_SCOPE));
+  assert.ok(isOwnershipInconsistentScopeDetail(bodyFault.reason, bodyFault.detail));
+  assert.ok(isBodyOnlyOwnershipRecoveryDetail(bodyFault.reason, bodyFault.detail));
+
+  // Head-required fault → a scope detail that is NOT body-only recoverable.
+  const headFault = ownershipStatus(headOwnerVerdict('no trailer', marker('claude')));
+  assert.equal(headFault.outcome, 'inconsistent');
+  assert.ok(isOwnershipInconsistentScopeDetail(headFault.reason, headFault.detail));
+  assert.equal(isBodyOnlyOwnershipRecoveryDetail(headFault.reason, headFault.detail), false);
+
+  // Unreadable → a retryable INFRASTRUCTURE reason, not a scope fault (mapper is pure over the verdict).
+  const unreadable = ownershipStatus({
+    trailerOwner: null, bodyOwner: null, trailerState: 'unreadable',
+    readable: false, consistent: false, candidate: false, eligible: false, remedy: 'infra',
+  });
+  assert.deepEqual(unreadable, { outcome: 'unreadable', reason: OWNERSHIP_READ_RETRY, detail: OWNERSHIP_READ_RETRY, remedy: 'infra' });
+  assert.equal(isOwnershipInconsistentScopeDetail(unreadable.reason, unreadable.detail), false);
 });
 
 test('the trailer read is independent of the runner\'s ambient git config', () => {
