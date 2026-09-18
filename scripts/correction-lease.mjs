@@ -1,6 +1,7 @@
 import {
   CORRECTION_LEASE_GRACE_MS,
   isRetryableReviewFailureDescription,
+  isOwnershipInconsistentScopeDetail,
   STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT,
 } from './review-policy.mjs';
 export { CORRECTION_LEASE_GRACE_MS, STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT } from './review-policy.mjs';
@@ -250,13 +251,21 @@ export function assessCorrectionLease({
   });
 
   const owner = routing.owner ?? 'undeclared';
+  // Ownership-verdict lifecycle (unit 2A2): a readable ownership INCONSISTENCY on the required status means
+  // the exact head's Correction-Owner trailer and the PR body marker disagree, so the body-declared owner is
+  // NOT confirmed by the immutable head. Waking it would wake an owner the head does not confirm — the exact
+  // defect the head-bound verdict exists to prevent — so an inconsistent-ownership failure is ALWAYS
+  // unroutable here: reported as stalled and mentioning no one, whatever the body declares. Reconciling the
+  // head and body (a body edit, or a new head) is the resume action; confirming the head owner needs the
+  // exact commit, which a later unit plumbs in.
+  const ownershipInconsistent = isOwnershipInconsistentScopeDetail(effectiveReason, detail);
   const marker = correctionLeaseMarker({
     number: pullRequest?.number,
     head: expected,
     owner,
     kind: `correction:${owedFailureId(effectiveReason, detail, occurrence)}`,
   });
-  const reportedState = routing.awakenable
+  const reportedState = (!ownershipInconsistent && routing.awakenable)
     ? 'correction_recovery'
     : CORRECTION_STALLED;
 
@@ -300,14 +309,19 @@ export function assessCorrectionLease({
   // undeclared one needs the marker, which the routed instruction already names.
   const resumeAction = reportedState !== CORRECTION_STALLED
     ? null
-    : routing.owner
-      ? `**Required resume action:** if no \`${routing.owner}\` session is already running on `
-        + `branch \`${pullRequest?.head?.ref}\`, start one and have it correct head `
-        + `\`${expected}\`. The configured GitHub loop can neither start that session nor observe whether one is `
-        + 'already running, so check before starting: a second session on the same branch is a '
-        + 'real risk of this notice, not a hypothetical one.'
-      : '**Required resume action:** declare the correction owner in the PR body, then the '
-        + 'declared owner corrects this head.';
+    : ownershipInconsistent
+      ? '**Required resume action:** the exact head\'s `Correction-Owner` commit trailer and the PR body '
+        + 'marker disagree, so no owner is confirmed by the immutable head and none is woken. Reconcile them '
+        + '— set the body marker to match a valid head trailer, or push a new head whose trailer matches the '
+        + 'body — as the failing status detail above specifies; the reconciled owner then corrects this head.'
+      : routing.owner
+        ? `**Required resume action:** if no \`${routing.owner}\` session is already running on `
+          + `branch \`${pullRequest?.head?.ref}\`, start one and have it correct head `
+          + `\`${expected}\`. The configured GitHub loop can neither start that session nor observe whether one is `
+          + 'already running, so check before starting: a second session on the same branch is a '
+          + 'real risk of this notice, not a hypothetical one.'
+        : '**Required resume action:** declare the correction owner in the PR body, then the '
+          + 'declared owner corrects this head.';
 
   return {
     ...base,
@@ -317,7 +331,8 @@ export function assessCorrectionLease({
     body: leaseBody({
       resumeAction,
       marker,
-      mention: awakeningMention(routing.owner),
+      // No wake on an inconsistent-ownership failure: the head does not confirm the body-declared owner.
+      mention: ownershipInconsistent ? null : awakeningMention(routing.owner),
       reportedState,
       pullRequestNumber: pullRequest?.number,
       head: expected,

@@ -22,6 +22,7 @@ import {
   owedFailureId,
 } from './correction-lease.mjs';
 import { isCorrectionEligiblePullRequest } from './correction-owner.mjs';
+import { ownershipInconsistentScopeDetail } from './review-policy.mjs';
 
 const REPOSITORY = 'JagPat/PMCvitan';
 const HEAD = 'dc54a78e0f2b4c1d9a3e5f60718293a4b5c6d7e8';
@@ -491,6 +492,33 @@ test('L20: a review-scope CI failure is asked for as a scope verdict', async () 
   const ci = await watch({ statuses: [status('ci: Failed checks: api, web')] });
   assert.match(ci.published, /fix the failed required checks/iu);
   assert.match(ci.published, /Failed checks: api, web/u);
+});
+
+test('L31: a readable ownership inconsistency is unroutable — stalled, never woken (unit 2A2)', async () => {
+  // The exact head's Correction-Owner trailer and the PR body marker disagree, so the body-declared owner is
+  // NOT confirmed by the immutable head. Waking it would wake an owner the head does not confirm — the exact
+  // defect the head-bound verdict exists to prevent — so the watchdog PUBLISHES a stalled notice that
+  // mentions no one, whatever the body declares, and points at reconciling the head and body.
+  for (const remedy of ['head', 'body']) {
+    const detail = ownershipInconsistentScopeDetail(remedy, 'claude');
+    const { published, assessment } = await watch({
+      // The gate publishes this as a `scope:` failure; the shipped path strips the prefix before assessing.
+      statuses: [status(`scope: ${detail}`)],
+    });
+    assert.ok(published, `${remedy}: a stalled notice is still published`);
+    assert.equal(assessment.reportedState, 'correction_stalled', `${remedy}: reported as stalled`);
+    assert.match(published, /correction_stalled/u);
+    assert.doesNotMatch(published, /@claude/u, `${remedy}: no owner is woken`);
+    assert.match(published, /disagree|Reconcile/u, `${remedy}: the resume action names the reconciliation`);
+  }
+
+  // A body that declares NO owner on the same inconsistency is likewise stalled and unwoken — the control is
+  // that a body-declared claude owner is what would otherwise have been woken.
+  const declaredClaude = await watch({
+    statuses: [status('review: 1 current-head Codex finding')],
+    reviewComments: [codexFinding(HEAD)],
+  });
+  assert.match(declaredClaude.published, /@claude/u, 'control: an ordinary review failure still wakes the owner');
 });
 
 test('L25: a pull request closed while the watchdog was reading is never notified', async () => {

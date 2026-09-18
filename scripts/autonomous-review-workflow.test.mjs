@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 
 import * as reviewGate from './autonomous-review-gate.mjs';
+import { OWNERSHIP_READ_RETRY, ownershipInconsistentScopeDetail } from './review-policy.mjs';
 
 const {
   hasTerminalReviewFailureAfterPending,
@@ -2340,4 +2341,81 @@ test('below the threshold nothing is advised, so the signal means something', as
   assert.equal(result.state, 'reviewing');
   assert.equal(result.findingHeadCount, 1);
   assert.equal(result.rootCauseAdvisory, undefined, 'one head raises no root-cause signal');
+});
+
+test('2A2: an unreadable-ownership status is a retryable terminal failure the gate recovers, not a persistent one', () => {
+  // Ownership-verdict lifecycle: an `unreadable` head is a retryable INFRASTRUCTURE fault. The recovery
+  // authorizer must classify it as terminal-and-retryable so the gate re-runs, and NEVER latch it as a
+  // persistent failure that owes a correction.
+  const readRetry = { context: 'codex-current-head', state: 'failure', id: 77, description: OWNERSHIP_READ_RETRY };
+  assert.equal(reviewGate.isTerminalReviewStatus(readRetry), true);
+  assert.equal(reviewGate.isRetryableTerminalReviewFailure(readRetry), true);
+  assert.equal(reviewGate.persistentReviewFailure([readRetry]), null);
+  assert.equal(reviewGate.authorizeRecoveryDispatch([readRetry], '77'), readRetry);
+
+  // A genuine current-head finding stays persistent and is not recovered — the retryable set did not widen.
+  const finding = { context: 'codex-current-head', state: 'failure', id: 78, description: 'review: 1 current-head Codex finding' };
+  assert.equal(reviewGate.isRetryableTerminalReviewFailure(finding), false);
+  assert.ok(reviewGate.persistentReviewFailure([finding]));
+});
+
+test('2A2: an ownership-inconsistent or unreadable status withholds and cancels a PR-wide auto-merge', async () => {
+  const head = 'a'.repeat(40);
+  const withhold = {
+    context: 'codex-current-head', state: 'failure',
+    description: `scope: ${ownershipInconsistentScopeDetail('head', 'claude')}`,
+  };
+  const retry = { context: 'codex-current-head', state: 'failure', description: OWNERSHIP_READ_RETRY };
+  const green = { context: 'codex-current-head', state: 'success', description: 'review: clean' };
+
+  // The pure decision: only an ownership fault on the required context withholds; a green head, or a fault on
+  // some other context, does not.
+  assert.equal(reviewGate.ownershipStatusWithholdsAutoMerge(withhold), true);
+  assert.equal(reviewGate.ownershipStatusWithholdsAutoMerge(retry), true);
+  assert.equal(reviewGate.ownershipStatusWithholdsAutoMerge(green), false);
+  assert.equal(
+    reviewGate.ownershipStatusWithholdsAutoMerge({ context: 'other', state: 'failure', description: withhold.description }),
+    false,
+  );
+
+  const livePR = (over = {}) => ({
+    number: 9, state: 'open', draft: false, node_id: 'N',
+    head: { sha: head, ref: 'claude/x', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+    auto_merge: { enabledAt: 'x' }, ...over,
+  });
+  const makeClient = (over = {}) => {
+    const calls = { disabled: 0 };
+    return {
+      calls,
+      pullRequest: async () => over.pull ?? livePR(),
+      disableAutoMerge: async () => {
+        calls.disabled += 1;
+        if (over.raceError) throw new Error('Pull request Auto merge is not enabled');
+      },
+    };
+  };
+
+  // Cancels a live armed auto-merge when the status withholds for ownership.
+  let client = makeClient();
+  assert.deepEqual(await reviewGate.reconcileAutoMergeForOwnership(client, 9, head, withhold), { state: 'cancelled' });
+  assert.equal(client.calls.disabled, 1);
+
+  // A status that does not withhold never touches auto-merge.
+  client = makeClient();
+  assert.deepEqual(await reviewGate.reconcileAutoMergeForOwnership(client, 9, head, green), { state: 'not_applicable' });
+  assert.equal(client.calls.disabled, 0);
+
+  // Nothing armed → already cancelled, no mutation.
+  client = makeClient({ pull: livePR({ auto_merge: null }) });
+  assert.deepEqual(await reviewGate.reconcileAutoMergeForOwnership(client, 9, head, withhold), { state: 'already_cancelled' });
+  assert.equal(client.calls.disabled, 0);
+
+  // Head moved between read and act → superseded, never cancel the wrong head's merge.
+  client = makeClient({ pull: livePR({ head: { sha: 'b'.repeat(40), ref: 'claude/x', repo: { full_name: 'JagPat/PMCvitan' } } }) });
+  assert.deepEqual(await reviewGate.reconcileAutoMergeForOwnership(client, 9, head, withhold), { state: 'superseded' });
+
+  // A race — another actor cancelled it first — reconciles as already cancelled rather than raising.
+  client = makeClient({ raceError: true });
+  assert.deepEqual(await reviewGate.reconcileAutoMergeForOwnership(client, 9, head, retry), { state: 'already_cancelled' });
 });
