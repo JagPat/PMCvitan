@@ -1702,11 +1702,13 @@ test('the clean verdict is published while the PR is still open', async () => {
   // status and BEFORE merge completion — it is the success path's only
   // guaranteed-delivery wake event for watching sessions.
   const publishedClean = clearBranch.indexOf("state: 'review_clean'");
-  const publishedSuccess = clearBranch.lastIndexOf("'success'");
+  // The required success is published by the single ownership-gated chokepoint call, not a
+  // bare setStatus here; the sticky must still precede that publication and the merge.
+  const publishedSuccess = clearBranch.indexOf('publishOwnershipGatedReviewSuccess(');
   const mergeCompletion = clearBranch.lastIndexOf('completeReviewedPullRequest');
   assert.ok(publishedClean >= 0);
   assert.ok(publishedSuccess > publishedClean);
-  assert.ok(mergeCompletion > publishedClean);
+  assert.ok(mergeCompletion > publishedSuccess);
   // and the pre-merge update must precede the post-merge 'clear' update
   const clearUpdate = clearBranch.lastIndexOf("state: 'clear'");
   assert.ok(clearUpdate > publishedClean);
@@ -1743,6 +1745,7 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
       client,
       pullRequest,
       expectedHead,
+      'feat: reviewed change\n\nCorrection-Owner: claude\n',
     ),
     'merged',
   );
@@ -1774,32 +1777,37 @@ test('a head whose exact commit trailer is not merge-eligible is held, never mer
   };
 
   assert.equal(
-    await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead),
+    await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead, 'feat: change\n\nCorrection-Owner: codex\n'),
     'held_for_gates',
   );
   assert.deepEqual(calls, []);
 });
 
-test('the required codex-current-head success is gated on the exact-head ownership verdict', async () => {
-  // Reproduce-first for the #611 ruling: publishing `codex-current-head: success` is a
-  // merge-capable transition when native auto-merge is already armed, so an ineligible /
-  // candidate / unreadable head must never reach it. The pre-publication gate is exercised
-  // directly (run() has no end-to-end harness); mergeExactHead/enableAutoMerge are fail spies.
+test('the single ownership chokepoint gates every required-success publish (verdict from the refreshed body)', async () => {
+  // Reproduce-first for the #611 redesign ruling. publishing `codex-current-head: success` is a
+  // merge-capable transition when native auto-merge is armed, so the ONE chokepoint publishes it
+  // only for an eligible head, computing the verdict from the REFRESHED body (never a pre-read
+  // snapshot). mergeExactHead/enableAutoMerge are fail spies — the chokepoint never merges.
   const head = 'a'.repeat(40);
   const base = 'b'.repeat(40);
+  const FRESH = 'review: Codex found no blocking issue on this exact head';
+  const RECOVERY = 'review: recovered prior clean Codex result on this exact head';
   const trailer = (owner) => `feat: change\n\nCorrection-Owner: ${owner}\n`;
   const marker = (owner) => `<!-- correction-owner: ${owner} -->`;
-  const livePull = ({ ref = 'claude/product', body = marker('claude'), sha = head } = {}) => ({
-    number: 230, state: 'open', draft: false, body,
+  const livePull = ({ ref = 'claude/product', body = marker('claude'), sha = head, baseSha = base, draft = false } = {}) => ({
+    number: 230, state: 'open', draft, body,
     head: { sha, ref, repo: { full_name: 'JagPat/PMCvitan' } },
-    base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: baseSha, repo: { full_name: 'JagPat/PMCvitan' } },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
   });
-  const makeClient = ({ live, commitMessage, setDraftResult } = {}) => {
+  // pullRequest() returns each queued PR in turn, then sticks on the last — so refresh#1
+  // (validate + capture base) and refresh#2 (the final revalidation the verdict reads) can differ.
+  const makeClient = ({ pulls, commitMessage, setDraftResult } = {}) => {
+    const queue = [...(pulls ?? [])];
     const calls = { setStatus: [], setDraft: [], sticky: [] };
     const client = {
       repository: 'JagPat/PMCvitan',
-      async pullRequest() { return live; },
+      async pullRequest() { return queue.length > 1 ? queue.shift() : queue[0]; },
       async commitMessage() { return typeof commitMessage === 'function' ? commitMessage() : commitMessage; },
       async setDraft(current, draft) {
         calls.setDraft.push(draft);
@@ -1809,83 +1817,99 @@ test('the required codex-current-head success is gated on the exact-head ownersh
         calls.setStatus.push({ head: h, state, description, context });
       },
       async updateStickyComment(number, body) { calls.sticky.push({ number, body }); },
-      async mergeExactHead() { assert.fail('the pre-publication gate must never merge'); },
-      async enableAutoMerge() { assert.fail('the pre-publication gate must never arm auto-merge'); },
+      async mergeExactHead() { assert.fail('the chokepoint must never merge'); },
+      async enableAutoMerge() { assert.fail('the chokepoint must never arm auto-merge'); },
     };
     return { client, calls };
   };
-  const authorize = (opts) => {
+  const publish = (opts) => {
     const { client, calls } = makeClient(opts);
-    return reviewGate.authorizeExactHeadOwnershipBeforePublication(
-      client, 230, head, { recoveryRequest: null, attempt: 1 },
-    ).then((result) => ({ result, calls }));
+    return reviewGate.publishOwnershipGatedReviewSuccess(client, 230, head, {
+      successDescription: opts.successDescription ?? FRESH,
+      recoveryRequest: null,
+      attempt: 1,
+    }).then((result) => ({ result, calls }));
   };
   const requiredHeadStatus = 'codex-current-head';
   const successes = (calls) => calls.setStatus.filter(
     (s) => s.state === 'success' && (s.context === undefined || s.context === requiredHeadStatus),
   );
 
-  // 7(a) missing / candidate / conflicting ownership → the required success is NEVER published.
-  const missing = await authorize({ live: livePull(), commitMessage: 'feat: change\n\nno trailer here\n' });
-  assert.equal(missing.result.decision, 'withheld');
-  assert.equal(successes(missing.calls).length, 0);
-  assert.deepEqual(missing.calls.setDraft, [true]);
-  assert.equal(missing.calls.sticky.length, 1);
-  const missingFailure = missing.calls.setStatus.find((s) => s.state === 'failure');
-  assert.ok(missingFailure.description.startsWith('scope: '));
-  assert.equal(
-    reviewGate.ownershipStatusWithholdsAutoMerge({ context: requiredHeadStatus, state: 'failure', description: missingFailure.description }),
-    true,
-  );
+  // (b, part 1) eligible → the chokepoint publishes EXACTLY the passed success description, no draft, no sticky.
+  for (const successDescription of [FRESH, RECOVERY]) {
+    const eligible = await publish({ pulls: [livePull(), livePull()], commitMessage: trailer('claude'), successDescription });
+    assert.equal(eligible.result.decision, 'eligible');
+    assert.equal(eligible.result.pullRequest.head.sha, head);
+    assert.equal(eligible.result.message, trailer('claude'));
+    assert.deepEqual(successes(eligible.calls).map((s) => s.description), [successDescription]);
+    assert.deepEqual(eligible.calls.setDraft, []);
+    assert.deepEqual(eligible.calls.sticky, []);
+  }
+  // cursor is a distinct eligible owner on its own branch.
+  const cursor = await publish({ pulls: [livePull({ ref: 'cursor/fix', body: marker('cursor') }), livePull({ ref: 'cursor/fix', body: marker('cursor') })], commitMessage: trailer('cursor') });
+  assert.equal(cursor.result.decision, 'eligible');
 
-  const candidate = await authorize({
-    live: livePull({ ref: 'codex/maintenance', body: marker('codex') }),
+  // (a) BODY EDITED during the commit read: refresh#1 body matches the trailer (would be eligible if used),
+  //     refresh#2 body names a different/forbidden owner. The verdict must read the REFRESHED body → withheld.
+  const raced = await publish({
+    pulls: [livePull({ body: marker('claude') }), livePull({ body: marker('codex') })],
+    commitMessage: trailer('claude'),
+  });
+  assert.equal(raced.result.decision, 'withheld');
+  assert.equal(successes(raced.calls).length, 0);
+  assert.deepEqual(raced.calls.setDraft, [true]);
+  assert.equal(raced.calls.sticky.length, 1);
+  assert.ok(raced.calls.setStatus.find((s) => s.state === 'failure').description.startsWith('scope: '));
+
+  // (b, part 2 / 6c-equivalent) an ineligible head — candidate / conflicting / missing — NEVER publishes the
+  //   required success, under EITHER publisher (fresh or recovery description). This is exactly the
+  //   recovered-prior-clean-on-ineligible-head case: the chokepoint publishes FAILURE, not success.
+  const candidate = await publish({
+    pulls: [livePull({ ref: 'codex/maintenance', body: marker('codex') }), livePull({ ref: 'codex/maintenance', body: marker('codex') })],
     commitMessage: trailer('codex'),
+    successDescription: RECOVERY,
   });
   assert.equal(candidate.result.decision, 'withheld');
   assert.equal(successes(candidate.calls).length, 0);
-  const candidateFailure = candidate.calls.setStatus.find((s) => s.state === 'failure');
-  assert.equal(candidateFailure.description, OWNERSHIP_CANDIDATE_HELD);
-  // A candidate hold, as the newest review status, is never re-dispatched by recovery.
-  assert.equal(
-    reviewGate.recoverableTerminalReviewStatus([{ context: requiredHeadStatus, state: 'failure', description: OWNERSHIP_CANDIDATE_HELD, id: 900 }]),
-    null,
-  );
+  assert.equal(candidate.calls.setStatus.find((s) => s.state === 'failure').description, OWNERSHIP_CANDIDATE_HELD);
+  assert.equal(reviewGate.recoverableTerminalReviewStatus([{ context: requiredHeadStatus, state: 'failure', description: OWNERSHIP_CANDIDATE_HELD, id: 900 }]), null);
 
-  const conflicting = await authorize({ live: livePull(), commitMessage: trailer('cursor') });
+  const missing = await publish({ pulls: [livePull(), livePull()], commitMessage: 'feat: change\n\nno trailer here\n' });
+  assert.equal(missing.result.decision, 'withheld');
+  assert.equal(successes(missing.calls).length, 0);
+  const missingFailure = missing.calls.setStatus.find((s) => s.state === 'failure');
+  assert.ok(missingFailure.description.startsWith('scope: '));
+  assert.equal(reviewGate.ownershipStatusWithholdsAutoMerge({ context: requiredHeadStatus, state: 'failure', description: missingFailure.description }), true);
+
+  const conflicting = await publish({ pulls: [livePull(), livePull()], commitMessage: trailer('cursor') });
   assert.equal(conflicting.result.decision, 'withheld');
   assert.equal(successes(conflicting.calls).length, 0);
-  assert.ok(conflicting.calls.setStatus.find((s) => s.state === 'failure').description.startsWith('scope: '));
 
-  // 7(b) a transient/unreadable commit read → retryable failure published, recovery scheduled.
-  const transient = await authorize({ live: livePull(), commitMessage: () => { throw new Error('transport'); } });
+  // (d) a transient/unreadable single read → retryable failure published (never green), recovery selects it.
+  const transient = await publish({ pulls: [livePull(), livePull()], commitMessage: () => { throw new Error('transport'); } });
   assert.equal(transient.result.decision, 'withheld');
   assert.equal(successes(transient.calls).length, 0);
   const retryFailure = transient.calls.setStatus.find((s) => s.state === 'failure');
   assert.equal(retryFailure.description, OWNERSHIP_READ_RETRY);
-  // The published retryable failure is what the existing recovery watchdog re-dispatches.
   const retryStatus = { context: requiredHeadStatus, state: 'failure', description: OWNERSHIP_READ_RETRY, id: 901 };
   assert.equal(reviewGate.recoverableTerminalReviewStatus([retryStatus]), retryStatus);
 
-  // 7(c) an eligible owner alone reaches success: the gate publishes nothing and lets the caller proceed.
-  const eligible = await authorize({ live: livePull(), commitMessage: trailer('claude') });
-  assert.equal(eligible.result.decision, 'eligible');
-  assert.equal(eligible.result.pullRequest.head.sha, head);
-  assert.deepEqual(eligible.calls.setStatus, []);
-  assert.deepEqual(eligible.calls.setDraft, []);
-  assert.deepEqual(eligible.calls.sticky, []);
-
-  // 7(d) a moved/superseded head publishes and authorizes nothing.
-  const moved = await authorize({ live: livePull({ sha: 'c'.repeat(40) }), commitMessage: trailer('claude') });
-  assert.equal(moved.result.decision, 'superseded');
-  assert.deepEqual(moved.calls.setStatus, []);
-  assert.deepEqual(moved.calls.setDraft, []);
-  assert.deepEqual(moved.calls.sticky, []);
-
-  // supersession INSIDE the draft-revert window (retarget mid-draft) also publishes nothing:
-  // the draft revert precedes the failure publish, so a lost head never gets a status.
-  const retargeted = await authorize({
-    live: livePull(), commitMessage: 'feat: change\n\nno trailer here\n',
+  // (f) head / base / draft movement between the read and the final refresh → superseded, publish nothing.
+  for (const moved of [
+    { pulls: [livePull(), livePull({ sha: 'c'.repeat(40) })] },
+    { pulls: [livePull(), livePull({ baseSha: 'd'.repeat(40) })] },
+    { pulls: [livePull(), livePull({ draft: true })] },
+  ]) {
+    const sup = await publish({ ...moved, commitMessage: trailer('claude') });
+    assert.equal(sup.result.decision, 'superseded');
+    assert.deepEqual(sup.calls.setStatus, []);
+    assert.deepEqual(sup.calls.setDraft, []);
+    assert.deepEqual(sup.calls.sticky, []);
+  }
+  // supersession INSIDE the draft-revert window (an ineligible head whose setDraft loses the head) also
+  // publishes nothing: the draft revert precedes the failure publish.
+  const retargeted = await publish({
+    pulls: [livePull(), livePull()], commitMessage: 'feat: change\n\nno trailer here\n',
     setDraftResult: { ...livePull({ sha: 'c'.repeat(40) }), draft: true },
   });
   assert.equal(retargeted.result.decision, 'superseded');
@@ -1893,21 +1917,30 @@ test('the required codex-current-head success is gated on the exact-head ownersh
   assert.deepEqual(retargeted.calls.sticky, []);
 });
 
-test('the ownership gate runs before the required success publish in run()', async () => {
-  const gate = await readFile(
-    new URL('./autonomous-review-gate.mjs', import.meta.url),
-    'utf8',
-  );
-  const gateCall = gate.indexOf('authorizeExactHeadOwnershipBeforePublication(\n        client');
-  const finalPolicy = gate.indexOf('await revalidateFinalReviewPolicy');
-  const successPublish = gate.indexOf("'review: Codex found no blocking issue on this exact head'");
-  assert.ok(finalPolicy >= 0 && gateCall >= 0 && successPublish >= 0);
-  // The verdict is resolved AFTER the final policy revalidation and BEFORE the success publish,
-  // and a withheld verdict throws rather than falling through to the publish.
-  assert.ok(gateCall > finalPolicy);
-  assert.ok(gateCall < successPublish);
-  assert.match(gate, /if \(ownership\.decision === 'withheld'\) throw new Error\(ownership\.description\);/u);
-  assert.match(gate, /if \(ownership\.decision === 'superseded'\) return;/u);
+test('every codex-current-head success publish lives only inside the ownership chokepoint', async () => {
+  // Boundary 1: no code path outside publishOwnershipGatedReviewSuccess may publish the required success.
+  const gate = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const start = gate.indexOf('export async function publishOwnershipGatedReviewSuccess');
+  const end = gate.indexOf('\nfunction ownershipWithholdingStickyBody', start);
+  assert.ok(start >= 0 && end > start);
+  // Enumerate every setStatus(expectedHead, 'success', <desc>, …). The recovery-CONTEXT success published by
+  // settleRecoveryRequest is exempt (its description is a template literal beginning `recovery:`, and it
+  // targets the recovery context, not codex-current-head). Every other success publish MUST sit inside the
+  // chokepoint's byte range.
+  const re = /setStatus\(\s*expectedHead,\s*'success',\s*(`[^`]*`|'[^']*'|[A-Za-z_$][\w$]*)/g;
+  const hits = [...gate.matchAll(re)];
+  assert.ok(hits.length >= 2, 'expected at least the recovery-context and chokepoint success publishers');
+  let chokepointSuccesses = 0;
+  for (const m of hits) {
+    if (m[1].startsWith('`recovery:')) continue;
+    assert.ok(m.index > start && m.index < end,
+      `codex-current-head success published outside the ownership chokepoint at byte ${m.index}`);
+    chokepointSuccesses += 1;
+  }
+  assert.equal(chokepointSuccesses, 1, 'exactly one codex-current-head success publisher, inside the chokepoint');
+  // Both success descriptions are passed to the chokepoint, never published directly.
+  assert.match(gate, /successDescription: 'review: Codex found no blocking issue on this exact head'/u);
+  assert.match(gate, /successDescription: 'review: recovered prior clean Codex result on this exact head'/u);
 });
 
 test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
@@ -1941,6 +1974,7 @@ test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
       client,
       pullRequest,
       expectedHead,
+      'feat: reviewed change\n\nCorrection-Owner: claude\n',
     ),
     'queued',
   );
@@ -1989,6 +2023,7 @@ test('a clean-state auto-merge race retries the exact-SHA merge once', async () 
       client,
       pullRequest,
       expectedHead,
+      'feat: reviewed change\n\nCorrection-Owner: claude\n',
     ),
     'merged',
   );

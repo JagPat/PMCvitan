@@ -1070,8 +1070,9 @@ export async function completeReviewedPullRequest(
   client,
   pullRequest,
   expectedHead,
+  message,
 ) {
-  const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead);
+  const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead, message);
   if (!authorization.allowed) {
     return 'held_for_gates';
   }
@@ -1111,8 +1112,16 @@ export async function completeReviewedPullRequest(
   }
 }
 
-/** The common mandatory guard for both direct merge and auto-merge entrypoints. */
-export async function authorizeExactHeadMerge(client, pullRequest, expectedHead) {
+/**
+ * The common mandatory guard for both direct merge and auto-merge entrypoints — the
+ * fail-closed FINAL authorization. It receives the immutable HEAD commit `message` already
+ * read once by `publishOwnershipGatedReviewSuccess`, so there is exactly ONE commit-message
+ * network read for the whole publish→merge path (boundary 3): no second read to fail closed
+ * silently. It still re-reads live PR state and recomputes the ownership verdict against its
+ * OWN final fresh body/ref, so a body-marker edit between the success publish and the merge
+ * withholds the merge; the exact-head/base/draft revalidation is preserved (boundary 5).
+ */
+export async function authorizeExactHeadMerge(client, pullRequest, expectedHead, message) {
   const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (!live || live.draft || !live.base?.sha) {
     return { allowed: false, state: live?.draft ? 'draft' : 'superseded' };
@@ -1126,31 +1135,18 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead)
   if (latestReview?.state !== 'success' || required.state !== 'success') {
     return { allowed: false, state: 'gates_not_green' };
   }
-  // The exact HEAD commit's terminal Correction-Owner trailer is the merge
-  // authority. Read it git-faithfully; a transport failure is an unreadable
-  // head, never an owning one, so it fails closed rather than granting merge.
-  let headMessage;
-  try {
-    headMessage = await client.commitMessage(expectedHead);
-  } catch {
-    return { allowed: false, state: 'ownership_unreadable' };
-  }
   // Re-read after remote evidence. A push, base update, retarget or draft
   // transition during validation fails closed.
   const finalLive = await refreshCurrentHead(client, live.number, expectedHead);
   if (!finalLive || finalLive.draft || finalLive.base?.sha !== live.base.sha) {
     return { allowed: false, state: 'changed_during_validation' };
   }
-  // Only a readable head whose immutable trailer names a merge-eligible owner
-  // (agreeing with the body marker, candidate owners excluded) may merge. An
-  // unreadable head is retryable infrastructure; any readable ownership fault
-  // withholds the merge. Publication of the withholding reason is a later unit;
-  // here the hold is silent and flows through as 'held_for_gates'.
-  const verdict = headOwnerVerdict(headMessage, finalLive.body, { headRef: finalLive.head?.ref });
-  if (!verdict.readable) {
-    return { allowed: false, state: 'ownership_unreadable' };
-  }
-  if (!verdict.eligible) {
+  // Recompute the verdict from the once-read immutable message against the FINAL fresh
+  // body/ref — no second commit-message network read. A merge-eligible owner agreeing with
+  // the current body marker (candidate owners excluded) may merge; any readable ownership
+  // fault, or an unreadable message, fails closed and flows through as 'held_for_gates'.
+  const verdict = headOwnerVerdict(message, finalLive.body, { headRef: finalLive.head?.ref });
+  if (!verdict.readable || !verdict.eligible) {
     return { allowed: false, state: 'ownership_ineligible' };
   }
   return { allowed: true, state: 'authorized', pullRequest: finalLive };
@@ -1193,21 +1189,27 @@ export async function ensureTerminalReviewState(
       expectedHead,
     );
     if (finalPolicy.superseded || !finalPolicy.allowed) return true;
-    const latestStatus = statuses.find(
-      (candidate) => candidate.context === STATUS_CONTEXT,
+    // Route the recovered-success publication through the ONE ownership-gated chokepoint —
+    // the same publisher as the fresh-review path. The prior id-guard skip is intentionally
+    // dropped: a recovered prior-clean status on a since-edited (now ownership-ineligible)
+    // body must re-adjudicate and publish FAILURE, never republish (or coast on) a green
+    // required status. A withheld/superseded verdict merges nothing.
+    const ownership = await publishOwnershipGatedReviewSuccess(
+      client,
+      pullRequest.number,
+      expectedHead,
+      {
+        successDescription: 'review: recovered prior clean Codex result on this exact head',
+        recoveryRequest: null,
+        attempt: 0,
+      },
     );
-    if (String(latestStatus?.id) !== String(status.id)) {
-      await client.setStatus(
-        expectedHead,
-        'success',
-        'review: recovered prior clean Codex result on this exact head',
-        pullRequest.html_url,
-      );
-    }
+    if (ownership.decision !== 'eligible') return true;
     await completeReviewedPullRequest(
       client,
-      finalPolicy.pullRequest,
+      ownership.pullRequest,
       expectedHead,
+      ownership.message,
     );
   } else {
     const latestStatus = statuses.find(
@@ -1355,54 +1357,75 @@ export async function revalidateFinalReviewPolicy(
 }
 
 /**
- * The exact-head ownership gate that runs BEFORE the required `codex-current-head`
- * success is published (unit 2B, with ownership-status withholding folded in per the
- * #611 coordinator ruling). Publishing that required success is itself a merge-capable
- * transition whenever native auto-merge is already armed — auto-merge persists across
- * head pushes — so the immutable HEAD commit's Correction-Owner trailer must gate the
- * publication, not only the later merge call. The scope gate judges the PR body marker
- * and branch; only this reads the exact HEAD commit trailer, the real merge authority.
+ * The SINGLE ownership-gated publisher of the required `codex-current-head` success (unit 2B
+ * redesign, #611 coordinator ruling). Publishing that required success is itself a
+ * merge-capable transition whenever native auto-merge is already armed — auto-merge persists
+ * across head pushes — so EVERY required-success publication (the fresh-review path and the
+ * recovery path) routes through here, and no other code path may publish it (a source
+ * assertion in the test suite enforces this). The scope gate judges the PR body marker and
+ * branch; only this reads the exact HEAD commit trailer, the real merge authority.
  *
- * Fail-closed, mirroring the scope/CI failure branches. An ineligible, candidate, or
- * inconsistent verdict publishes the canonical ownership-withholding FAILURE and reverts
- * the head to draft — two independent blocks on an already-armed auto-merge — and never
- * reaches the merge-completion path. A transient/unreadable commit read publishes the
- * retryable `OWNERSHIP_READ_RETRY` failure so the existing recovery watchdog re-dispatches
- * this exact head, never a green required status. A superseded head publishes and
- * authorizes nothing. Only an eligible verdict lets the caller publish success;
- * `authorizeExactHeadMerge` still re-reads the immutable trailer as the fail-closed final
- * authorization, so this is a pre-publication gate, not a replacement for it.
+ * The evidence read is ordered safely (boundary 2): validate the head, read the immutable
+ * commit message for that SHA ONCE, then refresh, and compute the verdict from the REFRESHED
+ * body/ref — a body-marker edit racing the read never yields a stale `eligible`. Fail-closed:
+ * an ineligible/candidate/inconsistent verdict publishes the canonical withholding FAILURE
+ * and reverts the head to draft (two independent blocks on an armed auto-merge), never
+ * reaching the merge-completion path; a transient/unreadable read publishes the retryable
+ * `OWNERSHIP_READ_RETRY` failure so the existing recovery watchdog re-dispatches this exact
+ * head — never a green required status; a superseded head publishes and authorizes nothing.
+ * On success it returns the once-read immutable `message`, which the caller threads into
+ * `authorizeExactHeadMerge` so the final fail-closed authorization recomputes the verdict
+ * from its own fresh body WITHOUT a second commit-message network read.
  */
-export async function authorizeExactHeadOwnershipBeforePublication(
+export async function publishOwnershipGatedReviewSuccess(
   client,
   number,
   expectedHead,
-  { recoveryRequest, attempt } = {},
+  { successDescription, recoveryRequest = null, attempt } = {},
 ) {
-  // Requirement: the final exact-head revalidation immediately before publication. A
-  // moved/superseded head returns null so the caller publishes and authorizes nothing.
+  // Validate the expected head and capture its base for the movement check.
   const live = await refreshCurrentHead(client, number, expectedHead);
-  if (!live) return { decision: 'superseded' };
+  if (!live || !live.base?.sha) return { decision: 'superseded' };
+  const baseSha = live.base.sha;
 
-  // The immutable HEAD commit trailer is the merge authority. A THROW is an unreadable
-  // head (retryable infrastructure); a null/empty message is a readable missing trailer
-  // (inconsistent) — headOwnerVerdict maps that without throwing.
-  let status;
+  // Read the immutable HEAD commit message ONCE. A THROW is an unreadable head (retryable
+  // infrastructure); a null/empty message is a readable missing trailer that
+  // headOwnerVerdict maps to `inconsistent` without throwing.
+  let message;
+  let unreadable = false;
   try {
-    const message = await client.commitMessage(expectedHead);
-    status = ownershipStatus(headOwnerVerdict(message, live.body, { headRef: live.head?.ref }));
+    message = await client.commitMessage(expectedHead);
   } catch {
-    status = ownershipStatus({ readable: false });
+    unreadable = true;
   }
-  if (status.outcome === 'eligible') {
-    return { decision: 'eligible', pullRequest: live };
+
+  let status;
+  if (!unreadable) {
+    // The final revalidation AFTER the remote read; the verdict is computed from THIS
+    // refreshed body/ref, never a snapshot taken before the read. Head/base/draft movement
+    // in the read window is superseded, so a lost head publishes and authorizes nothing.
+    const finalLive = await refreshCurrentHead(client, number, expectedHead);
+    if (!finalLive || finalLive.draft || finalLive.base?.sha !== baseSha) {
+      return { decision: 'superseded' };
+    }
+    status = ownershipStatus(
+      headOwnerVerdict(message, finalLive.body, { headRef: finalLive.head?.ref }),
+    );
+    if (status.outcome === 'eligible') {
+      // The ONLY `codex-current-head` success publication in the module.
+      await client.setStatus(expectedHead, 'success', successDescription, finalLive.html_url);
+      return { decision: 'eligible', pullRequest: finalLive, message };
+    }
+  } else {
+    status = ownershipStatus({ readable: false });
   }
 
   // Withhold: revert to draft FIRST (a supersession inside the window then makes us do
   // nothing), publish the canonical failure, settle any in-flight recovery request, and
-  // record the guaranteed-delivery sticky. The retryable OWNERSHIP_READ_RETRY failure is
-  // re-dispatched by the existing recovery watchdog; the candidate/inconsistent failures
-  // are terminal holds (a candidate hold, as newest status, suppresses re-dispatch).
+  // record the guaranteed-delivery sticky. The required status is never left green. The
+  // retryable OWNERSHIP_READ_RETRY failure is re-dispatched by the existing recovery
+  // watchdog; the candidate/inconsistent failures are terminal holds (a candidate hold, as
+  // newest status, suppresses re-dispatch).
   const reverted = await setDraftForCurrentHead(client, number, expectedHead, true);
   if (!reverted) return { decision: 'superseded' };
   const description = status.outcome === 'inconsistent'
@@ -2088,30 +2111,27 @@ export async function run() {
         throw new Error(`Final review policy changed: ${finalPolicy.state}`);
       }
       pullRequest = finalPolicy.pullRequest;
-      // The immutable exact-head ownership verdict gates the required success below:
-      // publishing `codex-current-head: success` is itself a merge-capable transition
-      // when native auto-merge is already armed, so an ineligible, candidate, or
-      // unreadable head must never reach it (unit 2B with ownership-status withholding
-      // folded in per the #611 ruling). A withheld head has already published its
-      // canonical failure and reverted to draft; a superseded one did nothing.
-      const ownership = await authorizeExactHeadOwnershipBeforePublication(
+      // The required `codex-current-head` success is published ONLY by the single
+      // ownership-gated chokepoint: publishing it is a merge-capable transition when native
+      // auto-merge is already armed, so an ineligible, candidate, or unreadable head must
+      // never reach it (unit 2B redesign, #611 ruling). One run polls one Codex invocation
+      // to its mutually exclusive terminal result; review webhooks never enter this
+      // orchestrator, so no second writer can race admission. A withheld head has already
+      // published its canonical failure and reverted to draft; a superseded one did nothing.
+      const ownership = await publishOwnershipGatedReviewSuccess(
         client,
         pullRequest.number,
         expectedHead,
-        { recoveryRequest, attempt },
+        {
+          successDescription: 'review: Codex found no blocking issue on this exact head',
+          recoveryRequest,
+          attempt,
+        },
       );
       if (ownership.decision === 'superseded') return;
       if (ownership.decision === 'withheld') throw new Error(ownership.description);
       pullRequest = ownership.pullRequest;
-      // One run polls one Codex invocation to its mutually exclusive terminal
-      // result: finding-bearing evidence or the clean reaction. Review webhooks
-      // never enter this orchestrator, so no second writer can race admission.
-      await client.setStatus(
-        expectedHead,
-        'success',
-        'review: Codex found no blocking issue on this exact head',
-        pullRequest.html_url,
-      );
+      const ownershipMessage = ownership.message;
       await settleRecoveryRequest(
         client,
         expectedHead,
@@ -2129,6 +2149,7 @@ export async function run() {
         client,
         pullRequest,
         expectedHead,
+        ownershipMessage,
       );
       await client.updateStickyComment(
         pullRequest.number,
