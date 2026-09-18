@@ -7,6 +7,8 @@ import {
   POLL_INTERVAL_MS,
   REQUIRED_CHECKS,
   STATUS_CONTEXT,
+  OWNERSHIP_READ_RETRY,
+  OWNERSHIP_CANDIDATE_HELD,
 } from './review-policy.mjs';
 export {
   requiredChecksForPullRequest,
@@ -186,6 +188,10 @@ export function isTerminalReviewStatus(status) {
 
   const description = status.description ?? '';
   return description.startsWith('review:')
+    // Ownership-verdict lifecycle (unit 2A2-i): an `unreadable` head is published as this `validation:`-prefixed
+    // status. It is a TERMINAL review failure so the recovery authorizer can classify it — and it is in the
+    // shared retryable set, so it resolves as retryable (gate recovers) rather than persistent (owed).
+    || description.startsWith(OWNERSHIP_READ_RETRY)
     || description.includes('current-head Codex finding')
     || description.includes('Codex submitted a current-head review')
     || description.includes('Codex review timed out')
@@ -246,7 +252,19 @@ function isReviewPendingStatus(status) {
     );
 }
 
+// Ownership-verdict lifecycle (unit 2A2-i′): a candidate-held head is the newest NON-retryable terminal
+// ownership state — held for independent-reviewer activation. Recovery selection considers only the newest
+// review status, so once a candidate hold is the latest `codex-current-head` status, no older retryable
+// review status may authorize or persist a recovery. It is deliberately NOT added to `isTerminalReviewStatus`
+// (that would draft/close the head — a readiness mutation outside this unit); it only gates recovery here.
+function candidateHoldIsNewestReview(statuses) {
+  const latest = (statuses ?? []).find((status) => status.context === STATUS_CONTEXT);
+  return latest?.state === 'failure'
+    && String(latest?.description ?? '').startsWith(OWNERSHIP_CANDIDATE_HELD);
+}
+
 export function recoverableTerminalReviewStatus(statuses) {
+  if (candidateHoldIsNewestReview(statuses)) return null;
   const persistentFailure = persistentReviewFailure(statuses);
   if (persistentFailure) return persistentFailure;
 
@@ -326,6 +344,8 @@ export async function persistRecoveryRequest(
 
 export function recoveryRequestTerminal(statuses, request) {
   if (!request) return null;
+  // A newer candidate hold supersedes a pending recovery request too: it must not keep persisting.
+  if (candidateHoldIsNewestReview(statuses)) return null;
   const sourceIndex = statuses.findIndex((status) =>
     status.context === STATUS_CONTEXT
     && String(status.id) === String(request.terminalStatusId));
@@ -355,6 +375,8 @@ export function isRetryableTerminalReviewFailure(status) {
 }
 
 export function authorizeRecoveryDispatch(statuses, requestedStatusId) {
+  // A newer candidate hold supersedes any older retryable status: hold the head, authorize no recovery.
+  if (candidateHoldIsNewestReview(statuses)) return null;
   if (persistentReviewFailure(statuses)) return null;
   const latestReviewStatus = statuses.find(
     (status) => status.context === STATUS_CONTEXT,
