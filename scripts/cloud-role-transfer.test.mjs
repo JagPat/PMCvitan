@@ -7,11 +7,17 @@ import { authorizeExactHeadMerge, GitHubClient, REQUIRED_CHECKS } from './autono
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
 
-test('Codex implementation ownership is refused until independent reviewer provenance exists', () => {
+test('Codex implementation ownership is recognised as an in-flight candidate but never routed or merged', () => {
+  // Codex is a recognised CANDIDATE owner: the body parse names it as a first-class `candidate` state on a
+  // branch that permits it, and as `contradictory` on a `claude/**` branch it cannot claim. Neither is
+  // `declared`, so scope still refuses and routing still stalls — a candidate is tracked, never merge-eligible
+  // and never awakenable, until a later unit's promotion hold admits-and-holds it.
+  const expectedState = { 'codex/maintenance': 'candidate', 'claude/product': 'contradictory' };
   for (const ref of ['codex/maintenance', 'claude/product']) {
     const body = '<!-- correction-owner: codex -->\n<!-- correction-transfer: claude->codex -->';
     const declaration = parseCorrectionOwner(body, { headRef: ref });
-    assert.equal(declaration.state, 'invalid');
+    assert.equal(declaration.state, expectedState[ref]);
+    assert.notEqual(declaration.state, 'declared');
     assert.ok(correctionOwnerProblem({ body, head: { ref } }));
     const route = correctionRouting({ declaration, head });
     assert.equal(route.owner, null);

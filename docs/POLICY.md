@@ -33,11 +33,14 @@ Only the declared owner handles normal correction handoff; do not start a compet
 producer. Conflict handoffs re-read the owner and current head before publication;
 invalid or non-awakenable ownership is reported without waking a different agent.
 
-Codex implementation ownership is currently inadmissible: GitHub implementation
-tasks and reviews share the Codex bot identity, and a fresh reaction does not prove
-a separate reviewer supplied it. A transfer marker cannot bypass this restriction.
-Enabling that role requires reviewer-specific provenance first. User-requested Codex
-assistance does not itself change the configured normal correction owner.
+The exact head's Correction-Owner trailer, the PR body marker and the branch reservation
+combine into one pure ownership verdict — a three-valued read (eligible; readable-but-
+inconsistent, cleared by a body edit or, when the trailer is unusable or the branch forbids
+it, a new head; or temporarily unreadable and retryable) in one canonical status vocabulary.
+Codex is a recognised CANDIDATE owner the verdict tracks in-flight but never merges and never
+wakes, held pending independent reviewer activation because implementation tasks and reviews
+share the Codex bot identity; a transfer marker cannot promote it. Later units consume the
+verdict for promotion and exact-head merge authorization; alone it mutates nothing.
 
 This repository currently enables only the Claude correction wake integration.
 Codex supports GitHub task mentions such as `@codex fix the CI failures` through its
