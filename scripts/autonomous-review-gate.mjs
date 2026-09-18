@@ -9,6 +9,7 @@ import {
   STATUS_CONTEXT,
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
+  isOwnershipInconsistentScopeDetail,
 } from './review-policy.mjs';
 export {
   requiredChecksForPullRequest,
@@ -459,7 +460,13 @@ export class GitHubClient {
       body: { query, variables },
     });
     if (payload.errors?.length) {
-      throw new Error(`GitHub GraphQL failed: ${JSON.stringify(payload.errors)}`);
+      // Keep the structured error entries on the thrown Error. A caller that must recognise ONE specific
+      // GraphQL error (e.g. "auto merge is not enabled") inspects each entry's `message` — never a substring
+      // of this wrapper string, which embeds the mutation `path` (`disablePullRequestAutoMerge`, etc.) and so
+      // would match a test meant for the failure reason against EVERY GraphQL error, genuine ones included.
+      const error = new Error(`GitHub GraphQL failed: ${JSON.stringify(payload.errors)}`);
+      error.graphqlErrors = payload.errors;
+      throw error;
     }
     return payload.data;
   }
@@ -1010,6 +1017,26 @@ async function refreshCurrentHead(client, number, expectedHead) {
     return null;
   }
   return pullRequest;
+}
+
+// Ownership-verdict lifecycle prerequisite (owner-verdict split): whether the latest required review status
+// WITHHOLDS a PR-wide auto-merge because the exact head's ownership is not confirmed merge-eligible. Three
+// vocabulary cases:
+//   - a readable ownership INCONSISTENCY (`scope:` failure whose detail is the ownership-inconsistent
+//     signature): the head trailer and body marker disagree, so no owner is confirmed;
+//   - a temporarily UNREADABLE head (`validation:` read-retry): the trailer could not be read at all; and
+//   - a CANDIDATE head held for independent-reviewer activation (`validation:` candidate-held): a recognised
+//     but never-merge-eligible owner.
+// This is a PURE predicate over the shared vocabulary and has NO consumer in this unit: it only classifies a
+// status. The auto-merge cancellation/reconciliation that consumes it — including the cross-head serialization
+// a non-head-scoped `disablePullRequestAutoMerge` requires — is deferred to the 2A3 activation unit, where the
+// matching re-arm/requeue behaviour can be designed together. Defining the predicate here grants no behaviour.
+export function ownershipStatusWithholdsAutoMerge(status) {
+  if (status?.context !== STATUS_CONTEXT || status?.state !== 'failure') return false;
+  const description = String(status?.description ?? '');
+  return description.startsWith(OWNERSHIP_READ_RETRY)
+    || description.startsWith(OWNERSHIP_CANDIDATE_HELD)
+    || isOwnershipInconsistentScopeDetail('scope', description.replace(/^\s*scope:\s*/u, ''));
 }
 
 export async function setDraftForCurrentHead(

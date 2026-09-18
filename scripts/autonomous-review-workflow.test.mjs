@@ -4,7 +4,11 @@ import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 
 import * as reviewGate from './autonomous-review-gate.mjs';
-import { OWNERSHIP_READ_RETRY, OWNERSHIP_CANDIDATE_HELD } from './review-policy.mjs';
+import {
+  OWNERSHIP_READ_RETRY,
+  OWNERSHIP_CANDIDATE_HELD,
+  ownershipInconsistentScopeDetail,
+} from './review-policy.mjs';
 
 const {
   hasTerminalReviewFailureAfterPending,
@@ -2379,4 +2383,54 @@ test('2A2-i′: a newer candidate hold supersedes an older retryable status for 
   // Control: without the hold, the retryable timeout still authorizes recovery as before.
   assert.equal(reviewGate.authorizeRecoveryDispatch([timeout], '100'), timeout);
   assert.equal(reviewGate.recoverableTerminalReviewStatus([timeout]), timeout);
+});
+
+test('2A2-ii: every ownership-withholding vocabulary case withholds a PR-wide auto-merge, and nothing else does', () => {
+  // Ownership-verdict lifecycle: the required status withholds auto-merge for each of the three vocabulary
+  // states in which the immutable head's ownership is not confirmed merge-eligible — a readable inconsistency,
+  // an unreadable head, AND a candidate held for independent-reviewer activation. Omitting candidate-held (the
+  // #606 P1) would let a green flip merge a held candidate head.
+  const inconsistent = {
+    context: 'codex-current-head', state: 'failure',
+    description: `scope: ${ownershipInconsistentScopeDetail('head', 'claude')}`,
+  };
+  const readRetry = { context: 'codex-current-head', state: 'failure', description: OWNERSHIP_READ_RETRY };
+  const candidateHeld = { context: 'codex-current-head', state: 'failure', description: OWNERSHIP_CANDIDATE_HELD };
+  const green = { context: 'codex-current-head', state: 'success', description: 'review: clean' };
+  const otherFailure = { context: 'codex-current-head', state: 'failure', description: 'review: 1 current-head Codex finding' };
+
+  assert.equal(reviewGate.ownershipStatusWithholdsAutoMerge(inconsistent), true);
+  assert.equal(reviewGate.ownershipStatusWithholdsAutoMerge(readRetry), true);
+  assert.equal(reviewGate.ownershipStatusWithholdsAutoMerge(candidateHeld), true, 'candidate-held must withhold');
+  assert.equal(reviewGate.ownershipStatusWithholdsAutoMerge(green), false);
+  // A non-ownership review failure does not touch auto-merge; and an ownership signature on some other context
+  // is not the required review status, so it withholds nothing.
+  assert.equal(reviewGate.ownershipStatusWithholdsAutoMerge(otherFailure), false);
+  assert.equal(
+    reviewGate.ownershipStatusWithholdsAutoMerge({ context: 'other', state: 'failure', description: candidateHeld.description }),
+    false,
+  );
+});
+
+test('2A2-ii: GitHubClient.graphql attaches the structured error entries to the thrown Error', async () => {
+  // Prerequisite retained for the later 2A3 activation unit: a consumer that must recognise ONE specific GraphQL
+  // error (e.g. "auto merge is not enabled") inspects each STRUCTURED entry's `message`, never the wrapper string
+  // (which embeds the mutation `path` and would match a naive test against every error). graphql() therefore hangs
+  // the parsed `errors` array off the thrown Error as `graphqlErrors`; a clean response returns its data unchanged.
+  const client = new reviewGate.GitHubClient({ repository: 'JagPat/PMCvitan', token: 't' });
+  const entries = [{ message: 'Auto merge is not enabled for this pull request', path: ['disablePullRequestAutoMerge'] }];
+  client.request = async () => ({ errors: entries });
+  await assert.rejects(
+    () => client.graphql('mutation Q { x }', {}),
+    (error) => {
+      assert.ok(error instanceof Error);
+      assert.deepEqual(error.graphqlErrors, entries, 'structured entries are attached for precise per-entry inspection');
+      assert.ok(error.message.includes('GitHub GraphQL failed'));
+      return true;
+    },
+  );
+
+  // A response with no errors returns its data unchanged and carries nothing extra.
+  client.request = async () => ({ data: { ok: true } });
+  assert.deepEqual(await client.graphql('query Q { x }', {}), { ok: true });
 });
