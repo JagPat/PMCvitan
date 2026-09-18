@@ -2461,6 +2461,29 @@ test('2A2-ii: auto-merge reconciliation cancels the confirmed live head, and nev
   client = makeClient({ pull: livePR({ head: { sha: 'b'.repeat(40), ref: 'claude/x', repo: { full_name: 'JagPat/PMCvitan' } } }) });
   assert.deepEqual(await reviewGate.reconcileAutoMergeForOwnership(client, 9, head, withhold), { state: 'superseded' });
 
+  // #609 P2: `disablePullRequestAutoMerge` is not head-scoped, so a push can land between the confirming read
+  // and the mutation. The confirming read still sees head A (with auto-merge armed) and the disable fires, but
+  // by the post-mutation re-read the head is B — a head this stale verdict never reviewed. The reconciler must
+  // report `superseded`, NOT `cancelled`, so no stale ownership verdict claims a withdrawal over the new head's
+  // queue. Reproduce-first: without the post-mutation re-read this returns `cancelled`.
+  {
+    const movedHead = 'c'.repeat(40);
+    const heads = [head, movedHead];
+    const calls = { disabled: 0 };
+    const raceClient = {
+      calls,
+      pullRequest: async () => livePR({
+        head: { sha: heads.shift() ?? movedHead, ref: 'claude/x', repo: { full_name: 'JagPat/PMCvitan' } },
+      }),
+      disableAutoMerge: async () => { calls.disabled += 1; },
+    };
+    assert.deepEqual(
+      await reviewGate.reconcileAutoMergeForOwnership(raceClient, 9, head, withhold),
+      { state: 'superseded' },
+    );
+    assert.equal(calls.disabled, 1, 'the disable fired, but the run makes no cancel claim over the moved head');
+  }
+
   // A genuine race — GitHub rejects disabling an auto-merge another actor already withdrew — reconciles as
   // already cancelled, recognised from the STRUCTURED entry message.
   client = makeClient({

@@ -1081,7 +1081,6 @@ export async function reconcileAutoMergeForOwnership(client, number, expectedHea
   if (!live.auto_merge) return { state: 'already_cancelled' };
   try {
     await client.disableAutoMerge(live);
-    return { state: 'cancelled' };
   } catch (error) {
     // Another actor withdrew it between the re-read and the mutation. That one specific GitHub rejection is
     // the reconciled outcome this consumer wants; any other error is a genuine failure and is re-raised.
@@ -1090,6 +1089,15 @@ export async function reconcileAutoMergeForOwnership(client, number, expectedHea
     }
     throw error;
   }
+  // Reconcile a head change across the mutation window. `disablePullRequestAutoMerge` takes no expected-head
+  // OID, so a push that lands between the confirming read above and this mutation moves the head and re-arms
+  // auto-merge on the NEW head — and this stale verdict, made against the old head, must not claim authority
+  // over it. Re-read: if the head is no longer the exact one this run reviewed, report `superseded` rather
+  // than a cancel, so no stale ownership verdict asserts a withdrawal over a head it never reviewed; that new
+  // head's own controller run governs its auto-merge.
+  const afterMutation = await refreshCurrentHead(client, number, expectedHead);
+  if (!afterMutation) return { state: 'superseded' };
+  return { state: 'cancelled' };
 }
 
 export async function setDraftForCurrentHead(
