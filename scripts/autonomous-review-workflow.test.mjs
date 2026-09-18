@@ -2412,93 +2412,25 @@ test('2A2-ii: every ownership-withholding vocabulary case withholds a PR-wide au
   );
 });
 
-test('2A2-ii: auto-merge reconciliation cancels the confirmed live head, and never swallows a genuine GraphQL error', async () => {
-  const head = 'a'.repeat(40);
-  const withhold = { context: 'codex-current-head', state: 'failure', description: OWNERSHIP_CANDIDATE_HELD };
-  const green = { context: 'codex-current-head', state: 'success', description: 'review: clean' };
-
-  const livePR = (over = {}) => ({
-    number: 9, state: 'open', draft: false, node_id: 'N',
-    head: { sha: head, ref: 'claude/x', repo: { full_name: 'JagPat/PMCvitan' } },
-    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
-    auto_merge: { enabledAt: 'x' }, ...over,
-  });
-  // A GraphQL failure exactly as GitHubClient.graphql throws it: the wrapper message embeds the whole errors
-  // payload (mutation path included), and the structured entries hang off `.graphqlErrors`.
-  const graphqlError = (entries) => {
-    const error = new Error(`GitHub GraphQL failed: ${JSON.stringify(entries)}`);
-    error.graphqlErrors = entries;
-    return error;
-  };
-  const makeClient = (over = {}) => {
-    const calls = { disabled: 0 };
-    return {
-      calls,
-      pullRequest: async () => over.pull ?? livePR(),
-      disableAutoMerge: async () => {
-        calls.disabled += 1;
-        if (over.disableError) throw over.disableError;
-      },
-    };
-  };
-
-  // Cancels a live armed auto-merge when the status withholds for ownership.
-  let client = makeClient();
-  assert.deepEqual(await reviewGate.reconcileAutoMergeForOwnership(client, 9, head, withhold), { state: 'cancelled' });
-  assert.equal(client.calls.disabled, 1);
-
-  // A status that does not withhold never touches auto-merge.
-  client = makeClient();
-  assert.deepEqual(await reviewGate.reconcileAutoMergeForOwnership(client, 9, head, green), { state: 'not_applicable' });
-  assert.equal(client.calls.disabled, 0);
-
-  // Nothing armed → already cancelled, no mutation.
-  client = makeClient({ pull: livePR({ auto_merge: null }) });
-  assert.deepEqual(await reviewGate.reconcileAutoMergeForOwnership(client, 9, head, withhold), { state: 'already_cancelled' });
-  assert.equal(client.calls.disabled, 0);
-
-  // Head moved between read and act → superseded, never cancel the wrong head's merge.
-  client = makeClient({ pull: livePR({ head: { sha: 'b'.repeat(40), ref: 'claude/x', repo: { full_name: 'JagPat/PMCvitan' } } }) });
-  assert.deepEqual(await reviewGate.reconcileAutoMergeForOwnership(client, 9, head, withhold), { state: 'superseded' });
-
-  // #609 P2: `disablePullRequestAutoMerge` is not head-scoped, so a push can land between the confirming read
-  // and the mutation. The confirming read still sees head A (with auto-merge armed) and the disable fires, but
-  // by the post-mutation re-read the head is B — a head this stale verdict never reviewed. The reconciler must
-  // report `superseded`, NOT `cancelled`, so no stale ownership verdict claims a withdrawal over the new head's
-  // queue. Reproduce-first: without the post-mutation re-read this returns `cancelled`.
-  {
-    const movedHead = 'c'.repeat(40);
-    const heads = [head, movedHead];
-    const calls = { disabled: 0 };
-    const raceClient = {
-      calls,
-      pullRequest: async () => livePR({
-        head: { sha: heads.shift() ?? movedHead, ref: 'claude/x', repo: { full_name: 'JagPat/PMCvitan' } },
-      }),
-      disableAutoMerge: async () => { calls.disabled += 1; },
-    };
-    assert.deepEqual(
-      await reviewGate.reconcileAutoMergeForOwnership(raceClient, 9, head, withhold),
-      { state: 'superseded' },
-    );
-    assert.equal(calls.disabled, 1, 'the disable fired, but the run makes no cancel claim over the moved head');
-  }
-
-  // A genuine race — GitHub rejects disabling an auto-merge another actor already withdrew — reconciles as
-  // already cancelled, recognised from the STRUCTURED entry message.
-  client = makeClient({
-    disableError: graphqlError([{ message: 'Auto merge is not enabled for this pull request', path: ['disablePullRequestAutoMerge'] }]),
-  });
-  assert.deepEqual(await reviewGate.reconcileAutoMergeForOwnership(client, 9, head, withhold), { state: 'already_cancelled' });
-
-  // Reproduce the #606 P1: the wrapper message ALWAYS contains the mutation path `disablePullRequestAutoMerge`,
-  // so a substring test against `error.message` swallowed EVERY GraphQL error. A genuine failure whose entries
-  // do NOT say the auto-merge is unenabled must PROPAGATE, not be reconciled away.
-  const genuine = graphqlError([{ message: 'API rate limit exceeded', path: ['disablePullRequestAutoMerge'] }]);
-  client = makeClient({ disableError: genuine });
+test('2A2-ii: GitHubClient.graphql attaches the structured error entries to the thrown Error', async () => {
+  // Prerequisite retained for the later 2A3 activation unit: a consumer that must recognise ONE specific GraphQL
+  // error (e.g. "auto merge is not enabled") inspects each STRUCTURED entry's `message`, never the wrapper string
+  // (which embeds the mutation `path` and would match a naive test against every error). graphql() therefore hangs
+  // the parsed `errors` array off the thrown Error as `graphqlErrors`; a clean response returns its data unchanged.
+  const client = new reviewGate.GitHubClient({ repository: 'JagPat/PMCvitan', token: 't' });
+  const entries = [{ message: 'Auto merge is not enabled for this pull request', path: ['disablePullRequestAutoMerge'] }];
+  client.request = async () => ({ errors: entries });
   await assert.rejects(
-    () => reviewGate.reconcileAutoMergeForOwnership(client, 9, head, withhold),
-    (error) => error === genuine,
-    'a genuine GraphQL error must propagate, never be swallowed as already-cancelled',
+    () => client.graphql('mutation Q { x }', {}),
+    (error) => {
+      assert.ok(error instanceof Error);
+      assert.deepEqual(error.graphqlErrors, entries, 'structured entries are attached for precise per-entry inspection');
+      assert.ok(error.message.includes('GitHub GraphQL failed'));
+      return true;
+    },
   );
+
+  // A response with no errors returns its data unchanged and carries nothing extra.
+  client.request = async () => ({ data: { ok: true } });
+  assert.deepEqual(await client.graphql('query Q { x }', {}), { ok: true });
 });
