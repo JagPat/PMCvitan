@@ -81,13 +81,17 @@ test('server-side workflow run and artifact association rejects forged producer 
 });
 
 test('automatic merge needs CI and exact-head review, with no human authorization', async () => {
-  const pull = { number: 600, state: 'open', draft: false, head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } }, base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } } };
+  const pull = { number: 600, state: 'open', draft: false, body: '<!-- correction-owner: claude -->', head: { sha: head, ref: 'claude/product', repo: { full_name: 'JagPat/PMCvitan' } }, base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } } };
   const checks = REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
-  const makeClient = ({ pulls = [pull, pull], statuses = [{ context: 'codex-current-head', state: 'success' }], runs = checks } = {}) => ({
+  // The exact HEAD commit's terminal Correction-Owner trailer. A merge-eligible
+  // owner (claude) by default; the ownership cases below vary it.
+  const claudeMessage = 'feat: change\n\nCorrection-Owner: claude\n';
+  const makeClient = ({ pulls = [pull, pull], statuses = [{ context: 'codex-current-head', state: 'success' }], runs = checks, commitMessage = claudeMessage } = {}) => ({
     repository: 'JagPat/PMCvitan',
     async pullRequest() { return pulls.shift() ?? pull; },
     async statuses() { return statuses; },
     async checkRuns() { return runs; },
+    async commitMessage() { return typeof commitMessage === 'function' ? commitMessage() : commitMessage; },
     async paginated() { throw new Error('Merge must not fetch human authorization comments'); },
   });
   assert.equal((await authorizeExactHeadMerge(makeClient(), pull, head)).allowed, true);
@@ -102,4 +106,49 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   for (const name of REQUIRED_CHECKS) {
     assert.equal((await authorizeExactHeadMerge(makeClient({ runs: checks.map(run => run.name === name ? { ...run, conclusion: 'failure' } : run) }), pull, head)).state, 'gates_not_green');
   }
+});
+
+test('the exact-head commit trailer is the merge authority: only an eligible owner passes', async () => {
+  // Every gate below is GREEN (codex-current-head success, required checks success): the merge is refused on
+  // the ownership verdict of the immutable HEAD commit trailer alone, read git-faithfully. Publication of the
+  // reason is a later unit; here an ineligible or unreadable head simply withholds the merge.
+  const checks = REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
+  const trailer = (owner) => `feat: change\n\nCorrection-Owner: ${owner}\n`;
+  const marker = (owner) => `<!-- correction-owner: ${owner} -->`;
+  // A pull on `ref`, with a body marker, whose HEAD commit carries `commitMessage`. Two identical reads so the
+  // post-evidence re-read matches, and all gates green — the verdict is the only variable.
+  const makeClient = ({ ref, body, commitMessage }) => {
+    const pull = { number: 600, state: 'open', draft: false, body, head: { sha: head, ref, repo: { full_name: 'JagPat/PMCvitan' } }, base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } } };
+    return {
+      repository: 'JagPat/PMCvitan',
+      async pullRequest() { return pull; },
+      async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
+      async checkRuns() { return checks; },
+      async commitMessage() { return typeof commitMessage === 'function' ? commitMessage() : commitMessage; },
+      async paginated() { throw new Error('Merge must not fetch human authorization comments'); },
+    };
+  };
+  const authorize = (opts) => authorizeExactHeadMerge(makeClient(opts), { number: 600 }, head);
+
+  // (a) an eligible admitted owner whose trailer agrees with the body marker on a branch it may claim.
+  assert.equal((await authorize({ ref: 'claude/product', body: marker('claude'), commitMessage: trailer('claude') })).allowed, true);
+  assert.equal((await authorize({ ref: 'cursor/fix', body: marker('cursor'), commitMessage: trailer('cursor') })).allowed, true);
+
+  // (b) reproduce-first: a consistent `codex` CANDIDATE passes codex-current-head yet is never merge-eligible.
+  assert.equal((await authorize({ ref: 'codex/maintenance', body: marker('codex'), commitMessage: trailer('codex') })).state, 'ownership_ineligible');
+
+  // (c) a missing / conflicting / invalid HEAD trailer names no owner, so nothing is eligible.
+  assert.equal((await authorize({ ref: 'claude/product', body: marker('claude'), commitMessage: 'feat: change\n\nno trailer here\n' })).state, 'ownership_ineligible');
+  assert.equal((await authorize({ ref: 'claude/product', body: marker('claude'), commitMessage: 'feat: change\n\nCorrection-Owner: claude\nCorrection-Owner: cursor\n' })).state, 'ownership_ineligible');
+  assert.equal((await authorize({ ref: 'claude/product', body: marker('claude'), commitMessage: 'feat: change\n\nCorrection-Owner: nobody\n' })).state, 'ownership_ineligible');
+
+  // (d) an unreadable HEAD (transport failure) is fail-closed, never an owning head.
+  assert.equal((await authorize({ ref: 'claude/product', body: marker('claude'), commitMessage: () => { throw new Error('transport'); } })).state, 'ownership_unreadable');
+
+  // (e) a trailer that disagrees with the body marker is inconsistent, so not eligible.
+  assert.equal((await authorize({ ref: 'claude/product', body: marker('claude'), commitMessage: trailer('cursor') })).state, 'ownership_ineligible');
+
+  // (f) a `claude/**` branch whose body declares a non-claude owner is contradictory (branch reservation),
+  //     so the head is never eligible however its trailer reads.
+  assert.equal((await authorize({ ref: 'claude/product', body: marker('codex'), commitMessage: trailer('claude') })).state, 'ownership_ineligible');
 });

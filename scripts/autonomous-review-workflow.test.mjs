@@ -27,12 +27,15 @@ function checkRun(name, conclusion = 'success', status = 'completed') {
   return { name, conclusion, status };
 }
 
-function automatedMergeEvidence(pullRequest) {
+function automatedMergeEvidence(pullRequest, { commitMessage = 'feat: reviewed change\n\nCorrection-Owner: claude\n' } = {}) {
   return {
     repository: 'JagPat/PMCvitan',
     async pullRequest() { return pullRequest; },
     async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
     async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
+    // The exact HEAD commit's terminal Correction-Owner trailer — the merge
+    // authority. Eligible (claude) by default; ownership cases override it.
+    async commitMessage() { return commitMessage; },
   };
 }
 
@@ -1716,7 +1719,8 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
     number: 230,
     state: 'open',
     draft: false,
-    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    body: '<!-- correction-owner: claude -->',
+    head: { sha: expectedHead, ref: 'claude/reviewed', repo: { full_name: 'JagPat/PMCvitan' } },
     base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
   const calls = [];
@@ -1748,6 +1752,34 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
   ]);
 });
 
+test('a head whose exact commit trailer is not merge-eligible is held, never merged', async () => {
+  // Every gate is green, but the immutable HEAD commit's trailer names a `codex` CANDIDATE (consistent with
+  // the body marker on a branch it may claim) — recognised, never merge-eligible. completeReviewedPullRequest
+  // withholds the merge as 'held_for_gates' and touches neither mergeExactHead nor auto-merge.
+  const expectedHead = 'a'.repeat(40);
+  const pullRequest = {
+    number: 230,
+    state: 'open',
+    draft: false,
+    body: '<!-- correction-owner: codex -->',
+    head: { sha: expectedHead, ref: 'codex/maintenance', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
+  };
+  const calls = [];
+  const client = {
+    ...automatedMergeEvidence(pullRequest, { commitMessage: 'feat: change\n\nCorrection-Owner: codex\n' }),
+    async mergeExactHead(number, head) { calls.push(['merge', number, head]); return { merged: true, sha: 'b'.repeat(40) }; },
+    async enableAutoMerge() { calls.push(['auto-merge']); },
+    async dispatchHandoff(ref, number) { calls.push(['handoff', ref, number]); },
+  };
+
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead),
+    'held_for_gates',
+  );
+  assert.deepEqual(calls, []);
+});
+
 test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
   assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
   const expectedHead = 'a'.repeat(40);
@@ -1755,7 +1787,8 @@ test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
     number: 230,
     state: 'open',
     draft: false,
-    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    body: '<!-- correction-owner: claude -->',
+    head: { sha: expectedHead, ref: 'claude/reviewed', repo: { full_name: 'JagPat/PMCvitan' } },
     base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
   const calls = [];
@@ -1795,7 +1828,8 @@ test('a clean-state auto-merge race retries the exact-SHA merge once', async () 
     number: 230,
     state: 'open',
     draft: false,
-    head: { sha: expectedHead, repo: { full_name: 'JagPat/PMCvitan' } },
+    body: '<!-- correction-owner: claude -->',
+    head: { sha: expectedHead, ref: 'claude/reviewed', repo: { full_name: 'JagPat/PMCvitan' } },
     base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
   };
   let mergeAttempts = 0;

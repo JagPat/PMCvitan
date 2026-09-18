@@ -33,6 +33,7 @@ import {
   CORRECTION_STALLED,
   correctionOwnerDeclaration,
   correctionRouting,
+  headOwnerVerdict,
 } from './correction-owner.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import {
@@ -489,6 +490,16 @@ export class GitHubClient {
       if (pageFiles.length < 100) return { ...commit, files };
       page += 1;
     }
+  }
+
+  // The exact HEAD commit MESSAGE, read git-faithfully by the correction-owner
+  // primitive. A single request (no file pagination): the message is nested at
+  // `.commit.message`. A missing/absent commit yields null; a transport failure
+  // throws, and the merge authorizer treats a throw as an unreadable head and
+  // fails closed.
+  async commitMessage(head) {
+    const commit = await this.request(`/repos/${this.repository}/commits/${head}`);
+    return commit?.commit?.message ?? null;
   }
 
   async checkRuns(head) {
@@ -1114,11 +1125,32 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead)
   if (latestReview?.state !== 'success' || required.state !== 'success') {
     return { allowed: false, state: 'gates_not_green' };
   }
+  // The exact HEAD commit's terminal Correction-Owner trailer is the merge
+  // authority. Read it git-faithfully; a transport failure is an unreadable
+  // head, never an owning one, so it fails closed rather than granting merge.
+  let headMessage;
+  try {
+    headMessage = await client.commitMessage(expectedHead);
+  } catch {
+    return { allowed: false, state: 'ownership_unreadable' };
+  }
   // Re-read after remote evidence. A push, base update, retarget or draft
   // transition during validation fails closed.
   const finalLive = await refreshCurrentHead(client, live.number, expectedHead);
   if (!finalLive || finalLive.draft || finalLive.base?.sha !== live.base.sha) {
     return { allowed: false, state: 'changed_during_validation' };
+  }
+  // Only a readable head whose immutable trailer names a merge-eligible owner
+  // (agreeing with the body marker, candidate owners excluded) may merge. An
+  // unreadable head is retryable infrastructure; any readable ownership fault
+  // withholds the merge. Publication of the withholding reason is a later unit;
+  // here the hold is silent and flows through as 'held_for_gates'.
+  const verdict = headOwnerVerdict(headMessage, finalLive.body, { headRef: finalLive.head?.ref });
+  if (!verdict.readable) {
+    return { allowed: false, state: 'ownership_unreadable' };
+  }
+  if (!verdict.eligible) {
+    return { allowed: false, state: 'ownership_ineligible' };
   }
   return { allowed: true, state: 'authorized', pullRequest: finalLive };
 }
