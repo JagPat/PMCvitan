@@ -22,6 +22,7 @@ import {
   owedFailureId,
 } from './correction-lease.mjs';
 import { isCorrectionEligiblePullRequest } from './correction-owner.mjs';
+import { ownershipInconsistentScopeDetail, OWNERSHIP_CANDIDATE_HELD } from './review-policy.mjs';
 
 const REPOSITORY = 'JagPat/PMCvitan';
 const HEAD = 'dc54a78e0f2b4c1d9a3e5f60718293a4b5c6d7e8';
@@ -684,4 +685,43 @@ test('L30: a failure the gate recovers from is dispatched, not merely excluded',
   await handOffCorrectionLease(finding, pull, REPOSITORY, 'main', { now: DUE });
   assert.equal(calls.dispatched.length, 2, 'a finding dispatches nothing');
   assert.equal(calls.posted.length, 1, 'it wakes the owner instead');
+});
+
+test('L31: a readable ownership inconsistency publishes a NEUTRAL stalled notice, naming and waking no one (unit 2A2-i)', async () => {
+  // The exact head's Correction-Owner trailer and the PR body marker disagree, so the body-declared owner is
+  // NOT confirmed by the immutable head. The published notice must therefore attribute the correction to no
+  // agent — no wake mention, and none of the body-derived "X owns this correction" instruction/label — and be
+  // reported as stalled, whatever the body declares. It points only at reconciling head and body.
+  for (const remedy of ['head', 'body']) {
+    const detail = ownershipInconsistentScopeDetail(remedy, 'claude');
+    const { published, assessment } = await watch({ statuses: [status(`scope: ${detail}`)] });
+    assert.ok(published, `${remedy}: a stalled notice is still published`);
+    assert.equal(assessment.reportedState, 'correction_stalled', `${remedy}: reported as stalled`);
+    assert.equal(assessment.owner, 'unconfirmed', `${remedy}: names no confirmed owner`);
+    assert.match(published, /correction_stalled/u);
+    assert.doesNotMatch(published, /@claude/u, `${remedy}: no owner is woken`);
+    assert.doesNotMatch(published, /Claude Code web Auto-fix|owns this correction/u, `${remedy}: no body-derived attribution`);
+    assert.match(published, /disagree|Reconcile/u, `${remedy}: the resume action names the reconciliation`);
+  }
+
+  // Control: an ordinary review finding on a claude-owned head still wakes claude.
+  const control = await watch({
+    statuses: [status('review: 1 current-head Codex finding')],
+    reviewComments: [codexFinding(HEAD)],
+  });
+  assert.match(control.published, /@claude/u, 'control: an ordinary review failure still wakes the owner');
+});
+
+test('L32: a candidate-held status owes no correction and opens no lease (unit 2A2-i)', async () => {
+  // A consistently candidate-owned head (e.g. codex) is held pending independent-reviewer activation — not
+  // merge-eligible, not awakenable, and not clearable by swapping the body marker to claude/cursor. The
+  // watchdog must open no lease and publish no marker-replacement instruction for it.
+  assert.equal(
+    correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: OWNERSHIP_CANDIDATE_HELD }),
+    null,
+    'candidate-held is not an owed correction',
+  );
+  const { published, assessment } = await watch({ statuses: [status(OWNERSHIP_CANDIDATE_HELD)] });
+  assert.equal(published, null, 'no lease comment is published for a candidate-held head');
+  assert.equal(assessment, null, 'the watchdog finds no owed correction to assess');
 });

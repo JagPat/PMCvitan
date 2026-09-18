@@ -130,6 +130,11 @@ const RETRYABLE_REVIEW_FAILURES = [
   'Codex evidence changed during final verification',
   'review: Required CI changed during current-head Codex review',
   'review: bootstrap exact-head review requested',
+  // Ownership-verdict lifecycle (unit 2A2-i): an `unreadable` head is a retryable INFRASTRUCTURE fault, not
+  // an ownership fault — the exact head could not be read, so the trailer's validity is unknown and no
+  // correction is owed. Classifying it retryable is what teaches the recovery authorizer to retry and the
+  // watchdog to open no correction lease. A later unit publishes this status; here the consumers recognise it.
+  OWNERSHIP_READ_RETRY,
 ];
 
 export function isRetryableReviewFailureDescription(description) {

@@ -7,6 +7,7 @@ import {
   POLL_INTERVAL_MS,
   REQUIRED_CHECKS,
   STATUS_CONTEXT,
+  OWNERSHIP_READ_RETRY,
 } from './review-policy.mjs';
 export {
   requiredChecksForPullRequest,
@@ -186,6 +187,10 @@ export function isTerminalReviewStatus(status) {
 
   const description = status.description ?? '';
   return description.startsWith('review:')
+    // Ownership-verdict lifecycle (unit 2A2-i): an `unreadable` head is published as this `validation:`-prefixed
+    // status. It is a TERMINAL review failure so the recovery authorizer can classify it — and it is in the
+    // shared retryable set, so it resolves as retryable (gate recovers) rather than persistent (owed).
+    || description.startsWith(OWNERSHIP_READ_RETRY)
     || description.includes('current-head Codex finding')
     || description.includes('Codex submitted a current-head review')
     || description.includes('Codex review timed out')
