@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 
 import * as reviewGate from './autonomous-review-gate.mjs';
+import { OWNERSHIP_READ_RETRY, OWNERSHIP_CANDIDATE_HELD } from './review-policy.mjs';
 
 const {
   hasTerminalReviewFailureAfterPending,
@@ -2340,4 +2341,42 @@ test('below the threshold nothing is advised, so the signal means something', as
   assert.equal(result.state, 'reviewing');
   assert.equal(result.findingHeadCount, 1);
   assert.equal(result.rootCauseAdvisory, undefined, 'one head raises no root-cause signal');
+});
+
+test('2A2-i: an unreadable-ownership status is a retryable terminal failure the gate recovers, not a persistent one', () => {
+  // Ownership-verdict lifecycle: an `unreadable` head is a retryable INFRASTRUCTURE fault. The recovery
+  // authorizer must classify it terminal-and-retryable so the gate re-runs, and NEVER latch it as a
+  // persistent failure that owes a correction.
+  const readRetry = { context: 'codex-current-head', state: 'failure', id: 77, description: OWNERSHIP_READ_RETRY };
+  assert.equal(reviewGate.isTerminalReviewStatus(readRetry), true);
+  assert.equal(reviewGate.isRetryableTerminalReviewFailure(readRetry), true);
+  assert.equal(reviewGate.persistentReviewFailure([readRetry]), null);
+  assert.equal(reviewGate.authorizeRecoveryDispatch([readRetry], '77'), readRetry);
+
+  // A genuine current-head finding stays persistent and is not recovered — the retryable set did not widen.
+  const finding = { context: 'codex-current-head', state: 'failure', id: 78, description: 'review: 1 current-head Codex finding' };
+  assert.equal(reviewGate.isRetryableTerminalReviewFailure(finding), false);
+  assert.ok(reviewGate.persistentReviewFailure([finding]));
+});
+
+test('2A2-i′: a newer candidate hold supersedes an older retryable status for recovery selection', () => {
+  // Ownership-verdict lifecycle: once `OWNERSHIP_CANDIDATE_HELD` is the newest `codex-current-head` status,
+  // the head is held for independent-reviewer activation. An older retryable review status (e.g. a review
+  // timeout) must NOT authorize or persist a recovery — recovery selection reads only the newest review
+  // status. Statuses are newest-first.
+  const held = { context: 'codex-current-head', state: 'failure', id: 200, description: OWNERSHIP_CANDIDATE_HELD };
+  const timeout = { context: 'codex-current-head', state: 'failure', id: 100, description: 'review: Codex review timed out after two attempts' };
+  const statuses = [held, timeout];
+
+  assert.equal(reviewGate.authorizeRecoveryDispatch(statuses, '100'), null, 'the older timeout cannot authorize recovery under a newer hold');
+  assert.equal(reviewGate.recoverableTerminalReviewStatus(statuses), null, 'no recoverable terminal while the hold is newest');
+  assert.equal(
+    reviewGate.recoveryRequestTerminal(statuses, { terminalStatusId: '100' }),
+    null,
+    'a pending recovery request for the older timeout does not persist under a newer hold',
+  );
+
+  // Control: without the hold, the retryable timeout still authorizes recovery as before.
+  assert.equal(reviewGate.authorizeRecoveryDispatch([timeout], '100'), timeout);
+  assert.equal(reviewGate.recoverableTerminalReviewStatus([timeout]), timeout);
 });
