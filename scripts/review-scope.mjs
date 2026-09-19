@@ -4,7 +4,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import {
+  assessPlanSizes,
   assessReviewScope,
+  changedPlanPaths,
   PRE_REVIEW_ENFORCE_AFTER_PR,
   STATUS_DOCUMENT,
 } from './review-efficiency.mjs';
@@ -41,6 +43,35 @@ async function pullRequestFiles({ fetchImpl, repository, number, token }) {
     files.push(...pageFiles);
     if (pageFiles.length < 100) return files;
   }
+}
+
+/**
+ * Each changed plan's text at the PR HEAD commit (the authoritative head, not the merge
+ * checkout on disk), or null for one the API would not serve; the caller fails on null.
+ */
+export async function planContentsAt({ fetchImpl, repository, headSha, token, paths }) {
+  const contents = {};
+  for (const path of paths) {
+    contents[path] = null;
+    if (typeof fetchImpl !== 'function' || !repository || !token || !headSha) continue;
+    try {
+      const encoded = path.split('/').map((segment) => encodeURIComponent(segment)).join('/');
+      const response = await fetchImpl(
+        `https://api.github.com/repos/${repository}/contents/${encoded}?ref=${encodeURIComponent(headSha)}`,
+        {
+          headers: {
+            accept: 'application/vnd.github.raw+json',
+            authorization: `Bearer ${token}`,
+            'x-github-api-version': '2022-11-28',
+          },
+        },
+      );
+      if (response.ok) contents[path] = await response.text();
+    } catch {
+      // a thrown fetch is an unreadable plan, reported by name below
+    }
+  }
+  return contents;
 }
 
 export async function run({
@@ -103,6 +134,27 @@ export async function run({
     }
   }
 
+  // An added or modified plan is measured by its content at the PR head. Only when the
+  // cumulative file list was readable: without it nothing can name which plans changed,
+  // and that unreadable list is already a failure above.
+  let planResult = null;
+  if (Array.isArray(changedFiles) && changedPlanPaths(changedFiles).length > 0) {
+    const contents = await planContentsAt({
+      fetchImpl,
+      repository: repository || event.repository?.full_name,
+      headSha: event.pull_request.head?.sha,
+      token,
+      paths: changedPlanPaths(changedFiles),
+    });
+    planResult = assessPlanSizes(changedFiles, contents);
+    if (planResult.allowed) {
+      console.log(`review-scope: ${planResult.measured} changed plan(s) within the line limit at the PR head`);
+    } else {
+      console.error(`::error title=Plan size::${planResult.problems.join('; ')}`);
+      process.exitCode = 1;
+    }
+  }
+
   // The tracked tree itself, checked HERE for the same reason: this is the one
   // job that runs BEFORE `pnpm install`, so it is the only place a packaging
   // defect can be named instead of reported five times as an install failure.
@@ -114,7 +166,7 @@ export async function run({
     process.exitCode = 1;
   }
 
-  return { ...result, status: statusResult, tree: treeResult };
+  return { ...result, status: statusResult, plans: planResult, tree: treeResult };
 }
 
 const DEPENDENCY_DIRECTORY = 'node_modules';
