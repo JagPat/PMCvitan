@@ -27,12 +27,17 @@ function checkRun(name, conclusion = 'success', status = 'completed') {
   return { name, conclusion, status };
 }
 
-function automatedMergeEvidence(pullRequest) {
+// 2B2: an eligible SHA merge-authority verdict — the exact head commit carries a valid terminal
+// Correction-Owner trailer, so `shaMergeAuthority` returns { outcome: 'eligible', mergeEligible: true }.
+const ELIGIBLE_HEAD_COMMIT = { commit: { message: 'fix: something\n\nCorrection-Owner: claude\n' } };
+
+function automatedMergeEvidence(pullRequest, commit = ELIGIBLE_HEAD_COMMIT) {
   return {
     repository: 'JagPat/PMCvitan',
     async pullRequest() { return pullRequest; },
     async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
     async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
+    async commit() { return commit; },
   };
 }
 
@@ -646,7 +651,9 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     async reviews() { return []; },
     async markReplacementRequired() {},
     async commit() {
-      return { commit: { message: 'fix: ordinary head' }, files: [] };
+      // 2B2: the SHA merge authority reads the head commit trailer; this promotable head carries a
+      // valid one so the test exercises the buried-verdict path, not ownership.
+      return { commit: { message: 'fix: ordinary head\n\nCorrection-Owner: claude\n' }, files: [] };
     },
     async updateStickyComment() {},
     async mergeExactHead() {
@@ -1521,7 +1528,7 @@ test('final admission revalidates live scope and the late review-round reset', a
     async reviewComments() { return []; },
     async reviews() { return []; },
     async markReplacementRequired() {},
-    async commit() { return { commit: { message: 'fix: no convergence' }, files: [] }; },
+    async commit() { return { commit: { message: 'fix: no convergence\n\nCorrection-Owner: claude\n' }, files: [] }; },
   };
 
   const invalidScope = await reviewGate.revalidateFinalReviewPolicy(
@@ -1559,6 +1566,135 @@ test('final admission revalidates live scope and the late review-round reset', a
   );
   assert.equal(lateFinding.allowed, false);
   assert.equal(lateFinding.state, 'changes_required');
+});
+
+test('the SHA merge-authority verdict gates final admission (unit 2B2)', async () => {
+  const head = 'f'.repeat(40);
+  const promotablePull = () => ({
+    number: 251,
+    additions: 1,
+    deletions: 0,
+    changed_files: 1,
+    body: '<!-- review-size: standard -->\n<!-- correction-owner: claude -->',
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/251',
+    head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  // A promotable head — scope in-limit, no unresolved Codex thread, no finding — so the ONLY
+  // remaining gate is the SHA merge-authority verdict this unit reads from the head commit trailer.
+  const makeClient = (message, { throws = false } = {}) => ({
+    async pullRequest() { return promotablePull(); },
+    async setDraft(live, draft) { return { ...live, draft }; },
+    async setStatus() {},
+    async updateStickyComment() {},
+    async reviewComments() {
+      return [
+        { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'a'.repeat(40) },
+        { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'b'.repeat(40) },
+      ];
+    },
+    async reviews() { return []; },
+    async markReplacementRequired() {},
+    async commit() {
+      if (throws) throw new Error('commit fetch failed');
+      return { commit: { message }, files: [] };
+    },
+  });
+
+  const eligible = await reviewGate.revalidateFinalReviewPolicy(
+    makeClient('fix: x\n\nCorrection-Owner: claude\n'), 251, head,
+  );
+  assert.equal(eligible.allowed, true);
+  assert.equal(eligible.state, 'allowed');
+  assert.equal(eligible.verdict.mergeEligible, true);
+
+  const candidate = await reviewGate.revalidateFinalReviewPolicy(
+    makeClient('fix: x\n\nCorrection-Owner: codex\n'), 251, head,
+  );
+  assert.equal(candidate.allowed, false);
+  assert.equal(candidate.state, 'ownership_withheld');
+  assert.equal(candidate.ownershipReason, OWNERSHIP_CANDIDATE_HELD);
+
+  const invalid = await reviewGate.revalidateFinalReviewPolicy(
+    makeClient('fix: x with no trailer'), 251, head,
+  );
+  assert.equal(invalid.allowed, false);
+  assert.equal(invalid.state, 'ownership_withheld');
+  assert.match(invalid.ownershipReason, /inconsistent correction ownership/u);
+
+  const unreadable = await reviewGate.revalidateFinalReviewPolicy(
+    makeClient('', { throws: true }), 251, head,
+  );
+  assert.equal(unreadable.allowed, false);
+  assert.equal(unreadable.state, 'ownership_withheld');
+  assert.equal(unreadable.ownershipReason, OWNERSHIP_READ_RETRY);
+});
+
+test('recovery does not republish success when the SHA verdict is no longer eligible (unit 2B2)', async () => {
+  const head = 'f'.repeat(40);
+  const cleanStatus = {
+    id: 401,
+    context: 'codex-current-head',
+    state: 'success',
+    description: 'review: Codex found no blocking issue on this exact head',
+  };
+  const statuses = [cleanStatus];
+  const pull = () => ({
+    number: 252,
+    additions: 1,
+    deletions: 0,
+    changed_files: 1,
+    body: '<!-- review-size: standard -->\n<!-- correction-owner: claude -->',
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/252',
+    head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  const build = (message, { throws = false } = {}) => {
+    const statusWrites = [];
+    const drafts = [];
+    const client = {
+      async pullRequest() { return pull(); },
+      async setDraft(current, draft) { drafts.push(draft); return { ...current, draft }; },
+      async setStatus(h, state, description) { statusWrites.push({ state, description }); },
+      async updateStickyComment() {},
+      async reviewComments() { return []; },
+      async reviews() { return []; },
+      async markReplacementRequired() {},
+      async commit() {
+        if (throws) throw new Error('commit fetch failed');
+        return { commit: { message }, files: [] };
+      },
+      async mergeExactHead() { throw new Error('must not merge an ineligible head'); },
+      async enableAutoMerge() { throw new Error('must not queue an ineligible head'); },
+    };
+    return { client, statusWrites, drafts };
+  };
+
+  // A candidate-owned head publishes the canonical held failure, drafts, and never republishes
+  // success or merges — the green status alone is not merge authority.
+  const candidate = build('fix: x\n\nCorrection-Owner: codex\n');
+  assert.equal(
+    await reviewGate.ensureTerminalReviewState(candidate.client, pull(), head, cleanStatus, statuses),
+    true,
+  );
+  assert.equal(candidate.statusWrites.at(-1).state, 'failure');
+  assert.equal(candidate.statusWrites.at(-1).description, OWNERSHIP_CANDIDATE_HELD);
+  assert.ok(!candidate.statusWrites.some((write) => write.state === 'success'));
+  assert.deepEqual(candidate.drafts, [true]);
+
+  // An unreadable head fails RETRYABLY and does NOT draft, so a later run can re-read and recover.
+  const unreadable = build('', { throws: true });
+  assert.equal(
+    await reviewGate.ensureTerminalReviewState(unreadable.client, pull(), head, cleanStatus, statuses),
+    true,
+  );
+  assert.equal(unreadable.statusWrites.at(-1).state, 'failure');
+  assert.equal(unreadable.statusWrites.at(-1).description, OWNERSHIP_READ_RETRY);
+  assert.deepEqual(unreadable.drafts, []);
 });
 
 test('Codex review records and inline comments are fully paginated', async () => {

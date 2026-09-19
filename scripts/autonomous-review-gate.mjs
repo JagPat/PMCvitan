@@ -9,6 +9,7 @@ import {
   STATUS_CONTEXT,
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
+  OWNERSHIP_INCONSISTENT_SCOPE,
   isOwnershipInconsistentScopeDetail,
 } from './review-policy.mjs';
 export {
@@ -33,6 +34,7 @@ import {
   CORRECTION_STALLED,
   correctionOwnerDeclaration,
   correctionRouting,
+  shaMergeAuthority,
 } from './correction-owner.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import {
@@ -1054,12 +1056,43 @@ export async function setDraftForCurrentHead(
   return isCurrentReviewUnit(updated, expectedHead) ? updated : null;
 }
 
+// 2B2: the single SHA-scoped merge-authority read for one run. The controller reads the exact head
+// commit MESSAGE once and every required-success publisher and the merge consume this one parsed
+// verdict (`shaMergeAuthority`, itself SHA-only and mutation-free). A fetch failure or a message
+// that cannot be read fails closed to the retryable `unreadable` outcome, never to an owner — so an
+// infrastructure blip never grants merge authority.
+export async function readShaMergeVerdict(client, head) {
+  try {
+    const commit = await client.commit(head);
+    const message = commit?.commit?.message;
+    if (typeof message !== 'string' || message.length === 0) {
+      return { outcome: 'unreadable', mergeEligible: false, owner: null, trailerState: 'unreadable' };
+    }
+    return shaMergeAuthority(message);
+  } catch {
+    return { outcome: 'unreadable', mergeEligible: false, owner: null, trailerState: 'unreadable' };
+  }
+}
+
+// The canonical `codex-current-head` failure reason a non-eligible SHA verdict publishes in place of
+// success. `eligible` alone returns null (success proceeds). `unreadable` is the only RETRYABLE
+// reason — a later run re-reads and re-classifies; `candidate` and `invalid` are canonical holds.
+export function ownershipReasonForVerdict(verdict) {
+  switch (verdict?.outcome) {
+    case 'eligible': return null;
+    case 'candidate': return OWNERSHIP_CANDIDATE_HELD;
+    case 'unreadable': return OWNERSHIP_READ_RETRY;
+    default: return OWNERSHIP_INCONSISTENT_SCOPE; // invalid — missing/conflicting/malformed trailer
+  }
+}
+
 export async function completeReviewedPullRequest(
   client,
   pullRequest,
   expectedHead,
+  verdict,
 ) {
-  const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead);
+  const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead, verdict);
   if (!authorization.allowed) {
     return 'held_for_gates';
   }
@@ -1100,7 +1133,7 @@ export async function completeReviewedPullRequest(
 }
 
 /** The common mandatory guard for both direct merge and auto-merge entrypoints. */
-export async function authorizeExactHeadMerge(client, pullRequest, expectedHead) {
+export async function authorizeExactHeadMerge(client, pullRequest, expectedHead, verdict) {
   const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (!live || live.draft || !live.base?.sha) {
     return { allowed: false, state: live?.draft ? 'draft' : 'superseded' };
@@ -1113,6 +1146,14 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead)
   const required = summarizeRequiredChecks(checks, requiredChecksForPullRequest(live.number));
   if (latestReview?.state !== 'success' || required.state !== 'success') {
     return { allowed: false, state: 'gates_not_green' };
+  }
+  // 2B2: the merge consumes the same one SHA merge-authority verdict the success publisher carried;
+  // called without it (a direct caller) it reads the exact head once and fails closed. Only a
+  // SHA-eligible trailer authorizes the merge — the SHA-shared status alone is not sufficient, so a
+  // green status left on a head whose trailer is candidate/invalid/unreadable never merges.
+  const mergeVerdict = verdict ?? await readShaMergeVerdict(client, expectedHead);
+  if (!mergeVerdict?.mergeEligible) {
+    return { allowed: false, state: 'ownership_not_eligible' };
   }
   // Re-read after remote evidence. A push, base update, retarget or draft
   // transition during validation fails closed.
@@ -1159,7 +1200,25 @@ export async function ensureTerminalReviewState(
       pullRequest.number,
       expectedHead,
     );
-    if (finalPolicy.superseded || !finalPolicy.allowed) return true;
+    if (finalPolicy.superseded) return true;
+    if (!finalPolicy.allowed) {
+      if (finalPolicy.ownershipReason) {
+        // 2B2: recovery must not republish a stale success when the exact head's SHA verdict is no
+        // longer eligible; publish the canonical ownership failure. A canonical hold
+        // (candidate/invalid) also drafts, as with any recovered current-head failure; a retryable
+        // unreadable read only fails so a later run can re-read and recover without a draft flip.
+        await client.setStatus(
+          expectedHead,
+          'failure',
+          finalPolicy.ownershipReason,
+          pullRequest.html_url,
+        );
+        if (finalPolicy.verdict?.outcome !== 'unreadable') {
+          await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
+        }
+      }
+      return true;
+    }
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
     );
@@ -1175,6 +1234,7 @@ export async function ensureTerminalReviewState(
       client,
       finalPolicy.pullRequest,
       expectedHead,
+      finalPolicy.verdict,
     );
   } else {
     const latestStatus = statuses.find(
@@ -1318,7 +1378,17 @@ export async function revalidateFinalReviewPolicy(
     return { state: 'changes_required', allowed: false, detail: finding };
   }
 
-  return { state: 'allowed', allowed: true, pullRequest };
+  // 2B2: the SHA-scoped merge authority for this exact head, read ONCE here — the single verdict
+  // both the required-success publisher and the merge consume. Only an eligible trailer permits a
+  // `codex-current-head` success; a non-eligible verdict yields the canonical ownership failure
+  // reason (unreadable→retryable, candidate/invalid→held) instead, never success.
+  const verdict = await readShaMergeVerdict(client, expectedHead);
+  const ownershipReason = ownershipReasonForVerdict(verdict);
+  if (ownershipReason) {
+    return { state: 'ownership_withheld', allowed: false, ownershipReason, verdict, pullRequest };
+  }
+
+  return { state: 'allowed', allowed: true, pullRequest, verdict };
 }
 
 async function reviewAttempt(
@@ -1958,6 +2028,18 @@ export async function run() {
       );
       if (finalPolicy.superseded) return;
       if (!finalPolicy.allowed) {
+        if (finalPolicy.ownershipReason) {
+          // 2B2: Codex found the head clean, but the exact head's SHA merge-authority verdict is
+          // not eligible — publish the canonical ownership failure on this same SHA instead of
+          // success (unreadable is retryable; candidate/invalid are held). No merge is attempted.
+          await client.setStatus(
+            expectedHead,
+            'failure',
+            finalPolicy.ownershipReason,
+            pullRequest.html_url,
+          );
+          return;
+        }
         throw new Error(`Final review policy changed: ${finalPolicy.state}`);
       }
       pullRequest = finalPolicy.pullRequest;
@@ -1987,6 +2069,7 @@ export async function run() {
         client,
         pullRequest,
         expectedHead,
+        finalPolicy.verdict,
       );
       await client.updateStickyComment(
         pullRequest.number,
