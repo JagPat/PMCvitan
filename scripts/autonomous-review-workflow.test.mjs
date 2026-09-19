@@ -1640,6 +1640,21 @@ test('the SHA merge-authority verdict gates final admission (unit 2B2)', async (
   assert.equal(unreadable.state, 'ownership_withheld');
   assert.equal(unreadable.ownershipReason, OWNERSHIP_READ_RETRY);
 
+  // An EMPTY but successfully-read commit message is an observably missing trailer, not a transient
+  // read failure: it classifies `invalid` (a `scope:` hold), NEVER OWNERSHIP_READ_RETRY — which would
+  // retry forever a head only a new commit can repair. Only a throw / absent message is unreadable.
+  const emptyMessage = await reviewGate.revalidateFinalReviewPolicy(
+    makeClient(''), 251, head,
+  );
+  assert.equal(emptyMessage.allowed, false);
+  assert.equal(emptyMessage.state, 'ownership_withheld');
+  assert.notEqual(emptyMessage.ownershipReason, OWNERSHIP_READ_RETRY);
+  assert.ok(emptyMessage.ownershipReason.startsWith('scope: '));
+  assert.equal(
+    correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: emptyMessage.ownershipReason }),
+    'scope',
+  );
+
   // Candidate and unreadable owe NO correction (candidate is held pending activation; unreadable is
   // retryable) — the correction-lease consumer opens no lease for either, so neither wakes an agent.
   assert.equal(
@@ -1676,11 +1691,12 @@ test('recovery does not republish success when the SHA verdict is no longer elig
   const build = (message, { throws = false } = {}) => {
     const statusWrites = [];
     const drafts = [];
+    const stickies = [];
     const client = {
       async pullRequest() { return pull(); },
       async setDraft(current, draft) { drafts.push(draft); return { ...current, draft }; },
       async setStatus(h, state, description) { statusWrites.push({ state, description }); },
-      async updateStickyComment() {},
+      async updateStickyComment(number, body) { stickies.push(body); },
       async reviewComments() { return []; },
       async reviews() { return []; },
       async markReplacementRequired() {},
@@ -1691,7 +1707,7 @@ test('recovery does not republish success when the SHA verdict is no longer elig
       async mergeExactHead() { throw new Error('must not merge an ineligible head'); },
       async enableAutoMerge() { throw new Error('must not queue an ineligible head'); },
     };
-    return { client, statusWrites, drafts };
+    return { client, statusWrites, drafts, stickies };
   };
 
   // A candidate-owned head publishes the canonical held failure, drafts, and never republishes
@@ -1705,6 +1721,26 @@ test('recovery does not republish success when the SHA verdict is no longer elig
   assert.equal(candidate.statusWrites.at(-1).description, OWNERSHIP_CANDIDATE_HELD);
   assert.ok(!candidate.statusWrites.some((write) => write.state === 'success'));
   assert.deepEqual(candidate.drafts, [true]);
+  // Recovery must also REPLACE the sticky (the only notification a subscribed session receives), so
+  // the prior clean/`review_clean` comment cannot keep claiming progress. The hold's owner comes from
+  // the VERDICT (the candidate `codex`), not the mutable PR body (which declares `claude`).
+  assert.match(candidate.stickies.at(-1), /`scope_required`/u);
+  assert.match(candidate.stickies.at(-1), /- \*\*Correction owner:\*\* `codex`/u);
+
+  // An INVALID head (readable, no trailer) names NO owner from the mutable body — its ownership is
+  // unconfirmed and reported `correction_stalled`, matching the canonical status the watchdog reads,
+  // so the two routing verdicts never disagree.
+  const invalid = build('fix: x with no trailer');
+  assert.equal(
+    await reviewGate.ensureTerminalReviewState(invalid.client, pull(), head, cleanStatus, statuses),
+    true,
+  );
+  assert.equal(invalid.statusWrites.at(-1).state, 'failure');
+  assert.match(invalid.statusWrites.at(-1).description, /^scope: /u);
+  assert.deepEqual(invalid.drafts, [true]);
+  assert.match(invalid.stickies.at(-1), /- \*\*Correction owner:\*\* `undeclared`/u);
+  assert.match(invalid.stickies.at(-1), /- \*\*Correction state:\*\* `correction_stalled`/u);
+  assert.doesNotMatch(invalid.stickies.at(-1), /`claude`/u);
 
   // An unreadable head fails RETRYABLY and does NOT draft, so a later run can re-read and recover.
   const unreadable = build('', { throws: true });
@@ -1715,6 +1751,30 @@ test('recovery does not republish success when the SHA verdict is no longer elig
   assert.equal(unreadable.statusWrites.at(-1).state, 'failure');
   assert.equal(unreadable.statusWrites.at(-1).description, OWNERSHIP_READ_RETRY);
   assert.deepEqual(unreadable.drafts, []);
+  // Even retryable, the sticky is replaced so a watching session is not left on a stale clean comment.
+  assert.match(unreadable.stickies.at(-1), /`scope_required`/u);
+});
+
+test('re-review is suppressed on an immutable ownership hold but reruns for a body-remedy one (unit 2B2)', () => {
+  const review = (description) => [{ context: 'codex-current-head', state: 'failure', description }];
+  // Candidate and a HEAD-remedy inconsistency are SHA-immutable: a metadata edit cannot change the
+  // trailer, so re-review is suppressed (only reviewer activation or a new head resumes).
+  assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview(review(OWNERSHIP_CANDIDATE_HELD)), true);
+  assert.equal(
+    reviewGate.immutableOwnershipHoldIsNewestReview(review(`scope: ${ownershipInconsistentScopeDetail('head')}`)),
+    true,
+  );
+  // A BODY-remedy inconsistency (head trailer valid; only the PR body marker disagrees) IS fixable by
+  // a body edit, so it must NOT be suppressed — re-review reruns once the body is corrected.
+  assert.equal(
+    reviewGate.immutableOwnershipHoldIsNewestReview(review(`scope: ${ownershipInconsistentScopeDetail('body', 'claude')}`)),
+    false,
+  );
+  // A retryable unreadable failure and a plain non-ownership failure are not immutable ownership holds.
+  assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview(review(OWNERSHIP_READ_RETRY)), false);
+  assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview(review('review: 2 findings')), false);
+  assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview([{ context: 'codex-current-head', state: 'success' }]), false);
+  assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview([]), false);
 });
 
 test('recovering a retryable unreadable ownership failure does not flip readiness (unit 2B2)', async () => {
