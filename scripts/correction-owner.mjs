@@ -360,9 +360,13 @@ function bodyMarkerPermitted(owner, headRef) {
 
 /**
  * The pure ownership VERDICT for one exact head — the immutable-head/body/branch agreement result the later
- * lifecycle, promotion and merge-authorization units consume. It combines the HEAD commit trailer, the PR
- * body marker and the branch reservation into one three-valued read outcome with a clearable remedy, and
- * mutates nothing (no readiness, status publication, auto-merge, recovery dispatch, or watchdog routing).
+ * lifecycle and promotion units consume for routing and diagnostics only. It combines the HEAD commit
+ * trailer, the PR body marker and the branch reservation into one three-valued read outcome with a clearable
+ * remedy, and mutates nothing (no readiness, status publication, auto-merge, recovery dispatch, or watchdog
+ * routing). Being PR-scoped (it reads the mutable PR body and branch), it is explicitly NOT merge authority:
+ * the SHA-shared required status may be released only by `shaMergeAuthority`, which reads the exact commit's
+ * trailer alone. A later unit that fed this verdict into that status would recreate the #611 sibling-PR
+ * hazard — two PRs sharing one head SHA disagreeing on body/branch yet sharing one status.
  *
  * Fields:
  *   trailerOwner  — the owner named by the exact head's terminal `Correction-Owner:` trailer when it is a
