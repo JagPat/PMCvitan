@@ -1755,6 +1755,47 @@ test('recovery does not republish success when the SHA verdict is no longer elig
   assert.match(unreadable.stickies.at(-1), /`scope_required`/u);
 });
 
+test('recovery does not overwrite the singleton sticky once the reviewed head is no longer current (unit 2B2)', async () => {
+  // If a push/close/retarget lands between revalidation and the hold publish, the reviewed unit is no
+  // longer current and the PR's singleton sticky now belongs to a different head. The recovery arm must
+  // honour that recheck (`setDraftForCurrentHead` returning null) and NOT overwrite the new head's sticky.
+  const head = 'f'.repeat(40);
+  const cleanStatus = { id: 401, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head' };
+  const statuses = [cleanStatus];
+  const currentPull = () => ({
+    number: 253,
+    additions: 1,
+    deletions: 0,
+    changed_files: 1,
+    body: '<!-- review-size: standard -->\n<!-- correction-owner: claude -->',
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/253',
+    head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  const stickies = [];
+  const client = {
+    async pullRequest() { return currentPull(); },
+    // The retarget lands exactly at the draft write: setDraft returns a DIFFERENT head, so
+    // setDraftForCurrentHead resolves the unit as no longer current (returns null).
+    async setDraft(current, draft) { return { ...current, draft, head: { sha: 'c'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } } }; },
+    async setStatus() {},
+    async updateStickyComment(number, body) { stickies.push(body); },
+    async reviewComments() { return []; },
+    async reviews() { return []; },
+    async markReplacementRequired() {},
+    async commit() { return { commit: { message: 'fix: x with no trailer' }, files: [] }; },
+    async mergeExactHead() { throw new Error('must not merge an ineligible head'); },
+    async enableAutoMerge() { throw new Error('must not queue an ineligible head'); },
+  };
+  assert.equal(
+    await reviewGate.ensureTerminalReviewState(client, currentPull(), head, cleanStatus, statuses),
+    true,
+  );
+  assert.deepEqual(stickies, [], 'no ownership-hold sticky is written for a head that is no longer current');
+});
+
 test('re-review is suppressed on an immutable ownership hold but reruns for a body-remedy one (unit 2B2)', () => {
   const review = (description) => [{ context: 'codex-current-head', state: 'failure', description }];
   // Candidate and a HEAD-remedy inconsistency are SHA-immutable: a metadata edit cannot change the
@@ -2642,6 +2683,31 @@ test('2A2-i′: a newer candidate hold supersedes an older retryable status for 
   // Control: without the hold, the retryable timeout still authorizes recovery as before.
   assert.equal(reviewGate.authorizeRecoveryDispatch([timeout], '100'), timeout);
   assert.equal(reviewGate.recoverableTerminalReviewStatus([timeout]), timeout);
+});
+
+test('2B2: a newer HEAD-remedy invalid hold also supersedes recovery, but a body-remedy hold does not', () => {
+  // Recovery selection/authorization must treat a HEAD-remedy ownership inconsistency (SHA-immutable —
+  // only a new commit fixes it) exactly like a candidate hold: an older retryable status beneath it must
+  // not be re-selected for dispatch, and a pending recovery request for it must not persist. A BODY-remedy
+  // inconsistency (a body edit fixes it) is NOT immutable, so recovery proceeds as before.
+  const timeout = { context: 'codex-current-head', state: 'failure', id: 100, description: 'review: Codex review timed out after two attempts' };
+  const headHold = { context: 'codex-current-head', state: 'failure', id: 201, description: `scope: ${ownershipInconsistentScopeDetail('head')}` };
+  const bodyHold = { context: 'codex-current-head', state: 'failure', id: 202, description: `scope: ${ownershipInconsistentScopeDetail('body', 'claude')}` };
+
+  const heldStatuses = [headHold, timeout];
+  assert.equal(reviewGate.authorizeRecoveryDispatch(heldStatuses, '100'), null, 'no dispatch beneath a newer head-remedy hold');
+  assert.equal(reviewGate.recoverableTerminalReviewStatus(heldStatuses), null, 'no recoverable terminal beneath a head-remedy hold');
+  assert.equal(
+    reviewGate.recoveryRequestTerminal(heldStatuses, { terminalStatusId: '100' }),
+    null,
+    'a pending recovery request does not persist beneath a head-remedy hold',
+  );
+
+  // A body-remedy hold is body-editable, so it does not freeze recovery: the older retryable timeout
+  // beneath it is still selectable.
+  const bodyStatuses = [bodyHold, timeout];
+  assert.equal(reviewGate.authorizeRecoveryDispatch(bodyStatuses, '100'), timeout, 'a body-remedy hold does not block recovery');
+  assert.equal(reviewGate.recoverableTerminalReviewStatus(bodyStatuses), timeout);
 });
 
 test('2A2-ii: every ownership-withholding vocabulary case withholds a PR-wide auto-merge, and nothing else does', () => {

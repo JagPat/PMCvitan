@@ -267,24 +267,25 @@ function candidateHoldIsNewestReview(statuses) {
     && String(latest?.description ?? '').startsWith(OWNERSHIP_CANDIDATE_HELD);
 }
 
-// Re-review orchestration (unit 2B2) must not spend a fresh Codex invocation on a head whose newest
-// failure a title/body edit cannot change. Two ownership holds are SHA-IMMUTABLE — only reviewer
-// activation or a new head resolves them: a candidate hold, and a HEAD-remedy ownership inconsistency
-// (a missing/malformed/conflicting trailer). A BODY-remedy inconsistency (the head trailer is valid;
-// only the mandatory PR body marker disagrees) IS fixable by a body edit, so it is deliberately
-// EXCLUDED here — a re-review must still run for it once the body is corrected.
+// Neither re-review orchestration nor recovery may act on a head whose newest failure a title/body
+// edit cannot change. Two ownership holds are SHA-IMMUTABLE — only reviewer activation or a new head
+// resolves them: a candidate hold, and a HEAD-remedy ownership inconsistency (a missing/malformed/
+// conflicting trailer). A BODY-remedy inconsistency (the head trailer is valid; only the mandatory PR
+// body marker disagrees) IS fixable by a body edit, so it is deliberately EXCLUDED — a re-review must
+// still run for it once the body is corrected. This is the superset of `candidateHoldIsNewestReview`
+// and gates the same three places recovery selection/authorization did: an older retryable status
+// beneath a newer invalid-trailer hold must not be re-selected any more than beneath a candidate hold.
 export function immutableOwnershipHoldIsNewestReview(statuses) {
+  if (candidateHoldIsNewestReview(statuses)) return true;
   const latest = (statuses ?? []).find((status) => status.context === STATUS_CONTEXT);
   if (latest?.state !== 'failure') return false;
-  const description = String(latest?.description ?? '');
-  if (description.startsWith(OWNERSHIP_CANDIDATE_HELD)) return true;
-  const detail = description.replace(/^\s*scope:\s*/u, '');
+  const detail = String(latest?.description ?? '').replace(/^\s*scope:\s*/u, '');
   return isOwnershipInconsistentScopeDetail('scope', detail)
     && !isBodyOnlyOwnershipRecoveryDetail('scope', detail);
 }
 
 export function recoverableTerminalReviewStatus(statuses) {
-  if (candidateHoldIsNewestReview(statuses)) return null;
+  if (immutableOwnershipHoldIsNewestReview(statuses)) return null;
   const persistentFailure = persistentReviewFailure(statuses);
   if (persistentFailure) return persistentFailure;
 
@@ -364,8 +365,9 @@ export async function persistRecoveryRequest(
 
 export function recoveryRequestTerminal(statuses, request) {
   if (!request) return null;
-  // A newer candidate hold supersedes a pending recovery request too: it must not keep persisting.
-  if (candidateHoldIsNewestReview(statuses)) return null;
+  // A newer SHA-immutable ownership hold (candidate OR a head-remedy inconsistency) supersedes a
+  // pending recovery request too: it must not keep persisting beneath a hold a metadata edit cannot lift.
+  if (immutableOwnershipHoldIsNewestReview(statuses)) return null;
   const sourceIndex = statuses.findIndex((status) =>
     status.context === STATUS_CONTEXT
     && String(status.id) === String(request.terminalStatusId));
@@ -395,8 +397,10 @@ export function isRetryableTerminalReviewFailure(status) {
 }
 
 export function authorizeRecoveryDispatch(statuses, requestedStatusId) {
-  // A newer candidate hold supersedes any older retryable status: hold the head, authorize no recovery.
-  if (candidateHoldIsNewestReview(statuses)) return null;
+  // A newer SHA-immutable ownership hold (candidate OR a head-remedy inconsistency) supersedes any
+  // older retryable status: hold the head, authorize no recovery. Restricting this to candidate holds
+  // let an older retryable status beneath a newer invalid-trailer hold be re-selected for dispatch.
+  if (immutableOwnershipHoldIsNewestReview(statuses)) return null;
   if (persistentReviewFailure(statuses)) return null;
   const latestReviewStatus = statuses.find(
     (status) => status.context === STATUS_CONTEXT,
@@ -1313,16 +1317,25 @@ export async function ensureTerminalReviewState(
           finalPolicy.ownershipReason,
           pullRequest.html_url,
         );
-        if (finalPolicy.verdict?.outcome !== 'unreadable') {
-          await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
+        // A canonical hold (candidate/invalid) drafts, as with any recovered current-head failure; a
+        // retryable unreadable read only fails so a later run can re-read and recover without a draft
+        // flip. Either way capture a LIVE current-head result: a push, close, or retarget between
+        // revalidation and here means this reviewed head is no longer current, and replacing the PR's
+        // singleton sticky would clobber the new head's state. `setDraftForCurrentHead` returns null
+        // when the unit is no longer current; the unreadable branch does not draft, so it rechecks
+        // explicitly via `refreshCurrentHead`.
+        const stillCurrent = finalPolicy.verdict?.outcome === 'unreadable'
+          ? await refreshCurrentHead(client, pullRequest.number, expectedHead)
+          : await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
+        // Recovery must also REPLACE the sticky (the only notification a subscribed session receives),
+        // so a prior `review_clean`/`clear` comment cannot keep claiming GitHub will complete a held
+        // head. The hold's owner/state come from the verdict, as the clean path does.
+        if (stillCurrent) {
+          await publishOwnershipHoldSticky(client, stillCurrent, expectedHead, {
+            ownershipReason: finalPolicy.ownershipReason,
+            verdict: finalPolicy.verdict,
+          });
         }
-        // Recovery must also REPLACE the sticky: a prior `review_clean`/`clear` comment (the only
-        // notification a subscribed session receives) would otherwise keep saying GitHub will complete
-        // a head that is now held on ownership. Derive the hold from the verdict, as the clean path does.
-        await publishOwnershipHoldSticky(client, pullRequest, expectedHead, {
-          ownershipReason: finalPolicy.ownershipReason,
-          verdict: finalPolicy.verdict,
-        });
       }
       return true;
     }
@@ -2165,15 +2178,30 @@ export async function run() {
             finalPolicy.ownershipReason,
             pullRequest.html_url,
           );
+          // Consume any pending recovery request now: a prior `OWNERSHIP_READ_RETRY` may have minted
+          // one, and once this immutable hold is newest, `run()` short-circuits before
+          // `pendingRecoveryRequest` on every later pass — so the request would otherwise persist
+          // forever. `settleRecoveryRequest` no-ops when there is none.
+          await settleRecoveryRequest(
+            client,
+            expectedHead,
+            pullRequest,
+            recoveryRequest,
+            'ownership hold',
+          );
           // Replace the `review_clean` sticky published above: it says GitHub will complete the head,
-          // but the head is held on ownership. The hold's owner/state come from the SHA verdict (never
-          // the mutable PR body), so this sticky and the canonical status agree on who — if anyone —
-          // the head authenticates.
-          await publishOwnershipHoldSticky(client, pullRequest, expectedHead, {
-            ownershipReason: finalPolicy.ownershipReason,
-            verdict: finalPolicy.verdict,
-            attempt,
-          });
+          // but the head is held on ownership. Only while THIS reviewed head is still current — a push,
+          // close, or retarget between revalidation and here means the singleton sticky belongs to a
+          // different head now. The hold's owner/state come from the SHA verdict (never the mutable PR
+          // body), so this sticky and the canonical status agree on who — if anyone — the head authenticates.
+          const stillCurrent = await refreshCurrentHead(client, pullRequest.number, expectedHead);
+          if (stillCurrent) {
+            await publishOwnershipHoldSticky(client, stillCurrent, expectedHead, {
+              ownershipReason: finalPolicy.ownershipReason,
+              verdict: finalPolicy.verdict,
+              attempt,
+            });
+          }
           return;
         }
         throw new Error(`Final review policy changed: ${finalPolicy.state}`);
