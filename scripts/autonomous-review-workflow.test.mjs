@@ -9,6 +9,7 @@ import {
   OWNERSHIP_CANDIDATE_HELD,
   ownershipInconsistentScopeDetail,
 } from './review-policy.mjs';
+import { correctionReasonFor } from './correction-lease.mjs';
 
 const {
   hasTerminalReviewFailureAfterPending,
@@ -1623,6 +1624,14 @@ test('the SHA merge-authority verdict gates final admission (unit 2B2)', async (
   assert.equal(invalid.allowed, false);
   assert.equal(invalid.state, 'ownership_withheld');
   assert.match(invalid.ownershipReason, /inconsistent correction ownership/u);
+  // The invalid reason is published in the canonical `scope:` vocabulary, so the correction-lease
+  // consumer classifies it `scope` (an unconfirmed owner) rather than the generic `review` — it must
+  // never trust the mutable PR-body owner and wake it.
+  assert.ok(invalid.ownershipReason.startsWith('scope: '));
+  assert.equal(
+    correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: invalid.ownershipReason }),
+    'scope',
+  );
 
   const unreadable = await reviewGate.revalidateFinalReviewPolicy(
     makeClient('', { throws: true }), 251, head,
@@ -1630,6 +1639,17 @@ test('the SHA merge-authority verdict gates final admission (unit 2B2)', async (
   assert.equal(unreadable.allowed, false);
   assert.equal(unreadable.state, 'ownership_withheld');
   assert.equal(unreadable.ownershipReason, OWNERSHIP_READ_RETRY);
+
+  // Candidate and unreadable owe NO correction (candidate is held pending activation; unreadable is
+  // retryable) — the correction-lease consumer opens no lease for either, so neither wakes an agent.
+  assert.equal(
+    correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: candidate.ownershipReason }),
+    null,
+  );
+  assert.equal(
+    correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: unreadable.ownershipReason }),
+    null,
+  );
 });
 
 test('recovery does not republish success when the SHA verdict is no longer eligible (unit 2B2)', async () => {
@@ -1695,6 +1715,49 @@ test('recovery does not republish success when the SHA verdict is no longer elig
   assert.equal(unreadable.statusWrites.at(-1).state, 'failure');
   assert.equal(unreadable.statusWrites.at(-1).description, OWNERSHIP_READ_RETRY);
   assert.deepEqual(unreadable.drafts, []);
+});
+
+test('recovering a retryable unreadable ownership failure does not flip readiness (unit 2B2)', async () => {
+  const head = 'f'.repeat(40);
+  // The failure-recovery arm of ensureTerminalReviewState drafts on any recovered current-head
+  // failure — except a retryable OWNERSHIP_READ_RETRY, which must stay retryable so a later run
+  // re-reads the commit and recovers without a manual re-ready.
+  const retryStatus = {
+    id: 501,
+    context: 'codex-current-head',
+    state: 'failure',
+    description: OWNERSHIP_READ_RETRY,
+  };
+  const drafts = [];
+  const client = {
+    async pullRequest() {
+      return {
+        number: 253,
+        state: 'open',
+        draft: false,
+        head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } },
+        base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
+        html_url: 'https://github.com/JagPat/PMCvitan/pull/253',
+      };
+    },
+    async setDraft(current, draft) { drafts.push(draft); return { ...current, draft }; },
+    async setStatus() {},
+  };
+  assert.equal(
+    await reviewGate.ensureTerminalReviewState(client, await client.pullRequest(), head, retryStatus, [retryStatus]),
+    true,
+  );
+  assert.deepEqual(drafts, [], 'a retryable unreadable failure must not draft the PR');
+
+  // An ordinary review failure in the same arm still drafts, as before.
+  const ordinary = { id: 502, context: 'codex-current-head', state: 'failure', description: 'review: a real finding' };
+  const ordinaryDrafts = [];
+  const ordinaryClient = { ...client, async setDraft(current, draft) { ordinaryDrafts.push(draft); return { ...current, draft }; } };
+  assert.equal(
+    await reviewGate.ensureTerminalReviewState(ordinaryClient, await client.pullRequest(), head, ordinary, [ordinary]),
+    true,
+  );
+  assert.deepEqual(ordinaryDrafts, [true], 'an ordinary recovered failure still drafts');
 });
 
 test('Codex review records and inline comments are fully paginated', async () => {

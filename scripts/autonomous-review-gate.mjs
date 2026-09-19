@@ -9,7 +9,7 @@ import {
   STATUS_CONTEXT,
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
-  OWNERSHIP_INCONSISTENT_SCOPE,
+  ownershipInconsistentScopeDetail,
   isOwnershipInconsistentScopeDetail,
 } from './review-policy.mjs';
 export {
@@ -1074,15 +1074,22 @@ export async function readShaMergeVerdict(client, head) {
   }
 }
 
-// The canonical `codex-current-head` failure reason a non-eligible SHA verdict publishes in place of
-// success. `eligible` alone returns null (success proceeds). `unreadable` is the only RETRYABLE
-// reason — a later run re-reads and re-classifies; `candidate` and `invalid` are canonical holds.
+// The canonical `codex-current-head` failure DESCRIPTION a non-eligible SHA verdict publishes in place
+// of success — each in the exact vocabulary the correction-lease consumer classifies by prefix
+// (`correctionReasonFor`), so an ownership hold routes correctly rather than as a generic review fault:
+//   - `eligible`   → null (success proceeds).
+//   - `candidate`  → `OWNERSHIP_CANDIDATE_HELD` (a `validation:` string the lease recognises as held —
+//                    no correction, never merge-eligible, resolved only by reviewer activation).
+//   - `unreadable` → `OWNERSHIP_READ_RETRY` (a retryable `validation:` string — no correction owed).
+//   - `invalid`    → a `scope:`-prefixed ownership-inconsistency detail, so `correctionReasonFor`
+//                    classifies it `scope` (not the generic `review`) and the lease treats the head's
+//                    ownership as unconfirmed rather than trusting the mutable PR-body owner.
 export function ownershipReasonForVerdict(verdict) {
   switch (verdict?.outcome) {
     case 'eligible': return null;
     case 'candidate': return OWNERSHIP_CANDIDATE_HELD;
     case 'unreadable': return OWNERSHIP_READ_RETRY;
-    default: return OWNERSHIP_INCONSISTENT_SCOPE; // invalid — missing/conflicting/malformed trailer
+    default: return `scope: ${ownershipInconsistentScopeDetail('head')}`; // missing/conflicting/malformed
   }
 }
 
@@ -1248,12 +1255,17 @@ export async function ensureTerminalReviewState(
         pullRequest.html_url,
       );
     }
-    await setDraftForCurrentHead(
-      client,
-      pullRequest.number,
-      expectedHead,
-      true,
-    );
+    // 2B2: a retryable `OWNERSHIP_READ_RETRY` failure must not flip readiness here either — the exact
+    // head could not be read, so a later run re-reads and recovers. Drafting on a transient read
+    // failure would strand the PR draft until a manual re-ready; every other recovered failure drafts.
+    if (!String(status.description ?? '').startsWith(OWNERSHIP_READ_RETRY)) {
+      await setDraftForCurrentHead(
+        client,
+        pullRequest.number,
+        expectedHead,
+        true,
+      );
+    }
   }
   return true;
 }
@@ -1682,6 +1694,20 @@ export async function run() {
     return;
   }
 
+  // 2B2: when the newest current-head review is a candidate ownership hold, the exact head is
+  // consistently owned by an in-flight candidate whose IMMUTABLE trailer cannot become merge-eligible
+  // through a metadata edit. Re-running CI and Codex on the same SHA would overwrite the hold with
+  // `pending` and spend a review that can only reproduce the same hold; leave it until reviewer
+  // activation or a new head supersedes it. A new head changes `expectedHead`, so its statuses carry no
+  // such hold and orchestration proceeds normally.
+  if (candidateHoldIsNewestReview(existingStatuses)) {
+    console.log(
+      'Newest current-head review is a candidate ownership hold; leaving it in place '
+        + '(activation or a new head resumes it, not a metadata edit).',
+    );
+    return;
+  }
+
   const scope = await enforceReviewScope(client, pullRequest, expectedHead);
   if (scope.superseded) return;
   if (!scope.allowed) throw new Error(scope.detail);
@@ -2037,6 +2063,25 @@ export async function run() {
             'failure',
             finalPolicy.ownershipReason,
             pullRequest.html_url,
+          );
+          // Replace the `review_clean` sticky published above: it says GitHub will complete the head,
+          // but the head is held on ownership. `scope_required` reflects "this exact head is not
+          // admissible as-is" and carries the ownership detail so a watching session is not misled.
+          const ownershipNotice = correctionNotice(pullRequest, {
+            detail: finalPolicy.ownershipReason,
+            reason: 'scope',
+          });
+          await client.updateStickyComment(
+            pullRequest.number,
+            statusBody({
+              state: 'scope_required',
+              head: expectedHead,
+              detail: finalPolicy.ownershipReason,
+              attempt,
+              owner: ownershipNotice.owner ?? 'undeclared',
+              correctionState: noticeState(ownershipNotice),
+              next: 'This exact head is held on ownership; the required status stays red until its Correction-Owner trailer resolves.',
+            }),
           );
           return;
         }
