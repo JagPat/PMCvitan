@@ -33,14 +33,14 @@ Only the declared owner handles normal correction handoff; do not start a compet
 producer. Conflict handoffs re-read the owner and current head before publication;
 invalid or non-awakenable ownership is reported without waking a different agent.
 
-The exact head's Correction-Owner trailer, the PR body marker and the branch reservation
-combine into one pure ownership verdict — a three-valued read (eligible; readable-but-
-inconsistent, cleared by a body edit or, when the trailer is unusable or the branch forbids
-it, a new head; or temporarily unreadable and retryable) in one canonical status vocabulary.
-Codex is a recognised CANDIDATE owner the verdict tracks in-flight but never merges and never
-wakes, held pending independent reviewer activation because implementation tasks and reviews
-share the Codex bot identity; a transfer marker cannot promote it. Later units consume the
-verdict for promotion and exact-head merge authorization; alone it mutates nothing.
+The exact head's Correction-Owner trailer, the PR body marker and the branch reservation combine into
+one pure PR-scoped verdict — a three-valued read (eligible; readable-but-inconsistent, cleared by a body
+edit or, when the trailer is unusable or the branch forbids it, a new head; or temporarily unreadable and
+retryable) in one canonical status vocabulary — which governs promotion routing and diagnostics, not merge.
+Codex is a recognised CANDIDATE owner it tracks in-flight but never merges nor wakes, pending independent-
+reviewer activation (tasks and reviews share its bot identity); a transfer marker cannot promote it. Merge
+authority is instead SHA-scoped: the required status is shared by every PR on that commit, so only a verdict
+read from that commit's trailer alone releases it — never the mutable body, branch or PR; alone it mutates nothing.
 
 This repository currently enables only the Claude correction wake integration.
 Codex supports GitHub task mentions such as `@codex fix the CI failures` through its

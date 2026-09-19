@@ -289,6 +289,49 @@ export function parseCommitCorrectionOwner(commitMessage) {
 }
 
 /**
+ * The immutable SHA merge-authority verdict (unit 2B1). Derived ONLY from the exact commit
+ * message/trailer for a single SHA — never the PR body marker, branch ref, PR number, or the set of
+ * sibling PRs. GitHub's required `codex-current-head` status is commit-SHA scoped (it lives at
+ * `/statuses/{sha}` and is shared by every pull request whose head points at that commit), so the
+ * predicate that may release it must be entirely SHA scoped too; a mutable, PR-scoped input cannot be
+ * safely encoded into a SHA-shared status while native auto-merge may already be armed (see #611). This
+ * is a PURE read: it parses the terminal trailer git-faithfully via `parseCommitCorrectionOwner` (an
+ * isolated, read-only git subprocess) and mutates nothing — no status publication, no draft or
+ * auto-merge mutation, no merge call. Because it takes only the commit message, the verdict is
+ * identical for every pull-request view that shares one head SHA.
+ *
+ * Four distinct outcomes, so a later publisher/consumer (unit 2B2) can act on each; `mergeEligible` is
+ * true for exactly one of them:
+ *   - `eligible`   — exactly one terminal `Correction-Owner:` trailer naming a merge-eligible admitted
+ *                    owner (`CORRECTION_OWNERS`); `owner` is that owner; `mergeEligible` true.
+ *   - `candidate`  — a recognised in-flight CANDIDATE owner (`CANDIDATE_CORRECTION_OWNERS`, e.g. codex):
+ *                    tracked, never merge-eligible; `owner` names it; `mergeEligible` false.
+ *   - `invalid`    — a readable trailer fault (missing, conflicting, or a malformed/non-admitted value);
+ *                    `owner` null; `mergeEligible` false. `trailerState` keeps the finer reason.
+ *   - `unreadable` — git could not be run, so the SHA's owner is unknown: transient/retryable
+ *                    infrastructure, never an owning head; `owner` null; `mergeEligible` false.
+ *
+ * This is the exact-head MERGE authority. The PR-scoped reads — `parseCorrectionOwner` (body marker) and
+ * `headOwnerVerdict` (body marker + branch reservation) — remain for correction routing and diagnostics
+ * and are explicitly NOT merge authority: being PR-scoped, they may not release the SHA-shared required
+ * status. No consumer in this unit calls `shaMergeAuthority`; it only classifies, failing closed so a
+ * later caller never treats a candidate, faulted, or unreadable SHA as merge-eligible.
+ */
+export function shaMergeAuthority(commitMessage) {
+  const trailer = parseCommitCorrectionOwner(commitMessage);
+  switch (trailer.state) {
+    case 'declared':
+      return { outcome: 'eligible', mergeEligible: true, owner: trailer.owner, trailerState: trailer.state };
+    case 'candidate':
+      return { outcome: 'candidate', mergeEligible: false, owner: trailer.owner, trailerState: trailer.state };
+    case 'unreadable':
+      return { outcome: 'unreadable', mergeEligible: false, owner: null, trailerState: trailer.state };
+    default: // missing | conflicting | invalid — a readable ownership fault
+      return { outcome: 'invalid', mergeEligible: false, owner: null, trailerState: trailer.state };
+  }
+}
+
+/**
  * HEAD-bound owner agreement — a resolution primitive for the later consumers (review gate, conflict
  * handoff, watchdog) that will hold a fetched commit. The exact commit's single terminal `Correction-Owner:`
  * trailer must name a valid owner AND agree with the PR body marker; `consistent` is false for a
@@ -317,9 +360,13 @@ function bodyMarkerPermitted(owner, headRef) {
 
 /**
  * The pure ownership VERDICT for one exact head — the immutable-head/body/branch agreement result the later
- * lifecycle, promotion and merge-authorization units consume. It combines the HEAD commit trailer, the PR
- * body marker and the branch reservation into one three-valued read outcome with a clearable remedy, and
- * mutates nothing (no readiness, status publication, auto-merge, recovery dispatch, or watchdog routing).
+ * lifecycle and promotion units consume for routing and diagnostics only. It combines the HEAD commit
+ * trailer, the PR body marker and the branch reservation into one three-valued read outcome with a clearable
+ * remedy, and mutates nothing (no readiness, status publication, auto-merge, recovery dispatch, or watchdog
+ * routing). Being PR-scoped (it reads the mutable PR body and branch), it is explicitly NOT merge authority:
+ * the SHA-shared required status may be released only by `shaMergeAuthority`, which reads the exact commit's
+ * trailer alone. A later unit that fed this verdict into that status would recreate the #611 sibling-PR
+ * hazard — two PRs sharing one head SHA disagreeing on body/branch yet sharing one status.
  *
  * Fields:
  *   trailerOwner  — the owner named by the exact head's terminal `Correction-Owner:` trailer when it is a

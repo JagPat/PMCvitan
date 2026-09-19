@@ -16,6 +16,9 @@ or a code fence. `scripts/correction-owner.mjs` exposes:
 - `parseCommitCorrectionOwner(commitMessage)` → `{ state, owner, declared }`, where `state` is:
   - `declared` — exactly one terminal `Correction-Owner:` trailer naming an admitted owner
     (`CORRECTION_OWNERS`); `owner` is the lower-cased value.
+  - `candidate` — the single terminal trailer names a recognised in-flight **candidate** owner
+    (`CANDIDATE_CORRECTION_OWNERS`, e.g. `codex`): tracked, never merge-eligible. It is a first-class state
+    distinct from `declared`, so every consumer that checks `=== 'declared'` keeps it out of merge authority.
   - `missing` — no terminal trailer block, or none named `Correction-Owner`.
   - `conflicting` — more than one `Correction-Owner` trailer, or disagreeing values.
   - `invalid` — a malformed value, or one that is not an admitted correction owner.
@@ -29,6 +32,18 @@ or a code fence. `scripts/correction-owner.mjs` exposes:
   missing/invalid/disagreeing trailer or an `unreadable` commit. `headRef` is passed through to the body
   parse so a `claude/**` branch declaring another owner reads as `contradictory` (the branch-reservation
   rule the scope gate applies) rather than being accepted.
+- `shaMergeAuthority(commitMessage)` → `{ outcome, mergeEligible, owner, trailerState }`, the **SHA-scoped
+  merge authority**: a pure, mutation-free verdict derived only from the exact commit's terminal trailer
+  (via `parseCommitCorrectionOwner`), so it is identical for every pull-request view sharing one head SHA.
+  `outcome` is one of `eligible` (a merge-eligible admitted owner; `mergeEligible` true — the only true
+  case), `candidate` (a tracked candidate; never eligible), `invalid` (a readable trailer fault —
+  missing/conflicting/malformed; `trailerState` keeps the finer reason), or `unreadable` (git could not be
+  run; transient/retryable, fails closed). It publishes no status, and mutates no draft, auto-merge, or
+  merge state — a later unit consumes the verdict. GitHub's required `codex-current-head` status lives at
+  `/statuses/{sha}` and is shared by every PR pointing at that commit, so only a SHA-scoped predicate may
+  release it. The PR-scoped reads (`parseCorrectionOwner` body marker, `headOwnerVerdict` body + branch
+  reservation, `headBoundOwnerAgreement`) remain for correction routing and diagnostics and are explicitly
+  **not** merge authority: being PR-scoped, they may not release the SHA-shared required status.
 
 ## Git fidelity
 
