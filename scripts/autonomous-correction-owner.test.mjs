@@ -31,6 +31,7 @@ import test from 'node:test';
 import { guardAgainstCurrentHeadFinding, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
 import {
   parseCommitCorrectionOwner,
+  shaMergeAuthority,
   headBoundOwnerAgreement,
   headOwnerVerdict,
   ownershipStatus,
@@ -944,6 +945,62 @@ test('owner resolution is applied on top of git-faithful parsing', () => {
   assert.equal(parseCommitCorrectionOwner('doc\n\n```\nCorrection-Owner: claude\n```\n').state, 'missing');
 });
 
+test('shaMergeAuthority is the SHA-only, mutation-free merge authority (unit 2B1)', () => {
+  // Derived ONLY from the commit message/trailer: the single-argument signature admits no PR body,
+  // branch ref, PR number, or sibling-PR set, so the verdict is identical for every pull-request view
+  // that shares one head SHA. GitHub's required status is SHA scoped, so its releasing predicate must be.
+  assert.equal(shaMergeAuthority.length, 1);
+
+  // eligible: a merge-eligible admitted owner (claude, cursor) — the only merge-eligible outcome.
+  assert.deepEqual(
+    shaMergeAuthority('x\n\nCorrection-Owner: claude\n'),
+    { outcome: 'eligible', mergeEligible: true, owner: 'claude', trailerState: 'declared' },
+  );
+  assert.deepEqual(
+    shaMergeAuthority('x\n\nCorrection-Owner: cursor\n'),
+    { outcome: 'eligible', mergeEligible: true, owner: 'cursor', trailerState: 'declared' },
+  );
+
+  // candidate: a recognised in-flight candidate (codex) is tracked but NEVER merge-eligible.
+  assert.deepEqual(
+    shaMergeAuthority('x\n\nCorrection-Owner: codex\n'),
+    { outcome: 'candidate', mergeEligible: false, owner: 'codex', trailerState: 'candidate' },
+  );
+
+  // invalid: a readable fault — missing, conflicting, or malformed/non-admitted — carries the finer
+  // trailerState, names no owner, and is never merge-eligible.
+  assert.deepEqual(
+    shaMergeAuthority('no trailer'),
+    { outcome: 'invalid', mergeEligible: false, owner: null, trailerState: 'missing' },
+  );
+  assert.deepEqual(
+    shaMergeAuthority('x\n\nCorrection-Owner: claude\nCorrection-Owner: cursor\n'),
+    { outcome: 'invalid', mergeEligible: false, owner: null, trailerState: 'conflicting' },
+  );
+  assert.deepEqual(
+    shaMergeAuthority('x\n\nCorrection-Owner: nobody\n'),
+    { outcome: 'invalid', mergeEligible: false, owner: null, trailerState: 'invalid' },
+  );
+  // A marker in prose or a code fence is not a terminal trailer, so it carries no merge authority.
+  assert.equal(shaMergeAuthority('doc\n\n```\nCorrection-Owner: claude\n```\n').outcome, 'invalid');
+
+  // mergeEligible is true for EXACTLY the eligible outcome.
+  for (const [message, expected] of [
+    ['x\n\nCorrection-Owner: claude\n', true],
+    ['x\n\nCorrection-Owner: cursor\n', true],
+    ['x\n\nCorrection-Owner: codex\n', false],
+    ['no trailer', false],
+    ['x\n\nCorrection-Owner: claude\nCorrection-Owner: cursor\n', false],
+    ['x\n\nCorrection-Owner: nobody\n', false],
+  ]) {
+    assert.equal(shaMergeAuthority(message).mergeEligible, expected);
+  }
+
+  // Identical for every PR view sharing one SHA: the same commit message always yields the same verdict.
+  const message = 'x\n\nCorrection-Owner: claude\n';
+  assert.deepEqual(shaMergeAuthority(message), shaMergeAuthority(message));
+});
+
 test('headBoundOwnerAgreement is a pure fail-closed resolution primitive', () => {
   const marker = (owner) => `<!-- correction-owner: ${owner} -->`;
   assert.deepEqual(
@@ -1159,6 +1216,12 @@ test('an unreadable git fails closed to `unreadable`, never to an owner', () => 
     assert.equal(agreement.consistent, false);
     assert.equal(agreement.headOwner, null);
     assert.equal(agreement.trailerState, 'unreadable');
+    // The SHA merge authority fails closed on the same infra failure: transient-unreadable is a distinct,
+    // never-eligible outcome, never collapsed into a readable ownership fault or an owner.
+    assert.deepEqual(
+      shaMergeAuthority('x\n\nCorrection-Owner: claude\n'),
+      { outcome: 'unreadable', mergeEligible: false, owner: null, trailerState: 'unreadable' },
+    );
   } finally {
     process.env.PATH = savedPath;
   }
