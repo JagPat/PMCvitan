@@ -83,14 +83,26 @@ test('server-side workflow run and artifact association rejects forged producer 
 test('automatic merge needs CI and exact-head review, with no human authorization', async () => {
   const pull = { number: 600, state: 'open', draft: false, head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } }, base: { ref: 'main', sha: base, repo: { full_name: 'JagPat/PMCvitan' } } };
   const checks = REQUIRED_CHECKS.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
-  const makeClient = ({ pulls = [pull, pull], statuses = [{ context: 'codex-current-head', state: 'success' }], runs = checks } = {}) => ({
+  // 2B2: the exact head commit carries a valid terminal Correction-Owner trailer by default, so the
+  // SHA merge-authority verdict is `eligible`. `merge` overrides it to exercise the ownership gate.
+  const eligibleCommit = { commit: { message: 'fix: something\n\nCorrection-Owner: claude\n' } };
+  const makeClient = ({ pulls = [pull, pull], statuses = [{ context: 'codex-current-head', state: 'success' }], runs = checks, commit = eligibleCommit } = {}) => ({
     repository: 'JagPat/PMCvitan',
     async pullRequest() { return pulls.shift() ?? pull; },
     async statuses() { return statuses; },
     async checkRuns() { return runs; },
+    async commit() { return commit; },
     async paginated() { throw new Error('Merge must not fetch human authorization comments'); },
   });
   assert.equal((await authorizeExactHeadMerge(makeClient(), pull, head)).allowed, true);
+  // 2B2: the merge reads ONE SHA merge-authority verdict and refuses a head whose trailer is not a
+  // merge-eligible owner — even with the required status green and all checks passing. A candidate
+  // owner, a readable-but-invalid trailer, and an unreadable/absent commit each fail closed.
+  assert.equal((await authorizeExactHeadMerge(makeClient({ commit: { commit: { message: 'x\n\nCorrection-Owner: codex\n' } } }), pull, head)).state, 'ownership_not_eligible');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ commit: { commit: { message: 'no trailer here' } } }), pull, head)).state, 'ownership_not_eligible');
+  assert.equal((await authorizeExactHeadMerge(makeClient({ commit: { commit: { message: '' } } }), pull, head)).state, 'ownership_not_eligible');
+  // A caller that pre-parsed the eligible verdict authorizes without a second commit read.
+  assert.equal((await authorizeExactHeadMerge({ ...makeClient(), async commit() { throw new Error('must not re-read when verdict is carried'); } }, pull, head, { outcome: 'eligible', mergeEligible: true, owner: 'claude' })).allowed, true);
   assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [{ ...pull, draft: true }] }), pull, head)).state, 'draft');
   assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [pull, { ...pull, head: { ...pull.head, sha: 'c'.repeat(40) } }] }), pull, head)).state, 'changed_during_validation');
   assert.equal((await authorizeExactHeadMerge(makeClient({ pulls: [pull, { ...pull, base: { ...pull.base, sha: 'd'.repeat(40) } }] }), pull, head)).state, 'changed_during_validation');

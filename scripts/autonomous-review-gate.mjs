@@ -9,7 +9,9 @@ import {
   STATUS_CONTEXT,
   OWNERSHIP_READ_RETRY,
   OWNERSHIP_CANDIDATE_HELD,
+  ownershipInconsistentScopeDetail,
   isOwnershipInconsistentScopeDetail,
+  isBodyOnlyOwnershipRecoveryDetail,
 } from './review-policy.mjs';
 export {
   requiredChecksForPullRequest,
@@ -33,6 +35,7 @@ import {
   CORRECTION_STALLED,
   correctionOwnerDeclaration,
   correctionRouting,
+  shaMergeAuthority,
 } from './correction-owner.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import {
@@ -264,8 +267,25 @@ function candidateHoldIsNewestReview(statuses) {
     && String(latest?.description ?? '').startsWith(OWNERSHIP_CANDIDATE_HELD);
 }
 
+// Neither re-review orchestration nor recovery may act on a head whose newest failure a title/body
+// edit cannot change. Two ownership holds are SHA-IMMUTABLE — only reviewer activation or a new head
+// resolves them: a candidate hold, and a HEAD-remedy ownership inconsistency (a missing/malformed/
+// conflicting trailer). A BODY-remedy inconsistency (the head trailer is valid; only the mandatory PR
+// body marker disagrees) IS fixable by a body edit, so it is deliberately EXCLUDED — a re-review must
+// still run for it once the body is corrected. This is the superset of `candidateHoldIsNewestReview`
+// and gates the same three places recovery selection/authorization did: an older retryable status
+// beneath a newer invalid-trailer hold must not be re-selected any more than beneath a candidate hold.
+export function immutableOwnershipHoldIsNewestReview(statuses) {
+  if (candidateHoldIsNewestReview(statuses)) return true;
+  const latest = (statuses ?? []).find((status) => status.context === STATUS_CONTEXT);
+  if (latest?.state !== 'failure') return false;
+  const detail = String(latest?.description ?? '').replace(/^\s*scope:\s*/u, '');
+  return isOwnershipInconsistentScopeDetail('scope', detail)
+    && !isBodyOnlyOwnershipRecoveryDetail('scope', detail);
+}
+
 export function recoverableTerminalReviewStatus(statuses) {
-  if (candidateHoldIsNewestReview(statuses)) return null;
+  if (immutableOwnershipHoldIsNewestReview(statuses)) return null;
   const persistentFailure = persistentReviewFailure(statuses);
   if (persistentFailure) return persistentFailure;
 
@@ -345,8 +365,9 @@ export async function persistRecoveryRequest(
 
 export function recoveryRequestTerminal(statuses, request) {
   if (!request) return null;
-  // A newer candidate hold supersedes a pending recovery request too: it must not keep persisting.
-  if (candidateHoldIsNewestReview(statuses)) return null;
+  // A newer SHA-immutable ownership hold (candidate OR a head-remedy inconsistency) supersedes a
+  // pending recovery request too: it must not keep persisting beneath a hold a metadata edit cannot lift.
+  if (immutableOwnershipHoldIsNewestReview(statuses)) return null;
   const sourceIndex = statuses.findIndex((status) =>
     status.context === STATUS_CONTEXT
     && String(status.id) === String(request.terminalStatusId));
@@ -376,8 +397,10 @@ export function isRetryableTerminalReviewFailure(status) {
 }
 
 export function authorizeRecoveryDispatch(statuses, requestedStatusId) {
-  // A newer candidate hold supersedes any older retryable status: hold the head, authorize no recovery.
-  if (candidateHoldIsNewestReview(statuses)) return null;
+  // A newer SHA-immutable ownership hold (candidate OR a head-remedy inconsistency) supersedes any
+  // older retryable status: hold the head, authorize no recovery. Restricting this to candidate holds
+  // let an older retryable status beneath a newer invalid-trailer hold be re-selected for dispatch.
+  if (immutableOwnershipHoldIsNewestReview(statuses)) return null;
   if (persistentReviewFailure(statuses)) return null;
   const latestReviewStatus = statuses.find(
     (status) => status.context === STATUS_CONTEXT,
@@ -908,6 +931,72 @@ function noticeState(notice) {
   return notice?.state === CORRECTION_STALLED ? CORRECTION_STALLED : null;
 }
 
+// The sticky's ownership fields for a non-eligible SHA verdict, derived from the VERDICT alone —
+// NEVER from the mutable PR body. The canonical `codex-current-head` failure and the correction-lease
+// watchdog both treat an `invalid` head's ownership as unconfirmed (the head authenticates nobody) and
+// a `candidate` head as held-for-activation. The sticky must show the same, so a watching session is
+// never handed a body-declared owner the head does not authenticate — the two routing verdicts must
+// agree. (Deriving `owner` from `correctionNotice(pullRequest, …)` read it from the body and could
+// publish e.g. `claude` with no `correction_stalled` state while the status said the owner was
+// unconfirmed.)
+function ownershipHoldNotice(verdict) {
+  switch (verdict?.outcome) {
+    case 'candidate':
+      // A real candidate owner named by the head trailer, held for independent-reviewer activation.
+      // No correction is owed (the watchdog routes none), so it is not `correction_stalled`.
+      return {
+        owner: verdict.owner ?? 'undeclared',
+        correctionState: null,
+        next: 'This exact head is held for independent-reviewer activation; the required status stays '
+          + 'red until a reviewer activates the candidate owner or a new head supersedes it.',
+      };
+    case 'unreadable':
+      // Transient: a later run re-reads the head and recovers. Assert no owner.
+      return {
+        owner: 'undeclared',
+        correctionState: null,
+        next: 'This exact head could not be read; the required status stays red until a later run '
+          + 're-reads the commit and recovers.',
+      };
+    default:
+      // `invalid`: the head trailer is missing, malformed, or conflicting — it authenticates nobody.
+      // Ownership is unconfirmed and no agent is routed; only a new head resolves it, so surface it as
+      // stalled rather than naming the body's declared owner.
+      return {
+        owner: 'undeclared',
+        correctionState: CORRECTION_STALLED,
+        next: 'This exact head authenticates no owner; the required status stays red until a new head '
+          + 'carries a single valid Correction-Owner trailer matching the PR body marker.',
+      };
+  }
+}
+
+// Replace whatever sticky was last published (`review_clean`/`clear`, or a stale success) when the
+// exact head's SHA verdict is not merge-eligible. The only notification a subscribed session receives
+// is a sticky-comment update, so a hold that changes only the required status would leave the reader
+// looking at a comment that says GitHub will complete a head that is actually blocked. Shared by the
+// ordinary clean-review path and the post-deploy recovery arm so both report the identical hold.
+async function publishOwnershipHoldSticky(
+  client,
+  pullRequest,
+  expectedHead,
+  { ownershipReason, verdict, attempt = null },
+) {
+  const hold = ownershipHoldNotice(verdict);
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: 'scope_required',
+      head: expectedHead,
+      detail: ownershipReason,
+      attempt,
+      owner: hold.owner,
+      correctionState: hold.correctionState,
+      next: hold.next,
+    }),
+  );
+}
+
 function statusBody({
   state,
   head,
@@ -929,7 +1018,11 @@ function statusBody({
     '',
     `- **Head:** \`${head}\``,
     `- **State:** \`${state}\``,
-    `- **Codex attempt:** ${attempt}/${MAX_REVIEW_ATTEMPTS}`,
+    // A recovery/hold sticky is not a fresh Codex attempt, so it omits the line rather than render a
+    // meaningless `null/N`; every review-loop caller passes a positive attempt and still shows it.
+    ...(Number.isInteger(attempt) && attempt > 0
+      ? [`- **Codex attempt:** ${attempt}/${MAX_REVIEW_ATTEMPTS}`]
+      : []),
     `- **Detail:** ${detail}`,
     // Machine-readable, beside the instruction it explains: a reader (human or
     // agent) can see WHO is expected to act without parsing the sentence.
@@ -1054,12 +1147,56 @@ export async function setDraftForCurrentHead(
   return isCurrentReviewUnit(updated, expectedHead) ? updated : null;
 }
 
+// 2B2: the single SHA-scoped merge-authority read for one run. The controller reads the exact head
+// commit MESSAGE once and every required-success publisher and the merge consume this one parsed
+// verdict (`shaMergeAuthority`, itself SHA-only and mutation-free). A fetch failure or a message
+// that cannot be read fails closed to the retryable `unreadable` outcome, never to an owner — so an
+// infrastructure blip never grants merge authority.
+export async function readShaMergeVerdict(client, head) {
+  try {
+    const commit = await client.commit(head);
+    const message = commit?.commit?.message;
+    if (typeof message !== 'string') {
+      // The read did not yield a message at all (absent field) — genuinely unreadable, fail retryably.
+      return { outcome: 'unreadable', mergeEligible: false, owner: null, trailerState: 'unreadable' };
+    }
+    // An EMPTY string is a SUCCESSFUL read of a commit whose message is genuinely empty (e.g.
+    // `git commit --allow-empty-message`): the trailer is observably missing, not transiently
+    // unreadable. `shaMergeAuthority('')` returns the readable `invalid`/`missing` outcome, which opens
+    // the canonical scope hold — never `OWNERSHIP_READ_RETRY`, which would retry a head forever when
+    // only a new commit can repair it.
+    return shaMergeAuthority(message);
+  } catch {
+    return { outcome: 'unreadable', mergeEligible: false, owner: null, trailerState: 'unreadable' };
+  }
+}
+
+// The canonical `codex-current-head` failure DESCRIPTION a non-eligible SHA verdict publishes in place
+// of success — each in the exact vocabulary the correction-lease consumer classifies by prefix
+// (`correctionReasonFor`), so an ownership hold routes correctly rather than as a generic review fault:
+//   - `eligible`   → null (success proceeds).
+//   - `candidate`  → `OWNERSHIP_CANDIDATE_HELD` (a `validation:` string the lease recognises as held —
+//                    no correction, never merge-eligible, resolved only by reviewer activation).
+//   - `unreadable` → `OWNERSHIP_READ_RETRY` (a retryable `validation:` string — no correction owed).
+//   - `invalid`    → a `scope:`-prefixed ownership-inconsistency detail, so `correctionReasonFor`
+//                    classifies it `scope` (not the generic `review`) and the lease treats the head's
+//                    ownership as unconfirmed rather than trusting the mutable PR-body owner.
+export function ownershipReasonForVerdict(verdict) {
+  switch (verdict?.outcome) {
+    case 'eligible': return null;
+    case 'candidate': return OWNERSHIP_CANDIDATE_HELD;
+    case 'unreadable': return OWNERSHIP_READ_RETRY;
+    default: return `scope: ${ownershipInconsistentScopeDetail('head')}`; // missing/conflicting/malformed
+  }
+}
+
 export async function completeReviewedPullRequest(
   client,
   pullRequest,
   expectedHead,
+  verdict,
 ) {
-  const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead);
+  const authorization = await authorizeExactHeadMerge(client, pullRequest, expectedHead, verdict);
   if (!authorization.allowed) {
     return 'held_for_gates';
   }
@@ -1100,7 +1237,7 @@ export async function completeReviewedPullRequest(
 }
 
 /** The common mandatory guard for both direct merge and auto-merge entrypoints. */
-export async function authorizeExactHeadMerge(client, pullRequest, expectedHead) {
+export async function authorizeExactHeadMerge(client, pullRequest, expectedHead, verdict) {
   const live = await refreshCurrentHead(client, pullRequest.number, expectedHead);
   if (!live || live.draft || !live.base?.sha) {
     return { allowed: false, state: live?.draft ? 'draft' : 'superseded' };
@@ -1113,6 +1250,14 @@ export async function authorizeExactHeadMerge(client, pullRequest, expectedHead)
   const required = summarizeRequiredChecks(checks, requiredChecksForPullRequest(live.number));
   if (latestReview?.state !== 'success' || required.state !== 'success') {
     return { allowed: false, state: 'gates_not_green' };
+  }
+  // 2B2: the merge consumes the same one SHA merge-authority verdict the success publisher carried;
+  // called without it (a direct caller) it reads the exact head once and fails closed. Only a
+  // SHA-eligible trailer authorizes the merge — the SHA-shared status alone is not sufficient, so a
+  // green status left on a head whose trailer is candidate/invalid/unreadable never merges.
+  const mergeVerdict = verdict ?? await readShaMergeVerdict(client, expectedHead);
+  if (!mergeVerdict?.mergeEligible) {
+    return { allowed: false, state: 'ownership_not_eligible' };
   }
   // Re-read after remote evidence. A push, base update, retarget or draft
   // transition during validation fails closed.
@@ -1159,7 +1304,41 @@ export async function ensureTerminalReviewState(
       pullRequest.number,
       expectedHead,
     );
-    if (finalPolicy.superseded || !finalPolicy.allowed) return true;
+    if (finalPolicy.superseded) return true;
+    if (!finalPolicy.allowed) {
+      if (finalPolicy.ownershipReason) {
+        // 2B2: recovery must not republish a stale success when the exact head's SHA verdict is no
+        // longer eligible; publish the canonical ownership failure. A canonical hold
+        // (candidate/invalid) also drafts, as with any recovered current-head failure; a retryable
+        // unreadable read only fails so a later run can re-read and recover without a draft flip.
+        await client.setStatus(
+          expectedHead,
+          'failure',
+          finalPolicy.ownershipReason,
+          pullRequest.html_url,
+        );
+        // A canonical hold (candidate/invalid) drafts, as with any recovered current-head failure; a
+        // retryable unreadable read only fails so a later run can re-read and recover without a draft
+        // flip. Either way capture a LIVE current-head result: a push, close, or retarget between
+        // revalidation and here means this reviewed head is no longer current, and replacing the PR's
+        // singleton sticky would clobber the new head's state. `setDraftForCurrentHead` returns null
+        // when the unit is no longer current; the unreadable branch does not draft, so it rechecks
+        // explicitly via `refreshCurrentHead`.
+        const stillCurrent = finalPolicy.verdict?.outcome === 'unreadable'
+          ? await refreshCurrentHead(client, pullRequest.number, expectedHead)
+          : await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
+        // Recovery must also REPLACE the sticky (the only notification a subscribed session receives),
+        // so a prior `review_clean`/`clear` comment cannot keep claiming GitHub will complete a held
+        // head. The hold's owner/state come from the verdict, as the clean path does.
+        if (stillCurrent) {
+          await publishOwnershipHoldSticky(client, stillCurrent, expectedHead, {
+            ownershipReason: finalPolicy.ownershipReason,
+            verdict: finalPolicy.verdict,
+          });
+        }
+      }
+      return true;
+    }
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
     );
@@ -1175,6 +1354,7 @@ export async function ensureTerminalReviewState(
       client,
       finalPolicy.pullRequest,
       expectedHead,
+      finalPolicy.verdict,
     );
   } else {
     const latestStatus = statuses.find(
@@ -1188,12 +1368,17 @@ export async function ensureTerminalReviewState(
         pullRequest.html_url,
       );
     }
-    await setDraftForCurrentHead(
-      client,
-      pullRequest.number,
-      expectedHead,
-      true,
-    );
+    // 2B2: a retryable `OWNERSHIP_READ_RETRY` failure must not flip readiness here either — the exact
+    // head could not be read, so a later run re-reads and recovers. Drafting on a transient read
+    // failure would strand the PR draft until a manual re-ready; every other recovered failure drafts.
+    if (!String(status.description ?? '').startsWith(OWNERSHIP_READ_RETRY)) {
+      await setDraftForCurrentHead(
+        client,
+        pullRequest.number,
+        expectedHead,
+        true,
+      );
+    }
   }
   return true;
 }
@@ -1318,7 +1503,17 @@ export async function revalidateFinalReviewPolicy(
     return { state: 'changes_required', allowed: false, detail: finding };
   }
 
-  return { state: 'allowed', allowed: true, pullRequest };
+  // 2B2: the SHA-scoped merge authority for this exact head, read ONCE here — the single verdict
+  // both the required-success publisher and the merge consume. Only an eligible trailer permits a
+  // `codex-current-head` success; a non-eligible verdict yields the canonical ownership failure
+  // reason (unreadable→retryable, candidate/invalid→held) instead, never success.
+  const verdict = await readShaMergeVerdict(client, expectedHead);
+  const ownershipReason = ownershipReasonForVerdict(verdict);
+  if (ownershipReason) {
+    return { state: 'ownership_withheld', allowed: false, ownershipReason, verdict, pullRequest };
+  }
+
+  return { state: 'allowed', allowed: true, pullRequest, verdict };
 }
 
 async function reviewAttempt(
@@ -1608,6 +1803,21 @@ export async function run() {
     );
     console.log(
       `Persisted recovery request for terminal status ${authorizedStatus.id}.`,
+    );
+    return;
+  }
+
+  // 2B2: when the newest current-head review is a candidate ownership hold, the exact head is
+  // consistently owned by an in-flight candidate whose IMMUTABLE trailer cannot become merge-eligible
+  // through a metadata edit. Re-running CI and Codex on the same SHA would overwrite the hold with
+  // `pending` and spend a review that can only reproduce the same hold; leave it until reviewer
+  // activation or a new head supersedes it. A new head changes `expectedHead`, so its statuses carry no
+  // such hold and orchestration proceeds normally.
+  if (immutableOwnershipHoldIsNewestReview(existingStatuses)) {
+    console.log(
+      'Newest current-head review is a SHA-immutable ownership hold (candidate, or a head-remedy '
+        + 'ownership inconsistency); leaving it in place — only reviewer activation or a new head '
+        + 'resumes it, never a metadata edit. A body-remedy inconsistency is not held here and reruns.',
     );
     return;
   }
@@ -1958,6 +2168,42 @@ export async function run() {
       );
       if (finalPolicy.superseded) return;
       if (!finalPolicy.allowed) {
+        if (finalPolicy.ownershipReason) {
+          // 2B2: Codex found the head clean, but the exact head's SHA merge-authority verdict is
+          // not eligible — publish the canonical ownership failure on this same SHA instead of
+          // success (unreadable is retryable; candidate/invalid are held). No merge is attempted.
+          await client.setStatus(
+            expectedHead,
+            'failure',
+            finalPolicy.ownershipReason,
+            pullRequest.html_url,
+          );
+          // Consume any pending recovery request now: a prior `OWNERSHIP_READ_RETRY` may have minted
+          // one, and once this immutable hold is newest, `run()` short-circuits before
+          // `pendingRecoveryRequest` on every later pass — so the request would otherwise persist
+          // forever. `settleRecoveryRequest` no-ops when there is none.
+          await settleRecoveryRequest(
+            client,
+            expectedHead,
+            pullRequest,
+            recoveryRequest,
+            'ownership hold',
+          );
+          // Replace the `review_clean` sticky published above: it says GitHub will complete the head,
+          // but the head is held on ownership. Only while THIS reviewed head is still current — a push,
+          // close, or retarget between revalidation and here means the singleton sticky belongs to a
+          // different head now. The hold's owner/state come from the SHA verdict (never the mutable PR
+          // body), so this sticky and the canonical status agree on who — if anyone — the head authenticates.
+          const stillCurrent = await refreshCurrentHead(client, pullRequest.number, expectedHead);
+          if (stillCurrent) {
+            await publishOwnershipHoldSticky(client, stillCurrent, expectedHead, {
+              ownershipReason: finalPolicy.ownershipReason,
+              verdict: finalPolicy.verdict,
+              attempt,
+            });
+          }
+          return;
+        }
         throw new Error(`Final review policy changed: ${finalPolicy.state}`);
       }
       pullRequest = finalPolicy.pullRequest;
@@ -1987,6 +2233,7 @@ export async function run() {
         client,
         pullRequest,
         expectedHead,
+        finalPolicy.verdict,
       );
       await client.updateStickyComment(
         pullRequest.number,

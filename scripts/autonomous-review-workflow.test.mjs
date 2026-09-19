@@ -9,6 +9,7 @@ import {
   OWNERSHIP_CANDIDATE_HELD,
   ownershipInconsistentScopeDetail,
 } from './review-policy.mjs';
+import { correctionReasonFor } from './correction-lease.mjs';
 
 const {
   hasTerminalReviewFailureAfterPending,
@@ -27,12 +28,17 @@ function checkRun(name, conclusion = 'success', status = 'completed') {
   return { name, conclusion, status };
 }
 
-function automatedMergeEvidence(pullRequest) {
+// 2B2: an eligible SHA merge-authority verdict — the exact head commit carries a valid terminal
+// Correction-Owner trailer, so `shaMergeAuthority` returns { outcome: 'eligible', mergeEligible: true }.
+const ELIGIBLE_HEAD_COMMIT = { commit: { message: 'fix: something\n\nCorrection-Owner: claude\n' } };
+
+function automatedMergeEvidence(pullRequest, commit = ELIGIBLE_HEAD_COMMIT) {
   return {
     repository: 'JagPat/PMCvitan',
     async pullRequest() { return pullRequest; },
     async statuses() { return [{ context: 'codex-current-head', state: 'success' }]; },
     async checkRuns() { return REQUIRED_CHECKS.map((name) => checkRun(name)); },
+    async commit() { return commit; },
   };
 }
 
@@ -646,7 +652,9 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     async reviews() { return []; },
     async markReplacementRequired() {},
     async commit() {
-      return { commit: { message: 'fix: ordinary head' }, files: [] };
+      // 2B2: the SHA merge authority reads the head commit trailer; this promotable head carries a
+      // valid one so the test exercises the buried-verdict path, not ownership.
+      return { commit: { message: 'fix: ordinary head\n\nCorrection-Owner: claude\n' }, files: [] };
     },
     async updateStickyComment() {},
     async mergeExactHead() {
@@ -1521,7 +1529,7 @@ test('final admission revalidates live scope and the late review-round reset', a
     async reviewComments() { return []; },
     async reviews() { return []; },
     async markReplacementRequired() {},
-    async commit() { return { commit: { message: 'fix: no convergence' }, files: [] }; },
+    async commit() { return { commit: { message: 'fix: no convergence\n\nCorrection-Owner: claude\n' }, files: [] }; },
   };
 
   const invalidScope = await reviewGate.revalidateFinalReviewPolicy(
@@ -1559,6 +1567,298 @@ test('final admission revalidates live scope and the late review-round reset', a
   );
   assert.equal(lateFinding.allowed, false);
   assert.equal(lateFinding.state, 'changes_required');
+});
+
+test('the SHA merge-authority verdict gates final admission (unit 2B2)', async () => {
+  const head = 'f'.repeat(40);
+  const promotablePull = () => ({
+    number: 251,
+    additions: 1,
+    deletions: 0,
+    changed_files: 1,
+    body: '<!-- review-size: standard -->\n<!-- correction-owner: claude -->',
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/251',
+    head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  // A promotable head — scope in-limit, no unresolved Codex thread, no finding — so the ONLY
+  // remaining gate is the SHA merge-authority verdict this unit reads from the head commit trailer.
+  const makeClient = (message, { throws = false } = {}) => ({
+    async pullRequest() { return promotablePull(); },
+    async setDraft(live, draft) { return { ...live, draft }; },
+    async setStatus() {},
+    async updateStickyComment() {},
+    async reviewComments() {
+      return [
+        { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'a'.repeat(40) },
+        { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'b'.repeat(40) },
+      ];
+    },
+    async reviews() { return []; },
+    async markReplacementRequired() {},
+    async commit() {
+      if (throws) throw new Error('commit fetch failed');
+      return { commit: { message }, files: [] };
+    },
+  });
+
+  const eligible = await reviewGate.revalidateFinalReviewPolicy(
+    makeClient('fix: x\n\nCorrection-Owner: claude\n'), 251, head,
+  );
+  assert.equal(eligible.allowed, true);
+  assert.equal(eligible.state, 'allowed');
+  assert.equal(eligible.verdict.mergeEligible, true);
+
+  const candidate = await reviewGate.revalidateFinalReviewPolicy(
+    makeClient('fix: x\n\nCorrection-Owner: codex\n'), 251, head,
+  );
+  assert.equal(candidate.allowed, false);
+  assert.equal(candidate.state, 'ownership_withheld');
+  assert.equal(candidate.ownershipReason, OWNERSHIP_CANDIDATE_HELD);
+
+  const invalid = await reviewGate.revalidateFinalReviewPolicy(
+    makeClient('fix: x with no trailer'), 251, head,
+  );
+  assert.equal(invalid.allowed, false);
+  assert.equal(invalid.state, 'ownership_withheld');
+  assert.match(invalid.ownershipReason, /inconsistent correction ownership/u);
+  // The invalid reason is published in the canonical `scope:` vocabulary, so the correction-lease
+  // consumer classifies it `scope` (an unconfirmed owner) rather than the generic `review` — it must
+  // never trust the mutable PR-body owner and wake it.
+  assert.ok(invalid.ownershipReason.startsWith('scope: '));
+  assert.equal(
+    correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: invalid.ownershipReason }),
+    'scope',
+  );
+
+  const unreadable = await reviewGate.revalidateFinalReviewPolicy(
+    makeClient('', { throws: true }), 251, head,
+  );
+  assert.equal(unreadable.allowed, false);
+  assert.equal(unreadable.state, 'ownership_withheld');
+  assert.equal(unreadable.ownershipReason, OWNERSHIP_READ_RETRY);
+
+  // An EMPTY but successfully-read commit message is an observably missing trailer, not a transient
+  // read failure: it classifies `invalid` (a `scope:` hold), NEVER OWNERSHIP_READ_RETRY — which would
+  // retry forever a head only a new commit can repair. Only a throw / absent message is unreadable.
+  const emptyMessage = await reviewGate.revalidateFinalReviewPolicy(
+    makeClient(''), 251, head,
+  );
+  assert.equal(emptyMessage.allowed, false);
+  assert.equal(emptyMessage.state, 'ownership_withheld');
+  assert.notEqual(emptyMessage.ownershipReason, OWNERSHIP_READ_RETRY);
+  assert.ok(emptyMessage.ownershipReason.startsWith('scope: '));
+  assert.equal(
+    correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: emptyMessage.ownershipReason }),
+    'scope',
+  );
+
+  // Candidate and unreadable owe NO correction (candidate is held pending activation; unreadable is
+  // retryable) — the correction-lease consumer opens no lease for either, so neither wakes an agent.
+  assert.equal(
+    correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: candidate.ownershipReason }),
+    null,
+  );
+  assert.equal(
+    correctionReasonFor({ context: 'codex-current-head', state: 'failure', description: unreadable.ownershipReason }),
+    null,
+  );
+});
+
+test('recovery does not republish success when the SHA verdict is no longer eligible (unit 2B2)', async () => {
+  const head = 'f'.repeat(40);
+  const cleanStatus = {
+    id: 401,
+    context: 'codex-current-head',
+    state: 'success',
+    description: 'review: Codex found no blocking issue on this exact head',
+  };
+  const statuses = [cleanStatus];
+  const pull = () => ({
+    number: 252,
+    additions: 1,
+    deletions: 0,
+    changed_files: 1,
+    body: '<!-- review-size: standard -->\n<!-- correction-owner: claude -->',
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/252',
+    head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  const build = (message, { throws = false } = {}) => {
+    const statusWrites = [];
+    const drafts = [];
+    const stickies = [];
+    const client = {
+      async pullRequest() { return pull(); },
+      async setDraft(current, draft) { drafts.push(draft); return { ...current, draft }; },
+      async setStatus(h, state, description) { statusWrites.push({ state, description }); },
+      async updateStickyComment(number, body) { stickies.push(body); },
+      async reviewComments() { return []; },
+      async reviews() { return []; },
+      async markReplacementRequired() {},
+      async commit() {
+        if (throws) throw new Error('commit fetch failed');
+        return { commit: { message }, files: [] };
+      },
+      async mergeExactHead() { throw new Error('must not merge an ineligible head'); },
+      async enableAutoMerge() { throw new Error('must not queue an ineligible head'); },
+    };
+    return { client, statusWrites, drafts, stickies };
+  };
+
+  // A candidate-owned head publishes the canonical held failure, drafts, and never republishes
+  // success or merges — the green status alone is not merge authority.
+  const candidate = build('fix: x\n\nCorrection-Owner: codex\n');
+  assert.equal(
+    await reviewGate.ensureTerminalReviewState(candidate.client, pull(), head, cleanStatus, statuses),
+    true,
+  );
+  assert.equal(candidate.statusWrites.at(-1).state, 'failure');
+  assert.equal(candidate.statusWrites.at(-1).description, OWNERSHIP_CANDIDATE_HELD);
+  assert.ok(!candidate.statusWrites.some((write) => write.state === 'success'));
+  assert.deepEqual(candidate.drafts, [true]);
+  // Recovery must also REPLACE the sticky (the only notification a subscribed session receives), so
+  // the prior clean/`review_clean` comment cannot keep claiming progress. The hold's owner comes from
+  // the VERDICT (the candidate `codex`), not the mutable PR body (which declares `claude`).
+  assert.match(candidate.stickies.at(-1), /`scope_required`/u);
+  assert.match(candidate.stickies.at(-1), /- \*\*Correction owner:\*\* `codex`/u);
+
+  // An INVALID head (readable, no trailer) names NO owner from the mutable body — its ownership is
+  // unconfirmed and reported `correction_stalled`, matching the canonical status the watchdog reads,
+  // so the two routing verdicts never disagree.
+  const invalid = build('fix: x with no trailer');
+  assert.equal(
+    await reviewGate.ensureTerminalReviewState(invalid.client, pull(), head, cleanStatus, statuses),
+    true,
+  );
+  assert.equal(invalid.statusWrites.at(-1).state, 'failure');
+  assert.match(invalid.statusWrites.at(-1).description, /^scope: /u);
+  assert.deepEqual(invalid.drafts, [true]);
+  assert.match(invalid.stickies.at(-1), /- \*\*Correction owner:\*\* `undeclared`/u);
+  assert.match(invalid.stickies.at(-1), /- \*\*Correction state:\*\* `correction_stalled`/u);
+  assert.doesNotMatch(invalid.stickies.at(-1), /`claude`/u);
+
+  // An unreadable head fails RETRYABLY and does NOT draft, so a later run can re-read and recover.
+  const unreadable = build('', { throws: true });
+  assert.equal(
+    await reviewGate.ensureTerminalReviewState(unreadable.client, pull(), head, cleanStatus, statuses),
+    true,
+  );
+  assert.equal(unreadable.statusWrites.at(-1).state, 'failure');
+  assert.equal(unreadable.statusWrites.at(-1).description, OWNERSHIP_READ_RETRY);
+  assert.deepEqual(unreadable.drafts, []);
+  // Even retryable, the sticky is replaced so a watching session is not left on a stale clean comment.
+  assert.match(unreadable.stickies.at(-1), /`scope_required`/u);
+});
+
+test('recovery does not overwrite the singleton sticky once the reviewed head is no longer current (unit 2B2)', async () => {
+  // If a push/close/retarget lands between revalidation and the hold publish, the reviewed unit is no
+  // longer current and the PR's singleton sticky now belongs to a different head. The recovery arm must
+  // honour that recheck (`setDraftForCurrentHead` returning null) and NOT overwrite the new head's sticky.
+  const head = 'f'.repeat(40);
+  const cleanStatus = { id: 401, context: 'codex-current-head', state: 'success', description: 'review: Codex found no blocking issue on this exact head' };
+  const statuses = [cleanStatus];
+  const currentPull = () => ({
+    number: 253,
+    additions: 1,
+    deletions: 0,
+    changed_files: 1,
+    body: '<!-- review-size: standard -->\n<!-- correction-owner: claude -->',
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/253',
+    head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  const stickies = [];
+  const client = {
+    async pullRequest() { return currentPull(); },
+    // The retarget lands exactly at the draft write: setDraft returns a DIFFERENT head, so
+    // setDraftForCurrentHead resolves the unit as no longer current (returns null).
+    async setDraft(current, draft) { return { ...current, draft, head: { sha: 'c'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } } }; },
+    async setStatus() {},
+    async updateStickyComment(number, body) { stickies.push(body); },
+    async reviewComments() { return []; },
+    async reviews() { return []; },
+    async markReplacementRequired() {},
+    async commit() { return { commit: { message: 'fix: x with no trailer' }, files: [] }; },
+    async mergeExactHead() { throw new Error('must not merge an ineligible head'); },
+    async enableAutoMerge() { throw new Error('must not queue an ineligible head'); },
+  };
+  assert.equal(
+    await reviewGate.ensureTerminalReviewState(client, currentPull(), head, cleanStatus, statuses),
+    true,
+  );
+  assert.deepEqual(stickies, [], 'no ownership-hold sticky is written for a head that is no longer current');
+});
+
+test('re-review is suppressed on an immutable ownership hold but reruns for a body-remedy one (unit 2B2)', () => {
+  const review = (description) => [{ context: 'codex-current-head', state: 'failure', description }];
+  // Candidate and a HEAD-remedy inconsistency are SHA-immutable: a metadata edit cannot change the
+  // trailer, so re-review is suppressed (only reviewer activation or a new head resumes).
+  assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview(review(OWNERSHIP_CANDIDATE_HELD)), true);
+  assert.equal(
+    reviewGate.immutableOwnershipHoldIsNewestReview(review(`scope: ${ownershipInconsistentScopeDetail('head')}`)),
+    true,
+  );
+  // A BODY-remedy inconsistency (head trailer valid; only the PR body marker disagrees) IS fixable by
+  // a body edit, so it must NOT be suppressed — re-review reruns once the body is corrected.
+  assert.equal(
+    reviewGate.immutableOwnershipHoldIsNewestReview(review(`scope: ${ownershipInconsistentScopeDetail('body', 'claude')}`)),
+    false,
+  );
+  // A retryable unreadable failure and a plain non-ownership failure are not immutable ownership holds.
+  assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview(review(OWNERSHIP_READ_RETRY)), false);
+  assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview(review('review: 2 findings')), false);
+  assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview([{ context: 'codex-current-head', state: 'success' }]), false);
+  assert.equal(reviewGate.immutableOwnershipHoldIsNewestReview([]), false);
+});
+
+test('recovering a retryable unreadable ownership failure does not flip readiness (unit 2B2)', async () => {
+  const head = 'f'.repeat(40);
+  // The failure-recovery arm of ensureTerminalReviewState drafts on any recovered current-head
+  // failure — except a retryable OWNERSHIP_READ_RETRY, which must stay retryable so a later run
+  // re-reads the commit and recovers without a manual re-ready.
+  const retryStatus = {
+    id: 501,
+    context: 'codex-current-head',
+    state: 'failure',
+    description: OWNERSHIP_READ_RETRY,
+  };
+  const drafts = [];
+  const client = {
+    async pullRequest() {
+      return {
+        number: 253,
+        state: 'open',
+        draft: false,
+        head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } },
+        base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
+        html_url: 'https://github.com/JagPat/PMCvitan/pull/253',
+      };
+    },
+    async setDraft(current, draft) { drafts.push(draft); return { ...current, draft }; },
+    async setStatus() {},
+  };
+  assert.equal(
+    await reviewGate.ensureTerminalReviewState(client, await client.pullRequest(), head, retryStatus, [retryStatus]),
+    true,
+  );
+  assert.deepEqual(drafts, [], 'a retryable unreadable failure must not draft the PR');
+
+  // An ordinary review failure in the same arm still drafts, as before.
+  const ordinary = { id: 502, context: 'codex-current-head', state: 'failure', description: 'review: a real finding' };
+  const ordinaryDrafts = [];
+  const ordinaryClient = { ...client, async setDraft(current, draft) { ordinaryDrafts.push(draft); return { ...current, draft }; } };
+  assert.equal(
+    await reviewGate.ensureTerminalReviewState(ordinaryClient, await client.pullRequest(), head, ordinary, [ordinary]),
+    true,
+  );
+  assert.deepEqual(ordinaryDrafts, [true], 'an ordinary recovered failure still drafts');
 });
 
 test('Codex review records and inline comments are fully paginated', async () => {
@@ -2383,6 +2683,31 @@ test('2A2-i′: a newer candidate hold supersedes an older retryable status for 
   // Control: without the hold, the retryable timeout still authorizes recovery as before.
   assert.equal(reviewGate.authorizeRecoveryDispatch([timeout], '100'), timeout);
   assert.equal(reviewGate.recoverableTerminalReviewStatus([timeout]), timeout);
+});
+
+test('2B2: a newer HEAD-remedy invalid hold also supersedes recovery, but a body-remedy hold does not', () => {
+  // Recovery selection/authorization must treat a HEAD-remedy ownership inconsistency (SHA-immutable —
+  // only a new commit fixes it) exactly like a candidate hold: an older retryable status beneath it must
+  // not be re-selected for dispatch, and a pending recovery request for it must not persist. A BODY-remedy
+  // inconsistency (a body edit fixes it) is NOT immutable, so recovery proceeds as before.
+  const timeout = { context: 'codex-current-head', state: 'failure', id: 100, description: 'review: Codex review timed out after two attempts' };
+  const headHold = { context: 'codex-current-head', state: 'failure', id: 201, description: `scope: ${ownershipInconsistentScopeDetail('head')}` };
+  const bodyHold = { context: 'codex-current-head', state: 'failure', id: 202, description: `scope: ${ownershipInconsistentScopeDetail('body', 'claude')}` };
+
+  const heldStatuses = [headHold, timeout];
+  assert.equal(reviewGate.authorizeRecoveryDispatch(heldStatuses, '100'), null, 'no dispatch beneath a newer head-remedy hold');
+  assert.equal(reviewGate.recoverableTerminalReviewStatus(heldStatuses), null, 'no recoverable terminal beneath a head-remedy hold');
+  assert.equal(
+    reviewGate.recoveryRequestTerminal(heldStatuses, { terminalStatusId: '100' }),
+    null,
+    'a pending recovery request does not persist beneath a head-remedy hold',
+  );
+
+  // A body-remedy hold is body-editable, so it does not freeze recovery: the older retryable timeout
+  // beneath it is still selectable.
+  const bodyStatuses = [bodyHold, timeout];
+  assert.equal(reviewGate.authorizeRecoveryDispatch(bodyStatuses, '100'), timeout, 'a body-remedy hold does not block recovery');
+  assert.equal(reviewGate.recoverableTerminalReviewStatus(bodyStatuses), timeout);
 });
 
 test('2A2-ii: every ownership-withholding vocabulary case withholds a PR-wide auto-merge, and nothing else does', () => {
