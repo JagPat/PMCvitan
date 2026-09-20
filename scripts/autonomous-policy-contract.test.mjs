@@ -19,6 +19,7 @@ test('gate, CI planner and scope consumers use the same canonical policy definit
   assert.strictEqual(scope.REQUIRED_INVARIANTS, policy.REQUIRED_INVARIANTS);
   assert.equal(scope.STANDARD_MAX_FILES, policy.STANDARD_MAX_FILES);
   assert.equal(scope.STANDARD_MAX_CHANGED_LINES, policy.STANDARD_MAX_CHANGED_LINES);
+  assert.equal(scope.HARD_SIZE_CAP_AFTER_PR, policy.HARD_SIZE_CAP_AFTER_PR);
   assert.equal(lineage.LINEAGE_BASE_REF, policy.LINEAGE_BASE_REF);
 });
 

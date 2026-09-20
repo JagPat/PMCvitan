@@ -1854,3 +1854,37 @@ test('invariant rows inside a fenced example do not count as the matrix', () => 
   const realBody = capBody(['<!-- migration-scope: inseparable -->']);
   assert.equal(assessReviewScope(pullRequest({ ...large, body: realBody }), { changedFiles: mixed }).state, 'inseparable_large');
 });
+
+test('a direct "no impact"/"no evidence" assertion cell is rejected', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  const rows = sixRows('There is no impact for this invariant', 'There is no supporting evidence for this row');
+  const result = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], rows) }), { changedFiles: mixed });
+  assert.equal(result.allowed, false, 'direct no-impact/no-evidence assertions must not exempt the cap');
+  assert.match(result.detail, /rows without concrete risk and evidence/u);
+  assert.deepEqual(result.missingInvariants, [...REQUIRED_INVARIANTS]);
+});
+
+test('invariant rows inside an HTML comment do not count as the matrix', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  // the six rows are wrapped in an HTML comment, so the rendered body shows no matrix
+  const commentedBody = [
+    '<!-- migration-scope: inseparable -->',
+    '<!-- correction-owner: claude -->',
+    'Replaces: none',
+    '',
+    '## Pre-review checklist',
+    ...PRE_REVIEW_KEYS.map((key) => `- [x] \`${key}\` — checked against this cumulative diff`),
+    '- Migration/service seam: the seed literal is generated from the compiled catalog',
+    '',
+    'An example matrix (commented out, not real):',
+    '<!--',
+    ...sixRows(),
+    '-->',
+  ].join('\n');
+  const result = assessReviewScope(pullRequest({ ...large, body: commentedBody }), { changedFiles: mixed });
+  assert.equal(result.allowed, false, 'HTML-commented example rows must not satisfy the matrix');
+  assert.match(result.detail, /rows without concrete risk and evidence/u);
+  assert.deepEqual(result.missingInvariants, [...REQUIRED_INVARIANTS]);
+});

@@ -8,6 +8,7 @@ import {
   REQUIRED_INVARIANTS,
   STATUS_DOCUMENT,
   CODEX_LOGIN,
+  HARD_SIZE_CAP_AFTER_PR,
   isRetryableReviewFailureDescription,
 } from './review-policy.mjs';
 export {
@@ -19,6 +20,7 @@ export {
   REQUIRED_PRE_REVIEW_CHECKS,
   REQUIRED_INVARIANTS,
   STATUS_DOCUMENT,
+  HARD_SIZE_CAP_AFTER_PR,
   isRetryableReviewFailureDescription,
 } from './review-policy.mjs';
 
@@ -58,11 +60,8 @@ export const CONVERGENCE_AFTER_FINDING_HEADS = 2;
 // review stop will settle it. The finding is kept and its verification is moved to the
 // one place a verification can exist.
 export const PLAN_REVIEW_ROUND_CAP = 3;
-// Units numbered above this carry the HARD size cap (user decision, 2026-09-15): an oversized
-// ordinary unit is split, `justified-large` admits nothing, no human size marker exists, and the
-// ONLY exemption is an inseparable migration unit whose diff carries the migration and its
-// service and whose six invariant rows carry concrete risk and evidence.
-export const HARD_SIZE_CAP_AFTER_PR = 590;
+// `HARD_SIZE_CAP_AFTER_PR` is defined once in review-policy.mjs (with the other scope thresholds)
+// and re-exported above, so this consumer and the policy-contract suite read one cutoff.
 
 const LARGE_MARKER = '<!-- review-size: justified-large -->';
 const INSEPARABLE_MIGRATION_MARKER = '<!-- migration-scope: inseparable -->';
@@ -96,14 +95,17 @@ function declaredMarker(body, name) {
   return values.size === 1 ? [...values][0] : undefined;
 }
 
-// The invariant-matrix rows, EXCLUDING any inside a fenced or quoted example block. A plain scan of
-// every pipe-prefixed line let six otherwise-valid rows placed inside a ```markdown example fence —
-// with no real matrix section — count as the matrix and grant the sole hard-cap exemption. Track
-// code fences (``` or ~~~) and skip any pipe line inside one, so only the real matrix section counts.
+// The invariant-matrix rows that actually RENDER, excluding any inside a construct GitHub does not
+// render as a table. A plain scan of every pipe-prefixed line let six otherwise-valid rows placed
+// inside a ```markdown example fence — or between `<!--` and `-->` — count as the matrix and grant
+// the sole hard-cap exemption, though the rendered body shows no matrix. The two GFM constructs that
+// swallow a pipe table are code fences and HTML comments: strip comments first (single- and
+// multi-line), then skip any pipe line inside a code fence, so only the real matrix section counts.
 function matrixRows(body) {
   const rows = [];
   let inFence = false;
-  for (const line of String(body ?? '').split(/\r?\n/u)) {
+  const text = String(body ?? '').replace(/<!--[\s\S]*?-->/gu, '');
+  for (const line of text.split(/\r?\n/u)) {
     if (/^\s*(?:```|~~~)/u.test(line)) { inFence = !inFence; continue; }
     if (inFence) continue;
     if (line.trimStart().startsWith('|')) rows.push(line.split('|').slice(1, -1).map((cell) => cell.trim()));
@@ -593,7 +595,7 @@ const CELL_NONANSWER_OPENER = /^(?:n\/?a|na|nil|tbd|to[\s-]?do|not applicable|no
 // declare a row empty; a genuine risk names a mechanism that fails ("none of the writers validates
 // the tenant, so a forged claim crosses", "the writer does not validate the tenant") and matches
 // none of them, staying concrete.
-const CELL_NONANSWER_PHRASE = /\b(?:not applicable|inapplicable|does ?n['’o]t apply|not relevant|irrelevant|not pertinent|not related|no related|carries no|does not carry|no risk|not affected|unaffected|out of scope|needs no verification|no verification (?:needed|required)|nothing to (?:assess|verify))\b/iu;
+const CELL_NONANSWER_PHRASE = /\b(?:not applicable|inapplicable|does ?n['’o]t apply|not relevant|irrelevant|not pertinent|not related|no related|carries no|does not carry|no risk|no impact|not affected|unaffected|out of scope|needs no verification|no verification (?:needed|required)|no(?: supporting)? evidence|nothing to (?:assess|verify))\b/iu;
 /** A risk or evidence cell that states something: not blank, not a placeholder (bare, qualified or
  * punctuation-only), not a fragment. */
 function concreteCell(cell) {

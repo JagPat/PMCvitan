@@ -7,6 +7,13 @@ export const REVIEW_SCOPE_ENFORCE_AFTER_PR = 246;
 export const PRE_REVIEW_ENFORCE_AFTER_PR = 345;
 export const STANDARD_MAX_FILES = 20;
 export const STANDARD_MAX_CHANGED_LINES = 1_500;
+// Units numbered above this carry the HARD size cap (user decision, 2026-09-15): an oversized
+// ordinary unit is split, `justified-large` admits nothing, no human size marker exists, and the
+// ONLY exemption is an inseparable migration unit whose diff carries the migration and its API
+// service and whose six invariant rows carry concrete risk and evidence. Older open units keep the
+// disposition they were authored under. Defined here, with the other scope thresholds, so every
+// consumer and the policy-contract suite read one cutoff.
+export const HARD_SIZE_CAP_AFTER_PR = 590;
 export const REPLACEMENT_REQUIRED_LABEL = 'review-replacement-required';
 export const REQUIRED_PRE_REVIEW_CHECKS = [
   'concurrency-serialization',
