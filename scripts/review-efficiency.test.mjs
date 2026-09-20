@@ -1921,6 +1921,41 @@ test('a mismatched inner fence does not end an outer code fence around the matri
   assert.equal(assessReviewScope(pullRequest({ ...large, body: longFence }), { changedFiles: mixed }).allowed, false, 'a shorter ``` must not close a ```` fence');
 });
 
+test('bare pipe rows with no header/delimiter are not a rendered table', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  // six otherwise-valid pipe lines with NO `| Invariant | Risk | Evidence |` header and NO
+  // `| --- | --- | --- |` delimiter row render as ordinary pipe-filled text, not a GFM table
+  const noTable = [
+    '<!-- migration-scope: inseparable -->',
+    '<!-- correction-owner: claude -->',
+    'Replaces: none',
+    '',
+    '## Pre-review checklist',
+    ...PRE_REVIEW_KEYS.map((key) => `- [x] \`${key}\` — checked against this cumulative diff`),
+    '- Migration/service seam: the seed literal is generated from the compiled catalog',
+    '',
+    ...REQUIRED_INVARIANTS.map((inv) => `| ${inv} | a concrete risk sentence | refused by the FK probe |`),
+  ].join('\n');
+  const result = assessReviewScope(pullRequest({ ...large, body: noTable }), { changedFiles: mixed });
+  assert.equal(result.allowed, false, 'pipe lines with no delimiter row must not count as the matrix');
+  assert.match(result.detail, /invariant rows missing risk and evidence/u);
+  assert.deepEqual(result.missingInvariants, [...REQUIRED_INVARIANTS]);
+  // adding the header + delimiter makes it a real table that exempts
+  const withTable = [
+    '<!-- migration-scope: inseparable -->',
+    '<!-- correction-owner: claude -->',
+    'Replaces: none',
+    '',
+    '## Pre-review checklist',
+    ...PRE_REVIEW_KEYS.map((key) => `- [x] \`${key}\` — checked against this cumulative diff`),
+    '- Migration/service seam: the seed literal is generated from the compiled catalog',
+    '',
+    ...sixRows(),
+  ].join('\n');
+  assert.equal(assessReviewScope(pullRequest({ ...large, body: withTable }), { changedFiles: mixed }).state, 'inseparable_large');
+});
+
 test('splitCells respects backslash parity: an escaped backslash leaves a real delimiter', () => {
   const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
   const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];

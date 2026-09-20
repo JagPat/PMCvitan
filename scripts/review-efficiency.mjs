@@ -114,7 +114,9 @@ function declaredMarker(body, name) {
 // Whether the rendered matrix is genuinely concrete stays the reviewer's judgement; this only
 // decides which rows render at all.
 function matrixRows(body) {
-  const rows = [];
+  // 1. Reduce the body to the lines GitHub renders at the top block level, excluding the three
+  //    constructs that render as something other than a table. Blank lines are kept as boundaries.
+  const top = [];
   let fence = null; // { char: '`' | '~', len } while inside a fenced code block
   let inComment = false;
   for (const line of String(body ?? '').split(/\r?\n/u)) {
@@ -140,16 +142,41 @@ function matrixRows(body) {
       continue; // an HTML comment block (single- or multi-line) renders nothing
     }
     if (indent >= 4) continue; // an indented code block renders as code, not a table
-    if (trimmed.startsWith('|')) rows.push(splitCells(line));
+    top.push(trimmed);
+  }
+  // 2. A GFM table is a header row, a DELIMITER row (`| --- | --- |`) of matching column count, then
+  //    contiguous pipe rows until a blank or non-pipe line. Only those data rows render as a table —
+  //    six bare pipe lines with no delimiter render as ordinary pipe-filled text, not a matrix — so
+  //    the gate counts a row only when it belongs to a real table. This is the table grammar itself,
+  //    not a denylist of shapes.
+  const rows = [];
+  for (let i = 0; i < top.length; i += 1) {
+    const header = top[i];
+    const delimiter = top[i + 1];
+    if (!header.includes('|') || delimiter === undefined || !isDelimiterRow(delimiter)) continue;
+    if (splitCells(header).length !== splitCells(delimiter).length) continue;
+    let j = i + 2;
+    for (; j < top.length && top[j].trim() !== '' && top[j].includes('|'); j += 1) {
+      rows.push(splitCells(top[j]));
+    }
+    i = j - 1; // skip the consumed table so its body is not rescanned as a new header
   }
   return rows;
+}
+
+// A GFM delimiter row: every cell is a run of hyphens, optionally colon-bracketed for alignment
+// (`---`, `:--`, `--:`, `:-:`). Its presence directly under a header row is what makes GitHub render
+// the following pipe lines as a table.
+function isDelimiterRow(line) {
+  const cells = splitCells(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-+:?$/u.test(cell));
 }
 
 // Split a table row into cells on UNESCAPED pipes, with correct backslash PARITY. A single `\|` is a
 // literal pipe inside a cell; `\\|` is an escaped backslash (a literal `\`) followed by a real cell
 // delimiter. A lookbehind cannot count the backslash run, so this walks the line: a backslash
-// escapes the next character, any other `|` is a delimiter. Outer empties (the row's leading and
-// trailing pipes) are dropped, `\|` and `\\` are unescaped, and each cell is trimmed.
+// escapes the next character, any other `|` is a delimiter. A leading and a trailing EMPTY cell (the
+// row's optional outer pipes) are dropped; `\|` and `\\` are unescaped and each cell is trimmed.
 function splitCells(line) {
   const cells = [];
   let cell = '';
@@ -161,7 +188,10 @@ function splitCells(line) {
     cell += ch;
   }
   cells.push(cell);
-  return cells.slice(1, -1).map((c) => c.replace(/\\([|\\])/gu, '$1').trim());
+  const trimmed = cells.map((c) => c.replace(/\\([|\\])/gu, '$1').trim());
+  if (trimmed.length > 0 && trimmed[0] === '') trimmed.shift();
+  if (trimmed.length > 0 && trimmed[trimmed.length - 1] === '') trimmed.pop();
+  return trimmed;
 }
 
 function finiteCount(value) {
