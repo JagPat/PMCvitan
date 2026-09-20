@@ -1690,7 +1690,7 @@ test('a new unit at exactly 20 files / 1,500 lines passes; 21 files or 1,501 lin
   }
 });
 
-test('the only exemption is an inseparable migration unit whose diff carries the seam and whose six rows are concrete', () => {
+test('the only exemption is an inseparable migration unit whose diff carries the seam and whose six rows are filled', () => {
   const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
   // the marker and the rows exempt MIGRATION work only: the diff must carry a migration AND the service it cannot be separated from
   const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
@@ -1709,13 +1709,13 @@ test('the only exemption is an inseparable migration unit whose diff carries the
   const vagueRow = sixRows().slice(0, -1).concat(`| ${REQUIRED_INVARIANTS.at(-1)} | n/a | checked |`);
   const vague = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], vagueRow) }), { changedFiles: mixed });
   assert.equal(vague.allowed, false);
-  assert.match(vague.detail, new RegExp(`rows without concrete risk and evidence: ${REQUIRED_INVARIANTS.at(-1)}`, 'u'));
+  assert.match(vague.detail, new RegExp(`invariant rows missing risk and evidence: ${REQUIRED_INVARIANTS.at(-1)}`, 'u'));
   assert.deepEqual(vague.missingInvariants, [REQUIRED_INVARIANTS.at(-1)]);
   const fiveRows = sixRows().slice(0, -1);
   assert.equal(assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], fiveRows) }), { changedFiles: mixed }).allowed, false);
-  // a legacy placeholder pair that satisfied the old rule is not concrete
+  // a legacy placeholder pair (a bare token the gate still rejects) leaves the rows unfilled
   const legacyCells = sixRows('relevant risk', 'focused probe');
-  assert.match(assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], legacyCells) }), { changedFiles: mixed }).detail, /rows without concrete risk and evidence: authorization-tenancy/u);
+  assert.match(assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], legacyCells) }), { changedFiles: mixed }).detail, /invariant rows missing risk and evidence: authorization-tenancy/u);
   // an older unit keeps the justified-large rule it was authored under
   assert.equal(assessReviewScope(pullRequest({ ...large, number: 300, body: justifiedLargeBody() })).state, 'justified_large');
 });
@@ -1726,54 +1726,26 @@ test('no human size-approval marker is read anywhere in the scope logic', async 
   }
 });
 
-test('the size-cap exemption rejects a qualified placeholder cell, not only the exact token', () => {
+test('the size-cap exemption requires filled risk/evidence cells; concreteness is left to the reviewer', () => {
   const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
   const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
-  // each of these is ≥20 chars and is NOT an exact placeholder token, yet states no concrete risk:
-  // an anchored exact match let them through and granted the sole size-cap exemption for free
-  for (const filler of [
-    'none because this invariant does not apply here',
-    'not applicable because this change carries no related behavior',
-    'n/a — no tenant boundary is in scope for this migration',
-    'not relevant, this change is out of scope for the invariant',
-    'tbd, a probe will be added in a later unit for this row',
+  // The gate makes only BOUNDED lexical rejections: an empty cell, a bare placeholder token, or a
+  // punctuation run (owner decision, #596 — a free-text concreteness denylist proved unsatisfiable).
+  for (const [risk, evidence] of [
+    ['', 'refused by the composite FK probe in the integration battery'],
+    ['n/a', 'refused by the composite FK probe in the integration battery'],
+    ['none', 'checked'],
+    ['-'.repeat(30), '?'.repeat(30)],
   ]) {
-    const rows = sixRows(filler, filler);
-    const result = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], rows) }), { changedFiles: mixed });
-    assert.equal(result.allowed, false, `qualified placeholder exempted the cap: ${filler}`);
-    assert.match(result.detail, /rows without concrete risk and evidence/u);
-    assert.deepEqual(result.missingInvariants, [...REQUIRED_INVARIANTS]);
+    const result = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], sixRows(risk, evidence)) }), { changedFiles: mixed });
+    assert.equal(result.allowed, false, `an empty/placeholder/punctuation cell must not pass: ${JSON.stringify([risk, evidence])}`);
+    assert.match(result.detail, /invariant rows missing risk and evidence/u);
   }
-  // a run of punctuation states nothing however long it is
-  const symbols = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], sixRows('-'.repeat(30), '?'.repeat(30))) }), { changedFiles: mixed });
-  assert.equal(symbols.allowed, false);
-  assert.match(symbols.detail, /rows without concrete risk and evidence/u);
-  // a genuine risk that merely OPENS with "none" is concrete and still exempts
-  const genuine = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], sixRows('none of the three writers validates the tenant, so a forged claim crosses', 'refused by the composite FK probe in the integration battery')) }), { changedFiles: mixed });
+  // The gate no longer scores free-text concreteness: a genuine risk a denylist had begun rejecting
+  // for containing "carries no" now passes the gate; the reviewer judges whether it is concrete.
+  const genuine = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], sixRows('The API carries no tenant identifier, allowing cross-project writes', 'refused by the composite FK probe in the integration battery')) }), { changedFiles: mixed });
   assert.equal(genuine.allowed, true, genuine.detail);
   assert.equal(genuine.state, 'inseparable_large');
-});
-
-test('a non-answer cell is rejected wherever its non-applicability phrase sits, not only at the opening token', () => {
-  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
-  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
-  // ≥20 chars, opening with ORDINARY words, so the start-anchored openers never fired — yet each
-  // only declares the row empty and must not earn the sole hard-cap exemption
-  for (const filler of [
-    'This invariant does not apply here at all',
-    'This invariant needs no verification here',
-    'The change carries no risk to this invariant whatsoever',
-    'This row is out of scope for the current migration unit',
-    'The migration is not relevant to authorization or tenancy',
-  ]) {
-    const result = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], sixRows(filler, filler)) }), { changedFiles: mixed });
-    assert.equal(result.allowed, false, `qualified non-answer opening with ordinary words exempted the cap: ${filler}`);
-    assert.match(result.detail, /rows without concrete risk and evidence/u);
-    assert.deepEqual(result.missingInvariants, [...REQUIRED_INVARIANTS]);
-  }
-  // a genuine risk whose sentence contains "does not <mechanism>" is concrete and still exempts
-  const genuine = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], sixRows('the writer does not validate the tenant, so a forged claim crosses', 'refused by the composite FK probe in the integration battery')) }), { changedFiles: mixed });
-  assert.equal(genuine.state, 'inseparable_large', genuine.detail);
 });
 
 test('a migration-scope marker only in prose or a code fence does not grant the hard-cap exemption', () => {
@@ -1813,20 +1785,6 @@ test('the hard-cap exemption requires an API-service seam, not any UI or shared 
   assert.equal(withService.state, 'inseparable_large', withService.detail);
 });
 
-test('a one-word "inapplicable"/"irrelevant" non-answer cell is rejected', () => {
-  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
-  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
-  for (const filler of [
-    'This invariant is inapplicable to this change',
-    'This invariant is irrelevant to the migration here',
-    'This invariant is not pertinent to the current unit',
-  ]) {
-    const result = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], sixRows(filler, filler)) }), { changedFiles: mixed });
-    assert.equal(result.allowed, false, `one-word non-answer exempted the cap: ${filler}`);
-    assert.match(result.detail, /rows without concrete risk and evidence/u);
-  }
-});
-
 test('invariant rows inside a fenced example do not count as the matrix', () => {
   const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
   const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
@@ -1848,21 +1806,11 @@ test('invariant rows inside a fenced example do not count as the matrix', () => 
   ].join('\n');
   const result = assessReviewScope(pullRequest({ ...large, body: fencedBody }), { changedFiles: mixed });
   assert.equal(result.allowed, false, 'fenced example rows must not satisfy the matrix');
-  assert.match(result.detail, /rows without concrete risk and evidence/u);
+  assert.match(result.detail, /invariant rows missing risk and evidence/u);
   assert.deepEqual(result.missingInvariants, [...REQUIRED_INVARIANTS]);
   // the identical rows in a REAL (unfenced) matrix section still exempt
   const realBody = capBody(['<!-- migration-scope: inseparable -->']);
   assert.equal(assessReviewScope(pullRequest({ ...large, body: realBody }), { changedFiles: mixed }).state, 'inseparable_large');
-});
-
-test('a direct "no impact"/"no evidence" assertion cell is rejected', () => {
-  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
-  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
-  const rows = sixRows('There is no impact for this invariant', 'There is no supporting evidence for this row');
-  const result = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], rows) }), { changedFiles: mixed });
-  assert.equal(result.allowed, false, 'direct no-impact/no-evidence assertions must not exempt the cap');
-  assert.match(result.detail, /rows without concrete risk and evidence/u);
-  assert.deepEqual(result.missingInvariants, [...REQUIRED_INVARIANTS]);
 });
 
 test('invariant rows inside an HTML comment do not count as the matrix', () => {
@@ -1885,6 +1833,66 @@ test('invariant rows inside an HTML comment do not count as the matrix', () => {
   ].join('\n');
   const result = assessReviewScope(pullRequest({ ...large, body: commentedBody }), { changedFiles: mixed });
   assert.equal(result.allowed, false, 'HTML-commented example rows must not satisfy the matrix');
-  assert.match(result.detail, /rows without concrete risk and evidence/u);
+  assert.match(result.detail, /invariant rows missing risk and evidence/u);
   assert.deepEqual(result.missingInvariants, [...REQUIRED_INVARIANTS]);
+});
+
+test('invariant rows indented as a code block do not count as the matrix', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  // four-space-indented rows render as an indented code block, not a table
+  const indentedBody = [
+    '<!-- migration-scope: inseparable -->',
+    '<!-- correction-owner: claude -->',
+    'Replaces: none',
+    '',
+    '## Pre-review checklist',
+    ...PRE_REVIEW_KEYS.map((key) => `- [x] \`${key}\` — checked against this cumulative diff`),
+    '- Migration/service seam: the seed literal is generated from the compiled catalog',
+    '',
+    'An example matrix indented as code (not a real table):',
+    ...sixRows().map((row) => `    ${row}`),
+  ].join('\n');
+  const result = assessReviewScope(pullRequest({ ...large, body: indentedBody }), { changedFiles: mixed });
+  assert.equal(result.allowed, false, 'indented-code example rows must not satisfy the matrix');
+  assert.match(result.detail, /invariant rows missing risk and evidence/u);
+  assert.deepEqual(result.missingInvariants, [...REQUIRED_INVARIANTS]);
+});
+
+test('an escaped pipe in a cell does not shift content into the evidence column', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  // a `\|` is a literal pipe inside the risk cell; a raw split treated the text after it as the
+  // evidence cell, leaving the rendered Evidence column empty while the row passed
+  const rows = [
+    '| Invariant | Risk | Evidence |', '| --- | --- | --- |',
+    ...REQUIRED_INVARIANTS.map((inv) => `| ${inv} | a concrete risk mentioning a \\| pipe and a mechanism | |`),
+  ];
+  const result = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], rows) }), { changedFiles: mixed });
+  assert.equal(result.allowed, false, 'an escaped-pipe row with an empty evidence cell must not pass');
+  assert.match(result.detail, /invariant rows missing risk and evidence/u);
+  // the same rows with a real evidence cell (the escaped pipe kept inside the risk cell) do exempt
+  const filled = [
+    '| Invariant | Risk | Evidence |', '| --- | --- | --- |',
+    ...REQUIRED_INVARIANTS.map((inv) => `| ${inv} | a concrete risk mentioning a \\| pipe and a mechanism | refused by the composite FK probe |`),
+  ];
+  assert.equal(assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], filled) }), { changedFiles: mixed }).state, 'inseparable_large');
+});
+
+test('a too-short migration/service seam does not satisfy the inseparable requirement', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  const shortSeamBody = [
+    '<!-- migration-scope: inseparable -->',
+    '<!-- correction-owner: claude -->',
+    'Replaces: none',
+    '',
+    '## Pre-review checklist',
+    ...PRE_REVIEW_KEYS.map((key) => `- [x] \`${key}\` — checked against this cumulative diff`),
+    '- Migration/service seam: x',
+    ...sixRows(),
+  ].join('\n');
+  const result = assessReviewScope(pullRequest({ ...large, body: shortSeamBody }), { changedFiles: mixed });
+  assert.equal(result.allowed, false, 'a one-character seam is not a concrete boundary');
+  assert.match(result.detail, /Migration\/service seam/u);
 });

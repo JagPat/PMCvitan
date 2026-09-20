@@ -108,9 +108,23 @@ function matrixRows(body) {
   for (const line of text.split(/\r?\n/u)) {
     if (/^\s*(?:```|~~~)/u.test(line)) { inFence = !inFence; continue; }
     if (inFence) continue;
-    if (line.trimStart().startsWith('|')) rows.push(line.split('|').slice(1, -1).map((cell) => cell.trim()));
+    // A line indented four spaces or a tab renders as an INDENTED CODE BLOCK, not a table, so its
+    // pipe-rows are not a real matrix — exclude them alongside fenced and commented rows.
+    if (/^(?: {4}|\t)/u.test(line)) continue;
+    if (line.trimStart().startsWith('|')) rows.push(splitCells(line));
   }
   return rows;
+}
+
+// Split a table row into cells on UNESCAPED pipes. A `\|` is a literal pipe inside a cell (GitHub
+// renders it as one column), so splitting on every `|` mis-columns the row — a `\|` in the risk cell
+// shifted real content into the evidence slot and left the rendered evidence empty. Split on pipes
+// not preceded by a backslash, drop the leading/trailing empties, and unescape `\|` back to `|`.
+function splitCells(line) {
+  return line
+    .split(/(?<!\\)\|/u)
+    .slice(1, -1)
+    .map((cell) => cell.replace(/\\\|/gu, '|').trim());
 }
 
 function finiteCount(value) {
@@ -342,8 +356,11 @@ export function assessReviewScope(
     && paths.some((path) => SERVICE_FILE.test(path));
   const migrationScope = declaredMarker(body, 'migration-scope');
   const seam = /^[\t ]*- Migration\/service seam:[\t ]*(.+?)[\t ]*$/imu.exec(body)?.[1]?.trim();
+  // A bounded floor only: present, past a length floor, not a placeholder token or punctuation run.
+  // Whether the seam actually explains why the migration and service cannot be reviewed apart is a
+  // judgement the reviewer makes (owner decision, #596) — the gate does not score prose concreteness.
   const meaningfulSeam = typeof seam === 'string'
-    && seam.length > 0
+    && seam.length >= 20
     && !/^(?:n\/?a|none|not applicable|separated|tbd|todo|to do|pending|unknown|fixme)(?:\b.*)?$/iu
       .test(seam)
     && !/^[-?.]+$/u.test(seam)
@@ -434,23 +451,25 @@ export function assessReviewScope(
       ),
     );
     if (number > HARD_SIZE_CAP_AFTER_PR) {
-      const vague = REQUIRED_INVARIANTS.filter((invariant) => !tableRows.some(
-        (cells) => cells[0]?.toLowerCase() === invariant && concreteCell(cells[1]) && concreteCell(cells[2]),
+      // The gate checks that all six invariant rows are PRESENT with filled risk and evidence cells;
+      // the reviewer judges whether that content is concrete (owner decision, #596 — see filledCell).
+      const unfilled = REQUIRED_INVARIANTS.filter((invariant) => !tableRows.some(
+        (cells) => cells[0]?.toLowerCase() === invariant && filledCell(cells[1]) && filledCell(cells[2]),
       ));
-      missingInvariants = vague;
+      missingInvariants = unfilled;
       // the exemption is for MIGRATION work the service cannot be separated from: the diff itself
       // must carry that migration + API-service seam, or the marker and six boilerplate rows would
       // exempt anything (a migration paired only with UI/shared does not earn it)
-      if (migrationScope === 'inseparable' && vague.length === 0 && migrationServiceExemptible) {
+      if (migrationScope === 'inseparable' && unfilled.length === 0 && migrationServiceExemptible) {
         state = 'inseparable_large';
       } else {
         sizeProblem = `Review unit exceeds the hard cap of ${maxFiles} files / ${maxChangedLines.toLocaleString('en-US')} changed lines `
           + `(${changedFileCount} files, ${changedLines.toLocaleString('en-US')} lines): split it into ordinary units. The only exemption is `
-          + `${INSEPARABLE_MIGRATION_MARKER} on a diff carrying a migration and its inseparable API service, with a complete invariant matrix whose six rows carry concrete risk and evidence`
+          + `${INSEPARABLE_MIGRATION_MARKER} on a diff carrying a migration and its inseparable API service, with the invariant matrix's six rows filled with risk and evidence the review judges concrete`
           + (justified ? '; `justified-large` no longer admits a new oversized unit' : '')
           + (migrationScope !== 'inseparable' ? '; no inseparable-migration marker' : '')
           + (!migrationServiceExemptible ? '; the diff carries no migration + API-service (apps/api/src) seam' : '')
-          + (vague.length > 0 ? `; rows without concrete risk and evidence: ${vague.join(', ')}` : '');
+          + (unfilled.length > 0 ? `; invariant rows missing risk and evidence: ${unfilled.join(', ')}` : '');
       }
     } else if (!justified || missingInvariants.length > 0) {
       const missing = [
@@ -581,30 +600,27 @@ const CELL_PLACEHOLDER_EXACT = /^(?:n\/?a|na|none|nil|tbd|to[\s-]?do|yes|ok|okay
 // Punctuation only: a run of dashes, question marks or the like states nothing however long it is
 // (the length floor alone would let 20 dashes through).
 const CELL_PLACEHOLDER_SYMBOLS = /^[\s.,:;!?–—-]+$/u;
-// A cell that OPENS with a declared non-answer states nothing concrete however it is dressed:
-// "n/a — no boundary here", "not applicable because this change carries no related behavior",
-// "tbd, will add a probe", "not relevant to this change". These openers never begin a genuine risk
-// statement, so a qualifying clause after them does not rescue the cell — the exemption rejects it
-// exactly as it rejects the bare token. `none` is deliberately excluded here: "none of the three
-// writers validates the tenant, so a forged claim crosses" is a real risk that opens with "none".
-const CELL_NONANSWER_OPENER = /^(?:n\/?a|na|nil|tbd|to[\s-]?do|not applicable|not relevant)\b/iu;
-// A non-applicability or no-evidence assertion states nothing concrete WHEREVER it sits in the cell,
-// not only at its opening. Anchoring to the first token let a qualified non-answer dressed in ordinary
-// words pass — "This invariant does not apply here at all", "This invariant needs no verification
-// here" — so it granted the sole hard-cap exemption with no concrete risk. These phrases only ever
-// declare a row empty; a genuine risk names a mechanism that fails ("none of the writers validates
-// the tenant, so a forged claim crosses", "the writer does not validate the tenant") and matches
-// none of them, staying concrete.
-const CELL_NONANSWER_PHRASE = /\b(?:not applicable|inapplicable|does ?n['’o]t apply|not relevant|irrelevant|not pertinent|not related|no related|carries no|does not carry|no risk|no impact|not affected|unaffected|out of scope|needs no verification|no verification (?:needed|required)|no(?: supporting)? evidence|nothing to (?:assess|verify))\b/iu;
-/** A risk or evidence cell that states something: not blank, not a placeholder (bare, qualified or
- * punctuation-only), not a fragment. */
-function concreteCell(cell) {
+/**
+ * A risk or evidence cell the gate accepts: present, not a punctuation run, not a bare placeholder
+ * token. This is a BOUNDED lexical check ONLY. Whether the cell is genuinely CONCRETE — names a real
+ * mechanism and consequence — is a judgement the reviewer makes on the rendered PR, not the gate
+ * (owner decision, #596).
+ *
+ * An earlier design tried to score concreteness with a denylist of non-answer phrasings. Five Codex
+ * review rounds proved it cannot be completed: it drew a new evasion synonym every round AND began
+ * rejecting genuine risks that share a phrase ("The API carries no tenant identifier, allowing
+ * cross-project writes" was refused for containing "carries no"). Rejecting more non-answers rejects
+ * more real risks; the two are not separable by regex on free text. So the gate now enforces the
+ * bounded, decidable requirements — the inseparable marker in the declaration block, a real
+ * migration and its `apps/api/src` service, an oversized diff, and six named invariant rows whose
+ * risk and evidence cells are filled — and the reviewer (Codex/human, which reviews every exemption
+ * use) judges whether that content is concrete.
+ */
+function filledCell(cell) {
   const text = String(cell ?? '').trim();
-  if (text.length < 20) return false;
+  if (text.length === 0) return false;
   if (CELL_PLACEHOLDER_SYMBOLS.test(text)) return false;
   if (CELL_PLACEHOLDER_EXACT.test(text)) return false;
-  if (CELL_NONANSWER_OPENER.test(text)) return false;
-  if (CELL_NONANSWER_PHRASE.test(text)) return false;
   return true;
 }
 

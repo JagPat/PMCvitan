@@ -74,7 +74,7 @@ is frozen: no new controller, watchdog or lease feature outside a requested main
 
 Keep one concern per PR. A review unit is at most 20 files and 1,500 changed lines; an oversized
 new unit is split. Its sole exemption is `<!-- migration-scope: inseparable -->` on a migration
-and its inseparable API service, all six invariant rows carrying concrete risk and evidence;
+and its inseparable API service, all six invariant rows filled with risk and evidence review judges concrete;
 `<!-- review-size: justified-large -->` admits nothing. Open units predating this hard cap keep their earlier disposition, enforced by PR number.
 
 Complete the template's five pre-review checks: concurrency/serialization, previous-
