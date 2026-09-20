@@ -2759,3 +2759,55 @@ test('2A2-ii: GitHubClient.graphql attaches the structured error entries to the 
   client.request = async () => ({ data: { ok: true } });
   assert.deepEqual(await client.graphql('query Q { x }', {}), { ok: true });
 });
+
+test('enforceProtectedMigrations: inert off-migrations, blocks a migration PR the trusted verifier fails', async () => {
+  const head = 'a'.repeat(40);
+  const base = {
+    number: 700,
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/700',
+    base: { ref: 'main', sha: 'b'.repeat(40), repo: { full_name: 'JagPat/PMCvitan' } },
+    head: { sha: head, repo: { full_name: 'JagPat/PMCvitan' } },
+  };
+  const migrationFiles = [{ filename: 'apps/api/prisma/migrations/20260101000000_x/migration.sql' }];
+  const nonMigrationFiles = [{ filename: 'apps/api/src/example/example.service.ts' }];
+
+  // A PR that touches no migration never invokes the verifier and is allowed.
+  let verifierCalls = 0;
+  const inert = {
+    async pullRequestFiles() { return nonMigrationFiles; },
+    async verifyProtectedMigrations() { verifierCalls += 1; return { ok: false, problems: ['should not run'] }; },
+  };
+  assert.deepEqual(await reviewGate.enforceProtectedMigrations(inert, base, head), { allowed: true });
+  assert.equal(verifierCalls, 0, 'the verifier does not run when the PR touches no migration');
+
+  // A migration PR whose trusted verification passes is allowed.
+  const clean = {
+    async pullRequestFiles() { return migrationFiles; },
+    async verifyProtectedMigrations() { return { ok: true, problems: [] }; },
+  };
+  assert.deepEqual(await reviewGate.enforceProtectedMigrations(clean, base, head), { allowed: true });
+
+  // A migration PR whose trusted verification fails is drafted, published as a scope failure, blocked.
+  const statuses = [];
+  const stickies = [];
+  const failing = {
+    async pullRequest() { return { ...base }; },
+    async pullRequestFiles() { return migrationFiles; },
+    async verifyProtectedMigrations() { return { ok: false, problems: ['protected migration bytes changed: apps/api/prisma/migrations/20260101000000_x/migration.sql'] }; },
+    async setDraft(live, draft) { return { ...base, draft }; },
+    async setStatus(...args) { statuses.push(args); },
+    async updateStickyComment(number, body) { stickies.push(body); },
+  };
+  const blocked = await reviewGate.enforceProtectedMigrations(failing, base, head);
+  assert.equal(blocked.allowed, false);
+  assert.match(blocked.detail, /protected migrations changed without a matching manifest/u);
+  assert.match(blocked.detail, /bytes changed/u);
+  assert.equal(statuses.length, 1);
+  assert.equal(statuses[0][1], 'failure');
+  assert.match(statuses[0][2], /^scope: protected migrations changed/u);
+
+  // A client without the capability is a no-op, never a false block.
+  assert.deepEqual(await reviewGate.enforceProtectedMigrations({}, base, head), { allowed: true });
+});

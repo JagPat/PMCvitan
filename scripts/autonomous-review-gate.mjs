@@ -22,8 +22,19 @@ export {
   REQUIRED_CHECKS,
 } from './review-policy.mjs';
 
+import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+
+import {
+  MANIFEST_PATH as MIGRATION_MANIFEST_PATH,
+  verify as verifyMigrationManifest,
+} from './migration-manifest.mjs';
+
+// A protected migration's committed path. The independent, trusted merge-boundary verification
+// (enforceProtectedMigrations) runs ONLY when a PR touches one of these or the manifest, so an
+// ordinary PR pays nothing and the check cannot be skipped by editing the PR-controlled CI workflow.
+const PROTECTED_MIGRATION = /^apps\/api\/prisma\/migrations\/[^/]+\/migration\.sql$/u;
 
 import {
   codexThreadIdsToResolve,
@@ -647,6 +658,36 @@ export class GitHubClient {
     return this.paginated(
       `/repos/${this.repository}/pulls/${number}/files`,
     );
+  }
+
+  // Independent protected-migration verification for the trusted merge boundary. The PR-side
+  // review-scope job also runs this, but that job's workflow is PR-controlled and can be skipped or
+  // rewritten, so the merge boundary must not rely on it. Here — in the trusted default-branch
+  // checkout — we fetch the exact base and head and run the TRUSTED (default-branch) verifier over
+  // them, so a candidate cannot edit a migration and weaken the check together. Returns the verifier's
+  // { ok, problems } shape; a fetch failure is a named, blocking problem (never a silent pass) and its
+  // stderr is withheld because the authenticated fetch URL carries the token.
+  async verifyProtectedMigrations(pullRequest, expectedHead) {
+    const baseSha = pullRequest?.base?.sha;
+    const repository = pullRequest?.base?.repo?.full_name ?? this.repository;
+    if (!baseSha || !repository) {
+      return { ok: false, problems: ['protected-migration verification could not read the PR base commit'] };
+    }
+    const url = `https://x-access-token:${this.token}@github.com/${repository}.git`;
+    try {
+      execFileSync('git', ['fetch', '--no-tags', '--depth=1', url, baseSha, expectedHead], {
+        cwd: process.cwd(),
+        stdio: ['ignore', 'ignore', 'ignore'],
+        maxBuffer: 64 * 1024 * 1024,
+      });
+    } catch {
+      return { ok: false, problems: [`protected-migration base ${baseSha.slice(0, 12)} / head ${expectedHead.slice(0, 12)} could not be fetched for independent verification`] };
+    }
+    try {
+      return verifyMigrationManifest({ baseRef: baseSha, headRef: expectedHead, cwd: process.cwd() });
+    } catch (error) {
+      return { ok: false, problems: [`protected-migration verification failed to run: ${error.message}`] };
+    }
   }
 
   async replacementLineage() {
@@ -1414,6 +1455,48 @@ export async function enforceReviewConvergence(
   return reviewHistoryPolicy(findingHeads);
 }
 
+// Independent, trusted enforcement of the protected-migration manifest at the merge boundary. Runs
+// only when the PR's cumulative diff touches a migration or the manifest — so an ordinary PR is inert
+// and no git runs. When a client cannot verify (an older or test client without the method), it is a
+// no-op rather than a false block. On a real violation it drafts the head, publishes the canonical
+// `scope:` failure and the correction sticky, exactly like enforceReviewScope, and blocks the merge.
+export async function enforceProtectedMigrations(client, pullRequest, expectedHead) {
+  if (typeof client.verifyProtectedMigrations !== 'function') return { allowed: true };
+  let files;
+  try {
+    files = await client.pullRequestFiles(pullRequest.number);
+  } catch {
+    files = undefined;
+  }
+  const touchesMigrations = Array.isArray(files) && files.some((file) => {
+    const name = typeof file === 'string' ? file : file?.filename;
+    return typeof name === 'string' && (PROTECTED_MIGRATION.test(name) || name === MIGRATION_MANIFEST_PATH);
+  });
+  if (!touchesMigrations) return { allowed: true };
+
+  const result = await client.verifyProtectedMigrations(pullRequest, expectedHead);
+  if (result?.ok) return { allowed: true };
+  const detail = `protected migrations changed without a matching manifest — ${(result?.problems ?? ['verification failed']).join('; ')}`;
+
+  const live = await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
+  if (!live) return { allowed: false, superseded: true, detail };
+  await client.setStatus(expectedHead, 'failure', `scope: ${detail}`, pullRequest.html_url);
+  const notice = correctionNotice(live, { detail, reason: 'scope' });
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: 'scope_required',
+      head: expectedHead,
+      detail,
+      attempt: 0,
+      owner: notice.owner ?? 'undeclared',
+      correctionState: noticeState(notice),
+      next: notice.instruction,
+    }),
+  );
+  return { allowed: false, detail };
+}
+
 export async function enforceReviewScope(client, pullRequest, expectedHead) {
   let changedFiles;
   let lineage;
@@ -1487,6 +1570,12 @@ export async function revalidateFinalReviewPolicy(
   const scope = await enforceReviewScope(client, pullRequest, expectedHead);
   if (scope.superseded) return { ...scope, state: 'superseded' };
   if (!scope.allowed) return { ...scope, state: 'scope_required' };
+
+  // Independent protected-migration verification, trusted-side: the PR-controlled review-scope job's
+  // success is not sufficient evidence the verifier ran, so re-run it here before admission.
+  const migrations = await enforceProtectedMigrations(client, pullRequest, expectedHead);
+  if (migrations.superseded) return { ...migrations, state: 'superseded' };
+  if (!migrations.allowed) return { ...migrations, state: 'scope_required' };
 
   const convergence = await enforceReviewConvergence(
     client,
