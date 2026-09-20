@@ -1956,6 +1956,79 @@ test('bare pipe rows with no header/delimiter are not a rendered table', () => {
   assert.equal(assessReviewScope(pullRequest({ ...large, body: withTable }), { changedFiles: mixed }).state, 'inseparable_large');
 });
 
+test('invariant rows wrapped in a raw HTML block do not count as the matrix', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  // A `<pre>` opens a CommonMark type-1 HTML block: GitHub renders its contents as raw HTML, not a
+  // GFM table, so the six rows inside it do not render as a matrix and must not earn the exemption.
+  const preWrapped = assessReviewScope(
+    pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], ['<pre>', ...sixRows(), '</pre>']) }),
+    { changedFiles: mixed },
+  );
+  assert.equal(preWrapped.allowed, false, 'rows inside <pre> render as raw HTML, not a table');
+  assert.match(preWrapped.detail, /invariant rows missing risk and evidence/u);
+  assert.deepEqual(preWrapped.missingInvariants, [...REQUIRED_INVARIANTS]);
+  // A `<div>` with no blank line before the rows is a type-6 HTML block that has not yet closed, so
+  // the rows are still raw HTML — the next round's `<div>` sibling of the `<pre>` evasion.
+  const divWrapped = assessReviewScope(
+    pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], ['<div>', ...sixRows(), '</div>']) }),
+    { changedFiles: mixed },
+  );
+  assert.equal(divWrapped.allowed, false, 'rows inside an unclosed <div> HTML block do not count');
+  assert.deepEqual(divWrapped.missingInvariants, [...REQUIRED_INVARIANTS]);
+});
+
+test('a matrix inside <details> after a blank line still renders and exempts', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  // `<details>`/`<summary>` open a type-6 HTML block that CLOSES at the next blank line; GitHub then
+  // renders the table that follows the blank as a real table, so the scanner must see it and exempt.
+  const rendered = assessReviewScope(
+    pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], ['<details>', '<summary>Invariant matrix</summary>', '', ...sixRows(), '', '</details>']) }),
+    { changedFiles: mixed },
+  );
+  assert.equal(rendered.allowed, true, rendered.detail);
+  assert.equal(rendered.state, 'inseparable_large');
+});
+
+test('the migration/service seam is read only from rendered content', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  // A real, filled matrix is present, but the ONLY `- Migration/service seam:` line is buried in an
+  // HTML comment (rendered as nothing). A whole-body regexp captured it; reading the rendered stream
+  // must not, so the inseparable exemption fails for want of a rendered seam explanation.
+  const hiddenSeam = [
+    '<!-- migration-scope: inseparable -->',
+    '<!-- correction-owner: claude -->',
+    'Replaces: none',
+    '',
+    '## Pre-review checklist',
+    ...PRE_REVIEW_KEYS.map((key) => `- [x] \`${key}\` — checked against this cumulative diff`),
+    '',
+    '<!--',
+    '- Migration/service seam: this explanation lives inside an HTML comment and never renders',
+    '-->',
+    '',
+    ...sixRows(),
+  ].join('\n');
+  const result = assessReviewScope(pullRequest({ ...large, body: hiddenSeam }), { changedFiles: mixed });
+  assert.equal(result.allowed, false, 'a seam hidden in a comment must not satisfy the exemption');
+  assert.match(result.detail, /concrete "Migration\/service seam" explanation/u);
+  // the same seam text on a rendered top-level bullet does satisfy it (the matrix is already filled)
+  const renderedSeam = [
+    '<!-- migration-scope: inseparable -->',
+    '<!-- correction-owner: claude -->',
+    'Replaces: none',
+    '',
+    '## Pre-review checklist',
+    ...PRE_REVIEW_KEYS.map((key) => `- [x] \`${key}\` — checked against this cumulative diff`),
+    '- Migration/service seam: the migration and its api service share one lock window and cannot be reviewed apart',
+    '',
+    ...sixRows(),
+  ].join('\n');
+  assert.equal(assessReviewScope(pullRequest({ ...large, body: renderedSeam }), { changedFiles: mixed }).state, 'inseparable_large');
+});
+
 test('splitCells respects backslash parity: an escaped backslash leaves a real delimiter', () => {
   const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
   const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];

@@ -95,56 +95,128 @@ function declaredMarker(body, name) {
   return values.size === 1 ? [...values][0] : undefined;
 }
 
-// The invariant-matrix rows that actually RENDER as a GFM table row, read by a BOUNDED,
-// CommonMark-aligned block scanner rather than an ad-hoc line toggle (owner decision, #596). A row
-// is counted only when it is at the document's top block level — not inside a fenced code block, an
-// indented code block, or an HTML comment — the three constructs GitHub renders as something other
-// than a table. The scanner is a fixed state machine over the CommonMark leaf-block rules for those
-// constructs, so it is complete for them rather than a denylist of shapes:
+// The seven CommonMark HTML-block kinds, keyed by end condition. GitHub renders the content of ANY
+// of them as raw HTML — never as a GFM table — so a table (or a declaration bullet) wrapped in one
+// does not render as itself and must not be read by this scanner. This is the FULL, fixed CommonMark
+// leaf-block set, so the scanner is complete for HTML blocks rather than a denylist of tags:
+//   - types 1-5 close on a specific string on some later line (or the opening line itself): a raw-text
+//     element `<pre|script|style|textarea>` (1), an HTML comment `<!--` (2), a processing
+//     instruction `<?` (3), a declaration `<!LETTER` (4), and CDATA `<![CDATA[` (5);
+//   - types 6 and 7 close at the next BLANK line: a block-level tag from the fixed CommonMark list
+//     (6), and any other single complete open/close tag alone on a line that does not interrupt a
+//     paragraph (7).
+const HTML_BLOCK_TAGS_6 = new Set([
+  'address', 'article', 'aside', 'base', 'basefont', 'blockquote', 'body', 'caption', 'center', 'col',
+  'colgroup', 'dd', 'details', 'dialog', 'dir', 'div', 'dl', 'dt', 'fieldset', 'figcaption', 'figure',
+  'footer', 'form', 'frame', 'frameset', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'head', 'header', 'hr',
+  'html', 'iframe', 'legend', 'li', 'link', 'main', 'menu', 'menuitem', 'nav', 'noframes', 'ol',
+  'optgroup', 'option', 'p', 'param', 'section', 'summary', 'table', 'tbody', 'td', 'tfoot', 'th',
+  'thead', 'title', 'tr', 'track', 'ul',
+]);
+const HTML_TYPE1_OPEN = /^<(?:script|pre|style|textarea)(?:[\t >]|$)/iu;
+const HTML_TYPE1_CLOSE = /<\/(?:script|pre|style|textarea)>/iu;
+const HTML_TYPE1_NAMES = /^(?:script|pre|style|textarea)$/iu;
+const HTML_TAG_NAME = /^<\/?([a-z][a-z0-9-]*)/iu;
+const HTML_TYPE6_OPEN = /^<\/?[a-z][a-z0-9-]*(?:[\t >]|\/>|$)/iu;
+const HTML_COMPLETE_OPEN_TAG =
+  /^<[a-z][a-z0-9-]*(?:\s+[a-z_:][a-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*\/?>\s*$/iu;
+const HTML_COMPLETE_CLOSE_TAG = /^<\/[a-z][a-z0-9-]*\s*>\s*$/iu;
+
+// The end condition for an open HTML block of the given kind, tested against a whole line.
+function htmlBlockEnds(kind, line) {
+  switch (kind) {
+    case 'comment': return line.includes('-->');
+    case 'pi': return line.includes('?>');
+    case 'cdata': return line.includes(']]>');
+    case 'decl': return line.includes('>');
+    case 'raw': return HTML_TYPE1_CLOSE.test(line);
+    case 'blank': return line.trim() === '';
+    default: return false;
+  }
+}
+
+// Which HTML-block kind, if any, a top-level (indent < 4) line OPENS, in CommonMark's fixed order.
+// `paragraphOpen` gates type 7, which alone cannot interrupt a paragraph.
+function htmlBlockStartKind(line, paragraphOpen) {
+  if (HTML_TYPE1_OPEN.test(line)) return 'raw'; // type 1
+  if (line.startsWith('<!--')) return 'comment'; // type 2
+  if (line.startsWith('<?')) return 'pi'; // type 3
+  if (/^<!\[CDATA\[/u.test(line)) return 'cdata'; // type 5 (before type 4: `<![` is not `<!LETTER`)
+  if (/^<![A-Za-z]/u.test(line)) return 'decl'; // type 4
+  const named = HTML_TYPE6_OPEN.test(line) && HTML_TAG_NAME.exec(line);
+  if (named && HTML_BLOCK_TAGS_6.has(named[1].toLowerCase())) return 'blank'; // type 6
+  if (!paragraphOpen) { // type 7: a single complete tag alone on the line, outside a paragraph
+    const tag = HTML_TAG_NAME.exec(line);
+    if (tag && !HTML_TYPE1_NAMES.test(tag[1])
+      && (HTML_COMPLETE_OPEN_TAG.test(line) || HTML_COMPLETE_CLOSE_TAG.test(line))) return 'blank';
+  }
+  return null;
+}
+
+// Reduce a Markdown body to the lines GitHub renders at the TOP block level, excluding every
+// construct it renders as something other than ordinary Markdown — fenced code, indented code, and
+// the seven CommonMark HTML blocks (above) — by a BOUNDED, CommonMark-aligned state machine rather
+// than an ad-hoc toggle (owner decision, #596). Blank lines are kept as block boundaries. Both the
+// invariant-matrix reader and the migration/service-seam reader consume this ONE stream, so neither
+// counts content the reader cannot see: a table or a seam bullet hidden in a code fence, an HTML
+// comment, or a `<pre>`/`<div>`/`<details>` wrapper does not render as itself and does not count.
 //
 //   - Fenced code: a line (indent < 4) of >= 3 backticks OR >= 3 tildes opens a fence; it closes
 //     ONLY on a later line of the SAME fence character, at least as long, with nothing after the run
-//     but whitespace. A different character or a shorter run does NOT close it (the reported bug: a
-//     `~~~` line inside a ```markdown fence must not end it), and an info string is allowed only on
-//     the opener.
-//   - HTML comment block: a line (indent < 4) beginning `<!--` starts a comment block that runs
-//     until the first line containing `-->`; nothing inside it renders.
+//     but whitespace. A different character or a shorter run does NOT close it, and an info string is
+//     allowed only on the opener.
+//   - HTML block: opened per htmlBlockStartKind and closed per htmlBlockEnds; nothing inside renders
+//     as Markdown. A type 6/7 block closes at a blank line, so a real table placed AFTER that blank
+//     (the standard `<details>`/`<summary>` + blank + table shape GitHub renders) is seen again.
 //   - Indented code: a line indented four spaces or a tab renders as code, not a table.
-//
-// Whether the rendered matrix is genuinely concrete stays the reviewer's judgement; this only
-// decides which rows render at all.
-function matrixRows(body) {
-  // 1. Reduce the body to the lines GitHub renders at the top block level, excluding the three
-  //    constructs that render as something other than a table. Blank lines are kept as boundaries.
+function renderedTopLevelLines(body) {
   const top = [];
   let fence = null; // { char: '`' | '~', len } while inside a fenced code block
-  let inComment = false;
+  let html = null; // an htmlBlockEnds kind while inside an HTML block
+  let paragraphOpen = false;
   for (const line of String(body ?? '').split(/\r?\n/u)) {
-    if (inComment) {
-      if (line.includes('-->')) inComment = false;
+    if (html) {
+      if (htmlBlockEnds(html, line)) {
+        // A type 6/7 block ends AT the blank line, which is itself a boundary; a type 1-5 block ends
+        // ON its closing line, which is part of the block and renders nothing.
+        if (html === 'blank') { top.push(''); paragraphOpen = false; }
+        html = null;
+      }
       continue;
     }
     const trimmed = line.replace(/^[\t ]+/u, '');
     const indent = line.length - trimmed.length;
-    const fenceRun = indent < 4 ? /^(`{3,}|~{3,})/u.exec(trimmed) : null;
     if (fence) {
-      if (fenceRun
-        && fenceRun[1][0] === fence.char
-        && fenceRun[1].length >= fence.len
-        && trimmed.slice(fenceRun[1].length).trim() === '') {
-        fence = null;
-      }
+      const fenceRun = indent < 4 ? /^(`{3,}|~{3,})/u.exec(trimmed) : null;
+      if (fenceRun && fenceRun[1][0] === fence.char && fenceRun[1].length >= fence.len
+        && trimmed.slice(fenceRun[1].length).trim() === '') fence = null;
       continue; // no line inside a fenced code block is a table row
     }
-    if (fenceRun) { fence = { char: fenceRun[1][0], len: fenceRun[1].length }; continue; }
-    if (indent < 4 && trimmed.startsWith('<!--')) {
-      if (!line.includes('-->')) inComment = true;
-      continue; // an HTML comment block (single- or multi-line) renders nothing
+    if (indent < 4) {
+      const fenceRun = /^(`{3,}|~{3,})/u.exec(trimmed);
+      if (fenceRun) { fence = { char: fenceRun[1][0], len: fenceRun[1].length }; paragraphOpen = false; continue; }
+      const kind = htmlBlockStartKind(trimmed, paragraphOpen);
+      if (kind) {
+        paragraphOpen = false;
+        // A type 1-5 block may open and close on its own line; a type 6/7 block runs to a blank line.
+        html = kind !== 'blank' && htmlBlockEnds(kind, line) ? null : kind;
+        continue;
+      }
     }
     if (indent >= 4) continue; // an indented code block renders as code, not a table
     top.push(trimmed);
+    paragraphOpen = trimmed !== '';
   }
-  // 2. A GFM table is a header row, a DELIMITER row (`| --- | --- |`) of matching column count, then
+  return top;
+}
+
+// The invariant-matrix rows that actually RENDER as a GFM table row. Read from the top-level rendered
+// stream (renderedTopLevelLines), so no row inside a fence, comment, indented code or HTML block is
+// counted. Whether the rendered matrix is genuinely concrete stays the reviewer's judgement; this
+// only decides which rows render at all.
+function matrixRows(body) {
+  const top = renderedTopLevelLines(body);
+  // A GFM table is a header row, a DELIMITER row (`| --- | --- |`) of matching column count, then
   //    contiguous pipe rows until a blank or non-pipe line. Only those data rows render as a table —
   //    six bare pipe lines with no delimiter render as ordinary pipe-filled text, not a matrix — so
   //    the gate counts a row only when it belongs to a real table. This is the table grammar itself,
@@ -422,7 +494,11 @@ export function assessReviewScope(
   const migrationServiceExemptible = hasMigration
     && paths.some((path) => SERVICE_FILE.test(path));
   const migrationScope = declaredMarker(body, 'migration-scope');
-  const seam = /^[\t ]*- Migration\/service seam:[\t ]*(.+?)[\t ]*$/imu.exec(body)?.[1]?.trim();
+  // Read the seam explanation ONLY from the top-level rendered stream, the same content the invariant
+  // matrix is read from: a `- Migration/service seam:` bullet hidden in an HTML comment or a fenced
+  // example does not render as a declaration and must not satisfy the exemption (owner decision, #596).
+  const seam = /^[\t ]*- Migration\/service seam:[\t ]*(.+?)[\t ]*$/imu
+    .exec(renderedTopLevelLines(body).join('\n'))?.[1]?.trim();
   // A bounded floor only: present, past a length floor, not a placeholder token or punctuation run.
   // Whether the seam actually explains why the migration and service cannot be reviewed apart is a
   // judgement the reviewer makes (owner decision, #596) — the gate does not score prose concreteness.
