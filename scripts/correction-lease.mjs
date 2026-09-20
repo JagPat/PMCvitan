@@ -1,6 +1,8 @@
 import {
   CORRECTION_LEASE_GRACE_MS,
   isRetryableReviewFailureDescription,
+  isOwnershipInconsistentScopeDetail,
+  OWNERSHIP_CANDIDATE_HELD,
   STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT,
 } from './review-policy.mjs';
 export { CORRECTION_LEASE_GRACE_MS, STATUS_CONTEXT as CORRECTION_STATUS_CONTEXT } from './review-policy.mjs';
@@ -36,6 +38,10 @@ import {
 
 export const CORRECTION_LEASE_MARKER = '<!-- autonomous-correction-lease:';
 export const ACTIONS_BOT_LOGIN = 'github-actions[bot]';
+// docs/POLICY.md reserves this branch prefix for Claude-authored work; a non-Claude owner on such a branch
+// can only be reconciled toward `claude` (or by moving the work off the branch), never by matching the two
+// contradictory sides. Kept local to avoid depending on a private constant in correction-owner.mjs.
+const CLAUDE_BRANCH_PREFIX = 'claude/';
 
 // Which failures on the required status are an OWED CORRECTION, classified by
 // the PREFIX the review gate writes rather than by the prose after it.
@@ -68,6 +74,12 @@ export function correctionReasonFor(status) {
   const description = String(status?.description ?? '');
   const prefix = /^\s*([a-z]+):/u.exec(description)?.[1];
   if (prefix && SELF_HEALING_PREFIXES.has(prefix)) return null;
+  // Ownership-verdict lifecycle (unit 2A2-i): a candidate-held head owes NO correction. The exact head is
+  // consistently owned by a recognised in-flight candidate (e.g. codex) and is held pending independent
+  // reviewer activation — not merge-eligible, not awakenable, and not correctable by swapping the body
+  // marker to claude/cursor. Routing it as an ordinary `validation:`→`review` correction would publish a
+  // marker-replacement instruction that cannot clear the hold, so it opens no lease at all.
+  if (description.startsWith(OWNERSHIP_CANDIDATE_HELD)) return null;
   const reason = OWED_REASON_BY_PREFIX.get(prefix) ?? 'review';
   if (reason === 'review' && isRetryableReviewFailureDescription(description)) return null;
   // The gate summarises a FAILED PR-side `review-scope` check as
@@ -249,14 +261,20 @@ export function assessCorrectionLease({
     pullRequestNumber: pullRequest?.number,
   });
 
-  const owner = routing.owner ?? 'undeclared';
+  // Ownership-verdict lifecycle (unit 2A2-i): a readable ownership INCONSISTENCY means the exact head's
+  // Correction-Owner trailer and the PR body marker disagree, so the body-declared owner is NOT confirmed by
+  // the immutable head. The notice must therefore name NO agent — not in the visible owner label, the
+  // instruction, the wake mention, or even the marker key — and never route to the body-derived owner. It is
+  // reported as stalled, and reconciling head and body is the only resume action.
+  const ownershipInconsistent = isOwnershipInconsistentScopeDetail(effectiveReason, detail);
+  const owner = ownershipInconsistent ? 'unconfirmed' : (routing.owner ?? 'undeclared');
   const marker = correctionLeaseMarker({
     number: pullRequest?.number,
     head: expected,
     owner,
     kind: `correction:${owedFailureId(effectiveReason, detail, occurrence)}`,
   });
-  const reportedState = routing.awakenable
+  const reportedState = (!ownershipInconsistent && routing.awakenable)
     ? 'correction_recovery'
     : CORRECTION_STALLED;
 
@@ -298,16 +316,40 @@ export function assessCorrectionLease({
   // `correction_stalled` is a dead end unless the notice says how to leave it.
   // A declared owner GitHub cannot wake needs a human to start that session; an
   // undeclared one needs the marker, which the routed instruction already names.
+  // A `claude/**` branch is reserved for Claude: a non-Claude owner can never be reconciled on it, so the
+  // resume action must require reconciling toward `claude` (or moving the work off the branch) — never an
+  // action that keeps the forbidden owner on both sides, which would leave the one-shot notice with no way
+  // to clear the failure.
+  const claudeReservedBranch = String(pullRequest?.head?.ref ?? '').startsWith(CLAUDE_BRANCH_PREFIX);
   const resumeAction = reportedState !== CORRECTION_STALLED
     ? null
-    : routing.owner
-      ? `**Required resume action:** if no \`${routing.owner}\` session is already running on `
-        + `branch \`${pullRequest?.head?.ref}\`, start one and have it correct head `
-        + `\`${expected}\`. The configured GitHub loop can neither start that session nor observe whether one is `
-        + 'already running, so check before starting: a second session on the same branch is a '
-        + 'real risk of this notice, not a hypothetical one.'
-      : '**Required resume action:** declare the correction owner in the PR body, then the '
-        + 'declared owner corrects this head.';
+    : ownershipInconsistent
+      ? (claudeReservedBranch
+        ? `**Required resume action:** branch \`${pullRequest?.head?.ref}\` is reserved for Claude, and the `
+          + 'exact head\'s `Correction-Owner` trailer and the PR body marker do not both name `claude`. '
+          + 'Reconcile toward `claude`: set the body marker to `claude` and, if the head trailer is not '
+          + 'already `claude`, push a new head whose `Correction-Owner` trailer is `claude`. A non-Claude '
+          + 'owner cannot be reconciled on a `claude/**` branch — if this work belongs to another owner, '
+          + 'move it to a branch reserved for that owner instead.'
+        : '**Required resume action:** the exact head\'s `Correction-Owner` commit trailer and the PR body '
+          + 'marker disagree, so no owner is confirmed by the immutable head and none is named or woken. '
+          + 'Reconcile them to the same valid owner — set the body marker to match a valid head trailer, or '
+          + 'push a new head whose trailer matches the body — as the failing status detail above specifies; '
+          + 'the reconciled owner then corrects this head.')
+      : routing.owner
+        ? `**Required resume action:** if no \`${routing.owner}\` session is already running on `
+          + `branch \`${pullRequest?.head?.ref}\`, start one and have it correct head `
+          + `\`${expected}\`. The configured GitHub loop can neither start that session nor observe whether one is `
+          + 'already running, so check before starting: a second session on the same branch is a '
+          + 'real risk of this notice, not a hypothetical one.'
+        : '**Required resume action:** declare the correction owner in the PR body, then the '
+          + 'declared owner corrects this head.';
+
+  // Neutral, non-attributing instruction for an inconsistent-ownership failure — it must not name the
+  // body-declared owner the immutable head does not confirm.
+  const neutralInconsistentInstruction = 'No correction owner is confirmed by the immutable head, so this '
+    + 'notice routes to no agent and names none. The exact head\'s ownership must be reconciled before any '
+    + 'owner is routed.';
 
   return {
     ...base,
@@ -317,14 +359,17 @@ export function assessCorrectionLease({
     body: leaseBody({
       resumeAction,
       marker,
-      mention: awakeningMention(routing.owner),
+      // No wake on an inconsistent-ownership failure: the head does not confirm the body-declared owner.
+      mention: ownershipInconsistent ? null : awakeningMention(routing.owner),
       reportedState,
       pullRequestNumber: pullRequest?.number,
       head: expected,
-      ownerLabel: routing.owner ? `\`${routing.owner}\`` : '`undeclared`',
+      ownerLabel: ownershipInconsistent
+        ? '`unconfirmed`'
+        : (routing.owner ? `\`${routing.owner}\`` : '`undeclared`'),
       detail,
       stalledMinutes,
-      instruction: routing.instruction,
+      instruction: ownershipInconsistent ? neutralInconsistentInstruction : routing.instruction,
     }),
   };
 }

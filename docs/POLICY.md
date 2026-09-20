@@ -33,11 +33,14 @@ Only the declared owner handles normal correction handoff; do not start a compet
 producer. Conflict handoffs re-read the owner and current head before publication;
 invalid or non-awakenable ownership is reported without waking a different agent.
 
-Codex implementation ownership is currently inadmissible: GitHub implementation
-tasks and reviews share the Codex bot identity, and a fresh reaction does not prove
-a separate reviewer supplied it. A transfer marker cannot bypass this restriction.
-Enabling that role requires reviewer-specific provenance first. User-requested Codex
-assistance does not itself change the configured normal correction owner.
+The exact head's Correction-Owner trailer, the PR body marker and the branch reservation combine into
+one pure PR-scoped verdict — a three-valued read (eligible; readable-but-inconsistent, cleared by a body
+edit or, when the trailer is unusable or the branch forbids it, a new head; or temporarily unreadable and
+retryable) in one canonical status vocabulary — which governs promotion routing and diagnostics, not merge.
+Codex is a recognised CANDIDATE owner it tracks in-flight but never merges nor wakes, pending independent-
+reviewer activation (tasks and reviews share its bot identity); a transfer marker cannot promote it. Merge
+authority is instead SHA-scoped: the required status is shared by every PR on that commit, so only a verdict
+read from that commit's trailer alone releases it — never the mutable body, branch or PR; alone it mutates nothing.
 
 This repository currently enables only the Claude correction wake integration.
 Codex supports GitHub task mentions such as `@codex fix the CI failures` through its
@@ -151,10 +154,8 @@ checks do not prove every domain invariant.
 
 ### Database migrations
 
-- Deployed migrations are immutable. Never edit, reorder, or rewrite a migration
-  that has already shipped — new changes go in a new, additive migration. CI verifies
-  every protected file's bytes against `migration-manifest.sha256.json` at the PR base
-  (`scripts/migration-manifest.mjs`); a new migration is recorded with `pnpm migrations:manifest`.
+- Deployed migrations are immutable. Never edit, reorder, or rewrite a shipped migration — new changes go in a new, additive one.
+  CI verifies every protected file's bytes against `migration-manifest.sha256.json` at the PR base (`scripts/migration-manifest.mjs`); record a new migration with `pnpm migrations:manifest`.
 - If a migration adds a column that an append-only trigger governs, the same
   migration must add that column to the trigger's frozen identity/evidence set.
   Flag a new column that an existing trigger's column list does not cover.
@@ -243,19 +244,21 @@ Reviewer output rules, the family probes and the dispute path live in
 
 ### Claude independent-review shadow boundary
 
-The existing Claude subscription integration responds to GitHub PR conversation
-and can author corrections, but the repository has no documented, tested contract
-that exposes an immutable reviewer completion, actor and exact SHA. A comment,
-mention response, workflow exit code, absence of findings, skipped run or timeout
-therefore cannot become green review evidence. `claude-review-adapter.mjs` is a
-non-authoritative fail-closed boundary only. Activation requires the subscription
-provider to document and verify a GitHub App Check Run named
-`claude-independent-review`, emitted by a dedicated configured App identity, with
-an external id binding PR and SHA and the v1 structured summary validated by the
-adapter. Until a real current-head shadow run proves that contract, the adapter
-does not affect `codex-current-head`, merge eligibility or branch protection.
+The hosted shadow path in `claude-shadow-review.yml` uses the official Claude Code
+action with a subscription OAuth token. Trusted default-branch code validates its
+structured findings and publishes `claude-independent-review` with GitHub Actions
+provenance and immutable repository, PR, base, head, run and attempt bindings. The
+consumer verifies the server-associated Actions run, trusted workflow path, publisher
+job and exact-name/digest artifact; the shared `github-actions` identity and check
+payload alone are never provenance. A
+comment, model-authored clearance word, action exit code, absence of output, skipped
+run or timeout cannot become green evidence. `claude-review-adapter.mjs` consumes
+that contract fail closed but remains non-authoritative until a real current-head
+shadow cycle proves it. A model-reported empty finding set is only `shadow_clear`,
+not positive gate clearance. It does not affect `codex-current-head`, merge eligibility
+or branch protection.
 
-Rollout is additive: merge this controller after required CI and independent
+Rollout is additive: merge this shadow path after required CI and independent
 Codex review; verify real Claude shadow evidence on a current SHA; then install a new required gate before retiring
 `codex-current-head`. Roll back by leaving or removing the future Claude required
 gate while retaining `codex-current-head`; never create an interval with neither
