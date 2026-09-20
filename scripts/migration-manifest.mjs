@@ -34,27 +34,73 @@ function blob(ref, path, cwd) {
 const root = (cwd) => git(['rev-parse', '--show-toplevel'], cwd).trim();
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
-// A regular blob is mode 100644 or 100755. A symlink (120000) or gitlink (160000) is NOT one: its
-// blob is the target pathname, not SQL, while every deployment consumer opens the file and follows
-// the link — so hashing the blob would freeze bytes nobody runs. Such an entry is rejected, never hashed.
+// A regular blob is mode 100644 or 100755. A symlink (120000) or gitlink/submodule (160000) is NOT
+// one: its object is a target pathname or a commit, not SQL, while a checkout follows the link — so
+// hashing the object would freeze bytes nobody deploys. Such an entry is rejected, never hashed.
 const REGULAR_MODE = /^100(?:644|755)$/u;
-// `ls-tree -r -z` emits one NUL-terminated `MODE SP TYPE SP OBJECT TAB PATH` record per entry, with
-// the PATH verbatim. Default output C-quotes any non-ASCII path (`"…/\303\251/migration.sql"`), which
-// the MIGRATION regex then discards — so a committed non-ASCII migration would fall outside the
-// protected inventory. `-z` gives the raw name and lets us read the mode in the same pass.
-function entriesAt(ref, cwd) {
+const FORBIDDEN_TREE_MODE = /^1(?:20000|60000)$/u; // 120000 symlink, 160000 gitlink/submodule
+// The gitattributes that make a checkout's bytes DIVERGE from the stored blob: end-of-line/text
+// normalization, a working-tree re-encoding, a clean/smudge filter, or `ident` ($Id$) substitution.
+// Only `unspecified`/`unset` leave the blob untouched; any other effective value is rejected so the
+// checksum can never certify a blob that the deployment checkout would rewrite.
+const CHECKOUT_ATTRS = ['text', 'eol', 'working-tree-encoding', 'filter', 'ident'];
+const SAFE_ATTR = new Set(['unspecified', 'unset']);
+
+// Every entry under the migrations directory, mode + path. `-r -z`: recursive, NUL-terminated,
+// UNQUOTED names (default output C-quotes non-ASCII paths, which the MIGRATION regex would then drop).
+// git never recurses INTO a symlink or submodule, so a symlinked migration DIRECTORY appears here as a
+// single mode-120000 entry at the directory path — which the topology audit rejects BEFORE any path
+// filtering, so it cannot smuggle a checkout-materialized migration past the checksum.
+function treeEntriesAt(ref, cwd) {
   return git(['ls-tree', '-r', '-z', ref, '--', MIGRATIONS_DIR], cwd)
     .split('\0')
     .map((record) => /^(\d{6}) [^ ]+ [0-9a-f]+\t([\s\S]*)$/u.exec(record))
-    .filter((match) => match && MIGRATION.test(match[2]))
-    .map((match) => ({ mode: match[1], path: match[2] }))
-    .sort((a, b) => (a.path < b.path ? -1 : 1));
+    .filter(Boolean)
+    .map((match) => ({ mode: match[1], path: match[2] }));
+}
+// Tree topology, validated before path filtering (owner ruling): no symlink or submodule may appear
+// anywhere under the migrations directory, so a protected migration is a real tree of regular files
+// and the stored blob is the file a checkout materializes.
+function topologyProblems(entries) {
+  return entries
+    .filter((entry) => FORBIDDEN_TREE_MODE.test(entry.mode))
+    .map((entry) => `migration tree topology rejected: ${entry.path} is a `
+      + `${entry.mode === '120000' ? 'symlink' : 'submodule/gitlink'} (git mode ${entry.mode}); `
+      + 'a protected migration path must be a real tree of regular files');
+}
+// Prove the stored blob equals the checkout-visible file: no gitattribute in effect at `ref` may
+// transform bytes on checkout. `check-attr --source=<ref>` reads .gitattributes AS OF that tree; an
+// unreadable result fails closed. `-z` output is NUL-separated (path, attr, value) triples.
+function attributeProblems(ref, paths, cwd) {
+  if (paths.length === 0) return [];
+  let out;
+  try {
+    out = git(['check-attr', '-z', `--source=${ref}`, ...CHECKOUT_ATTRS, '--', ...paths], cwd);
+  } catch (error) {
+    return [`migration checkout attributes unreadable at ${ref}: ${error.message}`];
+  }
+  const parts = out.split('\0');
+  const problems = [];
+  for (let i = 0; i + 2 < parts.length; i += 3) {
+    const [path, attr, value] = [parts[i], parts[i + 1], parts[i + 2]];
+    if (path === '' || SAFE_ATTR.has(value)) continue;
+    problems.push(`migration checkout attribute would transform bytes: ${path} has ${attr}=${value} `
+      + '(only unspecified/unset are safe); the stored blob would not match the deployed file');
+  }
+  return problems;
 }
 export function migrationsAt(ref, cwd) {
-  return entriesAt(ref, cwd).map((entry) => entry.path);
+  return treeEntriesAt(ref, cwd)
+    .filter((entry) => MIGRATION.test(entry.path))
+    .map((entry) => entry.path)
+    .sort();
 }
 export function digestsAt(ref, cwd) {
-  return Object.fromEntries(entriesAt(ref, cwd).map((entry) => {
+  const entries = treeEntriesAt(ref, cwd);
+  const topology = topologyProblems(entries);
+  if (topology.length > 0) throw new Error(topology.join('; '));
+  const migrations = entries.filter((entry) => MIGRATION.test(entry.path));
+  return Object.fromEntries(migrations.map((entry) => {
     if (!REGULAR_MODE.test(entry.mode)) {
       throw new Error(`protected migration is not a regular file (git mode ${entry.mode}): ${entry.path} — a symlink or gitlink cannot be checksummed as migration SQL`);
     }
@@ -119,6 +165,19 @@ export function compare({ protectedDigests, recordedAtBase = new Set(Object.keys
     // a phantom entry would become a "protected migration removed" failure for every later PR
     for (const path of Object.keys(headManifest.migrations)) if (headDigests[path] === undefined) problems.push(`manifest lists a migration absent at the head: ${path}`);
   }
+  // ADDITIVE ORDERING: a new migration must sort strictly AFTER the entire base inventory. Prisma
+  // applies directories lexicographically, so a migration inserted before an existing one runs before
+  // recorded successors on a fresh database but after them on an already-upgraded one — divergent
+  // schemas. (Base removals/renames/reorders are already named as removed/changed above; migration.sql
+  // paths share one prefix and suffix, so path order equals directory order.)
+  const baseKeys = Object.keys(protectedDigests);
+  if (baseKeys.length > 0) {
+    const baseMax = baseKeys.reduce((a, b) => (a > b ? a : b));
+    for (const path of Object.keys(headDigests)) {
+      if (path in protectedDigests) continue;
+      if (!(path > baseMax)) problems.push(`new migration sorts before the protected inventory (reorders apply order): ${path} is not after ${baseMax}`);
+    }
+  }
   return { ok: problems.length === 0, problems, protected: Object.keys(protectedDigests).length, source };
 }
 
@@ -150,16 +209,21 @@ export function verify({ baseRef, headRef = 'HEAD', cwd = process.cwd() }) {
   let base;
   let headManifest;
   let headDigests;
+  let attrProblems = [];
   try {
     base = protectedAt(baseRef, top);
     headManifest = readManifest(headRef, top);
     headDigests = digestsAt(headRef, top);
+    // Every protected/new migration at the HEAD, plus the manifest, must checkout byte-for-byte as
+    // stored — evaluated against the HEAD tree's own gitattributes, where a transform is introduced.
+    const headPaths = [...new Set([...Object.keys(headDigests), MANIFEST_PATH])];
+    attrProblems = attributeProblems(headRef, headPaths, top);
   } catch (error) {
     return { ok: false, problems: [error.message], protected: 0, source: `unverifiable at ${headRef}` };
   }
   const result = compare({ ...base, headManifest, headDigests });
   // a base whose record contradicts its own tree is repaired on the trusted base, never by a head
-  const problems = [...base.problems, ...result.problems];
+  const problems = [...base.problems, ...attrProblems, ...result.problems];
   return { ...result, ok: problems.length === 0, problems };
 }
 

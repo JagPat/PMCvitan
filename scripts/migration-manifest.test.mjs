@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -134,10 +134,52 @@ test('a symlinked migration.sql is rejected before hashing, at verify and at gen
   git(r.cwd, 'add', '-A'); git(r.cwd, 'commit', '-q', '-m', 'symlinked migration');
   const head = git(r.cwd, 'rev-parse', 'HEAD');
   assert.equal(git(r.cwd, 'ls-tree', '-r', head, '--', `${DIR}/20260106000000_link/migration.sql`).slice(0, 6), '120000', 'the migration is committed as a symlink');
-  // verify surfaces the non-regular file as a named failure rather than checksumming the link text
+  // verify surfaces the symlink as a named topology failure rather than checksumming the link text
   const result = r.verify(head, r.base);
   assert.equal(result.ok, false);
-  assert.match(result.problems.join(';'), /not a regular file \(git mode 120000\): .*20260106000000_link/u);
+  assert.match(result.problems.join(';'), /topology rejected: .*20260106000000_link\/migration\.sql is a symlink/u);
+});
+
+test('a symlinked migration DIRECTORY is rejected by the tree-topology audit before path filtering', (t) => {
+  const r = repo(); t.after(() => cleanup(r.cwd));
+  // `git ls-tree -r` emits only the mode-120000 directory path; a checkout follows the link and
+  // materializes `payload/migration.sql`, so path filtering alone would drop it. Topology rejects it.
+  writeFileSync(join(r.cwd, 'payload.txt'), 'SELECT 1;\n');
+  mkdirSync(join(r.cwd, 'payload'), { recursive: true });
+  writeFileSync(join(r.cwd, 'payload', 'migration.sql'), 'CREATE TABLE evil (id int);\n');
+  symlinkSync('../../../../payload', join(r.cwd, DIR, '20280101000000_link'));
+  git(r.cwd, 'add', '-A'); git(r.cwd, 'commit', '-q', '-m', 'symlinked migration dir');
+  const head = git(r.cwd, 'rev-parse', 'HEAD');
+  const result = r.verify(head, r.base);
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(';'), /topology rejected: .*20280101000000_link is a symlink/u);
+});
+
+test('a new migration that sorts before the base inventory is rejected as a reorder', (t) => {
+  const r = repo(); t.after(() => cleanup(r.cwd));
+  // Prisma applies directories lexicographically; a migration inserted before an existing one runs
+  // before recorded successors on a fresh DB but after them on an upgraded one — divergent schemas.
+  r.write(`${DIR}/20260050000000_inserted/migration.sql`, 'CREATE TABLE inserted (id int);\n');
+  r.bless(); r.commit('insert before the base inventory');
+  const inserted = r.verify();
+  assert.equal(inserted.ok, false);
+  assert.match(inserted.problems.join(';'), /sorts before the protected inventory .*20260050000000_inserted/u);
+  // the same migration content added AFTER the whole inventory is accepted
+  rmSync(join(r.cwd, DIR, '20260050000000_inserted'), { recursive: true });
+  r.write(`${DIR}/20260103000000_appended/migration.sql`, 'CREATE TABLE appended (id int);\n');
+  r.bless(); r.commit('append after the base inventory');
+  assert.equal(r.verify().ok, true, r.verify().problems.join(';'));
+});
+
+test('a .gitattributes rule that rewrites migration bytes on checkout is rejected', (t) => {
+  const r = repo(); t.after(() => cleanup(r.cwd));
+  // `git show` hashes the stored LF blob, but a checkout with `eol=crlf` materializes CRLF — the
+  // deployed file diverges from the checksummed blob without any protected path changing.
+  r.write('.gitattributes', `${DIR}/**/migration.sql text eol=crlf\n`);
+  r.commit('add a CRLF checkout transform');
+  const result = r.verify();
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(';'), /checkout attribute would transform bytes: .*migration\.sql has eol=crlf/u);
 });
 
 test('compare is pure: a head that redefines a recorded digest, or lists what the head lacks, is named without git', () => {
