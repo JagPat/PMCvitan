@@ -96,6 +96,21 @@ function declaredMarker(body, name) {
   return values.size === 1 ? [...values][0] : undefined;
 }
 
+// The invariant-matrix rows, EXCLUDING any inside a fenced or quoted example block. A plain scan of
+// every pipe-prefixed line let six otherwise-valid rows placed inside a ```markdown example fence —
+// with no real matrix section — count as the matrix and grant the sole hard-cap exemption. Track
+// code fences (``` or ~~~) and skip any pipe line inside one, so only the real matrix section counts.
+function matrixRows(body) {
+  const rows = [];
+  let inFence = false;
+  for (const line of String(body ?? '').split(/\r?\n/u)) {
+    if (/^\s*(?:```|~~~)/u.test(line)) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    if (line.trimStart().startsWith('|')) rows.push(line.split('|').slice(1, -1).map((cell) => cell.trim()));
+  }
+  return rows;
+}
+
 function finiteCount(value) {
   const count = Number(value);
   return Number.isFinite(count) && count >= 0 ? count : 0;
@@ -408,10 +423,7 @@ export function assessReviewScope(
     state = 'grandfathered';
   } else if (large) {
     const justified = declaredMarker(body, 'review-size') === 'justified-large';
-    const tableRows = body
-      .split(/\r?\n/u)
-      .filter((line) => line.trimStart().startsWith('|'))
-      .map((line) => line.split('|').slice(1, -1).map((cell) => cell.trim()));
+    const tableRows = matrixRows(body);
     missingInvariants = REQUIRED_INVARIANTS.filter(
       (invariant) => !tableRows.some(
         (cells) => cells[0]?.toLowerCase() === invariant
@@ -581,7 +593,7 @@ const CELL_NONANSWER_OPENER = /^(?:n\/?a|na|nil|tbd|to[\s-]?do|not applicable|no
 // declare a row empty; a genuine risk names a mechanism that fails ("none of the writers validates
 // the tenant, so a forged claim crosses", "the writer does not validate the tenant") and matches
 // none of them, staying concrete.
-const CELL_NONANSWER_PHRASE = /\b(?:not applicable|does ?n['’o]t apply|not relevant|not related|no related|carries no|does not carry|no risk|not affected|unaffected|out of scope|needs no verification|no verification (?:needed|required)|nothing to (?:assess|verify))\b/iu;
+const CELL_NONANSWER_PHRASE = /\b(?:not applicable|inapplicable|does ?n['’o]t apply|not relevant|irrelevant|not pertinent|not related|no related|carries no|does not carry|no risk|not affected|unaffected|out of scope|needs no verification|no verification (?:needed|required)|nothing to (?:assess|verify))\b/iu;
 /** A risk or evidence cell that states something: not blank, not a placeholder (bare, qualified or
  * punctuation-only), not a fragment. */
 function concreteCell(cell) {

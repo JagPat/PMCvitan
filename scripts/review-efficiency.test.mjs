@@ -1812,3 +1812,45 @@ test('the hard-cap exemption requires an API-service seam, not any UI or shared 
   const withService = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->']) }), { changedFiles: [migration, 'apps/api/src/x/x.service.ts', 'apps/web/src/screens/ExampleScreen.tsx'] });
   assert.equal(withService.state, 'inseparable_large', withService.detail);
 });
+
+test('a one-word "inapplicable"/"irrelevant" non-answer cell is rejected', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  for (const filler of [
+    'This invariant is inapplicable to this change',
+    'This invariant is irrelevant to the migration here',
+    'This invariant is not pertinent to the current unit',
+  ]) {
+    const result = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], sixRows(filler, filler)) }), { changedFiles: mixed });
+    assert.equal(result.allowed, false, `one-word non-answer exempted the cap: ${filler}`);
+    assert.match(result.detail, /rows without concrete risk and evidence/u);
+  }
+});
+
+test('invariant rows inside a fenced example do not count as the matrix', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  // the six otherwise-valid rows are inside a ```markdown fence, with NO real matrix section — the
+  // whole-body pipe scan counted them and granted the exemption
+  const fencedBody = [
+    '<!-- migration-scope: inseparable -->',
+    '<!-- correction-owner: claude -->',
+    'Replaces: none',
+    '',
+    '## Pre-review checklist',
+    ...PRE_REVIEW_KEYS.map((key) => `- [x] \`${key}\` — checked against this cumulative diff`),
+    '- Migration/service seam: the seed literal is generated from the compiled catalog',
+    '',
+    'An example matrix a real PR would fill (not this one):',
+    '```markdown',
+    ...sixRows(),
+    '```',
+  ].join('\n');
+  const result = assessReviewScope(pullRequest({ ...large, body: fencedBody }), { changedFiles: mixed });
+  assert.equal(result.allowed, false, 'fenced example rows must not satisfy the matrix');
+  assert.match(result.detail, /rows without concrete risk and evidence/u);
+  assert.deepEqual(result.missingInvariants, [...REQUIRED_INVARIANTS]);
+  // the identical rows in a REAL (unfenced) matrix section still exempt
+  const realBody = capBody(['<!-- migration-scope: inseparable -->']);
+  assert.equal(assessReviewScope(pullRequest({ ...large, body: realBody }), { changedFiles: mixed }).state, 'inseparable_large');
+});
