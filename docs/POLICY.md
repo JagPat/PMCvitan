@@ -72,10 +72,10 @@ thread with a concrete counterexample; no label or gate state reads a dispute, a
 finding blocks until a new head answers it or the repository owner rules. Review machinery
 is frozen: no new controller, watchdog or lease feature outside a requested maintenance PR.
 
-Keep one concern per PR. A review unit is at most 20 files and 1,500 changed lines; an
-oversized unit is split. The only exemption is `<!-- migration-scope: inseparable -->` on a
-migration and its inseparable service, all six invariant rows carrying concrete risk and
-evidence; `<!-- review-size: justified-large -->` admits nothing. Limits aid review, not proof.
+Keep one concern per PR. A review unit is at most 20 files and 1,500 changed lines; an oversized
+new unit is split. Its sole exemption is `<!-- migration-scope: inseparable -->` on a migration
+and its inseparable API service, all six invariant rows carrying concrete risk and evidence;
+`<!-- review-size: justified-large -->` admits nothing. Open units predating this hard cap keep their earlier disposition, enforced by PR number.
 
 Complete the template's five pre-review checks: concurrency/serialization, previous-
 release compatibility, alternate writers/triggers, authorization/tenancy, and

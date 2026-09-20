@@ -69,7 +69,32 @@ const INSEPARABLE_MIGRATION_MARKER = '<!-- migration-scope: inseparable -->';
 const CONVERGENCE_PACKET = /^docs\/reviews\/[^/]*convergence[^/]*\.md$/iu;
 const MIGRATION_FILE = /^apps\/api\/prisma\/migrations\/[^/]+\/migration\.sql$/u;
 const SERVICE_OR_UI_FILE = /^(?:apps\/api\/src|apps\/web\/src|packages\/shared\/src)\//u;
+// The hard-cap exemption is for a migration and the SERVICE it cannot be separated from — the API
+// that runs the schema. `apps/web/src` (UI) and `packages/shared/src` (a shared library) are not
+// that service, so a migration paired only with them is an ordinary oversized unit and must split.
+const SERVICE_FILE = /^apps\/api\/src\//u;
 const REPLACES_DECLARATION = /^[\t ]*replaces:[\t ]*(none|#\d+)[\t ]*$/gimu;
+
+// A body DECLARES its size and migration markers in the leading marker block and DESCRIBES them
+// everywhere else, exactly as correction-owner.mjs reads its own marker (correction-owner.mjs:39-53):
+// the leading run of marker-only lines, blanks allowed, ending at the first line that is not a
+// marker. A marker quoted in a sentence, a code fence or a later section is prose, so it cannot
+// claim the size justification or the sole hard-cap exemption — a whole-body scan let an oversized
+// PR quote `<!-- migration-scope: inseparable -->` in explanatory text and pass the trusted gate.
+// Two different values for one marker in the block is a contradiction, read as no declaration so
+// the exemption/justification fails closed.
+function declaredMarker(body, name) {
+  const marker = new RegExp(`^<!--\\s*${name}:\\s*([a-z][a-z-]*)\\s*-->$`, 'iu');
+  const values = new Set();
+  for (const line of String(body ?? '').split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    if (!/^<!--[\s\S]*-->$/u.test(trimmed)) break;
+    const match = marker.exec(trimmed);
+    if (match) values.add(match[1].toLowerCase());
+  }
+  return values.size === 1 ? [...values][0] : undefined;
+}
 
 function finiteCount(value) {
   const count = Number(value);
@@ -290,10 +315,15 @@ export function assessReviewScope(
   const paths = Array.isArray(changedFiles)
     ? changedFiles.flatMap((file) => changedPaths(file))
     : [];
-  const migrationServiceMix = paths.some((path) => MIGRATION_FILE.test(path))
+  const hasMigration = paths.some((path) => MIGRATION_FILE.test(path));
+  const migrationServiceMix = hasMigration
     && paths.some((path) => SERVICE_OR_UI_FILE.test(path));
-  const migrationScope = /<!--\s*migration-scope:\s*(separated|inseparable)\s*-->/iu
-    .exec(body)?.[1]?.toLowerCase();
+  // The hard-cap exemption needs the actual service seam, not any UI/shared change: a migration
+  // paired only with `apps/web/src` or `packages/shared/src` is not an inseparable migration/service
+  // unit and does not earn the exemption, even though it still trips `migrationServiceMix`.
+  const migrationServiceExemptible = hasMigration
+    && paths.some((path) => SERVICE_FILE.test(path));
+  const migrationScope = declaredMarker(body, 'migration-scope');
   const seam = /^[\t ]*- Migration\/service seam:[\t ]*(.+?)[\t ]*$/imu.exec(body)?.[1]?.trim();
   const meaningfulSeam = typeof seam === 'string'
     && seam.length > 0
@@ -377,9 +407,7 @@ export function assessReviewScope(
   if (large && number <= enforceAfterPr) {
     state = 'grandfathered';
   } else if (large) {
-    const sizeDeclaration = /^<!--\s*review-size:\s*(standard|justified-large)\s*-->/iu
-      .exec(body.trimStart());
-    const justified = sizeDeclaration?.[1]?.toLowerCase() === 'justified-large';
+    const justified = declaredMarker(body, 'review-size') === 'justified-large';
     const tableRows = body
       .split(/\r?\n/u)
       .filter((line) => line.trimStart().startsWith('|'))
@@ -397,16 +425,17 @@ export function assessReviewScope(
       ));
       missingInvariants = vague;
       // the exemption is for MIGRATION work the service cannot be separated from: the diff itself
-      // must carry that seam, or the marker and six boilerplate rows would exempt anything
-      if (migrationScope === 'inseparable' && vague.length === 0 && migrationServiceMix) {
+      // must carry that migration + API-service seam, or the marker and six boilerplate rows would
+      // exempt anything (a migration paired only with UI/shared does not earn it)
+      if (migrationScope === 'inseparable' && vague.length === 0 && migrationServiceExemptible) {
         state = 'inseparable_large';
       } else {
         sizeProblem = `Review unit exceeds the hard cap of ${maxFiles} files / ${maxChangedLines.toLocaleString('en-US')} changed lines `
           + `(${changedFileCount} files, ${changedLines.toLocaleString('en-US')} lines): split it into ordinary units. The only exemption is `
-          + `${INSEPARABLE_MIGRATION_MARKER} on a diff carrying a migration and its inseparable service, with a complete invariant matrix whose six rows carry concrete risk and evidence`
+          + `${INSEPARABLE_MIGRATION_MARKER} on a diff carrying a migration and its inseparable API service, with a complete invariant matrix whose six rows carry concrete risk and evidence`
           + (justified ? '; `justified-large` no longer admits a new oversized unit' : '')
           + (migrationScope !== 'inseparable' ? '; no inseparable-migration marker' : '')
-          + (!migrationServiceMix ? '; the diff carries no migration+service seam' : '')
+          + (!migrationServiceExemptible ? '; the diff carries no migration + API-service (apps/api/src) seam' : '')
           + (vague.length > 0 ? `; rows without concrete risk and evidence: ${vague.join(', ')}` : '');
       }
     } else if (!justified || missingInvariants.length > 0) {
@@ -545,10 +574,14 @@ const CELL_PLACEHOLDER_SYMBOLS = /^[\s.,:;!?–—-]+$/u;
 // exactly as it rejects the bare token. `none` is deliberately excluded here: "none of the three
 // writers validates the tenant, so a forged claim crosses" is a real risk that opens with "none".
 const CELL_NONANSWER_OPENER = /^(?:n\/?a|na|nil|tbd|to[\s-]?do|not applicable|not relevant)\b/iu;
-// `none`/`nothing` counts as a non-answer only when it is dressed in a clause that merely restates
-// non-applicability ("none because this invariant does not apply here"); a bare `none` is already
-// caught by the exact set above, and a substantive "none of the writers …" is left concrete.
-const CELL_NONE_QUALIFIED = /^(?:none|nothing)\b[\s\S]*\b(?:not applicable|does ?n['’o]t apply|not relevant|not related|no related|carries no|does not carry|no risk|not affected|unaffected|out of scope|nothing to (?:assess|verify))\b/iu;
+// A non-applicability or no-evidence assertion states nothing concrete WHEREVER it sits in the cell,
+// not only at its opening. Anchoring to the first token let a qualified non-answer dressed in ordinary
+// words pass — "This invariant does not apply here at all", "This invariant needs no verification
+// here" — so it granted the sole hard-cap exemption with no concrete risk. These phrases only ever
+// declare a row empty; a genuine risk names a mechanism that fails ("none of the writers validates
+// the tenant, so a forged claim crosses", "the writer does not validate the tenant") and matches
+// none of them, staying concrete.
+const CELL_NONANSWER_PHRASE = /\b(?:not applicable|does ?n['’o]t apply|not relevant|not related|no related|carries no|does not carry|no risk|not affected|unaffected|out of scope|needs no verification|no verification (?:needed|required)|nothing to (?:assess|verify))\b/iu;
 /** A risk or evidence cell that states something: not blank, not a placeholder (bare, qualified or
  * punctuation-only), not a fragment. */
 function concreteCell(cell) {
@@ -557,7 +590,7 @@ function concreteCell(cell) {
   if (CELL_PLACEHOLDER_SYMBOLS.test(text)) return false;
   if (CELL_PLACEHOLDER_EXACT.test(text)) return false;
   if (CELL_NONANSWER_OPENER.test(text)) return false;
-  if (CELL_NONE_QUALIFIED.test(text)) return false;
+  if (CELL_NONANSWER_PHRASE.test(text)) return false;
   return true;
 }
 

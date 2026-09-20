@@ -1700,12 +1700,12 @@ test('the only exemption is an inseparable migration unit whose diff carries the
   for (const files of [[], ['apps/api/src/x/x.service.ts', 'docs/a.md'], ['apps/api/prisma/migrations/20270101000000_x/migration.sql']]) {
     const bare = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->']) }), { changedFiles: files });
     assert.equal(bare.allowed, false, `an oversized unit without a migration+service seam is ordinary: ${files.join(',')}`);
-    assert.match(bare.detail, /carries no migration\+service seam/u);
+    assert.match(bare.detail, /carries no migration \+ API-service/u);
   }
   // an unreadable file list cannot prove the seam, so it cannot exempt
   const unreadable = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->']) }), { requireChangedFiles: true });
   assert.equal(unreadable.allowed, false);
-  assert.match(unreadable.detail, /carries no migration\+service seam/u);
+  assert.match(unreadable.detail, /carries no migration \+ API-service/u);
   const vagueRow = sixRows().slice(0, -1).concat(`| ${REQUIRED_INVARIANTS.at(-1)} | n/a | checked |`);
   const vague = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], vagueRow) }), { changedFiles: mixed });
   assert.equal(vague.allowed, false);
@@ -1752,4 +1752,63 @@ test('the size-cap exemption rejects a qualified placeholder cell, not only the 
   const genuine = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], sixRows('none of the three writers validates the tenant, so a forged claim crosses', 'refused by the composite FK probe in the integration battery')) }), { changedFiles: mixed });
   assert.equal(genuine.allowed, true, genuine.detail);
   assert.equal(genuine.state, 'inseparable_large');
+});
+
+test('a non-answer cell is rejected wherever its non-applicability phrase sits, not only at the opening token', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  // ≥20 chars, opening with ORDINARY words, so the start-anchored openers never fired — yet each
+  // only declares the row empty and must not earn the sole hard-cap exemption
+  for (const filler of [
+    'This invariant does not apply here at all',
+    'This invariant needs no verification here',
+    'The change carries no risk to this invariant whatsoever',
+    'This row is out of scope for the current migration unit',
+    'The migration is not relevant to authorization or tenancy',
+  ]) {
+    const result = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], sixRows(filler, filler)) }), { changedFiles: mixed });
+    assert.equal(result.allowed, false, `qualified non-answer opening with ordinary words exempted the cap: ${filler}`);
+    assert.match(result.detail, /rows without concrete risk and evidence/u);
+    assert.deepEqual(result.missingInvariants, [...REQUIRED_INVARIANTS]);
+  }
+  // a genuine risk whose sentence contains "does not <mechanism>" is concrete and still exempts
+  const genuine = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], sixRows('the writer does not validate the tenant, so a forged claim crosses', 'refused by the composite FK probe in the integration battery')) }), { changedFiles: mixed });
+  assert.equal(genuine.state, 'inseparable_large', genuine.detail);
+});
+
+test('a migration-scope marker only in prose or a code fence does not grant the hard-cap exemption', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  // the inseparable marker appears only in explanatory prose and a code fence, never in the leading
+  // declaration block — the whole-body scan honoured it and forged the exemption
+  const proseBody = [
+    '<!-- review-size: standard -->',
+    '<!-- correction-owner: claude -->',
+    'Replaces: none',
+    '',
+    'This unit would use `<!-- migration-scope: inseparable -->` if it qualified, but it does not.',
+    '```',
+    '<!-- migration-scope: inseparable -->',
+    '```',
+    '## Pre-review checklist',
+    ...PRE_REVIEW_KEYS.map((key) => `- [x] \`${key}\` — checked against this cumulative diff`),
+    '- Migration/service seam: the seed literal is generated from the compiled catalog',
+    ...sixRows(),
+  ].join('\n');
+  const result = assessReviewScope(pullRequest({ ...large, body: proseBody }), { changedFiles: mixed });
+  assert.equal(result.allowed, false, 'a prose- or fence-quoted marker must not exempt the hard cap');
+  assert.match(result.detail, /no inseparable-migration marker/u);
+});
+
+test('the hard-cap exemption requires an API-service seam, not any UI or shared change', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const migration = 'apps/api/prisma/migrations/20270101000000_x/migration.sql';
+  for (const nonService of ['apps/web/src/screens/ExampleScreen.tsx', 'packages/shared/src/index.ts']) {
+    const result = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->']) }), { changedFiles: [migration, nonService] });
+    assert.equal(result.allowed, false, `a migration paired only with ${nonService} must not earn the exemption`);
+    assert.match(result.detail, /carries no migration \+ API-service/u);
+  }
+  // the same diff WITH an apps/api/src service path — the actual inseparable service — does earn it
+  const withService = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->']) }), { changedFiles: [migration, 'apps/api/src/x/x.service.ts', 'apps/web/src/screens/ExampleScreen.tsx'] });
+  assert.equal(withService.state, 'inseparable_large', withService.detail);
 });
