@@ -31,10 +31,19 @@ import {
   verify as verifyMigrationManifest,
 } from './migration-manifest.mjs';
 
-// A protected migration's committed path. The independent, trusted merge-boundary verification
-// (enforceProtectedMigrations) runs ONLY when a PR touches one of these or the manifest, so an
-// ordinary PR pays nothing and the check cannot be skipped by editing the PR-controlled CI workflow.
-const PROTECTED_MIGRATION = /^apps\/api\/prisma\/migrations\/[^/]+\/migration\.sql$/u;
+// The trusted merge-boundary verifier (enforceProtectedMigrations) certifies the DEPLOYED
+// representation of every protected migration — its tree topology, its checkout-effective attributes,
+// and additive ordering — so the trigger that invokes it must fire on ANY change that can alter that
+// representation, not only an exact migration.sql edit. A directory symlink or other non-migration.sql
+// entry under the migrations directory appears as its OWN path (never as `.../migration.sql`), and a
+// `.gitattributes` at any depth at or above the migrations directory transforms its files' checkout
+// bytes without touching a migration path at all — either would slip past an exact-filename trigger and
+// merge unverified. So the trigger is a prefix on the migrations directory, the manifest path, or any
+// `.gitattributes`: over-inclusive by design, since a false trigger costs one fetch while a missed one
+// admits a checkout-visible tamper. An ordinary PR still pays nothing and the check cannot be skipped
+// by editing the PR-controlled CI workflow.
+const MIGRATIONS_DIR_PREFIX = 'apps/api/prisma/migrations/';
+const GITATTRIBUTES = /(?:^|\/)\.gitattributes$/u;
 
 import {
   codexThreadIdsToResolve,
@@ -1474,12 +1483,19 @@ export async function enforceProtectedMigrations(client, pullRequest, expectedHe
   // "no migration" — otherwise a PR that tampers with a migration and disables the PR-controlled step
   // could merge during that window. And a rename carries its SOURCE in `previous_filename` while
   // `filename` is the destination, so BOTH are tested: renaming a protected migration or the manifest
-  // OUT of the recognized paths must not make the PR look inert.
+  // OUT of the recognized paths must not make the PR look inert. The trigger fires on any path under
+  // the migrations directory (a directory symlink or other non-migration.sql entry appears as its OWN
+  // path there), the manifest, or any `.gitattributes` (attributes at or above the migrations dir
+  // rewrite its checkout bytes without touching a migration path) — so a checkout-visible tamper that
+  // never edits a migration.sql still routes through the trusted verifier.
   const unreadable = !Array.isArray(files);
   const touchesMigrations = unreadable || files.some((file) => {
     const names = typeof file === 'string' ? [file] : [file?.filename, file?.previous_filename];
-    return names.some((name) => typeof name === 'string'
-      && (PROTECTED_MIGRATION.test(name) || name === MIGRATION_MANIFEST_PATH));
+    return names.some((name) => typeof name === 'string' && (
+      name.startsWith(MIGRATIONS_DIR_PREFIX)
+      || name === MIGRATION_MANIFEST_PATH
+      || GITATTRIBUTES.test(name)
+    ));
   });
   if (!touchesMigrations) return { allowed: true };
 

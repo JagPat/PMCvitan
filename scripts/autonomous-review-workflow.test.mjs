@@ -2829,4 +2829,45 @@ test('enforceProtectedMigrations: inert off-migrations, blocks a migration PR th
   };
   assert.equal((await reviewGate.enforceProtectedMigrations(unreadable, base, head)).allowed, true);
   assert.equal(unreadableVerified, 1, 'an unreadable file list is verified (fail closed), not skipped');
+
+  // A DIRECTORY SYMLINK under the migrations dir is committed as its OWN path (git records it as one
+  // mode-120000 blob at the directory path, never as `.../migration.sql`), so an exact-filename
+  // trigger would treat the PR as inert. The now-capable verifier can reject it — but only if invoked.
+  let symlinkVerified = 0;
+  const dirSymlink = {
+    async pullRequestFiles() { return [{ filename: 'apps/api/prisma/migrations/20280101_link' }]; },
+    async verifyProtectedMigrations() { symlinkVerified += 1; return { ok: true, problems: [] }; },
+  };
+  assert.equal((await reviewGate.enforceProtectedMigrations(dirSymlink, base, head)).allowed, true);
+  assert.equal(symlinkVerified, 1, 'a non-migration.sql path under the migrations dir is verified, not skipped');
+
+  // A PR that only adds a `.gitattributes` (e.g. `... text eol=crlf`) rewrites the checkout bytes of
+  // existing migrations without touching a migration path at all. It must still route to the verifier,
+  // which evaluates checkout-effective attributes and fails closed on any transform.
+  let attrVerified = 0;
+  const attributesOnly = {
+    async pullRequestFiles() { return [{ filename: '.gitattributes' }]; },
+    async verifyProtectedMigrations() { attrVerified += 1; return { ok: true, problems: [] }; },
+  };
+  assert.equal((await reviewGate.enforceProtectedMigrations(attributesOnly, base, head)).allowed, true);
+  assert.equal(attrVerified, 1, 'a root .gitattributes change is verified, not skipped');
+
+  // A `.gitattributes` nested at or above the migrations dir counts too (attributes cascade downward).
+  let nestedAttrVerified = 0;
+  const nestedAttributes = {
+    async pullRequestFiles() { return [{ filename: 'apps/api/prisma/.gitattributes' }]; },
+    async verifyProtectedMigrations() { nestedAttrVerified += 1; return { ok: true, problems: [] }; },
+  };
+  assert.equal((await reviewGate.enforceProtectedMigrations(nestedAttributes, base, head)).allowed, true);
+  assert.equal(nestedAttrVerified, 1, 'a nested .gitattributes change is verified, not skipped');
+
+  // A genuinely unrelated file that merely CONTAINS "gitattributes" in its name is still inert — the
+  // trigger matches the basename `.gitattributes`, not a substring, so ordinary PRs pay nothing.
+  let inertAttrCalls = 0;
+  const inertNamed = {
+    async pullRequestFiles() { return [{ filename: 'docs/gitattributes-notes.md' }]; },
+    async verifyProtectedMigrations() { inertAttrCalls += 1; return { ok: false, problems: ['should not run'] }; },
+  };
+  assert.deepEqual(await reviewGate.enforceProtectedMigrations(inertNamed, base, head), { allowed: true });
+  assert.equal(inertAttrCalls, 0, 'a file merely named like gitattributes does not trigger verification');
 });
