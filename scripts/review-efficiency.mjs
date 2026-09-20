@@ -95,36 +95,73 @@ function declaredMarker(body, name) {
   return values.size === 1 ? [...values][0] : undefined;
 }
 
-// The invariant-matrix rows that actually RENDER, excluding any inside a construct GitHub does not
-// render as a table. A plain scan of every pipe-prefixed line let six otherwise-valid rows placed
-// inside a ```markdown example fence — or between `<!--` and `-->` — count as the matrix and grant
-// the sole hard-cap exemption, though the rendered body shows no matrix. The two GFM constructs that
-// swallow a pipe table are code fences and HTML comments: strip comments first (single- and
-// multi-line), then skip any pipe line inside a code fence, so only the real matrix section counts.
+// The invariant-matrix rows that actually RENDER as a GFM table row, read by a BOUNDED,
+// CommonMark-aligned block scanner rather than an ad-hoc line toggle (owner decision, #596). A row
+// is counted only when it is at the document's top block level — not inside a fenced code block, an
+// indented code block, or an HTML comment — the three constructs GitHub renders as something other
+// than a table. The scanner is a fixed state machine over the CommonMark leaf-block rules for those
+// constructs, so it is complete for them rather than a denylist of shapes:
+//
+//   - Fenced code: a line (indent < 4) of >= 3 backticks OR >= 3 tildes opens a fence; it closes
+//     ONLY on a later line of the SAME fence character, at least as long, with nothing after the run
+//     but whitespace. A different character or a shorter run does NOT close it (the reported bug: a
+//     `~~~` line inside a ```markdown fence must not end it), and an info string is allowed only on
+//     the opener.
+//   - HTML comment block: a line (indent < 4) beginning `<!--` starts a comment block that runs
+//     until the first line containing `-->`; nothing inside it renders.
+//   - Indented code: a line indented four spaces or a tab renders as code, not a table.
+//
+// Whether the rendered matrix is genuinely concrete stays the reviewer's judgement; this only
+// decides which rows render at all.
 function matrixRows(body) {
   const rows = [];
-  let inFence = false;
-  const text = String(body ?? '').replace(/<!--[\s\S]*?-->/gu, '');
-  for (const line of text.split(/\r?\n/u)) {
-    if (/^\s*(?:```|~~~)/u.test(line)) { inFence = !inFence; continue; }
-    if (inFence) continue;
-    // A line indented four spaces or a tab renders as an INDENTED CODE BLOCK, not a table, so its
-    // pipe-rows are not a real matrix — exclude them alongside fenced and commented rows.
-    if (/^(?: {4}|\t)/u.test(line)) continue;
-    if (line.trimStart().startsWith('|')) rows.push(splitCells(line));
+  let fence = null; // { char: '`' | '~', len } while inside a fenced code block
+  let inComment = false;
+  for (const line of String(body ?? '').split(/\r?\n/u)) {
+    if (inComment) {
+      if (line.includes('-->')) inComment = false;
+      continue;
+    }
+    const trimmed = line.replace(/^[\t ]+/u, '');
+    const indent = line.length - trimmed.length;
+    const fenceRun = indent < 4 ? /^(`{3,}|~{3,})/u.exec(trimmed) : null;
+    if (fence) {
+      if (fenceRun
+        && fenceRun[1][0] === fence.char
+        && fenceRun[1].length >= fence.len
+        && trimmed.slice(fenceRun[1].length).trim() === '') {
+        fence = null;
+      }
+      continue; // no line inside a fenced code block is a table row
+    }
+    if (fenceRun) { fence = { char: fenceRun[1][0], len: fenceRun[1].length }; continue; }
+    if (indent < 4 && trimmed.startsWith('<!--')) {
+      if (!line.includes('-->')) inComment = true;
+      continue; // an HTML comment block (single- or multi-line) renders nothing
+    }
+    if (indent >= 4) continue; // an indented code block renders as code, not a table
+    if (trimmed.startsWith('|')) rows.push(splitCells(line));
   }
   return rows;
 }
 
-// Split a table row into cells on UNESCAPED pipes. A `\|` is a literal pipe inside a cell (GitHub
-// renders it as one column), so splitting on every `|` mis-columns the row — a `\|` in the risk cell
-// shifted real content into the evidence slot and left the rendered evidence empty. Split on pipes
-// not preceded by a backslash, drop the leading/trailing empties, and unescape `\|` back to `|`.
+// Split a table row into cells on UNESCAPED pipes, with correct backslash PARITY. A single `\|` is a
+// literal pipe inside a cell; `\\|` is an escaped backslash (a literal `\`) followed by a real cell
+// delimiter. A lookbehind cannot count the backslash run, so this walks the line: a backslash
+// escapes the next character, any other `|` is a delimiter. Outer empties (the row's leading and
+// trailing pipes) are dropped, `\|` and `\\` are unescaped, and each cell is trimmed.
 function splitCells(line) {
-  return line
-    .split(/(?<!\\)\|/u)
-    .slice(1, -1)
-    .map((cell) => cell.replace(/\\\|/gu, '|').trim());
+  const cells = [];
+  let cell = '';
+  let escaped = false;
+  for (const ch of String(line)) {
+    if (escaped) { cell += ch; escaped = false; continue; }
+    if (ch === '\\') { cell += ch; escaped = true; continue; }
+    if (ch === '|') { cells.push(cell); cell = ''; continue; }
+    cell += ch;
+  }
+  cells.push(cell);
+  return cells.slice(1, -1).map((c) => c.replace(/\\([|\\])/gu, '$1').trim());
 }
 
 function finiteCount(value) {

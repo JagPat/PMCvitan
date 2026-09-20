@@ -1879,6 +1879,62 @@ test('an escaped pipe in a cell does not shift content into the evidence column'
   assert.equal(assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], filled) }), { changedFiles: mixed }).state, 'inseparable_large');
 });
 
+test('a mismatched inner fence does not end an outer code fence around the matrix', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  // the six rows sit inside a ```markdown fence that also contains a `~~~` line; a `~~~` does NOT
+  // close a backtick fence, so GitHub still renders all of it as code — no matrix
+  const trickBody = [
+    '<!-- migration-scope: inseparable -->',
+    '<!-- correction-owner: claude -->',
+    'Replaces: none',
+    '',
+    '## Pre-review checklist',
+    ...PRE_REVIEW_KEYS.map((key) => `- [x] \`${key}\` — checked against this cumulative diff`),
+    '- Migration/service seam: the seed literal is generated from the compiled catalog',
+    '',
+    'An example matrix, all inside one code fence:',
+    '```markdown',
+    '~~~',
+    ...sixRows(),
+    '```',
+  ].join('\n');
+  const result = assessReviewScope(pullRequest({ ...large, body: trickBody }), { changedFiles: mixed });
+  assert.equal(result.allowed, false, 'rows inside a backtick fence with an inner ~~~ must not count');
+  assert.match(result.detail, /invariant rows missing risk and evidence/u);
+  assert.deepEqual(result.missingInvariants, [...REQUIRED_INVARIANTS]);
+  // a shorter same-char fence line also does not close a longer opener
+  const longFence = [
+    '<!-- migration-scope: inseparable -->',
+    '<!-- correction-owner: claude -->',
+    'Replaces: none',
+    '',
+    '## Pre-review checklist',
+    ...PRE_REVIEW_KEYS.map((key) => `- [x] \`${key}\` — checked against this cumulative diff`),
+    '- Migration/service seam: the seed literal is generated from the compiled catalog',
+    '',
+    '````',
+    '```',
+    ...sixRows(),
+    '````',
+  ].join('\n');
+  assert.equal(assessReviewScope(pullRequest({ ...large, body: longFence }), { changedFiles: mixed }).allowed, false, 'a shorter ``` must not close a ```` fence');
+});
+
+test('splitCells respects backslash parity: an escaped backslash leaves a real delimiter', () => {
+  const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
+  const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
+  // `\\|` is an escaped backslash then a REAL delimiter, so the text after it is a separate (empty)
+  // evidence cell — the row must not pass. A naive lookbehind treats `\\|` as an escaped pipe.
+  const rows = [
+    '| Invariant | Risk | Evidence |', '| --- | --- | --- |',
+    ...REQUIRED_INVARIANTS.map((inv) => `| ${inv} | a real risk ending in a backslash \\\\| |`),
+  ];
+  const result = assessReviewScope(pullRequest({ ...large, body: capBody(['<!-- migration-scope: inseparable -->'], rows) }), { changedFiles: mixed });
+  assert.equal(result.allowed, false, 'an escaped backslash before a pipe leaves an empty evidence cell');
+  assert.match(result.detail, /invariant rows missing risk and evidence/u);
+});
+
 test('a too-short migration/service seam does not satisfy the inseparable requirement', () => {
   const large = { number: NEW_UNIT, changed_files: 24, additions: 3_000, deletions: 100 };
   const mixed = ['apps/api/prisma/migrations/20270101000000_x/migration.sql', 'apps/api/src/x/x.service.ts'];
