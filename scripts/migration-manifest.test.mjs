@@ -107,6 +107,39 @@ test('a migration the base tree carries but its manifest never recorded is prote
   assert.match(r.verify('HEAD', broken).problems.join(';'), /base manifest disagrees with the base tree: .*_one/u);
 });
 
+test('a committed migration whose path carries non-ASCII bytes is protected (ls-tree -z, not C-quoted names)', (t) => {
+  const r = repo(); t.after(() => cleanup(r.cwd));
+  // default `ls-tree --name-only` C-quotes a non-ASCII path (".../20260105000000_\303\251/…"), which the
+  // path regex then discards, so the migration would silently fall outside the protected inventory
+  r.write(`${DIR}/20260105000000_é/migration.sql`, 'CREATE TABLE accented (id int);\n');
+  const committed = generate({ cwd: r.cwd });
+  assert.ok(committed.migrations[`${DIR}/20260105000000_é/migration.sql`], 'generation records the non-ASCII migration');
+  r.commit('accented migration'); r.bless(); const base = r.commit('bless accented');
+  const protectedNow = digestsAt('HEAD', r.cwd);
+  assert.ok(protectedNow[`${DIR}/20260105000000_é/migration.sql`], 'the non-ASCII migration is in the protected inventory');
+  // tamper the non-ASCII migration's bytes: verification must catch it, proving it is protected
+  r.write(`${DIR}/20260105000000_é/migration.sql`, 'CREATE TABLE accented (id bigint);\n'); r.commit('tamper accented'); r.bless(); r.commit('rebless accented');
+  assert.match(r.verify('HEAD', base).problems.join(';'), /bytes changed: .*20260105000000_é/u);
+});
+
+test('a symlinked migration.sql is rejected before hashing, at verify and at generate', (t) => {
+  const r = repo(); t.after(() => cleanup(r.cwd));
+  // git records a symlink as mode 120000 whose blob is the TARGET PATH, not SQL; a checkout consumer
+  // follows the link and runs different bytes, so hashing the link text would freeze nothing real
+  writeFileSync(join(r.cwd, `${DIR}/target.sql`), 'SELECT 1;\n');
+  mkdirSync(join(r.cwd, DIR, '20260106000000_link'), { recursive: true });
+  execFileSync('ln', ['-s', '../target.sql', 'migration.sql'], { cwd: join(r.cwd, DIR, '20260106000000_link') });
+  // generate refuses to record a symlinked migration at all
+  assert.throws(() => generate({ cwd: r.cwd }), /not a regular file/u);
+  git(r.cwd, 'add', '-A'); git(r.cwd, 'commit', '-q', '-m', 'symlinked migration');
+  const head = git(r.cwd, 'rev-parse', 'HEAD');
+  assert.equal(git(r.cwd, 'ls-tree', '-r', head, '--', `${DIR}/20260106000000_link/migration.sql`).slice(0, 6), '120000', 'the migration is committed as a symlink');
+  // verify surfaces the non-regular file as a named failure rather than checksumming the link text
+  const result = r.verify(head, r.base);
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(';'), /not a regular file \(git mode 120000\): .*20260106000000_link/u);
+});
+
 test('compare is pure: a head that redefines a recorded digest, or lists what the head lacks, is named without git', () => {
   const one = `${DIR}/20260101000000_one/migration.sql`;
   const protectedDigests = { [one]: 'a'.repeat(64) };

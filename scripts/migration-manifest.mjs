@@ -7,7 +7,7 @@
 // (generated; `verify` names what differs, so the file never spends a review unit's line budget).
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -34,19 +34,48 @@ function blob(ref, path, cwd) {
 const root = (cwd) => git(['rev-parse', '--show-toplevel'], cwd).trim();
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
+// A regular blob is mode 100644 or 100755. A symlink (120000) or gitlink (160000) is NOT one: its
+// blob is the target pathname, not SQL, while every deployment consumer opens the file and follows
+// the link — so hashing the blob would freeze bytes nobody runs. Such an entry is rejected, never hashed.
+const REGULAR_MODE = /^100(?:644|755)$/u;
+// `ls-tree -r -z` emits one NUL-terminated `MODE SP TYPE SP OBJECT TAB PATH` record per entry, with
+// the PATH verbatim. Default output C-quotes any non-ASCII path (`"…/\303\251/migration.sql"`), which
+// the MIGRATION regex then discards — so a committed non-ASCII migration would fall outside the
+// protected inventory. `-z` gives the raw name and lets us read the mode in the same pass.
+function entriesAt(ref, cwd) {
+  return git(['ls-tree', '-r', '-z', ref, '--', MIGRATIONS_DIR], cwd)
+    .split('\0')
+    .map((record) => /^(\d{6}) [^ ]+ [0-9a-f]+\t([\s\S]*)$/u.exec(record))
+    .filter((match) => match && MIGRATION.test(match[2]))
+    .map((match) => ({ mode: match[1], path: match[2] }))
+    .sort((a, b) => (a.path < b.path ? -1 : 1));
+}
 export function migrationsAt(ref, cwd) {
-  return git(['ls-tree', '-r', '--name-only', ref, '--', MIGRATIONS_DIR], cwd)
-    .split('\n').filter((path) => MIGRATION.test(path)).sort();
+  return entriesAt(ref, cwd).map((entry) => entry.path);
 }
 export function digestsAt(ref, cwd) {
-  return Object.fromEntries(migrationsAt(ref, cwd).map((path) => [path, sha256(blob(ref, path, cwd))]));
+  return Object.fromEntries(entriesAt(ref, cwd).map((entry) => {
+    if (!REGULAR_MODE.test(entry.mode)) {
+      throw new Error(`protected migration is not a regular file (git mode ${entry.mode}): ${entry.path} — a symlink or gitlink cannot be checksummed as migration SQL`);
+    }
+    return [entry.path, sha256(blob(ref, entry.path, cwd))];
+  }));
 }
 /** The WORKING TREE's migrations: generation runs before the new migration is committed. */
 export function digestsInTree(cwd) {
   const dir = join(cwd, MIGRATIONS_DIR);
   return Object.fromEntries(readdirSync(dir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && existsSync(join(dir, entry.name, 'migration.sql')))
-    .map((entry) => [`${MIGRATIONS_DIR}/${entry.name}/migration.sql`, sha256(readFileSync(join(dir, entry.name, 'migration.sql')))])
+    .map((entry) => {
+      const file = join(dir, entry.name, 'migration.sql');
+      // lstat, not stat: a symlinked migration.sql would be recorded here as the hash of the target's
+      // CONTENT (readFileSync follows the link) while verify hashes the committed blob (the link text),
+      // so a recorded symlink could never verify. Refuse to record one at all — migrations are files.
+      if (!lstatSync(file).isFile()) {
+        throw new Error(`migration is not a regular file: ${MIGRATIONS_DIR}/${entry.name}/migration.sql — a symlink cannot be a migration`);
+      }
+      return [`${MIGRATIONS_DIR}/${entry.name}/migration.sql`, sha256(readFileSync(file))];
+    })
     .sort(([a], [b]) => (a < b ? -1 : 1)));
 }
 export function generate({ cwd = process.cwd() } = {}) {
@@ -115,8 +144,20 @@ export function verify({ baseRef, headRef = 'HEAD', cwd = process.cwd() }) {
   if (!baseRef) throw new Error('verify needs --base <ref>');
   const top = root(cwd);
   for (const ref of [baseRef, headRef]) git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], top);
-  const base = protectedAt(baseRef, top);
-  const result = compare({ ...base, headManifest: readManifest(headRef, top), headDigests: digestsAt(headRef, top) });
+  // A non-regular protected migration (a symlink/gitlink digestsAt refuses to checksum) or an
+  // unreadable record is a NAMED verification failure, never a thrown escape: the caller — the CLI
+  // step and the trusted merge gate alike — must see `ok: false` with the reason, not an exception.
+  let base;
+  let headManifest;
+  let headDigests;
+  try {
+    base = protectedAt(baseRef, top);
+    headManifest = readManifest(headRef, top);
+    headDigests = digestsAt(headRef, top);
+  } catch (error) {
+    return { ok: false, problems: [error.message], protected: 0, source: `unverifiable at ${headRef}` };
+  }
+  const result = compare({ ...base, headManifest, headDigests });
   // a base whose record contradicts its own tree is repaired on the trusted base, never by a head
   const problems = [...base.problems, ...result.problems];
   return { ...result, ok: problems.length === 0, problems };
