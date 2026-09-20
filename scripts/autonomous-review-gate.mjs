@@ -1468,9 +1468,18 @@ export async function enforceProtectedMigrations(client, pullRequest, expectedHe
   } catch {
     files = undefined;
   }
-  const touchesMigrations = Array.isArray(files) && files.some((file) => {
-    const name = typeof file === 'string' ? file : file?.filename;
-    return typeof name === 'string' && (PROTECTED_MIGRATION.test(name) || name === MIGRATION_MANIFEST_PATH);
+  // The file list only OPTIMIZES away the fetch for a PR that touches no migration; it can never be
+  // the reason verification is SKIPPED. An unreadable list (a transient API failure after
+  // enforceReviewScope read the diff) must therefore fall through to verifying, not be read as
+  // "no migration" — otherwise a PR that tampers with a migration and disables the PR-controlled step
+  // could merge during that window. And a rename carries its SOURCE in `previous_filename` while
+  // `filename` is the destination, so BOTH are tested: renaming a protected migration or the manifest
+  // OUT of the recognized paths must not make the PR look inert.
+  const unreadable = !Array.isArray(files);
+  const touchesMigrations = unreadable || files.some((file) => {
+    const names = typeof file === 'string' ? [file] : [file?.filename, file?.previous_filename];
+    return names.some((name) => typeof name === 'string'
+      && (PROTECTED_MIGRATION.test(name) || name === MIGRATION_MANIFEST_PATH));
   });
   if (!touchesMigrations) return { allowed: true };
 

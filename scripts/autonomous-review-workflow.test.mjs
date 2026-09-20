@@ -2810,4 +2810,23 @@ test('enforceProtectedMigrations: inert off-migrations, blocks a migration PR th
 
   // A client without the capability is a no-op, never a false block.
   assert.deepEqual(await reviewGate.enforceProtectedMigrations({}, base, head), { allowed: true });
+
+  // A RENAME that carries a protected migration only in previous_filename (filename is the
+  // destination) still triggers verification — renaming it out of the recognized paths is not inert.
+  let renameVerified = 0;
+  const renamed = {
+    async pullRequestFiles() { return [{ filename: 'docs/moved.md', previous_filename: 'apps/api/prisma/migrations/20260101000000_x/migration.sql', status: 'renamed' }]; },
+    async verifyProtectedMigrations() { renameVerified += 1; return { ok: true, problems: [] }; },
+  };
+  assert.equal((await reviewGate.enforceProtectedMigrations(renamed, base, head)).allowed, true);
+  assert.equal(renameVerified, 1, 'a rename carrying a migration in previous_filename is verified, not skipped');
+
+  // An UNREADABLE file list must fall through to verification, never be read as "no migration".
+  let unreadableVerified = 0;
+  const unreadable = {
+    async pullRequestFiles() { throw new Error('transient list read failure'); },
+    async verifyProtectedMigrations() { unreadableVerified += 1; return { ok: true, problems: [] }; },
+  };
+  assert.equal((await reviewGate.enforceProtectedMigrations(unreadable, base, head)).allowed, true);
+  assert.equal(unreadableVerified, 1, 'an unreadable file list is verified (fail closed), not skipped');
 });
