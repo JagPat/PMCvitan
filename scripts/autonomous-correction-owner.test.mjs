@@ -22,10 +22,27 @@
 // discipline, the same-repository restriction, or the two-finding-head
 // replacement policy — O7 pins that.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { guardAgainstCurrentHeadFinding, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
+import {
+  parseCommitCorrectionOwner,
+  shaMergeAuthority,
+  headBoundOwnerAgreement,
+  headOwnerVerdict,
+  ownershipStatus,
+} from './correction-owner.mjs';
+import {
+  OWNERSHIP_READ_RETRY,
+  OWNERSHIP_CANDIDATE_HELD,
+  OWNERSHIP_INCONSISTENT_SCOPE,
+  isOwnershipInconsistentScopeDetail,
+  isBodyOnlyOwnershipRecoveryDetail,
+} from './review-policy.mjs';
 import { assessReviewScope } from './review-efficiency.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
@@ -795,4 +812,417 @@ test('C11: a non-awakenable owner is told what GitHub cannot do, not that nothin
     ref: 'claude/x',
   });
   assert.doesNotMatch(nextLine(claude.body), /cannot (start|observe)|neither start/iu);
+});
+
+// ── Owner primitive unit: git-faithful commit-trailer parsing ────────────────────────────────────────
+// `parseCommitCorrectionOwner` reads the terminal `Correction-Owner:` trailer AS git reads it: extraction
+// is DELEGATED to real `git interpret-trailers --parse --unfold` rather than reimplemented, after a
+// hand-rolled grammar repeatedly diverged from git on adversarial input. This differential matrix is the
+// regression guard: it runs real git as the oracle and asserts the extraction/resolution mapping agrees,
+// and it keeps every adversarial case that a previous reimplementation got wrong so a future refactor
+// cannot silently reintroduce the divergence.
+
+// The raw terminal Correction-Owner trailer value(s) git recognises, isolated from this loop's owner
+// admission (git does not know `CORRECTION_OWNERS`). `--unfold` joins folded continuations as git does.
+// The same config isolation the primitive applies: no global/system/local/env config or discovered
+// repository reaches git, only the two pinned keys, so the oracle is `git parsing under our fixed config`.
+let oracleGitDir;
+function isolatedOracleDir() {
+  if (!oracleGitDir) oracleGitDir = mkdtempSync(join(tmpdir(), 'owner-trailer-oracle-'));
+  return oracleGitDir;
+}
+function isolatedGitEnv() {
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith('GIT_')) continue;
+    env[key] = value;
+  }
+  env.GIT_DIR = isolatedOracleDir();
+  env.GIT_CONFIG_GLOBAL = '/dev/null';
+  env.GIT_CONFIG_SYSTEM = '/dev/null';
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  return env;
+}
+
+function gitCorrectionOwnerValues(message) {
+  const out = execFileSync('git', [
+    '-c', 'trailer.separators=:',
+    '-c', 'core.commentChar=#',
+    'interpret-trailers', '--parse', '--unfold',
+  ], { input: message, cwd: isolatedOracleDir(), env: isolatedGitEnv() }).toString();
+  return out.split('\n')
+    .filter((line) => /^correction-owner[ \t]*:/iu.test(line))
+    // ASCII-trim only, so git's non-ASCII whitespace in the value is preserved for a faithful comparison.
+    .map((line) => line.slice(line.indexOf(':') + 1).replace(/^[ \t]+|[ \t]+$/gu, ''));
+}
+
+const VT = String.fromCharCode(0x0B); // vertical tab
+const FF = String.fromCharCode(0x0C); // form feed
+const NBSP = String.fromCharCode(0x00A0); // no-break space
+const EMSP = String.fromCharCode(0x2003); // em space
+const CR = String.fromCharCode(0x0D); // carriage return
+
+test('the commit-trailer parser agrees with real `git interpret-trailers --parse` over an adversarial matrix', () => {
+  const cases = [
+    'subject\n\nCorrection-Owner: claude\n',            // plain terminal trailer
+    'subject\n\nCorrection-Owner: cursor',              // no trailing newline
+    'subject\n\ncorrection-owner: claude\n',            // case-insensitive key
+    'fix: x\n\nbody\n\nCorrection-Owner: claude\nCo-Authored-By: C <c@x>\n', // trailer among others
+    'subject\n\nCorrection-Owner : claude\n',           // horizontal whitespace before separator
+    'subject\n\nCorrection-Owner\t: cursor\n',          // tab before separator
+    'subject\n\nCorrection-Owner: claude\n# generated\n', // trailing git comment line
+    'subject\n\n# leading comment\nCorrection-Owner: cursor\n', // leading git comment line
+    'subject\n\nCorrection-Owner: claude\n---\n',       // bare patch divider after trailer
+    'subject\n\nCorrection-Owner: claude\n--- a/f\n+++ b/f\n', // emailed-patch divider
+    'subject\n\nCorrection-Owner: claude\n---foo\n',    // NOT a divider - breaks the terminal block
+    'subject\n\nCorrection-Owner: claude\n ---\n',      // indented ` ---` is text/continuation, not a divider
+    'subject\n\n---\n\nCorrection-Owner: claude\n',     // divider BEFORE the trailer - it is patch content
+    'subject\n\nCorrection-Owner: claude\nCorrection-Owner: claude\n', // duplicate
+    'subject\n\nCorrection-Owner: claude\nCorrection-Owner: cursor\n', // conflicting
+    'subject\n\n leading continuation\nCorrection-Owner: claude\n', // continuation before first trailer voids block
+    'subject only\n',                                   // no trailer
+    `subject\n${VT}\nCorrection-Owner: claude`,         // vertical-tab "blank" line - NOT git-blank
+    `subject\n${FF}\nCorrection-Owner: claude`,         // form-feed "blank" line - NOT git-blank
+    `subject\n${NBSP}\nCorrection-Owner: claude`,       // NBSP "blank" line - NOT git-blank
+    `subject\n${EMSP}\nCorrection-Owner: claude`,       // em-space "blank" line - NOT git-blank
+    'subject\n   \nCorrection-Owner: cursor\n',         // ASCII-space blank line IS git-blank
+    'subject\n\t\nCorrection-Owner: claude\n',          // ASCII-tab blank line IS git-blank
+    // finding r4039009534 — git PRESERVES non-ASCII whitespace in the value (only ASCII padding is trimmed)
+    `subject\n\nCorrection-Owner: ${NBSP}claude\n`,     // leading NBSP kept in value (stays malformed)
+    `subject\n\nCorrection-Owner: claude${NBSP}\n`,     // trailing NBSP kept in value
+    // finding r4039009546 — git rule (ii): a `Signed-off-by` block tolerates non-trailer lines at >=25% trailers
+    'subject\n\nSigned-off-by: A <a@x>\nplain\nCorrection-Owner: claude\n', // SoB present -> block, plain dropped
+    'subject\n\nplain\nSigned-off-by: A <a@x>\nCorrection-Owner: claude\n', // non-trailer FIRST, SoB present -> block
+    'subject\n\nSigned-off-by: A <a@x>\nCorrection-Owner: claude\nplain\n', // trailing non-trailer dropped
+    'subject\n\nplain\nCorrection-Owner: claude\n',     // no recognized trailer -> NOT a block
+    'subject\n\nplain line\nCorrection-Owner: claude\nCo-Authored-By: c <c@x>\n', // no SoB, 2 trailers -> NOT a block
+    'subject\n\nSigned-off-by: A <a@x>\np1\np2\np3\np4\np5\np6\np7\nCorrection-Owner: claude\n', // <25% -> NOT a block
+    'Signed-off-by: A <a@x>\nCorrection-Owner: claude\n', // whole-message paragraph (no blank before) -> NOT a block
+    'Correction-Owner: claude\n',                        // single-line whole message -> NOT a block
+    'subject\n\nSigned-off-by: A <a@x>\nCorrection-Owner: claude\n more\n', // indented continuation folds with space
+    // finding r4039009540 — a LONE CR is an ordinary byte to git, not a line break
+    `subject${CR}${CR}Correction-Owner: claude${CR}`,   // lone CRs -> one line -> NOT a block
+    `subject${CR}\n${CR}\nCorrection-Owner: claude${CR}\n`, // CRLF pairs -> trailer block
+    // r4039545854 — a `#` comment separates a trailer from a continuation; git emits NO trailers, so a
+    // parser that strips comments before parsing (joining the continuation) must not over-accept.
+    'subject\n\nCorrection-Owner: claude\nFoo: x\n# comment\n continuation\n',
+    // r4039545847 — a SPACE-padded `Signed-off-by ` does NOT activate git's recognized-trailer rule, so the
+    // paragraph with a plain line is not a block; git emits nothing.
+    'subject\n\nCorrection-Owner: claude\nSigned-off-by : A\nplain\n',
+    // r4039545882 — git treats the `(cherry picked from commit …)` provenance suffix as part of the block;
+    // git emits `Correction-Owner: claude`.
+    'subject\n\nCorrection-Owner: claude\n(cherry picked from commit 0123456789012345678901234567890123456789)\n',
+    // r4039545863 — `-X:` is a valid git trailer token; git emits both trailers, so the block is not broken.
+    'subject\n\nCorrection-Owner: claude\n-X: z\n',
+    // r4039545874 — a dropped non-trailer line must reset continuation attachment; git drops `plain` and its
+    // indented follower and emits `Correction-Owner: claude` + `Signed-off-by: A`.
+    'subject\n\nCorrection-Owner: claude\nplain\n continuation\nSigned-off-by: A\n',
+  ];
+  for (const message of cases) {
+    const git = gitCorrectionOwnerValues(message);
+    const mine = parseCommitCorrectionOwner(message);
+    // Structural fidelity: the raw terminal Correction-Owner value(s) the parser finds equal git's,
+    // independent of this loop's owner admission.
+    assert.deepEqual(mine.declared, git, `raw trailer values must match git for ${JSON.stringify(message)}`);
+  }
+});
+
+test('owner resolution is applied on top of git-faithful parsing', () => {
+  // A git-recognised trailer naming a merge-eligible owner resolves as `declared`; a recognised in-flight
+  // CANDIDATE owner (codex) resolves as the first-class `candidate` state — tracked but never merge-eligible,
+  // since no consumer treats `candidate` as `declared`; any other value is `invalid` (not routed).
+  const claude = parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\n');
+  assert.equal(claude.state, 'declared');
+  assert.equal(claude.owner, 'claude');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: cursor\n').owner, 'cursor');
+  const codex = parseCommitCorrectionOwner('x\n\nCorrection-Owner: codex\n');
+  assert.equal(codex.state, 'candidate');
+  assert.equal(codex.owner, 'codex');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: nobody\n').state, 'invalid');
+  assert.equal(parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\nCorrection-Owner: cursor\n').state, 'conflicting');
+  assert.equal(parseCommitCorrectionOwner('no trailer').state, 'missing');
+  // A marker in prose or a code fence is not a terminal trailer.
+  assert.equal(parseCommitCorrectionOwner('doc\n\n```\nCorrection-Owner: claude\n```\n').state, 'missing');
+});
+
+test('shaMergeAuthority is the SHA-only, mutation-free merge authority (unit 2B1)', () => {
+  // Derived ONLY from the commit message/trailer: the single-argument signature admits no PR body,
+  // branch ref, PR number, or sibling-PR set, so the verdict is identical for every pull-request view
+  // that shares one head SHA. GitHub's required status is SHA scoped, so its releasing predicate must be.
+  assert.equal(shaMergeAuthority.length, 1);
+
+  // eligible: a merge-eligible admitted owner (claude, cursor) — the only merge-eligible outcome.
+  assert.deepEqual(
+    shaMergeAuthority('x\n\nCorrection-Owner: claude\n'),
+    { outcome: 'eligible', mergeEligible: true, owner: 'claude', trailerState: 'declared' },
+  );
+  assert.deepEqual(
+    shaMergeAuthority('x\n\nCorrection-Owner: cursor\n'),
+    { outcome: 'eligible', mergeEligible: true, owner: 'cursor', trailerState: 'declared' },
+  );
+
+  // candidate: a recognised in-flight candidate (codex) is tracked but NEVER merge-eligible.
+  assert.deepEqual(
+    shaMergeAuthority('x\n\nCorrection-Owner: codex\n'),
+    { outcome: 'candidate', mergeEligible: false, owner: 'codex', trailerState: 'candidate' },
+  );
+
+  // invalid: a readable fault — missing, conflicting, or malformed/non-admitted — carries the finer
+  // trailerState, names no owner, and is never merge-eligible.
+  assert.deepEqual(
+    shaMergeAuthority('no trailer'),
+    { outcome: 'invalid', mergeEligible: false, owner: null, trailerState: 'missing' },
+  );
+  assert.deepEqual(
+    shaMergeAuthority('x\n\nCorrection-Owner: claude\nCorrection-Owner: cursor\n'),
+    { outcome: 'invalid', mergeEligible: false, owner: null, trailerState: 'conflicting' },
+  );
+  assert.deepEqual(
+    shaMergeAuthority('x\n\nCorrection-Owner: nobody\n'),
+    { outcome: 'invalid', mergeEligible: false, owner: null, trailerState: 'invalid' },
+  );
+  // A marker in prose or a code fence is not a terminal trailer, so it carries no merge authority.
+  assert.equal(shaMergeAuthority('doc\n\n```\nCorrection-Owner: claude\n```\n').outcome, 'invalid');
+
+  // mergeEligible is true for EXACTLY the eligible outcome.
+  for (const [message, expected] of [
+    ['x\n\nCorrection-Owner: claude\n', true],
+    ['x\n\nCorrection-Owner: cursor\n', true],
+    ['x\n\nCorrection-Owner: codex\n', false],
+    ['no trailer', false],
+    ['x\n\nCorrection-Owner: claude\nCorrection-Owner: cursor\n', false],
+    ['x\n\nCorrection-Owner: nobody\n', false],
+  ]) {
+    assert.equal(shaMergeAuthority(message).mergeEligible, expected);
+  }
+
+  // Identical for every PR view sharing one SHA: the same commit message always yields the same verdict.
+  const message = 'x\n\nCorrection-Owner: claude\n';
+  assert.deepEqual(shaMergeAuthority(message), shaMergeAuthority(message));
+});
+
+test('headBoundOwnerAgreement is a pure fail-closed resolution primitive', () => {
+  const marker = (owner) => `<!-- correction-owner: ${owner} -->`;
+  assert.deepEqual(
+    headBoundOwnerAgreement('x\n\nCorrection-Owner: claude\n', marker('claude')),
+    { headOwner: 'claude', bodyOwner: 'claude', consistent: true, trailerState: 'declared' },
+  );
+  assert.equal(headBoundOwnerAgreement('x\n\nCorrection-Owner: cursor\n', marker('claude')).consistent, false);
+  assert.equal(headBoundOwnerAgreement('x\n\nCorrection-Owner: claude\n', 'no marker').consistent, false);
+  assert.deepEqual(
+    headBoundOwnerAgreement(null, marker('claude')),
+    { headOwner: null, bodyOwner: 'claude', consistent: false, trailerState: 'missing' },
+  );
+  // The branch reservation is consulted via headRef: a `claude/**` branch declaring another owner is
+  // contradictory even when the head trailer and body marker agree, so agreement must fail closed. Omitting
+  // headRef here (the earlier gap) accepted a head+body owner the branch contract forbids.
+  assert.equal(
+    headBoundOwnerAgreement('x\n\nCorrection-Owner: cursor\n', marker('cursor'), { headRef: 'claude/task' }).consistent,
+    false,
+  );
+  // Any other branch prefix imposes nothing, so the same head+body agrees.
+  assert.equal(
+    headBoundOwnerAgreement('x\n\nCorrection-Owner: cursor\n', marker('cursor'), { headRef: 'codex/task' }).consistent,
+    true,
+  );
+});
+
+test('headOwnerVerdict is the pure three-valued read outcome with a clearable remedy', () => {
+  const marker = (owner) => `<!-- correction-owner: ${owner} -->`;
+
+  // ELIGIBLE: a merge-eligible head trailer agreeing with the body marker. The single promotable outcome.
+  const eligible = headOwnerVerdict('x\n\nCorrection-Owner: claude\n', marker('claude'));
+  assert.deepEqual(eligible, {
+    trailerOwner: 'claude', bodyOwner: 'claude', trailerState: 'declared',
+    readable: true, consistent: true, candidate: false, eligible: true, remedy: null,
+  });
+
+  // CANDIDATE HELD: a consistent candidate (codex) is readable and consistent but never eligible, with no
+  // remedy — it is held, not faulted. No consumer in this unit promotes or wakes it.
+  const held = headOwnerVerdict('x\n\nCorrection-Owner: codex\n', marker('codex'), { headRef: 'codex/task' });
+  assert.deepEqual(held, {
+    trailerOwner: 'codex', bodyOwner: 'codex', trailerState: 'candidate',
+    readable: true, consistent: true, candidate: true, eligible: false, remedy: null,
+  });
+
+  // BODY-recoverable fault: a valid head trailer the branch permits as a marker, but the body marker is
+  // missing or disagrees — a body edit reconciles it, no new head required.
+  for (const body of ['no marker', marker('cursor')]) {
+    const v = headOwnerVerdict('x\n\nCorrection-Owner: claude\n', body);
+    assert.equal(v.readable, true);
+    assert.equal(v.consistent, false);
+    assert.equal(v.eligible, false);
+    assert.equal(v.remedy, 'body');
+  }
+
+  // HEAD-required fault: no valid head trailer (missing/invalid/conflicting), so no body edit can reconcile
+  // it — a new head is required.
+  for (const message of ['no trailer', 'x\n\nCorrection-Owner: nobody\n', 'x\n\nCorrection-Owner: claude\nCorrection-Owner: cursor\n']) {
+    const v = headOwnerVerdict(message, marker('claude'));
+    assert.equal(v.trailerOwner, null);
+    assert.equal(v.eligible, false);
+    assert.equal(v.remedy, 'head');
+  }
+
+  // BRANCH-contradiction head remedy: a VALID head trailer whose owner a `claude/**` branch forbids as a
+  // marker needs a NEW head, never a body edit — the remedy is 'head' even though the trailer itself parses.
+  const contradicted = headOwnerVerdict('x\n\nCorrection-Owner: cursor\n', marker('cursor'), { headRef: 'claude/task' });
+  assert.equal(contradicted.trailerOwner, 'cursor');
+  assert.equal(contradicted.consistent, false);
+  assert.equal(contradicted.remedy, 'head');
+});
+
+test('ownershipStatus maps a verdict onto the one canonical status vocabulary', () => {
+  const marker = (owner) => `<!-- correction-owner: ${owner} -->`;
+
+  // Eligible → no status reason.
+  assert.deepEqual(
+    ownershipStatus(headOwnerVerdict('x\n\nCorrection-Owner: claude\n', marker('claude'))),
+    { outcome: 'eligible', reason: null, detail: null, remedy: null },
+  );
+
+  // Candidate held → the fixed OWNERSHIP_CANDIDATE_HELD reason, never a scope fault.
+  const held = ownershipStatus(headOwnerVerdict('x\n\nCorrection-Owner: codex\n', marker('codex'), { headRef: 'codex/task' }));
+  assert.equal(held.outcome, 'held');
+  assert.equal(held.reason, OWNERSHIP_CANDIDATE_HELD);
+
+  // Body-recoverable fault → a `scope:` detail a reader can tell apart as body-only recoverable.
+  const bodyFault = ownershipStatus(headOwnerVerdict('x\n\nCorrection-Owner: claude\n', 'no marker'));
+  assert.equal(bodyFault.outcome, 'inconsistent');
+  assert.equal(bodyFault.reason, 'scope');
+  assert.ok(bodyFault.detail.startsWith(OWNERSHIP_INCONSISTENT_SCOPE));
+  assert.ok(isOwnershipInconsistentScopeDetail(bodyFault.reason, bodyFault.detail));
+  assert.ok(isBodyOnlyOwnershipRecoveryDetail(bodyFault.reason, bodyFault.detail));
+
+  // Head-required fault → a scope detail that is NOT body-only recoverable.
+  const headFault = ownershipStatus(headOwnerVerdict('no trailer', marker('claude')));
+  assert.equal(headFault.outcome, 'inconsistent');
+  assert.ok(isOwnershipInconsistentScopeDetail(headFault.reason, headFault.detail));
+  assert.equal(isBodyOnlyOwnershipRecoveryDetail(headFault.reason, headFault.detail), false);
+
+  // Unreadable → a retryable INFRASTRUCTURE reason, not a scope fault (mapper is pure over the verdict).
+  const unreadable = ownershipStatus({
+    trailerOwner: null, bodyOwner: null, trailerState: 'unreadable',
+    readable: false, consistent: false, candidate: false, eligible: false, remedy: 'infra',
+  });
+  assert.deepEqual(unreadable, { outcome: 'unreadable', reason: OWNERSHIP_READ_RETRY, detail: OWNERSHIP_READ_RETRY, remedy: 'infra' });
+  assert.equal(isOwnershipInconsistentScopeDetail(unreadable.reason, unreadable.detail), false);
+});
+
+test('the trailer read is independent of the runner\'s ambient git config', () => {
+  // The subprocess isolates git from every external config source (global/system/local/env) and pins only
+  // the two config keys it needs, so a hostile runner cannot change the verdict — neither by configuring
+  // another separator (which would make git emit `Correction-Owner= claude` and a colon search miss it) nor
+  // by configuring a trailer key (`trailer.<name>.key`, which would make git recognise a paragraph as a
+  // trailer block and OVER-accept). GIT_CONFIG_* here simulates the hostile runner. Env is restored in
+  // finally; top-level tests in this file run sequentially, so no concurrent git-using case is affected.
+  const saved = {
+    count: process.env.GIT_CONFIG_COUNT,
+    key0: process.env.GIT_CONFIG_KEY_0,
+    value0: process.env.GIT_CONFIG_VALUE_0,
+    key1: process.env.GIT_CONFIG_KEY_1,
+    value1: process.env.GIT_CONFIG_VALUE_1,
+  };
+  try {
+    // Two hostile config keys at once: a separator that would drop the trailer, and a trailer-key
+    // definition that would fabricate a block out of a plain paragraph.
+    process.env.GIT_CONFIG_COUNT = '2';
+    process.env.GIT_CONFIG_KEY_0 = 'trailer.separators';
+    process.env.GIT_CONFIG_VALUE_0 = '=:';
+    process.env.GIT_CONFIG_KEY_1 = 'trailer.correction-owner.key';
+    process.env.GIT_CONFIG_VALUE_1 = 'Correction-Owner';
+
+    // A real terminal trailer still resolves despite the hostile separator config.
+    const declared = parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\n');
+    assert.equal(declared.state, 'declared');
+    assert.equal(declared.owner, 'claude');
+
+    // And a non-block paragraph (a plain line before the trailer, no recognised trailer) stays `missing`:
+    // the configured trailer key must NOT fabricate a block, or a later consumer would accept a malformed
+    // HEAD solely because of the runner's config.
+    const notABlock = parseCommitCorrectionOwner('subject\n\nplain\nCorrection-Owner: claude\n');
+    assert.equal(notABlock.state, 'missing');
+    assert.deepEqual(notABlock.declared, []);
+  } finally {
+    for (const [key, value] of [
+      ['GIT_CONFIG_COUNT', saved.count],
+      ['GIT_CONFIG_KEY_0', saved.key0],
+      ['GIT_CONFIG_VALUE_0', saved.value0],
+      ['GIT_CONFIG_KEY_1', saved.key1],
+      ['GIT_CONFIG_VALUE_1', saved.value1],
+    ]) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('the trailer read ignores a repository selected via GIT_DIR / GIT_WORK_TREE / TMPDIR', () => {
+  // A runner that inherits `GIT_DIR`/`GIT_WORK_TREE`, or whose `TMPDIR` is inside a repository, must not let
+  // `interpret-trailers` discover that repository and read its local config — e.g. a `trailer.<name>.key`
+  // that fabricates a trailer block out of a plain paragraph. `GIT_CEILING_DIRECTORIES` does NOT fence this
+  // once the cwd is inside the repo, so the primitive strips every `GIT_*` variable and points `GIT_DIR` at
+  // its own empty directory; the ambient repo is never discovered. Build such a repo with the hostile key,
+  // point the discovery vars at it, and assert the parser is unaffected. Env restored in finally.
+  const hostRepo = mkdtempSync(join(tmpdir(), 'owner-trailer-hostrepo-'));
+  execFileSync('git', ['init', '-q', hostRepo]);
+  execFileSync('git', ['-C', hostRepo, 'config', 'trailer.correction-owner.key', 'Correction-Owner']);
+  const saved = {
+    dir: process.env.GIT_DIR,
+    work: process.env.GIT_WORK_TREE,
+    tmp: process.env.TMPDIR,
+  };
+  try {
+    process.env.GIT_DIR = join(hostRepo, '.git');
+    process.env.GIT_WORK_TREE = hostRepo;
+    process.env.TMPDIR = hostRepo;
+    // The repository's configured trailer key must NOT fabricate a block…
+    assert.equal(
+      parseCommitCorrectionOwner('subject\n\nplain\nCorrection-Owner: claude\n').state,
+      'missing',
+    );
+    // …and a real terminal trailer still resolves under the isolation.
+    assert.equal(parseCommitCorrectionOwner('subject\n\nCorrection-Owner: claude\n').owner, 'claude');
+  } finally {
+    for (const [key, value] of [
+      ['GIT_DIR', saved.dir],
+      ['GIT_WORK_TREE', saved.work],
+      ['TMPDIR', saved.tmp],
+    ]) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(hostRepo, { recursive: true, force: true });
+  }
+});
+
+test('an unreadable git fails closed to `unreadable`, never to an owner', () => {
+  // Extraction is delegated to git; when git cannot be run the commit's owner is unknown, so the primitive
+  // must report `unreadable` (a consumer then fails closed) rather than reading it as owning nothing — which
+  // would silently drop merge authority on infra failure. PATH is cleared for the call and restored; the
+  // top-level tests in this file run sequentially, so no concurrent git-using case is affected.
+  const savedPath = process.env.PATH;
+  try {
+    process.env.PATH = '/nonexistent-git-dir';
+    const result = parseCommitCorrectionOwner('x\n\nCorrection-Owner: claude\n');
+    assert.equal(result.state, 'unreadable');
+    assert.equal(result.owner, null);
+    assert.deepEqual(result.declared, []);
+    // The resolution helper fails closed on an unreadable head, never confirming the body owner.
+    const agreement = headBoundOwnerAgreement(
+      'x\n\nCorrection-Owner: claude\n',
+      '<!-- correction-owner: claude -->',
+    );
+    assert.equal(agreement.consistent, false);
+    assert.equal(agreement.headOwner, null);
+    assert.equal(agreement.trailerState, 'unreadable');
+    // The SHA merge authority fails closed on the same infra failure: transient-unreadable is a distinct,
+    // never-eligible outcome, never collapsed into a readable ownership fault or an owner.
+    assert.deepEqual(
+      shaMergeAuthority('x\n\nCorrection-Owner: claude\n'),
+      { outcome: 'unreadable', mergeEligible: false, owner: null, trailerState: 'unreadable' },
+    );
+  } finally {
+    process.env.PATH = savedPath;
+  }
 });

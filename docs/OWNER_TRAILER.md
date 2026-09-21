@@ -1,0 +1,87 @@
+# HEAD-bound correction-owner trailer (parsing/resolution primitive)
+
+This is the first sequential unit of the ownership-admission split (the preserved source is PR #601;
+see issue #482). It installs **only** the pure, git-faithful primitives that read the correction owner
+from the exact HEAD commit. It changes no gate, wake, merge, handoff, watchdog, continuation, or other
+authoritative consumer; no caller in this unit routes on the primitives. Admission (three-valued holds,
+the `codex` candidate), exact-head merge authorization, and conflict/watchdog routing are the later units
+that will consume this merged primitive.
+
+## Contract
+
+Authority is the exact HEAD commit's **single terminal `Correction-Owner:` trailer**, read as
+`git interpret-trailers --parse` reads it — never an ancestor trailer, a branch name, or a marker in prose
+or a code fence. `scripts/correction-owner.mjs` exposes:
+
+- `parseCommitCorrectionOwner(commitMessage)` → `{ state, owner, declared }`, where `state` is:
+  - `declared` — exactly one terminal `Correction-Owner:` trailer naming an admitted owner
+    (`CORRECTION_OWNERS`); `owner` is the lower-cased value.
+  - `candidate` — the single terminal trailer names a recognised in-flight **candidate** owner
+    (`CANDIDATE_CORRECTION_OWNERS`, e.g. `codex`): tracked, never merge-eligible. It is a first-class state
+    distinct from `declared`, so every consumer that checks `=== 'declared'` keeps it out of merge authority.
+  - `missing` — no terminal trailer block, or none named `Correction-Owner`.
+  - `conflicting` — more than one `Correction-Owner` trailer, or disagreeing values.
+  - `invalid` — a malformed value, or one that is not an admitted correction owner.
+  - `unreadable` — git could not be run (binary missing or non-zero exit), so the commit's owner cannot be
+    determined; a consumer must fail closed and grant no merge authority.
+  - `declared` (the array) always carries the raw trailer value(s) found, so a later consumer can inspect
+    a value this loop does not route to.
+- `headBoundOwnerAgreement(commitMessage, body, { headRef })` → `{ headOwner, bodyOwner, consistent, trailerState }`,
+  a resolution helper for the later gate/handoff/watchdog consumers. `consistent` is true only when
+  the HEAD trailer names a valid owner that agrees with the PR body marker; it fails closed for a
+  missing/invalid/disagreeing trailer or an `unreadable` commit. `headRef` is passed through to the body
+  parse so a `claude/**` branch declaring another owner reads as `contradictory` (the branch-reservation
+  rule the scope gate applies) rather than being accepted.
+- `shaMergeAuthority(commitMessage)` → `{ outcome, mergeEligible, owner, trailerState }`, the **SHA-scoped
+  merge authority**: a pure, mutation-free verdict derived only from the exact commit's terminal trailer
+  (via `parseCommitCorrectionOwner`), so it is identical for every pull-request view sharing one head SHA.
+  `outcome` is one of `eligible` (a merge-eligible admitted owner; `mergeEligible` true — the only true
+  case), `candidate` (a tracked candidate; never eligible), `invalid` (a readable trailer fault —
+  missing/conflicting/malformed; `trailerState` keeps the finer reason), or `unreadable` (git could not be
+  run; transient/retryable, fails closed). It publishes no status, and mutates no draft, auto-merge, or
+  merge state — a later unit consumes the verdict. GitHub's required `codex-current-head` status lives at
+  `/statuses/{sha}` and is shared by every PR pointing at that commit, so only a SHA-scoped predicate may
+  release it. The PR-scoped reads (`parseCorrectionOwner` body marker, `headOwnerVerdict` body + branch
+  reservation, `headBoundOwnerAgreement`) remain for correction routing and diagnostics and are explicitly
+  **not** merge authority: being PR-scoped, they may not release the SHA-shared required status.
+
+## Git fidelity
+
+Terminal-trailer extraction is **delegated to real `git interpret-trailers --parse --unfold`**, not
+reimplemented: the primitive feeds the commit message to git on stdin (never as an argument, so no content
+is read as a flag) and reads back git's own `Key: value` lines, with folded continuations already joined.
+The primitive is therefore git itself for the extraction step, and cannot diverge from git as further edge
+cases surface. The subprocess is **isolated from every external git config source** so the parse depends only
+on the config this module pins, never on the runner: global (`~/.gitconfig`) and system (`/etc/gitconfig`)
+are redirected to `/dev/null` (plus `GIT_CONFIG_NOSYSTEM`); every inherited `GIT_*` variable is dropped from
+the child's environment (config sources *and* repository-selection inputs alike); and `GIT_DIR` is pointed at
+an empty directory the module owns, so git uses that as its repository and **never discovers the ambient
+one** — closing local `.git/config`, an inherited `GIT_DIR`/`GIT_WORK_TREE`, and a `TMPDIR` that happens to
+sit inside a repository (which `GIT_CEILING_DIRECTORIES` does not reliably fence once the cwd is inside the
+repo). On that clean base it pins the two keys that still shape `--parse` output — `trailer.separators`
+(which decides both the accepted separators and the output separator, so a runner configured with e.g. `=:`
+would otherwise emit `Correction-Owner= claude`) and `core.commentChar` (which decides which comment lines
+`--parse` strips). Full isolation is required rather than key-by-key pinning because a configured trailer key
+(`trailer.<name>.key`) also changes whether git recognises a paragraph as a trailer block, and such keys
+cannot be enumerated in advance; the config *sources*, however, are enumerable and all closed. On top of git's output it applies only this loop's own admission logic: it filters for the
+`Correction-Owner` key (case-insensitive), ASCII-trims the value (git preserves non-ASCII whitespace in the
+value, so an NBSP/VT/em-space-padded value stays malformed and fails validation), and maps to the states
+above. If git cannot be run the primitive returns `unreadable` rather than reading the commit as owning
+nothing.
+
+Delegation replaced a hand-rolled reproduction of git's trailer grammar that repeatedly diverged from git
+on adversarial input — the `#` comment/continuation interaction, the exact recognized-token spelling
+(`Signed-off-by` only, and not when space-padded), the `(cherry picked from commit …)` provenance suffix,
+the trailer-token grammar (`-X:` is a valid token), and continuation reset after a dropped non-trailer
+line. Each divergence was a fresh review finding; delegating to git eliminated the whole class at once.
+
+A **differential test** (`scripts/autonomous-correction-owner.test.mjs`) remains the regression guard: it
+runs real git as the oracle over an adversarial matrix and asserts the extraction/resolution mapping
+agrees, and it keeps every case a previous reimplementation got wrong — the plain trailer, a missing
+trailing newline, case-insensitive keys, whitespace before the separator, `#` comment lines, the `---` and
+`--- a/file` dividers, `---foo`, an indented ` ---`, a divider before the trailer, duplicate/conflicting
+trailers, a leading continuation, ASCII- vs non-ASCII-"blank" separator lines, NBSP-padded values, lone-CR
+vs CRLF, the `Signed-off-by` recognized-block cases, the space-padded token, the cherry-pick suffix, the
+`-X:` token, and continuation reset after dropped prose — plus a fail-closed `unreadable` case. Keeping the
+primitive proven against git directly is what lets later units consume one authoritative owner verdict
+instead of re-deriving it.

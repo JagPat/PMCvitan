@@ -362,6 +362,39 @@ jobs:
         timeout-minutes: 25
         run: bash apps/api/scripts/phase6-4c-iiir-production-runner-proof.sh
 
+  # Server-associated identity for the exact pull-request merge tree exercised by this CI run.
+  # The trusted shadow publisher accepts it only when this workflow file is unchanged from the
+  # current target tip; candidate workflow edits therefore fail closed at authorization.
+  #
+  # This identity is AUXILIARY to the merge decision and must stay non-authoritative on BOTH axes:
+  #   - the aggregate CI workflow conclusion — `continue-on-error: true` keeps a failed or missing
+  #     identity from turning the whole run red; and
+  #   - the quality verdict — this job is deliberately ABSENT from `quality-gate`'s `needs`, so its
+  #     result never reaches `assessQualityGate`. (Dropping the `needs` edge alone would still leave
+  #     a failed job reddening the aggregate run, which is why `continue-on-error` is also required.)
+  #
+  # Non-authoritative is not permissive: a missing, failed, or mismatched identity artifact leaves
+  # the shadow publisher with no server-associated merge identity, and `authorizeShadowRequest`
+  # denies shadow authorization on that absence. The failure is invisible to CI and to the merge
+  # gate, and fatal to shadow clearance — exactly the intended asymmetry.
+  shadow-merge-identity:
+    needs: [review-scope]
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Materialize immutable CI merge identity
+        run: mkdir ci-merge-identity && printf '%s\n' '${{ github.sha }}' > ci-merge-identity/merge-sha
+      - name: Upload server-associated CI merge identity
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ci-merge-v1-base-${{ github.event.pull_request.base.sha }}-head-${{ github.event.pull_request.head.sha }}-merge-${{ github.sha }}-attempt-${{ github.run_attempt }}
+          path: ci-merge-identity/merge-sha
+          if-no-files-found: error
+          retention-days: 30
+
   # The ONE required status.
   #
   # `always()` is load-bearing: without it a failing job would SKIP this gate,
