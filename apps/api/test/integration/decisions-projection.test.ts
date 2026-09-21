@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisions, wipeDecisionsVia, plantUnpairedDecisionState } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisions, wipeDecisionsVia } from './fixtures';
 import { emitEvent } from '../../src/platform/events';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
@@ -102,15 +102,8 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
       });
       if (publishedAt) await tx.decision.update({ where: { id }, data: { publishedAt } });
     });
-    // Phase 6 unit 4d-i-b — this fixture FABRICATES a decision in whatever state the arm names,
-    // with its request planted beside it and its event emitted with no fact behind it. From the
-    // switch-on `decision.approved` and `decision.change_requested` are `pairingRequired`, and
-    // `ChangeRequest_t4d_paired` refuses a request born beside a decision that did not move here.
-    // The projection is the subject; the state is a stand-in for history, so the plant declares
-    // itself by name for exactly these writes.
     if (opts.withChangeRequest) {
-      await plantUnpairedDecisionState(t.prisma, (tx) =>
-        tx.changeRequest.create({ data: { projectId, decisionId: id, reason: 'reopen', costImpact: 500, timeImpactDays: 3, status: 'open', requestedById: authorId } }));
+      await t.prisma.changeRequest.create({ data: { projectId, decisionId: id, reason: 'reopen', costImpact: 500, timeImpactDays: 3, status: 'open', requestedById: authorId } });
     }
     const eventType = opts.draft ? 'decision.drafted' : status === 'change' ? 'decision.change_requested' : status === 'approved' ? 'decision.approved' : 'decision.published';
     // Phase 6 unit 4d-i — `decision.approved` is a family the delivered service ALWAYS announces
@@ -123,7 +116,7 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
     // plants a publication with no announcement, so it is the record key — stated here rather
     // than borrowed from `eventType`, which is what let the silent branch speak for both.
     const effectKey = eventType === 'decision.published' ? 'decision.published.record' : eventType;
-    await plantUnpairedDecisionState(t.prisma, (tx) => emitEvent(tx, { projectId, actor: human, eventType, entityType: 'Decision', entityId: id, effectKey, dispatch }));
+    await t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType, entityType: 'Decision', entityId: id, effectKey, dispatch }));
   };
 
   /** Drain every pending decisions.inbox (and noop) delivery for a project. */

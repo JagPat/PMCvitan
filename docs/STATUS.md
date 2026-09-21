@@ -14,13 +14,45 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-unit-i-b-pairing-switch-on
+work_item: phase-6-task-4d-unit-i-b-u1-bound-event-actor
 reviewed_merge: 5be4de3d
 open_pr: 590
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-15
+updated: 2026-09-21
 ```
+
+### Now — 4d-i-b resumes as the additive U1/U2/U3 redesign, on #590
+
+Owner disposition of 2026-09-21 (issue #482 comment 5757145200), under the user's
+"proceed as per your recomendation" approval: prioritise a complete, verified
+decision workflow and usable live release, and resume #590's product obligation
+**now**, superseding the earlier hold-until-process-reforms sequencing. The single
+pairing switch-on migration stopped at its third P1-bearing reviewed head with the
+NULL-actor defect open; it is replaced by the additive **U1 / U2 / U3** design
+recorded in docs/superpowers/plans/2026-09-21-4d-i-b-additive-units.md and #590
+comment 5680116372 — not an ordinary NULL-only fourth patch.
+
+`open_pr: 590` (branch `claude/phase6-t4d-i-b-pairing-switch-on`) now carries **U1
+only**: the bound-event/actor primitive (`phase6_t4d_tx_actor_event`) and the
+dormant kernel seal `DomainEvent_t4d_pairing_actor` — a `pairingRequired` event
+must name a human actor. Both are dark over the two live 4d-i generations (every
+row `pairingRequired = false`), so U1 refuses nothing a release produces; the
+round-4 defect is closed at the event boundary, proven reproduce-first
+(`phase6-t4d-i-b-u1-bound-actor.test.ts`). U2 (the change-request bundle seals and
+recorders) and U3 (the flip with all claimants, and the full 51-case matrix) follow
+as sequential units on their own heads.
+
+Deferred with their findings intact, not merged and not waived:
+`reform-1b` successor #615 (`f88d45d0`, five open findings, third-P1 stop) and #614
+(`43ad7ad3`). Neither is a dependency of #590 — the branch imports none of the
+lock helper, and main's REVIEW_RUBRIC/probes defer `lockOrderProbe`. 2A3, the
+migration-verifier replacement, and the size/metrics/runner automation stay
+recorded but do not precede product delivery unless a release blocker proves
+necessity.
+
+**Nothing here is deployed, merged, or drained.** Production drain and
+operator-attestation requirements remain in force.
 
 ### Post-#584 handoff — resume the unfinished Phase 6 task 4
 
@@ -42,125 +74,6 @@ mobile media query, and the API health endpoint responds HTTP 200. This is
 frontend delivery evidence, not proof that the API ran the 4d migrations or
 that a previous-release drain or outbox reseal completed. Existing production
 attestation requirements remain in force.
-
-### Unit 4d-i-b — the PAIRING SWITCH-ON, underway on `claude/phase6-t4d-i-b-pairing-switch-on`
-
-`task_state` stays `in_progress`: Phase 6 task 4 continues, and 4d-i-b is its next
-permitted unit under the active plan's §D, ordered between 4d-i and 4d-ii-a. On the
-unit's own commit `work_item` and `open_pr` are both `none`, by the §D self-naming
-convention — the PR number does not exist until the PR does — and both take their
-values together on the pointer commit that follows, because `assessRunnerState`
-sends a named `work_item` with no `open_pr` beside it to the PARENT task. This is
-that pointer commit: `open_pr` is **#590**, the draft PR opened from the unit commit
-`12e31b36ca24084b0670df6fcc75d3dfca8fc0c2` on `claude/phase6-t4d-i-b-pairing-switch-on`.
-
-**What the unit is.** ONE migration,
-`20271222000000_phase6_t4d_i_b_pairing_switch_on`, applied on top of both 4d-i
-files, which it does not change — their bytes on `main` are the ones #582 merged,
-verified before this unit began (`a8b0abda…` and `ea7e6ee8…` at `e3c3cfb9`). It
-seeds a THIRD `ExternalEffectCatalog` generation — 4d-i's current generation with
-`pairingRequired` flipped on exactly the plan's six decision event types — and
-installs the claimants that flag obliges: `ChangeRequest_t4d_paired` with
-`Decision_t4d_change_paired` (the opening, withdrawal and resolution of a
-`standard` change request judged as ONE bundle from both sides), the
-immediate-plus-deferred claimant halves on `ChangeRequest`,
-`DecisionApprovalRevision`, `DecisionConsultation` and
-`DecisionConsultationResponse`, the `_t4d_tx_transition` recorder on `Decision`,
-and the idempotent `platform_claim_event_pairing_once`. Under `src/` it changes
-EXACTLY the compiled catalog: `pairingRequired` on the six keys, and the
-`canonicalCatalog()` preimage that makes the flip a new `effectCoverageVersion()`.
-No service, command, route, reader or UI; the seed's DL-003 plant is the only
-production bypass, and it disables and re-enables the one seal around one
-transaction. `scripts/migrate.sh` executes the file from `ALWAYS_EXECUTE` on the
-baseline path and reports its aborts; RUNBOOK §P6T4D carries the third row and
-the aborts' repairs.
-
-**Nothing is deployed and nothing is reachable.** Between 4d-i-b and 4d-ii the
-catalog holds exactly three generations — the outgoing `6313b00c…`, 4d-i's
-`842cc9fc…`, and this unit's `7dac2bd5…` — and the unit's audit refuses a fourth
-by name. A still-serving 4d-i process resolves its events through 4d-i's own
-rows, on which the flag is false, so the switch-on refuses nothing that release
-emits; the coverage reseal under RUNBOOK §P6T4D governs the cutover. The drain
-gate `phase-6-4d-previous-release-drained` (KEEP, human `OPERATOR-ATTESTATION`)
-and every existing production attestation requirement remain in force; this unit
-lifts nothing.
-
-**Proofs on this branch.** The compiled-catalog oracles pin the seed literal to
-`canonicalCatalog()` for BOTH generations and require the current one to equal the
-previous with exactly six flips (`external-effect-catalog-seed.test.ts`,
-`external-effects.test.ts`). The three-generation contract — every seed, the
-drain admitting all three and refusing an unknown one, an unclaimed
-`decision.change_requested` admitted at 4d-i's generation and refused at this
-unit's — is `phase6-t4d-i-catalog-generations.test.ts`. The seal inventory and
-seal-contract oracles carry the ten new triggers and thirteen new functions.
-
-**Review round 2 (Codex, six P1s on `2ff21dc1`) and the proof it left behind.**
-The six findings shared one cause — the per-branch claimants returned on absence
-("claiming is all they do"), delegating to correspondence seals that fire only
-when an audit row or an event exists, so a fact written with NEITHER was judged
-by nobody; `xmin` was read as a transition; a same-type event for the same
-decision was taken as this fact's without binding its payload or recipient. The
-correction: the decision recorder gains `awaiting_countersign → change`; a
-request recorder (`ChangeRequest_t4d_lifecycle_transition`) writes the request's
-own moves into 4d-i's carrier so the decision side counts transitions, not
-writes; the request seal demands the `change_requested` / `change_withdrawn`
-audit row; the revision and consultation claimants' DEFERRED halves demand
-exactly one bound event (and, for the revision, one audit row) at commit. The
-reusable instrument is `phase6-t4d-i-b-pairing-matrix.test.ts`: a table-driven
-bundle matrix whose coverage is derived from the compiled `pairingRequired`
-catalog, driving each of the six types' complete bundle in both write orders and
-at the prior generation, plus the negatives (missing counterpart, wrong
-identity/audience, duplicated/reused evidence, no-op versus real transition).
-Against the failed head's migration bytes 13 of its 39 cases were RED — each a
-defective bundle that COMMITTED — and all are green here. The harness gained
-the response claimant's OWN arm (it had been "declared covered" by the request's)
-and a round-2 arm driving every defective bundle stripped-versus-whole. The
-lesson is recorded once, in `docs/POLICY.md` → *Transaction evidence*. Round 3
-(one P2 on `cc923fdd`) was the same lesson's last corner: the immediate claimant
-skipped `countersign_rejection`, so a reject-back written EVENT-FIRST was refused
-as unclaimed; it now claims that origin too unless a `returned` resolution is
-already visible in the transaction (the resolution is that bundle's claimant),
-the deferred seal refuses the one order this cannot judge by name; the
-whole-family audit the directive asked for added the decision side's
-`awaiting_countersign → change` arm (exactly one `countersign_rejection` request
-BORN here, read from the request recorder — 4d-i's door asks by `xmin`, which a
-touched earlier request supplies), and the matrix carries the disagreement as its
-own writer branch (both orders, the prior generation, the missing-request
-converse, the no-op stand-in at the drain generation) — 44 cases, the event-first
-case and the no-op stand-in both RED on `cc923fdd` and green here. Round 4 (one
-P1 on `40c896f0`) was the binding's third dimension: identity and audience were
-bound, the ACTOR was not — an event that named the consultation, pushed to the
-consultee and was attributed to somebody else claimed. The family was walked on
-every writer branch: the four audit-bearing branches are bound by 4d-i's
-`DecisionEvent_t4d_correspondence`, which this unit's mandatory audit row makes
-fire on every bundle (proven, not assumed — a wrong-actor negative on each);
-the three audit-less branches (consultation request, response, and the
-`countersign_rejection` request) are bound by their own claimants now
-(`actorId` = `requestedById` / `respondedById`; the request seal through the new
-`phase6_t4d_tx_actor_event(_count)`), strictly, since every writer of those
-facts emits a `human` event in the acting user's name. 51 matrix cases; the
-three audit-less wrong-actor cases COMMITTED on `40c896f0` and are refused here;
-the harness's round-2 arm drives the same three stripped-versus-whole.
-
-**Gate results at this head.** `pnpm check` green by exit code (automation 332 pass / 0
-fail; web 65 files / 1028 tests; api typecheck, unit tests 64 files / 875 — including the
-raw-plant tripwire that now classifies the three event-planting suites this round touched — and
-build). `pnpm --filter api test:integration`, alone, on a `pmcvitan_test` rebuilt from zero
-after the last full-battery migration edit (the round-3 tree): 110 files / 1681 tests green (the
-harness file 126 / 126, the matrix 43 / 43). The round-3 whole-family additions and the round-4
-actor binding were proven with FOCUSED runs only, per the directive (matrix 51 / 51 on a database
-rebuilt from zero, seal-contract + seal-inventory 9 / 9, the touched harness arms 7 / 7,
-`phase6-t4c-i-consultation` 22 / 22, api typecheck clean); the full battery runs in GitHub on the
-head. `pnpm test:e2e:api:legacy` 32 / 32; `pnpm test:e2e:api:outbox` 32 / 32.
-`upgrade-proof.sh` PASSED (788 assertions, 0 failed) — its 4c-ii "real writer shape" plant now
-carries the `decision.approved` event and the `approved` audit row the delivered writer produces,
-and its P42 previous-release bundle carries the `change_requested` audit row. The three
-`migrate.sh` runner proofs (schedule B1, schema enforcement, 4c-iii-r) PASSED. Both 4d-i
-migration files unchanged (`a8b0abda…`, `ea7e6ee8…`).
-
-**What follows.** After this unit merges: 4d-ii-a, 4d-ii-b, the drain attestation,
-then 4d-iii. None is started here; F-1c and the maintenance queue keep their
-priority.
 
 ### Historical record — 4d-i while #582 was open
 

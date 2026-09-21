@@ -30,15 +30,6 @@ export interface ExternalEffectDef {
    *  The producer supplies only the body; the roles are taken from here, so a caller can never widen
    *  or narrow the audience of a key. */
   readonly push: readonly PushRole[] | null;
-  /** Phase 6 unit 4d-i-b (§A.3 obligation 7, §D the PAIRING SWITCH-ON) — whether an event of this
-   *  key must be CLAIMED by exactly one FACT before its transaction commits. The kernel's deferred
-   *  `DomainEvent_t4d_pairing_claimed` reads the SEEDED copy of this flag by the exact
-   *  `(coverageVersion, effectKey)` the event carries, so the flag is part of the coverage-version
-   *  PREIMAGE below: flipping it compiles a NEW generation rather than rewriting a frozen row
-   *  (`ExternalEffectCatalog_t4d_sealed` admits no in-place change but the retirement stamp).
-   *  Declared `true` or omitted — never `false` — so an absent flag and a present one cannot be
-   *  two spellings of the same policy. */
-  readonly pairingRequired?: true;
   /** Phase 6 task 4b (§A.3) — the event FAMILY's claim-time "still actionable for THIS target"
    *  predicate, declared beside the catalog entry (the class mechanism; each family names its
    *  own). `'decider'`: the target must still be the decision's holder AND the status must still
@@ -88,19 +79,10 @@ export const EXTERNAL_EFFECTS = {
   // demand. `decisions.service.ts` picks the key from the `record` arm it already branches on.
   'decision.published': { eventType: 'decision.published', invalidate: true, push: ['client', 'pmc', 'contractor', 'engineer', 'consultant'], pushFamily: 'decider' },
   'decision.published.record': { eventType: 'decision.published', invalidate: true, push: null },
-  // Phase 6 unit 4d-i-b — THE SIX PAIRING-REQUIRED TYPES (§D's (c)). An event of one of these
-  // records an ACT, and §A.3 obligation 7 says the act's FACT claims the event: the finalized
-  // `DecisionApprovalRevision` for the two approvals, the `ChangeRequest` INSERT and CLOSURE for
-  // the request and the withdrawal, and the two consultation rows for their families. 4d-i seeded
-  // the mechanism with every row `false`; this flag is what turns it on, and it does so by
-  // compiling a new coverage generation (see `pairingRequired` on `ExternalEffectDef`). The three
-  // 4d-ii types (`decision.forwarded`, `decision.awaiting_countersign`,
-  // `membership.standing_changed`) are not compiled yet and declare themselves, with their
-  // claimants, in the unit that adds them.
-  'decision.approved': { eventType: 'decision.approved', invalidate: true, push: ['pmc', 'contractor', 'engineer'], pairingRequired: true },
-  'decision.reapproved': { eventType: 'decision.reapproved', invalidate: true, push: ['pmc', 'contractor', 'engineer'], pairingRequired: true },
-  'decision.change_requested': { eventType: 'decision.change_requested', invalidate: true, push: null, pairingRequired: true },
-  'decision.change_withdrawn': { eventType: 'decision.change_withdrawn', invalidate: true, push: null, pairingRequired: true },
+  'decision.approved': { eventType: 'decision.approved', invalidate: true, push: ['pmc', 'contractor', 'engineer'] },
+  'decision.reapproved': { eventType: 'decision.reapproved', invalidate: true, push: ['pmc', 'contractor', 'engineer'] },
+  'decision.change_requested': { eventType: 'decision.change_requested', invalidate: true, push: null },
+  'decision.change_withdrawn': { eventType: 'decision.change_withdrawn', invalidate: true, push: null },
   // Phase 6 task 4a — surfaces refresh; no push (`change_requested`/`change_withdrawn` set the
   // precedent for lifecycle corrections, and the pmc who acted needs no announcement).
   'decision.withdrawn': { eventType: 'decision.withdrawn', invalidate: true, push: null },
@@ -114,8 +96,8 @@ export const EXTERNAL_EFFECTS = {
   // archived would otherwise still deliver decision content after project authorization refuses
   // access, since the decision stays open, the consultation stands, and memberships can stay
   // active.
-  'decision.consultation_requested': { eventType: 'decision.consultation_requested', invalidate: true, push: ['pmc', 'client', 'contractor', 'engineer', 'consultant'], pushFamily: 'consultation_requested', pairingRequired: true },
-  'decision.consultation_responded': { eventType: 'decision.consultation_responded', invalidate: true, push: ['pmc'], pushFamily: 'consultation_responded', pairingRequired: true },
+  'decision.consultation_requested': { eventType: 'decision.consultation_requested', invalidate: true, push: ['pmc', 'client', 'contractor', 'engineer', 'consultant'], pushFamily: 'consultation_requested' },
+  'decision.consultation_responded': { eventType: 'decision.consultation_responded', invalidate: true, push: ['pmc'], pushFamily: 'consultation_responded' },
   // ── activities ─────────────────────────────────────────────────────────────────────────────
   // TWO PRODUCERS, TWO KEYS (#582 review round 13, finding 3 — and the FIRST of the four sites of
   // one class; round 18 found the other three and removed the flag that made them expressible).
@@ -348,14 +330,8 @@ function canonicalCatalog(): string {
     keys.map((k) => {
       const d = EXTERNAL_EFFECTS[k as ExternalEffectKey] as ExternalEffectDef;
       // Normalised to a boolean so an absent flag and an explicit `undefined` cannot hash apart.
-      // `pairingRequired` is the SIXTH element (Phase 6 unit 4d-i-b): it decides a sealed
-      // catalog column the kernel's pairing seal reads, so two releases that disagree about it
-      // must not share a coverage version — exactly the reason `requiresPush`'s inputs are here.
-      // Normalised the same way, so the generation 4d-i compiled (every key unflagged) is this
-      // preimage with the element removed, which `phase6-t4d-i-catalog-generations.test.ts`
-      // re-derives on every run.
       return [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(),
-        d.pushFamily ?? null, d.pairingRequired === true];
+        d.pushFamily ?? null];
     }),
   );
 }
@@ -363,8 +339,8 @@ function canonicalCatalog(): string {
 let cachedVersion: string | null = null;
 
 /** The current effect-coverage version: SHA-256 of the canonical catalog. Stable across process runs
- *  for a fixed catalog; changes iff a key, event type, invalidation, role set, family or pairing
- *  obligation changes — every input the sealed catalog row is built from. The cutover seal
+ *  for a fixed catalog; changes iff a key, event type, invalidation, role set or family changes —
+ *  every input the sealed catalog row is built from. The cutover seal
  *  (Task 3) pins this exact value and outbox-mode startup requires it. */
 export function effectCoverageVersion(): string {
   if (cachedVersion === null) cachedVersion = createHash('sha256').update(canonicalCatalog()).digest('hex');

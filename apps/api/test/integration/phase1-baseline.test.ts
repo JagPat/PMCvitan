@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, plantUnpairedDecisionState } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 /**
@@ -162,15 +162,9 @@ describe('phase 1 baseline characterization (integration)', () => {
     // scheduling or service code — the index is the backstop even for raw writes
     expect((await post(`/projects/${f.projectA.id}/decisions`, decisionInput('Veneer finish'))).status).toBe(201);
     const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId: f.projectA.id, title: 'Veneer finish' } });
-    // Phase 6 unit 4d-i-b — both raw inserts run under the named pairing bypass: the subject is
-    // the partial unique index, and from the switch-on `ChangeRequest_t4d_paired` would refuse
-    // the FIRST row at commit (no `approved → change` move, no event) before the index ever saw
-    // the second. The index still answers inside the bypass, at INSERT time, with P2002.
-    await plantUnpairedDecisionState(t.prisma, (tx) =>
-      tx.changeRequest.create({ data: { projectId: f.projectA.id, decisionId: d.id, reason: 'first open', costImpact: 0, timeImpactDays: 0 } }));
+    await t.prisma.changeRequest.create({ data: { projectId: f.projectA.id, decisionId: d.id, reason: 'first open', costImpact: 0, timeImpactDays: 0 } });
     await expect(
-      plantUnpairedDecisionState(t.prisma, (tx) =>
-        tx.changeRequest.create({ data: { projectId: f.projectA.id, decisionId: d.id, reason: 'second open', costImpact: 0, timeImpactDays: 0 } })),
+      t.prisma.changeRequest.create({ data: { projectId: f.projectA.id, decisionId: d.id, reason: 'second open', costImpact: 0, timeImpactDays: 0 } }),
     ).rejects.toMatchObject({ code: 'P2002' });
     const rows = await t.prisma.changeRequest.findMany({ where: { decisionId: d.id } });
     expect(rows).toHaveLength(1);

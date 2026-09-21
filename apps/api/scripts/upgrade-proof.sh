@@ -4519,21 +4519,6 @@ UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='UP4A-D2', "comp
 -- nobody performed. Adding it here keeps this assertion about the real shape rather than about a
 -- shape the database no longer admits — which is the whole point of the pair above and below it.
 UPDATE "Decision" SET "status"='approved' WHERE "id"='UP4A-D2' AND "projectId"='p1';
--- Phase 6 unit 4d-i-b (#590's review round 2, finding 5) — AND IT ANNOUNCES AND REGISTERS ITSELF.
--- The real writer's shape has two more members from the switch-on: the `decision.approved` event
--- at this release's (flagged) generation, which the finalized revision CLAIMS, and the `approved`
--- audit row `approve` appends beside it. The revision's deferred claimant refuses a head with
--- neither at commit, so this block carries both — the same three-part bundle the matrix proof
--- drives, here on the upgraded database.
-UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'p1';
-INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent")
-  SELECT 'UP4CII-EV','decision.approved',1,p."orgId",'p1',s."nextPosition" - 1,'system','upgrade-proof','Decision','UP4A-D2',
-         jsonb_build_object('effectKey','decision.approved','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
-                            'push', jsonb_build_object('body','upgrade-proof','roles', c."pushRoles"))
-    FROM "ProjectEventStream" s, "Project" p, "ExternalEffectCatalog" c
-   WHERE s."projectId" = 'p1' AND p."id" = 'p1'
-     AND c."effectKey" = 'decision.approved' AND c."pairingRequired";
-INSERT INTO "DecisionEvent" ("id","decisionId","type","actor") VALUES ('UP4CII-AU','UP4A-D2','approved','upgrade-proof');
 COMMIT;
 SQL
 assert "4c-ii: the accepted revision names the approval command it is the product of" \
@@ -4924,7 +4909,7 @@ $PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB3;" >/dev/null || exit 1
 $PSQL_ADMIN -c "CREATE DATABASE $DB3;" >/dev/null || exit 1
 t4d_r21_ready=1
 for d in $(ls -d "$MIG_DIR"/*/ | sort); do
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*) continue ;; esac
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5053,42 +5038,9 @@ assert "4d-i P42: every LEGACY ChangeRequest carries the project of its own deci
 # Each insert names NONE of 4d-i's new columns — it is the shape the currently-deployed build
 # emits — and each must COMMIT and land the value the drain depends on. RED against a migration
 # that added the columns NOT NULL without a default or a shim.
-# Phase 6 unit 4d-i-b, the pairing switch-on: the previous release's `requestChange` is ONE
-# transaction — the decision's move into `change`, the request, and the `decision.change_requested`
-# event at the coverage generation THAT release compiles (4d-i's, on which `pairingRequired` is
-# false). `ChangeRequest_t4d_paired` judges the opening as a bundle from both sides, so the plant
-# is the bundle the previous release writes and not a request alone; the request still names NONE
-# of 4d-i's new columns, which is what this arm measures. The bare request is planted FIRST and
-# must be refused BY NAME: a request beside a decision the transaction never moved is the shape the
-# switch-on exists to refuse, on the upgraded database as anywhere else.
-assert_rejects "4d-i-b: a bare old-shape request beside an untouched decision is refused by the pairing seal, by name" \
-  "INSERT INTO \"ChangeRequest\"(\"id\",\"decisionId\",\"reason\",\"costImpact\",\"timeImpactDays\",\"status\") VALUES ('UP4D-CR0','UP4A-D2','old writer, no bundle',0,0,'open')" \
-  "the OPENING is one bundle in both directions"
-$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P42: a previous-release requestChange bundle carrying an old-shape ChangeRequest (no projectId) was REFUSED"; FAIL=1; }
-BEGIN;
-UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'UP4A-D2';
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P42: a previous-release ChangeRequest insert (no projectId) was REFUSED"; FAIL=1; }
 INSERT INTO "ChangeRequest"("id","decisionId","reason","costImpact","timeImpactDays","status")
 VALUES ('UP4D-CR1','UP4A-D2','old writer names no project',0,0,'open');
--- Phase 6 unit 4d-i-b (#590's review round 2, finding 6) — the previous release's `requestChange`
--- appends the `change_requested` audit row beside the request and the event (it is the same
--- code), and the switch-on's request seal demands exactly one at commit.
-INSERT INTO "DecisionEvent" ("id","decisionId","type","actor") VALUES ('UP4D-CR1-AU','UP4A-D2','change_requested','upgrade-proof');
-UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = 'p1';
--- the generation a 4d-i process compiles: the unflagged generation with the switch-on's key set
-INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","payload","dispatchIntent")
-  SELECT 'UP4D-CR1-E','decision.change_requested',1,p."orgId",'p1',s."nextPosition" - 1,'system','upgrade-proof','Decision','UP4A-D2','{}'::jsonb,
-         jsonb_build_object('effectKey','decision.change_requested','coverageVersion',c."coverageVersion",'invalidate',c."invalidate")
-    FROM "ProjectEventStream" s, "Project" p, "ExternalEffectCatalog" c
-   WHERE s."projectId" = 'p1' AND p."id" = 'p1'
-     AND c."effectKey" = 'decision.change_requested'
-     AND c."coverageVersion" = (
-       SELECT g."coverageVersion"
-         FROM (SELECT "coverageVersion", count(*) AS n, bool_or("pairingRequired") AS flagged
-                 FROM "ExternalEffectCatalog" GROUP BY 1) g
-        WHERE NOT g.flagged
-          AND g.n = (SELECT count(*) FROM "ExternalEffectCatalog" x
-                      WHERE x."coverageVersion" = (SELECT DISTINCT "coverageVersion" FROM "ExternalEffectCatalog" WHERE "pairingRequired")));
-COMMIT;
 SQL
 assert "4d-i P42: the old-shape ChangeRequest COMMITTED and the shim filled its project from the decision" \
   "SELECT (cr.\"projectId\" = d.\"projectId\")::text FROM \"ChangeRequest\" cr JOIN \"Decision\" d ON d.\"id\" = cr.\"decisionId\" WHERE cr.\"id\" = 'UP4D-CR1';" \

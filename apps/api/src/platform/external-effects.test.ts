@@ -66,12 +66,10 @@ describe('PR C — external-effect catalog', () => {
             // replica exists to prove the real formula is order-independent, so it has to carry
             // the same fields; when it drifts from `canonicalCatalog()` this arm fails, which is
             // how the round-5 omission was caught here in the first place.
-            // Phase 6 unit 4d-i-b — `pairingRequired` is the SIXTH element: it decides the sealed
-            // catalog column the kernel's pairing seal reads, so it moves the version too.
             const d = EXTERNAL_EFFECTS[k] as (typeof EXTERNAL_EFFECTS)[ExternalEffectKey]
-              & { pushFamily?: string; pairingRequired?: true };
+              & { pushFamily?: string };
             return [k, d.eventType, d.invalidate, d.push === null ? null : [...d.push].slice().sort(),
-              d.pushFamily ?? null, d.pairingRequired === true];
+              d.pushFamily ?? null];
           }),
       );
     const reversed = createHash('sha256').update(preimage([...keys].reverse())).digest('hex');

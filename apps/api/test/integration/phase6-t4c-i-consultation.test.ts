@@ -4,7 +4,6 @@ import { Prisma, PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
 import { sanctionedReset } from '../../prisma/sanctioned-reset';
 import { plantLegacyApprovalRevision } from './fixtures';
-import { effectCoverageVersion } from '../../src/platform/external-effects';
 
 /**
  * Phase 6 unit 4c-i — CONSULTATION, deployed DARK (plan §A/§D, probes P23/P25/P25d/P27/P41 DB arms).
@@ -85,55 +84,7 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
      VALUES ('${o.id}','${o.projectId ?? projectId}','${o.consultationId}','${o.decisionId ?? decisionId}','${o.respondedById ?? users.eng}',
              '${o.response ?? 'Use the granite.'}',${o.recommendedOptionId === null || o.recommendedOptionId === undefined ? 'NULL' : `'${o.recommendedOptionId}'`},'${o.sourceCommandId}')`;
 
-  /**
-   * Phase 6 unit 4d-i-b (#590 round 2, findings 1 and 3) — the delivered writers' EVENT, planted
-   * the way `emitEvent` plants it (allocate, then insert at `nextPosition - 1`, at this release's
-   * coverage generation). From the switch-on a consultation or a response is a BUNDLE with the
-   * event that names it and targets its recipient — `consultations.request` emits
-   * `{consultationId, consulteeUserId}` pushed to the consultee, `consultations.respond` emits
-   * `{consultationId, responseId}` pushed to the requester — and the fact's deferred claimant
-   * refuses a bundle without exactly one such event at commit. So every bundle this suite
-   * expects to COMMIT carries it; the refusal arms are refused by the 4c row seals at INSERT,
-   * before any deferred claimant runs, and carry nothing they do not need.
-   */
-  // two statements (Prisma's raw calls take ONE each): the allocation, then the insert at the
-  // position it handed out — `insertRawEvent`'s allocate-then-insert protocol, inline because the
-  // bundle is one `$transaction` with the fact and the helper opens a transaction of its own; no
-  // position is chosen by hand and no allocation seal is bypassed
-  // …and ATTRIBUTED to the acting user (`actorId`), as `emitEvent` attributes every delivered
-  // writer's event: from #590 round 4 the claimant binds the event's actor to `requestedById` /
-  // `respondedById`, so the event is a `human` one in that user's name
-  const eventSql = (o: { eventId: string; type: string; decisionId: string; project: string; org: string; payload: string; target: string; roles: string; actor: string }): [string, string] => [
-    `UPDATE "ProjectEventStream" SET "nextPosition" = "nextPosition" + 1 WHERE "projectId" = '${o.project}'`,
-    `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","actorId","entityType","entityId","payload","dispatchIntent")
-       SELECT '${o.eventId}','${o.type}',1,'${o.org}','${o.project}',s."nextPosition" - 1,'human','${o.actor}','Decision','${o.decisionId}',
-              ${o.payload},
-              jsonb_build_object('effectKey','${o.type}','coverageVersion',c."coverageVersion",'invalidate',c."invalidate",
-                                 'push', jsonb_build_object('body','t4c-i','roles', jsonb_build_array('${o.roles}'),'targetUserId','${o.target}'))
-         FROM "ProjectEventStream" s, "ExternalEffectCatalog" c
-        WHERE s."projectId" = '${o.project}' AND c."effectKey" = '${o.type}' AND c."coverageVersion" = '${effectCoverageVersion()}'`,
-  ];
-  const requestEventSql = (rid: string, o: ReqOverrides) => {
-    const project = o.projectId ?? projectId;
-    const consultee = o.consulteeUserId ?? users.eng;
-    return eventSql({
-      eventId: id(`ev${seq++}`), type: 'decision.consultation_requested', decisionId: o.decisionId ?? decisionId,
-      project, org: project === projectBId ? orgBId : orgId,
-      payload: `jsonb_build_object('consultationId','${rid}','consulteeUserId','${consultee}')`, target: consultee, roles: 'engineer',
-      actor: o.requestedById ?? users.pmc,
-    });
-  };
-  const responseEventSql = (rid: string, o: ResOverrides, requestedById: string) => {
-    const project = o.projectId ?? projectId;
-    return eventSql({
-      eventId: id(`ev${seq++}`), type: 'decision.consultation_responded', decisionId: o.decisionId ?? decisionId,
-      project, org: project === projectBId ? orgBId : orgId,
-      payload: `jsonb_build_object('consultationId','${o.consultationId}','responseId','${rid}')`, target: requestedById, roles: 'pmc',
-      actor: o.respondedById ?? users.eng,
-    });
-  };
-
-  /** The one legal shape: reserve → insert → event → complete, all in ONE transaction. */
+  /** The one legal shape: reserve → insert → complete, all in ONE transaction. */
   const commitRequest = async (o: ReqOverrides & { actor?: string }): Promise<string> => {
     const rid = o.id ?? id(`c${seq++}`);
     const cid = id(`cmd${seq++}`);
@@ -141,21 +92,18 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     await t.prisma.$transaction([
       sql(reserveSql(cid, 'consultations.request', o.requestedById ?? users.pmc, project, project === projectBId ? orgBId : orgId)),
       sql(requestSql({ ...o, id: rid, sourceCommandId: cid })),
-      ...requestEventSql(rid, o).map(sql),
       sql(completeSql(cid, rid)),
     ]);
     return rid;
   };
 
-  /** The response twin of {@link commitRequest} — one transaction, reserve → insert → event → complete. */
+  /** The response twin of {@link commitRequest} — one transaction, reserve → insert → complete. */
   const commitResponse = async (o: ResOverrides): Promise<string> => {
     const rid = o.id ?? id(`r${seq++}`);
     const cid = id(`cmd${seq++}`);
-    const requestedById = (await t.prisma.decisionConsultation.findUniqueOrThrow({ where: { id: o.consultationId } })).requestedById;
     await t.prisma.$transaction([
       sql(reserveSql(cid, 'consultations.respond', o.respondedById ?? users.eng)),
       sql(responseSql({ ...o, id: rid, sourceCommandId: cid })),
-      ...responseEventSql(rid, o, requestedById).map(sql),
       sql(completeSql(cid, rid)),
     ]);
     return rid;
@@ -207,20 +155,12 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
   afterEach(async () => {
     // the consultation tables are append-only AND statement-sealed; the shared helper is the one
     // sanctioned bypass, and it is registered for exactly these seals
-    // Phase 6 unit 4d-i-b — the committing bundles now carry their events and claims, which the
-    // project rows below reference; the stream and its claim register are reset the way the
-    // other event-writing suites reset them (`command-ledger.test.ts`).
-    await sanctionedReset(t?.prisma, ['DecisionConsultationResponse', 'DecisionConsultation',
-      'DomainEventPairingClaim', 'DomainEvent'], { cascade: true });
+    await sanctionedReset(t?.prisma, ['DecisionConsultationResponse', 'DecisionConsultation']);
     await t.prisma.commandExecution.deleteMany({ where: { organizationId: { in: [orgId, orgBId] } } });
   });
 
   afterAll(async () => {
-    // Phase 6 unit 4d-i-b — the committing bundles now carry their events and claims, which the
-    // project rows below reference; the stream and its claim register are reset the way the
-    // other event-writing suites reset them (`command-ledger.test.ts`).
-    await sanctionedReset(t?.prisma, ['DecisionConsultationResponse', 'DecisionConsultation',
-      'DomainEventPairingClaim', 'DomainEvent'], { cascade: true });
+    await sanctionedReset(t?.prisma, ['DecisionConsultationResponse', 'DecisionConsultation']);
     await t?.prisma.$transaction([
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER USER'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER USER'),
@@ -688,7 +628,6 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
     const inserter = holdingTx(t.prisma, async (tx) => {
       await tx.$executeRawUnsafe(reserveSql(cid, 'consultations.request', users.pmc));
       await tx.$executeRawUnsafe(requestSql({ id: rid, decisionId: d1.d, sourceCommandId: cid }));
-      for (const stmt of requestEventSql(rid, { decisionId: d1.d })) await tx.$executeRawUnsafe(stmt);
       await tx.$executeRawUnsafe(completeSql(cid, rid));
     });
     // the insert has RETURNED, so the seal's share lock is taken and this transaction still holds
@@ -760,7 +699,6 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
       const inserter = holdingTx(t.prisma, async (tx) => {
         await tx.$executeRawUnsafe(reserveSql(cid1, 'consultations.request', users.pmc));
         await tx.$executeRawUnsafe(requestSql({ id: rid1, decisionId: d1.d, sourceCommandId: cid1 }));
-        for (const stmt of requestEventSql(rid1, { decisionId: d1.d })) await tx.$executeRawUnsafe(stmt);
         await tx.$executeRawUnsafe(completeSql(cid1, rid1));
       });
       await inserter.ready;
@@ -804,7 +742,6 @@ describe('Phase 6 unit 4c-i — consultation schema + seals, deployed dark (live
       const responder = holdingTx(t.prisma, async (tx) => {
         await tx.$executeRawUnsafe(reserveSql(cid3, 'consultations.respond', users.eng));
         await tx.$executeRawUnsafe(responseSql({ id: rid3, consultationId: cons3, decisionId: d3.d, sourceCommandId: cid3 }));
-        for (const stmt of responseEventSql(rid3, { consultationId: cons3, decisionId: d3.d }, users.pmc)) await tx.$executeRawUnsafe(stmt);
         await tx.$executeRawUnsafe(completeSql(cid3, rid3));
       });
       await responder.ready;
