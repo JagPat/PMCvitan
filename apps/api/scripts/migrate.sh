@@ -456,6 +456,12 @@ if echo "$out" | grep -q "P3005"; then
   # are absent, and the second half's dark fact tables would be adopted and frozen with no audit
   # having asked whether they are empty. Both are re-runnable on the same terms as the 4c files
   # above.
+  #
+  # 4d-i-b U1 (the bound-event/actor primitive and the dormant `DomainEvent_t4d_pairing_actor`
+  # seal) is here for the same reason and by name: it is catalog-driven and reads
+  # `ExternalEffectCatalog`, so a db-push baseline that models the table but ran none of 4d-i's
+  # doors must still get U1 applied for the seal to stand. It is re-runnable (CREATE OR REPLACE
+  # FUNCTION, DROP TRIGGER IF EXISTS) and dark until U3 seeds a pairingRequired generation.
   ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
 20270920000000_decision_option_kinds
 20271015000000_phase6_t4b_decider
@@ -471,7 +477,8 @@ if echo "$out" | grep -q "P3005"; then
 20271216000000_inspection_submit_authority_fence
 20271217000000_inspection_evidence_authority_fence
 20271220000000_phase6_t4d_i_dark_migration
-20271221000000_phase6_t4d_i_decision_facts"
+20271221000000_phase6_t4d_i_decision_facts
+20271222000000_phase6_t4d_i_b_u1_bound_event_actor"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

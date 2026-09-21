@@ -86,7 +86,9 @@ const INVENTORY: Record<string, string[]> = {
   DomainEvent: ['DomainEvent_t4d_envelope',
     // #582's review round 24, the sweep behind finding 2 — the stream carried four ROW triggers
     // and no statement-level arm, while every register derived from it was already sealed.
-    'DomainEvent_t4d_no_truncate', 'DomainEvent_t4d_pairing_claimed'],
+    // 4d-i-b U1 adds the kernel actor seal beside the claim seal — a pairingRequired event must
+    // name a human. Dark over 4d-i's generations; still a t4d trigger the inventory must carry.
+    'DomainEvent_t4d_no_truncate', 'DomainEvent_t4d_pairing_actor', 'DomainEvent_t4d_pairing_claimed'],
   DomainEventPairingClaim: [
     'DomainEventPairingClaim_t4d_no_truncate',
     'DomainEventPairingClaim_t4d_writer',

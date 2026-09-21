@@ -14,13 +14,51 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: none
+work_item: phase-6-task-4d-unit-i-b-u1-bound-event-actor
 reviewed_merge: 5be4de3d
-open_pr: none
+open_pr: 590
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-15
+updated: 2026-09-21
 ```
+
+### Now — 4d-i-b resumes as the additive U1/U2/U3 redesign, on #590
+
+Owner disposition of 2026-09-21 (issue #482 comment 5757145200), under the user's
+"proceed as per your recomendation" approval: prioritise a complete, verified
+decision workflow and usable live release, and resume #590's product obligation
+**now**, superseding the earlier hold-until-process-reforms sequencing. The single
+pairing switch-on migration stopped at its third P1-bearing reviewed head with the
+NULL-actor defect open; it is replaced by the additive **U1 / U2 / U3** design
+recorded in docs/superpowers/plans/2026-09-21-4d-i-b-additive-units.md and #590
+comment 5680116372 — not an ordinary NULL-only fourth patch.
+
+`open_pr: 590` (branch `claude/phase6-t4d-i-b-pairing-switch-on`) now carries **U1
+only**: the bound-event/actor primitive (`phase6_t4d_tx_actor_event`) and the
+dormant kernel seal `DomainEvent_t4d_pairing_actor` — a `pairingRequired` event
+must name a human actor. Both are dark over the two live 4d-i generations (every
+row `pairingRequired = false`), so U1 refuses nothing a release produces; the
+round-4 defect is closed at the event boundary, proven reproduce-first
+(`phase6-t4d-i-b-u1-bound-actor.test.ts`). U2 (the change-request bundle seals and
+recorders) and U3 (the flip with all claimants, and the full 51-case matrix) follow
+as sequential units on their own heads.
+
+A #590 head is merge-eligible only when it carries the terminal
+`Correction-Owner: claude` trailer the SHA-scoped merge gate (`shaMergeAuthority`)
+reads, matching the PR body's `correction-owner: claude` marker; a head that omits
+it authenticates no owner, so the required `codex-current-head` status stays red
+until a new head supplies the trailer.
+
+Deferred with their findings intact, not merged and not waived:
+`reform-1b` successor #615 (`f88d45d0`, five open findings, third-P1 stop) and #614
+(`43ad7ad3`). Neither is a dependency of #590 — the branch imports none of the
+lock helper, and main's REVIEW_RUBRIC/probes defer `lockOrderProbe`. 2A3, the
+migration-verifier replacement, and the size/metrics/runner automation stay
+recorded but do not precede product delivery unless a release blocker proves
+necessity.
+
+**Nothing here is deployed, merged, or drained.** Production drain and
+operator-attestation requirements remain in force.
 
 ### Post-#584 handoff — resume the unfinished Phase 6 task 4
 
