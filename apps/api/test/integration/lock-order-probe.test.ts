@@ -34,7 +34,7 @@ afterAll(async () => {
 describe('lockOrderProbe', () => {
   beforeEach(() => sql(a, "UPDATE _probe_lock SET status = 'open' WHERE id = 1"));
   const L = DEFAULT_LIFETIMES;
-  const TX = { timeout: 20_000, maxWait: L.maxWaitMs };       // the holder: a long backstop; the probe frees it long before
+  const TX = { timeout: L.holderTxMs, maxWait: L.maxWaitMs };  // the holder: its DECLARED bound, so cleanup can await it out even when abort() fails
   const CTX = { timeout: L.contenderTxMs, maxWait: L.maxWaitMs }; // the contender: short, below the settle window
   const COMP = { timeout: L.competitorTxMs, maxWait: L.maxWaitMs };
 
@@ -95,10 +95,13 @@ describe('lockOrderProbe', () => {
     await read(' FOR UPDATE NOWAIT');
   };
 
-  it('budgets its worst case under the per-test timeout, and refuses bounds that would not fit', async () => {
+  it('budgets its worst case under the per-test timeout, refuses bounds that would not fit, and still frees the holder it was given', async () => {
     expect(worstCase(L, DEFAULT_LIFETIMES.maxWaitMs + DEFAULT_LIFETIMES.contenderTxMs + 1_000)).toBeLessThan(TEST_TIMEOUT_MS);
+    // the fixture has already started a holder transaction; a rejected budget must still run through
+    // cleanup and free that holder, not return and leave it holding the row until its own timeout.
     await failsWith(/does not fit under the .* per-test timeout/u)(() => lockOrderProbe({ ...fixture(),
       contenderStarted: guardedContender, lifetimes: { competitorTxMs: 60_000 } }));
+    await assertFreeSoon();
   });
 
   it('passes on a guard that locks first inside one transaction and holds through its mutation', async () => {
@@ -169,15 +172,18 @@ describe('lockOrderProbe', () => {
     await assertFreeSoon(); // the row is free once the probe returns: cleanup waited the competitor's full bound
   });
 
-  it('names a holder abort that fails, instead of returning as if the row were free', async () => {
+  it('names a holder abort that fails, and STILL frees the row by awaiting the holder to its declared bound', async () => {
     const stalled = ({ observed, signal }: { observed: () => void; signal: AbortSignal }) => (async () => {
       const r = await Promise.race([read(' FOR UPDATE'), new Promise<never>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))]);
       observed(); return r;
     })();
-    const h = holder();
-    await failsWith(/holder's abort failed.*abort connection lost/u)(() => lockOrderProbe({ ...fixture(h),
+    // release() and abort() both throw, so nothing the probe calls rolls the holder back. #594 would
+    // have returned with the row still locked. Here the holder was registered as a participant, so
+    // cleanup awaits its transaction to maxWait + holderTxMs, by which the database has reclaimed it —
+    // no external abort is needed for the row to be free the moment the probe returns.
+    await failsWith(/holder's abort failed.*abort connection lost/u)(() => lockOrderProbe({ ...fixture(holder()),
       release: async () => { throw new Error('connection lost'); }, abort: async () => { throw new Error('abort connection lost'); }, contenderStarted: stalled }));
-    await h.abort(); await assertFreeSoon();
+    await assertFreeSoon();
   });
 
   it('fails, and still frees the row, when the release rejects before unlocking', async () => {
@@ -198,6 +204,18 @@ describe('lockOrderProbe', () => {
   it('fails, and still frees the row, when the lock inspection itself throws', async () => {
     await failsWith(/lock inspection failed.*connection reset/u)(() => lockOrderProbe({ ...fixture(),
       inspectBlocked: async () => { throw new Error('connection reset'); }, contenderStarted: guardedContender }));
+    await assertFreeSoon();
+  });
+
+  it('classifies a cooperative hung guard the probe cancelled as a timeout, not a broken-fixture crash', async () => {
+    // the guard takes the lock, reports, then hangs but LISTENS to cancellation. When it outlives the
+    // settle window the probe aborts it and it rejects with the probe's OWN reason — that is the
+    // hung-guard verdict, not "the contender failed instead of completing" (a broken fixture).
+    await failsWith(/still running after the holder was released and aborted/u)(() => lockOrderProbe({ ...fixture(), contenderSettleMs: 500,
+      contenderStarted: ({ observed, signal }) => b.$transaction(async (t) => {
+        await t.$queryRawUnsafe('SELECT status FROM _probe_lock WHERE id = 1 FOR UPDATE'); observed();
+        await new Promise<never>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      }, CTX) }));
     await assertFreeSoon();
   });
 });

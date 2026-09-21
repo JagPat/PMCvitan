@@ -67,10 +67,15 @@ const within = <T,>(promise: Promise<T>, ms: number): Promise<T | { stuck: true 
 export const TEST_TIMEOUT_MS = 30_000;
 const GRACE_MS = 2_000;
 
+const READINESS_MARGIN_MS = 3_000;
 /** the default transaction bounds a fixture uses; a caller may override per call, and the probe's
- * cleanup and budget are computed from whatever it is actually given (never from a hidden constant). */
-export const DEFAULT_LIFETIMES = { maxWaitMs: 2_000, contenderTxMs: 6_000, competitorTxMs: 9_000 } as const;
-export type Lifetimes = { maxWaitMs: number; contenderTxMs: number; competitorTxMs: number };
+ * cleanup and budget are computed from whatever it is actually given (never from a hidden constant).
+ * `holderTxMs` is the holder transaction's own timeout: it must exceed the holder's active hold
+ * (readiness + the inspection window, before the probe releases it) yet be a DECLARED bound, so that
+ * even a fixture whose abort() fails has its holder lock reclaimed by the database and awaited out in
+ * cleanup within the budget — never left until an undeclared 20-second backstop. */
+export const DEFAULT_LIFETIMES = { maxWaitMs: 2_000, contenderTxMs: 6_000, competitorTxMs: 9_000, holderTxMs: 12_000 } as const;
+export type Lifetimes = { maxWaitMs: number; contenderTxMs: number; competitorTxMs: number; holderTxMs: number };
 
 /** the settle window (verdict wait) MUST exceed the contender's transaction lifetime, so a guard the
  * database rolls back at its timeout has its lock RELEASE observed rather than mistaken for a hang. */
@@ -78,17 +83,30 @@ const settleFloor = (l: Lifetimes) => l.maxWaitMs + l.contenderTxMs;
 /** a participant's worst-case lock lifetime after it starts: acquisition cap plus its transaction timeout */
 const lockBound = (startedAt: number, txMs: number, l: Lifetimes) => l.maxWaitMs + txMs + GRACE_MS - (Date.now() - startedAt);
 
-/** the holder becomes ready promptly (a free row plus a capped acquisition); the probe waits at most
- * this long, then aborts it and fails, rather than hanging until Vitest kills the test. */
-const holderReadyMs = (l: Lifetimes, settleMs: number) => l.maxWaitMs + settleMs;
+/** the holder becomes ready promptly (a free row plus a capped acquisition), so the probe waits at
+ * most acquisition + a margin — NOT the settle window — before aborting it and failing. Coupling
+ * readiness to settle would make a healthy holder's readiness deadline the dominant budget term. */
+const holderReadyMs = (l: Lifetimes) => l.maxWaitMs + READINESS_MARGIN_MS;
 const inspectWindowMs = (l: Lifetimes) => l.maxWaitMs + 3_000;
+/** the probe's SAFETY net for the initial inspection: a well-behaved fixture bounds its own polling
+ * at inspectWindowMs and returns true/false; this net sits strictly above that so a fixture returning
+ * at its own budget is never cut off, yet a query that hangs forever is still named and cleaned up. */
+const inspectCeilingMs = (l: Lifetimes) => inspectWindowMs(l) + GRACE_MS;
 /** the worst-case wall time; it MUST be under TEST_TIMEOUT_MS or the probe cannot name a hung guard.
- * The two hang paths do not overlap and do not add: a hung GUARD starts no competitor (it never
- * reports its read), so its cost is the settle window; a hung COMPETITOR lets the guard settle fast,
- * so its cost is the competitor's full lock lifetime awaited in cleanup. The bound is the readiness
- * acquisition plus the inspection ceiling plus whichever of those two dominates, plus grace. */
-export const worstCase = (l: Lifetimes, settleMs: number) =>
-  l.maxWaitMs + inspectWindowMs(l) + Math.max(settleMs, l.maxWaitMs + l.competitorTxMs) + GRACE_MS * 2;
+ * It is the LATEST any participant's lock is guaranteed released, or the verdict reached, measured
+ * from the probe's start, plus grace: the holder from its own start; the contender and competitor
+ * from when they begin (after readiness and the inspection window); and the settle verdict wait for a
+ * hung guard. Every one of readiness, inspection, settle and each transaction bound is accounted, so
+ * an accepted configuration cannot time the test out before cleanup. */
+export const worstCase = (l: Lifetimes, settleMs: number) => {
+  const afterRelease = holderReadyMs(l) + inspectCeilingMs(l);
+  return Math.max(
+    l.maxWaitMs + l.holderTxMs,
+    afterRelease + l.maxWaitMs + l.contenderTxMs,
+    afterRelease + l.maxWaitMs + l.competitorTxMs,
+    afterRelease + settleMs,
+  ) + GRACE_MS * 2;
+};
 
 type Outcome = { ok: true } | { ok: false; error: unknown } | { stuck: true };
 
@@ -118,12 +136,6 @@ export async function lockOrderProbe(o: {
   const l: Lifetimes = { ...DEFAULT_LIFETIMES, ...o.lifetimes };
   const settleMs = o.contenderSettleMs ?? settleFloor(l) + GRACE_MS;
   const graceMs = Math.min(settleMs, GRACE_MS);
-  // Budget: the whole worst case must fit under the per-test timeout, computed from the bounds this
-  // call actually uses. A fixture whose transaction bounds are too large to fit is rejected here,
-  // not left to time the test out or (worse) to leak a lock the cleanup wait was too short to cover.
-  if (worstCase(l, settleMs) >= TEST_TIMEOUT_MS) {
-    fail(`the probe's worst case (${worstCase(l, settleMs)}ms for maxWait=${l.maxWaitMs}, contenderTx=${l.contenderTxMs}, competitorTx=${l.competitorTxMs}, settle=${settleMs}) does not fit under the ${TEST_TIMEOUT_MS}ms per-test timeout`);
-  }
 
   // structured ownership: every task the probe starts is registered here and awaited in finalize()
   const participants: Participant[] = [];
@@ -134,7 +146,7 @@ export async function lockOrderProbe(o: {
     return p;
   };
 
-  let released = false; let reads = 0; let escaped = false; let timedOut = false;
+  let released = false; let reads = 0; let escaped = false; let timedOut = false; let closed = false;
   let windowOpen = false; let competitorBlocked = false; let landedInWindow = false;
   let abortFailure: unknown; let windowFailure: unknown; let holderTxFailure: unknown; let competitorFailure: unknown;
   let contender: Participant | undefined; let competitor: Participant | undefined;
@@ -163,6 +175,10 @@ export async function lockOrderProbe(o: {
   };
 
   const observed = () => {
+    // once cleanup has begun, a late report from a contender that ignored cancellation must never
+    // start a competitor: that competitor would register after finalize's await loop and could take a
+    // fresh lock after the probe returns. Record the read for the "never reported" check, then stop.
+    if (closed) return;
     reads += 1;
     if (reads > 1) return;
     if (!released) { escaped = true; openWindow(); return; }
@@ -189,7 +205,7 @@ export async function lockOrderProbe(o: {
   // outlive the probe. It aborts the holder and cancels the contender, then awaits EVERY registered
   // participant to its own recorded lock bound — never short-circuited by an outcome already set.
   const finalize = async () => {
-    released = true; openWindow();
+    closed = true; released = true; openWindow();
     if (!cancel.signal.aborted) cancel.abort(new ProbeFailure('aborted by lockOrderProbe: cleanup'));
     await abortHolder();
     await window.catch(() => undefined);
@@ -204,28 +220,48 @@ export async function lockOrderProbe(o: {
 
   let primary: unknown; let failed = false;
   try {
-    // continued holder monitoring: a holder that dies at ANY time while it is meant to hold the lock
-    // — during readiness OR after ready() but before release — is recorded as a holder failure, so it
-    // is never mistaken for the contender escaping the lock. The readiness wait below stops watching
-    // once ready resolves; this monitor keeps watching the transaction until the probe releases it.
+    // Register the holder transaction as a participant FIRST, so cleanup OWNS it even on an early
+    // failure: an abort() that rejects must not let the holder lock outlive the probe — finalize awaits
+    // the holder to maxWait + holderTxMs, by which the database has reclaimed it. The same promise is
+    // monitored for a death at ANY time while it is meant to hold the lock (during readiness OR after
+    // ready() but before release), so a holder that dies is named as a holder failure, never mistaken
+    // for the contender escaping the lock.
     if (o.holderMonitor !== undefined) {
-      void invoke(o.holderMonitor).then(
+      const holder = register('holder', invoke(o.holderMonitor), l.holderTxMs);
+      void holder.promise.then(
         () => undefined,
         (error: unknown) => { if (!released && holderTxFailure === undefined) holderTxFailure = failureOf(error, 'holder transaction failed'); },
       );
     }
-    // readiness is bounded and COUPLED to the holder transaction: a holder that never signals is
-    // aborted and named, rather than hanging the probe until Vitest kills the test.
-    const readiness = await within(invoke(o.holderReady).then(() => 'ready' as const, (error: unknown) => ({ error })), holderReadyMs(l, settleMs));
+    // Budget, checked only after the holder is owned: a rejected budget still runs through finalize,
+    // which aborts and awaits the holder the fixture already started, rather than returning and leaving
+    // its lock held until the transaction's own timeout. The worst case is computed from the bounds
+    // this call actually uses, so a fixture whose bounds cannot fit under the per-test timeout is
+    // rejected here instead of timing the test out.
+    if (worstCase(l, settleMs) >= TEST_TIMEOUT_MS) {
+      fail(`the probe's worst case (${worstCase(l, settleMs)}ms for maxWait=${l.maxWaitMs}, holderTx=${l.holderTxMs}, contenderTx=${l.contenderTxMs}, competitorTx=${l.competitorTxMs}, settle=${settleMs}) does not fit under the ${TEST_TIMEOUT_MS}ms per-test timeout`);
+    }
+    // readiness is bounded: a holder that never signals is aborted and named, rather than hanging the
+    // probe until Vitest kills the test.
+    const readiness = await within(invoke(o.holderReady).then(() => 'ready' as const, (error: unknown) => ({ error })), holderReadyMs(l));
     if (readiness !== 'ready') {
-      if ('stuck' in readiness) { await abortHolder(); fail(`the holder never became ready within ${holderReadyMs(l, settleMs)}ms; it was aborted rather than hang the test`); }
+      if ('stuck' in readiness) { await abortHolder(); fail(`the holder never became ready within ${holderReadyMs(l)}ms; it was aborted rather than hang the test`); }
       fail(`the holder failed before it was ready: ${reason(readiness.error)}`);
     }
 
     const contenderPromise = invoke(() => o.contenderStarted({ observed, proceed, signal: cancel.signal }));
     contender = register('contender', contenderPromise, l.contenderTxMs);
 
-    const inspection = await invoke(o.inspectBlocked).then((blocked) => ({ blocked }), (error: unknown) => ({ failure: failureOf(error, 'inspection rejected') }));
+    // the initial lock inspection is bounded by the same ceiling the budget assumes: a query that
+    // never settles (a connection fault that neither resolves nor rejects) must not hang the probe
+    // past release/cleanup — it is named as an inspection failure and routed through finalize.
+    const inspectionResult = await within(
+      invoke(o.inspectBlocked).then((blocked) => ({ blocked }), (error: unknown) => ({ failure: failureOf(error, 'inspection rejected') })),
+      inspectCeilingMs(l),
+    );
+    const inspection = (typeof inspectionResult === 'object' && inspectionResult !== null && 'stuck' in inspectionResult)
+      ? { failure: new Error(`the lock inspection did not settle within ${inspectCeilingMs(l)}ms`) }
+      : inspectionResult;
     released = true;
     const releaseFailure = await invoke(o.release).then(() => undefined, (error: unknown) => failureOf(error, 'release rejected'));
     if (releaseFailure !== undefined) await abortHolder();
@@ -250,8 +286,10 @@ export async function lockOrderProbe(o: {
 
     const settled = outcome;
     // A contender that CRASHED (rejected) before completing its command is an infrastructure failure,
-    // named before the absent lock wait is read as lock-after-read.
-    if (settled !== undefined && !('stuck' in settled) && !settled.ok) {
+    // named before the absent lock wait is read as lock-after-read — UNLESS the probe itself cancelled
+    // it for outliving the settle window (`timedOut`), in which case its rejection carries the probe's
+    // own abort reason and is the hung-guard verdict below, not a broken fixture.
+    if (!timedOut && settled !== undefined && !('stuck' in settled) && !settled.ok) {
       fail(`the contender failed instead of completing its command: ${reason(settled.error)}`);
     }
     if ('failure' in inspection) fail(`the lock inspection failed: ${reason(inspection.failure)}`);
@@ -264,7 +302,11 @@ export async function lockOrderProbe(o: {
       fail('the contender ignored its abort signal and never settled; its transaction, if any, has been rolled back by its own timeout, so it holds no lock — but a guard that only hangs in JS proves no lock order');
     }
     if (timedOut) fail('the contender was still running after the holder was released and aborted: the guarded command never completed within its transaction, and was aborted');
-    if (!inspection.blocked) fail('the contender was never blocked behind the holder: the guard read the status before taking the lock (lock-after-read)');
+    // an unseen initial wait is NOT proof of lock-after-read: a correct lock-first contender can be
+    // delayed acquiring its pool connection until after inspectBlocked returned false, then take the
+    // row only once the holder released. Only `escaped` (checked above) proves the read completed
+    // before release; an unobserved wait is an inconclusive interleaving, not a product defect.
+    if (!inspection.blocked) fail('the contender was never observed waiting behind the holder and did not escape: the interleaving could not be established (a scheduling delay is not proof of lock order)');
     if (landedInWindow) fail("a competing writer landed between the guard's status read and its mutation: the guard did not hold its lock across the window (an autocommit FOR UPDATE, a commit before the mutation, or no lock at all)");
     if (competitor !== undefined && !competitorBlocked && competitorFailure === undefined && !competitorStuck) fail('the competing writer was never seen waiting behind the guard, and did not land: the interleaving was not observed');
     if (competitorStuck && competitorFailure === undefined) fail('the competing writer never landed after the guard finished: the row is still locked');
