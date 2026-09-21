@@ -43,6 +43,11 @@ round-4 defect is closed at the event boundary, proven reproduce-first
 recorders) and U3 (the flip with all claimants, and the full 51-case matrix) follow
 as sequential units on their own heads.
 
+Every #590 head carries the terminal `Correction-Owner: claude` trailer the
+SHA-scoped merge gate (`shaMergeAuthority`) reads, matching the PR body's
+`correction-owner: claude` marker; a head that omits it authenticates no owner and
+the required `codex-current-head` status stays red until a new head restores it.
+
 Deferred with their findings intact, not merged and not waived:
 `reform-1b` successor #615 (`f88d45d0`, five open findings, third-P1 stop) and #614
 (`43ad7ad3`). Neither is a dependency of #590 — the branch imports none of the
