@@ -97,7 +97,7 @@ the version its intents carry. Every unit must leave prior-generation events unt
   dormant rule fires; the primitive returns the fact's-actor event and excludes a
   wrong-actor event. No claimant, no flip: the production catalog is untouched.
 
-### U2 — the change-request bundle seals and recorders (this unit)
+### U2 — the change-request bundle seals and recorders (MERGED, #616 → main `c9eebc95`)
 
 Migration `20271223000000_phase6_t4d_i_b_u2_change_bundle_seals`. Both bundle seals gate on
 `phase6_t4d_change_pairing_active()` (a coverage generation flags the change/approval keys), so they
@@ -115,7 +115,16 @@ request-side seal JUDGES the opening/closure/reapproval bundle and CLAIMS nothin
   `Decision_t4d_change_paired` — the opening/closure/reapproval bundles in both
   directions, judging without claiming. Still no flip.
 
-### U3 — the flip with its claimants, together (deferred)
+### U3 — the flip with its claimants, together (this unit)
+
+Migration `20271224000000_phase6_t4d_i_b_u3_pairing_flip`. It seeds the pairing coverage generation
+beside 4d-i's two (the successor 4d-i's catalog audit admits, proven against the deployed prior
+generation), re-adds the two claims to U2's request-side seal (keeping U2's dark-window gate, which
+this flip makes TRUE), and installs `platform_claim_event_pairing_once` and every remaining
+claimant. The decision-side seal `phase6_t4d_change_transition_paired` is U2's and unchanged — the
+flip is what activates it. Its deployment window locks exactly the four tables that gain a trigger
+(`ChangeRequest`, `DecisionApprovalRevision`, `DecisionConsultation`,
+`DecisionConsultationResponse`).
 
 - The flip: the new `ExternalEffectCatalog` coverage generation with `pairingRequired`
   true on exactly the six decision types, its `canonicalCatalog()` preimage change in

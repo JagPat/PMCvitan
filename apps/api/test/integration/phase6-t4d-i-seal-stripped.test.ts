@@ -168,12 +168,14 @@ function buildBase(): void {
   psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${BASE_DB}" WITH (FORCE)`]);
   const created = psql('postgres', ['-c', `CREATE DATABASE "${BASE_DB}"`]);
   expect(created.ok, created.output).toBe(true);
-  // The 4d-i unit is applied to the RUN database (with strips), not the base. 4d-i-b U1 (20271222)
-  // DEPENDS on 4d-i's catalog and refuses to apply without it, so it is excluded from this
-  // deliberately pre-4d base too — its own unit's harness proves it, not this one.
+  // The 4d-i unit is applied to the RUN database (with strips), not the base. 4d-i-b U1 (20271222),
+  // U2 (20271223) and U3 (20271224) each DEPEND on 4d-i's catalog and refuse to apply without it,
+  // so they are excluded from this deliberately pre-4d base too — their own units' harnesses prove
+  // them, not this one.
   const unit = new Set<string>([...UNIT_DIRS,
     '20271222000000_phase6_t4d_i_b_u1_bound_event_actor',
-    '20271223000000_phase6_t4d_i_b_u2_change_bundle_seals']);
+    '20271223000000_phase6_t4d_i_b_u2_change_bundle_seals',
+    '20271224000000_phase6_t4d_i_b_u3_pairing_flip']);
   for (const dir of readdirSync(MIGRATIONS_DIR).filter((d) => !unit.has(d) && !d.endsWith('.toml')).sort()) {
     const file = join(MIGRATIONS_DIR, dir, 'migration.sql');
     // Everything is applied the way Prisma applies it (one transaction, stop on error), because

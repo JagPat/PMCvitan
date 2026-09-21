@@ -381,20 +381,41 @@ async function main(): Promise<void> {
   // The reopened decision (DL-003, status 'change') carries its OPEN change request —
   // a 'change' decision with ZERO open requests is exactly the inconsistent state the
   // change-control diagnostic aborts on and re-approval now refuses (gate finding 1).
-  await prisma.changeRequest.create({
-    data: {
-      // Phase 6 unit 4d-i — `ChangeRequest.projectId` joined the uniform seal contract
-      // (§A.3 obligation 5). The migration's trigger fills it for the previous release; a
-      // writer compiled against the new client names it.
-      projectId: PROJECT_ID,
-      decisionId: 'DL-003',
-      reason: 'Quartz slab size unavailable — vendor proposes 2-piece joint',
-      costImpact: 0,
-      timeImpactDays: 4,
-      status: 'open',
-      requestedById: pmcId,
-    },
-  });
+  //
+  // Phase 6 unit 4d-i-b — THE ONE ADMITTED BYPASS of `ChangeRequest_t4d_paired` (§D 4d-i-b (a);
+  // #568's review round 2, finding 1). That deferred seal requires a request born open to ride
+  // the SAME transaction as its decision's `approved → change` move and its
+  // `decision.change_requested` event, because the opening is one bundle in both directions.
+  // This plant is neither: DL-003 is BORN in `change` and the seed emits no event — it is a
+  // fixture standing in for a reopening that happened before this database existed, and the
+  // seal is right to refuse it, because it cannot tell a simulated history from a forgery. So
+  // the seed declares itself, BY NAME, for exactly this row: the seal is disabled, the row is
+  // written, the deferred queue is flushed so the re-enable is not refused (55006 — the same
+  // rule `plantLegacyApprovalRevision` met), and the seal goes back on in the same transaction,
+  // so no failure path can leave it off. Guarded on the trigger's existence, because a seed may
+  // run against a database migrated to an earlier point.
+  const pairedToggle = (action: 'DISABLE' | 'ENABLE'): string =>
+    `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'ChangeRequest_t4d_paired') THEN `
+    + `EXECUTE 'ALTER TABLE "ChangeRequest" ${action} TRIGGER "ChangeRequest_t4d_paired"'; END IF; END $$;`;
+  await prisma.$transaction([
+    prisma.$executeRawUnsafe(pairedToggle('DISABLE')),
+    prisma.changeRequest.create({
+      data: {
+        // Phase 6 unit 4d-i — `ChangeRequest.projectId` joined the uniform seal contract
+        // (§A.3 obligation 5). The migration's trigger fills it for the previous release; a
+        // writer compiled against the new client names it.
+        projectId: PROJECT_ID,
+        decisionId: 'DL-003',
+        reason: 'Quartz slab size unavailable — vendor proposes 2-piece joint',
+        costImpact: 0,
+        timeImpactDays: 4,
+        status: 'open',
+        requestedById: pmcId,
+      },
+    }),
+    prisma.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE'),
+    prisma.$executeRawUnsafe(pairedToggle('ENABLE')),
+  ]);
 
   // Project phases group activities for phase-level monitoring. The legacy
   // day-offsets stay for display geometry; the canonical civil dates derive from

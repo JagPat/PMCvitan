@@ -14,15 +14,15 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-unit-i-b-u2-change-bundle-seals
-reviewed_merge: 0f469108
-open_pr: 616
+work_item: phase-6-task-4d-unit-i-b-u3-pairing-flip
+reviewed_merge: c9eebc95
+open_pr: none
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-21
 ```
 
-### Now — 4d-i-b resumes as the additive U1/U2/U3 redesign; U1 merged, U2 on #616
+### Now — 4d-i-b resumes as the additive U1/U2/U3 redesign; U1 and U2 merged, U3 is the flip
 
 Owner disposition of 2026-09-21 (issue #482 comment 5757145200), under the user's
 "proceed as per your recomendation" approval: prioritise a complete, verified
@@ -37,15 +37,32 @@ comment 5680116372 — not an ordinary NULL-only fourth patch.
 (`phase6_t4d_tx_actor_event`) and the dormant kernel seal
 `DomainEvent_t4d_pairing_actor` — a `pairingRequired` event must name a human actor.
 
-`open_pr: 616` (branch `claude/phase6-t4d-i-b-u2-change-bundle-seals`) carries **U2**:
-the two transition recorders (`Decision_t4d_change_transition`,
-`ChangeRequest_t4d_lifecycle_transition`) and the two deferred bundle seals
-(`ChangeRequest_t4d_paired`, `Decision_t4d_change_paired`) that judge the opening,
-closure and reapproval bundle in both write orders — judging, never claiming (the
-claimants are U3). Both bundle seals gate on `phase6_t4d_change_pairing_active()` and
-are dark until U3 flips a generation, so U2 refuses nothing a release produces, proven
-reproduce-first (`phase6-t4d-i-b-u2-change-bundle-seals.test.ts`). U3 (the flip with
-all claimants, and the full 51-case matrix) follows as the sequential successor unit.
+**U2 merged** to `main` at `c9eebc95` (#616): the two transition recorders
+(`Decision_t4d_change_transition`, `ChangeRequest_t4d_lifecycle_transition`) and the
+two deferred bundle seals (`ChangeRequest_t4d_paired`, `Decision_t4d_change_paired`)
+that judge the opening, closure and reapproval bundle in both write orders — judging,
+never claiming. Both gate on `phase6_t4d_change_pairing_active()` and were dark until
+U3 flips a generation.
+
+**U3 is this unit** (`work_item: phase-6-task-4d-unit-i-b-u3-pairing-flip`, branch
+`claude/pmcvitan-mobile-places-n3fxup`, migration
+`20271224000000_phase6_t4d_i_b_u3_pairing_flip`): **THE FLIP**. It seeds a new
+`ExternalEffectCatalog` coverage generation with `pairingRequired` true on exactly the
+six decision types (`effectCoverageVersion()` moves `842cc9fc…` → `7dac2bd5…` via the
+sixth preimage element in `external-effects.ts`), proven the one successor 4d-i's catalog
+audit admits against the deployed prior generation; re-adds the two claims to U2's
+request-side seal (keeping U2's now-TRUE dark-window gate); and installs
+`platform_claim_event_pairing_once` and every remaining claimant
+(`ChangeRequest_t4d_claim`, `DecisionApprovalRevision_t4d_claim`(+`_deferred`),
+`DecisionConsultation_t4d_claim`(+`_deferred`),
+`DecisionConsultationResponse_t4d_claim`(+`_deferred`)) — each order-independent, each
+lookup through U1's actor primitive, each bundle judged by U2's seals. The decision-side
+seal `phase6_t4d_change_transition_paired` is U2's and unchanged; the flip activates it.
+Proven by the full 51-case matrix (`phase6-t4d-i-b-pairing-matrix.test.ts`), the three
+generations (`phase6-t4d-i-catalog-generations.test.ts`), the two seed literals
+(`external-effect-catalog-seed.test.ts`), and the seal-inventory/seal-contract oracles;
+`open_pr: none` on this unit commit per the §D self-naming convention (the pointer
+commit names the PR).
 
 Every head of the U1/U2/U3 lane carries the terminal `Correction-Owner: claude`
 trailer the SHA-scoped merge gate (`shaMergeAuthority`) reads, matching the PR body's

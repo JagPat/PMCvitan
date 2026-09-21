@@ -4910,10 +4910,10 @@ $PSQL_ADMIN -c "CREATE DATABASE $DB3;" >/dev/null || exit 1
 t4d_r21_ready=1
 for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # Skip the 4d-i halves AND anything that DEPENDS on them: this ledger is deliberately pre-4d so
-  # the dark migration can be applied last and asserted to abort. 4d-i-b U1 (20271222) installs a
-  # catalog-driven seal 4d-i makes resolvable and refuses to apply without it, so it belongs here
-  # with its prerequisites, not in the pre-4d ledger.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*) continue ;; esac
+  # the dark migration can be applied last and asserted to abort. 4d-i-b U1 (20271222), U2 (20271223)
+  # and U3 (20271224) each install catalog-driven seals 4d-i makes resolvable and refuse to apply
+  # without it, so they belong here with their prerequisites, not in the pre-4d ledger.
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
