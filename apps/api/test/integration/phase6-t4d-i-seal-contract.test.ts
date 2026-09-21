@@ -696,6 +696,46 @@ const REGISTER: Record<string, SealContract> = {
     on: { 'DomainEvent.DomainEvent_t4d_pairing_actor': C('I') },
     must: ['pairingRequired', 'actorKind'],
   },
+  // 4d-i-b U2 (20271223000000) — the two transition recorders and the two change-request bundle
+  // seals. The recorders only RECORD (a transition is not a state; only the UPDATE holds OLD) and
+  // refuse nothing. The two bundle seals JUDGE the opening/closure/reapproval bundle in both write
+  // orders and are dark until U3's flip (they gate on `phase6_t4d_change_pairing_active`); each
+  // CLAIMS nothing — `forbid` pins the absence of the claimant every claim path lives in, because
+  // the claimants are U3.
+  phase6_t4d_decision_change_here: {
+    rule: 'the decision\'s four change-lifecycle moves are RECORDED into 4d-i\'s trigger-only carrier '
+      + 'by the UPDATE that performs them — a state at commit is not the transition, and only the '
+      + 'update holds OLD',
+    plan: '§B.4 the transition carrier; 4d-i-b U2',
+    on: { 'Decision.Decision_t4d_change_transition': B('U') },
+    must: ['_t4d_tx_transition', 'change_from_approved'],
+  },
+  phase6_t4d_change_request_here: {
+    rule: 'the request\'s own lifecycle moves (opened, withdrawn, resolved) are RECORDED by the '
+      + 'INSERT/UPDATE that performs them, keyed by decision and naming the request, so a COUNT of '
+      + 'moves that STOOD is still a count and a no-op re-write of a historical row is not one',
+    plan: '§B.4 the transition carrier; 4d-i-b U2',
+    on: { 'ChangeRequest.ChangeRequest_t4d_lifecycle_transition': B('I U') },
+    must: ['_t4d_tx_transition', 'request_opened'],
+  },
+  phase6_t4d_change_request_paired: {
+    rule: 'the request side of the OPENING and the CLOSURE bundle is judged in both write orders — '
+      + 'the decision moved, the audit row was appended, the event was announced — but nothing is '
+      + 'CLAIMED here (the claimants are U3); dark until a generation flags the change keys',
+    plan: '§D 4d-i-b (a); 4d-i-b U2',
+    on: { 'ChangeRequest.ChangeRequest_t4d_paired': C('I U') },
+    must: ['phase6_t4d_change_pairing_active', 'phase6_t4d_tx_audit_count'],
+    forbid: ['platform_claim_event_pairing_once'],
+  },
+  phase6_t4d_change_transition_paired: {
+    rule: 'the decision side of the same bundle: each change-lifecycle move owes exactly one request '
+      + 'that was born or that left `open` in this transaction and still stands — judged, never '
+      + 'claimed; dark until a generation flags the change keys',
+    plan: '§D 4d-i-b (a); 4d-i-b U2',
+    on: { 'Decision.Decision_t4d_change_paired': C('U') },
+    must: ['phase6_t4d_change_pairing_active', 'phase6_t4d_requests_moved_in_tx'],
+    forbid: ['platform_claim_event_pairing_once'],
+  },
   platform_t4d_stream_allocation: {
     rule: 'the counter moves by EXACTLY ONE — every increase is not an allocation',
     plan: '§A.2 the allocator; #582 round 1, finding 2',

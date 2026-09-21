@@ -80,7 +80,7 @@ the version its intents carry. Every unit must leave prior-generation events unt
 
 ## Obligation → unit
 
-### U1 — the bound event/actor primitive, before any flip (this unit)
+### U1 — the bound event/actor primitive, before any flip (MERGED, #590 → main `0f469108`)
 
 - `phase6_t4d_tx_actor_event(project, decision, types, actor)` and
   `phase6_t4d_tx_actor_event_count(...)` — the same-transaction (`xmin =
@@ -97,7 +97,14 @@ the version its intents carry. Every unit must leave prior-generation events unt
   dormant rule fires; the primitive returns the fact's-actor event and excludes a
   wrong-actor event. No claimant, no flip: the production catalog is untouched.
 
-### U2 — the change-request bundle seals and recorders (deferred)
+### U2 — the change-request bundle seals and recorders (this unit)
+
+Migration `20271223000000_phase6_t4d_i_b_u2_change_bundle_seals`. Both bundle seals gate on
+`phase6_t4d_change_pairing_active()` (a coverage generation flags the change/approval keys), so they
+are dark until U3's flip — the recorders and the audit count refuse nothing at any time. The
+request-side seal JUDGES the opening/closure/reapproval bundle and CLAIMS nothing (the seal-contract
+`forbid` pins the absence of `platform_claim_event_pairing_once`); the claimants are U3.
+
 
 - Recorders: `phase6_t4d_decision_change_here` / `Decision_t4d_change_transition`,
   `phase6_t4d_change_request_here` / `ChangeRequest_t4d_lifecycle_transition`, and the

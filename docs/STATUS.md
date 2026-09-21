@@ -14,15 +14,15 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-unit-i-b-u1-bound-event-actor
-reviewed_merge: 5be4de3d
-open_pr: 590
+work_item: phase-6-task-4d-unit-i-b-u2-change-bundle-seals
+reviewed_merge: 0f469108
+open_pr: 616
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-21
 ```
 
-### Now — 4d-i-b resumes as the additive U1/U2/U3 redesign, on #590
+### Now — 4d-i-b resumes as the additive U1/U2/U3 redesign; U1 merged, U2 on #616
 
 Owner disposition of 2026-09-21 (issue #482 comment 5757145200), under the user's
 "proceed as per your recomendation" approval: prioritise a complete, verified
@@ -33,21 +33,24 @@ NULL-actor defect open; it is replaced by the additive **U1 / U2 / U3** design
 recorded in docs/superpowers/plans/2026-09-21-4d-i-b-additive-units.md and #590
 comment 5680116372 — not an ordinary NULL-only fourth patch.
 
-`open_pr: 590` (branch `claude/phase6-t4d-i-b-pairing-switch-on`) now carries **U1
-only**: the bound-event/actor primitive (`phase6_t4d_tx_actor_event`) and the
-dormant kernel seal `DomainEvent_t4d_pairing_actor` — a `pairingRequired` event
-must name a human actor. Both are dark over the two live 4d-i generations (every
-row `pairingRequired = false`), so U1 refuses nothing a release produces; the
-round-4 defect is closed at the event boundary, proven reproduce-first
-(`phase6-t4d-i-b-u1-bound-actor.test.ts`). U2 (the change-request bundle seals and
-recorders) and U3 (the flip with all claimants, and the full 51-case matrix) follow
-as sequential units on their own heads.
+**U1 merged** to `main` at `0f469108` (#590): the bound-event/actor primitive
+(`phase6_t4d_tx_actor_event`) and the dormant kernel seal
+`DomainEvent_t4d_pairing_actor` — a `pairingRequired` event must name a human actor.
 
-A #590 head is merge-eligible only when it carries the terminal
-`Correction-Owner: claude` trailer the SHA-scoped merge gate (`shaMergeAuthority`)
-reads, matching the PR body's `correction-owner: claude` marker; a head that omits
-it authenticates no owner, so the required `codex-current-head` status stays red
-until a new head supplies the trailer.
+`open_pr: 616` (branch `claude/phase6-t4d-i-b-u2-change-bundle-seals`) carries **U2**:
+the two transition recorders (`Decision_t4d_change_transition`,
+`ChangeRequest_t4d_lifecycle_transition`) and the two deferred bundle seals
+(`ChangeRequest_t4d_paired`, `Decision_t4d_change_paired`) that judge the opening,
+closure and reapproval bundle in both write orders — judging, never claiming (the
+claimants are U3). Both bundle seals gate on `phase6_t4d_change_pairing_active()` and
+are dark until U3 flips a generation, so U2 refuses nothing a release produces, proven
+reproduce-first (`phase6-t4d-i-b-u2-change-bundle-seals.test.ts`). U3 (the flip with
+all claimants, and the full 51-case matrix) follows as the sequential successor unit.
+
+Every head of the U1/U2/U3 lane carries the terminal `Correction-Owner: claude`
+trailer the SHA-scoped merge gate (`shaMergeAuthority`) reads, matching the PR body's
+`correction-owner: claude` marker; a head that omits it authenticates no owner and the
+required `codex-current-head` status stays red until a new head supplies the trailer.
 
 Deferred with their findings intact, not merged and not waived:
 `reform-1b` successor #615 (`f88d45d0`, five open findings, third-P1 stop) and #614

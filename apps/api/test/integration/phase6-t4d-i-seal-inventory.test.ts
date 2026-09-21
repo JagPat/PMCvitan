@@ -35,13 +35,21 @@ const INVENTORY: Record<string, string[]> = {
     // #582's review round 26, finding 3 — identity frozen from birth, the rule `Decision` already
     // carried and three of its four siblings did not.
     'ChangeRequest_t4d_identity',
-    'ChangeRequest_t4d_no_truncate', 'ChangeRequest_t4d_project',
+    // 4d-i-b U2 (20271223000000): the request-side bundle seal and its lifecycle recorder — the
+    // opening/closure/reapproval bundle judged (dark until U3's flip), and the move recorder.
+    'ChangeRequest_t4d_lifecycle_transition',
+    'ChangeRequest_t4d_no_truncate',
+    'ChangeRequest_t4d_paired', 'ChangeRequest_t4d_project',
     'ChangeRequest_t4d_source_bound'],
   Decision: [
     'Decision_t4d_approval_transition',
     'Decision_t4d_architect_reserved',
     'Decision_t4d_awaiting_paired',
     'Decision_t4d_awaiting_reserved',
+    // 4d-i-b U2 (20271223000000): the decision-side bundle seal and its transition recorder — a
+    // change lifecycle move judged for its request (dark until U3's flip), and the move recorder.
+    'Decision_t4d_change_paired',
+    'Decision_t4d_change_transition',
     'Decision_t4d_disagreement_paired',
     'Decision_t4d_entry_seal',
     'Decision_t4d_holder_standing',
