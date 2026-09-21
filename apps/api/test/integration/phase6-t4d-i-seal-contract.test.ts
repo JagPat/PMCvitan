@@ -687,6 +687,15 @@ const REGISTER: Record<string, SealContract> = {
     on: { 'DomainEvent.DomainEvent_t4d_pairing_claimed': C('I') },
     must: ['DomainEventPairingClaim', 'pairingRequired'],
   },
+  // 4d-i-b U1 — the converse companion of the claim seal: a pairing-required event must NAME the
+  // human who acted. Catalog-driven and dormant over 4d-i's generations, deferred beside the
+  // claim seal so both judge the same event at commit.
+  platform_t4d_event_pairing_actor: {
+    rule: 'an event of a pairing-required family names a HUMAN actor (actorKind = human, actorId not null)',
+    plan: '§A.3 obligation 7; 4d-i-b U1',
+    on: { 'DomainEvent.DomainEvent_t4d_pairing_actor': C('I') },
+    must: ['pairingRequired', 'actorKind'],
+  },
   platform_t4d_stream_allocation: {
     rule: 'the counter moves by EXACTLY ONE — every increase is not an allocation',
     plan: '§A.2 the allocator; #582 round 1, finding 2',

@@ -150,22 +150,21 @@ describe('phase 6 unit 4d-i-b U1 — the bound event/actor primitive and the dor
     });
   }
 
-  // ── THE ROUND-4 DEFECT, made observable at a flagged generation: a CLAIMED system/NULL event.
-  // The claim satisfies 4d-i's `pairing_claimed` seal, so the ONLY thing standing between this
-  // event and commit is the actor seal — exactly the gap round 4 found (a `system` event with
-  // `actorId = NULL` beside a fact that claimed it). Both seals are deferred and `pairing_actor`
-  // sorts first, so the refusal is the actor seal's.
+  // ── THE ROUND-4 SHAPE, made observable at a flagged generation. The actor seal fires at the event
+  // INSERT (immediate), so a `system`/NULL-actor pairingRequired event is refused HERE, for its
+  // actor, before any fact could claim it. That a CLAIMED system event commits once this seal is
+  // dropped is the reproduce-first proof it is load-bearing beyond 4d-i's deferred claim seal.
   for (const t of TYPES) {
-    it(`at a flagged generation, a CLAIMED \`${t.key}\` event with NO actor is refused by the actor seal`, () => {
-      const r = psql(RUN_DB, TX(EV({ id: `sys-${t.key}`, type: t.key, version: FLAGGED, push: t.push() }), CLAIM(`sys-${t.key}`)));
-      expect(r.ok, `a claimed system/NULL-actor pairingRequired event must be refused by the actor seal:\n${r.output}`).toBe(false);
+    it(`at a flagged generation, a \`${t.key}\` event with NO actor is refused by the actor seal`, () => {
+      const r = psql(RUN_DB, TX(EV({ id: `sys-${t.key}`, type: t.key, version: FLAGGED, push: t.push() })));
+      expect(r.ok, `a system/NULL-actor pairingRequired event must be refused by the actor seal:\n${r.output}`).toBe(false);
       expect(r.output).toMatch(/pairingRequired but is attributed to actorKind=system/u);
     });
 
     it(`at a flagged generation, a CLAIMED \`${t.key}\` event WITH a human actor commits`, () => {
       const r = psql(RUN_DB, TX(EV({ id: `hum-${t.key}`, type: t.key, version: FLAGGED, actor: 'mx-pmc', push: t.push() }), CLAIM(`hum-${t.key}`)));
-      // named human + a claim: the actor seal admits it and `pairing_claimed` is satisfied, so the
-      // whole bundle commits — the legitimate shape the flip (U3) will produce.
+      // named human + a claim: the actor seal admits it at INSERT and `pairing_claimed` is satisfied
+      // at commit, so the whole bundle commits — the legitimate shape the flip (U3) produces.
       expect(r.ok, `a claimed, human-attributed pairingRequired event must commit:\n${r.output}`).toBe(true);
     });
   }

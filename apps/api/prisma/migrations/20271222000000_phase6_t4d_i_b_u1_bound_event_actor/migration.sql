@@ -77,24 +77,18 @@ BEGIN
 END $t4dib_u1_window$;
 
 
--- ── THE PREREQUISITE IS 4d-i's, AND IT IS VERIFIED, NOT ASSUMED ─────────────────────────────
--- The actor seal reads `ExternalEffectCatalog` and stands beside `DomainEvent_t4d_pairing_claimed`;
--- both are 4d-i's dark migration. A plpgsql body is not validated at CREATE time, so a database
--- that never ran 4d-i must be NAMED here rather than at the first real emit in production. Naming
--- the catalog TABLE and the sibling kernel SEAL witnesses that half without re-verifying it.
+-- ── THE PREREQUISITE IS 4d-i's CATALOG, AND IT IS VERIFIED, NOT ASSUMED ─────────────────────
+-- The actor seal reads `ExternalEffectCatalog`, which 4d-i's dark migration creates. A plpgsql body
+-- is not validated at CREATE time, so without the catalog the trigger would break the FIRST real
+-- DomainEvent insert in production rather than here; a database without it is NAMED. It is the ONE
+-- object this unit needs — deliberately NOT the sibling `platform_t4d_event_pairing_claimed` seal,
+-- which the seal-stripped harness omits while this file must still apply — so the check is the
+-- table alone (a present catalog is all this seal reads).
 DO $t4dib_u1_prereq$
-DECLARE v_missing TEXT := '';
 BEGIN
   IF to_regclass('"ExternalEffectCatalog"') IS NULL THEN
-    v_missing := v_missing || '"ExternalEffectCatalog"';
-  END IF;
-  IF to_regproc('platform_t4d_event_pairing_claimed') IS NULL THEN
-    v_missing := v_missing || CASE WHEN v_missing = '' THEN '' ELSE ', ' END || 'platform_t4d_event_pairing_claimed()';
-  END IF;
-  IF v_missing <> '' THEN
     RAISE EXCEPTION
-      'phase6 4d-i-b U1 ABORT: this unit installs a catalog-driven seal 4d-i''s dark migration makes resolvable, and this database holds none of: %. 4d-i''s two halves (20271220000000 and 20271221000000) apply before this file, and on the db-push / P3005 baseline path `scripts/migrate.sh` EXECUTES them from ALWAYS_EXECUTE for exactly this reason. Apply them first. See docs/RUNBOOK.md §P6T4D.',
-      v_missing;
+      'phase6 4d-i-b U1 ABORT: this unit installs a catalog-driven seal that reads "ExternalEffectCatalog", which this database does not hold. 4d-i''s dark migration (20271220000000) creates it and applies before this file; on the db-push / P3005 baseline path `scripts/migrate.sh` EXECUTES 4d-i from ALWAYS_EXECUTE for exactly this reason. Apply it first. See docs/RUNBOOK.md §P6T4D.';
   END IF;
 END $t4dib_u1_prereq$;
 
@@ -169,17 +163,19 @@ BEGIN
   RETURN NULL;
 END $$;
 
--- DEFERRED, INITIALLY DEFERRED, beside `DomainEvent_t4d_pairing_claimed` and driven the same way.
--- The two columns it judges are the event's OWN, frozen at INSERT — the envelope seal and the
--- append-only trigger forbid changing them later — so nothing a later statement makes true would
--- change this verdict; deferral is not needed for correctness. It is deferred so the KERNEL's two
--- companion seals judge the same paired event at the SAME moment, both reading the row the event
--- names: `pairing_actor` (does it name a human?) and `pairing_claimed` (did a fact claim it?).
--- Sorted by name, `pairing_actor` runs first, so the round-4 shape — a `system`/NULL event that a
--- fact DID claim — is refused HERE for the actor, not silently admitted because the claim exists.
+-- IMMEDIATE — a NOT-DEFERRABLE constraint trigger, beside `DomainEvent_t4d_pairing_claimed` but
+-- unlike it. The two columns it judges are the event's OWN, frozen at INSERT (the envelope seal and
+-- the append-only trigger forbid changing them later), so it needs nothing a later statement writes
+-- and is checked at the END OF THE INSERT STATEMENT, never deferred to commit. `pairing_claimed`
+-- IS deferred because THAT seal waits on a fact written later; this one does not. Firing immediately
+-- also means it leaves no pending trigger event, so a legacy-shape plant that disables the deferred
+-- DomainEvent seals by name and re-enables them mid-transaction is not blocked by this one — it is
+-- dark for a pre-4d shape anyway (no pairingRequired row backs it), so it needs no place in that
+-- bypass. Round-4's claimed-`system`-event shape is refused here at INSERT; the reproduce-first
+-- proof shows a claimed system event committing only once this seal is dropped.
 DROP TRIGGER IF EXISTS "DomainEvent_t4d_pairing_actor" ON "DomainEvent";
 CREATE CONSTRAINT TRIGGER "DomainEvent_t4d_pairing_actor"
-  AFTER INSERT ON "DomainEvent" DEFERRABLE INITIALLY DEFERRED
+  AFTER INSERT ON "DomainEvent"
   FOR EACH ROW EXECUTE FUNCTION platform_t4d_event_pairing_actor();
 
 COMMIT;
