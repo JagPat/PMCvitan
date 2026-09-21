@@ -80,27 +80,28 @@ export const inspectCeilingMs = (l: Lifetimes) => inspectWindowMs(l) + GRACE_MS;
  * acquisition so a control that neither resolves nor rejects is named without stalling the barrier. */
 export const controlBound = (l: Lifetimes) => l.maxWaitMs + GRACE_MS;
 
-/** the worst-case wall time; it MUST be under TEST_TIMEOUT_MS or the probe cannot name a hung guard. It
- * is the SEQUENTIAL success path — readiness, the initial inspection, a SUCCESSFUL release (up to its
- * control bound), the settle/competitor waits (CONCURRENT with each other, hence a max), the terminal
- * verification, AND the final cleanup abort — every phase summed because they run one after another, plus
- * grace. It is also held at or above each participant's own lock lifetime from its start, which the
- * barrier must await out. Controls are counted here, not treated as an alternative to the later phases. */
+/** the worst-case wall time; it MUST be under TEST_TIMEOUT_MS or the probe cannot name a hung guard. Two
+ * things must fit: the SEQUENTIAL verdict path (readiness, the initial inspection, a successful release,
+ * the settle/competitor waits, the terminal verification, and the final cleanup abort — summed because
+ * they run one after another), AND the drain of EVERY participant to its own lock-release deadline. That
+ * deadline is a participant's START OFFSET on the sequential path plus its acquisition cap and its
+ * transaction timeout — so a late-starting operation (the verifier, the competitor) whose transaction
+ * outlives the sequential path is counted from where it actually begins, never as though it started at
+ * probe time. Enumerating every participant here is what keeps a long contender/verify tx, or a settle
+ * window below the contender's own lifetime, from being accepted and then killing the test in cleanup. */
 export const worstCase = (l: Lifetimes, settleMs: number) => {
-  const participantsPhase = Math.max(settleMs, l.maxWaitMs + l.competitorTxMs);
-  const sequential = holderReadyMs(l)      // readiness
-    + inspectCeilingMs(l)                  // initial inspection
-    + controlBound(l)                      // a successful (but worst-case slow) release
-    + participantsPhase                    // settle + competitor, run concurrently
-    + inspectCeilingMs(l)                  // terminal verification wait
-    + controlBound(l)                      // the final cleanup abort
-    + GRACE_MS * 2;
-  return Math.max(
-    sequential,
-    l.maxWaitMs + l.holderTxMs + GRACE_MS,   // the holder's own lock lifetime from its start
-    l.maxWaitMs + l.competitorTxMs + GRACE_MS,
-    l.maxWaitMs + l.verifyTxMs + GRACE_MS,
-  );
+  const readied = holderReadyMs(l);
+  const afterInspect = readied + inspectCeilingMs(l);          // the contender starts after the initial inspection
+  const afterRelease = afterInspect + controlBound(l);         // the competitor starts at observed(), ~after release
+  const participantsPhase = Math.max(settleMs, l.maxWaitMs + l.contenderTxMs, l.maxWaitMs + l.competitorTxMs);
+  const afterParticipants = afterRelease + participantsPhase;  // the verifier starts after the participants settle
+  const verdictPath = afterParticipants + inspectCeilingMs(l) /* verify wait */ + controlBound(l) /* final abort */;
+  // each participant's lock-release deadline = its start offset + acquisition cap + transaction timeout
+  const holderEnd = l.maxWaitMs + l.holderTxMs + GRACE_MS;                              // starts ~probe time
+  const contenderEnd = afterInspect + l.maxWaitMs + l.contenderTxMs + GRACE_MS;
+  const competitorEnd = afterRelease + l.maxWaitMs + l.competitorTxMs + GRACE_MS;
+  const verifyEnd = afterParticipants + l.maxWaitMs + l.verifyTxMs + GRACE_MS;
+  return Math.max(verdictPath, holderEnd, contenderEnd, competitorEnd, verifyEnd) + GRACE_MS;
 };
 
 /** a started, registered operation the lifecycle owns and must not let outlive the probe */
@@ -123,13 +124,15 @@ export type Lifecycle = {
   closed: () => boolean;
   /** refuse, through the cleanup barrier, a configuration whose worst case cannot fit the per-test timeout */
   assertBudget: (settleMs: number) => void;
-  /** register and run a cancellable operation; when already closed the factory is NOT invoked (started:false) */
+  /** register and run a cancellable operation; when already closed the factory is NOT invoked (started:false).
+   * This is the ONLY way to run a database operation — the standalone `within` helper bounds a wait on the
+   * returned `.result`, never a raw query, so nothing runs against the database outside this registration. */
   start: <T>(name: string, factory: (signal: AbortSignal) => Promise<T>, txMs: number) => Started<T>;
-  /** bound any promise against a declared deadline (a stuck query is named, never awaited forever) */
-  bounded: <T>(promise: Promise<T>, ms: number) => Promise<T | { stuck: true }>;
-  /** run a bounded control callback (release/abort) now; its database call is REGISTERED so the barrier
-   * drains it even if it times out. Returns the failure (rejection or timeout) or undefined. */
-  control: (fn: () => Promise<void>, label: string, ms?: number) => Promise<Error | undefined>;
+  /** run a bounded control callback (release/abort) now; its database call is REGISTERED with its own
+   * declared transaction bound (`txMs`, 0 for a control that holds no lock of its own) so the barrier drains
+   * it to that bound even if it times out. REFUSED once the lifecycle is closed (finalize's own closers use
+   * an internal path). Returns the failure (rejection, timeout, or refusal) or undefined. */
+  control: (fn: () => Promise<void>, label: string, txMs?: number, ms?: number) => Promise<Error | undefined>;
   /** register a bounded cleanup control the final barrier always runs before draining (e.g. the holder abort) */
   onClose: (fn: () => Promise<void>, label: string) => void;
   /** the failure recorded by a closer that rejected or timed out during finalize, if any */
@@ -149,7 +152,7 @@ export function createLifecycle(l: Lifetimes): Lifecycle {
   const closerFailures = new Map<string, Error>();
   const controller = new AbortController();
   let closedFlag = false;
-  let finalized = false;
+  let finalizePromise: Promise<void> | undefined;
 
   // raw registration (no closed check) — every database operation, participant or control, lands here so
   // the barrier's drain loop owns it. A control op holds no _probe_lock transaction of its own, so it is
@@ -161,13 +164,12 @@ export function createLifecycle(l: Lifetimes): Lifecycle {
     return p;
   };
 
-  const bounded = <T,>(promise: Promise<T>, ms: number) => within(promise, ms);
-
-  const control = async (fn: () => Promise<void>, label: string, ms = controlBound(l)): Promise<Error | undefined> => {
-    // the control's database call is registered so a timed-out control is drained by the barrier, never
-    // left to retain a connection or acquire a lock after finalize returns.
+  // the internal control path: run the callback as a REGISTERED operation with its own declared transaction
+  // bound (txMs), so a timed-out control is drained by the barrier to that bound — never left to retain a
+  // connection or hold a lock after finalize returns. Used by both the public control() and finalize's closers.
+  const runControl = async (fn: () => Promise<void>, label: string, txMs: number, ms: number): Promise<Error | undefined> => {
     const op = invoke(fn);
-    register(`control:${label}`, op, 0);
+    register(`control:${label}`, op, txMs);
     const outcome = await within(op.then(() => undefined, (error: unknown) => failureOf(error, `${label} rejected`)), ms);
     return isStuck(outcome) ? new Error(`${label} did not settle within ${ms}ms`) : outcome as Error | undefined;
   };
@@ -192,30 +194,42 @@ export function createLifecycle(l: Lifetimes): Lifecycle {
       const p = register(name, result, txMs);
       return { name, startedAt: p.startedAt, txMs, result, started: true };
     },
-    bounded,
-    control,
+    control: (fn: () => Promise<void>, label: string, txMs = 0, ms = controlBound(l)): Promise<Error | undefined> => {
+      // close-before-drain applies to controls too: a public control after close would append an operation
+      // the drain loop has already passed. finalize's own closers run through the internal runControl.
+      if (closedFlag) return Promise.resolve(new Error(`${label} refused: the lifecycle is closed`));
+      return runControl(fn, label, txMs, ms);
+    },
     onClose: (fn: () => Promise<void>, label: string) => { closers.push({ fn, label }); },
     closerFailure: (label: string) => closerFailures.get(label),
     cancel: (reasonValue: unknown) => { if (!controller.signal.aborted) controller.abort(reasonValue); },
     close: () => { closedFlag = true; },
-    finalize: async () => {
-      if (finalized) return;
-      finalized = true;
-      closedFlag = true;
-      if (!controller.signal.aborted) controller.abort(new ProbeFailure('aborted by lockLifecycle: cleanup'));
-      // run every registered cleanup control, bounded, recording (never throwing) its failure. Each
-      // control registers its own database call as a participant, so the drain loop below owns it too.
-      for (const c of closers) {
-        const failure = await control(c.fn, c.label);
-        if (failure !== undefined && !closerFailures.has(c.label)) closerFailures.set(c.label, failure);
-      }
-      // await every registered operation to its own recorded lock bound. A task still unsettled after that
-      // bound holds no lock — its transaction, if any, was rolled back by the database at its timeout; it
-      // hangs only in JS. Either way no lock it took outlives this return.
-      for (const p of participants) {
-        const left = Math.max(GRACE_MS, lockBound(p.startedAt, p.txMs, l));
-        await within(p.promise.then(() => undefined, () => undefined), left);
-      }
+    // the one barrier. Concurrent callers must all observe the SAME completion, not just the same "started"
+    // flag: the in-flight promise is cached and returned, so a second caller awaits the real drain rather
+    // than resolving while the first finalizer and its registered operations are still running.
+    finalize: () => {
+      if (finalizePromise) return finalizePromise;
+      finalizePromise = (async () => {
+        closedFlag = true;
+        if (!controller.signal.aborted) controller.abort(new ProbeFailure('aborted by lockLifecycle: cleanup'));
+        // run every registered cleanup control through the internal path (closed-guard does not apply to
+        // finalize's own closers), recording — never throwing — its failure. Each registers its database
+        // call as a participant, so the drain loop below owns it too.
+        for (const c of closers) {
+          const failure = await runControl(c.fn, c.label, 0, controlBound(l));
+          if (failure !== undefined && !closerFailures.has(c.label)) closerFailures.set(c.label, failure);
+        }
+        // await every registered operation to its own recorded lock bound. A task still unsettled after that
+        // bound holds no lock — its transaction, if any, was rolled back by the database at its timeout; it
+        // hangs only in JS. Either way no lock it took outlives this return. The list can grow while a closer
+        // runs (a closer registers its own op), so index rather than snapshot.
+        for (let i = 0; i < participants.length; i += 1) {
+          const p = participants[i]!;
+          const left = Math.max(GRACE_MS, lockBound(p.startedAt, p.txMs, l));
+          await within(p.promise.then(() => undefined, () => undefined), left);
+        }
+      })();
+      return finalizePromise;
     },
   };
 }

@@ -172,4 +172,33 @@ describe('lockLifecycle', () => {
       await assertFreeNow(a);
     });
   });
+
+  it('returns the same in-flight barrier to concurrent finalize callers, not a started flag', async () => {
+    // two paths call finalize() before the first drain completes: both must observe the SAME completion, so
+    // the second caller awaits the real drain of the stubborn holder rather than resolving immediately.
+    await withLifecycle(L, async (lc) => {
+      lc.start('holder', stubborn(a, L.holderTxMs), L.holderTxMs);
+      await heldFrom(b);
+      const first = lc.finalize();
+      const second = lc.finalize();
+      expect(second).toBe(first); // the in-flight promise is cached, not a boolean that resolves early
+      await second;
+      await assertFreeNow(b);
+    });
+  });
+
+  it('refuses a public control once closed and never runs its database call', async () => {
+    // close-before-drain covers controls too: a control after close would append an operation the drain
+    // loop has already passed. The callback must not run at all.
+    await withLifecycle(L, async (lc) => {
+      lc.close();
+      let invoked = false;
+      const failure = await lc.control(async () => { invoked = true; await sql(b, "UPDATE _probe_lock SET status = status || '+late' WHERE id = 1"); }, 'late');
+      expect(failure?.message).toMatch(/refused: the lifecycle is closed/u);
+      expect(invoked).toBe(false);
+      await lc.finalize();
+      await assertFreeNow(b);
+      expect((await b.$queryRawUnsafe<{ status: string }[]>('SELECT status FROM _probe_lock WHERE id = 1'))[0]!.status).toBe('open');
+    });
+  });
 });
