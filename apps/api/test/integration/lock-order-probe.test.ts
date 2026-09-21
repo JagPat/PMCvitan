@@ -1,7 +1,7 @@
 // The lock-order probe (reform-1b) against REAL PostgreSQL: it FAILS on each broken guard and PASSES
 // on the corrected one, and — the concern of this unit — no holder, contender, or competitor lock it
 // starts ever outlives its return. Scratch table only. Three real sessions interleave on _probe_lock.
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import {
   DEFAULT_LIFETIMES, TEST_TIMEOUT_MS, lockOrderProbe, worstCase,
@@ -32,6 +32,11 @@ afterAll(async () => {
 });
 
 describe('lockOrderProbe', () => {
+  // This unit's honest worst case (readiness + initial inspection, then the settle/competitor waits,
+  // THEN the terminal verify(), plus the bounded cleanup of every participant) exceeds a bare 30s, so
+  // the probe declares its own wider per-test bound; pin THIS file to it (the rest of the integration
+  // suite keeps the default) so the probe can NAME a hang before Vitest kills the test.
+  vi.setConfig({ testTimeout: TEST_TIMEOUT_MS, hookTimeout: TEST_TIMEOUT_MS });
   beforeEach(() => sql(a, "UPDATE _probe_lock SET status = 'open' WHERE id = 1"));
   const L = DEFAULT_LIFETIMES;
   const TX = { timeout: L.holderTxMs, maxWait: L.maxWaitMs };  // the holder: its DECLARED bound, so cleanup can await it out even when abort() fails
@@ -74,7 +79,15 @@ describe('lockOrderProbe', () => {
     return false;
   };
   const competitor = (comp = COMP) => async () => { await a.$transaction(async (t) => { await t.$executeRawUnsafe("UPDATE _probe_lock SET status = status || '+raced' WHERE id = 1"); }, comp); };
-  const verify = async () => { expect((await rows<{ status: string }>(a, 'SELECT status FROM _probe_lock WHERE id = 1'))[0]!.status).toBe('closed+guard+raced'); };
+  const VERIFY_TX = { timeout: L.verifyTxMs, maxWait: L.maxWaitMs };
+  // verify honors the contract: it reads back the terminal order inside a BOUNDED transaction, so a
+  // read that hangs after a connection fault is rolled back by the database rather than left holding the
+  // row. The `signal` is accepted for a cooperative verify; the happy-path read completes long before it.
+  const verify = async (_signal?: AbortSignal) => {
+    const status = await a.$transaction(async (t) => (await (t as unknown as { $queryRawUnsafe: <T>(s: string) => Promise<T[]> })
+      .$queryRawUnsafe<{ status: string }>('SELECT status FROM _probe_lock WHERE id = 1'))[0]!.status, VERIFY_TX);
+    expect(status).toBe('closed+guard+raced');
+  };
   const read = (suffix: string) => rows<{ status: string }>(b, `SELECT status FROM _probe_lock WHERE id = 1${suffix}`);
   const guardMark = "UPDATE _probe_lock SET status = status || '+guard' WHERE id = 1";
   const fixture = (h = holder()) => ({ ...h, inspectBlocked, competitor: competitor(), verify });
@@ -230,11 +243,77 @@ describe('lockOrderProbe', () => {
     await assertFreeSoon();
   });
 
-  it('names a terminal verification that hangs, and still frees the row', async () => {
-    // verify() never settles (a terminal read that hangs after a connection fault): the probe bounds it
-    // and names the timeout, rather than reaching Vitest's generic timeout with the query outstanding.
+  it('bounds a terminal verification that never settles at all (no transaction to roll it back)', async () => {
+    // verify() never settles and never rejects — a fixture that ignores the bounded-transaction
+    // contract. The probe still names the timeout via its own bound and aborts the verify signal,
+    // rather than reaching Vitest's generic timeout with the call outstanding.
     await failsWith(/terminal invariant check did not settle/u)(() => lockOrderProbe({ ...fixture(),
-      verify: () => new Promise<void>(() => undefined), contenderStarted: guardedContender }));
+      verify: (signal) => new Promise<void>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })),
+      contenderStarted: guardedContender }));
+    await assertFreeSoon();
+  });
+
+  it('reclaims a terminal verification whose bounded read hangs, freeing the row before it returns', async () => {
+    // the REAL database consequence a fake promise cannot exercise: verify()'s read acquires the row and
+    // then hangs. Because it honors the contract and runs inside a BOUNDED transaction, the database
+    // rolls it back at the transaction timeout; the probe registers verify as a participant and drains
+    // it in cleanup, so its lock does not outlive the probe — the row is free the moment it returns.
+    await failsWith(/terminal invariant (does not hold|check did not settle)/u)(() => lockOrderProbe({ ...fixture(),
+      verify: () => a.$transaction(async (t) => {
+        await (t as unknown as { $queryRawUnsafe: (s: string) => Promise<unknown> }).$queryRawUnsafe('SELECT status FROM _probe_lock WHERE id = 1 FOR UPDATE');
+        await new Promise<never>(() => undefined); // hangs holding the row lock; the bounded tx rolls it back
+      }, { timeout: L.verifyTxMs, maxWait: L.maxWaitMs }),
+      contenderStarted: guardedContender }));
+    await assertFreeSoon();
+  });
+
+  it('classifies a lock-free read that returns after release begins but before the holder commits as escaped', async () => {
+    // a DELAYED lock-free guard: its plain SELECT (no FOR UPDATE, never seen waiting) returns during the
+    // release WINDOW — after the probe began releasing but before the holder actually committed. The read
+    // happened while the holder still held its lock, so it is a lock-after-read, not a legitimate
+    // post-release read. `releaseCompleted` + `blockedSeen` catch it where a bare `released` flag did not.
+    const h = holder();
+    let readNow!: () => void;
+    const readGate = new Promise<void>((r) => { readNow = r; });
+    await failsWith(/lock-after-read|status read before the holder released/u)(() => lockOrderProbe({ ...fixture(h),
+      // release() lets the lock-free contender read while the holder still holds, gives it a beat to
+      // report, THEN actually releases the holder — landing the read squarely inside the release window.
+      release: async () => { readNow(); await new Promise((r) => setTimeout(r, 250)); await h.release(); },
+      contenderStarted: ({ observed }) => (async () => { await readGate; const r = await read(''); observed(); return r; })() }));
+    await assertFreeSoon();
+  });
+
+  it('names a release that never settles, and still frees the row', async () => {
+    // release() neither resolves nor rejects. It must not block settle()/finalize() and hand the test to
+    // Vitest's generic timeout: the probe bounds it, names it as a holder failure, aborts the holder, and
+    // finalize awaits the holder to its declared bound so the row is free when the probe returns.
+    await failsWith(/holder .*failed after it was ready.*release did not settle/u)(() => lockOrderProbe({ ...fixture(),
+      release: () => new Promise<void>(() => undefined), contenderStarted: guardedContender }));
+    await assertFreeSoon();
+  });
+
+  it('names an abort that never settles even when release also hangs, and still frees the row via the holder bound', async () => {
+    // both control callbacks hang. finalize still returns: abortHolder() is bounded, and the holder is a
+    // registered participant awaited to maxWait+holderTxMs, by which the database has rolled its own
+    // transaction back at its timeout — no external release or abort is needed for the row to be free.
+    await failsWith(/release did not settle|abort did not settle|holder's abort failed/u)(() => lockOrderProbe({ ...fixture(),
+      release: () => new Promise<void>(() => undefined), abort: () => new Promise<void>(() => undefined),
+      contenderStarted: guardedContender }));
+    await assertFreeSoon();
+  });
+
+  it('names, rather than masks, a window it cannot inspect within the remaining contender transaction', async () => {
+    // the residual the round-4 window-ceiling floor could still admit: the initial inspection is slow
+    // enough that by the time the guard reports, almost none of its transaction lifetime remains. The
+    // window ceiling is now bounded STRICTLY below that remainder (never a floor that exceeds it), so the
+    // probe NAMES the window it cannot fit rather than running an inspection that outlasts the guard's
+    // own lock and lets a competitor landing on the imminent rollback be misread.
+    let calls = 0;
+    await failsWith(/lock inspection failed during the guard's window.*insufficient remaining contender transaction lifetime/u)(() => lockOrderProbe({ ...fixture(),
+      inspectBlocked: () => { calls += 1; return calls === 1
+        ? (async () => { const r = await inspectBlocked(); await new Promise((res) => setTimeout(res, L.contenderTxMs - 2_000)); return r; })()
+        : inspectBlocked(); },
+      contenderStarted: guardedContender }));
     await assertFreeSoon();
   });
 
