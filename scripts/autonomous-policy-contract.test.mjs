@@ -61,10 +61,14 @@ test('the rubric and POLICY stay within their line budgets and name the executab
   assert.match(rubric, /git diff --name-only <base>\.\.\.HEAD -- apps\/api\/prisma\/migrations\//u);
   assert.match(rubric, /replay only: `rerunTwice`/u);
   for (const helper of ['pairingMatrix', 'lockOrderProbe', 'rerunTwice', 'noOpUpdateProbe', 'whitespaceCheckProbe']) assert.match(rubric, new RegExp(helper, 'u'));
-  // a probe the rubric names but probes.ts does not yet export must say which unit brings it; a probe it exports must not be deferred
+  // a probe the rubric names but its module does not yet export must say which unit brings it; a probe
+  // it exports must not be deferred. lockOrderProbe is its own unit (reform-1b) in lock-order-probe.ts;
+  // the rest are the shared helpers in probes.ts.
   const probesSource = await readFile(new URL('../apps/api/test/invariants/probes.ts', import.meta.url), 'utf8');
+  const lockOrderSource = await readFile(new URL('../apps/api/test/invariants/lock-order-probe.ts', import.meta.url), 'utf8').catch(() => '');
   for (const helper of ['pairingMatrix', 'lockOrderProbe', 'rerunTwice', 'noOpUpdateProbe', 'whitespaceCheckProbe']) {
-    const exported = new RegExp(`export async function ${helper}\\b`, 'u').test(probesSource);
+    const source = helper === 'lockOrderProbe' ? lockOrderSource : probesSource;
+    const exported = new RegExp(`export async function ${helper}\\b`, 'u').test(source);
     const deferred = new RegExp('`' + helper + '` (?:arrives in|\\(arrives in) (?:its own unit, )?`reform-\\w+`', 'u').test(rubric);
     assert.ok(exported !== deferred, `${helper}: exported=${exported} deferred=${deferred}; exactly one must hold`);
   }
