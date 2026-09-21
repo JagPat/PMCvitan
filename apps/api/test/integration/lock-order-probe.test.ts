@@ -218,4 +218,31 @@ describe('lockOrderProbe', () => {
       }, CTX) }));
     await assertFreeSoon();
   });
+
+  it('names a window-phase inspection that hangs, and still frees the row', async () => {
+    // the initial inspection succeeds so the probe proceeds; the SECOND inspection (inside the guard's
+    // window) hangs. It is bounded by the same ceiling and named as a window inspection failure, rather
+    // than parking the contender on `proceed` and hanging the probe past cleanup.
+    let calls = 0;
+    await failsWith(/lock inspection failed during the guard's window.*did not settle/u)(() => lockOrderProbe({ ...fixture(),
+      inspectBlocked: () => { calls += 1; return calls === 1 ? inspectBlocked() : new Promise<boolean>(() => undefined); },
+      contenderStarted: guardedContender }));
+    await assertFreeSoon();
+  });
+
+  it('names a terminal verification that hangs, and still frees the row', async () => {
+    // verify() never settles (a terminal read that hangs after a connection fault): the probe bounds it
+    // and names the timeout, rather than reaching Vitest's generic timeout with the query outstanding.
+    await failsWith(/terminal invariant check did not settle/u)(() => lockOrderProbe({ ...fixture(),
+      verify: () => new Promise<void>(() => undefined), contenderStarted: guardedContender }));
+    await assertFreeSoon();
+  });
+
+  it('rejects a fixture that does not own its holder transaction (no holderMonitor)', async () => {
+    // without a holderMonitor the probe cannot register the holder, so a failing abort() would leave the
+    // row locked; the probe refuses the configuration up front and still aborts the started holder.
+    await failsWith(/requires a holderMonitor/u)(() => lockOrderProbe({ ...fixture(),
+      holderMonitor: undefined as unknown as () => Promise<unknown>, contenderStarted: guardedContender }));
+    await assertFreeSoon();
+  });
 });
