@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: phase-6-task-4d-unit-i-b-u3-pairing-flip
 reviewed_merge: c9eebc95
-open_pr: none
+open_pr: 617
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-21
@@ -61,8 +61,7 @@ seal `phase6_t4d_change_transition_paired` is U2's and unchanged; the flip activ
 Proven by the full 51-case matrix (`phase6-t4d-i-b-pairing-matrix.test.ts`), the three
 generations (`phase6-t4d-i-catalog-generations.test.ts`), the two seed literals
 (`external-effect-catalog-seed.test.ts`), and the seal-inventory/seal-contract oracles;
-`open_pr: none` on this unit commit per the §D self-naming convention (the pointer
-commit names the PR).
+`open_pr: 617` (this pointer commit names the PR, per the §D self-naming convention).
 
 Every head of the U1/U2/U3 lane carries the terminal `Correction-Owner: claude`
 trailer the SHA-scoped merge gate (`shaMergeAuthority`) reads, matching the PR body's
