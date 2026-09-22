@@ -3,18 +3,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { effectCoverageVersion } from '../../src/platform/external-effects';
 import { Prisma } from '@prisma/client';
 import { orgsManifest } from '../../src/orgs/orgs.manifest';
-
-/**
- * THIS release's coverage generation. From round 8's finding 3 the migration seeds TWO — this one
- * and the outgoing `6313b00c…` a still-serving process emits — so a fixture that picks a catalog
- * row by `effectKey` alone now matches both and plants two events at one stream position. Every
- * plant here stands in for a CURRENT writer, so it names the version a current writer computes.
- */
-const COVERAGE = effectCoverageVersion();
-
 
 /**
  * Phase 6 unit 4d-i — THE SEAL-STRIPPED MIGRATION HARNESS (§C).
@@ -90,6 +80,28 @@ const OUTGOING = (() => {
   const m = readFileSync(MIGRATION, 'utf8')
     .match(/SELECT '([0-9a-f]{64})',\n\s+c\."effectKey"/);
   if (!m) throw new Error('the outgoing coverage generation could not be read from the migration');
+  return m[1]!;
+})();
+
+/**
+ * THIS UNIT's current coverage generation — the version 4d-i's migration seeds by VALUES (its 113
+ * live keys), read OUT OF THE MIGRATION rather than from `effectCoverageVersion()`. From round 8's
+ * finding 3 the migration seeds TWO generations — this one and the outgoing `6313b00c…` (via
+ * SELECT) a still-serving process emits — so a fixture that picks a catalog row by `effectKey`
+ * alone matches both and plants two events at one stream position; naming the version keeps a
+ * plant to one row. Every plant here stands in for a CURRENT writer against THIS harness's
+ * database, and that database carries ONLY the 4d-i unit (U1/U2/U3 are excluded from `buildBase`),
+ * so the version a current writer computes here is the one 4d-i seeds — NOT `effectCoverageVersion()`,
+ * which a LATER unit's flip moves on: 4d-i-b U3 moved that src constant to `7dac2bd5…` while this
+ * 4d-i-only database still tops out at `842cc9fc…`, so a plant at the src version found no catalog
+ * row and left its stream allocation orphaned (`platform_t4d_stream_allocation_bound`). Read from
+ * the file for the same reason OUTGOING is: a probe can never assert against a constant the file
+ * stopped using.
+ */
+const COVERAGE = (() => {
+  const m = readFileSync(MIGRATION, 'utf8')
+    .match(/INSERT INTO "_t4d_catalog_seed"[\s\S]*?VALUES\s*\n\s*\('([0-9a-f]{64})',/);
+  if (!m) throw new Error('the current coverage generation could not be read from the migration');
   return m[1]!;
 })();
 
