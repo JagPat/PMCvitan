@@ -44,7 +44,9 @@ test('Claude shadow evidence is exact-head/app and fail-closed but non-authorita
   assert.equal((await classify([cleanRun({ app: { slug: 'wrong' } })])).state, 'missing');
   assert.equal((await classify([cleanRun({ status: 'in_progress', conclusion: null, completed_at: null })])).state, 'partial');
   assert.equal((await classify([cleanRun({ conclusion: 'timed_out' })])).state, 'timed_out');
-  assert.equal((await classify([cleanRun({ conclusion: 'failure' })])).state, 'failure');
+  // A clear-evidence summary carrying a `failure` conclusion is inconsistent with what the publisher
+  // emits for a clear result (`success`), so it is rejected — the conclusion is bound to the evidence.
+  assert.equal((await classify([cleanRun({ conclusion: 'failure' })])).state, 'replayed');
   assert.equal((await classify([cleanRun({ output: { summary: '{}' } })])).state, 'replayed');
   assert.equal((await classify([alteredSummary({ publisherRunId: 999 })])).state, 'replayed');
   assert.equal((await classify([alteredSummary({ workflowRef: 'JagPat/PMCvitan/.github/workflows/other.yml@refs/heads/main' })])).state, 'replayed');
@@ -58,12 +60,19 @@ test('Claude shadow evidence is exact-head/app and fail-closed but non-authorita
   // workflowExecutionRef is rejected. RED before this unit (the field was published but unread).
   assert.equal((await classify([alteredSummary({ workflowExecutionRef: 'refs/heads/other' })])).state, 'replayed');
   assert.equal((await classify([alteredSummary({ workflowExecutionRef: undefined })])).state, 'replayed');
-  // (c) role-transfer broadening: non-clear evidence is admitted WITH its finding count, but only after
-  // the SAME server-side producer verification a clear result requires, and it stays non-authoritative.
+  // (c) role-transfer broadening: a real non-clear result publishes conclusion `failure` (the
+  // publisher's deterministic form) and is admitted WITH its authenticated state + finding count,
+  // after the SAME server-side producer verification a clear result requires; still non-authoritative.
   const changesArtifact = { ...JSON.parse(cleanRun().output.summary).artifact };
   changesArtifact.name = changesArtifact.name.replace('state-clear-findings-0', 'state-changes_required-findings-1');
-  const changesRun = () => alteredSummary({ state: 'changes_required', findingCount: 1, artifact: changesArtifact });
-  // RED before this unit: findings returned 'changes_required' WITHOUT any producer verification.
+  const changesRun = () => {
+    const run = alteredSummary({ state: 'changes_required', findingCount: 1, artifact: changesArtifact });
+    run.conclusion = 'failure';
+    return run;
+  };
+  // A non-clear summary carrying `success` disagrees with the publisher's form and is rejected.
+  assert.equal((await classify([alteredSummary({ state: 'changes_required', findingCount: 1, artifact: changesArtifact })])).state, 'replayed');
+  // RED before this unit: the `failure`-form check short-circuited to state 'failure', never verified/admitted.
   assert.equal((await classify([changesRun()], async () => false)).state, 'untrusted_producer');
   assert.deepEqual(await classify([changesRun()]), { state: 'changes_required', findingCount: 1, authoritative: false, runId: 7 });
   assert.equal((await classify([])).state, 'missing');
@@ -98,6 +107,15 @@ test('server-side workflow run and artifact association rejects forged producer 
   assert.equal(await makeClient({ jobs: [{ ...job, conclusion: 'failure' }] }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
   assert.equal(await makeClient({ artifacts: [{ ...artifact, name: 'copied-evidence' }] }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
   assert.equal(await makeClient({ artifacts: [{ ...artifact, digest: `sha256:${'e'.repeat(64)}` }] }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
+  // (c) role-transfer broadening: a non-clear result authenticates through the publisher's FAILING
+  // run/job form. Verification requires the run and its publish job to conclude `failure` (matching the
+  // evidence), and rejects the `success` form that a clear result would carry.
+  const nonClearEvidence = { ...evidence, state: 'changes_required', findingCount: 1 };
+  const failRun = { ...workflowRun, conclusion: 'failure' };
+  const failJob = { ...job, conclusion: 'failure' };
+  assert.equal(await makeClient({ run: failRun, jobs: [failJob] }).verifyClaudeShadowProducer(cleanRun(), nonClearEvidence), true);
+  assert.equal(await makeClient({ run: workflowRun, jobs: [job] }).verifyClaudeShadowProducer(cleanRun(), nonClearEvidence), false);
+  assert.equal(await makeClient({ run: failRun, jobs: [job] }).verifyClaudeShadowProducer(cleanRun(), nonClearEvidence), false);
 });
 
 test('automatic merge needs CI and exact-head review, with no human authorization', async () => {

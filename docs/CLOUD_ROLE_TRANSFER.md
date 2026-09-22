@@ -188,7 +188,13 @@ trusted `main` workflow SHA is accepted without weakening provenance.
 
 Producer verification now runs for EVERY admitted state, not only `clear`, so a non-clear result
 carries the same authenticated artifact/digest/provenance/freshness/dedup/actor obligations as a clear
-one; the finding count is admitted alongside the state. Every consumer path still returns
+one; the authenticated state and its finding count are admitted verbatim. Because the publisher
+concludes the check, its run and its `publish` job deterministically from the evidence — `success` only
+for a clear result with zero findings, `failure` for any non-clear result — the consumer binds the
+check conclusion to the evidence and the verifier requires the run/job to conclude in that same
+evidence-matching form. A non-clear result therefore authenticates through the publisher's FAILING
+run/job (requiring `success` would leave every real finding-bearing artifact unverifiable), while a
+conclusion that disagrees with the evidence it carries is rejected. Every consumer path still returns
 `authoritative: false`. This grants no merge authority, does not feed branch protection or the
 `codex-current-head` gate, retires nothing, and admits no correction owner —
 `claude-independent-review` stays absent from the required checks. Flipping the authoritative gate

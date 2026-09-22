@@ -534,6 +534,15 @@ export class GitHubClient {
   }
 
   async verifyClaudeShadowProducer(checkRun, evidence) {
+    // The publisher concludes the run and its publish job deterministically from the
+    // evidence: `success` only for a clear result with zero findings, `failure`
+    // otherwise. A non-clear result therefore authenticates through a FAILING run/job
+    // — requiring `success` here would make every real finding-bearing artifact
+    // unverifiable — so verification requires the run/job to conclude in that exact
+    // evidence-matching form.
+    const expectedConclusion = evidence.state === 'clear' && evidence.findingCount === 0
+      ? 'success'
+      : 'failure';
     const run = await this.request(
       `/repos/${this.repository}/actions/runs/${evidence.publisherRunId}`,
     );
@@ -543,7 +552,7 @@ export class GitHubClient {
       || run?.path !== '.github/workflows/claude-shadow-review.yml'
       || !['workflow_run', 'workflow_dispatch'].includes(run?.event)
       || run?.status !== 'completed'
-      || run?.conclusion !== 'success'
+      || run?.conclusion !== expectedConclusion
       || run?.head_sha !== evidence.workflowSha
       || run?.head_branch !== 'main'
       || run?.repository?.full_name !== this.repository
@@ -552,7 +561,7 @@ export class GitHubClient {
     if (!jobs.some((job) =>
       job?.name === 'publish'
       && job?.status === 'completed'
-      && job?.conclusion === 'success')) return false;
+      && job?.conclusion === expectedConclusion)) return false;
     const artifacts = await this.actionRunItems(run.id, 'artifacts', 'artifacts');
     return artifacts.some((artifact) =>
       artifact?.id === evidence.artifact.id

@@ -38,7 +38,13 @@ export async function classifyClaudeShadowReview({
   const run = candidates.sort((a, b) => b.id - a.id)[0];
   if (!run) return { state: 'missing', authoritative: false };
   if (run.status !== 'completed' || !run.completed_at) return { state: 'partial', authoritative: false };
-  if (run.conclusion !== 'success') return { state: run.conclusion ?? 'error', authoritative: false };
+  // The publisher only ever concludes `success` (clear, zero findings) or `failure`
+  // (any non-clear result). Any other conclusion is an anomalous/infra outcome the
+  // publisher never emits — pass it through, non-authoritative. The two it does emit
+  // are bound to the evidence in the validation block below.
+  if (run.conclusion !== 'success' && run.conclusion !== 'failure') {
+    return { state: run.conclusion ?? 'error', authoritative: false };
+  }
   let result;
   try {
     result = JSON.parse(run.output?.summary ?? '');
@@ -72,19 +78,29 @@ export async function classifyClaudeShadowReview({
     || !run.external_id.endsWith(
       `run-${result.runId}:attempt-${result.runAttempt}:publisher-${result.publisherRunId}:publisher-attempt-${result.publisherRunAttempt}`,
     )
+    // The publisher sets the check conclusion deterministically from the evidence
+    // (`success` iff clear with zero findings, else `failure`) — so bind the two.
+    // This is why the blanket "conclusion must be success" gate is gone: a real
+    // non-clear result publishes a `failure` check, and admitting it requires
+    // accepting that failure-form, while a conclusion that disagrees with the
+    // evidence it carries is rejected as replayed.
+    || run.conclusion !== (result.state === 'clear' && result.findingCount === 0 ? 'success' : 'failure')
   ) {
     return { state: 'replayed', authoritative: false };
   }
   // Full finding admission: EVERY admitted state — not only `clear` — must first
   // pass server-associated producer verification, so a non-clear result carries the
   // same authenticated artifact/digest/provenance/freshness/actor obligations as a
-  // clear one. Producer verification therefore runs BEFORE the state branch.
+  // clear one. Producer verification therefore runs BEFORE the state branch and is
+  // told the evidence so it can require the publisher's matching failure-form run.
   if (typeof verifyProducer !== 'function' || !await verifyProducer(run, result)) {
     return { state: 'untrusted_producer', authoritative: false };
   }
   if (result.state !== 'clear' || result.findingCount !== 0) {
+    // Admit the authenticated state and its finding count verbatim; still
+    // non-authoritative.
     return {
-      state: result.findingCount > 0 ? 'changes_required' : 'incomplete',
+      state: result.state,
       findingCount: result.findingCount,
       authoritative: false,
       runId: run.id,
