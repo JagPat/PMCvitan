@@ -174,3 +174,23 @@ Broadening consumer-side provenance and finding consumption — a `head_branch=m
 earlier trusted `main` workflow SHA, and full finding admission — is deferred to the later unit. A
 source-controlled guard does not sandbox a principal who can replace workflows; repository
 administration and branch protection remain outside this mechanism.
+
+### Consumer broadening — main-lineage evidence and full finding admission (non-authoritative)
+
+The consumer broadening the previous stage deferred now lands, still non-authoritative.
+`scripts/claude-review-adapter.mjs` no longer pins `workflowSha === baseSha`: it keeps the 40-hex
+format check, additionally requires the summary's `workflowExecutionRef` to be `refs/heads/main`, and
+moves the `workflowSha` trust anchor onto the server-associated producer check.
+`verifyClaudeShadowProducer` (`scripts/autonomous-review-gate.mjs`) now also requires the publisher
+run's `head_branch === 'main'`; combined with its existing `run.head_sha === evidence.workflowSha`
+proof, that binds `workflowSha` to a real commit the shadow workflow ran at on `main`, so an earlier
+trusted `main` workflow SHA is accepted without weakening provenance.
+
+Producer verification now runs for EVERY admitted state, not only `clear`, so a non-clear result
+carries the same authenticated artifact/digest/provenance/freshness/dedup/actor obligations as a clear
+one; the finding count is admitted alongside the state. Every consumer path still returns
+`authoritative: false`. This grants no merge authority, does not feed branch protection or the
+`codex-current-head` gate, retires nothing, and admits no correction owner —
+`claude-independent-review` stays absent from the required checks. Flipping the authoritative gate
+remains a separate, later, atomically reviewed unit (§"Pending activation" #4); a non-authoritative
+consumer improvement does not activate the role transfer.

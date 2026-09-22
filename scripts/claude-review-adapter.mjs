@@ -5,6 +5,19 @@ import { evidenceArtifactName } from './claude-shadow-review.mjs';
  * Fail-closed consumer for the subscription-backed hosted shadow reviewer.
  * The trusted default-branch publisher creates this check; comments, the
  * Claude action's exit code, and candidate-authored checks are not accepted.
+ *
+ * Trusted-`main` lineage: the summary's `workflowExecutionRef` must be
+ * `refs/heads/main`, and the publisher run's `head_sha`/`head_branch` binding
+ * (verified server-side by `verifyProducer`) anchors `workflowSha` to a real
+ * commit the shadow workflow ran at on `main` — so the earlier check that pinned
+ * `workflowSha === base` is no longer required, and any trusted `main` workflow
+ * SHA is accepted without weakening provenance.
+ *
+ * Every admitted state (clear AND non-clear) is server-verified before it is
+ * returned, and the finding count is admitted alongside the state. This remains
+ * NON-AUTHORITATIVE: `authoritative` is `false` on every path. It grants no merge
+ * authority, does not feed branch protection or the `codex-current-head` gate, and
+ * admits no correction owner.
  */
 export async function classifyClaudeShadowReview({
   checkRuns = [],
@@ -45,7 +58,7 @@ export async function classifyClaudeShadowReview({
     || typeof result.workflowRef !== 'string'
     || !result.workflowRef.includes('/.github/workflows/claude-shadow-review.yml@')
     || !/^[0-9a-f]{40}$/u.test(result.workflowSha ?? '')
-    || result.workflowSha !== expectedBase
+    || result.workflowExecutionRef !== 'refs/heads/main'
     || !['clear', 'changes_required', 'incomplete', 'malformed', 'reviewer_error'].includes(result.state)
     || !Number.isInteger(result.findingCount)
     || result.findingCount < 0
@@ -62,11 +75,20 @@ export async function classifyClaudeShadowReview({
   ) {
     return { state: 'replayed', authoritative: false };
   }
-  if (result.state !== 'clear' || result.findingCount !== 0) {
-    return { state: result.findingCount > 0 ? 'changes_required' : 'incomplete', authoritative: false };
-  }
+  // Full finding admission: EVERY admitted state — not only `clear` — must first
+  // pass server-associated producer verification, so a non-clear result carries the
+  // same authenticated artifact/digest/provenance/freshness/actor obligations as a
+  // clear one. Producer verification therefore runs BEFORE the state branch.
   if (typeof verifyProducer !== 'function' || !await verifyProducer(run, result)) {
     return { state: 'untrusted_producer', authoritative: false };
+  }
+  if (result.state !== 'clear' || result.findingCount !== 0) {
+    return {
+      state: result.findingCount > 0 ? 'changes_required' : 'incomplete',
+      findingCount: result.findingCount,
+      authoritative: false,
+      runId: run.id,
+    };
   }
   return { state: 'shadow_clear', authoritative: false, runId: run.id };
 }

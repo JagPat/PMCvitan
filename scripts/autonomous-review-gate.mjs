@@ -545,6 +545,7 @@ export class GitHubClient {
       || run?.status !== 'completed'
       || run?.conclusion !== 'success'
       || run?.head_sha !== evidence.workflowSha
+      || run?.head_branch !== 'main'
       || run?.repository?.full_name !== this.repository
     ) return false;
     const jobs = await this.actionRunItems(run.id, 'jobs', 'jobs', 'filter=all');
@@ -2142,7 +2143,9 @@ export async function run() {
         verifyProducer: (run, evidence) => client.verifyClaudeShadowProducer(run, evidence),
       });
       console.log(
-        `Claude independent-review shadow: ${shadow.state}; non-authoritative`,
+        `Claude independent-review shadow: ${shadow.state}`
+        + (Number.isInteger(shadow.findingCount) ? ` (${shadow.findingCount} finding(s))` : '')
+        + '; non-authoritative',
       );
       // Publish the clean verdict while the pull request is still OPEN. This
       // sticky update is the last guaranteed-delivery event on the success
