@@ -19,7 +19,7 @@ reviewed_merge: c9eebc95
 open_pr: 617
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-21
+updated: 2026-09-22
 ```
 
 ### Now — 4d-i-b resumes as the additive U1/U2/U3 redesign; U1 and U2 merged, U3 is the flip
@@ -67,6 +67,11 @@ Every head of the U1/U2/U3 lane carries the terminal `Correction-Owner: claude`
 trailer the SHA-scoped merge gate (`shaMergeAuthority`) reads, matching the PR body's
 `correction-owner: claude` marker; a head that omits it authenticates no owner and the
 required `codex-current-head` status stays red until a new head supplies the trailer.
+The gate extracts it with `git interpret-trailers --parse`, which reads only the
+terminal CONTIGUOUS trailer block, so `Correction-Owner:` must sit in the same
+unbroken block as the `Co-Authored-By:`/`Claude-Session:` lines — a blank line between
+them drops it from the block and the head reads as owner-undeclared even though the
+line is present.
 
 Deferred with their findings intact, not merged and not waived:
 `reform-1b` successor #615 (`f88d45d0`, five open findings, third-P1 stop) and #614
