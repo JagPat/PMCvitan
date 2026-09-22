@@ -26,7 +26,7 @@ test('Codex implementation ownership is recognised as an in-flight candidate but
 });
 function cleanRun(overrides = {}) {
   const artifact = { id: 789, digest: `sha256:${'d'.repeat(64)}`, name: `claude-shadow-v1-repo-${Buffer.from('JagPat/PMCvitan').toString('base64url')}-pr-600-base-${base}-head-${head}-ci-123-2-publisher-456-1-state-clear-findings-0` };
-  return { id: 7, name: 'claude-independent-review', head_sha: head, app: { slug: 'github-actions' }, external_id: `pmcvitan:claude-shadow:v1:repo-JagPat/PMCvitan:pr-600:base-${base}:head-${head}:run-123:attempt-2:publisher-456:publisher-attempt-1`, status: 'completed', conclusion: 'success', completed_at: '2026-09-14T12:00:00Z', output: { summary: JSON.stringify({ schema: 1, repository: 'JagPat/PMCvitan', pullRequest: 600, baseSha: base, headSha: head, runId: 123, runAttempt: 2, publisherRunId: 456, publisherRunAttempt: 1, workflowRef: 'JagPat/PMCvitan/.github/workflows/claude-shadow-review.yml@refs/heads/main', workflowSha: base, state: 'clear', findingCount: 0, artifact }) }, ...overrides };
+  return { id: 7, name: 'claude-independent-review', head_sha: head, app: { slug: 'github-actions' }, external_id: `pmcvitan:claude-shadow:v1:repo-JagPat/PMCvitan:pr-600:base-${base}:head-${head}:run-123:attempt-2:publisher-456:publisher-attempt-1`, status: 'completed', conclusion: 'success', completed_at: '2026-09-14T12:00:00Z', output: { summary: JSON.stringify({ schema: 1, repository: 'JagPat/PMCvitan', pullRequest: 600, baseSha: base, headSha: head, runId: 123, runAttempt: 2, publisherRunId: 456, publisherRunAttempt: 1, workflowRef: 'JagPat/PMCvitan/.github/workflows/claude-shadow-review.yml@refs/heads/main', workflowSha: base, workflowExecutionRef: 'refs/heads/main', state: 'clear', findingCount: 0, artifact }) }, ...overrides };
 }
 
 test('Claude shadow evidence is exact-head/app and fail-closed but non-authoritative', async () => {
@@ -44,11 +44,43 @@ test('Claude shadow evidence is exact-head/app and fail-closed but non-authorita
   assert.equal((await classify([cleanRun({ app: { slug: 'wrong' } })])).state, 'missing');
   assert.equal((await classify([cleanRun({ status: 'in_progress', conclusion: null, completed_at: null })])).state, 'partial');
   assert.equal((await classify([cleanRun({ conclusion: 'timed_out' })])).state, 'timed_out');
-  assert.equal((await classify([cleanRun({ conclusion: 'failure' })])).state, 'failure');
+  // A clear-evidence summary carrying a `failure` conclusion is inconsistent with what the publisher
+  // emits for a clear result (`success`), so it is rejected — the conclusion is bound to the evidence.
+  assert.equal((await classify([cleanRun({ conclusion: 'failure' })])).state, 'replayed');
   assert.equal((await classify([cleanRun({ output: { summary: '{}' } })])).state, 'replayed');
   assert.equal((await classify([alteredSummary({ publisherRunId: 999 })])).state, 'replayed');
   assert.equal((await classify([alteredSummary({ workflowRef: 'JagPat/PMCvitan/.github/workflows/other.yml@refs/heads/main' })])).state, 'replayed');
-  assert.equal((await classify([alteredSummary({ workflowSha: 'c'.repeat(40) })])).state, 'replayed');
+  // (b) role-transfer broadening: a valid 40-hex workflowSha that is NOT the PR base is now accepted —
+  // the base-equality pin is gone and trust moved to server-side producer verification (head_branch=main
+  // + head_sha binding), so an earlier trusted `main` workflow SHA is admitted. RED before this unit
+  // (was 'replayed'); the format check still rejects non-hex.
+  assert.equal((await classify([alteredSummary({ workflowSha: 'c'.repeat(40) })])).state, 'shadow_clear');
+  assert.equal((await classify([alteredSummary({ workflowSha: 'not-hex' })])).state, 'replayed');
+  // (a) role-transfer broadening: the summary must assert main-lineage execution; a non-main or absent
+  // workflowExecutionRef is rejected. RED before this unit (the field was published but unread).
+  assert.equal((await classify([alteredSummary({ workflowExecutionRef: 'refs/heads/other' })])).state, 'replayed');
+  assert.equal((await classify([alteredSummary({ workflowExecutionRef: undefined })])).state, 'replayed');
+  // (c) role-transfer broadening: a real non-clear result publishes conclusion `failure` (the
+  // publisher's deterministic form) and is admitted WITH its authenticated state + finding count,
+  // after the SAME server-side producer verification a clear result requires; still non-authoritative.
+  const changesArtifact = { ...JSON.parse(cleanRun().output.summary).artifact };
+  changesArtifact.name = changesArtifact.name.replace('state-clear-findings-0', 'state-changes_required-findings-1');
+  const changesRun = () => {
+    const run = alteredSummary({ state: 'changes_required', findingCount: 1, artifact: changesArtifact });
+    run.conclusion = 'failure';
+    return run;
+  };
+  // A non-clear summary carrying `success` disagrees with the publisher's form and is rejected.
+  assert.equal((await classify([alteredSummary({ state: 'changes_required', findingCount: 1, artifact: changesArtifact })])).state, 'replayed');
+  // RED before this unit: the `failure`-form check short-circuited to state 'failure', never verified/admitted.
+  assert.equal((await classify([changesRun()], async () => false)).state, 'untrusted_producer');
+  assert.deepEqual(await classify([changesRun()]), { state: 'changes_required', findingCount: 1, authoritative: false, runId: 7 });
+  // A network-dependent verification error is CONTAINED as untrusted_producer, never thrown out — a
+  // transient GitHub metadata outage must not strand the authoritative gate. RED before this unit
+  // (the now-unconditional verification propagated for non-clear results).
+  const throwing = async () => { throw new Error('gh metadata outage'); };
+  assert.equal((await classify([changesRun()], throwing)).state, 'untrusted_producer');
+  assert.equal((await classify([cleanRun()], throwing)).state, 'untrusted_producer');
   assert.equal((await classify([])).state, 'missing');
 });
 
@@ -63,7 +95,7 @@ test('a newer pending Claude rerun supersedes an older clear completion', async 
 
 test('server-side workflow run and artifact association rejects forged producer claims', async () => {
   const evidence = JSON.parse(cleanRun().output.summary);
-  const workflowRun = { id: 456, run_attempt: 1, path: '.github/workflows/claude-shadow-review.yml', event: 'workflow_run', status: 'completed', conclusion: 'success', head_sha: base, repository: { full_name: 'JagPat/PMCvitan' } };
+  const workflowRun = { id: 456, run_attempt: 1, path: '.github/workflows/claude-shadow-review.yml', event: 'workflow_run', status: 'completed', conclusion: 'success', head_sha: base, head_branch: 'main', repository: { full_name: 'JagPat/PMCvitan' } };
   const job = { name: 'publish', status: 'completed', conclusion: 'success' };
   const artifact = { ...evidence.artifact, expired: false };
   const makeClient = ({ run = workflowRun, jobs = [job], artifacts = [artifact] } = {}) => {
@@ -75,9 +107,21 @@ test('server-side workflow run and artifact association rejects forged producer 
   assert.equal(await makeClient().verifyClaudeShadowProducer(cleanRun(), evidence), true);
   assert.equal(await makeClient({ run: { ...workflowRun, path: '.github/workflows/evil.yml' } }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
   assert.equal(await makeClient({ run: { ...workflowRun, head_sha: 'c'.repeat(40) } }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
+  // (a) role-transfer broadening: the publisher run must have executed on `main`. This server-side
+  // head_branch proof is the anchor that lets the adapter drop its base-equality pin. RED before this unit.
+  assert.equal(await makeClient({ run: { ...workflowRun, head_branch: 'feature' } }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
   assert.equal(await makeClient({ jobs: [{ ...job, conclusion: 'failure' }] }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
   assert.equal(await makeClient({ artifacts: [{ ...artifact, name: 'copied-evidence' }] }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
   assert.equal(await makeClient({ artifacts: [{ ...artifact, digest: `sha256:${'e'.repeat(64)}` }] }).verifyClaudeShadowProducer(cleanRun(), evidence), false);
+  // (c) role-transfer broadening: a non-clear result authenticates through the publisher's FAILING
+  // run/job form. Verification requires the run and its publish job to conclude `failure` (matching the
+  // evidence), and rejects the `success` form that a clear result would carry.
+  const nonClearEvidence = { ...evidence, state: 'changes_required', findingCount: 1 };
+  const failRun = { ...workflowRun, conclusion: 'failure' };
+  const failJob = { ...job, conclusion: 'failure' };
+  assert.equal(await makeClient({ run: failRun, jobs: [failJob] }).verifyClaudeShadowProducer(cleanRun(), nonClearEvidence), true);
+  assert.equal(await makeClient({ run: workflowRun, jobs: [job] }).verifyClaudeShadowProducer(cleanRun(), nonClearEvidence), false);
+  assert.equal(await makeClient({ run: failRun, jobs: [job] }).verifyClaudeShadowProducer(cleanRun(), nonClearEvidence), false);
 });
 
 test('automatic merge needs CI and exact-head review, with no human authorization', async () => {

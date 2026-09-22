@@ -534,6 +534,15 @@ export class GitHubClient {
   }
 
   async verifyClaudeShadowProducer(checkRun, evidence) {
+    // The publisher concludes the run and its publish job deterministically from the
+    // evidence: `success` only for a clear result with zero findings, `failure`
+    // otherwise. A non-clear result therefore authenticates through a FAILING run/job
+    // — requiring `success` here would make every real finding-bearing artifact
+    // unverifiable — so verification requires the run/job to conclude in that exact
+    // evidence-matching form.
+    const expectedConclusion = evidence.state === 'clear' && evidence.findingCount === 0
+      ? 'success'
+      : 'failure';
     const run = await this.request(
       `/repos/${this.repository}/actions/runs/${evidence.publisherRunId}`,
     );
@@ -543,15 +552,16 @@ export class GitHubClient {
       || run?.path !== '.github/workflows/claude-shadow-review.yml'
       || !['workflow_run', 'workflow_dispatch'].includes(run?.event)
       || run?.status !== 'completed'
-      || run?.conclusion !== 'success'
+      || run?.conclusion !== expectedConclusion
       || run?.head_sha !== evidence.workflowSha
+      || run?.head_branch !== 'main'
       || run?.repository?.full_name !== this.repository
     ) return false;
     const jobs = await this.actionRunItems(run.id, 'jobs', 'jobs', 'filter=all');
     if (!jobs.some((job) =>
       job?.name === 'publish'
       && job?.status === 'completed'
-      && job?.conclusion === 'success')) return false;
+      && job?.conclusion === expectedConclusion)) return false;
     const artifacts = await this.actionRunItems(run.id, 'artifacts', 'artifacts');
     return artifacts.some((artifact) =>
       artifact?.id === evidence.artifact.id
@@ -2134,15 +2144,25 @@ export async function run() {
         );
         throw new Error(detail);
       }
-      const shadow = await classifyClaudeShadowReview({
-        checkRuns: await client.checkRuns(expectedHead),
-        expectedHead,
-        expectedBase: pullRequest.base.sha,
-        pullRequestNumber: pullRequest.number,
-        verifyProducer: (run, evidence) => client.verifyClaudeShadowProducer(run, evidence),
-      });
+      // Shadow evidence is non-authoritative and MUST NOT affect merge eligibility:
+      // contain any error from fetching or classifying it so it can never propagate
+      // and strand the authoritative `codex-current-head` gate published below.
+      let shadow = { state: 'unavailable', authoritative: false };
+      try {
+        shadow = await classifyClaudeShadowReview({
+          checkRuns: await client.checkRuns(expectedHead),
+          expectedHead,
+          expectedBase: pullRequest.base.sha,
+          pullRequestNumber: pullRequest.number,
+          verifyProducer: (run, evidence) => client.verifyClaudeShadowProducer(run, evidence),
+        });
+      } catch (error) {
+        console.log(`Claude independent-review shadow: unavailable (${error?.message ?? error}); non-authoritative, ignored`);
+      }
       console.log(
-        `Claude independent-review shadow: ${shadow.state}; non-authoritative`,
+        `Claude independent-review shadow: ${shadow.state}`
+        + (Number.isInteger(shadow.findingCount) ? ` (${shadow.findingCount} finding(s))` : '')
+        + '; non-authoritative',
       );
       // Publish the clean verdict while the pull request is still OPEN. This
       // sticky update is the last guaranteed-delivery event on the success
