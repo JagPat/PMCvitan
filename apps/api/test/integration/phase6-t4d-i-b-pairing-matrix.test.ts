@@ -296,7 +296,7 @@ const MATRIX: Branch[] = [
     negatives: [
       { name: 'the finalized revision is written with NO approval event and NO audit row (finding 5)',
         bundle: APPROVAL({ rev: 'mx-rev', ev: 'mx-ev-ap', version: CURRENT, event: false, audit: false }),
-        refusal: /approval revision .* with 0 approval-family event/ },
+        refusal: /naming .* as its approver, and this transaction carries 0 approval-family event/ },
       { name: 'the finalized revision is written with its event but NO audit row',
         bundle: APPROVAL({ rev: 'mx-rev', ev: 'mx-ev-ap', version: CURRENT, audit: false }),
         refusal: /with 0 `approved` \/ `reapproved` audit row/ },
@@ -307,12 +307,27 @@ const MATRIX: Branch[] = [
         // the audit row is refused by the 4d-i correspondence seal (no same-transaction event), and
         // without the audit row the revision claimant refuses for the same reason: an earlier
         // transaction's event is not THIS transaction's evidence under either seal
-        refusal: /has no matching decision\.approved event in this transaction|approval revision .* with 0 approval-family event/ },
+        refusal: /has no matching decision\.approved event in this transaction|naming .* as its approver, and this transaction carries 0 approval-family event/ },
       { name: 'the approval event is attributed to ANOTHER user than the revision\'s approver (wrong actor)',
         // bound by 4d-i's `DecisionEvent_t4d_correspondence`, which this unit's mandatory audit
         // row now makes fire on every approval; the message is that seal's
         bundle: APPROVAL({ rev: 'mx-rev', ev: 'mx-ev-ap', version: CURRENT, actor: 'mx-client' }),
-        refusal: /names an actor other than mx-pmc/ },
+        // the revision claimant now binds the actor itself and refuses the event not attributed to
+        // its approver, alongside 4d-i's correspondence — either deferred seal may fire first
+        refusal: /names an actor other than mx-pmc|naming .* as its approver, and this transaction carries 0 approval-family event/ },
+      { name: 'the finalized revision names NO approver (approvedById NULL) beside a HUMAN-attributed event (Codex U3 round 1)',
+        // 4d-i's correspondence SKIPS a NULL fact actor, so a human `decision.approved` over an
+        // approver-less finalized head is unbound there; the claimant must refuse it, not admit it —
+        // either it refuses the approver-less head, or it declines to claim and the kernel pairing
+        // seal aborts the unclaimed pairing-required event
+        bundle: TX(RESERVE('mx-rev-cmd', 'decisions.approve', 'mx-pmc'),
+          `UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'mx-dec';
+           INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById","sourceCommandId")
+             VALUES ('mx-rev','mx-proj','mx-dec',1,'a',now(),NULL,'mx-rev-cmd');`,
+          EV({ id: 'mx-ev-ap', type: 'decision.approved', dec: 'mx-dec', version: CURRENT, actor: 'mx-pmc',
+            push: `, 'push', jsonb_build_object('body','approved','roles', c."pushRoles")` }),
+          AU('mx-dec', 'approved'), COMPLETE('mx-rev-cmd', 'mx-dec')),
+        refusal: /naming <nobody> as its approver|requires a pairing claim and none was made/ },
       { name: 'TWO revisions born beside one event (duplicated evidence)',
         bundle: TX(RESERVE('mx-c1', 'decisions.approve', 'mx-pmc'), RESERVE('mx-c2', 'decisions.approve', 'mx-pmc'),
           `UPDATE "Decision" SET "status" = 'approved' WHERE "id" = 'mx-dec';
@@ -344,7 +359,7 @@ const MATRIX: Branch[] = [
         refusal: /with 0 `approved` \/ `reapproved` audit row/ },
       { name: 'the reapproval event is attributed to ANOTHER user than the revision\'s approver (wrong actor)',
         bundle: REAPPROVAL({ rev: 'mx-rev2', ev: 'mx-ev-re', cr: 'mx-cr', version: CURRENT, actor: 'mx-client' }),
-        refusal: /names an actor other than mx-pmc/ },
+        refusal: /names an actor other than mx-pmc|naming .* as its approver, and this transaction carries 0 approval-family event/ },
       { name: 'the reapproval moves the decision and writes its revision but leaves the request OPEN (missing converse)',
         bundle: REAPPROVAL({ rev: 'mx-rev2', ev: 'mx-ev-re', cr: 'mx-cr', version: CURRENT, closure: false }),
         refusal: /change → approved.* with 0 change request\(s\) closed here/ },
@@ -366,12 +381,23 @@ const MATRIX: Branch[] = [
         refusal: /with 0 `change_requested` audit row/ },
       { name: 'the standard opening\'s event is attributed to ANOTHER user than the request\'s requester (wrong actor)',
         bundle: OPENING({ cr: 'mx-cr', ev: 'mx-ev-open', version: CURRENT, actor: 'mx-client' }),
-        refusal: /names an actor other than mx-pmc/ },
+        // the standard request now binds its own actor too, alongside 4d-i's correspondence
+        refusal: /names an actor other than mx-pmc|names .* as its requester, and this transaction carries 0 `decision.change_requested` event/ },
+      { name: 'the standard opening names NO requester (requestedById NULL) beside a HUMAN-attributed event (Codex U3 round 1)',
+        // 4d-i's correspondence SKIPS a NULL fact actor, so a human `decision.change_requested` over
+        // a requester-less standard request is unbound there; the request must bind its own actor and
+        // refuse — else it declines to claim and the kernel pairing seal aborts the unclaimed event
+        bundle: TX(`UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'mx-dec2';`,
+          `INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","requestedById")
+             VALUES ('mx-cr','mx-proj','mx-dec2','the ask',0,0,'open',NULL);`,
+          EV({ id: 'mx-ev-open', type: 'decision.change_requested', dec: 'mx-dec2', version: CURRENT, actor: 'mx-pmc' }),
+          AU('mx-dec2', 'change_requested')),
+        refusal: /names <nobody> as its requester|requires a pairing claim and none was made/ },
       { name: 'the standard opening is written with NO event',
         bundle: TX(`UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'mx-dec2';`,
           `INSERT INTO "ChangeRequest" ("id","projectId","decisionId","reason","costImpact","timeImpactDays","status","requestedById")
              VALUES ('mx-cr','mx-proj','mx-dec2','the ask',0,0,'open','mx-pmc');`, AU('mx-dec2', 'change_requested')),
-        refusal: /with 0 `decision.change_requested` event|has no matching/ },
+        refusal: /with 0 `decision.change_requested` event|has no matching|names .* as its requester, and this transaction carries 0 `decision.change_requested` event/ },
       { name: 'the decision is moved into change with its event and audit row but NO request (missing converse)',
         bundle: TX(`UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'mx-dec2';`,
           EV({ id: 'mx-ev-open', type: 'decision.change_requested', dec: 'mx-dec2', version: CURRENT, actor: 'mx-pmc' }), AU('mx-dec2', 'change_requested')),

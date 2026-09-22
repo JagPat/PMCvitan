@@ -58,6 +58,11 @@ request-side seal (keeping U2's now-TRUE dark-window gate); and installs
 `DecisionConsultationResponse_t4d_claim`(+`_deferred`)) — each order-independent, each
 lookup through U1's actor primitive, each bundle judged by U2's seals. The decision-side
 seal `phase6_t4d_change_transition_paired` is U2's and unchanged; the flip activates it.
+Because the compiled `effectCoverageVersion()` moves, **deploying U3 RESEALS the external-effect
+cutover** by the same legacy/shadow → `outbox:seal-external` → outbox sequence 4d-i takes (the
+`OutboxCutoverState` seal is operator-recorded from the running build, never a migration write) —
+see docs/RUNBOOK.md §"Deploying 4d-i (and 4d-i-b's pairing flip) RESEALS the external-effect
+cutover"; the standing "outbox reseal completed" production attestation covers it.
 Proven by the full 51-case matrix (`phase6-t4d-i-b-pairing-matrix.test.ts`), the three
 generations (`phase6-t4d-i-catalog-generations.test.ts`), the two seed literals
 (`external-effect-catalog-seed.test.ts`), and the seal-inventory/seal-contract oracles;

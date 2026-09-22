@@ -223,6 +223,10 @@ const FUNCTIONS = [
   'phase6_t4d_tx_audit_count',
   'phase6_t4d_tx_actor_event',
   'phase6_t4d_tx_actor_event_count',
+  // U3 (Codex round 1) — U1's actor-event read widened to the payload/audience the consultation
+  // claimants match on, so a decisions claimant asks the kernel one qualified question instead of
+  // reaching into the DomainEvent table itself.
+  'phase6_t4d_tx_qualified_event',
   'phase6_t4d_change_request_paired',
   'phase6_t4d_change_request_claims_event',
   'phase6_t4d_change_transition_paired',

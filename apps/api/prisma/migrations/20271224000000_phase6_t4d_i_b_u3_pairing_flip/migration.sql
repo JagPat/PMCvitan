@@ -598,6 +598,20 @@ BEGIN
           'phase6 4d-i-b: standard change request % was opened in this transaction with % `change_requested` audit row(s) for decision % — the delivered `requestChange` appends the audit row beside the request and the event, and the register, the fact and the stream record the SAME act: a request with no audit row is an opening the decision log cannot show, and one with two is an act registered twice',
           NEW."id", v_audits, NEW."decisionId";
       END IF;
+      -- ONE act, ONE actor (#590 round 4; Codex U3 round 1). A `standard` request carries a
+      -- `change_requested` audit row, but 4d-i's `DecisionEvent_t4d_correspondence` binds the
+      -- event's actor to the request's `requestedById` only when it is non-null (it SKIPS NULL,
+      -- made total at 4d-iii), so a request opened with a NULL requester and a human-attributed
+      -- event would commit with the opening bound to nobody. The request binds its own actor here,
+      -- exactly as the `countersign_rejection` arm below does: exactly ONE same-transaction
+      -- `decision.change_requested` attributed to `requestedById`, and that requester present.
+      v_events := phase6_t4d_tx_actor_event_count(NEW."projectId", NEW."decisionId",
+                                                   ARRAY['decision.change_requested'], NEW."requestedById");
+      IF NEW."requestedById" IS NULL OR v_events <> 1 THEN
+        RAISE EXCEPTION
+          'phase6 4d-i-b: standard change request % of decision % names % as its requester, and this transaction carries % `decision.change_requested` event(s) attributed to that person (`actorId`) — the opening is ONE act with ONE actor: the request records who asked and the event announces who did, and a request that names no requester, or whose event is attributed to someone else, is an opening the register cannot pin to a person',
+          NEW."id", NEW."decisionId", COALESCE(NEW."requestedById", '<nobody>'), v_events;
+      END IF;
     ELSIF NEW."origin" = 'countersign_rejection' THEN
       IF NOT phase6_t4d_decision_moved_in_tx(NEW."decisionId", 'change_from_awaiting') THEN
         RAISE EXCEPTION
@@ -756,8 +770,12 @@ BEGIN
       v_event := phase6_t4d_tx_actor_event(NEW."projectId", NEW."decisionId",
                                            ARRAY['decision.change_requested'], NEW."requestedById");
     ELSIF NEW."origin" = 'standard' THEN
-      v_event := platform_tx_event(NEW."projectId", 'Decision', NEW."decisionId",
-                                   ARRAY['decision.change_requested']);
+      -- bound to the requester (#590 round 4; Codex U3 round 1), like the countersign_rejection arm
+      -- above: the deferred seal demands exactly one `decision.change_requested` attributed to
+      -- `requestedById`, so an event attributed to anyone else — or a NULL requester — is not this
+      -- request's to claim, whichever order the bundle is written in.
+      v_event := phase6_t4d_tx_actor_event(NEW."projectId", NEW."decisionId",
+                                           ARRAY['decision.change_requested'], NEW."requestedById");
     ELSE
       RETURN NULL;
     END IF;
@@ -821,12 +839,19 @@ DECLARE v_event TEXT; v_events BIGINT; v_audits BIGINT;
 BEGIN
   IF NEW."finalized" IS DISTINCT FROM TRUE THEN RETURN NULL; END IF;
   IF TG_NAME LIKE '%\_deferred' THEN
-    v_events := platform_tx_event_count(NEW."projectId", 'Decision', NEW."decisionId",
-                                        ARRAY['decision.approved', 'decision.reapproved']);
-    IF v_events <> 1 THEN
+    -- ONE act, ONE actor (#590 round 4; Codex U3 round 1). The finalized head carries a
+    -- `DecisionEvent` audit row, but 4d-i's `DecisionEvent_t4d_correspondence` binds the event's
+    -- actor to the fact ONLY when the fact names one — it SKIPS a NULL `approvedById` (made total
+    -- only at 4d-iii) — so a finalized head born with a NULL approver and a human-attributed event
+    -- would commit with the announcement bound to nobody. The claimant binds it here, as the
+    -- consultation and countersign_rejection arms bind theirs: exactly ONE approval-family event
+    -- attributed to the approver the head records (`approvedById`), and that approver present.
+    v_events := phase6_t4d_tx_actor_event_count(NEW."projectId", NEW."decisionId",
+                                                ARRAY['decision.approved', 'decision.reapproved'], NEW."approvedById");
+    IF NEW."approvedById" IS NULL OR v_events <> 1 THEN
       RAISE EXCEPTION
-        'phase6 4d-i-b: approval revision % of decision % was born finalized in this transaction with % approval-family event(s) (`decision.approved` / `decision.reapproved`) for the decision — the finalized head IS the approval, and the approval announces itself exactly ONCE in the same transaction; a head with no event is an approval the stream never carried and no consumer will ever act on, and one with two is an act announced twice',
-        NEW."id", NEW."decisionId", v_events;
+        'phase6 4d-i-b: approval revision % of decision % was born finalized in this transaction naming % as its approver, and this transaction carries % approval-family event(s) (`decision.approved` / `decision.reapproved`) attributed to that person (`actorId`) — the finalized head IS the approval and announces itself exactly ONCE, in the same transaction, in the name of the approver it records: a head with no such event is an approval the stream never carried, one with two is an act announced twice, and one whose head names no approver (or whose event is attributed to someone else) is an approval the register cannot pin to a person',
+        NEW."id", NEW."decisionId", COALESCE(NEW."approvedById", '<nobody>'), v_events;
     END IF;
     v_audits := phase6_t4d_tx_audit_count(NEW."decisionId", ARRAY['approved', 'reapproved']);
     IF v_audits <> 1 THEN
@@ -835,9 +860,9 @@ BEGIN
         NEW."id", NEW."decisionId", v_audits;
     END IF;
   END IF;
-  v_event := platform_tx_event(NEW."projectId", 'Decision', NEW."decisionId",
-                               ARRAY['decision.approved', 'decision.reapproved']);
-  IF v_event IS NULL THEN RETURN NULL; END IF;   -- the immediate half, before the event: the deferred half decides
+  v_event := phase6_t4d_tx_actor_event(NEW."projectId", NEW."decisionId",
+                                       ARRAY['decision.approved', 'decision.reapproved'], NEW."approvedById");
+  IF v_event IS NULL THEN RETURN NULL; END IF;   -- the immediate half, before the event (or a NULL approver): the deferred half decides
   PERFORM platform_claim_event_pairing_once(NEW."projectId", v_event, 'DecisionApprovalRevision', NEW."id");
   RETURN NULL;
 END $$;
@@ -850,6 +875,33 @@ DROP TRIGGER IF EXISTS "DecisionApprovalRevision_t4d_claim_deferred" ON "Decisio
 CREATE CONSTRAINT TRIGGER "DecisionApprovalRevision_t4d_claim_deferred"
   AFTER INSERT ON "DecisionApprovalRevision" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase6_t4d_revision_claims_approval();
+
+-- ── the payload/audience-qualified tx-event primitive (U1's actor-event read, widened) ──────
+-- U1's `phase6_t4d_tx_actor_event` is the kernel's `platform_tx_event` narrowed to one actor, and
+-- U1's own note said the no-audit-row claimants "ask through this". The consultation claimants
+-- below need it narrowed FURTHER — to the fact named IN the event's payload and the recipient
+-- named IN its dispatch intent — because a type-and-actor lookup alone is satisfied by an event
+-- that names ANOTHER consultation, or pushes to a stranger (#590 round 2, finding 3). Rather than
+-- have a decisions claimant reach into the kernel's `DomainEvent` table itself (Codex U3 round 1),
+-- this expresses that qualified read ONCE, as a sibling of U1's primitive: `p_payload` matched with
+-- `@>` (the event's payload CONTAINS these keys), `p_push_target` against
+-- `dispatchIntent.push.targetUserId`, `p_actor` against `actorId`. STABLE, scoped to THIS
+-- transaction's rows, so an earlier transaction's event is never mistaken for one this bundle
+-- produced. Returns the match count and (the single) eventId, so the claimant judges the count and
+-- claims the row without a second query.
+CREATE OR REPLACE FUNCTION phase6_t4d_tx_qualified_event(
+  p_project TEXT, p_decision TEXT, p_type TEXT, p_actor TEXT, p_payload JSONB, p_push_target TEXT,
+  OUT n BIGINT, OUT event_id TEXT
+) LANGUAGE sql STABLE AS $$
+  SELECT count(*), max(e."eventId") FROM "DomainEvent" e
+   WHERE e."projectId" = p_project
+     AND e."entityType" = 'Decision' AND e."entityId" = p_decision
+     AND e."eventType" = p_type
+     AND e."actorId" = p_actor
+     AND e."xmin" = txid_current()::text::xid
+     AND e."payload" @> p_payload
+     AND e."dispatchIntent" -> 'push' ->> 'targetUserId' = p_push_target;
+$$;
 
 -- ── the consultation request and response claim their families, BOUND to the row ───────────
 -- One function over both 4c fact tables, by `TG_TABLE_NAME`. The delivered writers emit the
@@ -886,14 +938,11 @@ BEGIN
   END IF;
 
   IF TG_TABLE_NAME = 'DecisionConsultation' THEN
-    SELECT count(*), max(e."eventId") INTO v_n, v_event
-      FROM "DomainEvent" e
-     WHERE e."projectId" = NEW."projectId" AND e."entityType" = 'Decision' AND e."entityId" = NEW."decisionId"
-       AND e."eventType" = v_type AND e."xmin" = txid_current()::text::xid
-       AND e."payload" ->> 'consultationId' = NEW."id"
-       AND e."payload" ->> 'consulteeUserId' = NEW."consulteeUserId"
-       AND e."dispatchIntent" -> 'push' ->> 'targetUserId' = NEW."consulteeUserId"
-       AND e."actorId" = NEW."requestedById";
+    SELECT q.n, q.event_id INTO v_n, v_event
+      FROM phase6_t4d_tx_qualified_event(
+             NEW."projectId", NEW."decisionId", v_type, NEW."requestedById",
+             jsonb_build_object('consultationId', NEW."id", 'consulteeUserId', NEW."consulteeUserId"),
+             NEW."consulteeUserId") q;
     IF TG_NAME LIKE '%\_deferred' AND v_n <> 1 THEN
       RAISE EXCEPTION
         'phase6 4d-i-b: consultation % of decision % was written in this transaction with % `decision.consultation_requested` event(s) that name it (`payload.consultationId`), carry its consultee (`payload.consulteeUserId`), target that consultee (`dispatchIntent.push.targetUserId` — the delivered `consultations.request` pushes to exactly the person asked) and are attributed to its requester (`actorId` = `requestedById`) — a consultation is an ask, and an ask announced to nobody, announced as another consultation, pushed to a stranger, or announced in somebody else''s name, is not the act this row records',
@@ -902,14 +951,11 @@ BEGIN
   ELSE
     SELECT c."requestedById" INTO v_target FROM "DecisionConsultation" c
      WHERE c."projectId" = NEW."projectId" AND c."id" = NEW."consultationId";
-    SELECT count(*), max(e."eventId") INTO v_n, v_event
-      FROM "DomainEvent" e
-     WHERE e."projectId" = NEW."projectId" AND e."entityType" = 'Decision' AND e."entityId" = NEW."decisionId"
-       AND e."eventType" = v_type AND e."xmin" = txid_current()::text::xid
-       AND e."payload" ->> 'responseId' = NEW."id"
-       AND e."payload" ->> 'consultationId' = NEW."consultationId"
-       AND e."dispatchIntent" -> 'push' ->> 'targetUserId' = v_target
-       AND e."actorId" = NEW."respondedById";
+    SELECT q.n, q.event_id INTO v_n, v_event
+      FROM phase6_t4d_tx_qualified_event(
+             NEW."projectId", NEW."decisionId", v_type, NEW."respondedById",
+             jsonb_build_object('responseId', NEW."id", 'consultationId', NEW."consultationId"),
+             v_target) q;
     IF TG_NAME LIKE '%\_deferred' AND v_n <> 1 THEN
       RAISE EXCEPTION
         'phase6 4d-i-b: consultation response % of decision % was written in this transaction with % `decision.consultation_responded` event(s) that name it (`payload.responseId`), name its consultation (`payload.consultationId`), target the requester (`dispatchIntent.push.targetUserId` = the consultation''s `requestedById`, who the delivered `consultations.respond` pushes to) and are attributed to its responder (`actorId` = `respondedById`) — an answer announced to nobody, announced as another response, pushed to anyone but the person who asked, or announced in somebody else''s name, is not the act this row records',

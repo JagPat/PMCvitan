@@ -726,7 +726,10 @@ const REGISTER: Record<string, SealContract> = {
       + 'open rides the decision\'s same-transaction landing in `change` (for `standard`, the '
       + 'EXACT `approved → change` move) and exactly ONE `decision.change_requested` event, which '
       + 'it CLAIMS unless a same-transaction `returned` stranded resolution is the bundle\'s '
-      + 'primary, and for `standard` exactly ONE `change_requested` audit row appended here; for '
+      + 'primary, and for `standard` exactly ONE `change_requested` audit row appended here AND '
+      + 'exactly ONE `decision.change_requested` event attributed to its `requestedById` (4d-i\'s '
+      + 'correspondence skips a NULL requester, so the request binds the actor itself — Codex U3 '
+      + 'round 1); for '
       + '`countersign_rejection` the EXACT `awaiting_countersign → change` move and exactly ONE '
       + 'event attributed to its `requestedById` (no audit row is declared for that branch, so '
       + '4d-i\'s correspondence cannot bind the actor there); a request written '
@@ -766,13 +769,16 @@ const REGISTER: Record<string, SealContract> = {
       + 'or `decision.reapproved` — the direct approve and the no-chain reapproval\'s claimant, '
       + 'the closure verifying only; a provisional birth claims nothing here (its event is 4d-ii\'s). '
       + 'The immediate half may defer absence; the DEFERRED half demands exactly one event of the '
-      + 'family and exactly one `approved` / `reapproved` audit row at commit',
+      + 'family ATTRIBUTED to the approver the head records (`approvedById`, which must be present — '
+      + '4d-i\'s correspondence skips a NULL approver, so the claimant binds the actor itself; Codex '
+      + 'U3 round 1) and exactly one `approved` / `reapproved` audit row at commit',
     plan: '§A.3 correspondence table (#572 r9 f1); §D 4d-i-b (b); 4d-i-b U3; #590 r2 f5',
     on: {
       'DecisionApprovalRevision.DecisionApprovalRevision_t4d_claim': A('I'),
       'DecisionApprovalRevision.DecisionApprovalRevision_t4d_claim_deferred': C('I'),
     },
-    must: ['"finalized"', 'TG_NAME', 'platform_tx_event', 'platform_tx_event_count',
+    must: ['"finalized"', 'TG_NAME', 'phase6_t4d_tx_actor_event', 'phase6_t4d_tx_actor_event_count',
+      'NEW."approvedById"',
       'phase6_t4d_tx_audit_count', "ARRAY['approved', 'reapproved']",
       'platform_claim_event_pairing_once', 'decision.approved', 'decision.reapproved'],
   },
@@ -792,9 +798,10 @@ const REGISTER: Record<string, SealContract> = {
       'DecisionConsultationResponse.DecisionConsultationResponse_t4d_claim_deferred': C('I'),
     },
     must: ['TG_TABLE_NAME', 'TG_NAME', 'decision.consultation_requested', 'decision.consultation_responded',
-      "'consultationId'", "'consulteeUserId'", "'responseId'", "'targetUserId'", '"requestedById"',
-      'e."actorId" = NEW."requestedById"', 'e."actorId" = NEW."respondedById"',
-      'txid_current', 'platform_claim_event_pairing_once'],
+      'phase6_t4d_tx_qualified_event', 'jsonb_build_object',
+      "'consultationId'", "'consulteeUserId'", "'responseId'",
+      'NEW."requestedById"', 'NEW."respondedById"', 'c."requestedById"',
+      'platform_claim_event_pairing_once'],
   },
   phase6_t4d_change_transition_paired: {
     rule: 'the decision side of the same bundle: each change-lifecycle move owes exactly one request '
