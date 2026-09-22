@@ -14,15 +14,38 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: phase-6-task-4d-unit-i-b-u3-pairing-flip
-reviewed_merge: c9eebc95
-open_pr: 617
+work_item: cloud-role-transfer-shadow-consumer-broadening
+reviewed_merge: b2490c2a
+open_pr: 618
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-22
 ```
 
-### Now — 4d-i-b resumes as the additive U1/U2/U3 redesign; U1 and U2 merged, U3 is the flip
+### Now — 4d-i-b U3 merged; the current unit is the cloud-role-transfer shadow-consumer broadening (#618)
+
+**U3 merged** to `main` at `b2490c2a` (#617): the pairing flip and all its claimants,
+with the R1 corrections (NULL-actor claimants, the platform-owned qualified-event
+primitive, the outbox reseal docs) folded on the same head. Phase 6 task 4d unit
+4d-i-b is complete; the U1/U2/U3 additive redesign below is now history.
+
+Per the owner disposition at the protected #617 boundary (issue #482, 2026-09-22),
+the next selected bounded work is the already-approved **cloud role transfer** from
+fresh `main`, NOT the next phase-6 product unit and NOT the deferred #614/#615.
+`open_pr: 618` (`work_item: cloud-role-transfer-shadow-consumer-broadening`, branch
+`claude/role-transfer-shadow-consumer`) lands the consumer-side broadening
+`docs/CLOUD_ROLE_TRANSFER.md` deferred to "the later unit": trusted-`main` lineage
+(`workflowExecutionRef`/`head_branch` = `main`), acceptance of an earlier trusted
+`main` workflow SHA (base-equality pin moved onto the server-side producer proof
+bound to the publisher's deterministic success/failure form), and full producer-
+verified finding admission — with the shadow consumer kept **non-authoritative**
+(`authoritative: false` on every path, no merge/gate/ownership/correction-owner
+change, `claude-independent-review` still out of the required checks). It claims no
+role activation; the authoritative-gate flip stays a separate, later, atomically
+reviewed unit. The preserved merged branch `claude/pmcvitan-mobile-places-n3fxup`
+stays untouched at `b2490c2a`.
+
+### History — 4d-i-b as the additive U1/U2/U3 redesign; all three merged (U3 = #617 → b2490c2a)
 
 Owner disposition of 2026-09-21 (issue #482 comment 5757145200), under the user's
 "proceed as per your recomendation" approval: prioritise a complete, verified
@@ -44,7 +67,8 @@ that judge the opening, closure and reapproval bundle in both write orders — j
 never claiming. Both gate on `phase6_t4d_change_pairing_active()` and were dark until
 U3 flips a generation.
 
-**U3 is this unit** (`work_item: phase-6-task-4d-unit-i-b-u3-pairing-flip`, branch
+**U3 merged** to `main` at `b2490c2a` (#617) (was `work_item:
+phase-6-task-4d-unit-i-b-u3-pairing-flip`, branch
 `claude/pmcvitan-mobile-places-n3fxup`, migration
 `20271224000000_phase6_t4d_i_b_u3_pairing_flip`): **THE FLIP**. It seeds a new
 `ExternalEffectCatalog` coverage generation with `pairingRequired` true on exactly the
@@ -66,7 +90,7 @@ cutover"; the standing "outbox reseal completed" production attestation covers i
 Proven by the full 51-case matrix (`phase6-t4d-i-b-pairing-matrix.test.ts`), the three
 generations (`phase6-t4d-i-catalog-generations.test.ts`), the two seed literals
 (`external-effect-catalog-seed.test.ts`), and the seal-inventory/seal-contract oracles;
-`open_pr: 617` (this pointer commit names the PR, per the §D self-naming convention).
+merged as #617 (its pointer commit named the PR, per the §D self-naming convention).
 
 Every head of the U1/U2/U3 lane carries the terminal `Correction-Owner: claude`
 trailer the SHA-scoped merge gate (`shaMergeAuthority`) reads, matching the PR body's
