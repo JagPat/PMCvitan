@@ -93,7 +93,19 @@ export async function classifyClaudeShadowReview({
   // same authenticated artifact/digest/provenance/freshness/actor obligations as a
   // clear one. Producer verification therefore runs BEFORE the state branch and is
   // told the evidence so it can require the publisher's matching failure-form run.
-  if (typeof verifyProducer !== 'function' || !await verifyProducer(run, result)) {
+  //
+  // This call is network-dependent, and it now runs for non-clear results that used
+  // to return before it. A transient GitHub metadata outage must NOT propagate and
+  // strand the authoritative `codex-current-head` gate — shadow evidence is
+  // non-authoritative — so a failed verification ATTEMPT is contained here and
+  // classified as `untrusted_producer`, exactly like a negative verdict.
+  let producerVerified;
+  try {
+    producerVerified = typeof verifyProducer === 'function' && await verifyProducer(run, result);
+  } catch {
+    producerVerified = false;
+  }
+  if (!producerVerified) {
     return { state: 'untrusted_producer', authoritative: false };
   }
   if (result.state !== 'clear' || result.findingCount !== 0) {

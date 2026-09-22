@@ -2144,13 +2144,21 @@ export async function run() {
         );
         throw new Error(detail);
       }
-      const shadow = await classifyClaudeShadowReview({
-        checkRuns: await client.checkRuns(expectedHead),
-        expectedHead,
-        expectedBase: pullRequest.base.sha,
-        pullRequestNumber: pullRequest.number,
-        verifyProducer: (run, evidence) => client.verifyClaudeShadowProducer(run, evidence),
-      });
+      // Shadow evidence is non-authoritative and MUST NOT affect merge eligibility:
+      // contain any error from fetching or classifying it so it can never propagate
+      // and strand the authoritative `codex-current-head` gate published below.
+      let shadow = { state: 'unavailable', authoritative: false };
+      try {
+        shadow = await classifyClaudeShadowReview({
+          checkRuns: await client.checkRuns(expectedHead),
+          expectedHead,
+          expectedBase: pullRequest.base.sha,
+          pullRequestNumber: pullRequest.number,
+          verifyProducer: (run, evidence) => client.verifyClaudeShadowProducer(run, evidence),
+        });
+      } catch (error) {
+        console.log(`Claude independent-review shadow: unavailable (${error?.message ?? error}); non-authoritative, ignored`);
+      }
       console.log(
         `Claude independent-review shadow: ${shadow.state}`
         + (Number.isInteger(shadow.findingCount) ? ` (${shadow.findingCount} finding(s))` : '')

@@ -75,6 +75,12 @@ test('Claude shadow evidence is exact-head/app and fail-closed but non-authorita
   // RED before this unit: the `failure`-form check short-circuited to state 'failure', never verified/admitted.
   assert.equal((await classify([changesRun()], async () => false)).state, 'untrusted_producer');
   assert.deepEqual(await classify([changesRun()]), { state: 'changes_required', findingCount: 1, authoritative: false, runId: 7 });
+  // A network-dependent verification error is CONTAINED as untrusted_producer, never thrown out — a
+  // transient GitHub metadata outage must not strand the authoritative gate. RED before this unit
+  // (the now-unconditional verification propagated for non-clear results).
+  const throwing = async () => { throw new Error('gh metadata outage'); };
+  assert.equal((await classify([changesRun()], throwing)).state, 'untrusted_producer');
+  assert.equal((await classify([cleanRun()], throwing)).state, 'untrusted_producer');
   assert.equal((await classify([])).state, 'missing');
 });
 
