@@ -4506,6 +4506,17 @@ assert_rejects "4c-ii: a bare revision with no source command (the cycle-advanci
   "INSERT INTO \"DecisionApprovalRevision\"(\"id\",\"projectId\",\"decisionId\",\"version\",\"optionKey\",\"approvedAt\",\"approvedById\") VALUES ('UP4CI-REV','p1','UP4A-D2',99,'a',now(),'USER-1')" \
   "carries no source command"
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4c-ii: the real approval shape (a completed receipt naming this decision) was refused"; FAIL=1; }
+-- Phase 6 4d-i-b U3's flip activates the approval claimants DecisionApprovalRevision_t4d_claim
+-- (+_deferred): a revision born FINALIZED must be paired with a decision.approved/reapproved event
+-- in its transaction. The real approver (apps/api/src/decisions/decisions.service.ts) always emits
+-- that event; this block proves 4c-ii's ORTHOGONAL source-provenance trigger, so it stands the
+-- pairing claimants down for this synthetic plant — exactly as test/integration/fixtures.ts
+-- `plantLegacyEvent` stands 4d event seals down for a legacy plant, and as the S-FORGED repair
+-- above disables an append-only trigger for a deliberate, in-the-open plant. The provenance seal it
+-- is proving (the `sourceCommandId` binding) stays ENABLED. Pairing is proven by the 51-case matrix
+-- (test/integration/phase6-t4d-i-b-pairing-matrix.test.ts), not here.
+ALTER TABLE "DecisionApprovalRevision" DISABLE TRIGGER "DecisionApprovalRevision_t4d_claim";
+ALTER TABLE "DecisionApprovalRevision" DISABLE TRIGGER "DecisionApprovalRevision_t4d_claim_deferred";
 BEGIN;
 INSERT INTO "CommandExecution" ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
 VALUES ('UP4CII-CMD','project','org-legacy','p1','USER-1','decisions.approve','k-up4cii','h-up4cii','reserved');
@@ -4520,6 +4531,8 @@ UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='UP4A-D2', "comp
 -- shape the database no longer admits — which is the whole point of the pair above and below it.
 UPDATE "Decision" SET "status"='approved' WHERE "id"='UP4A-D2' AND "projectId"='p1';
 COMMIT;
+ALTER TABLE "DecisionApprovalRevision" ENABLE TRIGGER "DecisionApprovalRevision_t4d_claim";
+ALTER TABLE "DecisionApprovalRevision" ENABLE TRIGGER "DecisionApprovalRevision_t4d_claim_deferred";
 SQL
 assert "4c-ii: the accepted revision names the approval command it is the product of" \
   "SELECT COALESCE(\"sourceCommandId\", 'null') FROM \"DecisionApprovalRevision\" WHERE \"id\"='UP4CI-REV';" \
@@ -4910,10 +4923,10 @@ $PSQL_ADMIN -c "CREATE DATABASE $DB3;" >/dev/null || exit 1
 t4d_r21_ready=1
 for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   # Skip the 4d-i halves AND anything that DEPENDS on them: this ledger is deliberately pre-4d so
-  # the dark migration can be applied last and asserted to abort. 4d-i-b U1 (20271222) installs a
-  # catalog-driven seal 4d-i makes resolvable and refuses to apply without it, so it belongs here
-  # with its prerequisites, not in the pre-4d ledger.
-  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*) continue ;; esac
+  # the dark migration can be applied last and asserted to abort. 4d-i-b U1 (20271222), U2 (20271223)
+  # and U3 (20271224) each install catalog-driven seals 4d-i makes resolvable and refuse to apply
+  # without it, so they belong here with their prerequisites, not in the pre-4d ledger.
+  case "$(basename "$d")" in 20271220000000_*|20271221000000_*|20271222000000_*|20271223000000_*|20271224000000_*) continue ;; esac
   psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  4d-i R21: the pre-4d ledger did not apply ($(basename "$d"))"; FAIL=1; t4d_r21_ready=0; break; }
 done
@@ -5043,8 +5056,22 @@ assert "4d-i P42: every LEGACY ChangeRequest carries the project of its own deci
 # emits — and each must COMMIT and land the value the drain depends on. RED against a migration
 # that added the columns NOT NULL without a default or a shim.
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4d-i P42: a previous-release ChangeRequest insert (no projectId) was REFUSED"; FAIL=1; }
+-- Phase 6 4d-i-b U3's flip activates the change-request pairing seal (ChangeRequest_t4d_paired) and
+-- its claimant (ChangeRequest_t4d_claim): an open request must pair with its decision's
+-- approved->change move, audit row and event in the same transaction. The real writer
+-- (apps/api/src/decisions/decisions.service.ts `requestChange`) always opens that bundle — no
+-- release, current or pre-4d-i, has ever emitted a bare unpaired request. This block proves 4d-i's
+-- ORTHOGONAL projectId shim (the BEFORE INSERT trigger that fills `projectId` from the decision for
+-- a previous release that never named it), so it stands the pairing seals down for this synthetic
+-- bare insert — as test/integration/fixtures.ts `plantLegacyEvent` does for a legacy plant — while
+-- the shim seal (ChangeRequest_t4d_project) it is proving stays ENABLED. Pairing is proven by the
+-- 51-case matrix (test/integration/phase6-t4d-i-b-pairing-matrix.test.ts), not here.
+ALTER TABLE "ChangeRequest" DISABLE TRIGGER "ChangeRequest_t4d_paired";
+ALTER TABLE "ChangeRequest" DISABLE TRIGGER "ChangeRequest_t4d_claim";
 INSERT INTO "ChangeRequest"("id","decisionId","reason","costImpact","timeImpactDays","status")
 VALUES ('UP4D-CR1','UP4A-D2','old writer names no project',0,0,'open');
+ALTER TABLE "ChangeRequest" ENABLE TRIGGER "ChangeRequest_t4d_paired";
+ALTER TABLE "ChangeRequest" ENABLE TRIGGER "ChangeRequest_t4d_claim";
 SQL
 assert "4d-i P42: the old-shape ChangeRequest COMMITTED and the shim filled its project from the decision" \
   "SELECT (cr.\"projectId\" = d.\"projectId\")::text FROM \"ChangeRequest\" cr JOIN \"Decision\" d ON d.\"id\" = cr.\"decisionId\" WHERE cr.\"id\" = 'UP4D-CR1';" \

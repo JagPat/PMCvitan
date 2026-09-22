@@ -697,11 +697,14 @@ const REGISTER: Record<string, SealContract> = {
     must: ['pairingRequired', 'actorKind'],
   },
   // 4d-i-b U2 (20271223000000) — the two transition recorders and the two change-request bundle
-  // seals. The recorders only RECORD (a transition is not a state; only the UPDATE holds OLD) and
-  // refuse nothing. The two bundle seals JUDGE the opening/closure/reapproval bundle in both write
-  // orders and are dark until U3's flip (they gate on `phase6_t4d_change_pairing_active`); each
-  // CLAIMS nothing — `forbid` pins the absence of the claimant every claim path lives in, because
-  // the claimants are U3.
+  // seals; and 4d-i-b U3 (20271224000000) — the flip, which gives the REQUEST-side seal its claims
+  // and adds the per-branch claimants below. The recorders only RECORD (a transition is not a
+  // state; only the UPDATE holds OLD) and refuse nothing. The DECISION-side bundle seal
+  // (`phase6_t4d_change_transition_paired`) still JUDGES only — U3 does not touch it — so its
+  // `forbid` still pins the absence of the claimant. The REQUEST-side seal
+  // (`phase6_t4d_change_request_paired`) JUDGED only under U2 and now CLAIMS under U3, so its
+  // `forbid` is gone and `platform_claim_event_pairing_once` is now a `must`. Both keep U2's
+  // dark-window gate (`phase6_t4d_change_pairing_active`), which U3's flip makes TRUE.
   phase6_t4d_decision_change_here: {
     rule: 'the decision\'s four change-lifecycle moves are RECORDED into 4d-i\'s trigger-only carrier '
       + 'by the UPDATE that performs them — a state at commit is not the transition, and only the '
@@ -719,13 +722,86 @@ const REGISTER: Record<string, SealContract> = {
     must: ['_t4d_tx_transition', 'request_opened'],
   },
   phase6_t4d_change_request_paired: {
-    rule: 'the request side of the OPENING and the CLOSURE bundle is judged in both write orders — '
-      + 'the decision moved, the audit row was appended, the event was announced — but nothing is '
-      + 'CLAIMED here (the claimants are U3); dark until a generation flags the change keys',
-    plan: '§D 4d-i-b (a); 4d-i-b U2',
+    rule: 'the REQUEST side of the change lifecycle\'s pairings, judged at COMMIT: a request born '
+      + 'open rides the decision\'s same-transaction landing in `change` (for `standard`, the '
+      + 'EXACT `approved → change` move) and exactly ONE `decision.change_requested` event, which '
+      + 'it CLAIMS unless a same-transaction `returned` stranded resolution is the bundle\'s '
+      + 'primary, and for `standard` exactly ONE `change_requested` audit row appended here AND '
+      + 'exactly ONE `decision.change_requested` event attributed to its `requestedById` (4d-i\'s '
+      + 'correspondence skips a NULL requester, so the request binds the actor itself — Codex U3 '
+      + 'round 1); for '
+      + '`countersign_rejection` the EXACT `awaiting_countersign → change` move and exactly ONE '
+      + 'event attributed to its `requestedById` (no audit row is declared for that branch, so '
+      + '4d-i\'s correspondence cannot bind the actor there); a request written '
+      + '`withdrawn` rides the `change → approved` restoration, exactly one `change_withdrawn` '
+      + 'audit row, and claims its one `decision.change_withdrawn`; a request written `resolved` '
+      + 'rides the reapproval\'s landing with exactly one revision born here and its event present '
+      + '— verification only, the revision claims. U2 installed this JUDGING; U3 gives it the '
+      + 'claims and keeps U2\'s dark-window gate (now TRUE, dark only if the catalog is rolled back)',
+    plan: '§A.3 the ChangeRequest row; §D 4d-i-b (a); 4d-i-b U2/U3; #568 r1 f3; #558 r1 f2, r2 f6; #572 r11 f1; #590 r2 f2, f6, r4',
     on: { 'ChangeRequest.ChangeRequest_t4d_paired': C('I U') },
-    must: ['phase6_t4d_change_pairing_active', 'phase6_t4d_tx_audit_count'],
-    forbid: ['platform_claim_event_pairing_once'],
+    must: [
+      'phase6_t4d_change_pairing_active',
+      'txid_current', 'change_from_approved', 'approved_from_change', 'awaiting_from_change', 'change_from_awaiting',
+      'phase6_t4d_tx_audit_count', "ARRAY['change_requested']", "ARRAY['change_withdrawn']",
+      'phase6_t4d_tx_actor_event_count', 'NEW."requestedById"',
+      'decision.change_requested', 'decision.change_withdrawn',
+      'decision.approved', 'decision.reapproved', 'decision.awaiting_countersign',
+      'platform_tx_event_count', 'platform_claim_event_pairing_once',
+      'DecisionStrandedResolution', 'returned', 'countersign_rejection', 'standard',
+      'DecisionApprovalRevision', 'withdrawn', 'resolved', 'DomainEventPairingClaim',
+    ],
+  },
+  phase6_t4d_change_request_claims_event: {
+    rule: 'the request\'s IMMEDIATE claim half: when the event of a standard opening, a '
+      + 'countersign_rejection opening (with no same-transaction `returned` resolution visible yet) '
+      + 'or a withdrawal is already written, claim it now — so a bundle that emits before it writes '
+      + 'the request is not refused by a deferred check queued ahead of the deferred seal; judges nothing. '
+      + 'A countersign_rejection request looks up the event attributed to its own `requestedById`',
+    plan: '§D 4d-i-b (b), "order-independent by construction"; 4d-i-b U3; #590 r3, r4',
+    on: { 'ChangeRequest.ChangeRequest_t4d_claim': A('I U') },
+    must: ['platform_tx_event', 'phase6_t4d_tx_actor_event', 'NEW."requestedById"', 'platform_claim_event_pairing_once',
+      'decision.change_requested', 'decision.change_withdrawn', 'standard', 'countersign_rejection',
+      'DecisionStrandedResolution', 'returned', 'withdrawn'],
+  },
+  phase6_t4d_revision_claims_approval: {
+    rule: 'a FINALIZED revision birth claims the decision\'s same-transaction `decision.approved` '
+      + 'or `decision.reapproved` — the direct approve and the no-chain reapproval\'s claimant, '
+      + 'the closure verifying only; a provisional birth claims nothing here (its event is 4d-ii\'s). '
+      + 'The immediate half may defer absence; the DEFERRED half demands exactly one event of the '
+      + 'family ATTRIBUTED to the approver the head records (`approvedById`, which must be present — '
+      + '4d-i\'s correspondence skips a NULL approver, so the claimant binds the actor itself; Codex '
+      + 'U3 round 1) and exactly one `approved` / `reapproved` audit row at commit',
+    plan: '§A.3 correspondence table (#572 r9 f1); §D 4d-i-b (b); 4d-i-b U3; #590 r2 f5',
+    on: {
+      'DecisionApprovalRevision.DecisionApprovalRevision_t4d_claim': A('I'),
+      'DecisionApprovalRevision.DecisionApprovalRevision_t4d_claim_deferred': C('I'),
+    },
+    must: ['"finalized"', 'TG_NAME', 'phase6_t4d_tx_actor_event', 'phase6_t4d_tx_actor_event_count',
+      'NEW."approvedById"',
+      'phase6_t4d_tx_audit_count', "ARRAY['approved', 'reapproved']",
+      'platform_claim_event_pairing_once', 'decision.approved', 'decision.reapproved'],
+  },
+  phase6_t4d_consultation_claims_event: {
+    rule: 'a consultation request claims its `decision.consultation_requested`, a response its '
+      + '`decision.consultation_responded`, by TG_TABLE_NAME — the decision\'s same-transaction '
+      + 'event whose payload names THIS row (`consultationId` and `consulteeUserId`; '
+      + '`responseId` and `consultationId`), whose push targets its recipient (the consultee; '
+      + 'the consultation\'s `requestedById`) and whose `actorId` is the person the row records as '
+      + 'acting (`requestedById`; `respondedById`). The immediate half may defer absence; the DEFERRED '
+      + 'half demands exactly one such event at commit',
+    plan: '§A.3 the two consultation rows; §D 4d-i-b (b); 4d-i-b U3; #590 r2 f1, f3; r4',
+    on: {
+      'DecisionConsultation.DecisionConsultation_t4d_claim': A('I'),
+      'DecisionConsultation.DecisionConsultation_t4d_claim_deferred': C('I'),
+      'DecisionConsultationResponse.DecisionConsultationResponse_t4d_claim': A('I'),
+      'DecisionConsultationResponse.DecisionConsultationResponse_t4d_claim_deferred': C('I'),
+    },
+    must: ['TG_TABLE_NAME', 'TG_NAME', 'decision.consultation_requested', 'decision.consultation_responded',
+      'phase6_t4d_tx_qualified_event', 'jsonb_build_object',
+      "'consultationId'", "'consulteeUserId'", "'responseId'",
+      'NEW."requestedById"', 'NEW."respondedById"', 'c."requestedById"',
+      'platform_claim_event_pairing_once'],
   },
   phase6_t4d_change_transition_paired: {
     rule: 'the decision side of the same bundle: each change-lifecycle move owes exactly one request '

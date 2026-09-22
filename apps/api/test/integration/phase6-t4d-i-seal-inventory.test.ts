@@ -30,7 +30,10 @@ const INVENTORY: Record<string, string[]> = {
   // transition trigger saw moved out of a session setting the CALLER can set and into a table
   // only a trigger can write; this is that table's one seal.
   _t4d_tx_transition: ['_t4d_tx_transition_trigger_only'],
-  ChangeRequest: ['ChangeRequest_t4d_birth_pair', 'ChangeRequest_t4d_closure_bound',
+  ChangeRequest: ['ChangeRequest_t4d_birth_pair',
+    // 4d-i-b U3 (20271224000000): the request's IMMEDIATE claim half (a claimant, refuses nothing).
+    'ChangeRequest_t4d_claim',
+    'ChangeRequest_t4d_closure_bound',
     'ChangeRequest_t4d_evidence_frozen',
     // #582's review round 26, finding 3 — identity frozen from birth, the rule `Decision` already
     // carried and three of its four siblings did not.
@@ -57,13 +60,19 @@ const INVENTORY: Record<string, string[]> = {
   DecisionApprovalRevision: [
     'DecisionApprovalRevision_t4d_birth',
     'DecisionApprovalRevision_t4d_birth_paired',
+    // 4d-i-b U3 (§D (b)): the finalized birth's claimant, immediate and deferred.
+    'DecisionApprovalRevision_t4d_claim',
+    'DecisionApprovalRevision_t4d_claim_deferred',
     'DecisionApprovalRevision_t4d_flip_paired',
     'DecisionApprovalRevision_t4d_one_flip',
   ],
   DecisionConsultation: ['DecisionConsultation_t4d_attribution',
-    'DecisionConsultation_t4d_attribution_present'],
+    'DecisionConsultation_t4d_attribution_present',
+    // 4d-i-b U3 (§D (b)): the two consultation families' claimants.
+    'DecisionConsultation_t4d_claim', 'DecisionConsultation_t4d_claim_deferred'],
   DecisionConsultationResponse: ['DecisionConsultationResponse_t4d_attribution',
-    'DecisionConsultationResponse_t4d_attribution_present'],
+    'DecisionConsultationResponse_t4d_attribution_present',
+    'DecisionConsultationResponse_t4d_claim', 'DecisionConsultationResponse_t4d_claim_deferred'],
   DecisionCountersign: [
     'DecisionCountersign_t4d_append_only',
     'DecisionCountersign_t4d_no_truncate',
@@ -201,9 +210,31 @@ const FUNCTIONS = [
   'platform_claim_event_pairing',
   'platform_tx_event',
   'platform_tx_notification',
+  // 4d-i-b — the idempotent claim the order-independent claimants call (U3), the change
+  // lifecycle's recorders and readers and the audit counter (U2), the actor-narrowed lookup and
+  // count (U1), the request's deferred seal and immediate claimant, the decision-side converse,
+  // and the two remaining per-branch claimants. Existence-only, like the rest of this list — a
+  // seal calling a function that is not there fails at the first write, not at install.
+  'platform_claim_event_pairing_once',
+  'phase6_t4d_decision_change_here',
+  'phase6_t4d_decision_moved_in_tx',
+  'phase6_t4d_change_request_here',
+  'phase6_t4d_requests_moved_in_tx',
+  'phase6_t4d_tx_audit_count',
+  'phase6_t4d_tx_actor_event',
+  'phase6_t4d_tx_actor_event_count',
+  // U3 (Codex round 1) — U1's actor-event read widened to the payload/audience the consultation
+  // claimants match on, so a decisions claimant asks the kernel one qualified question instead of
+  // reaching into the DomainEvent table itself.
+  'phase6_t4d_tx_qualified_event',
+  'phase6_t4d_change_request_paired',
+  'phase6_t4d_change_request_claims_event',
+  'phase6_t4d_change_transition_paired',
+  'phase6_t4d_revision_claims_approval',
+  'phase6_t4d_consultation_claims_event',
 ];
 
-describe('Phase 6 unit 4d-i — every seal the migration names is INSTALLED (live PG)', () => {
+describe('Phase 6 units 4d-i and 4d-i-b — every seal the migrations name is INSTALLED (live PG)', () => {
   let prisma: PrismaClient;
 
   beforeAll(async () => {

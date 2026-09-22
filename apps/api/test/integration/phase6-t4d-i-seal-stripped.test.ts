@@ -3,18 +3,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { effectCoverageVersion } from '../../src/platform/external-effects';
 import { Prisma } from '@prisma/client';
 import { orgsManifest } from '../../src/orgs/orgs.manifest';
-
-/**
- * THIS release's coverage generation. From round 8's finding 3 the migration seeds TWO — this one
- * and the outgoing `6313b00c…` a still-serving process emits — so a fixture that picks a catalog
- * row by `effectKey` alone now matches both and plants two events at one stream position. Every
- * plant here stands in for a CURRENT writer, so it names the version a current writer computes.
- */
-const COVERAGE = effectCoverageVersion();
-
 
 /**
  * Phase 6 unit 4d-i — THE SEAL-STRIPPED MIGRATION HARNESS (§C).
@@ -93,6 +83,28 @@ const OUTGOING = (() => {
   return m[1]!;
 })();
 
+/**
+ * THIS UNIT's current coverage generation — the version 4d-i's migration seeds by VALUES (its 113
+ * live keys), read OUT OF THE MIGRATION rather than from `effectCoverageVersion()`. From round 8's
+ * finding 3 the migration seeds TWO generations — this one and the outgoing `6313b00c…` (via
+ * SELECT) a still-serving process emits — so a fixture that picks a catalog row by `effectKey`
+ * alone matches both and plants two events at one stream position; naming the version keeps a
+ * plant to one row. Every plant here stands in for a CURRENT writer against THIS harness's
+ * database, and that database carries ONLY the 4d-i unit (U1/U2/U3 are excluded from `buildBase`),
+ * so the version a current writer computes here is the one 4d-i seeds — NOT `effectCoverageVersion()`,
+ * which a LATER unit's flip moves on: 4d-i-b U3 moved that src constant to `7dac2bd5…` while this
+ * 4d-i-only database still tops out at `842cc9fc…`, so a plant at the src version found no catalog
+ * row and left its stream allocation orphaned (`platform_t4d_stream_allocation_bound`). Read from
+ * the file for the same reason OUTGOING is: a probe can never assert against a constant the file
+ * stopped using.
+ */
+const COVERAGE = (() => {
+  const m = readFileSync(MIGRATION, 'utf8')
+    .match(/INSERT INTO "_t4d_catalog_seed"[\s\S]*?VALUES\s*\n\s*\('([0-9a-f]{64})',/);
+  if (!m) throw new Error('the current coverage generation could not be read from the migration');
+  return m[1]!;
+})();
+
 const BASE_DB = 't4d_seal_stripped_base';
 const RUN_DB = 't4d_seal_stripped_run';
 
@@ -168,12 +180,14 @@ function buildBase(): void {
   psql('postgres', ['-c', `DROP DATABASE IF EXISTS "${BASE_DB}" WITH (FORCE)`]);
   const created = psql('postgres', ['-c', `CREATE DATABASE "${BASE_DB}"`]);
   expect(created.ok, created.output).toBe(true);
-  // The 4d-i unit is applied to the RUN database (with strips), not the base. 4d-i-b U1 (20271222)
-  // DEPENDS on 4d-i's catalog and refuses to apply without it, so it is excluded from this
-  // deliberately pre-4d base too — its own unit's harness proves it, not this one.
+  // The 4d-i unit is applied to the RUN database (with strips), not the base. 4d-i-b U1 (20271222),
+  // U2 (20271223) and U3 (20271224) each DEPEND on 4d-i's catalog and refuse to apply without it,
+  // so they are excluded from this deliberately pre-4d base too — their own units' harnesses prove
+  // them, not this one.
   const unit = new Set<string>([...UNIT_DIRS,
     '20271222000000_phase6_t4d_i_b_u1_bound_event_actor',
-    '20271223000000_phase6_t4d_i_b_u2_change_bundle_seals']);
+    '20271223000000_phase6_t4d_i_b_u2_change_bundle_seals',
+    '20271224000000_phase6_t4d_i_b_u3_pairing_flip']);
   for (const dir of readdirSync(MIGRATIONS_DIR).filter((d) => !unit.has(d) && !d.endsWith('.toml')).sort()) {
     const file = join(MIGRATIONS_DIR, dir, 'migration.sql');
     // Everything is applied the way Prisma applies it (one transaction, stop on error), because

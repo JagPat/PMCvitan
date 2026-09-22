@@ -1336,7 +1336,7 @@ the same `User` row, forever.
 
 3. **Redeploy.** The audit now sees zero and the reservation installs.
 
-### Deploying 4d-i RESEALS the external-effect cutover
+### Deploying 4d-i (and 4d-i-b's pairing flip) RESEALS the external-effect cutover
 
 4d-i changes the compiled `effectCoverageVersion()`, and `OutboxBootstrap`
 refuses to start when `OUTBOX_SENDER_MODE=outbox` and the persisted
@@ -1347,12 +1347,23 @@ OUTBOX_SENDER_MODE=outbox seal coverage <old> != compiled catalog <new>
   — reseal (in legacy/shadow) after the external-effect catalog changed
 ```
 
-That is the gate working, not a fault. 4d-i takes the same sequence 4d-ii takes:
+That is the gate working, not a fault. **4d-i-b U3 (the pairing flip) changes the
+compiled version again** — `842cc9fc…` → `7dac2bd5…`, because `pairingRequired`
+joined `canonicalCatalog()`'s preimage — so deploying that build RESEALS by the
+SAME procedure: it is not a migration's job (a migration cannot supply the operator
+identity/reason or the running build's hash, and writing the seal would race the
+cutover), and seeding the new `ExternalEffectCatalog` generation does NOT update the
+separate cutover seal. 4d-i and 4d-i-b each take the same sequence 4d-ii takes:
 
-1. deploy the 4d-i build with `OUTBOX_SENDER_MODE=legacy` (or `shadow`);
-2. `outbox:status` clean, then `outbox:seal-external` — this records the NEW
-   coverage in the singleton seal;
-3. restart with `OUTBOX_SENDER_MODE=outbox`; startup verifies the seal.
+1. deploy **the build that carries the catalog change you are sealing** — for a
+   U3 rollout that is the **4d-i-b U3 build**, whose compiled `effectCoverageVersion()`
+   is `7dac2bd5…`, NOT the preceding 4d-i build (`842cc9fc…`) — with
+   `OUTBOX_SENDER_MODE=legacy` (or `shadow`);
+2. `outbox:status` clean, then `outbox:seal-external` — this records THAT running
+   build's compiled coverage in the singleton seal (`7dac2bd5…` for U3), so the seal
+   names the version the next `outbox` restart will verify;
+3. restart the SAME build with `OUTBOX_SENDER_MODE=outbox`; startup verifies the seal
+   against its own compiled coverage.
 
 The seeded `ExternalEffectCatalog` rows are a DIFFERENT mechanism and do not
 substitute for this: two coverage generations keep a still-serving previous
