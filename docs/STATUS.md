@@ -14,36 +14,39 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: cloud-role-transfer-shadow-consumer-broadening
-reviewed_merge: b2490c2a
-open_pr: 618
+work_item: cloud-role-transfer-activation-evidence-reader
+reviewed_merge: e0908622
+open_pr: 620
 next_task: phase-6-task-4d
 blocking_directive: none
-updated: 2026-09-22
+updated: 2026-09-23
 ```
 
-### Now — 4d-i-b U3 merged; the current unit is the cloud-role-transfer shadow-consumer broadening (#618)
+### Now — cloud role transfer: unit (a) activation evidence reader (#620); #619 held open as unit (b)
 
-**U3 merged** to `main` at `b2490c2a` (#617): the pairing flip and all its claimants,
-with the R1 corrections (NULL-actor claimants, the platform-owned qualified-event
-primitive, the outbox reseal docs) folded on the same head. Phase 6 task 4d unit
-4d-i-b is complete; the U1/U2/U3 additive redesign below is now history.
+The cloud role transfer continues from fresh `main` (`e0908622`, #618 merged), with one writer and one
+channel. #619, the activation-readiness verdict, reached the policy's third-head stop: 3 → 4 → 3 → 6
+P1s on `scripts/role-activation.mjs`, all in the identity/ordering/freshness class (stop recorded at
+#619 comment 5790993532). The operator approved the recommended **additive split** (#619 comment
+5791317874; coordination on #482 comment 5791318564):
 
-Per the owner disposition at the protected #617 boundary (issue #482, 2026-09-22),
-the next selected bounded work is the already-approved **cloud role transfer** from
-fresh `main`, NOT the next phase-6 product unit and NOT the deferred #614/#615.
-`open_pr: 618` (`work_item: cloud-role-transfer-shadow-consumer-broadening`, branch
-`claude/role-transfer-shadow-consumer`) lands the consumer-side broadening
-`docs/CLOUD_ROLE_TRANSFER.md` deferred to "the later unit": trusted-`main` lineage
-(`workflowExecutionRef`/`head_branch` = `main`), acceptance of an earlier trusted
-`main` workflow SHA (base-equality pin moved onto the server-side producer proof
-bound to the publisher's deterministic success/failure form), and full producer-
-verified finding admission — with the shadow consumer kept **non-authoritative**
-(`authoritative: false` on every path, no merge/gate/ownership/correction-owner
-change, `claude-independent-review` still out of the required checks). It claims no
-role activation; the authoritative-gate flip stays a separate, later, atomically
-reviewed unit. The preserved merged branch `claude/pmcvitan-mobile-places-n3fxup`
-stays untouched at `b2490c2a`.
+- **Unit (a), `open_pr: 620`** (`work_item: cloud-role-transfer-activation-evidence-reader`, branch
+  `claude/role-activation-evidence-reader`). `scripts/role-activation-evidence.mjs` is a trusted,
+  read-only reader that authenticates one correction cycle from GitHub: request, acceptance, findings
+  and reviews, newest-evidence CI, push log with ancestry, and live-head freshness. It returns
+  normalized records. It decides nothing across records, writes nothing and activates nothing.
+- **Unit (b), #619 (kept open, not replaced).** After (a) merges, #619 merges `main` and re-scopes the
+  pure verdict to consume (a)'s schema against a caller-supplied expected repository and PR. It carries
+  all six current-head obligations (repository on every record, the full milestone order,
+  install-after-cycle, the triggering finding through request and acceptance, live-head/push-log
+  freshness, and the latest applicable CI) plus every earlier finding.
+
+Nothing activates: `codex-current-head` stays required, no gate or routing changes, and Codex is
+neither awakenable nor activated. #614/#615 stay untouched, and the preserved merged branch
+`claude/pmcvitan-mobile-places-n3fxup` stays at `b2490c2a`.
+
+**Merged in the role-transfer lane:** #618 (`e0908622`), the shadow-consumer broadening
+(non-authoritative). #617 (`b2490c2a`), Phase 6 task 4d unit 4d-i-b U3.
 
 ### History — 4d-i-b as the additive U1/U2/U3 redesign; all three merged (U3 = #617 → b2490c2a)
 
