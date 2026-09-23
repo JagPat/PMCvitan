@@ -119,10 +119,12 @@ export function normalizeAcceptance(reactions, request) {
 
 /**
  * The branch push log since the request. The corrective push is the FIRST update after the request; every
- * later update is listed (an away-and-back return to the same SHA is two entries). Returns
+ * later update is listed (an away-and-back return to the same SHA is two entries). The log is branch-scoped;
+ * the record also names the PR whose live head ref the branch was resolved from, so it carries the same
+ * repository+PR identity as every other record. Returns
  * `{ correctivePush: null, truncated }` when the window is not fully covered or holds no update.
  */
-export function normalizePushLog(activities, { repository, branch, sinceMs }) {
+export function normalizePushLog(activities, { repository, pullRequest, branch, sinceMs }) {
   if (!Array.isArray(activities) || typeof branch !== 'string' || !Number.isFinite(sinceMs)) {
     return { correctivePush: null, pushesAfterCorrective: null, truncated: false };
   }
@@ -144,7 +146,7 @@ export function normalizePushLog(activities, { repository, branch, sinceMs }) {
     atMs,
   });
   return {
-    correctivePush: { repository, branch, ...describe(since[0]), ancestry: null },
+    correctivePush: { repository, pullRequest, branch, ...describe(since[0]), ancestry: null },
     pushesAfterCorrective: since.slice(1).map(describe),
     truncated: false,
   };
@@ -308,7 +310,7 @@ export async function readRoleActivationEvidence(
     : null;
   const pushLogReadAtMs = now();
   const log = request
-    ? normalizePushLog(activities, { repository, branch, sinceMs: request.atMs })
+    ? normalizePushLog(activities, { repository, pullRequest, branch, sinceMs: request.atMs })
     : { correctivePush: null, pushesAfterCorrective: null, truncated: false };
   if (log.truncated) problems.push('push-log: page does not reach back to the request (truncated)');
   const correctivePush = log.correctivePush;

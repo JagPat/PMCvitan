@@ -195,7 +195,7 @@ test('the reader normalizes a full correction cycle with identity and server tim
   );
   assert.deepEqual(acceptance, { repository: REPO, pullRequest: PR, requestId: REQUEST_ID, actorLogin: CODEX_LOGIN, atMs: ms('10:31') });
   assert.deepEqual(correctivePush, {
-    repository: REPO, branch: BRANCH, activityId: 900, activityType: 'push', actorLogin: CODEX_LOGIN,
+    repository: REPO, pullRequest: PR, branch: BRANCH, activityId: 900, activityType: 'push', actorLogin: CODEX_LOGIN,
     beforeSha: ORIGINAL, afterSha: CORRECTIVE, atMs: ms('10:50'),
     ancestry: { status: 'ahead', aheadBy: 2, behindBy: 0, mergeBaseSha: ORIGINAL },
   });
