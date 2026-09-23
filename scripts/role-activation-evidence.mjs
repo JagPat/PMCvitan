@@ -1,5 +1,5 @@
-import { CODEX_LOGIN, requiredChecksForPullRequest } from './review-policy.mjs';
-import { summarizeRequiredChecks } from './autonomous-review-gate.mjs';
+import { CLAUDE_SHADOW_CONTEXT, CODEX_LOGIN, requiredChecksForPullRequest } from './review-policy.mjs';
+import { resolveRequiredChecks } from './autonomous-review-gate.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import { PROBE_MARKER_PREFIX } from './codex-fix-probe.mjs';
 
@@ -22,19 +22,27 @@ import { PROBE_MARKER_PREFIX } from './codex-fix-probe.mjs';
  *   - task acceptance     — a Codex-connector 👀 reaction on THAT request comment.
  *   - findings / reviews  — `classifyClaudeShadowReview` + `GitHubClient.verifyClaudeShadowProducer`
  *                           (server-associated publisher run, trusted workflow path, artifact digest); the
- *                           finding's identity is the verified check run's own URL.
- *   - CI                  — `summarizeRequiredChecks`, the gate's newest-evidence rule (retargets and
- *                           cancelled attempts included). The initial CI is evaluated AS OF the triggering
- *                           finding; the final CI is read fresh, so a newer failed/cancelled attempt governs.
+ *                           finding's identity is the verified check run's own URL. The initial finding is
+ *                           the run the request's marker NAMES, not merely the newest; later reviews of the
+ *                           reviewed head are reported beside it.
+ *   - CI                  — `resolveRequiredChecks`, the gate's newest-evidence rule (retargets and
+ *                           cancelled attempts included). The record is dated, and bound, by the runs that
+ *                           DECIDED each required name, never by a superseded straggler. The initial CI is
+ *                           evaluated AS OF the triggering finding; the final CI is read in the closing pass.
  *   - corrective push     — the repository Activity API's branch push log (server before/after/type/actor/
  *                           timestamp); ancestry from the compare API. The corrective push is the FIRST
  *                           branch update after the request; every later update is reported, so an
- *                           away-and-back return to the same SHA is still two updates.
- *   - freshness           — the live PR is read before and after the fresh reads; the window's times are
- *                           recorded so the verdict can require the reads to post-date the final review.
- *                           Window times come from the reader host (`now`), milestones from GitHub; the
- *                           freshness itself is anchored by the reads, since the final review and CI are
- *                           read already-complete inside the pass.
+ *                           away-and-back return to the same SHA is still two updates. The log counts only
+ *                           when it reaches back to an update at or before the request (widening the
+ *                           Activity API's trailing `time_period` as needed); otherwise it is uncovered.
+ *   - freshness           — every other read happens first; then the freshness point `observedAtMs` is taken;
+ *                           then the CLOSING reads run: the live PR (head, base ref, repositories), the final
+ *                           check runs (final review and latest CI attempt), and last the branch push log.
+ *                           Each closing read starts after the freshness point, so each covers the cycle up
+ *                           to at least that instant: a push (even away-and-back), a retarget or a newer CI
+ *                           attempt before it is visible. Window times come from the reader host (`now`),
+ *                           milestones from GitHub. A later consumer that ACTS must re-read and bind to the
+ *                           reported decider runs; the reader only reports.
  *
  * It decides nothing across records: identity equality, ordering, causation and freshness are the pure
  * verdict's rules. A source that cannot be read or authenticated yields `null` (never a partial record that
@@ -51,9 +59,22 @@ export const GITHUB_ACTIONS_LOGIN = 'github-actions[bot]';
 // Observed-behaviour assumption, fail closed: the Codex connector acknowledges a task with 👀 on the
 // triggering comment. Any other reaction, or one from another account, is not acceptance.
 export const CODEX_ACCEPTANCE_REACTION = 'eyes';
-// One page of the branch push log. A full page that does not reach back past the request is TRUNCATED
-// (reported, not guessed): the corrective push cannot be identified without the whole window.
+// One page of the branch push log. A log that does not reach back to an update at or before the request is
+// UNCOVERED (reported, not guessed): the corrective push cannot be identified without the whole window.
 export const PUSH_LOG_PAGE_SIZE = 100;
+// The Activity API filters by a trailing `time_period` (a day unless given). Each period with a LOWER bound of
+// its length in days; the reader tries the shortest that spans the request, then wider ones, until the log
+// reaches back past the request or a page fills. Older than a year is uncovered.
+export const ACTIVITY_PERIODS = [['day', 1], ['week', 7], ['month', 28], ['quarter', 89], ['year', 365]];
+const DAY_MS = 86_400_000;
+const PERIOD_MARGIN_MS = 60 * 60_000;
+
+/** The Activity API periods, shortest first, that can reach back to `sinceMs` as of `nowMs`. */
+export function activityPeriods(sinceMs, nowMs) {
+  if (!Number.isFinite(sinceMs) || !Number.isFinite(nowMs)) return [];
+  const span = nowMs - sinceMs + PERIOD_MARGIN_MS;
+  return ACTIVITY_PERIODS.filter(([, days]) => span < days * DAY_MS).map(([name]) => name);
+}
 
 const SHA = /^[0-9a-f]{40}$/u;
 const MARKER = new RegExp(
@@ -121,22 +142,22 @@ export function normalizeAcceptance(reactions, request) {
  * The branch push log since the request. The corrective push is the FIRST update after the request; every
  * later update is listed (an away-and-back return to the same SHA is two entries). The log is branch-scoped;
  * the record also names the PR whose live head ref the branch was resolved from, so it carries the same
- * repository+PR identity as every other record. Returns
- * `{ correctivePush: null, truncated }` when the window is not fully covered or holds no update.
+ * repository+PR identity as every other record. The log is COVERED only when it holds an update at or before
+ * the request: the API lists newest first, so every update after that one is then present. Returns
+ * `{ correctivePush: null, covered }` when the window is not covered or holds no update.
  */
 export function normalizePushLog(activities, { repository, pullRequest, branch, sinceMs }) {
   if (!Array.isArray(activities) || typeof branch !== 'string' || !Number.isFinite(sinceMs)) {
-    return { correctivePush: null, pushesAfterCorrective: null, truncated: false };
+    return { correctivePush: null, pushesAfterCorrective: null, covered: false };
   }
   const ref = `refs/heads/${branch}`;
   const dated = activities
     .filter((activity) => activity?.ref === ref && timeMs(activity.timestamp) !== null)
     .map((activity) => ({ activity, atMs: timeMs(activity.timestamp) }))
     .sort((a, b) => (a.atMs - b.atMs) || (a.activity.id - b.activity.id));
-  // Covered only when the page was not full, or it reaches back to (or before) the request.
-  const truncated = activities.length >= PUSH_LOG_PAGE_SIZE && !(dated[0] && dated[0].atMs <= sinceMs);
+  const covered = dated.length > 0 && dated[0].atMs <= sinceMs;
   const since = dated.filter((entry) => entry.atMs > sinceMs);
-  if (truncated || since.length === 0) return { correctivePush: null, pushesAfterCorrective: null, truncated };
+  if (!covered || since.length === 0) return { correctivePush: null, pushesAfterCorrective: null, covered };
   const describe = ({ activity, atMs }) => ({
     activityId: activity.id,
     activityType: activity.activity_type ?? null,
@@ -148,7 +169,7 @@ export function normalizePushLog(activities, { repository, pullRequest, branch, 
   return {
     correctivePush: { repository, pullRequest, branch, ...describe(since[0]), ancestry: null },
     pushesAfterCorrective: since.slice(1).map(describe),
-    truncated: false,
+    covered,
   };
 }
 
@@ -207,16 +228,23 @@ export function checkRunsAsOf(checkRuns, asOfMs) {
   });
 }
 
-/** Required CI for one head under the gate's newest-evidence rule, dated by its newest completion. */
+/**
+ * Required CI for one head under the gate's newest-evidence rule. It is dated by, and names, the runs that
+ * DECIDED each required name (`deciders`: one check run per name, so a rerun is a different id) — never by
+ * every run of a required name, since a superseded straggler can finish after the run that decides.
+ */
 export function normalizeCi(checkRuns, { repository, pullRequest, headSha, baseSha, asOfMs = null, readAtMs }) {
   if (!Array.isArray(checkRuns) || !SHA.test(headSha ?? '')) return null;
   const required = requiredChecksForPullRequest(pullRequest);
   const runs = checkRunsAsOf(checkRuns.filter((run) => run?.head_sha === headSha), asOfMs);
-  const summary = summarizeRequiredChecks(runs, required);
-  const completions = runs
-    .filter((run) => required.includes(run.name) && run.status === 'completed')
-    .map((run) => timeMs(run.completed_at))
-    .filter((time) => time !== null);
+  const summary = resolveRequiredChecks(runs, required);
+  const deciders = summary.deciders.map((run) => ({
+    name: run.name,
+    checkRunId: run.id,
+    conclusion: run.conclusion,
+    completedAtMs: timeMs(run.completed_at),
+  }));
+  const completions = deciders.map((decider) => decider.completedAtMs);
   return {
     repository,
     pullRequest,
@@ -226,7 +254,8 @@ export function normalizeCi(checkRuns, { repository, pullRequest, headSha, baseS
     missing: summary.missing,
     pending: summary.pending,
     failed: summary.failed,
-    atMs: completions.length > 0 ? Math.max(...completions) : null,
+    deciders,
+    atMs: completions.length > 0 && completions.every(Number.isFinite) ? Math.max(...completions) : null,
     readAtMs,
   };
 }
@@ -274,20 +303,53 @@ export async function readRoleActivationEvidence(
     : null;
   const acceptance = normalizeAcceptance(reactions, request);
 
-  // The freshness pass: live PR, then every live-state read, then the live PR again.
+  // The branch push log, widening the Activity API period until it reaches back past the request.
+  const readPushLog = async (label, branch) => {
+    const uncovered = { correctivePush: null, pushesAfterCorrective: null, covered: false };
+    const periods = activityPeriods(request.atMs, now());
+    if (periods.length === 0) {
+      problems.push(`${label}: the request is older than the longest Activity API period`);
+      return uncovered;
+    }
+    for (const period of periods) {
+      const page = await read(label, () => client.request(
+        `/repos/${repository}/activity?ref=${encodeURIComponent(`refs/heads/${branch}`)}`
+          + `&direction=desc&per_page=${PUSH_LOG_PAGE_SIZE}&time_period=${period}`,
+      ));
+      if (!Array.isArray(page)) return uncovered;
+      const log = normalizePushLog(page, { repository, pullRequest, branch, sinceMs: request.atMs });
+      if (log.covered) return log;
+      // A full page that does not reach back cannot be widened into coverage: it would only be fuller.
+      if (page.length >= PUSH_LOG_PAGE_SIZE) break;
+    }
+    problems.push(`${label}: the log does not reach back to the request (uncovered)`);
+    return uncovered;
+  };
+
+  // The freshness pass opens: the live PR, then every non-closing read.
   const startedAtMs = now();
   const pullAtStart = await read('pull', () => client.pullRequest(pullRequest));
   const branch = typeof pullAtStart?.head?.ref === 'string' ? pullAtStart.head.ref : null;
   const baseSha = SHA.test(pullAtStart?.base?.sha ?? '') ? pullAtStart.base.sha : null;
   const originalHeadSha = request?.headSha ?? null;
 
-  // Initial legs on the reviewed head, bound to the cycle base; CI is evaluated as of the finding.
+  // Initial legs on the reviewed head, bound to the cycle base. The finding is the run the request NAMES
+  // (a later review of the same head must not stand in for it); CI is evaluated as of that finding.
   let initialFinding = null;
   let initialCi = null;
   if (originalHeadSha && baseSha) {
     const originalRuns = await read('original-check-runs', () => client.checkRuns(originalHeadSha));
     if (originalRuns) {
-      initialFinding = normalizeShadowReview(await review(originalRuns, originalHeadSha, baseSha), originalRuns);
+      const named = originalRuns.filter((run) => run?.name !== CLAUDE_SHADOW_CONTEXT
+        || run?.html_url === request.findingRef);
+      initialFinding = normalizeShadowReview(await review(named, originalHeadSha, baseSha), named);
+      if (Number.isInteger(initialFinding?.checkRunId)) {
+        initialFinding.laterReviewRunIds = originalRuns
+          .filter((run) => run?.name === CLAUDE_SHADOW_CONTEXT && run?.head_sha === originalHeadSha
+            && Number.isInteger(run.id) && run.id > initialFinding.checkRunId)
+          .map((run) => run.id)
+          .sort((a, b) => a - b);
+      }
       if (Number.isFinite(initialFinding?.atMs)) {
         initialCi = normalizeCi(originalRuns, {
           repository,
@@ -301,18 +363,10 @@ export async function readRoleActivationEvidence(
     }
   }
 
-  // The branch push log: the corrective push and every later update.
-  const activities = branch && request
-    ? await read('push-log', () => client.request(
-      `/repos/${repository}/activity?ref=${encodeURIComponent(`refs/heads/${branch}`)}`
-        + `&direction=desc&per_page=${PUSH_LOG_PAGE_SIZE}`,
-    ))
-    : null;
-  const pushLogReadAtMs = now();
-  const log = request
-    ? normalizePushLog(activities, { repository, pullRequest, branch, sinceMs: request.atMs })
-    : { correctivePush: null, pushesAfterCorrective: null, truncated: false };
-  if (log.truncated) problems.push('push-log: page does not reach back to the request (truncated)');
+  // The corrective push: the first branch update after the request, with its server ancestry.
+  const log = request && branch
+    ? await readPushLog('push-log', branch)
+    : { correctivePush: null, pushesAfterCorrective: null, covered: false };
   const correctivePush = log.correctivePush;
   const correctiveHeadSha = SHA.test(correctivePush?.afterSha ?? '') ? correctivePush.afterSha : null;
   if (correctivePush && originalHeadSha && correctiveHeadSha) {
@@ -320,7 +374,16 @@ export async function readRoleActivationEvidence(
       client.request(`/repos/${repository}/compare/${originalHeadSha}...${correctiveHeadSha}`)));
   }
 
-  // Final legs on the corrective head, read fresh: the newest shadow review and the latest applicable CI.
+  // The freshness point. Every read above is complete; every closing read below starts after it, so each
+  // closing read covers the cycle up to at least this instant.
+  const observedAtMs = now();
+
+  // Closing read 1: the live PR — head, base ref and both repositories, as they now stand.
+  const pullAtEnd = await read('pull-recheck', () => client.pullRequest(pullRequest));
+  const pullReadAtMs = now();
+
+  // Closing read 2: the final check runs on the corrective head — the newest shadow review and the latest
+  // applicable CI attempt, with the runs that decided it.
   let finalReview = null;
   let finalCi = null;
   if (correctiveHeadSha && baseSha) {
@@ -339,8 +402,20 @@ export async function readRoleActivationEvidence(
     }
   }
 
-  const pullAtEnd = await read('pull-recheck', () => client.pullRequest(pullRequest));
-  const observedAtMs = now();
+  // Closing read 3, last: the push log again, so an update (even away-and-back) before the freshness point
+  // is listed. It must confirm the same corrective push; anything else is unknown, never "no pushes".
+  let pushesAfterCorrective = null;
+  let pushLogReadAtMs = null;
+  if (correctivePush) {
+    const closing = await readPushLog('push-log-closing', branch);
+    pushLogReadAtMs = now();
+    if (closing.correctivePush?.activityId === correctivePush.activityId) {
+      pushesAfterCorrective = closing.pushesAfterCorrective;
+    } else if (closing.covered) {
+      problems.push('push-log-closing: the closing log names a different corrective push');
+    }
+  }
+
   const freshness = pullAtStart && pullAtEnd
     ? {
       repository,
@@ -350,15 +425,19 @@ export async function readRoleActivationEvidence(
       headRepository: pullAtStart.head?.repo?.full_name ?? null,
       baseRepository: pullAtStart.base?.repo?.full_name ?? null,
       baseRef: pullAtStart.base?.ref ?? null,
-      prState: pullAtEnd.state ?? null,
       liveHeadAtStart: pullAtStart.head?.sha ?? null,
+      prState: pullAtEnd.state ?? null,
       liveHeadAtEnd: pullAtEnd.head?.sha ?? null,
       branchAtEnd: pullAtEnd.head?.ref ?? null,
+      headRepositoryAtEnd: pullAtEnd.head?.repo?.full_name ?? null,
+      baseRefAtEnd: pullAtEnd.base?.ref ?? null,
+      baseRepositoryAtEnd: pullAtEnd.base?.repo?.full_name ?? null,
       baseShaAtEnd: pullAtEnd.base?.sha ?? null,
-      pushesAfterCorrective: log.pushesAfterCorrective,
-      pushLogReadAtMs,
+      pushesAfterCorrective,
       startedAtMs,
       observedAtMs,
+      pullReadAtMs,
+      pushLogReadAtMs,
     }
     : null;
 

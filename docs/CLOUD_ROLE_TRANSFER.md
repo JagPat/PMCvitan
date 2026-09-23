@@ -216,16 +216,22 @@ under and its milestone's server timestamp. It reuses the existing trusted adapt
 - **Acceptance.** The earliest Codex-connector 👀 reaction on that exact request comment. This is an
   observed-behaviour assumption and fails closed.
 - **Findings and reviews.** `classifyClaudeShadowReview` with `verifyClaudeShadowProducer`. A finding's
-  identity is its verified check run's own URL.
-- **CI.** `summarizeRequiredChecks`, the gate's newest-evidence rule, which includes cancelled attempts.
-  The initial CI is evaluated as of the triggering finding. The final CI is read fresh, so a newer
-  failed or cancelled attempt governs.
+  identity is its verified check run's own URL. The initial finding is the run the request's marker
+  names, not merely the newest review. Later reviews of the reviewed head are listed beside it.
+- **CI.** `resolveRequiredChecks`, the gate's newest-evidence rule, which includes cancelled attempts. A
+  CI record is dated by, and names, the run that decided each required name (`deciders`). A superseded
+  straggler never dates it. The initial CI is evaluated as of the triggering finding.
 - **Corrective push.** The Activity API's branch push log, giving server before/after/type/actor/time;
   ancestry comes from the compare API. The corrective push is the first branch update after the
   request. Every later update is listed, so an away-and-back to the same SHA still shows two updates.
-  A push-log page that does not reach back to the request is reported as truncated, not guessed.
-- **Freshness.** The live PR is read before and after the fresh reads, and the window's times are
-  recorded.
+  The log counts only when it reaches back to an update at or before the request. The reader widens the
+  API's trailing `time_period` (a day by default) until it does. If it never does, the log is reported
+  as uncovered, not guessed.
+- **Freshness.** Every other read happens first, then the freshness point is taken. Then come the closing
+  reads: the live PR (head, base ref and repositories), the final check runs (final review and latest CI
+  attempt), and last the push log again. Each closing read starts after the freshness point. So a push
+  (even away-and-back), a retarget or a newer CI attempt before that point is visible. A consumer that
+  acts must re-read and bind to the reported decider runs.
 
 The reader decides nothing across records. Identity equality with the caller's expected repository and
 PR, the full milestone order, causation and freshness are the pure verdict's rules (#619). An unreadable
