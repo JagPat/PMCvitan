@@ -13,6 +13,7 @@ import {
 import { codexFixComment, probeMarker } from './codex-fix-probe.mjs';
 import { evidenceArtifactName } from './claude-shadow-review.mjs';
 import { CODEX_LOGIN, REQUIRED_CHECKS } from './review-policy.mjs';
+import { EVENT_LOG_PAGE_SIZE } from './pull-request-event-log.mjs';
 
 const REPO = 'JagPat/PMCvitan';
 const PR = 619;
@@ -122,8 +123,14 @@ function world() {
     activities: [activity(900, ORIGINAL, CORRECTIVE, '10:50'), activity(800, OTHER, ORIGINAL, '09:00', { actor: 'JagPat' })],
     comparison: { status: 'ahead', ahead_by: 2, behind_by: 0, merge_base_commit: { sha: ORIGINAL } },
     pulls: [pull(), pull()],
+    // the pull request's issue events, oldest first, as GitHub returns them
+    events: [issueEvent(40, 'labeled', '09:30'), issueEvent(41, 'base_ref_changed', '09:40')],
     verify: true,
   };
+}
+
+function issueEvent(id, event, hhmm, actor = 'JagPat') {
+  return { id, event, actor: { login: actor }, created_at: at(hhmm) };
 }
 
 // The Activity API's trailing period, as the server applies it (a day unless `time_period` says otherwise).
@@ -139,7 +146,7 @@ function activityPage(w, path) {
 // between two of the reader's own reads (a barrier).
 function client(w) {
   const calls = [];
-  const counts = { pull: 0, activity: 0, comment: 0 };
+  const counts = { pull: 0, activity: 0, comment: 0, events: 0 };
   const after = (kind) => w.after?.[kind]?.[(counts[kind] += 1)]?.(w);
   const fake = {
     repository: REPO,
@@ -149,6 +156,7 @@ function client(w) {
       if (path === `/repos/${REPO}/issues/comments/${REQUEST_ID}`) {
         const comment = w.comment;
         after('comment');
+        if (!comment && w.emptyAnswer) return null;
         if (!comment) throw new Error('Not Found');
         return comment;
       }
@@ -159,6 +167,14 @@ function client(w) {
         return page;
       }
       if (path.startsWith(`/repos/${REPO}/compare/`)) return w.comparison;
+      const events = /^\/repos\/JagPat\/PMCvitan\/issues\/619\/events\?per_page=(\d+)&page=(\d+)$/u.exec(path);
+      if (events) {
+        if (w.eventsError) throw new Error(w.eventsError);
+        const [size, page] = [Number(events[1]), Number(events[2])];
+        const items = w.events.slice((page - 1) * size, page * size);
+        after('events');
+        return items;
+      }
       throw new Error(`unexpected ${path}`);
     },
     async pullRequest(number) {
@@ -239,6 +255,10 @@ test('the reader normalizes a full correction cycle with identity and server tim
     { headRepositoryAtEnd: REPO, baseRefAtEnd: 'main', baseRepositoryAtEnd: REPO },
   );
   assert.deepEqual(initialFinding.laterReviewRunIds, []);
+  // The lifecycle event log covers the cycle from its earliest milestone (the finding, before the request);
+  // the retarget and label before it are not the cycle's.
+  assert.equal(freshness.lifecycleSinceMs, ms('10:20'));
+  assert.deepEqual(freshness.lifecycleEvents, []);
   // The final CI names the one run that decided each required name.
   assert.deepEqual(finalCi.deciders.map((decider) => decider.name).sort(), [...REQUIRED_CHECKS].sort());
   assert.ok(finalCi.deciders.every((decider) => decider.conclusion === 'success' && decider.completedAtMs === ms('11:00')));
@@ -246,11 +266,12 @@ test('the reader normalizes a full correction cycle with identity and server tim
   assert.ok(freshness.startedAtMs < freshness.observedAtMs);
   // Every mutable source is read after the freshness point.
   for (const readAt of [request.readAtMs, acceptance.readAtMs, initialFinding.readAtMs, initialCi.readAtMs,
-    freshness.pullReadAtMs, freshness.pushLogReadAtMs, finalCi.readAtMs, finalReview.readAtMs]) {
+    freshness.pullReadAtMs, freshness.pushLogReadAtMs, finalCi.readAtMs, finalReview.readAtMs,
+    freshness.eventLogCoveredFromMs, freshness.eventLogReadAtMs]) {
     assert.ok(freshness.observedAtMs < readAt);
   }
   // Read-only: GETs only (the fake refuses writes), and only the documented read endpoints.
-  assert.ok(calls.every((path) => /\/(issues\/comments|activity\?|compare\/)/u.test(path)));
+  assert.ok(calls.every((path) => /\/(issues\/comments|issues\/619\/events\?|activity\?|compare\/)/u.test(path)));
   // The push log names its period; this cycle is inside a day.
   assert.ok(calls.filter((path) => path.includes('/activity?')).every((path) => path.endsWith('&time_period=day')));
 });
@@ -363,7 +384,10 @@ test('the request is re-read after the freshness point: an edit, a re-pointing o
     w.after = { comment: { 1: (world) => { world.comment = requestComment({ body: '@codex fix\nno marker' }); } } };
   });
   assert.equal(stripped.evidence.records.request, null);
-  assert.ok(stripped.evidence.problems.includes("request-recheck: the request is no longer readable as this cycle's request"));
+  assert.deepEqual(stripped.evidence.problems.filter((problem) => problem.startsWith('request-recheck:')), [
+    'request-recheck: rejected: no single codex-fix-probe marker with an @codex fix line',
+    "request-recheck: the request is no longer readable as this cycle's request",
+  ]);
   // Unreadable at the opening read but readable later: nothing was planned from it, so no request at all.
   const late = await readWorld((w) => {
     const comment = w.comment;
@@ -479,16 +503,23 @@ test('the correction request is the GitHub-generated probe comment on THIS PR, w
   assert.equal(human.evidence.records.request.humanAuthored, true);
   const edited = await readWorld((w) => { w.comment = requestComment({ updated_at: at('10:45') }); });
   assert.equal(edited.evidence.records.request.edited, true);
-  for (const comment of [
-    requestComment({ issue_url: `https://api.github.com/repos/${REPO}/issues/620` }), // another PR
-    requestComment({ issue_url: `https://api.github.com/repos/fork/PMCvitan/issues/${PR}` }), // another repository
-    requestComment({ body: '@codex fix\nno marker' }),
-    requestComment({ body: `${requestComment().body}\n${probeMarker({ pullRequest: PR, headSha: ORIGINAL, findingRef: 'x' })}` }), // two markers
+  const noMarker = 'no single codex-fix-probe marker with an @codex fix line';
+  for (const [comment, reason] of [
+    [requestComment({ issue_url: `https://api.github.com/repos/${REPO}/issues/620` }), 'the comment is not on this repository and pull request'], // another PR
+    [requestComment({ issue_url: `https://api.github.com/repos/fork/PMCvitan/issues/${PR}` }), 'the comment is not on this repository and pull request'], // another repository
+    [requestComment({ body: '@codex fix\nno marker' }), noMarker],
+    [requestComment({ body: `${requestComment().body}\n${probeMarker({ pullRequest: PR, headSha: ORIGINAL, findingRef: 'x' })}` }), noMarker], // two markers
+    [requestComment({ body: `@codex fix\n${probeMarker({ pullRequest: 620, headSha: ORIGINAL, findingRef: FINDING_REF })}` }), 'the marker names another pull request'],
+    [requestComment({ created_at: 'not a time' }), 'no readable creation time'],
+    [{ ...requestComment(), id: 'x' }, 'not a comment record'],
+    [null, 'not a comment record'], // an empty answer, not a thrown error
   ]) {
-    const { evidence } = await readWorld((w) => { w.comment = comment; });
+    const { evidence } = await readWorld((w) => { w.comment = comment; w.emptyAnswer = comment === null; });
     assert.equal(evidence.records.request, null);
     assert.equal(evidence.records.acceptance, null);
     assert.equal(evidence.cycle.correctionRequestId, null);
+    // Fetched but rejected is diagnosed with its reason, never a silent null.
+    assert.deepEqual(evidence.problems, [`request: rejected: ${reason}`], reason);
   }
   assert.deepEqual(parseProbeMarker(requestComment().body), { pullRequest: PR, headSha: ORIGINAL, findingRef: FINDING_REF });
 });
@@ -556,4 +587,80 @@ test('a GitHub read failure is contained as a null record and a diagnostic, neve
   const invalid = await readRoleActivationEvidence(fake, { pullRequest: 0, requestCommentId: REQUEST_ID });
   assert.equal(invalid.cycle, null);
   assert.deepEqual(invalid.problems, ['invalid reader input']);
+});
+
+test('an away-and-back base retarget inside the window is listed from the event log, though both PR reads agree', async () => {
+  // Barrier: right after the opening live-PR read, the PR is retargeted main -> release -> main. Both live
+  // PR reads show main at the same SHA, and the head push log is untouched.
+  const { evidence } = await readWorld((w) => {
+    w.after = { pull: { 1: (world) => world.events.push(
+      issueEvent(50, 'base_ref_changed', '11:58'), issueEvent(51, 'base_ref_changed', '11:59'),
+    ) } };
+  });
+  const { freshness } = evidence.records;
+  assert.deepEqual(
+    [freshness.baseRef, freshness.baseRefAtEnd, freshness.baseSha, freshness.baseShaAtEnd],
+    ['main', 'main', BASE, BASE],
+  );
+  assert.deepEqual(freshness.lifecycleEvents, [
+    { eventId: 50, event: 'base_ref_changed', actorLogin: 'JagPat', atMs: ms('11:58') },
+    { eventId: 51, event: 'base_ref_changed', actorLogin: 'JagPat', atMs: ms('11:59') },
+  ]);
+  assert.deepEqual(evidence.problems, []);
+  // A close and reopen inside the window is listed the same way.
+  const reopened = await readWorld((w) => {
+    w.after = { pull: { 1: (world) => world.events.push(issueEvent(52, 'closed', '11:58'), issueEvent(53, 'reopened', '11:59')) } };
+  });
+  assert.deepEqual(reopened.evidence.records.freshness.lifecycleEvents.map((entry) => entry.event), ['closed', 'reopened']);
+});
+
+test('the event log is a closing read: an event appended before the freshness point is listed', async () => {
+  // Barrier: the retarget lands after the reader's last opening read (the push log), before any closing read.
+  const { evidence } = await readWorld((w) => {
+    w.after = { activity: { 1: (world) => world.events.push(issueEvent(60, 'base_ref_changed', '11:59')) } };
+  });
+  const { freshness } = evidence.records;
+  assert.deepEqual(freshness.lifecycleEvents.map((entry) => entry.eventId), [60]);
+  assert.ok(freshness.observedAtMs < freshness.eventLogCoveredFromMs);
+  assert.ok(freshness.pushLogReadAtMs < freshness.eventLogCoveredFromMs);
+});
+
+test('the event log is anchored at the cycle\'s earliest milestone; without a finding time, at the request', async () => {
+  // A retarget between the finding (10:20) and the request (10:30) is the cycle's.
+  const between = await readWorld((w) => { w.events.push(issueEvent(70, 'base_ref_changed', '10:25')); });
+  assert.deepEqual(between.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [70]);
+  // Without a finding identity there is no finding time: the anchor is the request.
+  const unverified = await readWorld((w) => {
+    w.verify = false;
+    w.events.push(issueEvent(70, 'base_ref_changed', '10:25'), issueEvent(71, 'base_ref_changed', '10:40'));
+  });
+  assert.equal(unverified.evidence.records.freshness.lifecycleSinceMs, ms('10:30'));
+  assert.deepEqual(unverified.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [71]);
+  // The earlier of the two, whichever it is: a finding stamped after the request does not move the anchor.
+  const late = await readWorld((w) => {
+    w.runs[ORIGINAL] = [...ciRuns(ORIGINAL), shadowRun(ORIGINAL, { id: INITIAL_FINDING_RUN, completed: at('10:40'), state: 'changes_required' })];
+    w.events.push(issueEvent(70, 'base_ref_changed', '10:35'));
+  });
+  assert.equal(late.evidence.records.freshness.lifecycleSinceMs, ms('10:30'));
+  assert.deepEqual(late.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [70]);
+  // No request, no cycle: the log is not read at all.
+  const none = await readWorld((w) => { w.comment = null; });
+  assert.ok(!none.calls.some((path) => path.includes('/events?')));
+  assert.equal(none.evidence.records.freshness.lifecycleEvents, null);
+});
+
+test('an incomplete event log is unknown with a diagnostic, never "no events"', async () => {
+  const failed = await readWorld((w) => { w.eventsError = 'boom'; });
+  assert.equal(failed.evidence.records.freshness.lifecycleEvents, null);
+  assert.deepEqual(failed.evidence.problems, ['event-log: events page 1: boom']);
+  const disordered = await readWorld((w) => { w.events.reverse(); });
+  assert.equal(disordered.evidence.records.freshness.lifecycleEvents, null);
+  assert.deepEqual(disordered.evidence.problems, ['event-log: events: ids do not strictly increase (uncovered)']);
+  // Read to its end across pages: a retarget on the second page is listed.
+  const paged = await readWorld((w) => {
+    w.events = [...Array.from({ length: EVENT_LOG_PAGE_SIZE }, (_, index) => issueEvent(1000 + index, 'labeled', '09:00')),
+      issueEvent(2000, 'base_ref_changed', '11:00')];
+  });
+  assert.deepEqual(paged.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [2000]);
+  assert.equal(paged.calls.filter((path) => path.includes('/events?')).length, 2);
 });

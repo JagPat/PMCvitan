@@ -2,6 +2,7 @@ import { CLAUDE_SHADOW_CONTEXT, CODEX_LOGIN, requiredChecksForPullRequest } from
 import { resolveRequiredChecks } from './autonomous-review-gate.mjs';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import { PROBE_MARKER_PREFIX } from './codex-fix-probe.mjs';
+import { readPullRequestEventLog } from './pull-request-event-log.mjs';
 
 /**
  * Role-transfer ACTIVATION EVIDENCE READER (trusted, read-only, non-activating).
@@ -18,7 +19,8 @@ import { PROBE_MARKER_PREFIX } from './codex-fix-probe.mjs';
  * Per-source authentication, reusing the repository's existing trusted adapters:
  *   - correction request  — the `issues/comments/{id}` record; its `issue_url` binds repository and PR; the
  *                           GitHub-generated `codex-fix-probe` marker names the reviewed head and the
- *                           triggering finding; the author/type say whether a bot or a human posted it.
+ *                           triggering finding; the author/type say whether a bot or a human posted it. A
+ *                           comment that is fetched but rejected is diagnosed with the reason.
  *   - task acceptance     — a Codex-connector 👀 reaction on THAT request comment.
  *   - findings / reviews  — `classifyClaudeShadowReview` + `GitHubClient.verifyClaudeShadowProducer`
  *                           (server-associated publisher run, trusted workflow path, artifact digest); the
@@ -40,10 +42,13 @@ import { PROBE_MARKER_PREFIX } from './codex-fix-probe.mjs';
  *                           freshness point `observedAtMs` is taken. Then every mutable source is read in the
  *                           CLOSING pass: the request again (it must still be the one planned from), its
  *                           acceptance, the live PR (head, base ref, repositories), both heads' check runs
- *                           (findings, reviews, CI), and last the push log again (it must confirm the same
- *                           corrective push; one that landed during the pass is a diagnostic). Each closing
- *                           read starts after the freshness point, so an edit, a push (even away-and-back), a
- *                           retarget, a later review or a newer CI attempt before it is visible. Window times
+ *                           (findings, reviews, CI), the push log again (it must confirm the same corrective
+ *                           push; one that landed during the pass is a diagnostic), and last the pull
+ *                           request's lifecycle event log (scripts/pull-request-event-log.mjs: base changes,
+ *                           close/reopen/merge, draft and head-ref events since the cycle's earliest
+ *                           milestone). Each closing read starts after the freshness point, so an edit, a push
+ *                           or a retarget (either even away-and-back), a later review or a newer CI attempt
+ *                           before it is visible. Window times
  *                           come from the reader host (`now`), milestones from GitHub. Ancestry between two
  *                           fixed SHAs is immutable and read once. A later consumer that ACTS must re-read and
  *                           bind to the reported decider runs; the reader only reports.
@@ -101,13 +106,27 @@ export function parseProbeMarker(body) {
   return { pullRequest: Number(pullRequest), headSha, findingRef };
 }
 
+/**
+ * Why a fetched comment is not this cycle's correction request, or null when it is. A comment that GETs
+ * but is rejected here is a diagnostic in its own right, distinct from a read that failed.
+ */
+export function correctionRequestRejection(comment, { repository, pullRequest }) {
+  if (!comment || !Number.isInteger(comment.id)) return 'not a comment record';
+  if (comment.issue_url !== `https://api.github.com/repos/${repository}/issues/${pullRequest}`) {
+    return 'the comment is not on this repository and pull request';
+  }
+  const marker = parseProbeMarker(comment.body);
+  if (!marker) return 'no single codex-fix-probe marker with an @codex fix line';
+  if (marker.pullRequest !== pullRequest) return 'the marker names another pull request';
+  if (timeMs(comment.created_at) === null) return 'no readable creation time';
+  return null;
+}
+
 /** The correction-request comment, bound to this repository and PR by its server `issue_url`. */
 export function normalizeCorrectionRequest(comment, { repository, pullRequest }) {
-  if (!comment || !Number.isInteger(comment.id)) return null;
-  if (comment.issue_url !== `https://api.github.com/repos/${repository}/issues/${pullRequest}`) return null;
+  if (correctionRequestRejection(comment, { repository, pullRequest }) !== null) return null;
   const marker = parseProbeMarker(comment.body);
   const atMs = timeMs(comment.created_at);
-  if (!marker || marker.pullRequest !== pullRequest || atMs === null) return null;
   return {
     repository,
     pullRequest,
@@ -319,10 +338,20 @@ export async function readRoleActivationEvidence(
     problems.push(`${label}: the log does not reach back to the request (uncovered)`);
     return uncovered;
   };
-  const readRequest = async (label) => normalizeCorrectionRequest(
-    await read(label, () => client.request(`/repos/${repository}/issues/comments/${requestCommentId}`)),
-    { repository, pullRequest },
-  );
+  // A failed fetch and a fetched-but-rejected comment (an empty answer included) are each diagnosed, so a
+  // null request always carries its cause.
+  const readRequest = async (label) => {
+    let comment;
+    try {
+      comment = await client.request(`/repos/${repository}/issues/comments/${requestCommentId}`);
+    } catch (error) {
+      problems.push(`${label}: ${error?.message ?? String(error)}`);
+      return null;
+    }
+    const rejection = correctionRequestRejection(comment, { repository, pullRequest });
+    if (rejection !== null) problems.push(`${label}: rejected: ${rejection}`);
+    return normalizeCorrectionRequest(comment, { repository, pullRequest });
+  };
 
   // OPENING reads — only what decides what to read: the request (reviewed head, finding, time), the live PR
   // (branch, base) and the push log (the corrective head). Each is read again, or superseded, after the
@@ -443,6 +472,20 @@ export async function readRoleActivationEvidence(
     }
   }
 
+  // Closing, last: the pull request's lifecycle event log (scripts/pull-request-event-log.mjs), from the
+  // cycle's earliest milestone. The two live-PR reads are snapshots, so a base retarget away and back
+  // (`main → release → main`) leaves them equal; the append-only issue events list both changes. It is read
+  // after the freshness point, so an event before that point is listed; an incomplete log is `null` with a
+  // diagnostic, never "no events". Which events disqualify the cycle is the verdict's rule.
+  let lifecycle = null;
+  if (opening) {
+    const sinceMs = Math.min(opening.atMs, initialFinding?.atMs ?? Infinity);
+    const log = await readPullRequestEventLog(client, { pullRequest, sinceMs, now });
+    problems.push(...log.problems.map((problem) => `event-log: ${problem}`));
+    lifecycle = { sinceMs, events: log.covered ? log.events : null,
+      coveredFromMs: log.coveredFromMs, readAtMs: log.readAtMs };
+  }
+
   const freshness = pullAtStart && pullAtEnd
     ? {
       repository,
@@ -461,6 +504,10 @@ export async function readRoleActivationEvidence(
       baseRepositoryAtEnd: pullAtEnd.base?.repo?.full_name ?? null,
       baseShaAtEnd: pullAtEnd.base?.sha ?? null,
       pushesAfterCorrective,
+      lifecycleSinceMs: lifecycle?.sinceMs ?? null,
+      lifecycleEvents: lifecycle?.events ?? null,
+      eventLogCoveredFromMs: lifecycle?.coveredFromMs ?? null,
+      eventLogReadAtMs: lifecycle?.readAtMs ?? null,
       startedAtMs,
       observedAtMs,
       pullReadAtMs,
