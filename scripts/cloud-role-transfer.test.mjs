@@ -3,6 +3,8 @@ import test from 'node:test';
 import { classifyClaudeShadowReview } from './claude-review-adapter.mjs';
 import { parseCorrectionOwner, correctionRouting, correctionOwnerProblem } from './correction-owner.mjs';
 import { authorizeExactHeadMerge, GitHubClient, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
+import { roleTransferActivationVerdict, ACTIVATION_SWITCH, ACTIVATION_REQUIRED_PROOFS } from './role-activation.mjs';
+import { STATUS_CONTEXT, CLAUDE_SHADOW_CONTEXT } from './review-policy.mjs';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -158,4 +160,54 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   for (const name of REQUIRED_CHECKS) {
     assert.equal((await authorizeExactHeadMerge(makeClient({ runs: checks.map(run => run.name === name ? { ...run, conclusion: 'failure' } : run) }), pull, head)).state, 'gates_not_green');
   }
+});
+
+test('role-transfer activation readiness holds until the full observed proof sequence, and switches nothing itself', () => {
+  const corrective = 'a'.repeat(40);
+  const fullProof = () => ({
+    correctiveHeadSha: corrective,
+    codexTaskAcceptance: { githubGenerated: true, humanAuthored: false },
+    correctivePush: { sameBranch: true, headSha: corrective },
+    ci: { headSha: corrective, green: true },
+    claudeReReview: { headSha: corrective, state: 'shadow_clear', authoritative: false },
+  });
+
+  // All four proofs present for the SAME corrective head → activation permitted.
+  const activated = roleTransferActivationVerdict(fullProof());
+  assert.equal(activated.state, 'activate');
+  assert.equal(activated.activate, true);
+  assert.equal(activated.keepCodexCurrentHead, false);
+  assert.equal(activated.correctiveHeadSha, corrective);
+
+  // Default / empty evidence → HOLD, keep codex-current-head; every proof is reported missing.
+  const held = roleTransferActivationVerdict();
+  assert.equal(held.state, 'hold');
+  assert.equal(held.activate, false);
+  assert.equal(held.keepCodexCurrentHead, true);
+  assert.deepEqual(held.missing.filter((m) => m !== 'correctiveHeadSha').sort(), [...ACTIVATION_REQUIRED_PROOFS].sort());
+
+  // Each single missing/failed proof holds and names exactly that gap.
+  const drop = (mut) => { const e = fullProof(); mut(e); return roleTransferActivationVerdict(e); };
+  const acc = drop((e) => { e.codexTaskAcceptance = { githubGenerated: true, humanAuthored: true }; }); // human @codex is not proof
+  assert.equal(acc.state, 'hold');
+  assert.deepEqual(acc.missing, ['codexTaskAcceptanceGitHubGenerated']);
+  assert.deepEqual(drop((e) => { e.codexTaskAcceptance = { githubGenerated: false }; }).missing, ['codexTaskAcceptanceGitHubGenerated']);
+  assert.deepEqual(drop((e) => { e.correctivePush = { sameBranch: false, headSha: corrective }; }).missing, ['codexCorrectiveSameBranchPush']);
+  assert.deepEqual(drop((e) => { e.ci = { headSha: corrective, green: false }; }).missing, ['fullCiGreen']);
+  assert.deepEqual(drop((e) => { e.claudeReReview = { headSha: corrective, state: 'changes_required' }; }).missing, ['boundClaudeClearReReview']);
+
+  // A proof bound to a DIFFERENT head does not count — CI/review must be on the corrective head.
+  const otherHead = 'b'.repeat(40);
+  assert.deepEqual(drop((e) => { e.ci = { headSha: otherHead, green: true }; }).missing, ['fullCiGreen']);
+  assert.deepEqual(drop((e) => { e.claudeReReview = { headSha: otherHead, state: 'shadow_clear' }; }).missing, ['boundClaudeClearReReview']);
+  assert.deepEqual(drop((e) => { e.correctivePush = { sameBranch: true, headSha: otherHead }; }).missing, ['codexCorrectiveSameBranchPush']);
+
+  // The switch is DATA the contract describes, not something it applies: it names the replacement
+  // gate to add and the codex-current-head status to retire only afterward, and the role swap.
+  assert.equal(ACTIVATION_SWITCH.addRequired, CLAUDE_SHADOW_CONTEXT);
+  assert.equal(ACTIVATION_SWITCH.retire, STATUS_CONTEXT);
+  assert.equal(ACTIVATION_SWITCH.codingOwner, 'codex');
+  assert.equal(ACTIVATION_SWITCH.reviewer, 'claude');
+  // codex-current-head remains the live required gate: this unit does not add the shadow context to it.
+  assert.ok(!REQUIRED_CHECKS.includes(CLAUDE_SHADOW_CONTEXT));
 });

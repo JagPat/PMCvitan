@@ -200,3 +200,28 @@ conclusion that disagrees with the evidence it carries is rejected. Every consum
 `claude-independent-review` stays absent from the required checks. Flipping the authoritative gate
 remains a separate, later, atomically reviewed unit (§"Pending activation" #4); a non-authoritative
 consumer improvement does not activate the role transfer.
+
+### Activation-readiness contract (not activation)
+
+`scripts/role-activation.mjs` is the pure, mutation-free contract that gates the atomic switch
+described in §"Pending activation" #4. It touches no live gate and starts nothing: it reads
+evidence and returns a verdict. `roleTransferActivationVerdict(evidence)` permits activation ONLY when
+all four proofs hold for the SAME corrective head, in the order the sequence must occur:
+
+1. **GitHub-generated Codex task acceptance** — an automated GitHub event started a hosted Codex task;
+   a human `@codex` mention is explicitly not proof.
+2. **Same-branch corrective push** — that task pushed a new head on the same branch (the corrective
+   head SHA).
+3. **Full CI green** on that corrective head.
+4. **A bound independent Claude finding/clear re-review** on that exact head — a server-verified
+   `shadow_clear` from the (still non-authoritative) consumer, bound to the corrective head SHA.
+
+Anything missing → `{ state: 'hold', keepCodexCurrentHead: true, missing: [...] }`: the existing
+`codex-current-head` required gate stays in force. Only when every proof is present does the verdict
+become `activate`, carrying `ACTIVATION_SWITCH` as DATA — the replacement gate to add
+(`claude-independent-review`), the `codex-current-head` status to retire only AFTER that replacement is
+installed and observed, and the routing swap (Codex codes, Claude reviews). This unit APPLIES none of
+it: it adds nothing to `REQUIRED_CHECKS`, changes no routing, and does not make
+`claude-independent-review` a merge gate. It declares Codex neither awakenable nor activated; the
+observed cloud cycle and the operator-authorized atomic switch remain the separate, later step this
+contract exists to gate.
