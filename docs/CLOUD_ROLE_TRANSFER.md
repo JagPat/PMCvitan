@@ -205,22 +205,26 @@ consumer improvement does not activate the role transfer.
 
 `scripts/role-activation.mjs` is the pure, mutation-free contract that gates the atomic switch
 described in §"Pending activation" #4. It touches no live gate and starts nothing: it reads
-evidence and returns a verdict. `roleTransferActivationVerdict(evidence)` binds ONE correction cycle:
-every record must name the SAME cycle identity — the correction request, PR, branch, and the
-pre-correction (reviewed) head — so evidence from a different PR/branch/request, or supplied out of
-order, cannot be recombined into a false `activate`. The proofs, in the order the cycle occurs:
+evidence and returns a verdict. `roleTransferActivationVerdict(evidence)` binds ONE correction cycle on
+EVERY identity dimension: every record must name the SAME cycle identity — the correction request, PR,
+branch, the **base SHA** the cycle is reviewed against, and the pre-correction (reviewed) head — so
+evidence from a different PR/branch/request, a different base (a retarget or an advancing `main`), or
+supplied out of order cannot be recombined into a false `activate`. The proofs, in the order the cycle
+occurs:
 
-0a. **Initial full CI green** on the reviewed head.
+0a. **Initial full CI green** on the reviewed head, at the cycle base.
 0b. **The initial Claude finding** on that head that TRIGGERED this correction request (a
-   `changes_required` shadow review bound to the request id) — the full-cycle contract's "Claude
-   findings" leg, not just the final clear.
+   `changes_required` shadow review bound to the request id, at the cycle base) — the full-cycle
+   contract's "Claude findings" leg, not just the final clear.
 1. **GitHub-generated Codex task acceptance** for this request — an automated GitHub event started a
    hosted Codex task that CAUSED exactly the corrective head; a human `@codex` mention is not proof.
-2. **Same-branch corrective push** for this request — a descendant of the reviewed head
-   (`parent === originalHead`) producing the corrective head SHA.
-3. **Full CI green** on that corrective head.
-4. **A bound independent Claude clear re-review** on that exact corrective head — a server-verified
-   `shadow_clear` from the (still non-authoritative) consumer.
+2. **Same-branch corrective push** for this request — the branch update advanced the tip from the
+   reviewed head (`before === originalHead`) to the corrective head (`after === correctiveHead`).
+   Ancestry is proven by the push event's before/after tips, so a task that pushes more than one commit
+   is admitted (the reviewed head need not be the final commit's direct parent).
+3. **Full CI green** on that corrective head, at the cycle base.
+4. **A bound independent Claude clear re-review** on that exact corrective head, at the cycle base — a
+   server-verified `shadow_clear` from the (still non-authoritative) consumer.
 
 Anything missing → `{ state: 'hold', keepCodexCurrentHead: true, missing: [...] }`: the existing
 `codex-current-head` required gate stays in force. When every cycle proof holds, activation is

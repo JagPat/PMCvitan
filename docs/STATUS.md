@@ -27,14 +27,21 @@ updated: 2026-09-23
 The cloud role transfer continues from fresh `main` (`e0908622`, #618 merged), one writer /
 one channel. `open_pr: 619` (`work_item: cloud-role-transfer-activation-readiness`, branch
 `claude/role-transfer-activation-readiness`) adds `scripts/role-activation.mjs`: the pure,
-mutation-free contract that gates the atomic switch. `roleTransferActivationVerdict` permits
-activation ONLY when all four proofs hold for the SAME corrective head — GitHub-generated
-Codex task acceptance, same-branch corrective push, full CI green, and a bound independent
-Claude `shadow_clear` re-review on that exact head — otherwise it HOLDS and keeps
-`codex-current-head` required. It applies no switch: nothing is added to `REQUIRED_CHECKS`, no
-routing changes, `claude-independent-review` stays out of the required checks, and Codex is
-declared neither awakenable nor activated. The observed cloud cycle and the operator-authorized
-atomic switch remain the separate, later step this contract exists to gate.
+mutation-free contract that gates the atomic switch. `roleTransferActivationVerdict` binds ONE
+correction cycle on every identity dimension (PR, branch, base SHA, reviewed head, correction
+request) and permits activation ONLY when the whole proof set holds for that cycle: (0a) initial
+full CI green on the reviewed head at the cycle base; (0b) the initial `changes_required` Claude
+finding that triggered the request; (1) GitHub-generated Codex task acceptance that caused the
+corrective head; (2) a same-branch corrective push advancing the tip (before→after) from the
+reviewed head to the corrective head; (3) full CI green on the corrective head; (4) a bound
+`shadow_clear` re-review on that exact head — otherwise it HOLDS and keeps `codex-current-head`
+required. Activation is two-phase: `activate` INSTALLS a distinct trusted-controller replacement
+status and swaps routing while KEEPING `codex-current-head`; `retire` (dropping it) needs a
+separate, bound-and-ordered proof that the replacement gate was installed and later observed in
+role. It applies no switch: nothing is added to `REQUIRED_CHECKS`, no routing changes,
+`claude-independent-review` stays out of the required checks, and Codex is declared neither
+awakenable nor activated. The observed cloud cycle and the operator-authorized atomic switch
+remain the separate, later step this contract exists to gate.
 
 **Merged in the role-transfer lane:** #618 (`e0908622`) — the shadow-consumer broadening
 (trusted-`main` lineage; earlier-trusted-`main`-SHA acceptance via the server-side producer

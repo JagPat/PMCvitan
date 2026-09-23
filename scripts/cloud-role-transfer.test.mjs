@@ -169,21 +169,26 @@ test('automatic merge needs CI and exact-head review, with no human authorizatio
   }
 });
 
-test('role-transfer activation readiness binds one verified cycle, installs before retiring, and switches nothing itself', () => {
+test('role-transfer activation readiness binds one base-scoped cycle, installs before retiring, and switches nothing itself', () => {
   const original = 'a'.repeat(40); // the reviewed (pre-correction) head
   const corrective = 'c'.repeat(40); // the head the corrective push produced
+  const baseSha = 'f'.repeat(40); // the base the whole cycle is reviewed against
   const requestId = 'correction-request-42';
-  const cycle = () => ({ pullRequest: 619, branch: 'claude/x', originalHeadSha: original, correctionRequestId: requestId });
-  // The full cycle bound to ONE identity, replacement gate NOT yet observed.
+  const cycle = () => ({ pullRequest: 619, branch: 'claude/x', baseSha, originalHeadSha: original, correctionRequestId: requestId });
+  const goodReplacement = () => ({
+    context: CLAUDE_STATUS_CONTEXT, repository: 'JagPat/PMCvitan', installedRequired: true, observedInRole: true,
+    installedAtMs: 1000, observedAtMs: 2000, observedHeadSha: 'd'.repeat(40), observationId: 'status-run-777',
+  });
+  // The full cycle bound to ONE identity (PR + branch + base), replacement gate NOT yet observed.
   const fullCycle = () => ({
     cycle: cycle(),
     correctiveHeadSha: corrective,
-    initialCi: { pullRequest: 619, branch: 'claude/x', headSha: original, green: true },
-    initialClaudeFinding: { pullRequest: 619, branch: 'claude/x', headSha: original, state: 'changes_required', correctionRequestId: requestId },
+    initialCi: { pullRequest: 619, branch: 'claude/x', baseSha, headSha: original, green: true },
+    initialClaudeFinding: { pullRequest: 619, branch: 'claude/x', baseSha, headSha: original, state: 'changes_required', correctionRequestId: requestId },
     codexTaskAcceptance: { pullRequest: 619, branch: 'claude/x', githubGenerated: true, humanAuthored: false, correctionRequestId: requestId, causedHeadSha: corrective },
-    correctivePush: { pullRequest: 619, branch: 'claude/x', sameBranch: true, parentSha: original, headSha: corrective, correctionRequestId: requestId },
-    ci: { pullRequest: 619, branch: 'claude/x', headSha: corrective, green: true },
-    claudeReReview: { pullRequest: 619, branch: 'claude/x', headSha: corrective, state: 'shadow_clear', authoritative: false },
+    correctivePush: { pullRequest: 619, branch: 'claude/x', sameBranch: true, beforeSha: original, afterSha: corrective, correctionRequestId: requestId },
+    ci: { pullRequest: 619, branch: 'claude/x', baseSha, headSha: corrective, green: true },
+    claudeReReview: { pullRequest: 619, branch: 'claude/x', baseSha, headSha: corrective, state: 'shadow_clear', authoritative: false },
   });
 
   // Full cycle, replacement gate not yet observed → INSTALL the replacement, but KEEP codex-current-head.
@@ -196,20 +201,29 @@ test('role-transfer activation readiness binds one verified cycle, installs befo
   assert.equal(installed.install.addRequired, CLAUDE_STATUS_CONTEXT); // the trusted-controller status, not the raw shadow check
   assert.deepEqual(installed.missingForRetire, [ACTIVATION_RETIRE_PROOF]);
 
-  // Only once the replacement gate is installed as required AND observed in role → RETIRE codex-current-head.
-  const retired = roleTransferActivationVerdict({
-    ...fullCycle(),
-    replacementGate: { context: CLAUDE_STATUS_CONTEXT, installedRequired: true, observedInRole: true },
-  });
+  // A task that pushed MORE THAN ONE commit still proves the cycle: before/after tips prove ancestry, so
+  // the reviewed head need not be the final commit's direct parent (only before === reviewed head matters).
+  const multiCommit = roleTransferActivationVerdict(fullCycle()); // beforeSha === original, afterSha === corrective regardless of intermediate commits
+  assert.equal(multiCommit.state, 'activate');
+
+  // Only once the replacement gate is installed as required AND later observed in role → RETIRE.
+  const retired = roleTransferActivationVerdict({ ...fullCycle(), replacementGate: goodReplacement() });
   assert.equal(retired.state, 'retire');
   assert.equal(retired.keepCodexCurrentHead, false);
   assert.equal(retired.retireCodexCurrentHead, true);
   assert.equal(retired.retire.retire, STATUS_CONTEXT);
-  // A replacement-gate record that is not installed/observed, or names the wrong context, does NOT retire.
+  // A retire proof missing identity, missing/older ordering, or naming the wrong context does NOT retire —
+  // a stale/unrelated or bare two-boolean observation cannot drop codex-current-head.
   for (const bad of [
-    { context: CLAUDE_STATUS_CONTEXT, installedRequired: true, observedInRole: false },
-    { context: CLAUDE_STATUS_CONTEXT, installedRequired: false, observedInRole: true },
-    { context: CLAUDE_SHADOW_CONTEXT, installedRequired: true, observedInRole: true }, // raw producer check name is not the gate
+    { ...goodReplacement(), observedInRole: false },
+    { ...goodReplacement(), installedRequired: false },
+    { context: CLAUDE_STATUS_CONTEXT, installedRequired: true, observedInRole: true }, // bare booleans, no identity/ordering
+    { ...goodReplacement(), repository: '' }, // no repository identity
+    { ...goodReplacement(), observedHeadSha: 'not-a-sha' }, // no observed head
+    { ...goodReplacement(), observationId: '' }, // no trusted-controller observation identity
+    { ...goodReplacement(), observedAtMs: 1000 }, // observed not strictly after install
+    { ...goodReplacement(), observedAtMs: 500 }, // observed BEFORE install
+    { context: CLAUDE_SHADOW_CONTEXT, repository: 'JagPat/PMCvitan', installedRequired: true, observedInRole: true, installedAtMs: 1000, observedAtMs: 2000, observedHeadSha: 'd'.repeat(40), observationId: 'x' }, // raw producer check name is not the gate
   ]) {
     const v = roleTransferActivationVerdict({ ...fullCycle(), replacementGate: bad });
     assert.equal(v.state, 'activate');
@@ -235,9 +249,11 @@ test('role-transfer activation readiness binds one verified cycle, installs befo
   assert.deepEqual(drop((e) => { e.ci.green = false; }).missing, ['fullCiGreen']);
   assert.deepEqual(drop((e) => { e.claudeReReview.state = 'changes_required'; }).missing, ['boundClaudeClearReReview']);
 
-  // Causation: the accepted task must have caused THIS head, and the push must descend from the reviewed head.
+  // Causation: the accepted task must have caused THIS head, and the push must have advanced FROM the
+  // reviewed head (before === reviewed head) TO the corrective head (after === corrective head).
   assert.deepEqual(drop((e) => { e.codexTaskAcceptance.causedHeadSha = 'd'.repeat(40); }).missing, ['codexTaskAcceptanceGitHubGenerated']);
-  assert.deepEqual(drop((e) => { e.correctivePush.parentSha = 'd'.repeat(40); }).missing, ['codexCorrectiveSameBranchPush']);
+  assert.deepEqual(drop((e) => { e.correctivePush.beforeSha = 'd'.repeat(40); }).missing, ['codexCorrectiveSameBranchPush']);
+  assert.deepEqual(drop((e) => { e.correctivePush.afterSha = 'd'.repeat(40); }).missing, ['codexCorrectiveSameBranchPush']);
 
   // Cross-cycle recombination is refused: a record naming a different PR/branch/request does not count,
   // even though its own head SHAs line up — the loophole that let PR A's task pair with PR B's push.
@@ -246,9 +262,17 @@ test('role-transfer activation readiness binds one verified cycle, installs befo
   assert.deepEqual(drop((e) => { e.correctivePush.correctionRequestId = 'other-request'; }).missing, ['codexCorrectiveSameBranchPush']);
   assert.deepEqual(drop((e) => { e.initialClaudeFinding.correctionRequestId = 'other-request'; }).missing, ['initialClaudeFinding']);
 
-  // A malformed cycle identity (or a corrective head equal to the reviewed head) holds on cycleIdentity.
+  // Base binding: initial-vs-corrective evidence at a DIFFERENT base does not recombine — a retarget or an
+  // advancing `main` between the two reviews invalidates the cycle. Each base-dependent record must match.
+  const otherBase = '1'.repeat(40);
+  assert.deepEqual(drop((e) => { e.ci.baseSha = otherBase; }).missing, ['fullCiGreen']);
+  assert.deepEqual(drop((e) => { e.claudeReReview.baseSha = otherBase; }).missing, ['boundClaudeClearReReview']);
+  assert.deepEqual(drop((e) => { e.initialCi.baseSha = otherBase; }).missing, ['initialFullCiGreen']);
+  assert.deepEqual(drop((e) => { e.initialClaudeFinding.baseSha = otherBase; }).missing, ['initialClaudeFinding']);
+  // A malformed cycle identity (missing base, or a corrective head equal to the reviewed head) holds on cycleIdentity.
   assert.ok(roleTransferActivationVerdict({ ...fullCycle(), correctiveHeadSha: original }).missing.includes('cycleIdentity'));
   assert.ok(roleTransferActivationVerdict({ ...fullCycle(), cycle: { ...cycle(), correctionRequestId: '' } }).missing.includes('cycleIdentity'));
+  assert.ok(roleTransferActivationVerdict({ ...fullCycle(), cycle: { ...cycle(), baseSha: 'not-a-sha' } }).missing.includes('cycleIdentity'));
 
   // A CI/review proof bound to a DIFFERENT head does not count — it must be on the corrective head.
   const otherHead = 'e'.repeat(40);
