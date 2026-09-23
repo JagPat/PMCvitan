@@ -14,35 +14,39 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-09-07-decision-workflow-4d.md
 task: 4
 task_state: in_progress
-work_item: cloud-role-transfer-evidence-integration
-reviewed_merge: 2a1f0f46
-open_pr: 622
+work_item: cloud-role-transfer-activation-readiness
+reviewed_merge: 0a712d93
+open_pr: 619
 next_task: phase-6-task-4d
 blocking_directive: none
 updated: 2026-09-23
 ```
 
-### Now — cloud role transfer: the evidence reader consumes the event log (#622); #621 and #620 merged; #619 held open
+### Now — cloud role transfer: unit (b), the activation-readiness verdict (#619); #622, #621 and #620 merged
 
 The cloud role transfer continues with one writer and one channel. #619 (the activation-readiness
 verdict) reached its third-head stop and was split additively (#619 comments 5790993532 and
-5791317874). Unit (a), #620, the trusted evidence reader, then reached its own third-head stop: Codex P1s
-on `b84f0d89`, `8becf01c` and `dacfd365` in `scripts/role-activation-evidence.mjs`, recorded at #620
-comment 5792574988 (coordination on #482, comment 5792575745). The shared root cause: freshness proven
-by comparing snapshots. The pull request's base and state were the last dimensions with no append-only
-history.
+5791317874). Unit (a), #620, the trusted evidence reader, then reached its own third-head stop, recorded
+at #620 comment 5792574988 (coordination on #482, comment 5792575745). The shared root cause: freshness
+proven by comparing snapshots. Every mutable dimension now rests on an append-only history.
 
-- **Unit (a), #620, merged at `7f2cbbef`.** Two findings stayed owed in code (#620 comment 5793241285):
-  4081030214 (P1, an away-and-back base retarget is invisible) and 4081030220 (P2, a request that GETs
-  but fails normalization carries no diagnostic).
-- **Unit (a0), #621, merged at `2a1f0f46`.** `scripts/pull-request-event-log.mjs`: a trusted, read-only,
-  complete-or-nothing history of one pull request's lifecycle events from its append-only issue events.
-- **Now, the integration unit, `open_pr: 622`** (`work_item: cloud-role-transfer-evidence-integration`,
-  branch `claude/role-activation-evidence-integration`, from `main` at `2a1f0f46`). The reader's closing
-  pass reads the event log last, anchored at the cycle's earliest milestone, and reports `lifecycleEvents`,
-  so a retarget away and back is listed (answers 4081030214). A request that is fetched but rejected is
-  diagnosed with its reason (answers 4081030220).
-- **Unit (b), #619 (kept open).** It follows, re-scoped to a pure verdict over the reader's schema.
+- **Unit (a), #620, merged at `7f2cbbef`:** the trusted, read-only evidence reader.
+- **Unit (a0), #621, merged at `2a1f0f46`:** the pull request lifecycle event log.
+- **Integration, #622, merged at `0a712d93`:** the reader reads the event log last in its closing pass
+  and diagnoses a rejected request. It answered #620 findings 4081030214 and 4081030220.
+- **Now, unit (b), `open_pr: 619`** (`work_item: cloud-role-transfer-activation-readiness`, branch
+  `claude/role-transfer-activation-readiness`, with `main` at `0a712d93` merged in). The verdict,
+  `scripts/role-activation.mjs`, is re-scoped to a pure judgement over the reader's normalized schema
+  and the caller's expected repository and PR. It answers #619's six open findings: repository on every
+  record (4080104371), the full milestone order (4080104377), installation after the proven cycle and a
+  later observation (4080104384), the triggering finding bound through the request to the accepted task
+  (4080104390), fresh live-head, push-log and lifecycle-event evidence after the final review
+  (4080104397), and the latest applicable CI attempt with its deciding runs (4080104403).
+  At its convergence stop (#619 comment 5795929840, after findings 4083067610/17/23 on `e3a0ece1`) the
+  verdict was narrowed to what trusted evidence can prove. It never retires `codex-current-head`, and it
+  always holds on `codexTaskCausation` until a trusted task → push binding exists (a later unit; it needs
+  a requested maintenance PR to `codex-fix-probe`). It admits a same-second tie only where the records
+  prove the order.
 
 Nothing is activated. `codex-current-head` stays required. There is no gate or routing switch and no
 deployment. #614/#615 stay untouched. The preserved merged branch `claude/pmcvitan-mobile-places-n3fxup`

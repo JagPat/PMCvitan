@@ -2,209 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  ACTIVITY_PERIODS,
-  CODEX_ACCEPTANCE_REACTION,
-  GITHUB_ACTIONS_LOGIN,
   PUSH_LOG_PAGE_SIZE,
   ROLE_ACTIVATION_EVIDENCE_SCHEMA,
   parseProbeMarker,
   readRoleActivationEvidence,
 } from './role-activation-evidence.mjs';
-import { codexFixComment, probeMarker } from './codex-fix-probe.mjs';
-import { evidenceArtifactName } from './claude-shadow-review.mjs';
+import { probeMarker } from './codex-fix-probe.mjs';
 import { CODEX_LOGIN, REQUIRED_CHECKS } from './review-policy.mjs';
 import { EVENT_LOG_PAGE_SIZE } from './pull-request-event-log.mjs';
-
-const REPO = 'JagPat/PMCvitan';
-const PR = 619;
-const BRANCH = 'claude/x';
-const BASE = 'b'.repeat(40);
-const ORIGINAL = 'a'.repeat(40);
-const CORRECTIVE = 'c'.repeat(40);
-const OTHER = 'e'.repeat(40);
-const REQUEST_ID = 5001;
-const at = (hhmm) => `2026-09-23T${hhmm}:00Z`;
-const ms = (hhmm) => Date.parse(at(hhmm));
-
-let nextId = 1;
-function ciRuns(headSha, { start = '10:00', end = '10:05', suite = 1, conclusion = 'success' } = {}) {
-  return REQUIRED_CHECKS.map((name) => ({
-    id: nextId++,
-    name,
-    head_sha: headSha,
-    status: 'completed',
-    conclusion,
-    started_at: at(start),
-    completed_at: at(end),
-    check_suite: { id: suite },
-  }));
-}
-
-function shadowRun(headSha, { id, completed, state }) {
-  const findingCount = state === 'clear' ? 0 : 1;
-  const summary = {
-    schema: 1,
-    repository: REPO,
-    pullRequest: PR,
-    baseSha: BASE,
-    headSha,
-    testedBaseSha: BASE,
-    runId: 100 + id,
-    runAttempt: 1,
-    publisherRunId: 200 + id,
-    publisherRunAttempt: 1,
-    workflowRef: `${REPO}/.github/workflows/claude-shadow-review.yml@refs/heads/main`,
-    workflowSha: BASE,
-    workflowExecutionRef: 'refs/heads/main',
-    state,
-    findingCount,
-  };
-  summary.artifact = {
-    id: 300 + id,
-    digest: `sha256:${'d'.repeat(64)}`,
-    name: evidenceArtifactName(summary, summary, { state, findings: Array.from({ length: findingCount }) }),
-  };
-  return {
-    id,
-    name: 'claude-independent-review',
-    head_sha: headSha,
-    html_url: `https://github.com/${REPO}/runs/${id}`,
-    app: { slug: 'github-actions' },
-    external_id: `pmcvitan:claude-shadow:v1:repo-${REPO}:pr-${PR}:base-${BASE}:head-${headSha}:run-${summary.runId}`
-      + `:attempt-1:publisher-${summary.publisherRunId}:publisher-attempt-1`,
-    status: 'completed',
-    conclusion: state === 'clear' ? 'success' : 'failure',
-    started_at: completed,
-    completed_at: completed,
-    output: { summary: JSON.stringify(summary) },
-  };
-}
-
-const INITIAL_FINDING_RUN = 7001;
-const FINDING_REF = `https://github.com/${REPO}/runs/${INITIAL_FINDING_RUN}`;
-
-function requestComment(overrides = {}) {
-  const marker = probeMarker({ pullRequest: PR, headSha: ORIGINAL, findingRef: FINDING_REF });
-  return {
-    id: REQUEST_ID,
-    issue_url: `https://api.github.com/repos/${REPO}/issues/${PR}`,
-    user: { login: GITHUB_ACTIONS_LOGIN, type: 'Bot' },
-    created_at: at('10:30'),
-    updated_at: at('10:30'),
-    body: codexFixComment({ pullRequestNumber: PR, headSha: ORIGINAL, sourceBranch: BRANCH, findingRef: FINDING_REF, marker }),
-    ...overrides,
-  };
-}
-
-function pull(headSha = CORRECTIVE, overrides = {}) {
-  return {
-    number: PR,
-    state: 'open',
-    head: { ref: BRANCH, sha: headSha, repo: { full_name: REPO } },
-    base: { ref: 'main', sha: BASE, repo: { full_name: REPO } },
-    ...overrides,
-  };
-}
-
-function activity(id, before, after, hhmm, { type = 'push', actor = CODEX_LOGIN } = {}) {
-  return { id, before, after, ref: `refs/heads/${BRANCH}`, timestamp: at(hhmm), activity_type: type, actor: { login: actor } };
-}
-
-// A full, valid cycle as GitHub would serve it.
-function world() {
-  return {
-    comment: requestComment(),
-    reactions: [{ user: { login: CODEX_LOGIN, type: 'Bot' }, content: CODEX_ACCEPTANCE_REACTION, created_at: at('10:31') }],
-    runs: {
-      [ORIGINAL]: [...ciRuns(ORIGINAL), shadowRun(ORIGINAL, { id: INITIAL_FINDING_RUN, completed: at('10:20'), state: 'changes_required' })],
-      [CORRECTIVE]: [...ciRuns(CORRECTIVE, { start: '10:51', end: '11:00', suite: 2 }), shadowRun(CORRECTIVE, { id: 7002, completed: at('11:20'), state: 'clear' })],
-    },
-    // newest first, as the Activity API returns it
-    activities: [activity(900, ORIGINAL, CORRECTIVE, '10:50'), activity(800, OTHER, ORIGINAL, '09:00', { actor: 'JagPat' })],
-    comparison: { status: 'ahead', ahead_by: 2, behind_by: 0, merge_base_commit: { sha: ORIGINAL } },
-    pulls: [pull(), pull()],
-    // the pull request's issue events, oldest first, as GitHub returns them
-    events: [issueEvent(40, 'labeled', '09:30'), issueEvent(41, 'base_ref_changed', '09:40')],
-    verify: true,
-  };
-}
-
-function issueEvent(id, event, hhmm, actor = 'JagPat') {
-  return { id, event, actor: { login: actor }, created_at: at(hhmm) };
-}
-
-// The Activity API's trailing period, as the server applies it (a day unless `time_period` says otherwise).
-const SERVER_NOW = ms('12:00');
-function activityPage(w, path) {
-  const period = new URL(path, 'https://api.github.com').searchParams.get('time_period') ?? 'day';
-  const days = Object.fromEntries(ACTIVITY_PERIODS)[period];
-  return w.activities.filter((entry) => Date.parse(entry.timestamp) > SERVER_NOW - days * 86_400_000);
-}
-
-// A fake GitHubClient. It records every request and refuses anything but a GET, so a test also proves the
-// reader is read-only. `w.after` hooks run after the nth read of a kind, so a test can interleave a change
-// between two of the reader's own reads (a barrier).
-function client(w) {
-  const calls = [];
-  const counts = { pull: 0, activity: 0, comment: 0, events: 0 };
-  const after = (kind) => w.after?.[kind]?.[(counts[kind] += 1)]?.(w);
-  const fake = {
-    repository: REPO,
-    async request(path, { method = 'GET' } = {}) {
-      calls.push(path);
-      if (method !== 'GET') throw new Error(`write attempted: ${method} ${path}`);
-      if (path === `/repos/${REPO}/issues/comments/${REQUEST_ID}`) {
-        const comment = w.comment;
-        after('comment');
-        if (!comment && w.emptyAnswer) return null;
-        if (!comment) throw new Error('Not Found');
-        return comment;
-      }
-      if (path.startsWith(`/repos/${REPO}/issues/comments/${REQUEST_ID}/reactions`)) return w.reactions;
-      if (path.startsWith(`/repos/${REPO}/activity?`)) {
-        const page = activityPage(w, path);
-        after('activity');
-        return page;
-      }
-      if (path.startsWith(`/repos/${REPO}/compare/`)) return w.comparison;
-      const events = /^\/repos\/JagPat\/PMCvitan\/issues\/619\/events\?per_page=(\d+)&page=(\d+)$/u.exec(path);
-      if (events) {
-        if (w.eventsError) throw new Error(w.eventsError);
-        const [size, page] = [Number(events[1]), Number(events[2])];
-        const items = w.events.slice((page - 1) * size, page * size);
-        after('events');
-        return items;
-      }
-      throw new Error(`unexpected ${path}`);
-    },
-    async pullRequest(number) {
-      assert.equal(number, PR);
-      const live = w.pulls.shift() ?? pull();
-      after('pull');
-      return live;
-    },
-    async checkRuns(sha) {
-      return [...(w.runs[sha] ?? [])];
-    },
-    async verifyClaudeShadowProducer() {
-      return w.verify;
-    },
-  };
-  return { fake, calls };
-}
-
-function clock() {
-  let t = ms('12:00');
-  return () => (t += 1_000);
-}
-
-async function readWorld(mutate = () => {}) {
-  const w = world();
-  mutate(w);
-  const { fake, calls } = client(w);
-  const evidence = await readRoleActivationEvidence(fake, { pullRequest: PR, requestCommentId: REQUEST_ID, now: clock() });
-  return { evidence, calls };
-}
+import {
+  BASE, BRANCH, CORRECTIVE, FINDING_REF, INITIAL_FINDING_RUN, ORIGINAL, OTHER, PR, REPO, REQUEST_ID,
+  activity, at, ciRuns, client, clock, issueEvent, ms, pull, readWorld, requestComment, shadowRun, world,
+} from './role-activation-test-fixtures.mjs';
 
 test('the reader normalizes a full correction cycle with identity and server timestamps on every record', async () => {
   const { evidence, calls } = await readWorld();
@@ -255,15 +64,24 @@ test('the reader normalizes a full correction cycle with identity and server tim
     { headRepositoryAtEnd: REPO, baseRefAtEnd: 'main', baseRepositoryAtEnd: REPO },
   );
   assert.deepEqual(initialFinding.laterReviewRunIds, []);
-  // The lifecycle event log covers the cycle from its earliest milestone (the finding, before the request);
-  // the retarget and label before it are not the cycle's.
-  assert.equal(freshness.lifecycleSinceMs, ms('10:20'));
+  // The lifecycle event log covers the cycle from its earliest milestone: the update that brought the branch
+  // to the reviewed head (09:00; every workflow for that head was created after it), before the initial CI
+  // started, the finding and the request. The retarget before it is not the cycle's.
+  assert.deepEqual(freshness.reviewedHeadArrival, { activityId: 800, afterSha: ORIGINAL, atMs: ms('09:00') });
+  assert.equal(initialCi.startedAtMs, ms('10:00'));
+  assert.equal(freshness.lifecycleSinceMs, ms('09:00'));
   assert.deepEqual(freshness.lifecycleEvents, []);
   // The final CI names the one run that decided each required name.
   assert.deepEqual(finalCi.deciders.map((decider) => decider.name).sort(), [...REQUIRED_CHECKS].sort());
   assert.ok(finalCi.deciders.every((decider) => decider.conclusion === 'success' && decider.completedAtMs === ms('11:00')));
   // Every closing read starts after the freshness point, which follows the pass's opening.
   assert.ok(freshness.startedAtMs < freshness.observedAtMs);
+  // The final live-PR read is the very last read of the pass, after the event log.
+  assert.ok(freshness.eventLogReadAtMs < freshness.pullFinalReadAtMs);
+  assert.deepEqual(
+    [freshness.prStateAtClose, freshness.liveHeadAtClose, freshness.baseRefAtClose, freshness.baseShaAtClose, freshness.baseRepositoryAtClose],
+    ['open', CORRECTIVE, 'main', BASE, REPO],
+  );
   // Every mutable source is read after the freshness point.
   for (const readAt of [request.readAtMs, acceptance.readAtMs, initialFinding.readAtMs, initialCi.readAtMs,
     freshness.pullReadAtMs, freshness.pushLogReadAtMs, finalCi.readAtMs, finalReview.readAtMs,
@@ -449,6 +267,18 @@ test('the ending base ref and repositories are recorded, so a retarget to a same
   assert.equal(freshness.baseRepositoryAtEnd, 'fork/PMCvitan');
 });
 
+test('a later review counts only when producer-verified; a same-named unverified run is reported apart', async () => {
+  const { evidence } = await readWorld((w) => {
+    w.runs[ORIGINAL].push(
+      shadowRun(ORIGINAL, { id: 7500, completed: at('10:40'), state: 'clear' }),
+      shadowRun(ORIGINAL, { id: 7600, completed: at('10:45'), state: 'clear' }),
+    );
+    w.verify = (run) => run.id !== 7600; // 7600 carries the shadow name but fails producer verification
+  });
+  assert.deepEqual(evidence.records.initialFinding.laterReviewRunIds, [7500]);
+  assert.deepEqual(evidence.records.initialFinding.unverifiedLaterRunIds, [7600]);
+});
+
 test('the initial finding is the run the request names; a later review of the same head is reported beside it', async () => {
   const { evidence } = await readWorld((w) => {
     w.runs[ORIGINAL].push(shadowRun(ORIGINAL, { id: 7500, completed: at('10:40'), state: 'clear' }));
@@ -629,20 +459,42 @@ test('the event log is anchored at the cycle\'s earliest milestone; without a fi
   // A retarget between the finding (10:20) and the request (10:30) is the cycle's.
   const between = await readWorld((w) => { w.events.push(issueEvent(70, 'base_ref_changed', '10:25')); });
   assert.deepEqual(between.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [70]);
-  // Without a finding identity there is no finding time: the anchor is the request.
+  // So is one after the initial CI started (10:00) but before the finding: it moves the base the deciding
+  // runs were launched on.
+  const afterCi = await readWorld((w) => { w.events.push(issueEvent(70, 'base_ref_changed', '10:10')); });
+  assert.deepEqual(afterCi.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [70]);
+  // The anchor is the EARLIEST decider start: one required check started at 09:50 moves it there.
+  const staggered = await readWorld((w) => {
+    w.runs[ORIGINAL][0] = { ...w.runs[ORIGINAL][0], started_at: at('09:50') };
+    w.events.push(issueEvent(71, 'base_ref_changed', '09:55'));
+  });
+  assert.equal(staggered.evidence.records.initialCi.startedAtMs, ms('09:50'));
+  assert.deepEqual(staggered.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [71]);
+  // Finding 4086243264: a workflow can be created (and queued) before its first job starts. The head's
+  // arrival bounds every workflow for it, so a retarget between the arrival (09:00) and the first job start
+  // (10:00) is the cycle's.
+  const queued = await readWorld((w) => { w.events.push(issueEvent(72, 'base_ref_changed', '09:10')); });
+  assert.deepEqual(queued.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [72]);
+  // The arrival is the LATEST update at or before the request, not an older one.
+  const older = await readWorld((w) => { w.activities.push(activity(700, BASE, OTHER, '08:00', { actor: 'JagPat' })); });
+  assert.deepEqual(older.evidence.records.freshness.reviewedHeadArrival, { activityId: 800, afterSha: ORIGINAL, atMs: ms('09:00') });
+  // The anchor is the earliest of every milestone: when deciders started before the recorded arrival (the
+  // same head arrived earlier too), the CI start moves it earlier still.
+  const reArrived = await readWorld((w) => {
+    w.activities[1] = { ...w.activities[1], timestamp: at('10:10') };
+    w.events.push(issueEvent(73, 'base_ref_changed', '10:05'));
+  });
+  assert.equal(reArrived.evidence.records.freshness.reviewedHeadArrival.atMs, ms('10:10'));
+  assert.equal(reArrived.evidence.records.freshness.lifecycleSinceMs, ms('10:00'));
+  assert.deepEqual(reArrived.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [73]);
+  // With no arrival, no finding time and no CI, the anchor is the request.
   const unverified = await readWorld((w) => {
     w.verify = false;
+    w.activities = w.activities.map((entry) => (entry.id === 800 ? { ...entry, timestamp: at('10:30') } : entry));
     w.events.push(issueEvent(70, 'base_ref_changed', '10:25'), issueEvent(71, 'base_ref_changed', '10:40'));
   });
   assert.equal(unverified.evidence.records.freshness.lifecycleSinceMs, ms('10:30'));
   assert.deepEqual(unverified.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [71]);
-  // The earlier of the two, whichever it is: a finding stamped after the request does not move the anchor.
-  const late = await readWorld((w) => {
-    w.runs[ORIGINAL] = [...ciRuns(ORIGINAL), shadowRun(ORIGINAL, { id: INITIAL_FINDING_RUN, completed: at('10:40'), state: 'changes_required' })];
-    w.events.push(issueEvent(70, 'base_ref_changed', '10:35'));
-  });
-  assert.equal(late.evidence.records.freshness.lifecycleSinceMs, ms('10:30'));
-  assert.deepEqual(late.evidence.records.freshness.lifecycleEvents.map((entry) => entry.eventId), [70]);
   // No request, no cycle: the log is not read at all.
   const none = await readWorld((w) => { w.comment = null; });
   assert.ok(!none.calls.some((path) => path.includes('/events?')));

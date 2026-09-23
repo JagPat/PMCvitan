@@ -6,8 +6,9 @@
  * window leaves both snapshots equal while the merge result under test (and the CI it launched) moved.
  * This module is the HISTORY side for those dimensions, the base/state counterpart of the branch push
  * log: for ONE repository and ONE pull request it reads the ISSUE EVENTS and returns every lifecycle
- * event at or after an anchor time — base changes, close/reopen/merge, draft transitions and head-ref
- * events — each with its server time, id and actor.
+ * event at or after an anchor time — base changes (including deletion), close/reopen/merge, draft
+ * transitions and head-ref events — each with its server time, id and actor. Any event not on the known-
+ * neutral list (`PULL_REQUEST_NEUTRAL_EVENTS`) is reported too, so an unknown mutation is surfaced.
  *
  * Why issue events, not the timeline. The timeline interleaves user content (comments) that can be
  * DELETED; page-based reads over a list with deletions can shift an item across a page boundary and
@@ -39,6 +40,8 @@ const SERVER_TIME_PRECISION_MS = 1_000;
 // spellings GitHub has used (`convert_to_draft` and `converted_to_draft`).
 export const PULL_REQUEST_LIFECYCLE_EVENTS = Object.freeze([
   'base_ref_changed',
+  'base_ref_deleted',
+  'base_ref_restored',
   'base_ref_force_pushed',
   'automatic_base_change_succeeded',
   'automatic_base_change_failed',
@@ -53,6 +56,45 @@ export const PULL_REQUEST_LIFECYCLE_EVENTS = Object.freeze([
   'head_ref_force_pushed',
 ]);
 
+// Issue events known to leave a pull request's base, state and head ref untouched (labels, assignment,
+// mentions, review requests, auto-merge toggles and the like). Every OTHER event — a lifecycle event or one
+// this list does not know — is reported, so an unknown mutation is surfaced rather than silently dropped.
+export const PULL_REQUEST_NEUTRAL_EVENTS = Object.freeze([
+  'assigned',
+  'unassigned',
+  'labeled',
+  'unlabeled',
+  'mentioned',
+  'subscribed',
+  'unsubscribed',
+  'milestoned',
+  'demilestoned',
+  'renamed',
+  'locked',
+  'unlocked',
+  'pinned',
+  'unpinned',
+  'referenced',
+  'review_requested',
+  'review_request_removed',
+  'review_dismissed',
+  'marked_as_duplicate',
+  'unmarked_as_duplicate',
+  'auto_merge_enabled',
+  'auto_merge_disabled',
+  'auto_squash_enabled',
+  'auto_rebase_enabled',
+  'added_to_merge_queue',
+  'removed_from_merge_queue',
+  'added_to_project',
+  'moved_columns_in_project',
+  'removed_from_project',
+  'deployed',
+  'deployment_environment_changed',
+  'connected',
+  'disconnected',
+]);
+
 function timeMs(value) {
   if (typeof value !== 'string' || value.length === 0) return null;
   const parsed = Date.parse(value);
@@ -60,22 +102,22 @@ function timeMs(value) {
 }
 
 /**
- * The lifecycle events on complete event pages at or after `sinceMs`, compared at the server's
- * whole-second precision (an event in the anchor's own second cannot be ordered before it), oldest
- * first. Undated lifecycle events are kept with `atMs: null`. Returns `null` for input that is not a list
- * of pages.
+ * The lifecycle events — and any event not known to be neutral — on complete event pages at or after
+ * `sinceMs`, compared at the server's whole-second precision (an event in the anchor's own second cannot be
+ * ordered before it), oldest first. Undated events are kept with `atMs: null`. Returns `null` for input that
+ * is not a list of pages.
  */
 export function normalizePullRequestEvents(pages, { sinceMs }) {
   if (!Array.isArray(pages) || !pages.every(Array.isArray) || !Number.isFinite(sinceMs)) return null;
   const anchorMs = Math.floor(sinceMs / SERVER_TIME_PRECISION_MS) * SERVER_TIME_PRECISION_MS;
   return pages
     .flat()
-    .filter((item) => PULL_REQUEST_LIFECYCLE_EVENTS.includes(item?.event))
+    .filter((item) => !PULL_REQUEST_NEUTRAL_EVENTS.includes(item?.event))
     .map((item) => ({
-      eventId: item.id ?? null,
-      event: item.event,
-      actorLogin: item.actor?.login ?? null,
-      atMs: timeMs(item.created_at),
+      eventId: item?.id ?? null,
+      event: typeof item?.event === 'string' ? item.event : null,
+      actorLogin: item?.actor?.login ?? null,
+      atMs: timeMs(item?.created_at),
     }))
     .filter((entry) => entry.atMs === null || entry.atMs >= anchorMs)
     .sort((a, b) => (a.atMs ?? Infinity) - (b.atMs ?? Infinity));

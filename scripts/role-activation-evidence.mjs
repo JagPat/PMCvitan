@@ -171,7 +171,7 @@ export function normalizeAcceptance(reactions, request) {
  */
 export function normalizePushLog(activities, { repository, pullRequest, branch, sinceMs }) {
   if (!Array.isArray(activities) || typeof branch !== 'string' || !Number.isFinite(sinceMs)) {
-    return { correctivePush: null, pushesAfterCorrective: null, covered: false };
+    return { correctivePush: null, pushesAfterCorrective: null, headArrival: null, covered: false };
   }
   const ref = `refs/heads/${branch}`;
   const dated = activities
@@ -180,7 +180,13 @@ export function normalizePushLog(activities, { repository, pullRequest, branch, 
     .sort((a, b) => (a.atMs - b.atMs) || (a.activity.id - b.activity.id));
   const covered = dated.length > 0 && dated[0].atMs <= sinceMs;
   const since = dated.filter((entry) => entry.atMs > sinceMs);
-  if (!covered || since.length === 0) return { correctivePush: null, pushesAfterCorrective: null, covered };
+  // The update in effect at the request: the one that brought the branch to the reviewed head. Every
+  // `pull_request` workflow for that head was created after it, so it bounds the cycle's CI from below.
+  const before = dated.filter((entry) => entry.atMs <= sinceMs).at(-1);
+  const headArrival = covered && before
+    ? { activityId: before.activity.id, afterSha: before.activity.after ?? null, atMs: before.atMs }
+    : null;
+  if (!covered || since.length === 0) return { correctivePush: null, pushesAfterCorrective: null, headArrival, covered };
   const describe = ({ activity, atMs }) => ({
     activityId: activity.id,
     activityType: activity.activity_type ?? null,
@@ -192,6 +198,7 @@ export function normalizePushLog(activities, { repository, pullRequest, branch, 
   return {
     correctivePush: { repository, pullRequest, branch, ...describe(since[0]), ancestry: null },
     pushesAfterCorrective: since.slice(1).map(describe),
+    headArrival,
     covered,
   };
 }
@@ -265,9 +272,11 @@ export function normalizeCi(checkRuns, { repository, pullRequest, headSha, baseS
     name: run.name,
     checkRunId: run.id,
     conclusion: run.conclusion,
+    startedAtMs: timeMs(run.started_at),
     completedAtMs: timeMs(run.completed_at),
   }));
   const completions = deciders.map((decider) => decider.completedAtMs);
+  const starts = deciders.map((decider) => decider.startedAtMs);
   return {
     repository,
     pullRequest,
@@ -278,6 +287,8 @@ export function normalizeCi(checkRuns, { repository, pullRequest, headSha, baseS
     pending: summary.pending,
     failed: summary.failed,
     deciders,
+    // The earliest decider start: a retarget after it can move the base the deciding runs were launched on.
+    startedAtMs: starts.length > 0 && starts.every(Number.isFinite) ? Math.min(...starts) : null,
     atMs: completions.length > 0 && completions.every(Number.isFinite) ? Math.max(...completions) : null,
     readAtMs,
   };
@@ -318,7 +329,7 @@ export async function readRoleActivationEvidence(
 
   // The branch push log, widening the Activity API period until it reaches back past the request.
   const readPushLog = async (label, request, branch) => {
-    const uncovered = { correctivePush: null, pushesAfterCorrective: null, covered: false };
+    const uncovered = { correctivePush: null, pushesAfterCorrective: null, headArrival: null, covered: false };
     const periods = activityPeriods(request.atMs, now());
     if (periods.length === 0) {
       problems.push(`${label}: the request is older than the longest Activity API period`);
@@ -364,7 +375,7 @@ export async function readRoleActivationEvidence(
   const originalHeadSha = opening?.headSha ?? null;
   const log = opening && branch
     ? await readPushLog('push-log', opening, branch)
-    : { correctivePush: null, pushesAfterCorrective: null, covered: false };
+    : { correctivePush: null, pushesAfterCorrective: null, headArrival: null, covered: false };
   const correctivePush = log.correctivePush;
   const correctiveHeadSha = SHA.test(correctivePush?.afterSha ?? '') ? correctivePush.afterSha : null;
   if (correctivePush && originalHeadSha && correctiveHeadSha) {
@@ -416,11 +427,20 @@ export async function readRoleActivationEvidence(
       initialFinding = normalizeShadowReview(await review(named, originalHeadSha, baseSha), named);
       if (initialFinding) initialFinding.readAtMs = readAtMs;
       if (Number.isInteger(initialFinding?.checkRunId)) {
-        initialFinding.laterReviewRunIds = originalRuns
+        // A later review counts only when it is producer-verified like the finding itself: a check run that
+        // merely carries the shadow name is not provenance. Unverified candidates are reported apart.
+        const others = originalRuns.filter((run) => run?.name !== CLAUDE_SHADOW_CONTEXT);
+        const candidates = originalRuns
           .filter((run) => run?.name === CLAUDE_SHADOW_CONTEXT && run?.head_sha === originalHeadSha
             && Number.isInteger(run.id) && run.id > initialFinding.checkRunId)
-          .map((run) => run.id)
-          .sort((a, b) => a - b);
+          .sort((a, b) => a.id - b.id);
+        initialFinding.laterReviewRunIds = [];
+        initialFinding.unverifiedLaterRunIds = [];
+        for (const run of candidates) {
+          const verified = normalizeShadowReview(await review([...others, run], originalHeadSha, baseSha), [run]);
+          (verified?.checkRunId === run.id ? initialFinding.laterReviewRunIds : initialFinding.unverifiedLaterRunIds)
+            .push(run.id);
+        }
       }
       if (Number.isFinite(initialFinding?.atMs)) {
         initialCi = normalizeCi(originalRuns, {
@@ -473,18 +493,25 @@ export async function readRoleActivationEvidence(
   }
 
   // Closing, last: the pull request's lifecycle event log (scripts/pull-request-event-log.mjs), from the
-  // cycle's earliest milestone. The two live-PR reads are snapshots, so a base retarget away and back
+  // cycle's earliest milestone: the update that brought the branch to the reviewed head (every workflow for
+  // that head was created after it), else the initial CI's earliest decider start, the finding or the request. The two live-PR reads are snapshots, so a base retarget away and back
   // (`main → release → main`) leaves them equal; the append-only issue events list both changes. It is read
   // after the freshness point, so an event before that point is listed; an incomplete log is `null` with a
   // diagnostic, never "no events". Which events disqualify the cycle is the verdict's rule.
   let lifecycle = null;
   if (opening) {
-    const sinceMs = Math.min(opening.atMs, initialFinding?.atMs ?? Infinity);
-    const log = await readPullRequestEventLog(client, { pullRequest, sinceMs, now });
-    problems.push(...log.problems.map((problem) => `event-log: ${problem}`));
-    lifecycle = { sinceMs, events: log.covered ? log.events : null,
-      coveredFromMs: log.coveredFromMs, readAtMs: log.readAtMs };
+    const sinceMs = Math.min(opening.atMs, initialFinding?.atMs ?? Infinity, initialCi?.startedAtMs ?? Infinity,
+      log.headArrival?.atMs ?? Infinity);
+    const eventLog = await readPullRequestEventLog(client, { pullRequest, sinceMs, now });
+    problems.push(...eventLog.problems.map((problem) => `event-log: ${problem}`));
+    lifecycle = { sinceMs, events: eventLog.covered ? eventLog.events : null,
+      coveredFromMs: eventLog.coveredFromMs, readAtMs: eventLog.readAtMs };
   }
+
+  // Closing, very last: the live PR once more. An ordinary fast-forward of the base branch appends no PR
+  // event, so the base SHA (and head, state, refs) must still be the cycle's after every other closing read.
+  const pullAtClose = opening ? await read('pull-final', () => client.pullRequest(pullRequest)) : null;
+  const pullFinalReadAtMs = pullAtClose ? now() : null;
 
   const freshness = pullAtStart && pullAtEnd
     ? {
@@ -503,7 +530,14 @@ export async function readRoleActivationEvidence(
       baseRefAtEnd: pullAtEnd.base?.ref ?? null,
       baseRepositoryAtEnd: pullAtEnd.base?.repo?.full_name ?? null,
       baseShaAtEnd: pullAtEnd.base?.sha ?? null,
+      prStateAtClose: pullAtClose?.state ?? null,
+      liveHeadAtClose: pullAtClose?.head?.sha ?? null,
+      baseRefAtClose: pullAtClose?.base?.ref ?? null,
+      baseShaAtClose: pullAtClose?.base?.sha ?? null,
+      baseRepositoryAtClose: pullAtClose?.base?.repo?.full_name ?? null,
       pushesAfterCorrective,
+      // An immutable historical entry of the append-only push log, read in the opening pass.
+      reviewedHeadArrival: log.headArrival,
       lifecycleSinceMs: lifecycle?.sinceMs ?? null,
       lifecycleEvents: lifecycle?.events ?? null,
       eventLogCoveredFromMs: lifecycle?.coveredFromMs ?? null,
@@ -512,6 +546,7 @@ export async function readRoleActivationEvidence(
       observedAtMs,
       pullReadAtMs,
       pushLogReadAtMs,
+      pullFinalReadAtMs,
     }
     : null;
 

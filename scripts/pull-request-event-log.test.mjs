@@ -6,6 +6,7 @@ import {
   EVENT_LOG_PAGE_SIZE,
   PULL_REQUEST_EVENT_LOG_SCHEMA,
   PULL_REQUEST_LIFECYCLE_EVENTS,
+  PULL_REQUEST_NEUTRAL_EVENTS,
   readPullRequestEventLog,
 } from './pull-request-event-log.mjs';
 
@@ -154,4 +155,14 @@ test('a read failure, a non-list page or invalid input is contained as uncovered
     assert.deepEqual([invalid.covered, invalid.problems], [false, ['invalid event-log input']]);
   }
   assert.deepEqual((await readPullRequestEventLog(null, { pullRequest: PR, sinceMs: SINCE })).problems, ['invalid event-log input']);
+});
+
+test('a base-branch deletion and any event not known to be neutral are reported; neutral events are not', async () => {
+  const deleted = event('base_ref_deleted', '11:00');
+  const unknown = event('some_future_mutation', '11:01');
+  const neutral = PULL_REQUEST_NEUTRAL_EVENTS.map((name) => event(name, '11:02'));
+  const log = await readPullRequestEventLog(client([deleted, unknown, ...neutral]), { pullRequest: PR, sinceMs: SINCE, now: clock() });
+  assert.deepEqual(log.events.map((entry) => entry.event), ['base_ref_deleted', 'some_future_mutation']);
+  assert.ok(PULL_REQUEST_LIFECYCLE_EVENTS.includes('base_ref_deleted'));
+  assert.ok(!PULL_REQUEST_LIFECYCLE_EVENTS.some((name) => PULL_REQUEST_NEUTRAL_EVENTS.includes(name)));
 });
