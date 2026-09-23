@@ -35,14 +35,18 @@ import { PROBE_MARKER_PREFIX } from './codex-fix-probe.mjs';
  *                           away-and-back return to the same SHA is still two updates. The log counts only
  *                           when it reaches back to an update at or before the request (widening the
  *                           Activity API's trailing `time_period` as needed); otherwise it is uncovered.
- *   - freshness           — every other read happens first; then the freshness point `observedAtMs` is taken;
- *                           then the CLOSING reads run: the live PR (head, base ref, repositories), the final
- *                           check runs (final review and latest CI attempt), and last the branch push log.
- *                           Each closing read starts after the freshness point, so each covers the cycle up
- *                           to at least that instant: a push (even away-and-back), a retarget or a newer CI
- *                           attempt before it is visible. Window times come from the reader host (`now`),
- *                           milestones from GitHub. A later consumer that ACTS must re-read and bind to the
- *                           reported decider runs; the reader only reports.
+ *   - freshness           — OPENING reads decide only what to read: the request (reviewed head, finding,
+ *                           time), the live PR (branch, base) and the push log (corrective head). Then the
+ *                           freshness point `observedAtMs` is taken. Then every mutable source is read in the
+ *                           CLOSING pass: the request again (it must still be the one planned from), its
+ *                           acceptance, the live PR (head, base ref, repositories), both heads' check runs
+ *                           (findings, reviews, CI), and last the push log again (it must confirm the same
+ *                           corrective push; one that landed during the pass is a diagnostic). Each closing
+ *                           read starts after the freshness point, so an edit, a push (even away-and-back), a
+ *                           retarget, a later review or a newer CI attempt before it is visible. Window times
+ *                           come from the reader host (`now`), milestones from GitHub. Ancestry between two
+ *                           fixed SHAs is immutable and read once. A later consumer that ACTS must re-read and
+ *                           bind to the reported decider runs; the reader only reports.
  *
  * It decides nothing across records: identity equality, ordering, causation and freshness are the pure
  * verdict's rules. A source that cannot be read or authenticated yields `null` (never a partial record that
@@ -293,18 +297,8 @@ export async function readRoleActivationEvidence(
     verifyProducer,
   }));
 
-  // Historical legs: the request, its acceptance.
-  const requestComment = await read('request', () =>
-    client.request(`/repos/${repository}/issues/comments/${requestCommentId}`));
-  const request = normalizeCorrectionRequest(requestComment, { repository, pullRequest });
-  const reactions = request
-    ? await read('acceptance', () =>
-      client.request(`/repos/${repository}/issues/comments/${request.requestId}/reactions?per_page=100`))
-    : null;
-  const acceptance = normalizeAcceptance(reactions, request);
-
   // The branch push log, widening the Activity API period until it reaches back past the request.
-  const readPushLog = async (label, branch) => {
+  const readPushLog = async (label, request, branch) => {
     const uncovered = { correctivePush: null, pushesAfterCorrective: null, covered: false };
     const periods = activityPeriods(request.atMs, now());
     if (periods.length === 0) {
@@ -325,24 +319,72 @@ export async function readRoleActivationEvidence(
     problems.push(`${label}: the log does not reach back to the request (uncovered)`);
     return uncovered;
   };
+  const readRequest = async (label) => normalizeCorrectionRequest(
+    await read(label, () => client.request(`/repos/${repository}/issues/comments/${requestCommentId}`)),
+    { repository, pullRequest },
+  );
 
-  // The freshness pass opens: the live PR, then every non-closing read.
+  // OPENING reads — only what decides what to read: the request (reviewed head, finding, time), the live PR
+  // (branch, base) and the push log (the corrective head). Each is read again, or superseded, after the
+  // freshness point; nothing mutable is reported from an opening read alone.
   const startedAtMs = now();
+  const opening = await readRequest('request');
   const pullAtStart = await read('pull', () => client.pullRequest(pullRequest));
   const branch = typeof pullAtStart?.head?.ref === 'string' ? pullAtStart.head.ref : null;
   const baseSha = SHA.test(pullAtStart?.base?.sha ?? '') ? pullAtStart.base.sha : null;
-  const originalHeadSha = request?.headSha ?? null;
+  const originalHeadSha = opening?.headSha ?? null;
+  const log = opening && branch
+    ? await readPushLog('push-log', opening, branch)
+    : { correctivePush: null, pushesAfterCorrective: null, covered: false };
+  const correctivePush = log.correctivePush;
+  const correctiveHeadSha = SHA.test(correctivePush?.afterSha ?? '') ? correctivePush.afterSha : null;
+  if (correctivePush && originalHeadSha && correctiveHeadSha) {
+    // Ancestry between two fixed SHAs is immutable, so it needs no re-read.
+    correctivePush.ancestry = normalizeAncestry(await read('ancestry', () =>
+      client.request(`/repos/${repository}/compare/${originalHeadSha}...${correctiveHeadSha}`)));
+  }
 
-  // Initial legs on the reviewed head, bound to the cycle base. The finding is the run the request NAMES
-  // (a later review of the same head must not stand in for it); CI is evaluated as of that finding.
+  // The freshness point. Every CLOSING read below starts after it, so each covers the cycle up to at least
+  // this instant: an edited request, a withdrawn acceptance, a push (even away-and-back), a retarget, a
+  // later review or a newer CI attempt before it is visible.
+  const observedAtMs = now();
+
+  // Closing: the request again. It must still be the one the pass was planned from; an edit shows as
+  // `edited`, and a deleted or re-pointed request is no request.
+  let request = await readRequest('request-recheck');
+  if (request) request.readAtMs = now();
+  if (opening && request && (request.headSha !== opening.headSha || request.findingRef !== opening.findingRef
+    || request.atMs !== opening.atMs)) {
+    problems.push('request-recheck: the request changed during the pass');
+    request = null;
+  } else if (opening && !request) {
+    problems.push('request-recheck: the request is no longer readable as this cycle\'s request');
+  }
+
+  // Closing: its acceptance, read only now.
+  const reactions = request
+    ? await read('acceptance', () =>
+      client.request(`/repos/${repository}/issues/comments/${request.requestId}/reactions?per_page=100`))
+    : null;
+  const acceptance = normalizeAcceptance(reactions, request);
+  if (acceptance) acceptance.readAtMs = now();
+
+  // Closing: the live PR — head, base ref and both repositories, as they now stand.
+  const pullAtEnd = await read('pull-recheck', () => client.pullRequest(pullRequest));
+  const pullReadAtMs = now();
+
+  // Closing: the reviewed head's check runs. The finding is the run the request NAMES (a later review of
+  // the same head must not stand in for it, and is listed beside it); CI is evaluated as of that finding.
   let initialFinding = null;
   let initialCi = null;
-  if (originalHeadSha && baseSha) {
+  if (request && baseSha) {
     const originalRuns = await read('original-check-runs', () => client.checkRuns(originalHeadSha));
+    const readAtMs = now();
     if (originalRuns) {
       const named = originalRuns.filter((run) => run?.name !== CLAUDE_SHADOW_CONTEXT
         || run?.html_url === request.findingRef);
       initialFinding = normalizeShadowReview(await review(named, originalHeadSha, baseSha), named);
+      if (initialFinding) initialFinding.readAtMs = readAtMs;
       if (Number.isInteger(initialFinding?.checkRunId)) {
         initialFinding.laterReviewRunIds = originalRuns
           .filter((run) => run?.name === CLAUDE_SHADOW_CONTEXT && run?.head_sha === originalHeadSha
@@ -357,33 +399,14 @@ export async function readRoleActivationEvidence(
           headSha: originalHeadSha,
           baseSha: initialFinding.testedBaseSha,
           asOfMs: initialFinding.atMs,
-          readAtMs: now(),
+          readAtMs,
         });
       }
     }
   }
 
-  // The corrective push: the first branch update after the request, with its server ancestry.
-  const log = request && branch
-    ? await readPushLog('push-log', branch)
-    : { correctivePush: null, pushesAfterCorrective: null, covered: false };
-  const correctivePush = log.correctivePush;
-  const correctiveHeadSha = SHA.test(correctivePush?.afterSha ?? '') ? correctivePush.afterSha : null;
-  if (correctivePush && originalHeadSha && correctiveHeadSha) {
-    correctivePush.ancestry = normalizeAncestry(await read('ancestry', () =>
-      client.request(`/repos/${repository}/compare/${originalHeadSha}...${correctiveHeadSha}`)));
-  }
-
-  // The freshness point. Every read above is complete; every closing read below starts after it, so each
-  // closing read covers the cycle up to at least this instant.
-  const observedAtMs = now();
-
-  // Closing read 1: the live PR — head, base ref and both repositories, as they now stand.
-  const pullAtEnd = await read('pull-recheck', () => client.pullRequest(pullRequest));
-  const pullReadAtMs = now();
-
-  // Closing read 2: the final check runs on the corrective head — the newest shadow review and the latest
-  // applicable CI attempt, with the runs that decided it.
+  // Closing: the corrective head's check runs — the newest shadow review and the latest applicable CI
+  // attempt, with the runs that decided it.
   let finalReview = null;
   let finalCi = null;
   if (correctiveHeadSha && baseSha) {
@@ -402,17 +425,20 @@ export async function readRoleActivationEvidence(
     }
   }
 
-  // Closing read 3, last: the push log again, so an update (even away-and-back) before the freshness point
-  // is listed. It must confirm the same corrective push; anything else is unknown, never "no pushes".
+  // Closing, last: the push log again, whenever there is a branch to read, so an update before the freshness
+  // point is listed. It must confirm the same corrective push; a corrective push that landed only during
+  // the pass, or a different one, is a diagnostic and never "no pushes".
   let pushesAfterCorrective = null;
   let pushLogReadAtMs = null;
-  if (correctivePush) {
-    const closing = await readPushLog('push-log-closing', branch);
+  if (opening && branch) {
+    const closing = await readPushLog('push-log-closing', opening, branch);
     pushLogReadAtMs = now();
-    if (closing.correctivePush?.activityId === correctivePush.activityId) {
+    if (correctivePush && closing.correctivePush?.activityId === correctivePush.activityId) {
       pushesAfterCorrective = closing.pushesAfterCorrective;
-    } else if (closing.covered) {
-      problems.push('push-log-closing: the closing log names a different corrective push');
+    } else if (closing.correctivePush) {
+      problems.push(correctivePush
+        ? 'push-log-closing: the closing log names a different corrective push'
+        : 'push-log-closing: a corrective push landed during the pass; read the cycle again');
     }
   }
 

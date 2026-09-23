@@ -227,11 +227,14 @@ under and its milestone's server timestamp. It reuses the existing trusted adapt
   The log counts only when it reaches back to an update at or before the request. The reader widens the
   API's trailing `time_period` (a day by default) until it does. If it never does, the log is reported
   as uncovered, not guessed.
-- **Freshness.** Every other read happens first, then the freshness point is taken. Then come the closing
-  reads: the live PR (head, base ref and repositories), the final check runs (final review and latest CI
-  attempt), and last the push log again. Each closing read starts after the freshness point. So a push
-  (even away-and-back), a retarget or a newer CI attempt before that point is visible. A consumer that
-  acts must re-read and bind to the reported decider runs.
+- **Freshness.** Opening reads decide only what to read: the request, the live PR and the push log.
+  Then the freshness point is taken. Every mutable source is then read in the closing pass: the
+  request again (it must be unchanged), its acceptance, the live PR (head, base ref and repositories),
+  both heads' check runs, and last the push log again. Each closing read starts after the freshness
+  point. So an edit, a push (even away-and-back), a retarget, a later review or a newer CI attempt
+  before that point is visible. A corrective push that lands during the pass is reported as a
+  diagnostic, never silently absent. A consumer that acts must re-read and bind to the reported
+  decider runs.
 
 The reader decides nothing across records. Identity equality with the caller's expected repository and
 PR, the full milestone order, causation and freshness are the pure verdict's rules (#619). An unreadable

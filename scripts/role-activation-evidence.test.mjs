@@ -139,14 +139,19 @@ function activityPage(w, path) {
 // between two of the reader's own reads (a barrier).
 function client(w) {
   const calls = [];
-  const counts = { pull: 0, activity: 0 };
+  const counts = { pull: 0, activity: 0, comment: 0 };
   const after = (kind) => w.after?.[kind]?.[(counts[kind] += 1)]?.(w);
   const fake = {
     repository: REPO,
     async request(path, { method = 'GET' } = {}) {
       calls.push(path);
       if (method !== 'GET') throw new Error(`write attempted: ${method} ${path}`);
-      if (path === `/repos/${REPO}/issues/comments/${REQUEST_ID}`) return w.comment;
+      if (path === `/repos/${REPO}/issues/comments/${REQUEST_ID}`) {
+        const comment = w.comment;
+        after('comment');
+        if (!comment) throw new Error('Not Found');
+        return comment;
+      }
       if (path.startsWith(`/repos/${REPO}/issues/comments/${REQUEST_ID}/reactions`)) return w.reactions;
       if (path.startsWith(`/repos/${REPO}/activity?`)) {
         const page = activityPage(w, path);
@@ -211,7 +216,7 @@ test('the reader normalizes a full correction cycle with identity and server tim
       headSha: request.headSha, findingRef: request.findingRef, requestId: request.requestId, atMs: request.atMs },
     { githubGenerated: true, humanAuthored: false, edited: false, headSha: ORIGINAL, findingRef: FINDING_REF, requestId: REQUEST_ID, atMs: ms('10:30') },
   );
-  assert.deepEqual(acceptance, { repository: REPO, pullRequest: PR, requestId: REQUEST_ID, actorLogin: CODEX_LOGIN, atMs: ms('10:31') });
+  assert.deepEqual(acceptance, { repository: REPO, pullRequest: PR, requestId: REQUEST_ID, actorLogin: CODEX_LOGIN, atMs: ms('10:31'), readAtMs: acceptance.readAtMs });
   assert.deepEqual(correctivePush, {
     repository: REPO, pullRequest: PR, branch: BRANCH, activityId: 900, activityType: 'push', actorLogin: CODEX_LOGIN,
     beforeSha: ORIGINAL, afterSha: CORRECTIVE, atMs: ms('10:50'),
@@ -239,7 +244,9 @@ test('the reader normalizes a full correction cycle with identity and server tim
   assert.ok(finalCi.deciders.every((decider) => decider.conclusion === 'success' && decider.completedAtMs === ms('11:00')));
   // Every closing read starts after the freshness point, which follows the pass's opening.
   assert.ok(freshness.startedAtMs < freshness.observedAtMs);
-  for (const readAt of [freshness.pullReadAtMs, freshness.pushLogReadAtMs, finalCi.readAtMs, finalReview.readAtMs]) {
+  // Every mutable source is read after the freshness point.
+  for (const readAt of [request.readAtMs, acceptance.readAtMs, initialFinding.readAtMs, initialCi.readAtMs,
+    freshness.pullReadAtMs, freshness.pushLogReadAtMs, finalCi.readAtMs, finalReview.readAtMs]) {
     assert.ok(freshness.observedAtMs < readAt);
   }
   // Read-only: GETs only (the fake refuses writes), and only the documented read endpoints.
@@ -334,6 +341,56 @@ test('the final CI is read after the freshness point, so a rerun started before 
   assert.ok(freshness.observedAtMs < finalCi.readAtMs);
 });
 
+test('the request is re-read after the freshness point: an edit, a re-pointing or a deletion during the pass is visible', async () => {
+  // Barrier: the request comment is edited right after the reader's opening read of it.
+  const edited = await readWorld((w) => {
+    w.after = { comment: { 1: (world) => { world.comment = requestComment({ updated_at: at('11:59') }); } } };
+  });
+  assert.equal(edited.evidence.records.request.edited, true);
+  assert.ok(edited.evidence.records.freshness.observedAtMs < edited.evidence.records.request.readAtMs);
+  // Re-pointed at another finding: no request, and a diagnostic.
+  const repointed = await readWorld((w) => {
+    w.after = { comment: { 1: (world) => {
+      const marker = probeMarker({ pullRequest: PR, headSha: ORIGINAL, findingRef: `https://github.com/${REPO}/runs/7999` });
+      world.comment = requestComment({ body: `@codex fix\n${marker}` });
+    } } };
+  });
+  assert.equal(repointed.evidence.records.request, null);
+  assert.equal(repointed.evidence.records.acceptance, null);
+  assert.ok(repointed.evidence.problems.includes('request-recheck: the request changed during the pass'));
+  // Stripped of its marker: no longer this cycle's request.
+  const stripped = await readWorld((w) => {
+    w.after = { comment: { 1: (world) => { world.comment = requestComment({ body: '@codex fix\nno marker' }); } } };
+  });
+  assert.equal(stripped.evidence.records.request, null);
+  assert.ok(stripped.evidence.problems.includes("request-recheck: the request is no longer readable as this cycle's request"));
+  // Deleted: no request, and a diagnostic.
+  const deleted = await readWorld((w) => { w.after = { comment: { 1: (world) => { world.comment = null; } } }; });
+  assert.equal(deleted.evidence.records.request, null);
+  assert.ok(deleted.evidence.problems.some((problem) => problem.startsWith('request-recheck:')));
+});
+
+test('a corrective push that lands during the pass is a diagnostic, never silently absent', async () => {
+  // Barrier: no update after the request at the opening push-log read; the corrective push lands right after.
+  const { evidence } = await readWorld((w) => {
+    w.activities = w.activities.filter((entry) => entry.id !== 900);
+    w.pulls = [pull(ORIGINAL), pull(CORRECTIVE)];
+    w.after = { activity: { 1: (world) => world.activities.unshift(activity(900, ORIGINAL, CORRECTIVE, '11:59')) } };
+  });
+  assert.equal(evidence.records.correctivePush, null);
+  assert.equal(evidence.records.freshness.liveHeadAtEnd, CORRECTIVE);
+  assert.ok(evidence.problems.includes('push-log-closing: a corrective push landed during the pass; read the cycle again'));
+});
+
+test('a later review of the reviewed head that appears during the pass is listed', async () => {
+  // Barrier: a new shadow review of the reviewed head appears right after the opening push-log read.
+  const { evidence } = await readWorld((w) => {
+    w.after = { activity: { 1: (world) => world.runs[ORIGINAL].push(shadowRun(ORIGINAL, { id: 7600, completed: at('11:59'), state: 'clear' })) } };
+  });
+  assert.equal(evidence.records.initialFinding.reviewRef, FINDING_REF);
+  assert.deepEqual(evidence.records.initialFinding.laterReviewRunIds, [7600]);
+});
+
 test('the CI record is dated by the runs that decided it, not by a superseded straggler', async () => {
   // An earlier attempt (suite 1) on the corrective SHA was superseded by suite 2 (the fixture's), but its
   // `api` job straggles to a success at 11:30 — after the applicable suite finished at 11:00.
@@ -370,7 +427,8 @@ test('the initial finding is the run the request names; a later review of the sa
   assert.deepEqual(initialFinding.laterReviewRunIds, [7500]);
   // A marker naming no run of the reviewed head yields no finding identity.
   const unnamed = await readWorld((w) => { w.runs[ORIGINAL] = w.runs[ORIGINAL].filter((run) => run.id !== INITIAL_FINDING_RUN); });
-  assert.deepEqual(unnamed.evidence.records.initialFinding, { state: 'missing' });
+  assert.equal(unnamed.evidence.records.initialFinding.state, 'missing');
+  assert.equal(unnamed.evidence.records.initialFinding.reviewRef, undefined);
 });
 
 test('the live head is read before and after the fresh reads, so a move inside the window is visible', async () => {
@@ -401,8 +459,9 @@ test('the corrective push is the first update after the request, with its server
   });
   assert.equal(truncated.evidence.records.correctivePush, null);
   assert.ok(truncated.evidence.problems.some((problem) => problem.includes('uncovered')));
-  // A full page cannot be widened into coverage, so it is not re-read under a longer period.
-  assert.equal(truncated.calls.filter((path) => path.includes('/activity?')).length, 1);
+  // A full page cannot be widened into coverage, so neither the opening nor the closing read retries it
+  // under a longer period.
+  assert.equal(truncated.calls.filter((path) => path.includes('/activity?')).length, 2);
 });
 
 test('the correction request is the GitHub-generated probe comment on THIS PR, with its author and finding', async () => {
@@ -457,11 +516,13 @@ test('the initial CI is evaluated as of the triggering finding, not as it stands
 
 test('shadow evidence is producer-verified and base-bound; unverifiable or rebased evidence carries no identity', async () => {
   const untrusted = await readWorld((w) => { w.verify = false; });
-  assert.deepEqual(untrusted.evidence.records.initialFinding, { state: 'untrusted_producer' });
+  assert.equal(untrusted.evidence.records.initialFinding.state, 'untrusted_producer');
+  assert.equal(untrusted.evidence.records.initialFinding.reviewRef, undefined);
   assert.deepEqual(untrusted.evidence.records.finalReview, { state: 'untrusted_producer', readAtMs: untrusted.evidence.records.finalCi.readAtMs });
   assert.equal(untrusted.evidence.records.initialCi, null); // no finding time to evaluate the initial CI at
   const rebased = await readWorld((w) => { w.pulls = [pull(CORRECTIVE, { base: { ref: 'main', sha: OTHER, repo: { full_name: REPO } } }), pull()]; });
-  assert.deepEqual(rebased.evidence.records.initialFinding, { state: 'missing' });
+  assert.equal(rebased.evidence.records.initialFinding.state, 'missing');
+  assert.equal(rebased.evidence.records.initialFinding.reviewRef, undefined);
   assert.equal(rebased.evidence.cycle.baseSha, OTHER);
 });
 
