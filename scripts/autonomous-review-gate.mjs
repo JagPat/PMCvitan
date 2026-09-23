@@ -91,12 +91,21 @@ function intentionalSkip(skipped, gatesPassed) {
 }
 
 export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHECKS) {
+  const { state, missing, pending, failed } = resolveRequiredChecks(checkRuns, requiredChecks);
+  return { state, missing, pending, failed };
+}
+
+// The summary above plus, per required name that reached a verdict (failed or passed), the ONE run that
+// decided it. Evidence readers that must date or bind the CI verdict use these runs — never every run of a
+// required name, since a superseded straggler can finish after the run that actually decides.
+export function resolveRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHECKS) {
   const watermarks = gateWatermarks(checkRuns);
   const attemptStamps = attemptGateStamps(checkRuns);
   const gatesPassed = attemptsWithPassingGates(checkRuns);
   const missing = [];
   const pending = [];
   const failed = [];
+  const deciders = [];
 
   for (const name of requiredChecks) {
     const runs = checkRuns.filter((run) => run.name === name);
@@ -150,6 +159,7 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
     }
     if (decider.conclusion !== 'success') {
       failed.push(name);
+      deciders.push(decider);
       continue;
     }
     // A passing product run must belong to the CURRENT attempt. Product jobs
@@ -169,10 +179,13 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
       && coverageStamp(decider, attemptStamps) < (watermarks.get(name) ?? '')
     ) {
       pending.push(name);
+      continue;
     }
+    deciders.push(decider);
   }
 
   return {
+    deciders,
     state:
       failed.length > 0
         ? 'failure'

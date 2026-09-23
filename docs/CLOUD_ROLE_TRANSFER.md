@@ -201,6 +201,50 @@ conclusion that disagrees with the evidence it carries is rejected. Every consum
 remains a separate, later, atomically reviewed unit (§"Pending activation" #4); a non-authoritative
 consumer improvement does not activate the role transfer.
 
+### Activation evidence reader (trusted, read-only, non-activating)
+
+The activation verdict cannot trust records its caller assembles: "the latest CI attempt", "no push
+since the corrective push" and "the live head" are facts about GitHub at decision time. After the #619
+convergence stop, the operator approved an additive split. `scripts/role-activation-evidence.mjs` is the
+trusted side. For one repository, one PR and one GitHub-generated correction-request comment,
+`readRoleActivationEvidence(client, { pullRequest, requestCommentId })` reads the cycle and returns
+normalized evidence (`ROLE_ACTIVATION_EVIDENCE_SCHEMA`). Every record carries the identity it was read
+under and its milestone's server timestamp. It reuses the existing trusted adapters:
+
+- **Request.** The comment's server `issue_url` binds the repository and PR. Its single `codex-fix-probe`
+  marker names the reviewed head and the triggering finding. The author and edit state are reported.
+- **Acceptance.** The earliest Codex-connector 👀 reaction on that exact request comment. This is an
+  observed-behaviour assumption and fails closed.
+- **Findings and reviews.** `classifyClaudeShadowReview` with `verifyClaudeShadowProducer`. A finding's
+  identity is its verified check run's own URL. The initial finding is the run the request's marker
+  names, not merely the newest review. Later reviews of the reviewed head are listed beside it.
+- **CI.** `resolveRequiredChecks`, the gate's newest-evidence rule, which includes cancelled attempts. A
+  CI record is dated by, and names, the run that decided each required name (`deciders`). A superseded
+  straggler never dates it. The initial CI is evaluated as of the triggering finding.
+- **Corrective push.** The Activity API's branch push log, giving server before/after/type/actor/time;
+  ancestry comes from the compare API. The corrective push is the first branch update after the
+  request. Every later update is listed, so an away-and-back to the same SHA still shows two updates.
+  The log counts only when it reaches back to an update at or before the request. The reader widens the
+  API's trailing `time_period` (a day by default) until it does. If it never does, the log is reported
+  as uncovered, not guessed.
+- **Freshness.** Opening reads decide only what to read: the request, the live PR and the push log.
+  Then the freshness point is taken. Every mutable source is then read in the closing pass: the
+  request again (it must be unchanged), its acceptance, the live PR (head, base ref and repositories),
+  both heads' check runs, and last the push log again. Each closing read starts after the freshness
+  point. So an edit, a push (even away-and-back), a retarget, a later review or a newer CI attempt
+  before that point is visible. A corrective push that lands during the pass is reported as a
+  diagnostic, never silently absent. A consumer that acts must re-read and bind to the reported
+  decider runs.
+
+The reader decides nothing across records. Identity equality with the caller's expected repository and
+PR, the full milestone order, causation and freshness are the pure verdict's rules (#619). An unreadable
+or unauthenticated source yields `null` plus a diagnostic, never a partial record. The reader issues
+only reads and is wired to no workflow, gate or routing. It does not observe a replacement-gate
+installation (none exists), so it never supplies the separate retirement proof. `codex-fix-probe` keys
+a request only to a Codex review comment, so a Claude-finding → Codex-correction cycle cannot bind its
+triggering finding until a later probe variant can key a request to a Claude shadow finding. Until
+then the verdict holds, fail closed.
+
 ### Pull request lifecycle event log (trusted, read-only, non-activating)
 
 A snapshot of a pull request shows what its base, state and head ref are at one read. It cannot show
